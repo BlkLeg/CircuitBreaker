@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
+import PropTypes from 'prop-types';
 import { getIconEntry } from './common/IconPickerModal';
 import { getOsOption } from '../icons/osOptions';
 
 function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange }) {
-  const [values, _setValues] = useState(() => {
+  // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
+  const [values, setValuesInternal] = useState(() => {
     const init = { ...initialValues };
     fields.forEach((f) => {
       if (f.type === 'tags' && Array.isArray(init[f.name])) {
@@ -23,12 +25,16 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
   }
 
   const setValues = (updater) => {
-    _setValues((prev) => {
+    setValuesInternal((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
       const dirty = JSON.stringify(next) !== initialRef.current;
       onDirtyChange?.(dirty);
       return next;
     });
+  };
+
+  const handleIconChange = (fieldName, newSlug) => {
+    setValues((prev) => ({ ...prev, [fieldName]: newSlug }));
   };
 
   const handleChange = (e) => {
@@ -101,7 +107,7 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
           <button
             type="button"
             className="btn btn-sm"
-            onClick={() => field.onOpenPicker?.(slug, (newSlug) => setValues((prev) => ({ ...prev, [field.name]: newSlug })))}
+            onClick={() => field.onOpenPicker?.(slug, (newSlug) => handleIconChange(field.name, newSlug))}
           >
             {slug ? 'Change icon' : 'Choose icon'}
           </button>
@@ -165,5 +171,28 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     </form>
   );
 }
+
+EntityForm.propTypes = {
+  fields: PropTypes.arrayOf(
+    PropTypes.shape({
+      name: PropTypes.string.isRequired,
+      label: PropTypes.string.isRequired,
+      type: PropTypes.string,
+      options: PropTypes.arrayOf(
+        PropTypes.shape({
+          value: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+          label: PropTypes.string.isRequired,
+        })
+      ),
+      required: PropTypes.bool,
+      hint: PropTypes.string,
+      onOpenPicker: PropTypes.func,
+    })
+  ).isRequired,
+  initialValues: PropTypes.object,
+  onSubmit: PropTypes.func.isRequired,
+  onCancel: PropTypes.func.isRequired,
+  onDirtyChange: PropTypes.func,
+};
 
 export default EntityForm;
