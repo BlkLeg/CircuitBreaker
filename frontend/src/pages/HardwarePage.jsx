@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
@@ -7,24 +7,15 @@ import HardwareDetail from '../components/details/HardwareDetail';
 import { VENDORS } from '../config/vendors';
 import { getVendorIcon } from '../icons/vendorIcons';
 import FormModal from '../components/common/FormModal';
+import { useSettings } from '../context/SettingsContext';
 
-const COLUMNS = [
+const BASE_COLUMNS = [
   { key: 'id', label: 'ID' },
   { key: 'name', label: 'Name' },
   { key: 'role', label: 'Role' },
-  {
-    key: 'vendor', label: 'Vendor',
-    render: (v) => {
-      if (!v) return null;
-      const info = getVendorIcon(v);
-      return (
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <img src={info.path} alt={info.label} style={{ width: 16, height: 16 }} />
-          {info.label}
-        </span>
-      );
-    },
-  },
+];
+
+const TAIL_COLUMNS = [
   { key: 'model', label: 'Model' },
   { key: 'cpu', label: 'CPU' },
   { key: 'memory_gb', label: 'Memory (GB)' },
@@ -45,6 +36,27 @@ const FIELDS = [
 ];
 
 function HardwarePage() {
+  const { settings } = useSettings();
+  const vendorIconMode = settings?.vendor_icon_mode ?? 'custom_files';
+
+  const COLUMNS = useMemo(() => [
+    ...BASE_COLUMNS,
+    {
+      key: 'vendor', label: 'Vendor',
+      render: (v) => {
+        if (!v) return null;
+        if (vendorIconMode === 'none') return <span>{v}</span>;
+        const info = getVendorIcon(v);
+        return (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <img src={info.path} alt={info.label} style={{ width: 16, height: 16 }} />
+            {info.label}
+          </span>
+        );
+      },
+    },
+    ...TAIL_COLUMNS,
+  ], [vendorIconMode]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -88,7 +100,7 @@ function HardwarePage() {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this hardware node?')) return;
+    if (!globalThis.confirm('Delete this hardware node?')) return;
     try {
       await hardwareApi.delete(id);
       fetchData();

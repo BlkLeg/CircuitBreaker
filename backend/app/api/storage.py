@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -21,7 +22,11 @@ def list_storage(
 
 @router.post("", response_model=Storage, status_code=201)
 def create_storage(payload: StorageCreate, db: Session = Depends(get_db)):
-    return storage_service.create_storage(db, payload)
+    try:
+        return storage_service.create_storage(db, payload)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.get("/{storage_id}", response_model=Storage)
@@ -38,6 +43,9 @@ def patch_storage(storage_id: int, payload: StorageUpdate, db: Session = Depends
         return storage_service.update_storage(db, storage_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.delete("/{storage_id}", status_code=204)

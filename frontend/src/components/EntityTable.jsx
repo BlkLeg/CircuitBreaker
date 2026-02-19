@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 
 function EntityTable({ columns, data, onEdit, onDelete, onRowClick }) {
   return (
@@ -47,5 +48,21 @@ function EntityTable({ columns, data, onEdit, onDelete, onRowClick }) {
     </div>
   );
 }
+
+EntityTable.propTypes = {
+  columns:    PropTypes.arrayOf(PropTypes.shape({
+    key:    PropTypes.string.isRequired,
+    label:  PropTypes.string.isRequired,
+    render: PropTypes.func,
+  })).isRequired,
+  data:       PropTypes.arrayOf(PropTypes.object).isRequired,
+  onEdit:     PropTypes.func.isRequired,
+  onDelete:   PropTypes.func.isRequired,
+  onRowClick: PropTypes.func,
+};
+
+EntityTable.defaultProps = {
+  onRowClick: undefined,
+};
 
 export default EntityTable;

@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@dagrejs/dagre": "^1.1.8",
+    "@reactflow/node-resizer": "^2.2.14",
     "axios": "^1.7.0",
+    "elkjs": "^0.11.0",
     "lucide-react": "^0.574.0",
     "prop-types": "^15.8.1",
     "react": "^18.3.0",

@@ -9,6 +9,10 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_FK_HARDWARE_ID = "hardware.id"
+_FK_SERVICES_ID = "services.id"
+
+
 # ── Common ─────────────────────────────────────────────────────────────────
 
 
@@ -84,7 +88,7 @@ class ComputeUnit(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)  # 'vm' | 'container'
-    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=False)
+    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
     os: Mapped[str | None] = mapped_column(String)
     icon_slug: Mapped[str | None] = mapped_column(String)
     cpu_cores: Mapped[int | None] = mapped_column(Integer, name="CPU_cores")
@@ -113,12 +117,14 @@ class Service(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     compute_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=True)
-    hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=True)
+    hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     category: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
     ports: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -143,8 +149,8 @@ class ServiceDependency(Base):
     __table_args__ = (UniqueConstraint("service_id", "depends_on_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id"), nullable=False)
-    depends_on_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id"), nullable=False)
+    service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
+    depends_on_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
 
     service: Mapped["Service"] = relationship(
         "Service", foreign_keys=[service_id], back_populates="dependencies"
@@ -163,7 +169,7 @@ class Storage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)  # 'disk', 'pool', 'dataset', 'share'
-    hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("hardware.id"))
+    hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID))
     capacity_gb: Mapped[int | None] = mapped_column(Integer)
     path: Mapped[str | None] = mapped_column(String)
     protocol: Mapped[str | None] = mapped_column(String)
@@ -180,7 +186,7 @@ class ServiceStorage(Base):
     __table_args__ = (UniqueConstraint("service_id", "storage_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id"), nullable=False)
+    service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     storage_id: Mapped[int] = mapped_column(Integer, ForeignKey("storage.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
 
@@ -243,9 +249,65 @@ class ServiceMisc(Base):
     __table_args__ = (UniqueConstraint("service_id", "misc_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id"), nullable=False)
+    service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     misc_id: Mapped[int] = mapped_column(Integer, ForeignKey("misc_items.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
 
     service: Mapped["Service"] = relationship("Service", back_populates="misc_links")
     misc_item: Mapped["MiscItem"] = relationship("MiscItem", back_populates="service_links")
+
+
+# ── Graph Layouts ─────────────────────────────────────────────────────────────
+
+
+class GraphLayout(Base):
+    __tablename__ = "graph_layouts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)  # e.g. "default", "user-1-custom"
+    context: Mapped[str | None] = mapped_column(String)  # e.g. "topology"
+    layout_data: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── App Settings ──────────────────────────────────────────────────────────────
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    theme: Mapped[str] = mapped_column(String, nullable=False, default="dark")
+    default_environment: Mapped[str | None] = mapped_column(String)
+    show_experimental_features: Mapped[bool] = mapped_column(
+        Integer, nullable=False, default=False
+    )
+    api_base_url: Mapped[str | None] = mapped_column(String)
+    map_default_filters: Mapped[str | None] = mapped_column(Text)  # JSON string
+    vendor_icon_mode: Mapped[str] = mapped_column(String, nullable=False, default="custom_files")
+    environments: Mapped[str | None] = mapped_column(Text, default='["prod","staging","dev"]')  # JSON array
+    categories: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
+    dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Audit Logs ────────────────────────────────────────────────────────────────
+
+
+class Log(Base):
+    __tablename__ = "logs"
+
+    id:          Mapped[int]          = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp:   Mapped[datetime]     = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    level:       Mapped[str]          = mapped_column(String, nullable=False, default="info")
+    category:    Mapped[str]          = mapped_column(String, nullable=False)   # crud | settings | relationships | docs
+    action:      Mapped[str]          = mapped_column(String, nullable=False)   # create_hardware, update_service, …
+    actor:       Mapped[str | None]   = mapped_column(String, default="user")
+    entity_type: Mapped[str | None]   = mapped_column(String)
+    entity_id:   Mapped[int | None]   = mapped_column(Integer)
+    old_value:   Mapped[str | None]   = mapped_column(Text)
+    new_value:   Mapped[str | None]   = mapped_column(Text)
+    user_agent:  Mapped[str | None]   = mapped_column(String)
+    ip_address:  Mapped[str | None]   = mapped_column(String)
+    details:     Mapped[str | None]   = mapped_column(Text)

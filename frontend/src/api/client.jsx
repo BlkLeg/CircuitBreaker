@@ -1,4 +1,5 @@
 import axios from 'axios';
+import logger from '../utils/logger';
 
 const client = axios.create({
   baseURL: '/api/v1',
@@ -12,7 +13,7 @@ client.interceptors.response.use(
     const message = Array.isArray(detail)
       ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
       : detail || error.message;
-    console.error('API Error:', message);
+    logger.error('API Error:', message);
     return Promise.reject(new Error(message));
   }
 );
@@ -29,6 +30,7 @@ export const hardwareApi = {
 export const computeUnitsApi = {
   list: (params) => client.get('/compute-units', { params }),
   get: (id) => client.get(`/compute-units/${id}`),
+  getNetworks: (id) => client.get(`/compute-units/${id}/networks`),
   create: (data) => client.post('/compute-units', data),
   update: (id, data) => client.patch(`/compute-units/${id}`, data),
   delete: (id) => client.delete(`/compute-units/${id}`),
@@ -92,10 +94,24 @@ export const docsApi = {
 
 export const graphApi = {
   topology: (params) => client.get('/graph/topology', { params }),
+  getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
+  saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
 };
 
 export const searchApi = {
   search: (q) => client.get('/search', { params: { q } }),
+};
+
+export const settingsApi = {
+  get: () => client.get('/settings'),
+  update: (data) => client.put('/settings', data),
+  reset: () => client.post('/settings/reset'),
+};
+
+export const logsApi = {
+  list:   (params) => client.get('/logs', { params }),
+  clear:  ()       => client.delete('/logs'),
+  stream: (since)  => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
 };
 
 export default client;

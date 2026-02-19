@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -20,7 +21,11 @@ def list_hardware(
 
 @router.post("", response_model=Hardware, status_code=201)
 def create_hardware(payload: HardwareCreate, db: Session = Depends(get_db)):
-    return hardware_service.create_hardware(db, payload)
+    try:
+        return hardware_service.create_hardware(db, payload)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.get("/{hardware_id}", response_model=Hardware)
@@ -38,6 +43,9 @@ def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = De
         return hardware_service.update_hardware(db, hardware_id, update)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.patch("/{hardware_id}", response_model=Hardware)
@@ -46,6 +54,9 @@ def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Session = Depe
         return hardware_service.update_hardware(db, hardware_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.delete("/{hardware_id}", status_code=204)

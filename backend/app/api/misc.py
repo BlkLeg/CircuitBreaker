@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -20,7 +21,11 @@ def list_misc(
 
 @router.post("", response_model=MiscItem, status_code=201)
 def create_misc_item(payload: MiscItemCreate, db: Session = Depends(get_db)):
-    return misc_service.create_misc_item(db, payload)
+    try:
+        return misc_service.create_misc_item(db, payload)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.get("/{item_id}", response_model=MiscItem)
@@ -37,6 +42,9 @@ def patch_misc_item(item_id: int, payload: MiscItemUpdate, db: Session = Depends
         return misc_service.update_misc_item(db, item_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
 @router.delete("/{item_id}", status_code=204)

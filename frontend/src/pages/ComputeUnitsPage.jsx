@@ -7,6 +7,8 @@ import ComputeDetail from '../components/details/ComputeDetail';
 import IconPickerModal, { IconImg, getIconEntry } from '../components/common/IconPickerModal';
 import { OS_OPTIONS, getOsOption } from '../icons/osOptions';
 import FormModal from '../components/common/FormModal';
+import { useSettings } from '../context/SettingsContext';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -38,6 +40,8 @@ const COLUMNS = [
 ];
 
 function ComputeUnitsPage() {
+  const { settings } = useSettings();
+  const environments = settings?.environments ?? ['prod', 'staging', 'dev'];
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -112,7 +116,8 @@ function ComputeUnitsPage() {
     { name: 'cpu_cores', label: 'CPU Cores', type: 'number' },
     { name: 'memory_mb', label: 'Memory (MB)', type: 'number' },
     { name: 'disk_gb', label: 'Disk (GB)', type: 'number' },
-    { name: 'environment', label: 'Environment' },
+    { name: 'environment', label: 'Environment', type: 'select',
+      options: environments.map((e) => ({ value: e, label: e })) },
     { name: 'notes', label: 'Notes', type: 'textarea' },
     { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
   ];
@@ -132,14 +137,22 @@ function ComputeUnitsPage() {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this compute unit?')) return;
-    try {
-      await computeUnitsApi.delete(id);
-      fetchData();
-    } catch (err) {
-      setError(err.message);
-    }
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const handleDelete = (id) => {
+    setConfirmState({
+      open: true,
+      message: 'Delete this compute unit?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await computeUnitsApi.delete(id);
+          fetchData();
+        } catch (err) {
+          setError(err.message);
+        }
+      },
+    });
   };
 
   return (
@@ -165,7 +178,10 @@ function ComputeUnitsPage() {
           <option value="vm">VM</option>
           <option value="container">Container</option>
         </select>
-        <input className="filter-input" type="text" placeholder="Environment..." value={envFilter} onChange={(e) => setEnvFilter(e.target.value)} />
+        <select className="filter-select" value={envFilter} onChange={(e) => setEnvFilter(e.target.value)}>
+          <option value="">All environments</option>
+          {environments.map((e) => <option key={e} value={e}>{e}</option>)}
+        </select>
         <select className="filter-select" value={hwFilter} onChange={(e) => setHwFilter(e.target.value)}>
           <option value="">All hardware</option>
           {hardware.map((h) => (
@@ -206,6 +222,12 @@ function ComputeUnitsPage() {
           onClose={() => setIconPickerOpen(false)}
         />
       )}
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

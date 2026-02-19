@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
+import ConfirmDialog from '../common/ConfirmDialog';
+import logger from '../../utils/logger';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Layers, Database, Box, Plus, Trash2, ArrowRight } from 'lucide-react';
 
@@ -38,7 +40,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
       setAllStorage(strs.data);
       setAllMisc(mscs.data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   }, [service]);
 
@@ -56,14 +58,22 @@ function ServiceDetail({ service, isOpen, onClose }) {
     }
   };
 
-  const handleRemoveDep = async (depId) => {
-    if (!window.confirm('Remove dependency?')) return;
-    try {
-      await servicesApi.removeDependency(service.id, depId);
-      fetchData();
-    } catch (err) {
-      alert(err.message);
-    }
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const handleRemoveDep = (depId) => {
+    setConfirmState({
+      open: true,
+      message: 'Remove dependency?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await servicesApi.removeDependency(service.id, depId);
+          fetchData();
+        } catch (err) {
+          alert(err.message);
+        }
+      },
+    });
   };
 
   const handleAddStorage = async () => {
@@ -77,14 +87,20 @@ function ServiceDetail({ service, isOpen, onClose }) {
     }
   };
 
-  const handleRemoveStorage = async (linkId) => {
-    if (!window.confirm('Unlink storage?')) return;
-    try {
-      await servicesApi.removeStorage(service.id, linkId);
-      fetchData();
-    } catch (err) {
-      alert(err.message);
-    }
+  const handleRemoveStorage = (linkId) => {
+    setConfirmState({
+      open: true,
+      message: 'Unlink storage?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await servicesApi.removeStorage(service.id, linkId);
+          fetchData();
+        } catch (err) {
+          alert(err.message);
+        }
+      },
+    });
   };
   
     const handleAddMisc = async () => {
@@ -98,14 +114,20 @@ function ServiceDetail({ service, isOpen, onClose }) {
     }
   };
 
-  const handleRemoveMisc = async (linkId) => {
-    if (!window.confirm('Unlink misc item?')) return;
-    try {
-      await servicesApi.removeMisc(service.id, linkId);
-      fetchData();
-    } catch (err) {
-      alert(err.message);
-    }
+  const handleRemoveMisc = (linkId) => {
+    setConfirmState({
+      open: true,
+      message: 'Unlink misc item?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await servicesApi.removeMisc(service.id, linkId);
+          fetchData();
+        } catch (err) {
+          alert(err.message);
+        }
+      },
+    });
   };
 
   if (!service) return null;
@@ -239,6 +261,12 @@ function ServiceDetail({ service, isOpen, onClose }) {
         .field-group label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
         .btn-icon.danger { color: var(--color-danger); background: none; border: none; cursor: pointer; }
       `}</style>
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </Drawer>
   );
 }

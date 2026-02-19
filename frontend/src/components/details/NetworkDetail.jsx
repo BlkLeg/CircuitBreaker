@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
+import logger from '../../utils/logger';
 import { networksApi, computeUnitsApi, hardwareApi } from '../../api/client';
 import { Monitor, Plus, Trash2, Server } from 'lucide-react';
 
@@ -25,7 +26,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       if (!hwProp && rest[0]) setHardware(rest[0].data);
       if (!cuProp && rest[1]) setComputeUnits(rest[1].data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   }, [network, hwProp, cuProp]);
 
@@ -46,7 +47,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       setNewIp('');
       fetchData();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   };
 
@@ -55,7 +56,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       await networksApi.removeMember(network.id, computeId);
       fetchData();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   };
 

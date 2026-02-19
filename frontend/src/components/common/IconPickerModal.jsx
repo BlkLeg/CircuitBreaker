@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Search, Upload, Check } from 'lucide-react';
 
 // All icons available in the library
@@ -62,7 +62,11 @@ const GROUPS = ['OS', 'Vendor', 'Network', 'Storage', 'Apps', 'Other', 'Uploaded
 
 export function getIconEntry(slug) {
   if (!slug) return null;
-  return LIBRARY_ICONS.find((i) => i.slug === slug) ?? { slug, label: slug, path: `/icons/vendors/${slug}.svg`, group: 'Uploaded' };
+  const lib = LIBRARY_ICONS.find((i) => i.slug === slug);
+  if (lib) return lib;
+  // Uploaded icons are served from /user-icons/ and their slugs start with 'user-'
+  const path = slug.startsWith('user-') ? `/user-icons/${slug}` : `/icons/vendors/${slug}.svg`;
+  return { slug, label: slug.replace(/\.[^.]+$/, ''), path, group: 'Uploaded' };
 }
 
 export function IconImg({ slug, size = 20, style = {} }) {
@@ -87,6 +91,16 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
   const [uploadedIcons, setUploadedIcons] = useState([]);
   const [preview, setPreview] = useState(currentSlug);
   const fileRef = useRef(null);
+
+  // Fetch previously-uploaded icons when the modal opens
+  useEffect(() => {
+    fetch('/api/v1/compute-units/icons')
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => {
+        setUploadedIcons(data.map((i) => ({ ...i, group: 'Uploaded' })));
+      })
+      .catch(() => {});
+  }, []);
 
   const allIcons = [...LIBRARY_ICONS, ...uploadedIcons];
   const filtered = allIcons.filter((icon) => {

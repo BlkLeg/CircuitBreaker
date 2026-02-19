@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { getIconEntry } from './common/IconPickerModal';
 import { getOsOption } from '../icons/osOptions';
+import { slugify } from '../utils/slugify';
 
 function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange }) {
   // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
@@ -13,6 +14,15 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
       }
     });
     return init;
+  });
+  // Track which slug fields have been manually edited (dirty)
+  const [slugDirtyFields, setSlugDirtyFields] = useState(() => {
+    // When editing an existing record, slug is already set — treat as dirty so it won't auto-reset
+    const dirty = {};
+    fields.forEach((f) => {
+      if (f.type === 'slug' && initialValues[f.name]) dirty[f.name] = true;
+    });
+    return dirty;
   });
   const initialRef = useRef(null);
   // Capture a comparable snapshot of initial values once
@@ -47,7 +57,28 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     } else {
       coerced = value;
     }
-    setValues((prev) => ({ ...prev, [name]: coerced }));
+    setValues((prev) => {
+      const next = { ...prev, [name]: coerced };
+      // Auto-update any un-dirty slug fields that watch this field
+      fields.forEach((f) => {
+        if (f.type === 'slug' && f.slugSource === name && !slugDirtyFields[f.name]) {
+          next[f.name] = slugify(String(coerced ?? ''));
+        }
+      });
+      return next;
+    });
+  };
+
+  // Slug field own-change: mark it dirty so auto-update stops
+  const handleSlugChange = (e) => {
+    const { name, value } = e.target;
+    setSlugDirtyFields((prev) => ({ ...prev, [name]: true }));
+    setValues((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleResetSlug = (fieldName, sourceFieldName) => {
+    setSlugDirtyFields((prev) => ({ ...prev, [fieldName]: false }));
+    setValues((prev) => ({ ...prev, [fieldName]: slugify(String(prev[sourceFieldName] ?? '')) }));
   };
 
 
@@ -135,6 +166,35 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     if (field.type === 'textarea') {
       return (
         <textarea id={field.name} name={field.name} value={values[field.name] ?? ''} onChange={handleChange} rows={4} />
+      );
+    }
+
+    // ── Slug field with auto-generation ──────────────────────────────────────
+    if (field.type === 'slug') {
+      const isDirty = !!slugDirtyFields[field.name];
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            id={field.name}
+            type="text"
+            name={field.name}
+            value={values[field.name] ?? ''}
+            onChange={handleSlugChange}
+            required={field.required}
+            style={{ flex: 1, fontFamily: 'monospace', fontSize: 12 }}
+          />
+          {isDirty && field.slugSource && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              title="Re-generate from name"
+              onClick={() => handleResetSlug(field.name, field.slugSource)}
+              style={{ flexShrink: 0, fontSize: 11 }}
+            >
+              ↺
+            </button>
+          )}
+        </div>
       );
     }
 

@@ -1,9 +1,5 @@
-# Placeholder for future authentication logic.
-# v1 ships with no auth. When enabled, replace this with JWT validation.
-# The planned flow: client sends `Authorization: Bearer <token>` header;
-# verify_token decodes and validates a HS256 JWT signed with a secret key.
-
-
-def verify_token(token: str) -> bool:
-    """Always returns True in v1 (no-auth mode)."""
-    return True
+# Authentication is intentionally absent in v1 (single-user homelab tool).
+# v2 will introduce JWT validation here: client sends
+# `Authorization: Bearer <token>`; this module will decode and verify a
+# HS256 JWT signed with a secret key stored in the environment.
+# KNOWN GAP: All API endpoints are currently unauthenticated.

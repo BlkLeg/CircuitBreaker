@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -62,6 +63,9 @@ def add_member(network_id: int, payload: ComputeNetworkLink, db: Session = Depen
         return networks_service.add_compute_member(db, network_id, payload.compute_id, payload.ip_address)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Compute unit is already a member of this network")
 
 
 @router.delete("/{network_id}/members/{compute_id}", status_code=204)

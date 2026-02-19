@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { docsApi } from '../../api/client';
 import { FileText, Link as LinkIcon, Trash2, Plus, ExternalLink } from 'lucide-react';
 import MarkdownViewer from '../MarkdownViewer';
+import ConfirmDialog from './ConfirmDialog';
+import logger from '../../utils/logger';
 
 function DocsPanel({ entityType, entityId }) {
   const [attachedDocs, setAttachedDocs] = useState([]);
@@ -20,7 +22,7 @@ function DocsPanel({ entityType, entityId }) {
       setAttachedDocs(attached.data);
       setAllDocs(all.data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     } finally {
       setLoading(false);
     }
@@ -38,14 +40,22 @@ function DocsPanel({ entityType, entityId }) {
     }
   };
 
-  const handleDetach = async (docId) => {
-    if (!window.confirm('Unlink this document?')) return;
-    try {
-      await docsApi.detach({ doc_id: docId, entity_type: entityType, entity_id: entityId });
-      fetchData();
-    } catch (err) {
-      alert(err.message);
-    }
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const handleDetach = (docId) => {
+    setConfirmState({
+      open: true,
+      message: 'Unlink this document?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await docsApi.detach({ doc_id: docId, entity_type: entityType, entity_id: entityId });
+          fetchData();
+        } catch (err) {
+          alert(err.message);
+        }
+      },
+    });
   };
 
   const unattachedDocs = allDocs.filter(d => !attachedDocs.find(ad => ad.id === d.id));
@@ -138,6 +148,12 @@ function DocsPanel({ entityType, entityId }) {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

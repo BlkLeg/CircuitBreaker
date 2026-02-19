@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
+import ConfirmDialog from '../common/ConfirmDialog';
+import logger from '../../utils/logger';
 import { computeUnitsApi, networksApi, servicesApi } from '../../api/client';
-import { Server, Grid, Network, Trash2 } from 'lucide-react';
+import { Grid, Network, Trash2 } from 'lucide-react';
 import { IconImg } from '../common/IconPickerModal';
 import { getOsOption } from '../../icons/osOptions';
 
@@ -13,22 +16,21 @@ function ComputeDetail({ compute, isOpen, onClose }) {
   const [allNetworks, setAllNetworks] = useState([]);
   const [newNetId, setNewNetId] = useState('');
   const [newIp, setNewIp] = useState('');
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const fetchData = useCallback(async () => {
     if (!compute) return;
     try {
-      const svcs = await servicesApi.list({ compute_id: compute.id });
+      const [svcs, nets, allNets] = await Promise.all([
+        servicesApi.list({ compute_id: compute.id }),
+        computeUnitsApi.getNetworks(compute.id),
+        networksApi.list(),
+      ]);
       setServices(svcs.data);
-
-      const freshCompute = await computeUnitsApi.get(compute.id);
-      if (freshCompute.data.network_memberships) {
-        setNetworks(freshCompute.data.network_memberships);
-      }
-
-      const allNets = await networksApi.list();
+      setNetworks(nets.data);
       setAllNetworks(allNets.data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   }, [compute]);
 
@@ -42,12 +44,18 @@ function ComputeDetail({ compute, isOpen, onClose }) {
     } catch (err) { alert(err.message); }
   };
 
-  const handleLeaveNetwork = async (networkId) => {
-    if (!window.confirm('Leave this network?')) return;
-    try {
-      await networksApi.removeMember(networkId, compute.id);
-      fetchData();
-    } catch (err) { alert(err.message); }
+  const handleLeaveNetwork = (networkId) => {
+    setConfirmState({
+      open: true,
+      message: 'Leave this network?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await networksApi.removeMember(networkId, compute.id);
+          fetchData();
+        } catch (err) { alert(err.message); }
+      },
+    });
   };
 
   if (!compute) return null;
@@ -74,10 +82,10 @@ function ComputeDetail({ compute, isOpen, onClose }) {
       <div className="tab-content" style={{ marginTop: 20 }}>
         {activeTab === 'overview' && (
           <div className="detail-section">
-            <div className="field-group"><label>Name</label><div>{compute.name}</div></div>
-            <div className="field-group"><label>Kind</label><div>{compute.kind}</div></div>
+            <div className="field-group"><span className="field-label">Name</span><div>{compute.name}</div></div>
+            <div className="field-group"><span className="field-label">Kind</span><div>{compute.kind}</div></div>
             <div className="field-group">
-              <label>OS</label>
+              <span className="field-label">OS</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 {compute.os && (
                   <img
@@ -91,16 +99,16 @@ function ComputeDetail({ compute, isOpen, onClose }) {
             </div>
             {compute.icon_slug && (
               <div className="field-group">
-                <label>Icon</label>
+                <span className="field-label">Icon</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <IconImg slug={compute.icon_slug} size={28} />
                   <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{compute.icon_slug}</span>
                 </div>
               </div>
             )}
-            <div className="field-group"><label>CPU / RAM</label><div>{compute.cpu_cores} cores / {compute.memory_mb} MB</div></div>
-            <div className="field-group"><label>Disk</label><div>{compute.disk_gb ? `${compute.disk_gb} GB` : '—'}</div></div>
-            <div className="field-group"><label>IP</label><div>{compute.ip_address || '—'}</div></div>
+            <div className="field-group"><span className="field-label">CPU / RAM</span><div>{compute.cpu_cores} cores / {compute.memory_mb} MB</div></div>
+            <div className="field-group"><span className="field-label">Disk</span><div>{compute.disk_gb ? `${compute.disk_gb} GB` : '—'}</div></div>
+            <div className="field-group"><span className="field-label">IP</span><div>{compute.ip_address || '—'}</div></div>
           </div>
         )}
 
@@ -116,15 +124,18 @@ function ComputeDetail({ compute, isOpen, onClose }) {
               <button className="btn btn-sm btn-primary" onClick={handleJoinNetwork} disabled={!newNetId}>Join</button>
             </div>
             <div className="list-group">
-              {networks.map(mem => (
-                <div key={mem.network_id} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', padding: 8, borderBottom: '1px solid var(--color-border)' }}>
-                  <div>
-                    <Network size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-                    <strong>{mem.network?.name}</strong> <span className="text-muted">({mem.ip_address})</span>
+              {networks.map(mem => {
+                const netName = allNetworks.find(n => n.id === mem.network_id)?.name ?? `Network #${mem.network_id}`;
+                return (
+                  <div key={mem.network_id} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', padding: 8, borderBottom: '1px solid var(--color-border)' }}>
+                    <div>
+                      <Network size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                      <strong>{netName}</strong> {mem.ip_address && <span className="text-muted">({mem.ip_address})</span>}
+                    </div>
+                    <button className="btn-icon danger" onClick={() => handleLeaveNetwork(mem.network_id)}><Trash2 size={14} /></button>
                   </div>
-                  <button className="btn-icon danger" onClick={() => handleLeaveNetwork(mem.network_id)}><Trash2 size={14} /></button>
-                </div>
-              ))}
+                );
+              })}
               {networks.length === 0 && <p className="text-muted">No network memberships.</p>}
             </div>
           </div>
@@ -152,10 +163,36 @@ function ComputeDetail({ compute, isOpen, onClose }) {
         .tab { background: none; border: none; padding: 8px 0; color: var(--color-text-muted); cursor: pointer; border-bottom: 2px solid transparent; }
         .tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
         .field-group { margin-bottom: 12px; }
-        .field-group label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
+        .field-group .field-label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
       `}</style>
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </Drawer>
   );
 }
+
+ComputeDetail.propTypes = {
+  compute: PropTypes.shape({
+    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    name: PropTypes.string,
+    kind: PropTypes.string,
+    os: PropTypes.string,
+    icon_slug: PropTypes.string,
+    cpu_cores: PropTypes.number,
+    memory_mb: PropTypes.number,
+    disk_gb: PropTypes.number,
+    ip_address: PropTypes.string,
+  }),
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
+
+ComputeDetail.defaultProps = {
+  compute: null,
+};
 
 export default ComputeDetail;

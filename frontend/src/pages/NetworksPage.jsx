@@ -5,6 +5,7 @@ import TagFilter from '../components/TagFilter';
 import { networksApi, hardwareApi, computeUnitsApi } from '../api/client';
 import NetworkDetail from '../components/details/NetworkDetail';
 import FormModal from '../components/common/FormModal';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -91,14 +92,22 @@ function NetworksPage() {
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm('Delete this network?')) return;
-    try {
-      await networksApi.delete(id);
-      fetchData();
-    } catch (err) {
-      setError(err.message);
-    }
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const handleDelete = (id) => {
+    setConfirmState({
+      open: true,
+      message: 'Delete this network?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await networksApi.delete(id);
+          fetchData();
+        } catch (err) {
+          setError(err.message);
+        }
+      },
+    });
   };
 
   return (
@@ -167,6 +176,12 @@ function NetworksPage() {
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
         onClose={() => { setShowForm(false); setEditTarget(null); }}
+      />
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
       />
     </div>
   );

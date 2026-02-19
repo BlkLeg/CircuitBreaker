@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import MarkdownViewer from '../components/MarkdownViewer';
 import { docsApi } from '../api/client';
+import ConfirmDialog from '../components/common/ConfirmDialog';
+import logger from '../utils/logger';
 
 function DocsPage() {
   const [docs, setDocs] = useState([]);
@@ -15,7 +17,7 @@ function DocsPage() {
       const res = await docsApi.list();
       setDocs(res.data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     } finally {
       setLoading(false);
     }
@@ -49,19 +51,28 @@ function DocsPage() {
       setEditing(false);
       await fetchDocs();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
     }
   };
 
-  const handleDelete = async () => {
-    if (!selectedDoc || !window.confirm('Delete this document?')) return;
-    try {
-      await docsApi.delete(selectedDoc.id);
-      setSelectedDoc(null);
-      fetchDocs();
-    } catch (err) {
-      console.error(err);
-    }
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const handleDelete = () => {
+    if (!selectedDoc) return;
+    setConfirmState({
+      open: true,
+      message: 'Delete this document?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await docsApi.delete(selectedDoc.id);
+          setSelectedDoc(null);
+          fetchDocs();
+        } catch (err) {
+          logger.error(err);
+        }
+      },
+    });
   };
 
   return (
@@ -169,6 +180,12 @@ function DocsPage() {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

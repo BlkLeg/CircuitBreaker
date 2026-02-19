@@ -8,11 +8,13 @@ class ServiceBase(BaseModel):
     slug: str
     compute_id: Optional[int] = None
     hardware_id: Optional[int] = None
+    icon_slug: Optional[str] = None
     category: Optional[str] = None
     url: Optional[str] = None
     ports: Optional[str] = None
     description: Optional[str] = None
     environment: Optional[str] = None
+    status: Optional[str] = None  # running | stopped | degraded | maintenance
     tags: list[str] = []
 
 
@@ -25,11 +27,13 @@ class ServiceUpdate(BaseModel):
     slug: Optional[str] = None
     compute_id: Optional[int] = None
     hardware_id: Optional[int] = None
+    icon_slug: Optional[str] = None
     category: Optional[str] = None
     url: Optional[str] = None
     ports: Optional[str] = None
     description: Optional[str] = None
     environment: Optional[str] = None
+    status: Optional[str] = None  # running | stopped | degraded | maintenance
     tags: Optional[list[str]] = None
 
 

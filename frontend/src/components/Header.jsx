@@ -4,18 +4,13 @@ import { Search } from 'lucide-react';
 function Header({ onOpenPalette }) {
   return (
     <header className="global-header" style={{
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      height: '60px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 50,
-      pointerEvents: 'none' // Let clicks pass through to underlying elements if not on search
+      position: 'fixed',
+      top: 8,
+      right: 16,
+      zIndex: 200,
+      pointerEvents: 'none',
     }}>
-      <button 
+      <button
         className="search-trigger"
         onClick={onOpenPalette}
         style={{
@@ -23,17 +18,17 @@ function Header({ onOpenPalette }) {
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          background: 'rgba(13, 17, 23, 0.6)',
-          border: '1px solid rgba(30, 42, 58, 0.6)',
+          background: 'rgba(13, 17, 23, 0.75)',
+          border: '1px solid rgba(30, 42, 58, 0.7)',
           borderRadius: '8px',
-          padding: '8px 16px',
+          padding: '7px 14px',
           color: 'var(--color-text-muted)',
           fontSize: '13px',
           cursor: 'pointer',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'blur(10px)',
           transition: 'all 0.2s ease',
-          width: '320px',
-          maxWidth: '90vw'
+          width: '260px',
+          maxWidth: 'calc(100vw - 32px)',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = 'rgba(13, 17, 23, 0.8)';
