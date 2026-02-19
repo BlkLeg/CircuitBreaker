@@ -1,0 +1,46 @@
+import React from 'react';
+
+function EntityTable({ columns, data, onEdit, onDelete }) {
+  return (
+    <div className="table-wrapper">
+      <table className="entity-table">
+        <thead>
+          <tr>
+            {columns.map((col) => (
+              <th key={col.key}>{col.label}</th>
+            ))}
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row) => (
+            <tr key={row.id}>
+              {columns.map((col) => (
+                <td key={col.key}>
+                  {col.render ? col.render(row[col.key], row) : String(row[col.key] ?? '')}
+                </td>
+              ))}
+              <td className="action-cell">
+                <button onClick={() => onEdit(row)} className="btn btn-sm">
+                  Edit
+                </button>
+                <button onClick={() => onDelete(row.id)} className="btn btn-sm btn-danger">
+                  Delete
+                </button>
+              </td>
+            </tr>
+          ))}
+          {data.length === 0 && (
+            <tr>
+              <td colSpan={columns.length + 1} className="empty-row">
+                No records found.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default EntityTable;
