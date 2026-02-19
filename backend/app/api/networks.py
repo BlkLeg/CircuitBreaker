@@ -9,8 +9,14 @@ router = APIRouter(prefix="/networks", tags=["networks"])
 
 
 @router.get("", response_model=list[Network])
-def list_networks(q: str | None = Query(None), db: Session = Depends(get_db)):
-    return networks_service.list_networks(db, q=q)
+def list_networks(
+    tag: str | None = Query(None),
+    vlan_id: int | None = Query(None),
+    cidr: str | None = Query(None),
+    q: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    return networks_service.list_networks(db, tag=tag, vlan_id=vlan_id, cidr=cidr, q=q)
 
 
 @router.post("", response_model=Network, status_code=201)

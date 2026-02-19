@@ -1,28 +1,79 @@
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
-from app.db.models import Network, ComputeNetwork
+from app.db.models import Network, ComputeNetwork, EntityTag, Tag
 from app.schemas.networks import NetworkCreate, NetworkUpdate
 
 
-def _to_dict(net: Network) -> dict:
-    return {c.name: getattr(net, c.name) for c in net.__table__.columns}
+def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
+    existing = db.execute(
+        select(EntityTag).where(
+            EntityTag.entity_type == entity_type,
+            EntityTag.entity_id == entity_id,
+        )
+    ).scalars().all()
+    for et in existing:
+        db.delete(et)
+    db.flush()
+
+    for name in tag_names:
+        tag = db.execute(select(Tag).where(Tag.name == name)).scalar_one_or_none()
+        if tag is None:
+            tag = Tag(name=name)
+            db.add(tag)
+            db.flush()
+        db.add(EntityTag(entity_type=entity_type, entity_id=entity_id, tag_id=tag.id))
 
 
-def list_networks(db: Session, *, q: str | None = None) -> list[dict]:
+def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
+    rows = db.execute(
+        select(EntityTag).where(
+            EntityTag.entity_type == entity_type,
+            EntityTag.entity_id == entity_id,
+        )
+    ).scalars().all()
+    return [row.tag.name for row in rows]
+
+
+def _to_dict(db: Session, net: Network) -> dict:
+    d = {c.name: getattr(net, c.name) for c in net.__table__.columns}
+    d["tags"] = get_tags_for(db, "network", net.id)
+    return d
+
+
+def list_networks(
+    db: Session,
+    *,
+    tag: str | None = None,
+    vlan_id: int | None = None,
+    cidr: str | None = None,
+    q: str | None = None,
+) -> list[dict]:
     stmt = select(Network)
+    if vlan_id is not None:
+        stmt = stmt.where(Network.vlan_id == vlan_id)
+    if cidr:
+        stmt = stmt.where(Network.cidr.ilike(f"%{cidr}%"))
     if q:
-        stmt = stmt.where(Network.name.ilike(f"%{q}%"))
+        stmt = stmt.where(
+            or_(Network.name.ilike(f"%{q}%"), Network.description.ilike(f"%{q}%"))
+        )
+    if tag:
+        stmt = (
+            stmt.join(EntityTag, (EntityTag.entity_type == "network") & (EntityTag.entity_id == Network.id))
+            .join(Tag, Tag.id == EntityTag.tag_id)
+            .where(Tag.name == tag)
+        )
     rows = db.execute(stmt).scalars().all()
-    return [_to_dict(r) for r in rows]
+    return [_to_dict(db, r) for r in rows]
 
 
 def get_network(db: Session, network_id: int) -> dict:
     net = db.get(Network, network_id)
     if net is None:
         raise ValueError(f"Network {network_id} not found")
-    return _to_dict(net)
+    return _to_dict(db, net)
 
 
 def create_network(db: Session, payload: NetworkCreate) -> dict:
@@ -34,27 +85,32 @@ def create_network(db: Session, payload: NetworkCreate) -> dict:
         description=payload.description,
     )
     db.add(net)
+    db.flush()
+    _sync_tags(db, "network", net.id, payload.tags)
     db.commit()
     db.refresh(net)
-    return _to_dict(net)
+    return _to_dict(db, net)
 
 
 def update_network(db: Session, network_id: int, payload: NetworkUpdate) -> dict:
     net = db.get(Network, network_id)
     if net is None:
         raise ValueError(f"Network {network_id} not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(net, field, value)
     net.updated_at = datetime.now(timezone.utc)
+    if payload.tags is not None:
+        _sync_tags(db, "network", net.id, payload.tags)
     db.commit()
     db.refresh(net)
-    return _to_dict(net)
+    return _to_dict(db, net)
 
 
 def delete_network(db: Session, network_id: int) -> None:
     net = db.get(Network, network_id)
     if net is None:
         raise ValueError(f"Network {network_id} not found")
+    _sync_tags(db, "network", net.id, [])
     db.delete(net)
     db.commit()
 

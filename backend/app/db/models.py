@@ -86,6 +86,7 @@ class ComputeUnit(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)  # 'vm' | 'container'
     hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=False)
     os: Mapped[str | None] = mapped_column(String)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     cpu_cores: Mapped[int | None] = mapped_column(Integer, name="CPU_cores")
     memory_mb: Mapped[int | None] = mapped_column(Integer)
     disk_gb: Mapped[int | None] = mapped_column(Integer)
@@ -111,7 +112,8 @@ class Service(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    compute_id: Mapped[int] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=False)
+    compute_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=True)
+    hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=True)
     category: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
     ports: Mapped[str | None] = mapped_column(String)
@@ -120,7 +122,8 @@ class Service(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
-    compute_unit: Mapped["ComputeUnit"] = relationship("ComputeUnit", back_populates="services")
+    compute_unit: Mapped["ComputeUnit | None"] = relationship("ComputeUnit", back_populates="services")
+    hardware: Mapped["Hardware | None"] = relationship("Hardware")
     dependencies: Mapped[list["ServiceDependency"]] = relationship(
         "ServiceDependency",
         foreign_keys="ServiceDependency.service_id",

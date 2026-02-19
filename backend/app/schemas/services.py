@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict
 class ServiceBase(BaseModel):
     name: str
     slug: str
-    compute_id: int
+    compute_id: Optional[int] = None
+    hardware_id: Optional[int] = None
     category: Optional[str] = None
     url: Optional[str] = None
     ports: Optional[str] = None
@@ -23,6 +24,7 @@ class ServiceUpdate(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     compute_id: Optional[int] = None
+    hardware_id: Optional[int] = None
     category: Optional[str] = None
     url: Optional[str] = None
     ports: Optional[str] = None

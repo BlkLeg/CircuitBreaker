@@ -7,15 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first for better layer caching
+# Copy metadata and source, then install
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir -e .
-
-# Copy application source
 COPY backend/app ./app
-
-# Create data directory for SQLite database
-RUN mkdir -p /app/data
+RUN pip install --no-cache-dir . \
+    && mkdir -p /app/data
 
 EXPOSE 8000
 

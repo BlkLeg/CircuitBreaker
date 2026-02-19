@@ -81,6 +81,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
         name=payload.name,
         slug=payload.slug,
         compute_id=payload.compute_id,
+        hardware_id=payload.hardware_id,
         category=payload.category,
         url=payload.url,
         ports=payload.ports,

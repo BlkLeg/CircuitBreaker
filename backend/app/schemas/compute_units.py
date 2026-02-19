@@ -8,6 +8,7 @@ class ComputeUnitBase(BaseModel):
     kind: str  # 'vm' | 'container'
     hardware_id: int
     os: Optional[str] = None
+    icon_slug: Optional[str] = None
     cpu_cores: Optional[int] = None
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None
@@ -26,6 +27,7 @@ class ComputeUnitUpdate(BaseModel):
     kind: Optional[str] = None
     hardware_id: Optional[int] = None
     os: Optional[str] = None
+    icon_slug: Optional[str] = None
     cpu_cores: Optional[int] = None
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None

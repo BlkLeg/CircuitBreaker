@@ -12,7 +12,7 @@ class NetworkBase(BaseModel):
 
 
 class NetworkCreate(NetworkBase):
-    pass
+    tags: list[str] = []
 
 
 class NetworkUpdate(BaseModel):
@@ -21,12 +21,14 @@ class NetworkUpdate(BaseModel):
     vlan_id: Optional[int] = None
     gateway: Optional[str] = None
     description: Optional[str] = None
+    tags: Optional[list[str]] = None
 
 
 class Network(NetworkBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
 

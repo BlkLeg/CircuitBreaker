@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, inspect as sa_inspect
 
 from app.db.models import ComputeUnit, EntityTag, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
@@ -36,7 +36,8 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
 
 
 def _to_dict(db: Session, cu: ComputeUnit) -> dict:
-    d = {c.key: getattr(cu, c.key) for c in cu.__mapper__.columns}
+    mapper = sa_inspect(type(cu))
+    d = {attr.key: getattr(cu, attr.key) for attr in mapper.column_attrs}
     d["tags"] = get_tags_for(db, "compute", cu.id)
     return d
 
@@ -82,6 +83,7 @@ def create_compute_unit(db: Session, payload: ComputeUnitCreate) -> dict:
         kind=payload.kind,
         hardware_id=payload.hardware_id,
         os=payload.os,
+        icon_slug=payload.icon_slug,
         cpu_cores=payload.cpu_cores,
         memory_mb=payload.memory_mb,
         disk_gb=payload.disk_gb,
