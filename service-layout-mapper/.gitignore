@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / React
+node_modules/
+frontend/build/
+frontend/.env.local
+frontend/.env.production.local
+.npm/
+
+# Docker
+docker/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
