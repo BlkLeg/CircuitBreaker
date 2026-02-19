@@ -24,12 +24,24 @@ const elk = new ELK();
 
 // ── Node Styles ─────────────────────────────────────────────────────────────
 const NODE_STYLES = {
-  hardware: { background: '#4a7fa5', borderColor: '#2c5f7a' },  // steel blue
-  compute:  { background: '#3a7d44', borderColor: '#1f5c2c' },  // green
-  service:  { background: '#c2601e', borderColor: '#8f4012' },  // orange
-  storage:  { background: '#7b4fa0', borderColor: '#5a3278' },  // purple
-  network:  { background: '#0e8a8a', borderColor: '#0a6060' },  // cyan
-  misc:     { background: '#4a5568', borderColor: '#2d3748' },  // gray
+  hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' },  // steel blue
+  compute:  { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' },  // green
+  service:  { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' },  // orange
+  storage:  { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' },  // purple
+  network:  { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' },  // cyan
+  misc:     { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' },  // gray
+};
+
+// Per-relation edge accent colours
+const EDGE_COLORS = {
+  hosts:           '#4a7fa5',
+  runs:            '#3a7d44',
+  connects_to:     '#0eb8b8',
+  depends_on:      '#e07030',
+  uses:            '#7b4fa0',
+  integrates_with: '#6b7a96',
+  routes:          '#ff6b35',
+  on_network:      '#00d4aa',
 };
 
 const NODE_TYPE_LABELS = {
@@ -52,16 +64,11 @@ const NODE_TYPE_ROUTES = {
 };
 
 const BASE_NODE_STYLE = {
-  color: '#fff',
-  borderRadius: 8,
-  borderWidth: 1,
-  borderStyle: 'solid',
-  padding: '8px 12px',
-  fontSize: 12,
-  fontWeight: 500,
-  width: 180,
-  textAlign: 'center',
-  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+  background: 'transparent',
+  border: 'none',
+  boxShadow: 'none',
+  padding: 0,
+  width: 140,
 };
 
 // ── Icon Resolution ──────────────────────────────────────────────────────────
@@ -75,23 +82,73 @@ function resolveNodeIcon(type, icon_slug, vendor) {
 // ── Custom Node ──────────────────────────────────────────────────────────────
 
 function IconNode({ data }) {
+  const glow = data.glowColor || '#4a7fa5';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '6px 10px' }}>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 8, height: 8 }} />
-      {data.iconSrc && (
-        <img
-          src={data.iconSrc}
-          alt=""
-          width={26}
-          height={26}
-          style={{ objectFit: 'contain', filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.4))' }}
-          onError={(e) => { e.target.style.display = 'none'; }}
-        />
-      )}
-      <div style={{ fontSize: 11, fontWeight: 500, lineHeight: 1.3, textAlign: 'center', maxWidth: 160 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, userSelect: 'none', cursor: 'pointer' }}>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 }} />
+
+      {/* Glow ring + icon */}
+      <div style={{
+        width: 64,
+        height: 64,
+        borderRadius: '50%',
+        background: `radial-gradient(circle, ${glow}28 0%, ${glow}0a 70%, transparent 100%)`,
+        boxShadow: `0 0 20px 5px ${glow}44, 0 0 6px 1px ${glow}88, inset 0 0 10px ${glow}15`,
+        border: `1.5px solid ${glow}99`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 8,
+        flexShrink: 0,
+        transition: 'box-shadow 0.2s ease',
+      }}>
+        {data.iconSrc ? (
+          <img
+            src={data.iconSrc}
+            alt=""
+            width={38}
+            height={38}
+            style={{ objectFit: 'contain', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))' }}
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+        ) : (
+          <span style={{ fontSize: 24, fontWeight: 700, color: '#fff', textShadow: `0 0 14px ${glow}` }}>
+            {data.label?.[0]?.toUpperCase() || '?'}
+          </span>
+        )}
+      </div>
+
+      {/* Label */}
+      <div style={{
+        fontSize: 12,
+        fontWeight: 600,
+        color: '#ffffff',
+        textShadow: '0 1px 8px rgba(0,0,0,1), 0 0 16px rgba(0,0,0,0.9)',
+        textAlign: 'center',
+        maxWidth: 130,
+        lineHeight: 1.3,
+        letterSpacing: '0.01em',
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+      }}>
         {data.label}
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 8, height: 8 }} />
+
+      {/* IP address (compute) or CIDR (network) */}
+      {(data.ip_address || data.cidr) && (
+        <div style={{
+          fontSize: 10,
+          color: '#00d4ff',
+          marginTop: 3,
+          fontFamily: 'monospace',
+          textShadow: '0 0 8px rgba(0,212,255,0.7)',
+          letterSpacing: '0.02em',
+        }}>
+          {data.ip_address || data.cidr}
+        </div>
+      )}
+
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 }} />
     </div>
   );
 }
@@ -101,13 +158,15 @@ const NODE_TYPES = { iconNode: IconNode };
 // ── Entity field definitions for the sidebar ────────────────────────────────
 const ENTITY_FIELDS = {
   hardware: [
-    { key: 'role',      label: 'Role' },
-    { key: 'vendor',    label: 'Vendor' },
-    { key: 'model',     label: 'Model' },
-    { key: 'cpu',       label: 'CPU' },
-    { key: 'memory_gb', label: 'Memory',   fmt: v => `${v} GB` },
-    { key: 'location',  label: 'Location' },
-    { key: 'notes',     label: 'Notes' },
+    { key: 'role',       label: 'Role' },
+    { key: 'vendor',     label: 'Vendor' },
+    { key: 'model',      label: 'Model' },
+    { key: 'ip_address', label: 'IP Address' },
+    { key: 'wan_uplink', label: 'WAN / Uplink' },
+    { key: 'cpu',        label: 'CPU' },
+    { key: 'memory_gb',  label: 'Memory',   fmt: v => `${v} GB` },
+    { key: 'location',   label: 'Location' },
+    { key: 'notes',      label: 'Notes' },
   ],
   compute: [
     { key: 'kind',       label: 'Kind' },
@@ -161,10 +220,10 @@ const ENTITY_API_GET = {
 
 const getDagreLayout = (nodes, edges, direction = 'TB') => {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: direction, ranksep: 100, nodesep: 80 });
+  g.setGraph({ rankdir: direction, ranksep: 120, nodesep: 100 });
   g.setDefaultEdgeLabel(() => ({}));
   nodes.forEach((node) => {
-    g.setNode(node.id, { width: node.style.width || 180, height: 70 });
+    g.setNode(node.id, { width: node.style?.width || 140, height: 120 });
   });
   edges.forEach((edge) => {
     g.setEdge(edge.source, edge.target);
@@ -173,7 +232,7 @@ const getDagreLayout = (nodes, edges, direction = 'TB') => {
   return {
     nodes: nodes.map((node) => {
       const { x, y } = g.node(node.id);
-      return { ...node, position: { x: x - (node.style.width || 180) / 2, y: y - 35 } };
+      return { ...node, position: { x: x - (node.style?.width || 140) / 2, y: y - 60 } };
     }),
     edges,
   };
@@ -188,7 +247,7 @@ const getElkLayout = async (nodes, edges, algorithm = 'layered') => {
       'elk.spacing.nodeNode': '80',
       'elk.layered.spacing.nodeNodeBetweenLayers': '100',
     },
-    children: nodes.map((n) => ({ id: n.id, width: 180, height: 50 })),
+    children: nodes.map((n) => ({ id: n.id, width: 140, height: 120 })),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
   };
   const layout = await elk.layout(graph);
@@ -320,24 +379,33 @@ function MapInternal() {
         data: {
           label: n.label,
           iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor),
+          glowColor: NODE_STYLES[n.type]?.glowColor,
+          ip_address: n.ip_address || null,
+          cidr: n.cidr || null,
         },
         position: { x: 0, y: 0 },
-        style: { ...BASE_NODE_STYLE, ...NODE_STYLES[n.type] },
+        style: { ...BASE_NODE_STYLE },
         originalType: n.type,
         _tags: n.tags || [],
         _refId: n.ref_id,
       }));
 
-      const rawE = res.data.edges.map(e => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        label: e.relation,
-        animated: e.relation === 'depends_on' || e.relation === 'runs',
-        style: { stroke: '#6c7086' },
-        labelStyle: { fill: '#a6adc8', fontSize: 10 },
-        _relation: e.relation,
-      }));
+      const rawE = res.data.edges.map(e => {
+        const color = EDGE_COLORS[e.relation] || '#6c7086';
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          label: e.relation,
+          animated: e.relation === 'depends_on' || e.relation === 'runs',
+          style: { stroke: color, strokeWidth: 1.5, opacity: 0.75 },
+          labelStyle: { fill: '#cdd6f4', fontSize: 9, fontWeight: 500 },
+          labelBgStyle: { fill: 'rgba(6,10,20,0.88)', rx: 6 },
+          labelBgPadding: [3, 7],
+          labelBgBorderRadius: 6,
+          _relation: e.relation,
+        };
+      });
 
       // Try to load saved layout
       let savedPositions = null;
@@ -424,8 +492,8 @@ function MapInternal() {
     setEdges(prev => prev.map(e => ({
       ...e,
       style: connectedEdgeIds.has(e.id)
-        ? { stroke: '#00d4ff', strokeWidth: 2 }
-        : { stroke: '#6c7086' },
+        ? { stroke: '#00d4ff', strokeWidth: 2.5, opacity: 1 }
+        : { stroke: EDGE_COLORS[e._relation] || '#6c7086', strokeWidth: 1.5, opacity: 0.25 },
       animated: connectedEdgeIds.has(e.id) ? true : (e._relation === 'depends_on' || e._relation === 'runs'),
     })));
 
@@ -449,7 +517,7 @@ function MapInternal() {
       // Reset edge highlight
       setEdges(prev => prev.map(e => ({
         ...e,
-        style: { stroke: '#6c7086' },
+        style: { stroke: EDGE_COLORS[e._relation] || '#6c7086', strokeWidth: 1.5, opacity: 0.75 },
         animated: e._relation === 'depends_on' || e._relation === 'runs',
       })));
       setSelectedNode(null);
@@ -542,7 +610,7 @@ function MapInternal() {
       )}
 
       {/* Graph canvas */}
-      <div style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}>
+      <div style={{ flex: 1, position: 'relative', background: '#060a12' }}>
         <ReactFlow
           nodeTypes={NODE_TYPES}
           nodes={nodes}
@@ -572,7 +640,7 @@ function MapInternal() {
             </div>
           </Panel>
           <Controls />
-          <Background color="#1e2030" gap={20} />
+          <Background color="#1a2035" gap={24} size={1} />
         </ReactFlow>
 
         {/* Hover tooltip */}

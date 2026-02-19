@@ -8,6 +8,7 @@ import FormModal from '../components/common/FormModal';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useSettings } from '../context/SettingsContext';
+import { useToast } from '../components/common/Toast';
 
 // Encode the selection so a single dropdown can carry both hardware and compute options.
 // Prefix: "hw_<id>" for hardware, "cu_<id>" for compute units.
@@ -32,13 +33,13 @@ const COLUMNS = [
 
 function ServicesPage() {
   const { settings } = useSettings();
+  const toast = useToast();
   const environments = settings?.environments ?? ['prod', 'staging', 'dev'];
   const categories = settings?.categories ?? [];
   const [items, setItems] = useState([]);
   const [computeUnits, setComputeUnits] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
@@ -49,10 +50,10 @@ function ServicesPage() {
   const [iconPickerCallback, setIconPickerCallback] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState('');
   const [envFilter, setEnvFilter] = useState('');
+  const [formApiErrors, setFormApiErrors] = useState({});
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = {};
       if (q) params.q = q;
@@ -88,11 +89,11 @@ function ServicesPage() {
       });
       setItems(enhancedItems);
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [q, tagFilter, categoryFilter, envFilter]);
+  }, [q, tagFilter, categoryFilter, envFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -155,14 +156,21 @@ function ServicesPage() {
     try {
       if (editTarget) {
         await servicesApi.update(editTarget.id, rest);
+        toast.success('Service updated.');
       } else {
         await servicesApi.create(rest);
+        toast.success('Service created.');
       }
       setShowForm(false);
       setEditTarget(null);
+      setFormApiErrors({});
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.fieldErrors) {
+        setFormApiErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
     }
   };
 
@@ -176,9 +184,10 @@ function ServicesPage() {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
           await servicesApi.delete(id);
+          toast.success('Service deleted.');
           fetchData();
         } catch (err) {
-          setError(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -198,8 +207,6 @@ function ServicesPage() {
           + Add Service
         </button>
       </div>
-
-      {error && <div className="error-banner">{error}</div>}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -242,7 +249,8 @@ function ServicesPage() {
         fields={buildFields(editTarget?.icon_slug ?? null)}
         initialValues={getInitialValues(editTarget)}
         onSubmit={handleSubmit}
-        onClose={() => { setShowForm(false); setEditTarget(null); }}
+        onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
+        apiErrors={formApiErrors}
       />
 
       {iconPickerOpen && (

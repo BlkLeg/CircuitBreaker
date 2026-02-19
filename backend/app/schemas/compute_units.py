@@ -10,6 +10,7 @@ class ComputeUnitBase(BaseModel):
     os: Optional[str] = None
     icon_slug: Optional[str] = None
     cpu_cores: Optional[int] = None
+    cpu_brand: Optional[str] = None
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None
@@ -29,6 +30,7 @@ class ComputeUnitUpdate(BaseModel):
     os: Optional[str] = None
     icon_slug: Optional[str] = None
     cpu_cores: Optional[int] = None
+    cpu_brand: Optional[str] = None
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None

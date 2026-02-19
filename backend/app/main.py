@@ -1,12 +1,14 @@
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.errors import AppError
 from app.db.session import engine, Base
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs
@@ -40,6 +42,24 @@ def _run_migrations(conn) -> None:
     svc_cols = _get_columns(conn, "services")
     if "status" not in svc_cols:
         conn.execute("ALTER TABLE services ADD COLUMN status TEXT")
+    # hardware.ip_address / wan_uplink
+    hw_cols = _get_columns(conn, "hardware")
+    if "ip_address" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN ip_address TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "wan_uplink" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN wan_uplink TEXT")
+    # hardware.cpu_brand / compute_units.cpu_brand
+    hw_cols = _get_columns(conn, "hardware")
+    if "cpu_brand" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN cpu_brand TEXT")
+    cu_cols = _get_columns(conn, "compute_units")
+    if "cpu_brand" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN cpu_brand TEXT")
+    # networks.gateway_hardware_id
+    net_cols = _get_columns(conn, "networks")
+    if "gateway_hardware_id" not in net_cols:
+        conn.execute("ALTER TABLE networks ADD COLUMN gateway_hardware_id INTEGER REFERENCES hardware(id)")
     # app_settings: environments, categories, dock_order
     settings_cols = _get_columns(conn, "app_settings")
     if "environments" not in settings_cols:
@@ -48,6 +68,12 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN categories TEXT DEFAULT '[]'")
     if "dock_order" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN dock_order TEXT")
+    if "locations" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN locations TEXT DEFAULT '[]'")
+    # hardware.vendor_icon_slug
+    hw_cols = _get_columns(conn, "hardware")
+    if "vendor_icon_slug" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN vendor_icon_slug TEXT")
     # Fix services.compute_id NOT NULL constraint — must be nullable
     svc_schema = conn.execute("PRAGMA table_info(services)").fetchall()
     compute_id_col = next((c for c in svc_schema if c[1] == "compute_id"), None)
@@ -81,6 +107,10 @@ def _run_migrations(conn) -> None:
         conn.execute("DROP TABLE services")
         conn.execute("ALTER TABLE services_new RENAME TO services")
         conn.execute("PRAGMA foreign_keys=ON")
+    # logs.status_code
+    log_cols = _get_columns(conn, "logs")
+    if "status_code" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN status_code INTEGER")
 
 
 @asynccontextmanager
@@ -113,6 +143,40 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+
+def _error_json(error_code: str, detail: object, status_code: int) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error": error_code, "detail": detail})
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    """Convert domain-level AppError subclasses to structured JSON responses."""
+    _logger.info("AppError [%s %s]: %s", request.method, request.url.path, exc.message)
+    return _error_json(exc.error_code, exc.message, exc.status_code)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Convert Pydantic validation errors to a consistent schema."""
+    errors = [
+        {"field": ".".join(str(loc) for loc in e["loc"]), "msg": e["msg"]}
+        for e in exc.errors()
+    ]
+    return _error_json("validation_error", errors, 422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all: log the full traceback server-side, return a safe 500 body."""
+    _logger.exception(
+        "Unhandled exception [%s %s]", request.method, request.url.path, exc_info=exc
+    )
+    return _error_json("internal_error", "An unexpected error occurred.", 500)
 
 app.add_middleware(
     CORSMiddleware,

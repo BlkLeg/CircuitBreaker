@@ -37,11 +37,15 @@ function Dock() {
   const [localOrder, setLocalOrder] = useState(null);
 
   // Resolve current display order
-  const order =
-    localOrder ??
-    (Array.isArray(settings?.dock_order) && settings.dock_order.length > 0
-      ? settings.dock_order
-      : DEFAULT_ORDER);
+  // Merge saved order with DEFAULT_ORDER so new routes added to NAV_MAP
+  // always appear even when an older dock_order was previously saved.
+  const savedOrder = localOrder ?? (Array.isArray(settings?.dock_order) && settings.dock_order.length > 0 ? settings.dock_order : null);
+  const order = savedOrder
+    ? [
+        ...savedOrder.filter((p) => NAV_MAP[p]),
+        ...DEFAULT_ORDER.filter((p) => NAV_MAP[p] && !savedOrder.includes(p)),
+      ]
+    : DEFAULT_ORDER;
 
   const navItems = order
     .filter((path) => NAV_MAP[path])

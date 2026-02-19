@@ -5,6 +5,7 @@ import { useSettings } from '../context/SettingsContext';
 import IconLibraryManager from '../components/settings/IconLibraryManager';
 import ListEditor from '../components/settings/ListEditor';
 import SettingsNav from '../components/settings/SettingsNav';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc'];
 
@@ -99,6 +100,7 @@ function SettingsPage() {
   const [mapFilters, setMapFilters] = useState({ environment: '', include: ENTITY_TYPES.slice() });
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState(null);
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const [activeSection, setActiveSection] = useState('appearance');
 
   const sectionRefs = {
@@ -120,6 +122,7 @@ function SettingsPage() {
       api_base_url: ctxSettings.api_base_url ?? '',
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
       categories: ctxSettings.categories ?? [],
+      locations: ctxSettings.locations ?? [],
     });
     setMapFilters(parseMapFilters(ctxSettings.map_default_filters));
   }, [ctxSettings]);
@@ -173,6 +176,7 @@ function SettingsPage() {
         map_default_filters: mapFiltersJson,
         environments: form.environments,
         categories: form.categories,
+        locations: form.locations,
       });
       await reloadSettings();
       setBanner({ type: 'success', msg: 'Settings saved.' });
@@ -192,24 +196,31 @@ function SettingsPage() {
       api_base_url: ctxSettings.api_base_url ?? '',
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
       categories: ctxSettings.categories ?? [],
+      locations: ctxSettings.locations ?? [],
     });
     setMapFilters(parseMapFilters(ctxSettings.map_default_filters));
     setBanner(null);
   };
 
   const handleReset = async () => {
-    if (!globalThis.confirm('Reset all settings to factory defaults?')) return;
-    setSaving(true);
-    setBanner(null);
-    try {
-      await settingsApi.reset();
-      await reloadSettings();
-      setBanner({ type: 'success', msg: 'Settings reset to defaults.' });
-    } catch (err) {
-      setBanner({ type: 'error', msg: `Reset failed: ${err.message}` });
-    } finally {
-      setSaving(false);
-    }
+    setConfirmState({
+      open: true,
+      message: 'Reset all settings to factory defaults?',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        setSaving(true);
+        setBanner(null);
+        try {
+          await settingsApi.reset();
+          await reloadSettings();
+          setBanner({ type: 'success', msg: 'Settings reset to defaults.' });
+        } catch (err) {
+          setBanner({ type: 'error', msg: `Reset failed: ${err.message}` });
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   const toggleInclude = (type) => {
@@ -364,6 +375,16 @@ function SettingsPage() {
               placeholder="e.g. monitoring"
             />
           </div>
+
+          <div style={S.row}>
+            <div style={S.label}>Locations</div>
+            <span style={S.hint}>Used as dropdown options in the Hardware location field.</span>
+            <ListEditor
+              items={form.locations ?? []}
+              onChange={(v) => set('locations', v)}
+              placeholder="e.g. Server Room A"
+            />
+          </div>
         </div>
 
         {/* ── Icons & Vendors ─────────────────────── */}
@@ -452,6 +473,13 @@ function SettingsPage() {
 
         </div>{/* end .settings-content */}
       </div>{/* end .settings-layout */}
+
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

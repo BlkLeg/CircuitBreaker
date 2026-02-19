@@ -5,7 +5,7 @@ import TagFilter from '../components/TagFilter';
 import { storageApi, hardwareApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
-
+import { useToast } from '../components/common/Toast';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -19,19 +19,19 @@ const COLUMNS = [
 ];
 
 function StoragePage() {
+  const toast = useToast();
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [q, setQ] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [kindFilter, setKindFilter] = useState('');
+  const [formApiErrors, setFormApiErrors] = useState({});
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = {};
       if (q) params.q = q;
@@ -45,11 +45,11 @@ function StoragePage() {
       setHardware(hwRes.data);
       setItems(stRes.data.map((s) => ({ ...s, hardware_name: hwMap[s.hardware_id] ?? s.hardware_id })));
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [q, tagFilter, kindFilter]);
+  }, [q, tagFilter, kindFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -78,14 +78,21 @@ function StoragePage() {
     try {
       if (editTarget) {
         await storageApi.update(editTarget.id, values);
+        toast.success('Storage updated.');
       } else {
         await storageApi.create(values);
+        toast.success('Storage entry created.');
       }
       setShowForm(false);
       setEditTarget(null);
+      setFormApiErrors({});
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.fieldErrors) {
+        setFormApiErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
     }
   };
 
@@ -99,9 +106,10 @@ function StoragePage() {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
           await storageApi.delete(id);
+          toast.success('Storage entry deleted.');
           fetchData();
         } catch (err) {
-          setError(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -115,8 +123,6 @@ function StoragePage() {
           + Add Storage
         </button>
       </div>
-
-      {error && <div className="error-banner">{error}</div>}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -145,7 +151,8 @@ function StoragePage() {
         fields={fields}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
-        onClose={() => { setShowForm(false); setEditTarget(null); }}
+        onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
+        apiErrors={formApiErrors}
       />
       <ConfirmDialog
         open={confirmState.open}

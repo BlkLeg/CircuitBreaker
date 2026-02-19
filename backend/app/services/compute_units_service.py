@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, inspect as sa_inspect
 
-from app.db.models import ComputeUnit, EntityTag, Tag
+from app.db.models import ComputeUnit, ComputeNetwork, Service, EntityTag, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
 
 
@@ -88,6 +88,7 @@ def create_compute_unit(db: Session, payload: ComputeUnitCreate) -> dict:
         memory_mb=payload.memory_mb,
         disk_gb=payload.disk_gb,
         ip_address=payload.ip_address,
+        cpu_brand=payload.cpu_brand,
         environment=payload.environment,
         notes=payload.notes,
     )
@@ -117,6 +118,18 @@ def delete_compute_unit(db: Session, cu_id: int) -> None:
     cu = db.get(ComputeUnit, cu_id)
     if cu is None:
         raise ValueError(f"ComputeUnit {cu_id} not found")
+    # Block if services are still running on this compute unit
+    svc_count = db.execute(select(Service).where(Service.compute_id == cu_id)).scalars().all()
+    if svc_count:
+        names = ", ".join(s.name for s in svc_count)
+        raise ValueError(
+            f"Cannot delete: {len(svc_count)} service(s) are running on this compute unit ({names}). "
+            "Remove or reassign them first."
+        )
+    # Cascade-remove network memberships (join table, safe to auto-remove)
+    for row in db.execute(select(ComputeNetwork).where(ComputeNetwork.compute_id == cu_id)).scalars().all():
+        db.delete(row)
+    db.flush()
     _sync_tags(db, "compute", cu.id, [])
     db.delete(cu)
     db.commit()

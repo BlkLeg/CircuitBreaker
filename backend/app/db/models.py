@@ -67,16 +67,23 @@ class Hardware(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str | None] = mapped_column(String)
     vendor: Mapped[str | None] = mapped_column(String)
+    vendor_icon_slug: Mapped[str | None] = mapped_column(String)
     model: Mapped[str | None] = mapped_column(String)
     cpu: Mapped[str | None] = mapped_column(String)
     memory_gb: Mapped[int | None] = mapped_column(Integer)
     location: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
+    ip_address: Mapped[str | None] = mapped_column(String)
+    wan_uplink: Mapped[str | None] = mapped_column(String)
+    cpu_brand: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     compute_units: Mapped[list["ComputeUnit"]] = relationship("ComputeUnit", back_populates="hardware")
     storage_items: Mapped[list["Storage"]] = relationship("Storage", back_populates="hardware")
+    network_memberships: Mapped[list["HardwareNetwork"]] = relationship(
+        "HardwareNetwork", back_populates="hardware"
+    )
 
 
 # ── Compute Units ───────────────────────────────────────────────────────────
@@ -92,6 +99,7 @@ class ComputeUnit(Base):
     os: Mapped[str | None] = mapped_column(String)
     icon_slug: Mapped[str | None] = mapped_column(String)
     cpu_cores: Mapped[int | None] = mapped_column(Integer, name="CPU_cores")
+    cpu_brand: Mapped[str | None] = mapped_column(String)
     memory_mb: Mapped[int | None] = mapped_column(Integer)
     disk_gb: Mapped[int | None] = mapped_column(Integer)
     ip_address: Mapped[str | None] = mapped_column(String)
@@ -206,12 +214,32 @@ class Network(Base):
     vlan_id: Mapped[int | None] = mapped_column(Integer)
     gateway: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
+    gateway_hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
+    gateway_hardware: Mapped["Hardware | None"] = relationship(
+        "Hardware", foreign_keys=[gateway_hardware_id]
+    )
     compute_memberships: Mapped[list["ComputeNetwork"]] = relationship(
         "ComputeNetwork", back_populates="network"
     )
+    hardware_memberships: Mapped[list["HardwareNetwork"]] = relationship(
+        "HardwareNetwork", back_populates="network"
+    )
+
+
+class HardwareNetwork(Base):
+    __tablename__ = "hardware_networks"
+    __table_args__ = (UniqueConstraint("hardware_id", "network_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=False)
+    network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
+    ip_address: Mapped[str | None] = mapped_column(String)
+
+    hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="network_memberships")
+    network: Mapped["Network"] = relationship("Network", back_populates="hardware_memberships")
 
 
 class ComputeNetwork(Base):
@@ -287,6 +315,7 @@ class AppSettings(Base):
     vendor_icon_mode: Mapped[str] = mapped_column(String, nullable=False, default="custom_files")
     environments: Mapped[str | None] = mapped_column(Text, default='["prod","staging","dev"]')  # JSON array
     categories: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
+    locations: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
     dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -311,3 +340,4 @@ class Log(Base):
     user_agent:  Mapped[str | None]   = mapped_column(String)
     ip_address:  Mapped[str | None]   = mapped_column(String)
     details:     Mapped[str | None]   = mapped_column(Text)
+    status_code: Mapped[int | None]   = mapped_column(Integer)   # HTTP response status (added for error tracking)

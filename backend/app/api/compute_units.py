@@ -156,4 +156,6 @@ def delete_compute_unit(cu_id: int, db: Session = Depends(get_db)):
     try:
         compute_units_service.delete_compute_unit(db, cu_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Cannot delete: other records still reference this compute unit.")

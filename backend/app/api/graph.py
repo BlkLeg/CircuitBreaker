@@ -18,6 +18,7 @@ from app.db.models import (
     ServiceStorage,
     Network,
     ComputeNetwork,
+    HardwareNetwork,
     MiscItem,
     ServiceMisc,
     GraphLayout,
@@ -68,7 +69,63 @@ def get_topology(
     def get_tags(etype, eid):
         return entity_tags_map.get((etype, eid), [])
 
-    # 1. Hardware
+    # Pre-build lookup maps for service→network implicit edges
+    # (compute_id → [network_id, ...]) and (hardware_id → [network_id, ...])
+    cu_networks: dict[int, list[int]] = {}
+    hw_networks: dict[int, list[int]] = {}
+    if "networks" in include_set and "services" in include_set:
+        for cn in db.execute(select(ComputeNetwork)).scalars().all():
+            cu_networks.setdefault(cn.compute_id, []).append(cn.network_id)
+        for hn in db.execute(select(HardwareNetwork)).scalars().all():
+            hw_networks.setdefault(hn.hardware_id, []).append(hn.network_id)
+        for net in db.execute(select(Network).where(Network.gateway_hardware_id.isnot(None))).scalars().all():
+            hw_networks.setdefault(net.gateway_hardware_id, []).append(net.id)
+
+    # 1. Networks — emitted first so layout engines (Dagre/ELK) rank them as roots
+    if "networks" in include_set:
+        for net in db.execute(select(Network)).scalars():
+            nodes.append({
+                "id": f"net-{net.id}",
+                "type": "network",
+                "ref_id": net.id,
+                "label": net.name,
+                "cidr": net.cidr,
+                "tags": get_tags("networks", net.id)
+            })
+
+        # Compute → Network membership edges
+        if "compute" in include_set:
+            cns = db.execute(select(ComputeNetwork)).scalars().all()
+            for cn in cns:
+                edges.append({
+                    "id": f"e-cn-{cn.id}",
+                    "source": f"cu-{cn.compute_id}",
+                    "target": f"net-{cn.network_id}",
+                    "relation": "connects_to",
+                })
+
+        # Hardware → Network gateway edges
+        if "hardware" in include_set:
+            for net in db.execute(select(Network).where(Network.gateway_hardware_id.isnot(None))).scalars():
+                edges.append({
+                    "id": f"e-gw-{net.id}",
+                    "source": f"hw-{net.gateway_hardware_id}",
+                    "target": f"net-{net.id}",
+                    "relation": "routes",
+                })
+
+        # Hardware → Network membership edges
+        if "hardware" in include_set:
+            hns = db.execute(select(HardwareNetwork)).scalars().all()
+            for hn in hns:
+                edges.append({
+                    "id": f"e-hn-{hn.id}",
+                    "source": f"hw-{hn.hardware_id}",
+                    "target": f"net-{hn.network_id}",
+                    "relation": "on_network",
+                })
+
+    # 2. Hardware
     if "hardware" in include_set:
         for hw in db.execute(select(Hardware)).scalars():
             nodes.append({
@@ -77,10 +134,11 @@ def get_topology(
                 "ref_id": hw.id,
                 "label": hw.name,
                 "vendor": hw.vendor,
+                "ip_address": hw.ip_address,
                 "tags": get_tags("hardware", hw.id)
             })
 
-    # 2. Compute
+    # 3. Compute
     if "compute" in include_set:
         q = select(ComputeUnit)
         if environment:
@@ -92,6 +150,7 @@ def get_topology(
                 "ref_id": cu.id,
                 "label": cu.name,
                 "icon_slug": cu.icon_slug,
+                "ip_address": cu.ip_address,
                 "tags": get_tags("compute", cu.id)
             })
             # Link to Hardware
@@ -103,7 +162,7 @@ def get_topology(
                     "relation": "hosts",
                 })
 
-    # 3. Services
+    # 4. Services
     if "services" in include_set:
         q = select(Service)
         if environment:
@@ -137,8 +196,32 @@ def get_topology(
                     "relation": "hosts",
                 })
 
-        # Service -> Service dependencies
-        # Only if both sides are in our filtered set
+            # Service → Network implicit edges
+            # A service is considered on any network its host compute unit or hardware belongs to
+            if "networks" in include_set:
+                seen_nets: set[int] = set()
+                if svc.compute_id:
+                    for net_id in cu_networks.get(svc.compute_id, []):
+                        if net_id not in seen_nets:
+                            seen_nets.add(net_id)
+                            edges.append({
+                                "id": f"e-svc-net-{svc.id}-{net_id}",
+                                "source": f"svc-{svc.id}",
+                                "target": f"net-{net_id}",
+                                "relation": "on_network",
+                            })
+                elif svc.hardware_id:
+                    for net_id in hw_networks.get(svc.hardware_id, []):
+                        if net_id not in seen_nets:
+                            seen_nets.add(net_id)
+                            edges.append({
+                                "id": f"e-svc-net-{svc.id}-{net_id}",
+                                "source": f"svc-{svc.id}",
+                                "target": f"net-{net_id}",
+                                "relation": "on_network",
+                            })
+
+        # Service → Service dependencies
         deps = db.execute(select(ServiceDependency)).scalars().all()
         for dep in deps:
             if dep.service_id in service_ids and dep.depends_on_id in service_ids:
@@ -149,11 +232,8 @@ def get_topology(
                     "relation": "depends_on",
                 })
 
-        # Service -> Storage
+        # Service → Storage
         if "storage" in include_set:
-            # We need to know which storage nodes exist too
-            # (Assuming we fetch all storage if 'storage' is included)
-            # Better to check existence if we filter storage (currently we don't filter storage by env)
             links = db.execute(select(ServiceStorage)).scalars().all()
             for link in links:
                 if link.service_id in service_ids:
@@ -163,8 +243,8 @@ def get_topology(
                         "target": f"st-{link.storage_id}",
                         "relation": "uses",
                     })
-        
-        # Service -> Misc
+
+        # Service → Misc
         if "misc" in include_set:
             links = db.execute(select(ServiceMisc)).scalars().all()
             for link in links:
@@ -176,7 +256,7 @@ def get_topology(
                         "relation": "integrates_with",
                     })
 
-    # 4. Storage
+    # 5. Storage
     if "storage" in include_set:
         for st in db.execute(select(Storage)).scalars():
             nodes.append({
@@ -186,39 +266,6 @@ def get_topology(
                 "label": st.name,
                 "tags": get_tags("storage", st.id)
             })
-
-    # 5. Networks
-    if "networks" in include_set:
-        for net in db.execute(select(Network)).scalars():
-            nodes.append({
-                "id": f"net-{net.id}",
-                "type": "network",
-                "ref_id": net.id,
-                "label": net.name,
-                "tags": get_tags("networks", net.id)
-            })
-            # Compute -> Network
-            if "compute" in include_set:
-                # We need to filter by the compute units we actually fetched?
-                # For v1, let's just fetch all links and filter by node existence in frontend or here.
-                # Filter here is valid.
-                pass
-        
-        if "compute" in include_set:
-            # Re-fetch compute IDs just to be safe or use what we have? 
-            # We didn't store valid CU IDs in a set. Let's relying on the edge creation logic
-            # to be filtered by valid nodes in the Frontend is risky. 
-            # Let's act defensively: only add edges if we know the nodes are likely there.
-            # Actually, `compute` filtering was done. We should probably track valid IDs.
-            # For simplicity, we just dump all edges. ReactFlow handles missing nodes gracefully usually.
-            cns = db.execute(select(ComputeNetwork)).scalars().all()
-            for cn in cns:
-                 edges.append({
-                    "id": f"e-cn-{cn.id}",
-                    "source": f"cu-{cn.compute_id}",
-                    "target": f"net-{cn.network_id}",
-                    "relation": "connects_to",
-                })
 
     # 6. Misc
     if "misc" in include_set:

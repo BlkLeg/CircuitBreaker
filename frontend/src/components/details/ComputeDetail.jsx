@@ -8,6 +8,7 @@ import { computeUnitsApi, networksApi, servicesApi } from '../../api/client';
 import { Grid, Network, Trash2 } from 'lucide-react';
 import { IconImg } from '../common/IconPickerModal';
 import { getOsOption } from '../../icons/osOptions';
+import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 
 function ComputeDetail({ compute, isOpen, onClose }) {
   const [activeTab, setActiveTab] = useState('overview');
@@ -97,6 +98,20 @@ function ComputeDetail({ compute, isOpen, onClose }) {
                 <span>{osOpt.label}</span>
               </div>
             </div>
+            {compute.cpu_brand && (
+              <div className="field-group">
+                <span className="field-label">CPU Brand</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <img
+                    src={CPU_BRAND_MAP[compute.cpu_brand]?.icon}
+                    alt={CPU_BRAND_MAP[compute.cpu_brand]?.label}
+                    width={18} height={18} style={{ objectFit: 'contain' }}
+                    onError={(e) => { e.target.style.display = 'none'; }}
+                  />
+                  <span>{CPU_BRAND_MAP[compute.cpu_brand]?.label ?? compute.cpu_brand}</span>
+                </div>
+              </div>
+            )}
             {compute.icon_slug && (
               <div className="field-group">
                 <span className="field-label">Icon</span>

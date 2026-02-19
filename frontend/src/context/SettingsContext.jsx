@@ -13,6 +13,7 @@ const DEFAULTS = {
   vendor_icon_mode: 'custom_files',
   environments: ['prod', 'staging', 'dev'],
   categories: [],
+  locations: [],
   dock_order: null,
 };
 

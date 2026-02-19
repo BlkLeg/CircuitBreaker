@@ -3,7 +3,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.networks import Network, NetworkCreate, NetworkUpdate, ComputeNetworkLink, ComputeNetworkRead
+from app.schemas.networks import (
+    Network, NetworkCreate, NetworkUpdate,
+    ComputeNetworkLink, ComputeNetworkRead,
+    HardwareNetworkLink, HardwareNetworkRead,
+)
 from app.services import networks_service
 
 router = APIRouter(prefix="/networks", tags=["networks"])
@@ -15,9 +19,13 @@ def list_networks(
     vlan_id: int | None = Query(None),
     cidr: str | None = Query(None),
     q: str | None = Query(None),
+    gateway_hardware_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    return networks_service.list_networks(db, tag=tag, vlan_id=vlan_id, cidr=cidr, q=q)
+    return networks_service.list_networks(
+        db, tag=tag, vlan_id=vlan_id, cidr=cidr, q=q,
+        gateway_hardware_id=gateway_hardware_id,
+    )
 
 
 @router.post("", response_model=Network, status_code=201)
@@ -46,7 +54,9 @@ def delete_network(network_id: int, db: Session = Depends(get_db)):
     try:
         networks_service.delete_network(db, network_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc))
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Cannot delete: other records still reference this network.")
 
 
 # ── Compute memberships ──────────────────────────────────────────────────────
@@ -72,5 +82,32 @@ def add_member(network_id: int, payload: ComputeNetworkLink, db: Session = Depen
 def remove_member(network_id: int, compute_id: int, db: Session = Depends(get_db)):
     try:
         networks_service.remove_compute_member(db, network_id, compute_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ── Hardware memberships ────────────────────────────────────────────
+
+
+@router.get("/{network_id}/hardware-members", response_model=list[HardwareNetworkRead])
+def list_hardware_members(network_id: int, db: Session = Depends(get_db)):
+    return networks_service.list_hardware_members(db, network_id)
+
+
+@router.post("/{network_id}/hardware-members", response_model=HardwareNetworkRead, status_code=201)
+def add_hardware_member(network_id: int, payload: HardwareNetworkLink, db: Session = Depends(get_db)):
+    try:
+        return networks_service.add_hardware_member(db, network_id, payload.hardware_id, payload.ip_address)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Hardware is already a member of this network")
+
+
+@router.delete("/{network_id}/hardware-members/{hardware_id}", status_code=204)
+def remove_hardware_member(network_id: int, hardware_id: int, db: Session = Depends(get_db)):
+    try:
+        networks_service.remove_hardware_member(db, network_id, hardware_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

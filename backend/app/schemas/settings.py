@@ -19,6 +19,7 @@ class AppSettingsRead(BaseModel):
     vendor_icon_mode: str
     environments: list[str] = ["prod", "staging", "dev"]
     categories: list[str] = []
+    locations: list[str] = []
     dock_order: Optional[list[str]] = None
     created_at: datetime
     updated_at: datetime
@@ -49,6 +50,19 @@ class AppSettingsRead(BaseModel):
             return []
         return v
 
+    @field_validator('locations', mode='before')
+    @classmethod
+    def parse_locations(cls, v):
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception as exc:
+                _logger.warning("Failed to parse 'locations' setting, using default. Error: %s", exc)
+                return []
+        if v is None:
+            return []
+        return v
+
     @field_validator('dock_order', mode='before')
     @classmethod
     def parse_dock_order(cls, v):
@@ -70,4 +84,5 @@ class AppSettingsUpdate(BaseModel):
     vendor_icon_mode: Optional[Literal["none", "built_in", "custom_files"]] = None
     environments: Optional[list[str]] = None
     categories: Optional[list[str]] = None
+    locations: Optional[list[str]] = None
     dock_order: Optional[list[str]] = None

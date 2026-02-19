@@ -10,6 +10,10 @@ VendorSlug = Literal[
 ]
 
 
+# Allowed role slugs (enforced by frontend dropdown; kept as str for DB compatibility)
+# router | hypervisor | server | nas | desktop | workstation | mini_pc | raspberry_pi | switch | ap | other
+
+
 class HardwareBase(BaseModel):
     name: str
     role: Optional[str] = None
@@ -19,6 +23,10 @@ class HardwareBase(BaseModel):
     memory_gb: Optional[int] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+    ip_address: Optional[str] = None
+    wan_uplink: Optional[str] = None
+    cpu_brand: Optional[str] = None
+    vendor_icon_slug: Optional[str] = None
     tags: list[str] = []
 
 
@@ -35,6 +43,10 @@ class HardwareUpdate(BaseModel):
     memory_gb: Optional[int] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+    ip_address: Optional[str] = None
+    wan_uplink: Optional[str] = None
+    cpu_brand: Optional[str] = None
+    vendor_icon_slug: Optional[str] = None
     tags: Optional[list[str]] = None
 
 

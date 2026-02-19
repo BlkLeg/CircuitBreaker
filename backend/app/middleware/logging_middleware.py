@@ -157,19 +157,25 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         # Process request
         response = await call_next(request)
+        status_code = response.status_code
 
-        # Only log on success
-        if response.status_code >= 400:
-            return response
+        # Determine log level from HTTP status
+        if status_code >= 500:
+            level = "error"
+        elif status_code >= 400:
+            level = "warn"
+        else:
+            level = "info"
 
-        # Collect response body for new_value on creates/updates
+        # Collect response body for new_value on successful creates/updates
         new_value_str: str | None = None
-        try:
-            resp_body = await _read_response_body(response)
-            if method in {"POST", "PATCH", "PUT"} and resp_body:
-                new_value_str = resp_body.decode("utf-8")
-        except Exception:
-            pass
+        if level == "info":
+            try:
+                resp_body = await _read_response_body(response)
+                if method in {"POST", "PATCH", "PUT"} and resp_body:
+                    new_value_str = resp_body.decode("utf-8")
+            except Exception:
+                pass
 
         # For POST where new_value wasn't captured from response, fall back to request body
         if method == "POST" and not new_value_str and req_body_str:
@@ -183,11 +189,13 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
 
-        # Write log entry
+        # Write log entry (always — including errors)
         try:
             _write_log(
                 action=action,
                 category=category,
+                level=level,
+                status_code=status_code,
                 entity_type=entity_type,
                 entity_id=entity_id,
                 old_value=old_value_str,
@@ -242,6 +250,8 @@ def _write_log(
     *,
     action: str,
     category: str,
+    level: str = "info",
+    status_code: int | None = None,
     entity_type: str | None,
     entity_id: int | None,
     old_value: str | None,
@@ -253,7 +263,7 @@ def _write_log(
     with SessionLocal() as db:
         entry = Log(
             timestamp=datetime.now(timezone.utc),
-            level="info",
+            level=level,
             category=category,
             action=action,
             actor="user",
@@ -264,6 +274,7 @@ def _write_log(
             user_agent=user_agent,
             ip_address=ip_address,
             details=details,
+            status_code=status_code,
         )
         db.add(entry)
         db.commit()

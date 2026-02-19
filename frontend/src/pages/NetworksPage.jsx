@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
@@ -6,32 +6,14 @@ import { networksApi, hardwareApi, computeUnitsApi } from '../api/client';
 import NetworkDetail from '../components/details/NetworkDetail';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
-
-const COLUMNS = [
-  { key: 'id', label: 'ID' },
-  { key: 'name', label: 'Name' },
-  { key: 'cidr', label: 'CIDR' },
-  { key: 'vlan_id', label: 'VLAN' },
-  { key: 'gateway', label: 'Gateway' },
-  { key: 'description', label: 'Description' },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
-];
-
-const FIELDS = [
-  { name: 'name', label: 'Name', required: true },
-  { name: 'cidr', label: 'CIDR (e.g. 192.168.10.0/24)' },
-  { name: 'vlan_id', label: 'VLAN ID', type: 'number' },
-  { name: 'gateway', label: 'Gateway' },
-  { name: 'description', label: 'Description', type: 'textarea' },
-  { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
-];
+import { useToast } from '../components/common/Toast';
 
 function NetworksPage() {
+  const toast = useToast();
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [computeUnits, setComputeUnits] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
@@ -39,10 +21,42 @@ function NetworksPage() {
   const [tagFilter, setTagFilter] = useState('');
   const [vlanFilter, setVlanFilter] = useState('');
   const [hwFilter, setHwFilter] = useState('');
+  const [formApiErrors, setFormApiErrors] = useState({});
+
+  const COLUMNS = useMemo(() => [
+    { key: 'id', label: 'ID' },
+    { key: 'name', label: 'Name' },
+    { key: 'cidr', label: 'CIDR' },
+    { key: 'vlan_id', label: 'VLAN' },
+    { key: 'gateway', label: 'Gateway IP' },
+    {
+      key: 'gateway_hardware_id',
+      label: 'Gateway Hardware',
+      render: (v) => hardware.find((h) => h.id === v)?.name ?? '—',
+    },
+    { key: 'description', label: 'Description' },
+    { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
+  ], [hardware]);
+
+  const FIELDS = useMemo(() => [
+    { name: 'name', label: 'Name', required: true },
+    { name: 'cidr', label: 'CIDR (e.g. 192.168.10.0/24)' },
+    { name: 'vlan_id', label: 'VLAN ID', type: 'number' },
+    { name: 'gateway', label: 'Gateway IP (static text, e.g. 10.10.10.1)' },
+    {
+      name: 'gateway_hardware_id',
+      label: 'Gateway Hardware',
+      type: 'select',
+      options: [
+        ...hardware.map((h) => ({ value: h.id, label: `${h.name}${h.ip_address ? ` (${h.ip_address})` : ''}` })),
+      ],
+    },
+    { name: 'description', label: 'Description', type: 'textarea' },
+    { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
+  ], [hardware]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = {};
       if (q) params.q = q;
@@ -57,11 +71,11 @@ function NetworksPage() {
       setComputeUnits(cuRes.data);
       setItems(netRes.data);
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [q, tagFilter, vlanFilter]);
+  }, [q, tagFilter, vlanFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -81,14 +95,21 @@ function NetworksPage() {
     try {
       if (editTarget) {
         await networksApi.update(editTarget.id, values);
+        toast.success('Network updated.');
       } else {
         await networksApi.create(values);
+        toast.success('Network created.');
       }
       setShowForm(false);
       setEditTarget(null);
+      setFormApiErrors({});
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.fieldErrors) {
+        setFormApiErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
     }
   };
 
@@ -102,9 +123,10 @@ function NetworksPage() {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
           await networksApi.delete(id);
+          toast.success('Network deleted.');
           fetchData();
         } catch (err) {
-          setError(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -118,8 +140,6 @@ function NetworksPage() {
           + Add Network
         </button>
       </div>
-
-      {error && <div className="error-banner">{error}</div>}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -175,7 +195,8 @@ function NetworksPage() {
         fields={FIELDS}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
-        onClose={() => { setShowForm(false); setEditTarget(null); }}
+        onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
+        apiErrors={formApiErrors}
       />
       <ConfirmDialog
         open={confirmState.open}

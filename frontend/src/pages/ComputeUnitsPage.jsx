@@ -6,9 +6,11 @@ import { computeUnitsApi, hardwareApi } from '../api/client';
 import ComputeDetail from '../components/details/ComputeDetail';
 import IconPickerModal, { IconImg, getIconEntry } from '../components/common/IconPickerModal';
 import { OS_OPTIONS, getOsOption } from '../icons/osOptions';
+import { CPU_BRANDS, CPU_BRAND_MAP } from '../config/cpuBrands';
 import FormModal from '../components/common/FormModal';
 import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import { useToast } from '../components/common/Toast';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -33,6 +35,21 @@ const COLUMNS = [
       );
     },
   },
+  {
+    key: 'cpu_brand',
+    label: 'CPU Brand',
+    render: (v) => {
+      if (!v) return null;
+      const brand = CPU_BRAND_MAP[v];
+      if (!brand) return <span>{v}</span>;
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <img src={brand.icon} alt={brand.label} width={14} height={14} style={{ objectFit: 'contain' }} onError={(e) => { e.target.style.display = 'none'; }} />
+          {brand.label}
+        </span>
+      );
+    },
+  },
   { key: 'hardware_name', label: 'Hardware' },
   { key: 'ip_address', label: 'IP' },
   { key: 'environment', label: 'Env' },
@@ -41,11 +58,11 @@ const COLUMNS = [
 
 function ComputeUnitsPage() {
   const { settings } = useSettings();
+  const toast = useToast();
   const environments = settings?.environments ?? ['prod', 'staging', 'dev'];
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [detailTarget, setDetailTarget] = useState(null);
@@ -54,6 +71,7 @@ function ComputeUnitsPage() {
   const [kindFilter, setKindFilter] = useState('');
   const [envFilter, setEnvFilter] = useState('');
   const [hwFilter, setHwFilter] = useState('');
+  const [formApiErrors, setFormApiErrors] = useState({});
 
   // Icon picker state (lives outside EntityForm since it's a modal)
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -62,7 +80,6 @@ function ComputeUnitsPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = {};
       if (q) params.q = q;
@@ -78,11 +95,11 @@ function ComputeUnitsPage() {
       setHardware(hwRes.data);
       setItems(cuRes.data.map((cu) => ({ ...cu, hardware_name: hwMap[cu.hardware_id] ?? cu.hardware_id })));
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [q, tagFilter, kindFilter, envFilter, hwFilter]);
+  }, [q, tagFilter, kindFilter, envFilter, hwFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -114,6 +131,7 @@ function ComputeUnitsPage() {
     },
     { name: 'ip_address', label: 'IP Address' },
     { name: 'cpu_cores', label: 'CPU Cores', type: 'number' },
+    { name: 'cpu_brand', label: 'CPU Brand', type: 'cpu-select', options: CPU_BRANDS },
     { name: 'memory_mb', label: 'Memory (MB)', type: 'number' },
     { name: 'disk_gb', label: 'Disk (GB)', type: 'number' },
     { name: 'environment', label: 'Environment', type: 'select',
@@ -126,14 +144,21 @@ function ComputeUnitsPage() {
     try {
       if (editTarget) {
         await computeUnitsApi.update(editTarget.id, values);
+        toast.success('Compute unit updated.');
       } else {
         await computeUnitsApi.create(values);
+        toast.success('Compute unit created.');
       }
       setShowForm(false);
       setEditTarget(null);
+      setFormApiErrors({});
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.fieldErrors) {
+        setFormApiErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
     }
   };
 
@@ -147,9 +172,10 @@ function ComputeUnitsPage() {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
           await computeUnitsApi.delete(id);
+          toast.success('Compute unit deleted.');
           fetchData();
         } catch (err) {
-          setError(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -167,8 +193,6 @@ function ComputeUnitsPage() {
       <div className="info-tip">
         💡 <strong>Hierarchy tip:</strong> A <em>Hardware</em> node is a physical machine. A <em>Compute Unit</em> is a VM or container running on that hardware. Services then run inside compute units (or directly on hardware for bare-metal). One hardware node can host many compute units.
       </div>
-
-      {error && <div className="error-banner">{error}</div>}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -212,7 +236,8 @@ function ComputeUnitsPage() {
         fields={buildFields(editTarget?.icon_slug ?? null)}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
-        onClose={() => { setShowForm(false); setEditTarget(null); }}
+        onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
+        apiErrors={formApiErrors}
       />
 
       {iconPickerOpen && (

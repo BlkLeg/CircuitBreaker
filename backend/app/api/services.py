@@ -22,6 +22,7 @@ router = APIRouter(prefix="/services", tags=["services"])
 @router.get("", response_model=list[Service])
 def list_services(
     compute_id: int | None = Query(None),
+    hardware_id: int | None = Query(None),
     category: str | None = Query(None),
     environment: str | None = Query(None),
     tag: str | None = Query(None),
@@ -29,7 +30,8 @@ def list_services(
     db: Session = Depends(get_db),
 ):
     return services_service.list_services(
-        db, compute_id=compute_id, category=category, environment=environment, tag=tag, q=q
+        db, compute_id=compute_id, hardware_id=hardware_id,
+        category=category, environment=environment, tag=tag, q=q
     )
 
 

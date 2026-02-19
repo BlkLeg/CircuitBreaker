@@ -16,6 +16,7 @@ _DEFAULTS = dict(
     vendor_icon_mode="custom_files",
     environments='["prod","staging","dev"]',
     categories='[]',
+    locations='[]',
     dock_order=None,
 )
 
@@ -34,7 +35,7 @@ def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
     row = get_or_create_settings(db)
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
-        if field in ("map_default_filters", "environments", "categories", "dock_order"):
+        if field in ("map_default_filters", "environments", "categories", "locations", "dock_order"):
             # Accept list/dict → serialize to JSON string; None → None
             if value is not None and not isinstance(value, str):
                 value = json.dumps(value)

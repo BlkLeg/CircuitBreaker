@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
-from app.db.models import Network, ComputeNetwork, EntityTag, Tag
+from app.db.models import Network, ComputeNetwork, HardwareNetwork, EntityTag, Tag
 from app.schemas.networks import NetworkCreate, NetworkUpdate
 
 
@@ -49,6 +49,7 @@ def list_networks(
     vlan_id: int | None = None,
     cidr: str | None = None,
     q: str | None = None,
+    gateway_hardware_id: int | None = None,
 ) -> list[dict]:
     stmt = select(Network)
     if vlan_id is not None:
@@ -59,6 +60,8 @@ def list_networks(
         stmt = stmt.where(
             or_(Network.name.ilike(f"%{q}%"), Network.description.ilike(f"%{q}%"))
         )
+    if gateway_hardware_id is not None:
+        stmt = stmt.where(Network.gateway_hardware_id == gateway_hardware_id)
     if tag:
         stmt = (
             stmt.join(EntityTag, (EntityTag.entity_type == "network") & (EntityTag.entity_id == Network.id))
@@ -83,6 +86,7 @@ def create_network(db: Session, payload: NetworkCreate) -> dict:
         vlan_id=payload.vlan_id,
         gateway=payload.gateway,
         description=payload.description,
+        gateway_hardware_id=payload.gateway_hardware_id,
     )
     db.add(net)
     db.flush()
@@ -110,6 +114,12 @@ def delete_network(db: Session, network_id: int) -> None:
     net = db.get(Network, network_id)
     if net is None:
         raise ValueError(f"Network {network_id} not found")
+    # Cascade-remove join-table memberships (safe to auto-remove)
+    for row in db.execute(select(ComputeNetwork).where(ComputeNetwork.network_id == network_id)).scalars().all():
+        db.delete(row)
+    for row in db.execute(select(HardwareNetwork).where(HardwareNetwork.network_id == network_id)).scalars().all():
+        db.delete(row)
+    db.flush()
     _sync_tags(db, "network", net.id, [])
     db.delete(net)
     db.commit()
@@ -146,4 +156,39 @@ def remove_compute_member(db: Session, network_id: int, compute_id: int) -> None
     if cn is None:
         raise ValueError("Network membership not found")
     db.delete(cn)
+    db.commit()
+
+
+# ── Hardware memberships ─────────────────────────────────────────────────────
+
+
+def list_hardware_members(db: Session, network_id: int) -> list[HardwareNetwork]:
+    return list(
+        db.execute(select(HardwareNetwork).where(HardwareNetwork.network_id == network_id))
+        .scalars()
+        .all()
+    )
+
+
+def add_hardware_member(db: Session, network_id: int, hardware_id: int, ip_address: str | None) -> HardwareNetwork:
+    from app.db.models import Network as _Network  # avoid circular at top-level
+    if db.get(_Network, network_id) is None:
+        raise ValueError(f"Network {network_id} not found")
+    hn = HardwareNetwork(network_id=network_id, hardware_id=hardware_id, ip_address=ip_address)
+    db.add(hn)
+    db.commit()
+    db.refresh(hn)
+    return hn
+
+
+def remove_hardware_member(db: Session, network_id: int, hardware_id: int) -> None:
+    hn = db.execute(
+        select(HardwareNetwork).where(
+            HardwareNetwork.network_id == network_id,
+            HardwareNetwork.hardware_id == hardware_id,
+        )
+    ).scalar_one_or_none()
+    if hn is None:
+        raise ValueError("Hardware network membership not found")
+    db.delete(hn)
     db.commit()

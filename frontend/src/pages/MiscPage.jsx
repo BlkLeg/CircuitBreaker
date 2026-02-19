@@ -5,6 +5,7 @@ import TagFilter from '../components/TagFilter';
 import { miscApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import { useToast } from '../components/common/Toast';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -31,18 +32,18 @@ const FIELDS = [
 ];
 
 function MiscPage() {
+  const toast = useToast();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [q, setQ] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [kindFilter, setKindFilter] = useState('');
+  const [formApiErrors, setFormApiErrors] = useState({});
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
       const params = {};
       if (q) params.q = q;
@@ -51,11 +52,11 @@ function MiscPage() {
       const res = await miscApi.list(params);
       setItems(res.data);
     } catch (err) {
-      setError(err.message);
+      toast.error(err.message);
     } finally {
       setLoading(false);
     }
-  }, [q, tagFilter, kindFilter]);
+  }, [q, tagFilter, kindFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -63,14 +64,21 @@ function MiscPage() {
     try {
       if (editTarget) {
         await miscApi.update(editTarget.id, values);
+        toast.success('Misc item updated.');
       } else {
         await miscApi.create(values);
+        toast.success('Misc item created.');
       }
       setShowForm(false);
       setEditTarget(null);
+      setFormApiErrors({});
       fetchData();
     } catch (err) {
-      setError(err.message);
+      if (err.fieldErrors) {
+        setFormApiErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
     }
   };
 
@@ -84,9 +92,10 @@ function MiscPage() {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
           await miscApi.delete(id);
+          toast.success('Misc item deleted.');
           fetchData();
         } catch (err) {
-          setError(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -100,8 +109,6 @@ function MiscPage() {
           + Add Misc Item
         </button>
       </div>
-
-      {error && <div className="error-banner">{error}</div>}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -130,7 +137,8 @@ function MiscPage() {
         fields={FIELDS}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
-        onClose={() => { setShowForm(false); setEditTarget(null); }}
+        onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
+        apiErrors={formApiErrors}
       />
       <ConfirmDialog
         open={confirmState.open}

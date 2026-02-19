@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
+from app.core.errors import NotFoundError, ConflictError
 from app.db.models import Service, ServiceDependency, ServiceStorage, ServiceMisc, EntityTag, Tag
 from app.schemas.services import ServiceCreate, ServiceUpdate
 
@@ -45,6 +46,7 @@ def list_services(
     db: Session,
     *,
     compute_id: int | None = None,
+    hardware_id: int | None = None,
     category: str | None = None,
     environment: str | None = None,
     tag: str | None = None,
@@ -53,6 +55,8 @@ def list_services(
     stmt = select(Service)
     if compute_id:
         stmt = stmt.where(Service.compute_id == compute_id)
+    if hardware_id:
+        stmt = stmt.where(Service.hardware_id == hardware_id)
     if category:
         stmt = stmt.where(Service.category == category)
     if environment:
@@ -72,7 +76,7 @@ def list_services(
 def get_service(db: Session, service_id: int) -> dict:
     svc = db.get(Service, service_id)
     if svc is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     return _to_dict(db, svc)
 
 
@@ -100,7 +104,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
 def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict:
     svc = db.get(Service, service_id)
     if svc is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(svc, field, value)
     svc.updated_at = datetime.now(timezone.utc)
@@ -114,7 +118,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
 def delete_service(db: Session, service_id: int) -> None:
     svc = db.get(Service, service_id)
     if svc is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     _sync_tags(db, "service", svc.id, [])
     db.delete(svc)
     db.commit()
@@ -133,9 +137,9 @@ def get_dependencies(db: Session, service_id: int) -> list[ServiceDependency]:
 
 def add_dependency(db: Session, service_id: int, depends_on_id: int) -> ServiceDependency:
     if db.get(Service, service_id) is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     if db.get(Service, depends_on_id) is None:
-        raise ValueError(f"Service {depends_on_id} not found")
+        raise NotFoundError(f"Service {depends_on_id} not found")
     dep = ServiceDependency(service_id=service_id, depends_on_id=depends_on_id)
     db.add(dep)
     db.commit()
@@ -151,7 +155,7 @@ def remove_dependency(db: Session, service_id: int, depends_on_id: int) -> None:
         )
     ).scalar_one_or_none()
     if dep is None:
-        raise ValueError(f"Dependency not found")
+        raise NotFoundError("Dependency not found")
     db.delete(dep)
     db.commit()
 
@@ -169,7 +173,7 @@ def get_service_storage(db: Session, service_id: int) -> list[ServiceStorage]:
 
 def add_storage_link(db: Session, service_id: int, storage_id: int, purpose: str | None) -> ServiceStorage:
     if db.get(Service, service_id) is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     link = ServiceStorage(service_id=service_id, storage_id=storage_id, purpose=purpose)
     db.add(link)
     db.commit()
@@ -185,7 +189,7 @@ def remove_storage_link(db: Session, service_id: int, storage_id: int) -> None:
         )
     ).scalar_one_or_none()
     if link is None:
-        raise ValueError("Storage link not found")
+        raise NotFoundError("Storage link not found")
     db.delete(link)
     db.commit()
 
@@ -203,7 +207,7 @@ def get_service_misc(db: Session, service_id: int) -> list[ServiceMisc]:
 
 def add_misc_link(db: Session, service_id: int, misc_id: int, purpose: str | None) -> ServiceMisc:
     if db.get(Service, service_id) is None:
-        raise ValueError(f"Service {service_id} not found")
+        raise NotFoundError(f"Service {service_id} not found")
     link = ServiceMisc(service_id=service_id, misc_id=misc_id, purpose=purpose)
     db.add(link)
     db.commit()
@@ -219,6 +223,6 @@ def remove_misc_link(db: Session, service_id: int, misc_id: int) -> None:
         )
     ).scalar_one_or_none()
     if link is None:
-        raise ValueError("Misc link not found")
+        raise NotFoundError("Misc link not found")
     db.delete(link)
     db.commit()

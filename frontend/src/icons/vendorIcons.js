@@ -1,6 +1,6 @@
 export const VENDOR_ICON_MAP = {
   amd:        { label: 'AMD',          path: '/icons/vendors/amd-dark.svg' },
-  intel:      { label: 'Intel',        path: '/icons/vendors/generic.svg' },
+  intel:      { label: 'Intel',        path: '/icons/vendors/intel.svg' },
   nvidia:     { label: 'Nvidia',       path: '/icons/vendors/nvidia.svg' },
   arm:        { label: 'ARM',          path: '/icons/vendors/arm.svg' },
   apple:      { label: 'Apple',        path: '/icons/vendors/apple.svg' },

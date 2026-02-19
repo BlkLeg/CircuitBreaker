@@ -9,6 +9,7 @@ class NetworkBase(BaseModel):
     vlan_id: Optional[int] = None
     gateway: Optional[str] = None
     description: Optional[str] = None
+    gateway_hardware_id: Optional[int] = None
 
 
 class NetworkCreate(NetworkBase):
@@ -21,6 +22,7 @@ class NetworkUpdate(BaseModel):
     vlan_id: Optional[int] = None
     gateway: Optional[str] = None
     description: Optional[str] = None
+    gateway_hardware_id: Optional[int] = None
     tags: Optional[list[str]] = None
 
 
@@ -43,5 +45,19 @@ class ComputeNetworkRead(BaseModel):
 
     id: int
     compute_id: int
+    network_id: int
+    ip_address: Optional[str] = None
+
+
+class HardwareNetworkLink(BaseModel):
+    hardware_id: int
+    ip_address: Optional[str] = None
+
+
+class HardwareNetworkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    hardware_id: int
     network_id: int
     ip_address: Optional[str] = None

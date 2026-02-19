@@ -874,6 +874,24 @@ body {
   font-size: 13px;
 }
 
+/* Strip ReactFlow default card styling so icons float freely */
+.map-page .react-flow__node {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+}
+.map-page .react-flow__node.selected,
+.map-page .react-flow__node:focus,
+.map-page .react-flow__node:focus-visible {
+  box-shadow: none !important;
+  outline: none !important;
+}
+.map-page .react-flow__node-iconNode {
+  overflow: visible;
+}
+
 .map-container {
   height: calc(100vh - 160px);
   border: 1px solid var(--color-border);

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SettingsProvider } from './context/SettingsContext';
+import { ToastProvider } from './components/common/Toast';
+import ErrorBoundary from './components/ErrorBoundary';
 import Dock from './components/Dock';
 import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
@@ -31,30 +33,35 @@ function App() {
 
   return (
     <SettingsProvider>
+    <ToastProvider>
     <BrowserRouter>
       <div className="app-shell">
         <CommandPalette isOpen={paletteOpen} onClose={() => setPaletteOpen(false)} />
         <Header onOpenPalette={() => setPaletteOpen(true)} />
         <div className="page-content">
-          <Routes>
-            <Route path="/" element={<Navigate to="/map" replace />} />
-            <Route path="/hardware" element={<HardwarePage />} />
-            <Route path="/compute-units" element={<ComputeUnitsPage />} />
-            <Route path="/services" element={<ServicesPage />} />
-            <Route path="/storage" element={<StoragePage />} />
-            <Route path="/networks" element={<NetworksPage />} />
-            <Route path="/misc" element={<MiscPage />} />
-            <Route path="/docs" element={<DocsPage />} />
-            <Route path="/map" element={<MapPage />} />
-            <Route path="/logs" element={<LogsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Navigate to="/map" replace />} />
+              <Route path="/hardware" element={<HardwarePage />} />
+              <Route path="/compute-units" element={<ComputeUnitsPage />} />
+              <Route path="/services" element={<ServicesPage />} />
+              <Route path="/storage" element={<StoragePage />} />
+              <Route path="/networks" element={<NetworksPage />} />
+              <Route path="/misc" element={<MiscPage />} />
+              <Route path="/docs" element={<DocsPage />} />
+              <Route path="/map" element={<MapPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </ErrorBoundary>
         </div>
         <Dock />
       </div>
     </BrowserRouter>
+    </ToastProvider>
     </SettingsProvider>
   );
 }
 
 export default App;
+

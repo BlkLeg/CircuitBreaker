@@ -64,4 +64,16 @@ def delete_hardware(hardware_id: int, db: Session = Depends(get_db)):
     try:
         hardware_service.delete_hardware(db, hardware_id)
     except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Cannot delete: other records still reference this hardware.")
+
+
+@router.get("/{hardware_id}/network-memberships")
+def get_network_memberships(hardware_id: int, db: Session = Depends(get_db)):
+    """Return all networks this hardware node is directly a member of."""
+    try:
+        hardware_service.get_hardware(db, hardware_id)  # 404 guard
+    except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    return hardware_service.list_network_memberships(db, hardware_id)

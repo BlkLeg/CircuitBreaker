@@ -9,12 +9,57 @@ const client = axios.create({
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    const detail = error.response?.data?.detail;
-    const message = Array.isArray(detail)
-      ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
-      : detail || error.message;
-    logger.error('API Error:', message);
-    return Promise.reject(new Error(message));
+    // Network / timeout — backend unreachable
+    if (!error.response) {
+      const networkErr = new Error('Cannot reach the server. Check your network connection.');
+      networkErr.isNetworkError = true;
+      logger.error('Network error:', error.message);
+      return Promise.reject(networkErr);
+    }
+
+    const { status, data } = error.response;
+
+    // Build a user-facing message
+    let message;
+    // Server errors — don't expose raw detail
+    if (status >= 500) {
+      message = 'A server error occurred. Please try again or contact support.';
+      logger.error(`API ${status}:`, data);
+    } else {
+      // 4xx — surface the API's error detail
+      const detail = data?.detail;
+      if (Array.isArray(detail)) {
+        // Pydantic validation_error: array of { field, msg } (our custom schema)
+        // or FastAPI's default [ { loc, msg, type } ]
+        message = detail
+          .map((e) => e.msg || JSON.stringify(e))
+          .join('; ');
+      } else {
+        message = detail || error.message;
+      }
+      logger.error(`API ${status}:`, message);
+    }
+
+    const err = new Error(message);
+    err.statusCode = status;
+
+    // Attach per-field errors for 422 Unprocessable Entity
+    // Our custom validation_error schema: detail is [{ field, msg }]
+    if (status === 422 && Array.isArray(data?.detail)) {
+      const fieldErrors = {};
+      data.detail.forEach((e) => {
+        // Support both our schema { field, msg } and FastAPI default { loc: [...], msg }
+        const fieldName = e.field ?? (Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : null);
+        if (fieldName && e.msg) {
+          fieldErrors[fieldName] = e.msg;
+        }
+      });
+      if (Object.keys(fieldErrors).length > 0) {
+        err.fieldErrors = fieldErrors;
+      }
+    }
+
+    return Promise.reject(err);
   }
 );
 
@@ -25,6 +70,7 @@ export const hardwareApi = {
   update: (id, data) => client.patch(`/hardware/${id}`, data),
   replace: (id, data) => client.put(`/hardware/${id}`, data),
   delete: (id) => client.delete(`/hardware/${id}`),
+  getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
 };
 
 export const computeUnitsApi = {
@@ -70,6 +116,9 @@ export const networksApi = {
   getMembers: (id) => client.get(`/networks/${id}/members`),
   addMember: (id, data) => client.post(`/networks/${id}/members`, data),
   removeMember: (id, computeId) => client.delete(`/networks/${id}/members/${computeId}`),
+  getHardwareMembers: (id) => client.get(`/networks/${id}/hardware-members`),
+  addHardwareMember: (id, data) => client.post(`/networks/${id}/hardware-members`, data),
+  removeHardwareMember: (id, hardwareId) => client.delete(`/networks/${id}/hardware-members/${hardwareId}`),
 };
 
 export const miscApi = {

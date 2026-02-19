@@ -2,9 +2,10 @@ import React, { useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { getIconEntry } from './common/IconPickerModal';
 import { getOsOption } from '../icons/osOptions';
+import { CPU_BRAND_MAP } from '../config/cpuBrands';
 import { slugify } from '../utils/slugify';
 
-function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange }) {
+function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange, apiErrors = {} }) {
   // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
   const [values, setValuesInternal] = useState(() => {
     const init = { ...initialValues };
@@ -34,6 +35,8 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     initialRef.current = JSON.stringify(snap);
   }
 
+  const [clearedApiErrors, setClearedApiErrors] = React.useState({});
+
   const setValues = (updater) => {
     setValuesInternal((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -57,6 +60,8 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     } else {
       coerced = value;
     }
+    // Clear any API error for this field when the user edits it
+    setClearedApiErrors((prev) => ({ ...prev, [name]: true }));
     setValues((prev) => {
       const next = { ...prev, [name]: coerced };
       // Auto-update any un-dirty slug fields that watch this field
@@ -102,6 +107,22 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {opt && <img src={opt.icon} alt={opt.label} width={18} height={18} style={{ objectFit: 'contain', flexShrink: 0 }} onError={(e) => { e.target.style.display = 'none'; }} />}
+          <select id={field.name} name={field.name} value={values[field.name] ?? ''} onChange={handleChange} style={{ flex: 1 }}>
+            <option value="">-- select --</option>
+            {field.options.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+      );
+    }
+
+    // ── CPU brand select with icon preview ────────────────────────────────────
+    if (field.type === 'cpu-select') {
+      const brand = CPU_BRAND_MAP[values[field.name]];
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {brand && <img src={brand.icon} alt={brand.label} width={18} height={18} style={{ objectFit: 'contain', flexShrink: 0 }} onError={(e) => { e.target.style.display = 'none'; }} />}
           <select id={field.name} name={field.name} value={values[field.name] ?? ''} onChange={handleChange} style={{ flex: 1 }}>
             <option value="">-- select --</option>
             {field.options.map((opt) => (
@@ -213,13 +234,19 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
 
   return (
     <form className="entity-form" onSubmit={handleSubmit}>
-      {fields.map((field) => (
-        <div key={field.name} className="form-group">
-          <label htmlFor={field.name}>{field.label}</label>
-          {renderField(field)}
-          {field.hint && <p className="form-hint">{field.hint}</p>}
-        </div>
-      ))}
+      {fields.map((field) => {
+        const apiErr = !clearedApiErrors[field.name] ? apiErrors[field.name] : null;
+        return (
+          <div key={field.name} className="form-group">
+            <label htmlFor={field.name}>{field.label}</label>
+            {renderField(field)}
+            {field.hint && <p className="form-hint">{field.hint}</p>}
+            {apiErr && (
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: '#e74c3c' }}>{apiErr}</p>
+            )}
+          </div>
+        );
+      })}
       <div className="form-actions">
         <button type="submit" className="btn btn-primary">
           {initialValues.id ? 'Update' : 'Create'}
@@ -253,6 +280,7 @@ EntityForm.propTypes = {
   onSubmit: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
   onDirtyChange: PropTypes.func,
+  apiErrors: PropTypes.object,
 };
 
 export default EntityForm;

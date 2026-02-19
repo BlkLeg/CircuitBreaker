@@ -3,7 +3,7 @@ import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
 import logger from '../../utils/logger';
 import { networksApi, computeUnitsApi, hardwareApi } from '../../api/client';
-import { Monitor, Plus, Trash2, Server } from 'lucide-react';
+import { Monitor, Plus, Trash2, Server, Wifi } from 'lucide-react';
 
 function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardware: hwProp = null, computeUnits: cuProp = null }) {
   const [activeTab, setActiveTab] = useState('overview');
@@ -12,17 +12,24 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
   const [hardware, setHardware] = useState(hwProp || []);
   const [newComputeId, setNewComputeId] = useState('');
   const [newIp, setNewIp] = useState('');
+  const [hwMembers, setHwMembers] = useState([]);
+  const [newHwId, setNewHwId] = useState('');
+  const [newHwIp, setNewHwIp] = useState('');
 
   const fetchData = useCallback(async () => {
     if (!network) return;
     try {
-      const fetches = [networksApi.getMembers(network.id)];
+      const fetches = [
+        networksApi.getMembers(network.id),
+        networksApi.getHardwareMembers(network.id),
+      ];
       // Only fetch hw/cu if parent didn't pass them down
       if (!hwProp) fetches.push(hardwareApi.list());
       if (!cuProp) fetches.push(computeUnitsApi.list());
 
-      const [memRes, ...rest] = await Promise.all(fetches);
+      const [memRes, hwMemRes, ...rest] = await Promise.all(fetches);
       setMembers(memRes.data);
+      setHwMembers(hwMemRes.data);
       if (!hwProp && rest[0]) setHardware(rest[0].data);
       if (!cuProp && rest[1]) setComputeUnits(rest[1].data);
     } catch (err) {
@@ -60,12 +67,39 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
     }
   };
 
+  const handleAddHwMember = async () => {
+    if (!newHwId) return;
+    try {
+      await networksApi.addHardwareMember(network.id, {
+        hardware_id: parseInt(newHwId, 10),
+        ip_address: newHwIp || null,
+      });
+      setNewHwId('');
+      setNewHwIp('');
+      fetchData();
+    } catch (err) {
+      logger.error(err);
+    }
+  };
+
+  const handleRemoveHwMember = async (hardwareId) => {
+    try {
+      await networksApi.removeHardwareMember(network.id, hardwareId);
+      fetchData();
+    } catch (err) {
+      logger.error(err);
+    }
+  };
+
   if (!network) return null;
 
   const hwMap = Object.fromEntries(hardware.map((h) => [h.id, h]));
   const cuMap = Object.fromEntries(computeUnits.map((cu) => [cu.id, cu]));
   const memberComputeIds = new Set(members.map((m) => m.compute_id));
   const availableCUs = computeUnits.filter((cu) => !memberComputeIds.has(cu.id));
+  const hwMemberIds = new Set(hwMembers.map((m) => m.hardware_id));
+  const availableHw = hardware.filter((h) => !hwMemberIds.has(h.id));
+  const gatewayHw = hardware.find((h) => h.id === network.gateway_hardware_id);
 
   // Group members by their parent hardware node
   const membersByHw = {};
@@ -84,7 +118,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       <div className="tabs">
         <button className={`tab ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
         <button className={`tab ${activeTab === 'members' ? 'active' : ''}`} onClick={() => setActiveTab('members')}>
-          Members {members.length > 0 && <span className="tab-badge">{members.length}</span>}
+          Members {(members.length + hwMembers.length) > 0 && <span className="tab-badge">{members.length + hwMembers.length}</span>}
         </button>
         <button className={`tab ${activeTab === 'docs' ? 'active' : ''}`} onClick={() => setActiveTab('docs')}>Docs</button>
       </div>
@@ -95,7 +129,11 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
             <div className="field-group"><label>Name</label><div>{network.name}</div></div>
             <div className="field-group"><label>CIDR</label><div>{network.cidr || '—'}</div></div>
             <div className="field-group"><label>VLAN</label><div>{network.vlan_id ?? '—'}</div></div>
-            <div className="field-group"><label>Gateway</label><div>{network.gateway || '—'}</div></div>
+            <div className="field-group"><label>Gateway IP</label><div>{network.gateway || '—'}</div></div>
+            <div className="field-group">
+              <label>Gateway Hardware</label>
+              <div>{gatewayHw ? gatewayHw.name : '—'}</div>
+            </div>
             <div className="field-group"><label>Description</label><div>{network.description || '—'}</div></div>
           </div>
         )}
@@ -195,6 +233,67 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
             {availableCUs.length === 0 && members.length === 0 && (
               <div className="info-tip" style={{ marginTop: 8 }}>
                 💡 Add compute units (VMs/containers) on the <strong>Compute</strong> tab first, then attach them to this network.
+              </div>
+            )}
+
+            {/* Hardware direct members */}
+            <h4 style={{ marginTop: 24, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Wifi size={15} /> Hardware Members
+            </h4>
+            {hwMembers.length === 0 && availableHw.length === 0 && (
+              <p className="text-muted">No hardware nodes directly attached.</p>
+            )}
+            {hwMembers.map((mem) => {
+              const hw = hwMap[mem.hardware_id];
+              return (
+                <div key={mem.hardware_id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '7px 10px', marginBottom: 4,
+                  border: '1px solid var(--color-border)', borderRadius: 6,
+                  background: 'var(--color-surface)',
+                }}>
+                  <span>
+                    <Server size={13} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                    <strong>{hw?.name ?? `Hardware #${mem.hardware_id}`}</strong>
+                    {hw?.role && <span className="text-muted" style={{ marginLeft: 6, fontSize: '0.75rem' }}>({hw.role})</span>}
+                    {mem.ip_address && <span className="text-muted"> — {mem.ip_address}</span>}
+                  </span>
+                  <button
+                    className="btn btn-danger"
+                    style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+                    onClick={() => handleRemoveHwMember(mem.hardware_id)}
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              );
+            })}
+            {availableHw.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+                <select
+                  className="filter-select"
+                  value={newHwId}
+                  onChange={(e) => setNewHwId(e.target.value)}
+                  style={{ flex: '1 1 180px' }}
+                >
+                  <option value="">Add hardware node…</option>
+                  {availableHw.map((hw) => (
+                    <option key={hw.id} value={hw.id}>
+                      {hw.name}{hw.ip_address ? ` (${hw.ip_address})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="filter-input"
+                  type="text"
+                  placeholder="IP on this network"
+                  value={newHwIp}
+                  onChange={(e) => setNewHwIp(e.target.value)}
+                  style={{ flex: '1 1 120px' }}
+                />
+                <button className="btn btn-primary" onClick={handleAddHwMember} disabled={!newHwId}>
+                  <Plus size={14} />
+                </button>
               </div>
             )}
           </div>
