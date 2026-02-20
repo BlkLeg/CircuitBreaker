@@ -45,3 +45,4 @@ class ComputeUnit(ComputeUnitBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    storage_allocated: Optional[dict] = None

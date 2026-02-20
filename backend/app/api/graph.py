@@ -69,6 +69,20 @@ def get_topology(
     def get_tags(etype, eid):
         return entity_tags_map.get((etype, eid), [])
 
+    # Pre-build compute_id → [storage_pool_names] via service→storage relationships
+    cu_storage_pools: dict[int, list[str]] = {}
+    svc_storage_rows = db.execute(
+        select(Service.compute_id, Storage.name)
+        .join(ServiceStorage, ServiceStorage.service_id == Service.id)
+        .join(Storage, Storage.id == ServiceStorage.storage_id)
+        .where(Service.compute_id.isnot(None))
+    ).all()
+    for cu_id, st_name in svc_storage_rows:
+        if cu_id not in cu_storage_pools:
+            cu_storage_pools[cu_id] = []
+        if st_name not in cu_storage_pools[cu_id]:
+            cu_storage_pools[cu_id].append(st_name)
+
     # Pre-build lookup maps for service→network implicit edges
     # (compute_id → [network_id, ...]) and (hardware_id → [network_id, ...])
     cu_networks: dict[int, list[int]] = {}
@@ -128,13 +142,30 @@ def get_topology(
     # 2. Hardware
     if "hardware" in include_set:
         for hw in db.execute(select(Hardware)).scalars():
+            # Build storage_summary by aggregating attached storage items
+            storage_summary = None
+            if hw.storage_items:
+                total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
+                used_gb = sum(s.used_gb or 0 for s in hw.storage_items)
+                kinds = list(dict.fromkeys(s.kind for s in hw.storage_items if s.kind))  # preserves order, deduped
+                primary_pool = hw.storage_items[0].name if hw.storage_items else None
+                storage_summary = {
+                    "total_gb": total_gb,
+                    "used_gb": used_gb if any(s.used_gb is not None for s in hw.storage_items) else None,
+                    "types": kinds,
+                    "primary_pool": primary_pool,
+                    "count": len(hw.storage_items),
+                }
             nodes.append({
                 "id": f"hw-{hw.id}",
                 "type": "hardware",
                 "ref_id": hw.id,
                 "label": hw.name,
                 "vendor": hw.vendor,
+                "role": hw.role,
+                "icon_slug": hw.vendor_icon_slug,
                 "ip_address": hw.ip_address,
+                "storage_summary": storage_summary,
                 "tags": get_tags("hardware", hw.id)
             })
 
@@ -144,13 +175,22 @@ def get_topology(
         if environment:
             q = q.where(ComputeUnit.environment == environment)
         for cu in db.execute(q).scalars():
+            pools = cu_storage_pools.get(cu.id, [])
+            storage_allocated = None
+            if cu.disk_gb or pools:
+                storage_allocated = {
+                    "disk_gb": cu.disk_gb,
+                    "storage_pools": pools,
+                }
             nodes.append({
                 "id": f"cu-{cu.id}",
                 "type": "compute",
                 "ref_id": cu.id,
                 "label": cu.name,
+                "kind": cu.kind,
                 "icon_slug": cu.icon_slug,
                 "ip_address": cu.ip_address,
+                "storage_allocated": storage_allocated,
                 "tags": get_tags("compute", cu.id)
             })
             # Link to Hardware
@@ -171,12 +211,20 @@ def get_topology(
         service_ids = {s.id for s in services}
 
         for svc in services:
+            effective_ip = (
+                svc.ip_address
+                or (svc.compute_unit.ip_address if svc.compute_unit else None)
+                or (svc.hardware.ip_address if svc.hardware else None)
+            )
             nodes.append({
                 "id": f"svc-{svc.id}",
                 "type": "service",
                 "ref_id": svc.id,
                 "label": svc.name,
                 "icon_slug": svc.icon_slug,
+                "ip_address": effective_ip,
+                "compute_id": svc.compute_id,
+                "hardware_id": svc.hardware_id,
                 "tags": get_tags("services", svc.id)
             })
             # Link to Compute
@@ -264,8 +312,21 @@ def get_topology(
                 "type": "storage",
                 "ref_id": st.id,
                 "label": st.name,
+                "kind": st.kind,
+                "capacity_gb": st.capacity_gb,
+                "used_gb": st.used_gb,
+                "vendor": st.hardware.vendor if st.hardware else None,
+                "icon_slug": st.hardware.vendor_icon_slug if st.hardware else None,
                 "tags": get_tags("storage", st.id)
             })
+            # Edge: Storage → Hardware (attached_to)
+            if st.hardware_id and "hardware" in include_set:
+                edges.append({
+                    "id": f"e-hw-st-{st.id}",
+                    "source": f"hw-{st.hardware_id}",
+                    "target": f"st-{st.id}",
+                    "relation": "has_storage",
+                })
 
     # 6. Misc
     if "misc" in include_set:

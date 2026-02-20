@@ -3,8 +3,8 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
-import { computeUnitsApi, networksApi, servicesApi, hardwareApi } from '../../api/client';
-import { Server, Globe, Layers, ExternalLink } from 'lucide-react';
+import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi } from '../../api/client';
+import { Server, Globe, Layers, ExternalLink, Database } from 'lucide-react';
 import { getVendorIcon } from '../../icons/vendorIcons';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import { IconImg } from '../common/IconPickerModal';
@@ -19,6 +19,7 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   const [routedNetworks, setRoutedNetworks] = useState([]);
   const [directMemberships, setDirectMemberships] = useState([]);
   const [hwServices, setHwServices] = useState([]);
+  const [hwStorage, setHwStorage] = useState([]);
 
   const fetchData = useCallback(async () => {
     if (!hardware) return;
@@ -28,12 +29,14 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         computeUnitsApi.list({ hardware_id: hardware.id }),
         hardwareApi.getNetworkMemberships(hardware.id),
         servicesApi.list({ hardware_id: hardware.id }),
+        storageApi.list({ hardware_id: hardware.id }),
       ];
       if (isRouter) fetches.push(networksApi.list({ gateway_hardware_id: hardware.id }));
-      const [cuRes, memRes, svcRes, routedRes] = await Promise.all(fetches);
+      const [cuRes, memRes, svcRes, stRes, routedRes] = await Promise.all(fetches);
       setComputeUnits(cuRes.data);
       setDirectMemberships(memRes.data);
       setHwServices(svcRes.data);
+      setHwStorage(stRes.data);
       if (routedRes) setRoutedNetworks(routedRes.data);
     } catch (err) {
       logger.error(err);
@@ -61,6 +64,9 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         </button>
         <button className={`tab ${activeTab === 'services' ? 'active' : ''}`} onClick={() => setActiveTab('services')}>
           Services {hwServices.length > 0 && <span className="tab-badge">{hwServices.length}</span>}
+        </button>
+        <button className={`tab ${activeTab === 'storage' ? 'active' : ''}`} onClick={() => setActiveTab('storage')}>
+          Storage {hwStorage.length > 0 && <span className="tab-badge">{hwStorage.length}</span>}
         </button>
         <button className={`tab ${activeTab === 'docs' ? 'active' : ''}`} onClick={() => setActiveTab('docs')}>Docs</button>
       </div>
@@ -225,6 +231,59 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   )}
                 </div>
               ))
+            )}
+          </div>
+        )}
+
+        {activeTab === 'storage' && (
+          <div className="detail-section">
+            <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Database size={15} /> Attached Storage
+            </h4>
+            {hwStorage.length === 0 ? (
+              <p className="text-muted">No storage items attached to this hardware.</p>
+            ) : (
+              hwStorage.map((st) => {
+                const capLabel = st.capacity_gb
+                  ? st.capacity_gb >= 1024 ? `${(st.capacity_gb / 1024).toFixed(1)} TB` : `${st.capacity_gb} GB`
+                  : null;
+                return (
+                  <div key={st.id} style={{
+                    padding: '8px 12px', marginBottom: 6,
+                    border: '1px solid var(--color-border)', borderRadius: 6,
+                    background: 'var(--color-surface)',
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontWeight: 600 }}>{st.name}</span>
+                      <span style={{
+                        fontSize: '0.75rem', padding: '1px 6px', borderRadius: 3,
+                        background: 'var(--color-glow)', color: 'var(--color-primary)',
+                        textTransform: 'uppercase', letterSpacing: '0.04em',
+                      }}>{st.kind}</span>
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      {capLabel && <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>{capLabel}</span>}
+                      {st.path && <span style={{ fontFamily: 'monospace' }}>{st.path}</span>}
+                      {st.protocol && <span>{st.protocol.toUpperCase()}</span>}
+                    </div>
+                    {st.used_gb != null && st.capacity_gb > 0 && (() => {
+                      const pct = Math.min(100, Math.round(st.used_gb / st.capacity_gb * 100));
+                      const barColor = pct >= 85 ? 'var(--color-danger)' : pct >= 60 ? '#f7c948' : 'var(--color-online)';
+                      return (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
+                            <span>Used</span>
+                            <span style={{ color: barColor }}>{pct}%</span>
+                          </div>
+                          <div style={{ height: 4, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
+                            <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 2 }} />
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })
             )}
           </div>
         )}

@@ -34,9 +34,13 @@ function IconGrid({ icons, onDelete }) {
           <img
             src={icon.path}
             alt={icon.label}
-            width={28}
-            height={28}
-            style={{ objectFit: 'contain' }}
+            style={{
+              width: 32,
+              height: 32,
+              objectFit: 'contain',
+              maxWidth: '100%',
+              maxHeight: '100%',
+            }}
             onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
           />
           <span style={{

@@ -132,6 +132,7 @@ function ServicesPage() {
         { value: 'maintenance', label: 'Maintenance' },
       ],
     },
+    { name: 'ip_address', label: 'IP Address (optional)', placeholder: '10.0.1.4' },
     { name: 'description', label: 'Description', type: 'textarea' },
     { name: 'icon_slug', label: 'Icon', type: 'icon-picker',
       currentSlug: currentIconSlug,

@@ -33,9 +33,16 @@ export const LIBRARY_ICONS = [
   { slug: 'cisco',             label: 'Cisco',           path: '/icons/vendors/cisco.svg',             group: 'Network' },
   { slug: 'ubiquiti',          label: 'Ubiquiti',        path: '/icons/vendors/ubiquiti.svg',          group: 'Network' },
   { slug: 'mikrotik-dark',     label: 'MikroTik',        path: '/icons/vendors/mikrotik-dark.svg',     group: 'Network' },
+  { slug: 'router',            label: 'Router',          path: '/icons/vendors/router.svg',            group: 'Network' },
+  { slug: 'switch',            label: 'Network Switch',  path: '/icons/vendors/switch.svg',            group: 'Network' },
+  { slug: 'firewall',          label: 'Firewall',        path: '/icons/vendors/firewall.svg',          group: 'Network' },
+  { slug: 'internet',          label: 'Internet / WAN',  path: '/icons/vendors/internet.svg',          group: 'Network' },
+  { slug: 'network',           label: 'Network Segment', path: '/icons/vendors/network.svg',           group: 'Network' },
   // Storage
   { slug: 'synology',          label: 'Synology',        path: '/icons/vendors/synology.svg',          group: 'Storage' },
   { slug: 'qnap',              label: 'QNAP',            path: '/icons/vendors/qnap.svg',              group: 'Storage' },
+  { slug: 'hdd',               label: 'Hard Drive',      path: '/icons/vendors/hdd.svg',               group: 'Storage' },
+  { slug: 'nas',               label: 'NAS / Network Storage', path: '/icons/vendors/nas.svg',         group: 'Storage' },
   // Apps
   { slug: 'plex',              label: 'Plex',            path: '/icons/vendors/plex.svg',              group: 'Apps' },
   { slug: 'jellyfin',          label: 'Jellyfin',        path: '/icons/vendors/jellyfin.svg',          group: 'Apps' },

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Cloud shape (network segment / VLAN) -->
+  <path d="M6.5 19a4.5 4.5 0 0 1 0-9 5 5 0 0 1 9.4-2 4 4 0 0 1 .1 8H6.5z"/>
+  <!-- Three-node tree hanging below -->
+  <!-- Trunk line -->
+  <line x1="12" y1="19" x2="12" y2="21.5"/>
+  <!-- Left branch -->
+  <line x1="12" y1="21.5" x2="8"  y2="21.5"/>
+  <!-- Right branch -->
+  <line x1="12" y1="21.5" x2="16" y2="21.5"/>
+  <!-- Node dots -->
+  <circle cx="8"  cy="21.5" r="1.1" fill="white" stroke="none"/>
+  <circle cx="12" cy="21.5" r="1.1" fill="white" stroke="none"/>
+  <circle cx="16" cy="21.5" r="1.1" fill="white" stroke="none"/>
+</svg>

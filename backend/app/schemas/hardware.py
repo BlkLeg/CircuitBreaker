@@ -56,3 +56,4 @@ class Hardware(HardwareBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    storage_summary: Optional[dict] = None

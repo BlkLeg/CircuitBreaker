@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Globe circle -->
+  <circle cx="12" cy="12" r="9"/>
+  <!-- Vertical meridian -->
+  <line x1="12" y1="3" x2="12" y2="21"/>
+  <!-- Horizontal equator -->
+  <line x1="3" y1="12" x2="21" y2="12"/>
+  <!-- Latitude arc upper -->
+  <path d="M5 8c2-1.5 4.5-2.3 7-2.3s5 .8 7 2.3" fill="none"/>
+  <!-- Latitude arc lower -->
+  <path d="M5 16c2 1.5 4.5 2.3 7 2.3s5-.8 7-2.3" fill="none"/>
+</svg>

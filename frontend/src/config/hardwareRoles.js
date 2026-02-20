@@ -1,5 +1,6 @@
 export const HARDWARE_ROLES = [
-  { value: 'router',       label: 'Router / Firewall' },
+  { value: 'router',       label: 'Router' },
+  { value: 'firewall',     label: 'Firewall' },
   { value: 'hypervisor',   label: 'Hypervisor' },
   { value: 'server',       label: 'Server' },
   { value: 'nas',          label: 'NAS' },

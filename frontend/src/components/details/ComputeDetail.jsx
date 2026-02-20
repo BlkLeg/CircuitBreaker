@@ -5,7 +5,7 @@ import DocsPanel from '../common/DocsPanel';
 import ConfirmDialog from '../common/ConfirmDialog';
 import logger from '../../utils/logger';
 import { computeUnitsApi, networksApi, servicesApi } from '../../api/client';
-import { Grid, Network, Trash2 } from 'lucide-react';
+import { Grid, Network, Trash2, Database } from 'lucide-react';
 import { IconImg } from '../common/IconPickerModal';
 import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
@@ -15,6 +15,7 @@ function ComputeDetail({ compute, isOpen, onClose }) {
   const [services, setServices] = useState([]);
   const [networks, setNetworks] = useState([]);
   const [allNetworks, setAllNetworks] = useState([]);
+  const [storageLinks, setStorageLinks] = useState([]); // [{storage, serviceName}]
   const [newNetId, setNewNetId] = useState('');
   const [newIp, setNewIp] = useState('');
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
@@ -30,6 +31,22 @@ function ComputeDetail({ compute, isOpen, onClose }) {
       setServices(svcs.data);
       setNetworks(nets.data);
       setAllNetworks(allNets.data);
+      // Fetch storage links for each service hosted on this compute
+      const storageResults = await Promise.all(
+        svcs.data.map(svc =>
+          servicesApi.getStorage(svc.id)
+            .then(res => (res.data || []).map(link => ({ storage: link, serviceName: svc.name })))
+            .catch(() => [])
+        )
+      );
+      // Deduplicate by storage.id
+      const seen = new Set();
+      const aggregated = storageResults.flat().filter(({ storage }) => {
+        if (seen.has(storage.id)) return false;
+        seen.add(storage.id);
+        return true;
+      });
+      setStorageLinks(aggregated);
     } catch (err) {
       logger.error(err);
     }
@@ -77,6 +94,7 @@ function ComputeDetail({ compute, isOpen, onClose }) {
         <button className={`tab ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
         <button className={`tab ${activeTab === 'networking' ? 'active' : ''}`} onClick={() => setActiveTab('networking')}>Networking</button>
         <button className={`tab ${activeTab === 'services' ? 'active' : ''}`} onClick={() => setActiveTab('services')}>Services</button>
+        <button className={`tab ${activeTab === 'storage' ? 'active' : ''}`} onClick={() => setActiveTab('storage')}>Storage</button>
         <button className={`tab ${activeTab === 'docs' ? 'active' : ''}`} onClick={() => setActiveTab('docs')}>Docs</button>
       </div>
 
@@ -167,6 +185,57 @@ function ComputeDetail({ compute, isOpen, onClose }) {
                 </div>
               ))}
               {services.length === 0 && <p className="text-muted">No services running.</p>}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'storage' && (
+          <div className="detail-section">
+            <h4>Allocated Storage</h4>
+            {compute.disk_gb && (
+              <div className="field-group">
+                <span className="field-label">Disk</span>
+                <div>{compute.disk_gb} GB</div>
+              </div>
+            )}
+            <h4 style={{ marginTop: 16 }}>Storage Pools (via services)</h4>
+            <div className="list-group">
+              {storageLinks.map(({ storage, serviceName }) => {
+                const capLabel = storage.capacity_gb
+                  ? (storage.capacity_gb >= 1024 ? `${(storage.capacity_gb / 1024).toFixed(1)} TB` : `${storage.capacity_gb} GB`)
+                  : null;
+                const usedPct = storage.used_gb != null && storage.capacity_gb > 0
+                  ? Math.min(100, Math.round(storage.used_gb / storage.capacity_gb * 100))
+                  : null;
+                const barColor = usedPct != null
+                  ? (usedPct >= 85 ? 'var(--color-danger)' : usedPct >= 60 ? '#f7c948' : 'var(--color-online)')
+                  : 'var(--color-primary)';
+                return (
+                  <div key={storage.id} style={{ padding: '8px 0', borderBottom: '1px solid var(--color-border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                      <Database size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                      <strong style={{ fontSize: 13 }}>{storage.name}</strong>
+                      <span style={{ fontSize: 10, background: 'var(--color-glow)', color: 'var(--color-primary)', borderRadius: 3, padding: '1px 5px' }}>{storage.kind}</span>
+                      {capLabel && <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--color-text-muted)' }}>{capLabel}</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: usedPct != null ? 6 : 0 }}>
+                      via <span style={{ color: 'var(--color-text)' }}>{serviceName}</span>
+                      {storage.path && <span style={{ fontFamily: 'monospace', marginLeft: 6 }}>{storage.path}</span>}
+                    </div>
+                    {usedPct != null && (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
+                          <span>Used</span><span style={{ color: barColor }}>{usedPct}%</span>
+                        </div>
+                        <div style={{ height: 4, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
+                          <div style={{ width: `${usedPct}%`, height: '100%', background: barColor, borderRadius: 2 }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {storageLinks.length === 0 && !compute.disk_gb && <p className="text-muted">No storage allocated.</p>}
             </div>
           </div>
         )}

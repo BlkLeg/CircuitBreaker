@@ -32,7 +32,7 @@ function ConfirmDialog({ open, message, onConfirm, onCancel }) {
     >
       <div
         style={{
-          background: 'var(--color-bg-elevated, #1e1e2e)',
+          background: 'var(--color-surface)',
           border: '1px solid var(--color-border, rgba(255,255,255,0.12))',
           borderRadius: 10,
           padding: '24px 28px',

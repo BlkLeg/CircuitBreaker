@@ -39,6 +39,16 @@ def _to_dict(db: Session, cu: ComputeUnit) -> dict:
     mapper = sa_inspect(type(cu))
     d = {attr.key: getattr(cu, attr.key) for attr in mapper.column_attrs}
     d["tags"] = get_tags_for(db, "compute", cu.id)
+    # Aggregate storage pools from services hosted on this compute unit
+    pools: list[str] = []
+    for svc in (cu.services or []):
+        for link in (svc.storage_links or []):
+            if link.storage and link.storage.name not in pools:
+                pools.append(link.storage.name)
+    if cu.disk_gb or pools:
+        d["storage_allocated"] = {"disk_gb": cu.disk_gb, "storage_pools": pools}
+    else:
+        d["storage_allocated"] = None
     return d
 
 

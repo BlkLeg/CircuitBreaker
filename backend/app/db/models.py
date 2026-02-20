@@ -133,6 +133,7 @@ class Service(Base):
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
     status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
+    ip_address: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -179,6 +180,7 @@ class Storage(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)  # 'disk', 'pool', 'dataset', 'share'
     hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID))
     capacity_gb: Mapped[int | None] = mapped_column(Integer)
+    used_gb: Mapped[int | None] = mapped_column(Integer)
     path: Mapped[str | None] = mapped_column(String)
     protocol: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)

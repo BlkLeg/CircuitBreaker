@@ -36,9 +36,9 @@ export default function ListEditor({ items = [], onChange, placeholder = 'Add it
                 borderRadius: 99,
                 fontSize: 12,
                 fontWeight: 500,
-                background: 'rgba(99,102,241,0.15)',
-                border: '1px solid rgba(99,102,241,0.35)',
-                color: '#a5b4fc',
+                background: 'var(--color-glow)',
+                border: '1px solid var(--color-primary)',
+                color: 'var(--color-primary)',
               }}
             >
               {item}
@@ -50,7 +50,7 @@ export default function ListEditor({ items = [], onChange, placeholder = 'Add it
                   background: 'none',
                   border: 'none',
                   cursor: 'pointer',
-                  color: 'rgba(165,180,252,0.6)',
+                  color: 'var(--color-text-muted)',
                   fontSize: 14,
                   lineHeight: 1,
                   padding: '0 0 1px 0',
@@ -79,7 +79,15 @@ export default function ListEditor({ items = [], onChange, placeholder = 'Add it
             }
           }}
           placeholder={placeholder}
-          style={{ flex: 1, fontSize: 13 }}
+          style={{
+            flex: 1,
+            fontSize: 13,
+            background: 'var(--color-bg)',
+            color: 'var(--color-text)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 4,
+            padding: '6px 10px',
+          }}
         />
         <button
           type="button"

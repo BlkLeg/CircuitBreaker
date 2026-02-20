@@ -8,6 +8,7 @@ class StorageBase(BaseModel):
     kind: str  # 'disk', 'pool', 'dataset', 'share'
     hardware_id: Optional[int] = None
     capacity_gb: Optional[int] = None
+    used_gb: Optional[int] = None
     path: Optional[str] = None
     protocol: Optional[str] = None
     notes: Optional[str] = None
@@ -23,6 +24,7 @@ class StorageUpdate(BaseModel):
     kind: Optional[str] = None
     hardware_id: Optional[int] = None
     capacity_gb: Optional[int] = None
+    used_gb: Optional[int] = None
     path: Optional[str] = None
     protocol: Optional[str] = None
     notes: Optional[str] = None

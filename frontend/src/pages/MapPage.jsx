@@ -19,6 +19,7 @@ import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networ
 import { useSettings } from '../context/SettingsContext';
 import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
+import MapContextMenu from '../components/map/MapContextMenu';
 
 const elk = new ELK();
 
@@ -42,6 +43,7 @@ const EDGE_COLORS = {
   integrates_with: '#6b7a96',
   routes:          '#ff6b35',
   on_network:      '#00d4aa',
+  has_storage:     '#c47a2a',
 };
 
 const NODE_TYPE_LABELS = {
@@ -73,9 +75,30 @@ const BASE_NODE_STYLE = {
 
 // ── Icon Resolution ──────────────────────────────────────────────────────────
 
-function resolveNodeIcon(type, icon_slug, vendor) {
-  if (icon_slug) return getIconEntry(icon_slug)?.path ?? null;
-  if (type === 'hardware' && vendor) return getVendorIcon(vendor)?.path ?? null;
+const KIND_ICON = {
+  // Storage kinds
+  disk:      'hdd',
+  pool:      'nas',
+  dataset:   'nas',
+  share:     'nas',
+  // Compute kinds (fallback only — explicit icon_slug takes priority)
+  container: 'docker',
+};
+
+const ROLE_ICON = {
+  router:   'router',
+  firewall: 'firewall',
+  switch:   'switch',
+  ap:       'switch',   // Access Point → same switch icon
+  nas:      'nas',
+};
+
+function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
+  if (icon_slug)                              return getIconEntry(icon_slug)?.path ?? null;
+  if (type === 'hardware' && ROLE_ICON[role]) return getIconEntry(ROLE_ICON[role])?.path ?? null;
+  if (type === 'hardware' && vendor)          return getVendorIcon(vendor)?.path ?? null;
+  if (type === 'network')                     return getIconEntry('network')?.path ?? null;
+  if (kind && KIND_ICON[kind])                return getIconEntry(KIND_ICON[kind])?.path ?? null;
   return null;
 }
 
@@ -112,7 +135,7 @@ function IconNode({ data }) {
             onError={(e) => { e.target.style.display = 'none'; }}
           />
         ) : (
-          <span style={{ fontSize: 24, fontWeight: 700, color: '#fff', textShadow: `0 0 14px ${glow}` }}>
+          <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)' }}>
             {data.label?.[0]?.toUpperCase() || '?'}
           </span>
         )}
@@ -122,8 +145,7 @@ function IconNode({ data }) {
       <div style={{
         fontSize: 12,
         fontWeight: 600,
-        color: '#ffffff',
-        textShadow: '0 1px 8px rgba(0,0,0,1), 0 0 16px rgba(0,0,0,0.9)',
+        color: 'var(--color-text)',
         textAlign: 'center',
         maxWidth: 130,
         lineHeight: 1.3,
@@ -138,15 +160,31 @@ function IconNode({ data }) {
       {(data.ip_address || data.cidr) && (
         <div style={{
           fontSize: 10,
-          color: '#00d4ff',
+          color: 'var(--color-primary)',
           marginTop: 3,
           fontFamily: 'monospace',
-          textShadow: '0 0 8px rgba(0,212,255,0.7)',
           letterSpacing: '0.02em',
         }}>
           {data.ip_address || data.cidr}
         </div>
       )}
+
+      {/* Storage capacity badge — hardware nodes with used_gb tracking */}
+      {data.storage_summary && data.storage_summary.used_gb != null && data.storage_summary.total_gb > 0 && (() => {
+        const pct = Math.min(100, Math.round(data.storage_summary.used_gb / data.storage_summary.total_gb * 100));
+        const barColor = pct >= 85 ? 'var(--color-danger)' : pct >= 60 ? '#f7c948' : 'var(--color-online)';
+        const totalLabel = data.storage_summary.total_gb >= 1024
+          ? `${(data.storage_summary.total_gb / 1024).toFixed(1)}TB`
+          : `${data.storage_summary.total_gb}GB`;
+        return (
+          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <div style={{ width: 56, height: 4, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 3 }} />
+            </div>
+            <div style={{ fontSize: 9, color: barColor, fontFamily: 'monospace' }}>{totalLabel}</div>
+          </div>
+        );
+      })()}
 
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 }} />
     </div>
@@ -182,6 +220,7 @@ const ENTITY_FIELDS = {
     { key: 'slug',        label: 'Slug' },
     { key: 'category',    label: 'Category' },
     { key: 'status',      label: 'Status' },
+    { key: 'ip_address',  label: 'IP Address' },
     { key: 'url',         label: 'URL' },
     { key: 'ports',       label: 'Ports' },
     { key: 'environment', label: 'Env' },
@@ -281,6 +320,10 @@ function MapInternal() {
   const { settings } = useSettings();
   const navigate = useNavigate();
 
+  const isLight = settings.theme === 'light' ||
+    (settings.theme === 'auto' && window.matchMedia('(prefers-color-scheme: light)').matches);
+  const bgGridColor = isLight ? '#c8d4e0' : '#1a2035';
+
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
@@ -300,6 +343,18 @@ function MapInternal() {
 
   // Tooltip state
   const [tooltip, setTooltip] = useState(null); // { x, y, node }
+
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, node } | null
+
+  // Esc key to dismiss context menu
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === 'Escape') setContextMenu(null);
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Entity details for the selected node
   const [nodeDetails, setNodeDetails] = useState(null);
@@ -378,16 +433,22 @@ function MapInternal() {
         type: 'iconNode',
         data: {
           label: n.label,
-          iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor),
+          iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role),
           glowColor: NODE_STYLES[n.type]?.glowColor,
           ip_address: n.ip_address || null,
           cidr: n.cidr || null,
+          storage_summary: n.storage_summary || null,
+          storage_allocated: n.storage_allocated || null,
+          capacity_gb: n.capacity_gb || null,
+          used_gb: n.used_gb || null,
         },
         position: { x: 0, y: 0 },
         style: { ...BASE_NODE_STYLE },
         originalType: n.type,
         _tags: n.tags || [],
         _refId: n.ref_id,
+        _computeId: n.compute_id || null,
+        _hwId: n.hardware_id || null,
       }));
 
       const rawE = res.data.edges.map(e => {
@@ -418,9 +479,14 @@ function MapInternal() {
       } catch { /* no saved layout */ }
 
       if (savedPositions) {
-        const mergedNodes = rawN.map(n => ({
-          ...n, position: savedPositions[n.id] || { x: 0, y: 0 },
-        }));
+        let newIdx = 0;
+        const mergedNodes = rawN.map(n => {
+          if (savedPositions[n.id]) return { ...n, position: savedPositions[n.id] };
+          const col = newIdx % 4;
+          const row = Math.floor(newIdx / 4);
+          newIdx++;
+          return { ...n, position: { x: 80 + col * 220, y: 80 + row * 180 } };
+        });
         setNodes(mergedNodes);
         setEdges(rawE);
         setLayoutEngine('manual');
@@ -482,6 +548,12 @@ function MapInternal() {
     setTooltip(null);
   }, []);
 
+  const handleNodeContextMenu = useCallback((event, node) => {
+    event.preventDefault();
+    setTooltip(null);
+    setContextMenu({ x: event.clientX, y: event.clientY, node });
+  }, []);
+
   const handleNodeClick = useCallback((event, node) => {
     setTooltip(null);
 
@@ -513,6 +585,7 @@ function MapInternal() {
   }, [edges, nodes, setEdges]);
 
   const handlePaneClick = useCallback(() => {
+    setContextMenu(null);
     if (selectedNode) {
       // Reset edge highlight
       setEdges(prev => prev.map(e => ({
@@ -610,7 +683,7 @@ function MapInternal() {
       )}
 
       {/* Graph canvas */}
-      <div style={{ flex: 1, position: 'relative', background: '#060a12' }}>
+      <div style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}>
         <ReactFlow
           nodeTypes={NODE_TYPES}
           nodes={nodes}
@@ -623,24 +696,25 @@ function MapInternal() {
           onNodeMouseEnter={handleNodeMouseEnter}
           onNodeMouseLeave={handleNodeMouseLeave}
           onNodeClick={handleNodeClick}
+          onNodeContextMenu={handleNodeContextMenu}
           onPaneClick={handlePaneClick}
           fitView
           minZoom={0.1}
         >
           {/* Legend */}
-          <Panel position="top-right" style={{ background: 'rgba(8,12,20,0.85)', padding: 10, borderRadius: 8, fontSize: 11, color: '#fff', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <Panel position="top-right" style={{ background: 'var(--color-surface)', padding: 10, borderRadius: 8, fontSize: 11, color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, color: 'var(--color-text-muted)' }}>Legend</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               {Object.entries(NODE_STYLES).map(([type, style]) => (
                 <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <div style={{ width: 12, height: 12, background: style.background, borderRadius: 2, border: `1px solid ${style.borderColor}` }} />
-                  <span style={{ textTransform: 'capitalize', color: includeTypes[type] ? '#fff' : 'var(--color-text-muted)' }}>{type}</span>
+                  <span style={{ textTransform: 'capitalize', color: includeTypes[type] ? 'var(--color-text)' : 'var(--color-text-muted)' }}>{type}</span>
                 </div>
               ))}
             </div>
           </Panel>
           <Controls />
-          <Background color="#1a2035" gap={24} size={1} />
+          <Background color={bgGridColor} gap={24} size={1} />
         </ReactFlow>
 
         {/* Hover tooltip */}
@@ -650,12 +724,12 @@ function MapInternal() {
               position: 'fixed',
               left: tooltip.x,
               top: tooltip.y,
-              background: 'rgba(8,12,20,0.95)',
-              border: '1px solid rgba(255,255,255,0.12)',
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
               borderRadius: 6,
               padding: '8px 12px',
               fontSize: 12,
-              color: '#cdd6f4',
+              color: 'var(--color-text)',
               pointerEvents: 'none',
               zIndex: 9999,
               maxWidth: 220,
@@ -663,17 +737,69 @@ function MapInternal() {
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>{tooltip.node.data.label}</div>
-            <div style={{ color: 'var(--color-text-muted)', marginBottom: tooltip.node._tags?.length ? 4 : 0 }}>
+            <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>
               Type: <span style={{ color: NODE_STYLES[tooltip.node.originalType]?.background }}>{NODE_TYPE_LABELS[tooltip.node.originalType] || tooltip.node.originalType}</span>
             </div>
+            {/* IP / CIDR */}
+            {(tooltip.node.data.ip_address || tooltip.node.data.cidr) && (
+              <div style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--color-primary)', marginBottom: 2 }}>
+                {tooltip.node.data.ip_address || tooltip.node.data.cidr}
+              </div>
+            )}
+            {/* Storage summary (hardware) */}
+            {tooltip.node.data.storage_summary && (() => {
+              const s = tooltip.node.data.storage_summary;
+              const tb = s.total_gb >= 1024 ? `${(s.total_gb / 1024).toFixed(1)}TB` : `${s.total_gb}GB`;
+              const types = s.types?.join(', ') || '';
+              const usedPct = s.used_gb != null && s.total_gb > 0
+                ? `${Math.round(s.used_gb / s.total_gb * 100)}% used`
+                : null;
+              const parts = [usedPct, types].filter(Boolean).join(', ');
+              return (
+                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                  💾 {tb} total{parts ? ` (${parts})` : ''}
+                  {s.primary_pool && <span> · {s.primary_pool}</span>}
+                </div>
+              );
+            })()}
+            {/* Storage allocated (compute) */}
+            {tooltip.node.data.storage_allocated?.disk_gb && (
+              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                💾 {tooltip.node.data.storage_allocated.disk_gb} GB disk
+                {tooltip.node.data.storage_allocated.storage_pools?.length > 0 &&
+                  <span> · {tooltip.node.data.storage_allocated.storage_pools.join(', ')}</span>}
+              </div>
+            )}
+            {/* Capacity (storage nodes) */}
+            {tooltip.node.data.capacity_gb && (
+              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                💾 {tooltip.node.data.capacity_gb >= 1024
+                  ? `${(tooltip.node.data.capacity_gb / 1024).toFixed(1)} TB`
+                  : `${tooltip.node.data.capacity_gb} GB`} capacity
+                {tooltip.node.data.used_gb != null && tooltip.node.data.capacity_gb > 0 &&
+                  <span> ({Math.round(tooltip.node.data.used_gb / tooltip.node.data.capacity_gb * 100)}% used)</span>}
+              </div>
+            )}
             {tooltip.node._tags?.length > 0 && (
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
                 {tooltip.node._tags.map(t => (
-                  <span key={t} style={{ background: 'rgba(0,212,255,0.12)', color: '#00d4ff', borderRadius: 3, padding: '1px 5px', fontSize: 10 }}>{t}</span>
+                  <span key={t} style={{ background: 'var(--color-glow)', color: 'var(--color-primary)', borderRadius: 3, padding: '1px 5px', fontSize: 10 }}>{t}</span>
                 ))}
               </div>
             )}
           </div>
+        )}
+
+        {/* Context menu */}
+        {contextMenu && (
+          <MapContextMenu
+            node={contextMenu.node}
+            position={{ x: contextMenu.x, y: contextMenu.y }}
+            onClose={() => setContextMenu(null)}
+            onLinkSuccess={() => { setContextMenu(null); fetchData(); }}
+            edges={edges}
+            nodes={nodes}
+          />
         )}
 
         {/* Side panel */}
@@ -745,13 +871,78 @@ function MapInternal() {
               })()}
             </div>
 
+            {/* Storage – hardware nodes */}
+            {selectedNode.originalType === 'hardware' && selectedNode.data.storage_summary && (() => {
+              const s = selectedNode.data.storage_summary;
+              const totalLabel = s.total_gb >= 1024 ? `${(s.total_gb / 1024).toFixed(1)} TB` : `${s.total_gb} GB`;
+              return (
+                <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>Storage</div>
+                  <div style={{ fontSize: 11 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ color: 'var(--color-text)' }}>{totalLabel} total</span>
+                      <span style={{ color: 'var(--color-text-muted)' }}>{s.count} item{s.count !== 1 ? 's' : ''}</span>
+                    </div>
+                    {s.types?.length > 0 && (
+                      <div style={{ color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                        Types: <span style={{ color: 'var(--color-text)' }}>{s.types.join(', ').toUpperCase()}</span>
+                      </div>
+                    )}
+                    {s.primary_pool && (
+                      <div style={{ color: 'var(--color-text-muted)' }}>
+                        Primary: <span style={{ color: 'var(--color-text)', fontFamily: 'monospace' }}>{s.primary_pool}</span>
+                      </div>
+                    )}
+                    {/* Mini usage bar — shown when used_gb is tracked */}
+                    {s.used_gb != null && s.total_gb > 0 && (() => {
+                      const pct = Math.min(100, Math.round(s.used_gb / s.total_gb * 100));
+                      const barColor = pct >= 85 ? 'var(--color-danger)' : pct >= 60 ? '#f7c948' : 'var(--color-online)';
+                      return (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                            <span>Used</span>
+                            <span style={{ color: barColor }}>{pct}%</span>
+                          </div>
+                          <div style={{ height: 5, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+                            <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 3 }} />
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Storage – compute nodes */}
+            {selectedNode.originalType === 'compute' && selectedNode.data.storage_allocated &&
+              (selectedNode.data.storage_allocated.disk_gb || selectedNode.data.storage_allocated.storage_pools?.length > 0) && (
+              <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)' }}>
+                <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>Storage</div>
+                <div style={{ fontSize: 11 }}>
+                  {selectedNode.data.storage_allocated.disk_gb && (
+                    <div style={{ color: 'var(--color-text)', marginBottom: 4 }}>
+                      💾 {selectedNode.data.storage_allocated.disk_gb} GB disk allocated
+                    </div>
+                  )}
+                  {selectedNode.data.storage_allocated.storage_pools?.length > 0 && (
+                    <div style={{ color: 'var(--color-text-muted)' }}>
+                      Pools: <span style={{ color: 'var(--color-text)', fontFamily: 'monospace' }}>
+                        {selectedNode.data.storage_allocated.storage_pools.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Tags */}
             {selectedNode._tags?.length > 0 && (
               <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)' }}>
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>Tags</div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {selectedNode._tags.map(t => (
-                    <span key={t} style={{ background: 'rgba(0,212,255,0.12)', color: '#00d4ff', borderRadius: 3, padding: '2px 7px', fontSize: 11 }}>{t}</span>
+                    <span key={t} style={{ background: 'var(--color-glow)', color: 'var(--color-primary)', borderRadius: 3, padding: '2px 7px', fontSize: 11 }}>{t}</span>
                   ))}
                 </div>
               </div>
@@ -764,7 +955,7 @@ function MapInternal() {
                 {selectedNode.related.map((r) => (
                   <div
                     key={r.node.id}
-                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--color-border)' }}
                   >
                     <div style={{ fontSize: 12 }}>
                       <span style={{ color: 'var(--color-text-muted)', fontSize: 10, marginRight: 4 }}>{r.relation}</span>

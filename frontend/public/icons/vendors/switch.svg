@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Body — wider and flatter than router, no antennas -->
+  <rect x="1" y="8" width="22" height="8" rx="2"/>
+  <!-- Port slots — 8 ports across the face -->
+  <rect x="3"    y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <rect x="6"    y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <rect x="9"    y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <rect x="12"   y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <rect x="15"   y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <rect x="18"   y="11" width="2" height="2.5" rx="0.4" fill="white" stroke="none"/>
+  <!-- Uplink arrows (left/right symmetry) -->
+  <polyline points="2,6 4,4 6,6" stroke-width="1.2"/>
+  <polyline points="18,6 20,4 22,6" stroke-width="1.2"/>
+</svg>

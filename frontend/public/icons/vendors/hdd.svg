@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- HDD chassis — flat rectangle with rounded ends -->
+  <rect x="2" y="7" width="20" height="10" rx="3"/>
+  <!-- Circular platter window -->
+  <circle cx="9" cy="12" r="2.8"/>
+  <circle cx="9" cy="12" r="0.9" fill="white" stroke="none"/>
+  <!-- Read arm -->
+  <line x1="11.3" y1="10.2" x2="13.5" y2="9"/>
+  <!-- Connector notches (right side) -->
+  <line x1="17" y1="10" x2="20" y2="10"/>
+  <line x1="17" y1="12" x2="20" y2="12"/>
+  <line x1="17" y1="14" x2="20" y2="14"/>
+</svg>

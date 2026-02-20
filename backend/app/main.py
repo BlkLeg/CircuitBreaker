@@ -107,10 +107,18 @@ def _run_migrations(conn) -> None:
         conn.execute("DROP TABLE services")
         conn.execute("ALTER TABLE services_new RENAME TO services")
         conn.execute("PRAGMA foreign_keys=ON")
+    # services.ip_address
+    svc_cols = _get_columns(conn, "services")
+    if "ip_address" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN ip_address TEXT")
     # logs.status_code
     log_cols = _get_columns(conn, "logs")
     if "status_code" not in log_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN status_code INTEGER")
+    # storage.used_gb
+    st_cols = _get_columns(conn, "storage")
+    if "used_gb" not in st_cols:
+        conn.execute("ALTER TABLE storage ADD COLUMN used_gb INTEGER")
 
 
 @asynccontextmanager

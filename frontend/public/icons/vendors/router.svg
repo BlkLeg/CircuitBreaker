@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Antenna left -->
+  <line x1="7" y1="10" x2="5" y2="4"/>
+  <circle cx="5" cy="3.5" r="0.8" fill="white" stroke="none"/>
+  <!-- Antenna right -->
+  <line x1="17" y1="10" x2="19" y2="4"/>
+  <circle cx="19" cy="3.5" r="0.8" fill="white" stroke="none"/>
+  <!-- Body -->
+  <rect x="2" y="10" width="20" height="9" rx="2"/>
+  <!-- Status LEDs -->
+  <circle cx="5.5" cy="14.5" r="0.9" fill="white" stroke="none"/>
+  <circle cx="8.5" cy="14.5" r="0.9" fill="white" stroke="none"/>
+  <!-- Ethernet ports -->
+  <rect x="12" y="12.5" width="2.5" height="4" rx="0.5" fill="white" stroke="none"/>
+  <rect x="15.5" y="12.5" width="2.5" height="4" rx="0.5" fill="white" stroke="none"/>
+  <rect x="19" y="12.5" width="1.5" height="4" rx="0.5" fill="white" stroke="none"/>
+</svg>

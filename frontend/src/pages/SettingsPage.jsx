@@ -37,8 +37,8 @@ const S = {
     marginBottom: 32,
     padding: '20px 24px',
     borderRadius: 8,
-    background: 'rgba(255,255,255,0.03)',
-    border: '1px solid rgba(255,255,255,0.07)',
+    background: 'var(--color-surface)',
+    border: '1px solid var(--color-border)',
   },
   sectionTitle: {
     fontSize: 13,
@@ -48,7 +48,7 @@ const S = {
     color: 'var(--color-text-muted, #9ca3af)',
     marginBottom: 16,
     paddingBottom: 8,
-    borderBottom: '1px solid rgba(255,255,255,0.06)',
+    borderBottom: '1px solid var(--color-border)',
   },
   row: { marginBottom: 16 },
   label: {
@@ -75,20 +75,20 @@ const S = {
     fontWeight: 500,
     cursor: 'pointer',
     border: '1px solid',
-    borderColor: active ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.12)',
-    background: active ? 'rgba(99,102,241,0.15)' : 'transparent',
-    color: active ? '#a5b4fc' : 'rgba(255,255,255,0.5)',
+    borderColor: active ? 'var(--color-primary)' : 'var(--color-border)',
+    background: active ? 'var(--color-glow)' : 'transparent',
+    color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
     transition: 'all 0.15s',
   }),
   actions: { display: 'flex', gap: 12, marginTop: 8 },
   readonlyField: {
     padding: '8px 12px',
-    background: 'rgba(0,0,0,0.2)',
+    background: 'var(--color-bg)',
     borderRadius: 4,
     fontSize: 12,
-    color: 'rgba(156,163,175,0.7)',
+    color: 'var(--color-text-muted)',
     fontFamily: 'monospace',
-    border: '1px solid rgba(255,255,255,0.06)',
+    border: '1px solid var(--color-border)',
   },
 };
 
@@ -456,7 +456,7 @@ function SettingsPage() {
             </div>
           )}
 
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>
             <button
               className="btn btn-danger btn-sm"
               type="button"

@@ -23,6 +23,9 @@ const DEFAULT_ITEMS = [
   { id: 'logs-filter-svc',   icon: '🔧', title: 'Logs: Filter by service', action_url: '/logs' },
   { id: 'logs-export',       icon: '⬇️', title: 'Logs: Export logs',       action_url: '/logs' },
   { id: 'logs-clear',        icon: '🗑️', title: 'Logs: Clear logs',        action_url: '/logs' },
+  { id: 'map-link-node',     icon: '🔗', title: 'Map: Link selected node',              action_url: '/map'      },
+  { id: 'map-storage',       icon: '💾', title: 'Map: Show storage details',            action_url: '/map'      },
+  { id: 'hw-filter-storage', icon: '🗄️', title: 'Hardware: Filter by storage capacity', action_url: '/hardware' },
 ];
 
 const TYPE_LABELS = {
@@ -99,7 +102,11 @@ function CommandPalette({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const showDefaults = !query.trim();
-  const items = showDefaults ? DEFAULT_ITEMS : results;
+  const defaultMatches = query.trim()
+    ? DEFAULT_ITEMS.filter(item =>
+        item.title.toLowerCase().includes(query.trim().toLowerCase()))
+    : [];
+  const items = showDefaults ? DEFAULT_ITEMS : [...defaultMatches, ...results];
 
   return (
     <div className="palette-overlay">

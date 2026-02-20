@@ -5,6 +5,7 @@ import TagFilter from '../components/TagFilter';
 import { storageApi, hardwareApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import StorageDetail from '../components/details/StorageDetail';
 import { useToast } from '../components/common/Toast';
 
 const COLUMNS = [
@@ -12,6 +13,7 @@ const COLUMNS = [
   { key: 'name', label: 'Name' },
   { key: 'kind', label: 'Kind' },
   { key: 'capacity_gb', label: 'Capacity (GB)' },
+  { key: 'used_gb', label: 'Used (GB)', render: (v) => v != null ? v : '—' },
   { key: 'path', label: 'Path' },
   { key: 'protocol', label: 'Protocol' },
   { key: 'hardware_name', label: 'Hardware' },
@@ -25,6 +27,7 @@ function StoragePage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
+  const [detailTarget, setDetailTarget] = useState(null);
   const [q, setQ] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [kindFilter, setKindFilter] = useState('');
@@ -64,6 +67,7 @@ function StoragePage() {
       ],
     },
     { name: 'capacity_gb', label: 'Capacity (GB)', type: 'number' },
+    { name: 'used_gb', label: 'Used (GB)', type: 'number' },
     { name: 'path', label: 'Path' },
     { name: 'protocol', label: 'Protocol (zfs, nfs, smb…)' },
     {
@@ -142,6 +146,7 @@ function StoragePage() {
           data={items}
           onEdit={(row) => { setEditTarget(row); setShowForm(true); }}
           onDelete={handleDelete}
+          onRowClick={(row) => setDetailTarget(row)}
         />
       )}
 
@@ -159,6 +164,11 @@ function StoragePage() {
         message={confirmState.message}
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
+      <StorageDetail
+        storage={detailTarget}
+        isOpen={!!detailTarget}
+        onClose={() => setDetailTarget(null)}
       />
     </div>
   );

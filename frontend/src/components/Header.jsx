@@ -18,26 +18,25 @@ function Header({ onOpenPalette }) {
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          background: 'rgba(13, 17, 23, 0.75)',
-          border: '1px solid rgba(30, 42, 58, 0.7)',
+          background: 'var(--color-surface)',
+          border: '1px solid var(--color-border)',
           borderRadius: '8px',
           padding: '7px 14px',
           color: 'var(--color-text-muted)',
           fontSize: '13px',
           cursor: 'pointer',
-          backdropFilter: 'blur(10px)',
           transition: 'all 0.2s ease',
           width: '260px',
           maxWidth: 'calc(100vw - 32px)',
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'rgba(13, 17, 23, 0.8)';
-          e.currentTarget.style.borderColor = 'var(--color-primary-hover)';
+          e.currentTarget.style.background = 'var(--color-surface)';
+          e.currentTarget.style.borderColor = 'var(--color-primary)';
           e.currentTarget.style.color = 'var(--color-text)';
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'rgba(13, 17, 23, 0.6)';
-          e.currentTarget.style.borderColor = 'rgba(30, 42, 58, 0.6)';
+          e.currentTarget.style.background = 'var(--color-surface)';
+          e.currentTarget.style.borderColor = 'var(--color-border)';
           e.currentTarget.style.color = 'var(--color-text-muted)';
         }}
       >
@@ -46,7 +45,7 @@ function Header({ onOpenPalette }) {
         <span style={{ 
           marginLeft: 'auto', 
           fontSize: '11px', 
-          background: 'rgba(255,255,255,0.05)', 
+          background: 'var(--color-border)',
           padding: '2px 6px', 
           borderRadius: '4px' 
         }}>Ctrl K</span>

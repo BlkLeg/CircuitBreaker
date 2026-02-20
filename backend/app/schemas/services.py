@@ -15,6 +15,7 @@ class ServiceBase(BaseModel):
     description: Optional[str] = None
     environment: Optional[str] = None
     status: Optional[str] = None  # running | stopped | degraded | maintenance
+    ip_address: Optional[str] = None
     tags: list[str] = []
 
 
@@ -34,6 +35,7 @@ class ServiceUpdate(BaseModel):
     description: Optional[str] = None
     environment: Optional[str] = None
     status: Optional[str] = None  # running | stopped | degraded | maintenance
+    ip_address: Optional[str] = None
     tags: Optional[list[str]] = None
 
 

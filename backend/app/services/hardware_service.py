@@ -41,6 +41,19 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
 def _to_dict(db: Session, hw: Hardware) -> dict:
     d = {c.name: getattr(hw, c.name) for c in hw.__table__.columns}
     d["tags"] = get_tags_for(db, "hardware", hw.id)
+    if hw.storage_items:
+        total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
+        used_gb_vals = [s.used_gb for s in hw.storage_items if s.used_gb is not None]
+        kinds = list(dict.fromkeys(s.kind for s in hw.storage_items if s.kind))
+        d["storage_summary"] = {
+            "total_gb": total_gb,
+            "used_gb": sum(used_gb_vals) if used_gb_vals else None,
+            "types": kinds,
+            "primary_pool": hw.storage_items[0].name,
+            "count": len(hw.storage_items),
+        }
+    else:
+        d["storage_summary"] = None
     return d
 
 
