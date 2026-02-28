@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
-from app.core.errors import NotFoundError, ConflictError
 from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
 
@@ -82,7 +81,7 @@ def list_hardware(
 def get_hardware(db: Session, hardware_id: int) -> dict:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
-        raise NotFoundError(f"Hardware {hardware_id} not found")
+        raise ValueError(f"Hardware {hardware_id} not found")
     return _to_dict(db, hw)
 
 
@@ -112,7 +111,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
 def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> dict:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
-        raise NotFoundError(f"Hardware {hardware_id} not found")
+        raise ValueError(f"Hardware {hardware_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(hw, field, value)
     hw.updated_at = datetime.now(timezone.utc)
@@ -126,7 +125,7 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
 def delete_hardware(db: Session, hardware_id: int) -> None:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
-        raise NotFoundError(f"Hardware {hardware_id} not found")
+        raise ValueError(f"Hardware {hardware_id} not found")
     # Block if dependent entities still exist
     blocking: list[str] = []
     cu_count = len(db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id)).scalars().all())
@@ -139,7 +138,7 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
     if svc_count:
         blocking.append(f"{svc_count} service(s)")
     if blocking:
-        raise ConflictError(
+        raise ValueError(
             f"Cannot delete: this hardware has {', '.join(blocking)} assigned to it. Remove them first."
         )
     # Cascade-remove network memberships (join table, safe to auto-remove)

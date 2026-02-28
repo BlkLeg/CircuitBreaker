@@ -40,7 +40,7 @@ export default function ThemePalette() {
   return (
     <div ref={containerRef} style={S.wrapper}>
       {open && (
-        <div style={S.popover}>
+        <div style={S.popover} role="menu" aria-label="Theme options">
           <div style={S.popoverTitle}>Theme</div>
           <div style={S.grid}>
             {Object.entries(THEME_PRESETS).map(([key, colors]) => {
@@ -50,6 +50,10 @@ export default function ThemePalette() {
                 <button
                   key={key}
                   title={PRESET_LABELS[key] ?? key}
+                  aria-label={PRESET_LABELS[key] ?? key}
+                  aria-pressed={isActive}
+                  role="menuitemradio"
+                  aria-checked={isActive}
                   style={S.card(isActive, c.primary)}
                   onClick={() => handleSelect(key)}
                 >
@@ -70,6 +74,9 @@ export default function ThemePalette() {
       <button
         style={S.trigger(activeColors?.primary)}
         title="Quick theme switcher"
+        aria-label="Quick theme switcher"
+        aria-expanded={open}
+        aria-haspopup="true"
         onClick={() => setOpen((o) => !o)}
       >
         <Palette size={15} color="#fff" />

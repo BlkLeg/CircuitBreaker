@@ -30,8 +30,13 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Environment variables
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
-# Ensure the data directory exists
-RUN mkdir -p /data
+# Ensure the data directory exists and create dedicated non-root user
+RUN mkdir -p /data \
+    && groupadd --system breaker26 \
+    && useradd --system --gid breaker26 --no-create-home --shell /sbin/nologin breaker26 \
+    && chown -R breaker26:breaker26 /app /data
+
+USER breaker26
 
 # Expose port (default 8080)
 EXPOSE 8080

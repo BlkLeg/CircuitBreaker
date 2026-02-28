@@ -3,9 +3,11 @@ import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
 import logger from '../../utils/logger';
 import { networksApi, computeUnitsApi, hardwareApi } from '../../api/client';
+import { useToast } from '../common/Toast';
 import { Monitor, Plus, Trash2, Server, Wifi } from 'lucide-react';
 
 function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardware: hwProp = null, computeUnits: cuProp = null }) {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [members, setMembers] = useState([]);
   const [computeUnits, setComputeUnits] = useState(cuProp || []);
@@ -54,7 +56,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       setNewIp('');
       fetchData();
     } catch (err) {
-      logger.error(err);
+      toast.error(err.message || 'Failed to add compute member');
     }
   };
 
@@ -63,7 +65,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       await networksApi.removeMember(network.id, computeId);
       fetchData();
     } catch (err) {
-      logger.error(err);
+      toast.error(err.message || 'Failed to remove compute member');
     }
   };
 
@@ -78,7 +80,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       setNewHwIp('');
       fetchData();
     } catch (err) {
-      logger.error(err);
+      toast.error(err.message || 'Failed to add hardware member');
     }
   };
 
@@ -87,7 +89,7 @@ function NetworkDetail({ network, isOpen, onClose, hardwareFilter = null, hardwa
       await networksApi.removeHardwareMember(network.id, hardwareId);
       fetchData();
     } catch (err) {
-      logger.error(err);
+      toast.error(err.message || 'Failed to remove hardware member');
     }
   };
 

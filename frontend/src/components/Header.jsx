@@ -13,23 +13,28 @@ function Header({ onOpenPalette }) {
 
   return (
     <>
-      <header className="global-header" style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        zIndex: 200,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '8px 16px',
-        background: 'var(--color-surface)',
-        borderBottom: '1px solid var(--color-border)',
-        height: 'var(--header-height)',
-      }}>
+      <header
+        className="global-header"
+        role="banner"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 200,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 16px',
+          background: 'var(--color-surface)',
+          borderBottom: '1px solid var(--color-border)',
+          height: 'var(--header-height)',
+        }}
+      >
       <Link
         to="/map"
         title="Home"
+        aria-label="Circuit Breaker Home"
         style={{
           pointerEvents: 'auto',
           opacity: 1,
@@ -54,6 +59,8 @@ function Header({ onOpenPalette }) {
       <button
         className="search-trigger"
         onClick={onOpenPalette}
+        aria-label="Open command palette"
+        aria-keyshortcuts="Control+K"
         style={{
           pointerEvents: 'auto',
           display: 'flex',

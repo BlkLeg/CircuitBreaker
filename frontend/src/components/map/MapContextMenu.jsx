@@ -17,7 +17,7 @@ const LINK_ITEMS = {
   service:  ['hardware', 'compute', 'storage', 'misc', 'network'],
   compute:  ['hardware', 'service', 'network'],
   hardware: ['compute', 'storage'],
-  network:  ['compute', 'service'],
+  network:  ['hardware', 'compute', 'service'],
   storage:  ['hardware', 'service'],
   misc:     ['service'],
 };
@@ -94,6 +94,7 @@ async function performLink(srcNode, targetType, targetEntity) {
     if (targetType === 'storage')  return storageApi.update(tgtId, { hardware_id: srcId });
   }
   if (srcType === 'network') {
+    if (targetType === 'hardware') return networksApi.addHardwareMember(srcId, { hardware_id: tgtId });
     if (targetType === 'compute')  return networksApi.addMember(srcId, { compute_id: tgtId });
     if (targetType === 'service') {
       // Resolve the service's hosting compute or hardware, then join that to the network
@@ -179,7 +180,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
   const x = Math.min(position.x, window.innerWidth  - menuW - 8);
   const y = Math.min(position.y, window.innerHeight - menuH - 8);
 
-  // Close on outside click — suspended while icon picker is open (it renders outside menuRef)
+  // Close on outside click — suspended while icon picker is open (renders outside menuRef)
   useEffect(() => {
     if (showIconPicker) return;
     function handleMouseDown(e) {
@@ -469,6 +470,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
           onClose={() => { setShowIconPicker(false); onClose(); }}
         />
       )}
+
     </>
   );
 }

@@ -1,10 +1,6 @@
 ## Items to Complete
 
-* Add helpful hints on each page:
-* Hardware - advise users to add hardware first.
-* Network - Recommend this 2nd.
-* Compute - Already has notes
-* Services - advise users to add last and delete first.
+* Add helpful hints on each page: **COMPLETED**
 * Gather screenshots of multiple pages.
 * Expand icon list, especially for various hardware.
 * Ensure fresh downloads get a clean slate.
@@ -26,10 +22,10 @@
 
 ## Missing features (minor)
 
-* Setting to customize dock options with all pages available in command palette (dropdown menu w/ multiple selection options).
-* Add a palette for the theme selector in the bottom left corner of the screen for quick changes outside the settings page.
+* Setting to customize dock options with all pages available in command palette (dropdown menu w/ multiple selection options). - **Partially implemented. Missing several pages**
+* Add a palette for the theme selector in the bottom left corner of the screen for quick changes outside the settings page. **COMPLETE**
 
 ## BUGS
 
-* Uploaded favicon does not render or change on the frontend.
-* Round out the edges of the invisible dock boundary instead of straight lines.
+* User-uploaded favicon does not render or change on the frontend. (Customization) **LOW**
+* Round out the edges of the invisible dock boundary instead of straight lines. **COMPLETE**

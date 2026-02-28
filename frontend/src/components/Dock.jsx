@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { BookOpen, Cpu, GripHorizontal, Layers, Network, ScrollText, Server, Settings, Map } from 'lucide-react';
+import { BookOpen, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
@@ -9,6 +9,7 @@ export const NAV_MAP = {
   '/compute-units': { icon: Server,     label: 'Compute'  },
   '/services':      { icon: Layers,     label: 'Services' },
   '/networks':      { icon: Network,    label: 'Network'  },
+  '/storage':       { icon: HardDrive,  label: 'Storage'  },
   '/map':           { icon: Map,        label: 'Map'      },
   '/docs':          { icon: BookOpen,   label: 'Docs'     },
   '/logs':          { icon: ScrollText, label: 'Logs'     },
@@ -21,6 +22,7 @@ export const DEFAULT_ORDER = [
   '/compute-units',
   '/services',
   '/networks',
+  '/storage',
   '/docs',
   '/logs',
   '/settings',
@@ -113,7 +115,7 @@ function Dock() {
   }, [order, reloadSettings]);
 
   return (
-    <nav ref={navRef} className="dock" onDoubleClick={() => setEditMode((m) => !m)}>
+    <nav aria-label="Main Navigation" ref={navRef} className="dock" onDoubleClick={() => setEditMode((m) => !m)}>
       {navItems.map(({ path, icon: Icon, label }, idx) => (
         <NavLink
           key={path}
@@ -130,6 +132,7 @@ function Dock() {
           onDragEnd={handleDragEnd}
           onDragOver={(e) => e.preventDefault()}
           title={editMode ? `Drag to reorder — ${label}` : label}
+          aria-label={label}
         >
           <Icon size={22} strokeWidth={1.5} />
           <span>{label}</span>
@@ -142,6 +145,7 @@ function Dock() {
         className={`dock-item dock-item--grip${editMode ? ' active' : ''}`}
         onClick={(e) => { e.stopPropagation(); setEditMode((m) => !m); }}
         title={editMode ? 'Done reordering (Esc)' : 'Reorder dock (or double-click)'}
+        aria-label={editMode ? 'Done reordering dock' : 'Reorder dock'}
       >
         <GripHorizontal size={22} strokeWidth={1.5} />
         <span>{editMode ? 'Done' : 'Order'}</span>

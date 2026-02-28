@@ -36,6 +36,18 @@ export function AuthProvider({ children }) {
       .catch(() => {});
   }, []);
 
+  // Handle session expiry signalled by the axios interceptor (401 on any request)
+  useEffect(() => {
+    const handler = () => {
+      // Interceptor already cleared localStorage; reset React state and prompt re-login
+      setToken(null);
+      setUser(null);
+      setAuthModalOpen(true);
+    };
+    window.addEventListener('cb:session-expired', handler);
+    return () => window.removeEventListener('cb:session-expired', handler);
+  }, []);
+
   // Validate token on mount and whenever it changes
   useEffect(() => {
     if (!token) return;

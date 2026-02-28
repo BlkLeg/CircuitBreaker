@@ -134,6 +134,7 @@ function CommandPalette({ isOpen, onClose }) {
             className="palette-input"
             type="text"
             placeholder="Type a command or search..."
+            aria-label="Search commands"
             value={query}
             onChange={handleInput}
             autoComplete="off"

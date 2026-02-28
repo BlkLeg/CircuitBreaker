@@ -30,6 +30,12 @@ client.interceptors.response.use(
 
     const { status, data } = error.response;
 
+    // Stale or invalid token — clear it and signal the auth context to reset
+    if (status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      window.dispatchEvent(new CustomEvent('cb:session-expired'));
+    }
+
     // Build a user-facing message
     let message;
     // Server errors — don't expose raw detail
