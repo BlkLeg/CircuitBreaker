@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Search, Upload, Check } from 'lucide-react';
+import { useToast } from './Toast';
 
 // All icons available in the library
 export const LIBRARY_ICONS = [
@@ -159,6 +160,7 @@ export function IconImg({ slug, size = 20, style = {} }) {
 }
 
 function IconPickerModal({ currentSlug, onSelect, onClose }) {
+  const toast = useToast();
   const [search, setSearch] = useState('');
   const [activeGroup, setActiveGroup] = useState('All');
   const [uploading, setUploading] = useState(false);
@@ -188,7 +190,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 1024 * 1024) { alert('Icon must be under 1 MB'); return; }
+    if (file.size > 1024 * 1024) { toast.error('Icon must be under 1 MB'); return; }
 
     setUploading(true);
     try {
@@ -201,7 +203,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
       setUploadedIcons((prev) => [...prev, newEntry]);
       setPreview(slug);
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     } finally {
       setUploading(false);
       e.target.value = '';

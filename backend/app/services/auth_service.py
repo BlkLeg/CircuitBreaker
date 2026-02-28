@@ -37,6 +37,26 @@ def _make_token(user: User, cfg: AppSettings) -> str:
     return create_token(user.id, cfg.jwt_secret, cfg.session_timeout_hours)
 
 
+def _validate_password(password: str) -> None:
+    """Enforce complexity rules matching the frontend RULES array."""
+    errors = []
+    if len(password) < 8:
+        errors.append("at least 8 characters")
+    if not re.search(r"[A-Z]", password):
+        errors.append("one uppercase letter")
+    if not re.search(r"[a-z]", password):
+        errors.append("one lowercase letter")
+    if not re.search(r"\d", password):
+        errors.append("one digit")
+    if not re.search(r"[^A-Za-z0-9]", password):
+        errors.append("one special character")
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must contain: {', '.join(errors)}",
+        )
+
+
 def register(
     db: Session,
     email: str,
@@ -46,8 +66,10 @@ def register(
 ) -> AuthResponse:
     if not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Invalid email address")
-    if len(password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    _validate_password(password)
+
+    # First user becomes admin
+    is_admin = db.query(User).count() == 0
 
     now = datetime.now(timezone.utc).isoformat()
     user = User(
@@ -55,6 +77,7 @@ def register(
         password_hash=hash_password(password),
         gravatar_hash=gravatar_hash(email),
         display_name=display_name.strip() if display_name and display_name.strip() else email.split("@")[0],
+        is_admin=is_admin,
         created_at=now,
     )
     db.add(user)

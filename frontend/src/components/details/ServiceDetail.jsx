@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
 import ConfirmDialog from '../common/ConfirmDialog';
+import { useToast } from '../common/Toast';
 import logger from '../../utils/logger';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Layers, Database, Box, Plus, Trash2, ArrowRight } from 'lucide-react';
 
 function ServiceDetail({ service, isOpen, onClose }) {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [dependencies, setDependencies] = useState([]);
   const [storageLinks, setStorageLinks] = useState([]);
@@ -54,7 +56,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
       setNewDepId('');
       fetchData();
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     }
   };
 
@@ -70,7 +72,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
           await servicesApi.removeDependency(service.id, depId);
           fetchData();
         } catch (err) {
-          alert(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -83,7 +85,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
       setNewStoragePurpose('');
       fetchData();
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     }
   };
 
@@ -97,7 +99,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
           await servicesApi.removeStorage(service.id, linkId);
           fetchData();
         } catch (err) {
-          alert(err.message);
+          toast.error(err.message);
         }
       },
     });
@@ -110,7 +112,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
       setNewMiscPurpose('');
       fetchData();
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     }
   };
 
@@ -124,7 +126,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
           await servicesApi.removeMisc(service.id, linkId);
           fetchData();
         } catch (err) {
-          alert(err.message);
+          toast.error(err.message);
         }
       },
     });

@@ -20,6 +20,11 @@ import { useSettings } from '../context/SettingsContext';
 import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
 import MapContextMenu from '../components/map/MapContextMenu';
+import SmartEdge from '../components/map/SmartEdge';
+
+// Stable context for passing edge interaction callbacks to SmartEdge without
+// re-rendering every edge when the callback ref changes.
+export const MapEdgeCallbacksContext = React.createContext({ current: null });
 
 const elk = new ELK();
 
@@ -112,11 +117,19 @@ function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
 
 // ── Custom Node ──────────────────────────────────────────────────────────────
 
+// All 8 handles are invisible — they exist purely as connection points so
+// ReactFlow can route edges to any side.  Opacity/size kept at zero.
+const INVISIBLE_HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 };
+
 function IconNode({ data }) {
   const glow = data.glowColor || '#4a7fa5';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, userSelect: 'none', cursor: 'pointer' }}>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 }} />
+      {/* 4 target handles — one per side */}
+      <Handle type="target" id="t-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
+      <Handle type="target" id="t-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
+      <Handle type="target" id="t-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
+      <Handle type="target" id="t-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
 
       {/* Glow ring + icon */}
       <div style={{
@@ -194,12 +207,17 @@ function IconNode({ data }) {
         );
       })()}
 
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 }} />
+      {/* 4 source handles — one per side */}
+      <Handle type="source" id="s-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
+      <Handle type="source" id="s-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
+      <Handle type="source" id="s-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
+      <Handle type="source" id="s-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
     </div>
   );
 }
 
 const NODE_TYPES = { iconNode: IconNode };
+const EDGE_TYPES = { smart: SmartEdge };
 
 // ── Entity field definitions for the sidebar ────────────────────────────────
 const ENTITY_FIELDS = {
@@ -434,10 +452,76 @@ const getGridLayout = (nodes, edges) => {
   return { nodes: newNodes, edges };
 };
 
+// ── Edge Routing Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Determine the optimal side for an edge to exit/enter based on the relative
+ * positions of the source and target nodes.
+ *
+ * If the horizontal distance dominates → exit the side that faces the target
+ * (right when target is to the right, left when target is to the left).
+ * Otherwise use top/bottom for primarily vertical connections.
+ */
+function computeSide(sourcePos, targetPos) {
+  const dx = targetPos.x - sourcePos.x;
+  const dy = targetPos.y - sourcePos.y;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return { sourceSide: dx > 0 ? 'right' : 'left', targetSide: dx > 0 ? 'left' : 'right' };
+  }
+  return { sourceSide: dy > 0 ? 'bottom' : 'top', targetSide: dy > 0 ? 'top' : 'bottom' };
+}
+
+/**
+ * Apply sourceHandle / targetHandle to edges based on relative node positions.
+ *
+ * @param {Node[]} nodesArr - current nodes with positions
+ * @param {Edge[]} edgesArr - current edges
+ * @param {Object} overrides - edgeId → { source_side, target_side, control_point }
+ * @param {string|null} onlyNodeId - if set, only recompute edges connected to this node
+ */
+function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = null) {
+  const posMap = Object.fromEntries(nodesArr.map(n => [n.id, n.position]));
+  return edgesArr.map(e => {
+    const isConnected = e.source === onlyNodeId || e.target === onlyNodeId;
+    if (onlyNodeId && !isConnected) return e;
+
+    const override = overrides[e.id];
+    const src = posMap[e.source] ?? { x: 0, y: 0 };
+    const tgt = posMap[e.target] ?? { x: 0, y: 0 };
+    const { sourceSide, targetSide } = override
+      ? { sourceSide: override.source_side, targetSide: override.target_side }
+      : computeSide(src, tgt);
+
+    return {
+      ...e,
+      sourceHandle: `s-${sourceSide}`,
+      targetHandle: `t-${targetSide}`,
+      data: {
+        ...e.data,
+        controlPoint: override?.control_point ?? e.data?.controlPoint ?? null,
+      },
+    };
+  });
+}
+
+/**
+ * Parse the stored layout JSON — handles both the new format
+ *   { nodes: {...}, edges: {...} }
+ * and the legacy format
+ *   { "hw-1": {x,y}, ... }  (flat node position map).
+ */
+function parseLayoutData(raw) {
+  const parsed = JSON.parse(raw);
+  if (parsed && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)) {
+    return { nodes: parsed.nodes || {}, edges: parsed.edges || {} };
+  }
+  return { nodes: parsed || {}, edges: {} };
+}
+
 // ── Main Component ──────────────────────────────────────────────────────────
 
 function MapInternal() {
-  const { fitView } = useReactFlow();
+  const { fitView, project } = useReactFlow();
   const { settings } = useSettings();
   const navigate = useNavigate();
 
@@ -454,6 +538,23 @@ function MapInternal() {
   const [lastSaved, setLastSaved] = useState(null);
   const [dirty, setDirty] = useState(false);
 
+  // Edge override state — { edgeId: { source_side, target_side, control_point? } }
+  const [edgeOverrides, setEdgeOverrides] = useState({});
+  // Edge anchor context menu — { edgeId, x, y } | null
+  const [edgeMenu, setEdgeMenu] = useState(null);
+
+  // Stable refs so callbacks can always access the latest values
+  const nodesRef = useRef([]);
+  const edgeOverridesRef = useRef({});
+  const flowContainerRef = useRef(null);
+
+  // Keep refs in sync with state
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgeOverridesRef.current = edgeOverrides; }, [edgeOverrides]);
+
+  // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
+  const edgeCallbacksRef = useRef(null);
+
   // Filters
   const [envFilter, setEnvFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
@@ -465,13 +566,16 @@ function MapInternal() {
   // Tooltip state
   const [tooltip, setTooltip] = useState(null); // { x, y, node }
 
-  // Context menu state
+  // Context menu state (node)
   const [contextMenu, setContextMenu] = useState(null); // { x, y, node } | null
 
-  // Esc key to dismiss context menu
+  // Esc key to dismiss context menus
   useEffect(() => {
     function handleKeyDown(e) {
-      if (e.key === 'Escape') setContextMenu(null);
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+        setEdgeMenu(null);
+      }
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
@@ -539,6 +643,11 @@ function MapInternal() {
     return Object.entries(types).filter(([, v]) => v).map(([k]) => MAP[k]).filter(Boolean).join(',') || 'hardware';
   };
 
+  const getLayoutName = useCallback(() => {
+    const scopedEnv = (envFilter || '').trim();
+    return scopedEnv ? `default::env:${scopedEnv}` : 'default';
+  }, [envFilter]);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -587,43 +696,58 @@ function MapInternal() {
           id: e.id,
           source: e.source,
           target: e.target,
+          type: 'smart',
           label: e.relation,
           animated: e.relation === 'depends_on' || e.relation === 'runs',
           style: { stroke: color, strokeWidth: 1.5, opacity: 0.75 },
-          labelStyle: { fill: '#cdd6f4', fontSize: 9, fontWeight: 500 },
-          labelBgStyle: { fill: 'rgba(6,10,20,0.88)', rx: 6 },
-          labelBgPadding: [3, 7],
-          labelBgBorderRadius: 6,
           _relation: e.relation,
+          data: { label: e.relation, controlPoint: null },
         };
       });
 
-      // Try to load saved layout
-      let savedPositions = null;
+      // Try to load saved layout (environment-scoped with default fallback)
+      let savedNodePositions = null;
+      let savedEdgeOverrides = {};
       try {
-        const layoutRes = await graphApi.getLayout('default');
-        if (layoutRes.data.layout_data) {
-          savedPositions = JSON.parse(layoutRes.data.layout_data);
+        const scopedLayoutName = getLayoutName();
+        const layoutNames = scopedLayoutName === 'default'
+          ? ['default']
+          : [scopedLayoutName, 'default'];
+
+        for (const layoutName of layoutNames) {
+          const layoutRes = await graphApi.getLayout(layoutName);
+          if (!layoutRes.data.layout_data) continue;
+          const parsed = parseLayoutData(layoutRes.data.layout_data);
+          savedNodePositions = parsed.nodes;
+          savedEdgeOverrides = parsed.edges || {};
           setLastSaved(layoutRes.data.updated_at);
+          break;
         }
       } catch { /* no saved layout */ }
 
-      if (savedPositions) {
+      if (savedNodePositions) {
+        const autoLayout = getHierarchicalLayout(rawN, rawE, 'TB');
+        const autoPositions = Object.fromEntries(autoLayout.nodes.map(n => [n.id, n.position]));
         let newIdx = 0;
         const mergedNodes = rawN.map(n => {
-          if (savedPositions[n.id]) return { ...n, position: savedPositions[n.id] };
+          if (savedNodePositions[n.id]) return { ...n, position: savedNodePositions[n.id] };
+          if (n.originalType === 'cluster' && autoPositions[n.id]) {
+            return { ...n, position: autoPositions[n.id] };
+          }
           const col = newIdx % 4;
           const row = Math.floor(newIdx / 4);
           newIdx++;
           return { ...n, position: { x: 80 + col * 220, y: 80 + row * 180 } };
         });
+        setEdgeOverrides(savedEdgeOverrides);
+        edgeOverridesRef.current = savedEdgeOverrides;
         setNodes(mergedNodes);
-        setEdges(rawE);
+        setEdges(applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides));
         setLayoutEngine('manual');
       } else {
         const layout = getHierarchicalLayout(rawN, rawE, 'TB');
         setNodes(layout.nodes);
-        setEdges(layout.edges);
+        setEdges(applyEdgeSides(layout.nodes, layout.edges, {}));
         setLayoutEngine('hierarchical-tb');
       }
 
@@ -634,7 +758,7 @@ function MapInternal() {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [envFilter, includeTypes, fitView]);
+  }, [envFilter, includeTypes, fitView, getLayoutName]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -659,7 +783,7 @@ function MapInternal() {
 
       if (layout) {
         setNodes([...layout.nodes]);
-        setEdges([...layout.edges]);
+        setEdges(applyEdgeSides(layout.nodes, layout.edges, edgeOverridesRef.current));
         setTimeout(() => fitView({ duration: 800, padding: 0.2 }), 10);
       }
       setLayoutEngine(engine);
@@ -669,10 +793,11 @@ function MapInternal() {
   }, [nodes, edges, setNodes, setEdges, fitView, fetchData]);
 
   const saveLayout = async () => {
-    const positions = {};
-    nodes.forEach(n => { positions[n.id] = n.position; });
+    const nodePositions = {};
+    nodes.forEach(n => { nodePositions[n.id] = n.position; });
+    const payload = { nodes: nodePositions, edges: edgeOverrides };
     try {
-      await graphApi.saveLayout('default', JSON.stringify(positions));
+      await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
       setLastSaved(new Date().toISOString());
       setDirty(false);
     } catch (err) {
@@ -743,7 +868,80 @@ function MapInternal() {
     fitView({ nodes: [{ id: nodeId }], duration: 600, padding: 0.5 });
   };
 
+  // ── Edge interaction handlers ───────────────────────────────────────────────
+
+  const handleEdgeContextMenu = useCallback((event, _edge) => {
+    event.preventDefault();
+    setEdgeMenu({ edgeId: _edge.id, x: event.clientX, y: event.clientY });
+  }, []);
+
+  const handleControlPointChange = useCallback((edgeId, clientPos) => {
+    const containerRect = flowContainerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    const flowPos = project({ x: clientPos.x - containerRect.left, y: clientPos.y - containerRect.top });
+    const updated = {
+      ...edgeOverridesRef.current,
+      [edgeId]: { ...edgeOverridesRef.current[edgeId], control_point: flowPos },
+    };
+    edgeOverridesRef.current = updated;
+    setEdgeOverrides(updated);
+    setEdges(prev => prev.map(e =>
+      e.id === edgeId ? { ...e, data: { ...e.data, controlPoint: flowPos } } : e
+    ));
+    setDirty(true);
+  }, [project, setEdges]);
+
+  const handleEdgeAnchorChange = useCallback((edgeId, which, side) => {
+    const key = which === 'source' ? 'source_side' : 'target_side';
+    let updated;
+    if (side === 'auto') {
+      // Remove override for this side — auto-routing takes over
+      const existing = { ...edgeOverridesRef.current[edgeId] };
+      delete existing[key];
+      if (Object.keys(existing).length === 0) {
+        const { [edgeId]: _removed, ...rest } = edgeOverridesRef.current;
+        updated = rest;
+      } else {
+        updated = { ...edgeOverridesRef.current, [edgeId]: existing };
+      }
+    } else {
+      updated = {
+        ...edgeOverridesRef.current,
+        [edgeId]: { ...edgeOverridesRef.current[edgeId], [key]: side },
+      };
+    }
+    edgeOverridesRef.current = updated;
+    setEdgeOverrides(updated);
+    setEdges(prev => applyEdgeSides(nodesRef.current, prev, updated));
+    setDirty(true);
+    setEdgeMenu(null);
+  }, [setEdges]);
+
+  const handleClearBend = useCallback((edgeId) => {
+    const existing = { ...edgeOverridesRef.current[edgeId] };
+    delete existing.control_point;
+    const updated = Object.keys(existing).length === 0
+      ? (() => { const { [edgeId]: _r, ...rest } = edgeOverridesRef.current; return rest; })()
+      : { ...edgeOverridesRef.current, [edgeId]: existing };
+    edgeOverridesRef.current = updated;
+    setEdgeOverrides(updated);
+    setEdges(prev => prev.map(e =>
+      e.id === edgeId ? { ...e, data: { ...e.data, controlPoint: null } } : e
+    ));
+    setDirty(true);
+    setEdgeMenu(null);
+  }, [setEdges]);
+
+  const handleNodeDragStop = useCallback((_event, _node, draggedNodes) => {
+    setEdges(prev => applyEdgeSides(draggedNodes, prev, edgeOverridesRef.current, _node.id));
+    setDirty(true);
+  }, [setEdges]);
+
+  // Keep edgeCallbacksRef.current up-to-date so SmartEdge always calls the
+  // latest version of handleControlPointChange without needing to re-render.
+  edgeCallbacksRef.current = { onControlPointChange: handleControlPointChange };
+
   return (
+    <MapEdgeCallbacksContext.Provider value={edgeCallbacksRef}>
     <div className="page map-page" style={{ height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       {/* Header + Toolbar */}
       <div className="page-header" style={{ marginBottom: 0, paddingBottom: 10, borderBottom: '1px solid var(--color-border)', flexWrap: 'wrap', gap: 8 }}>
@@ -827,9 +1025,10 @@ function MapInternal() {
       )}
 
       {/* Graph canvas */}
-      <div style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}>
+      <div ref={flowContainerRef} style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}>
         <ReactFlow
           nodeTypes={NODE_TYPES}
+          edgeTypes={EDGE_TYPES}
           nodes={nodes}
           edges={edges}
           onNodesChange={(changes) => {
@@ -837,13 +1036,16 @@ function MapInternal() {
             if (changes.some(c => c.type === 'position' && c.dragging)) setDirty(true);
           }}
           onEdgesChange={onEdgesChange}
+          onNodeDragStop={handleNodeDragStop}
           onNodeMouseEnter={handleNodeMouseEnter}
           onNodeMouseLeave={handleNodeMouseLeave}
           onNodeClick={handleNodeClick}
           onNodeContextMenu={handleNodeContextMenu}
-          onPaneClick={handlePaneClick}
+          onEdgeContextMenu={handleEdgeContextMenu}
+          onPaneClick={() => { setEdgeMenu(null); handlePaneClick(); }}
           fitView
           minZoom={0.1}
+          preventScrolling  /* keep page from scrolling when pointer is over map */
         >
           {/* Legend */}
           <Panel position="top-right" style={{ background: 'var(--color-surface)', padding: 10, borderRadius: 8, fontSize: 11, color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
@@ -955,7 +1157,7 @@ function MapInternal() {
           </div>
         )}
 
-        {/* Context menu */}
+        {/* Node context menu */}
         {contextMenu && (
           <MapContextMenu
             node={contextMenu.node}
@@ -966,6 +1168,70 @@ function MapInternal() {
             nodes={nodes}
           />
         )}
+
+        {/* Edge anchor context menu */}
+        {edgeMenu && (() => {
+          const menuW = 200;
+          const menuH = 200;
+          const ex = Math.min(edgeMenu.x, window.innerWidth  - menuW - 8);
+          const ey = Math.min(edgeMenu.y, window.innerHeight - menuH - 8);
+          const currentOverride = edgeOverrides[edgeMenu.edgeId] || {};
+          const SIDES = ['auto', 'top', 'right', 'bottom', 'left'];
+          return (
+            <div
+              style={{
+                position: 'fixed', left: ex, top: ey, zIndex: 1001,
+                background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                borderRadius: 8, minWidth: menuW, boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                overflow: 'hidden', userSelect: 'none',
+              }}
+              onMouseDown={e => e.stopPropagation()}
+            >
+              <div style={{ padding: '7px 12px 5px', borderBottom: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                Edge Anchors
+              </div>
+              <div style={{ padding: '4px 12px 2px', fontSize: 11, color: 'var(--color-text-muted)' }}>Source side</div>
+              <div style={{ display: 'flex', gap: 4, padding: '2px 12px 6px', flexWrap: 'wrap' }}>
+                {SIDES.map(s => (
+                  <button key={s} onClick={() => handleEdgeAnchorChange(edgeMenu.edgeId, 'source', s)}
+                    style={{ padding: '2px 8px', borderRadius: 4, border: '1px solid var(--color-border)', fontSize: 11, cursor: 'pointer',
+                      background: (currentOverride.source_side === s || (s === 'auto' && !currentOverride.source_side)) ? 'var(--color-primary)' : 'transparent',
+                      color: (currentOverride.source_side === s || (s === 'auto' && !currentOverride.source_side)) ? '#000' : 'var(--color-text)',
+                    }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <div style={{ padding: '4px 12px 2px', fontSize: 11, color: 'var(--color-text-muted)' }}>Target side</div>
+              <div style={{ display: 'flex', gap: 4, padding: '2px 12px 6px', flexWrap: 'wrap' }}>
+                {SIDES.map(s => (
+                  <button key={s} onClick={() => handleEdgeAnchorChange(edgeMenu.edgeId, 'target', s)}
+                    style={{ padding: '2px 8px', borderRadius: 4, border: '1px solid var(--color-border)', fontSize: 11, cursor: 'pointer',
+                      background: (currentOverride.target_side === s || (s === 'auto' && !currentOverride.target_side)) ? 'var(--color-primary)' : 'transparent',
+                      color: (currentOverride.target_side === s || (s === 'auto' && !currentOverride.target_side)) ? '#000' : 'var(--color-text)',
+                    }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              <div style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }} />
+              <button onClick={() => handleClearBend(edgeMenu.edgeId)}
+                style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--color-text-muted)', padding: '7px 12px', fontSize: 11, textAlign: 'left', cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-glow)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                Clear bend point
+              </button>
+              <button onClick={() => setEdgeMenu(null)}
+                style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--color-text-muted)', padding: '7px 12px', fontSize: 11, textAlign: 'left', cursor: 'pointer' }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-glow)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                Close
+              </button>
+            </div>
+          );
+        })()}
 
         {/* Side panel */}
         {selectedNode && (
@@ -1152,6 +1418,7 @@ function MapInternal() {
         )}
       </div>
     </div>
+    </MapEdgeCallbacksContext.Provider>
   );
 }
 

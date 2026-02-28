@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
 import ConfirmDialog from '../common/ConfirmDialog';
+import { useToast } from '../common/Toast';
 import logger from '../../utils/logger';
 import { computeUnitsApi, networksApi, servicesApi } from '../../api/client';
 import { Grid, Network, Trash2, Database } from 'lucide-react';
@@ -11,6 +12,7 @@ import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 
 function ComputeDetail({ compute, isOpen, onClose }) {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [services, setServices] = useState([]);
   const [networks, setNetworks] = useState([]);
@@ -59,7 +61,7 @@ function ComputeDetail({ compute, isOpen, onClose }) {
       await networksApi.addMember(newNetId, { compute_id: compute.id, ip_address: newIp });
       setNewNetId(''); setNewIp('');
       fetchData();
-    } catch (err) { alert(err.message); }
+    } catch (err) { toast.error(err.message); }
   };
 
   const handleLeaveNetwork = (networkId) => {
@@ -71,7 +73,7 @@ function ComputeDetail({ compute, isOpen, onClose }) {
         try {
           await networksApi.removeMember(networkId, compute.id);
           fetchData();
-        } catch (err) { alert(err.message); }
+        } catch (err) { toast.error(err.message); }
       },
     });
   };

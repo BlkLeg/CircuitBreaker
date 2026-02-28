@@ -2,7 +2,9 @@
 
 The **Circuit Breaker** (formerly Service Layout Mapper) is a self-hosted tool designed to help you easily document, track, and visualize your homelab or small business network topology.
 
-Unlike automated discovery tools that can be noisy or complex, Circuit Breaker provides a focused, manual documentation approach. You define your hardware, the compute instances running on them, and the services they host—giving you an accurate "at-a-glance" map of how your infrastructure connects.
+Unlike automated discovery tools that can be noisy or complex, Circuit Breaker provides a focused, manual documentation approach. You define your hardware, the compute instances running on them, and the services they host—giving you an accurate "at-a-glance" map of how your infrastructure connects. Auto-discovey lovers, your time is coming in v1 of the app so don't worry!
+
+Curious about what's coming next? Check out our [Product Roadmap](roadmap.md) to see our plans for V1 and beyond.
 
 ## Why Circuit Breaker?
 

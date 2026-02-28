@@ -172,6 +172,21 @@ async function performUnlink(edge) {
   // network compute member
   if (rel === 'on_network' && src.prefix === 'cu' && tgt.prefix === 'net')
     return networksApi.removeMember(tgt.id, src.id);
+  // cluster membership
+  if (rel === 'cluster_member') {
+    const clusterId = src.prefix === 'cluster' ? src.id : (tgt.prefix === 'cluster' ? tgt.id : null);
+    const hardwareId = src.prefix === 'hw' ? src.id : (tgt.prefix === 'hw' ? tgt.id : null);
+    if (!clusterId || !hardwareId) {
+      throw new Error('Cannot resolve cluster membership unlink target');
+    }
+    const membersRes = await clustersApi.getMembers(clusterId);
+    const members = membersRes.data || [];
+    const membership = members.find(m => m.hardware_id === hardwareId);
+    if (!membership) {
+      throw new Error('Cluster membership not found');
+    }
+    return clustersApi.removeMember(clusterId, membership.id);
+  }
   // service dependency
   if (rel === 'depends_on' && src.prefix === 'svc' && tgt.prefix === 'svc')
     return servicesApi.removeDependency(src.id, tgt.id);

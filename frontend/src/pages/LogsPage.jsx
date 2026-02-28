@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { logsApi } from '../api/client';
 import { IconImg } from '../components/common/IconPickerModal';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────
 
@@ -218,6 +219,7 @@ function LogRow({ log, expanded, onToggle, navigate }) {
 
 function LogsPage() {
   const navigate = useNavigate();
+  const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const [logs, setLogs] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -319,16 +321,22 @@ function LogsPage() {
 
   // ── Clear ────────────────────────────────────────────────────────────────
 
-  const handleClear = async () => {
-    if (!window.confirm('Clear all logs? This cannot be undone.')) return;
-    try {
-      await logsApi.clear();
-      setLogs([]);
-      setTotalCount(0);
-      lastTimestampRef.current = null;
-    } catch (err) {
-      setError(err.message);
-    }
+  const handleClear = () => {
+    setConfirmState({
+      open: true,
+      message: 'Clear all logs? This cannot be undone.',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await logsApi.clear();
+          setLogs([]);
+          setTotalCount(0);
+          lastTimestampRef.current = null;
+        } catch (err) {
+          setError(err.message);
+        }
+      }
+    });
   };
 
   // ── Pagination ───────────────────────────────────────────────────────────
@@ -495,6 +503,12 @@ function LogsPage() {
           <button className="btn btn-sm" disabled={!hasMore} onClick={() => setOffset((totalPages - 1) * limit)} style={{ fontSize: 11 }}>Last ⏭</button>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmState.open}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
     </div>
   );
 }

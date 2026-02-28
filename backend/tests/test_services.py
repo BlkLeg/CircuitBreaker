@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 
@@ -77,3 +79,68 @@ def test_graph_topology(client, compute_id):
     assert any(nid.startswith("hw-") for nid in node_ids)
     assert any(nid.startswith("cu-") for nid in node_ids)
     assert any(nid.startswith("svc-") for nid in node_ids)
+
+
+def test_graph_layout_scoped_name_roundtrip(client):
+    scoped_name = "default::env:prod"
+    payload = {"nodes": {"cluster-1": {"x": 120, "y": 80}}, "edges": {}}
+
+    save = client.post(
+        "/api/v1/graph/layout",
+        json={"name": scoped_name, "layout_data": json.dumps(payload)},
+    )
+    assert save.status_code == 200
+
+    res = client.get("/api/v1/graph/layout", params={"name": scoped_name})
+    assert res.status_code == 200
+    assert res.json()["layout_data"] is not None
+
+
+def test_graph_layout_default_fallback_absent_scoped(client):
+    default_payload = {"nodes": {"hw-1": {"x": 10, "y": 20}}, "edges": {}}
+    save = client.post(
+        "/api/v1/graph/layout",
+        json={"name": "default", "layout_data": json.dumps(default_payload)},
+    )
+    assert save.status_code == 200
+
+    scoped = client.get("/api/v1/graph/layout", params={"name": "default::env:dev"})
+    assert scoped.status_code == 200
+    assert scoped.json()["layout_data"] is None
+
+    default = client.get("/api/v1/graph/layout", params={"name": "default"})
+    assert default.status_code == 200
+    assert default.json()["layout_data"] is not None
+
+
+def test_graph_topology_filters_clusters_by_environment(client):
+    hw_prod = client.post("/api/v1/hardware", json={"name": "PVE-Prod"}).json()
+    hw_dev = client.post("/api/v1/hardware", json={"name": "PVE-Dev"}).json()
+
+    cluster_prod = client.post(
+        "/api/v1/hardware-clusters",
+        json={"name": "Prod Cluster", "environment": "prod"},
+    ).json()
+    cluster_dev = client.post(
+        "/api/v1/hardware-clusters",
+        json={"name": "Dev Cluster", "environment": "dev"},
+    ).json()
+
+    add_prod = client.post(
+        f"/api/v1/hardware-clusters/{cluster_prod['id']}/members",
+        json={"hardware_id": hw_prod["id"]},
+    )
+    add_dev = client.post(
+        f"/api/v1/hardware-clusters/{cluster_dev['id']}/members",
+        json={"hardware_id": hw_dev["id"]},
+    )
+    assert add_prod.status_code == 201
+    assert add_dev.status_code == 201
+
+    topo_prod = client.get("/api/v1/graph/topology", params={"environment": "prod"})
+    assert topo_prod.status_code == 200
+    prod_cluster_labels = {
+        n["label"] for n in topo_prod.json()["nodes"] if n.get("type") == "cluster"
+    }
+    assert "Prod Cluster" in prod_cluster_labels
+    assert "Dev Cluster" not in prod_cluster_labels

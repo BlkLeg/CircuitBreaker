@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Trash2, Upload } from 'lucide-react';
 import { LIBRARY_ICONS } from '../common/IconPickerModal';
 import ConfirmDialog from '../common/ConfirmDialog';
+import { useToast } from '../common/Toast';
 import client from '../../api/client';
 
 // Group the static library icons by their 'group' field
@@ -103,6 +104,7 @@ function SectionLabel({ children, count }) {
 }
 
 function IconLibraryManager() {
+  const toast = useToast();
   const [uploadedIcons, setUploadedIcons] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -126,7 +128,7 @@ function IconLibraryManager() {
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 1024 * 1024) { alert('Icon must be under 1 MB'); return; }
+    if (file.size > 1024 * 1024) { toast.error('Icon must be under 1 MB'); return; }
     setUploading(true);
     try {
       const form = new FormData();

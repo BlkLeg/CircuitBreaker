@@ -10,6 +10,11 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: {
       include: ['react-markdown', 'style-to-js'],
     },
+    build: {
+      // Minimum browser floor: these are the first versions to support color-mix(),
+      // the most advanced CSS feature used in this app.
+      target: ['chrome111', 'firefox113', 'safari16.4', 'edge111'],
+    },
     server: {
       proxy: {
         '/api': apiTarget,

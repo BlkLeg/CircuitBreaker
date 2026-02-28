@@ -3,9 +3,11 @@ import { docsApi } from '../../api/client';
 import { FileText, Link as LinkIcon, Trash2, Plus, ExternalLink } from 'lucide-react';
 import MarkdownViewer from '../MarkdownViewer';
 import ConfirmDialog from './ConfirmDialog';
+import { useToast } from './Toast';
 import logger from '../../utils/logger';
 
 function DocsPanel({ entityType, entityId }) {
+  const toast = useToast();
   const [attachedDocs, setAttachedDocs] = useState([]);
   const [allDocs, setAllDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -36,7 +38,7 @@ function DocsPanel({ entityType, entityId }) {
       setShowAttach(false);
       fetchData();
     } catch (err) {
-      alert(err.message);
+      toast.error(err.message);
     }
   };
 
@@ -52,7 +54,7 @@ function DocsPanel({ entityType, entityId }) {
           await docsApi.detach({ doc_id: docId, entity_type: entityType, entity_id: entityId });
           fetchData();
         } catch (err) {
-          alert(err.message);
+          toast.error(err.message);
         }
       },
     });

@@ -1,6 +1,7 @@
 """JWT, password hashing, Gravatar utilities, and FastAPI auth dependencies."""
 import hashlib
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,6 +13,11 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
+
+
+def _get_api_token() -> Optional[str]:
+    """Return the static CB_API_TOKEN from environment, or None if unset."""
+    return os.getenv("CB_API_TOKEN") or None
 
 
 # ---------------------------------------------------------------------------
@@ -70,26 +76,44 @@ def _extract_bearer(request: Request) -> Optional[str]:
 def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Optional[int]:
     """Return the authenticated user_id from JWT, or None if absent/invalid.
 
-    This dependency never raises — callers decide whether auth is required.
+    Returns 0 (service-account sentinel) when the request presents a valid
+    CB_API_TOKEN bearer token.  Never raises — callers decide whether auth is
+    required.
+    """
+    from app.services.settings_service import get_or_create_settings  # local import to avoid circular
+
+    raw_token = _extract_bearer(request)
+
+    # CB_API_TOKEN takes priority over JWT — works regardless of auth_enabled
+    api_token = _get_api_token()
+    if api_token and raw_token == api_token:
+        return 0  # sentinel: authenticated via static API token (no user row)
+
+    cfg = get_or_create_settings(db)
+
+    # When CB_API_TOKEN is set, JWTs are also a valid alternative — skip the
+    # early-return so we fall through to JWT decoding below.
+    if not api_token and (not cfg.auth_enabled or not cfg.jwt_secret):
+        return None
+
+    if not raw_token or not cfg.jwt_secret:
+        return None
+
+    return decode_token(raw_token, cfg.jwt_secret)
+
+
+def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: Session = Depends(get_db)) -> Optional[int]:
+    """Raise 401 when write access is not authorised.
+
+    Write access is required when either ``auth_enabled`` is true *or*
+    ``CB_API_TOKEN`` is set in the environment (i.e. the operator has opted
+    into token-gated writes).  A ``user_id`` of 0 indicates API-token auth
+    and is treated as authenticated.
     """
     from app.services.settings_service import get_or_create_settings  # local import to avoid circular
 
     cfg = get_or_create_settings(db)
-    if not cfg.auth_enabled or not cfg.jwt_secret:
-        return None
-
-    token = _extract_bearer(request)
-    if not token:
-        return None
-
-    return decode_token(token, cfg.jwt_secret)
-
-
-def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: Session = Depends(get_db)) -> Optional[int]:
-    """Raise 401 when auth is enabled and the request carries no valid JWT."""
-    from app.services.settings_service import get_or_create_settings  # local import to avoid circular
-
-    cfg = get_or_create_settings(db)
-    if cfg.auth_enabled and user_id is None:
+    auth_required = cfg.auth_enabled or bool(_get_api_token())
+    if auth_required and user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user_id

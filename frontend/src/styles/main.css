@@ -148,10 +148,15 @@ body {
   text-transform: uppercase;
   user-select: none;
   /* Individual pill glass */
+  background: rgba(13, 17, 23, 0.75);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(0, 212, 255, 0.10);                                  /* fallback: no color-mix */
   border: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);                                  /* fallback: no color-mix */
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 color-mix(in srgb, var(--color-surface) 5%, transparent);
@@ -165,9 +170,14 @@ body {
 
 .dock-item:hover {
   color: var(--color-text);
+  background: rgba(13, 17, 23, 0.88);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 88%, transparent);
+  border-color: rgba(0, 212, 255, 0.22);                                      /* fallback: no color-mix */
   border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
   transform: translateY(-4px);
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);                                  /* fallback: no color-mix */
   box-shadow:
     0 8px 28px rgba(0, 0, 0, 0.55),
     inset 0 1px 0 color-mix(in srgb, var(--color-surface) 7%, transparent);
@@ -175,13 +185,20 @@ body {
 
 .dock-item:hover svg {
   transform: scale(1.12);
+  filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.40));                       /* fallback: no color-mix */
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-primary) 40%, transparent));
 }
 
 .dock-item.active {
   color: var(--color-primary);
+  background: rgba(0, 212, 255, 0.08);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  border-color: rgba(0, 212, 255, 0.38);                                      /* fallback: no color-mix */
   border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
+  box-shadow:
+    0 0 14px rgba(0, 212, 255, 0.25),
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);                                  /* fallback: no color-mix */
   box-shadow:
     0 0 14px color-mix(in srgb, var(--color-primary) 25%, transparent),
     0 4px 20px rgba(0, 0, 0, 0.5),
@@ -189,6 +206,7 @@ body {
 }
 
 .dock-item.active svg {
+  filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.65));                       /* fallback: no color-mix */
   filter: drop-shadow(0 0 8px color-mix(in srgb, var(--color-primary) 65%, transparent));
 }
 
@@ -199,8 +217,13 @@ body {
 
 .dock-item--stub:hover {
   transform: none;
+  background: rgba(13, 17, 23, 0.75);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
+  border-color: rgba(0, 212, 255, 0.10);                                      /* fallback: no color-mix */
   border-color: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  box-shadow:
+    0 4px 20px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);                                  /* fallback: no color-mix */
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 color-mix(in srgb, var(--color-surface) 5%, transparent);
@@ -266,11 +289,16 @@ body {
   width: 440px;
   max-width: calc(100vw - 48px);
   pointer-events: all;
+  background: rgba(13, 17, 23, 0.97);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface) 97%, transparent);
   backdrop-filter: blur(32px);
   -webkit-backdrop-filter: blur(32px);
+  border: 1px solid rgba(0, 212, 255, 0.18);                                  /* fallback: no color-mix */
   border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   border-radius: 14px;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 212, 255, 0.12);                                        /* fallback: no color-mix */
   box-shadow:
     0 8px 40px rgba(0, 0, 0, 0.5),
     0 0 0 1px color-mix(in srgb, var(--color-primary) 12%, transparent);
@@ -282,6 +310,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 14px 16px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.10);                           /* fallback: no color-mix */
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
@@ -300,7 +329,9 @@ body {
 }
 
 .palette-hint {
+  background: rgba(0, 212, 255, 0.08);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  border: 1px solid rgba(0, 212, 255, 0.20);                                  /* fallback: no color-mix */
   border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
   border-radius: 6px;
   color: var(--color-primary);
@@ -343,6 +374,7 @@ body {
 }
 
 .palette-result-item:hover {
+  background: rgba(0, 212, 255, 0.07);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 7%, transparent);
 }
 
@@ -517,6 +549,7 @@ body {
 }
 
 .entity-table tbody tr:hover {
+  background: rgba(0, 212, 255, 0.05);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 5%, transparent);
 }
 
@@ -1073,6 +1106,9 @@ body {
   padding: 24px;
   background-color: var(--color-bg);
   background-image:
+    linear-gradient(135deg, #050810 0%, var(--color-surface) 55%, #050810 100%),
+    radial-gradient(circle, rgba(0, 212, 255, 0.09) 1px, transparent 1px);   /* fallback: no color-mix */
+  background-image:
     linear-gradient(135deg, color-mix(in srgb, var(--color-bg) 95%, #000) 0%, var(--color-surface) 55%, color-mix(in srgb, var(--color-bg) 90%, #000) 100%),
     radial-gradient(circle, color-mix(in srgb, var(--color-primary) 9%, transparent) 1px, transparent 1px);
   background-size: cover, 28px 28px;
@@ -1094,6 +1130,7 @@ body {
   height: 520px;
   top: -140px;
   left: -140px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.08) 0%, transparent 68%);  /* fallback: no color-mix */
   background: radial-gradient(circle, color-mix(in srgb, var(--color-primary) 8%, transparent) 0%, transparent 68%);
   filter: blur(50px);
 }
@@ -1103,6 +1140,7 @@ body {
   height: 420px;
   bottom: -110px;
   right: -110px;
+  background: radial-gradient(circle, rgba(0, 212, 255, 0.06) 0%, transparent 68%);  /* fallback: no color-mix */
   background: radial-gradient(circle, color-mix(in srgb, var(--color-primary) 6%, transparent) 0%, transparent 68%);
   filter: blur(70px);
   animation-delay: 0.2s;
@@ -1253,6 +1291,16 @@ body {
   box-shadow: 0 0 0 3px var(--color-glow);
 }
 
+/* Override browser autofill highlight on login form (prevents yellow/blue flash) */
+.login-input:-webkit-autofill,
+.login-input:-webkit-autofill:hover,
+.login-input:-webkit-autofill:focus,
+.login-input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--color-bg) inset !important;
+  -webkit-text-fill-color: var(--color-text) !important;
+  caret-color: var(--color-text);
+}
+
 .login-input-error {
   font-size: 11px;
   color: var(--color-danger, #f38ba8);
@@ -1361,6 +1409,7 @@ body {
     bottom: 0;
     max-width: none;
     padding: 8px 12px;
+    background: rgba(13, 17, 23, 0.95);                                       /* fallback: no color-mix */
     background: color-mix(in srgb, var(--color-surface) 95%, transparent);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
@@ -1389,6 +1438,7 @@ body {
 
   .dock-item.active {
     box-shadow: none;
+    background: rgba(0, 212, 255, 0.10);                                      /* fallback: no color-mix */
     background: color-mix(in srgb, var(--color-primary) 10%, transparent);
     border: none;
   }
@@ -1453,4 +1503,19 @@ body {
 *:focus-visible {
   outline: 2px solid var(--color-primary) !important;
   outline-offset: 2px !important;
+}
+
+/* ── SmartEdge — bend handle visibility ──────────────────────────────────────
+   The draggable midpoint circle is invisible by default.
+   It fades in when the user hovers the edge wrapper so it's easy to grab.      */
+.smart-edge-bend-handle {
+  fill: var(--color-primary);
+  opacity: 0;
+  transition: opacity 0.18s;
+  pointer-events: all;
+}
+
+.react-flow__edge:hover .smart-edge-bend-handle,
+.react-flow__edge.selected .smart-edge-bend-handle {
+  opacity: 0.85;
 }

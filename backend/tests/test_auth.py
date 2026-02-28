@@ -16,14 +16,14 @@ def _enable_auth(client):
     return resp.json()
 
 
-def _register(client, email="test@example.com", password="secure1234", display_name=None):
+def _register(client, email="test@example.com", password="Secure1234!", display_name=None):
     body = {"email": email, "password": password}
     if display_name:
         body["display_name"] = display_name
     return client.post("/api/v1/auth/register", json=body)
 
 
-def _login(client, email="test@example.com", password="secure1234"):
+def _login(client, email="test@example.com", password="Secure1234!"):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
 
 

@@ -149,6 +149,8 @@ def get_topology(
         clusters = db.execute(select(HardwareCluster)).scalars().all()
         included_cluster_ids: set[int] = set()
         for cluster in clusters:
+            if environment and cluster.environment and cluster.environment != environment:
+                continue
             if not cluster.members:
                 continue
             included_cluster_ids.add(cluster.id)
