@@ -4,7 +4,10 @@
   "private": true,
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
+    "@emoji-mart/data": "^1.2.1",
+    "@emoji-mart/react": "^1.1.1",
     "@reactflow/node-resizer": "^2.2.14",
+    "@uiw/react-md-editor": "^4.0.11",
     "axios": "^1.7.0",
     "elkjs": "^0.11.0",
     "lucide-react": "^0.574.0",
@@ -13,6 +16,7 @@
     "react-dom": "^18.3.0",
     "react-markdown": "^9.0.1",
     "react-router-dom": "^6.24.0",
+    "react-syntax-highlighter": "^16.1.1",
     "reactflow": "^11.11.4"
   },
   "scripts": {

@@ -9,6 +9,7 @@ import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
+import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 
 // Encode the selection so a single dropdown can carry both hardware and compute options.
 // Prefix: "hw_<id>" for hardware, "cu_<id>" for compute units.
@@ -230,6 +231,12 @@ function ServicesPage() {
           </select>
       </div>
 
+      {!loading && items.length === 0 && settings?.show_page_hints && (
+        <div className="info-tip" style={{ marginBottom: 12 }}>
+          💡 <strong>Tip:</strong> Add services last, after creating hardware and compute units. When cleaning up, delete services before removing compute units.
+        </div>
+      )}
+
       <EntityTable
           columns={COLUMNS}
           data={items}
@@ -250,6 +257,14 @@ function ServicesPage() {
         fields={buildFields(editTarget?.icon_slug ?? null)}
         initialValues={getInitialValues(editTarget)}
         onSubmit={handleSubmit}
+        onValidate={(values) => {
+          const errors = {};
+          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          if (nameErr) errors.name = nameErr;
+          const ipErr = validateIpAddress(values.ip_address);
+          if (ipErr) errors.ip_address = ipErr;
+          return errors;
+        }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
       />

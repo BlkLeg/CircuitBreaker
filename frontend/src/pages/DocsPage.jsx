@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import MarkdownViewer from '../components/MarkdownViewer';
+import DocEditor from '../components/DocEditor';
 import { docsApi } from '../api/client';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import { useToast } from '../components/common/Toast';
 import logger from '../utils/logger';
 
 function DocsPage() {
+  const toast = useToast();
   const [docs, setDocs] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [editing, setEditing] = useState(false);
@@ -41,19 +44,28 @@ function DocsPage() {
     setEditing(true);
   };
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async (bodyMdOverride) => {
+    const payload = {
+      title: formValues.title,
+      body_md: typeof bodyMdOverride === 'string' ? bodyMdOverride : formValues.body_md,
+    };
     try {
       if (selectedDoc) {
-        await docsApi.update(selectedDoc.id, formValues);
+        const res = await docsApi.update(selectedDoc.id, payload);
+        setSelectedDoc(res.data);
       } else {
-        await docsApi.create(formValues);
+        const res = await docsApi.create(payload);
+        setSelectedDoc(res.data);
       }
+      toast.success(selectedDoc ? 'Document updated.' : 'Document created.');
       setEditing(false);
       await fetchDocs();
     } catch (err) {
       logger.error(err);
+      toast.error(err.message || 'Save failed. Please try again.');
+      throw err; // re-throw so DocEditor auto-save can handle errors
     }
-  };
+  }, [selectedDoc, formValues, fetchDocs, toast]);
 
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
@@ -135,25 +147,15 @@ function DocsPage() {
                   fontFamily: 'inherit',
                 }}
               />
-              <textarea
-                placeholder="Write Markdown here..."
+              <DocEditor
+                docId={selectedDoc?.id ?? null}
                 value={formValues.body_md}
-                onChange={(e) => setFormValues((p) => ({ ...p, body_md: e.target.value }))}
-                style={{
-                  flex: 1,
-                  background: 'var(--color-bg)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius)',
-                  color: 'var(--color-text)',
-                  padding: '12px',
-                  fontSize: 14,
-                  fontFamily: 'monospace',
-                  resize: 'none',
-                  lineHeight: 1.5
-                }}
+                onChange={(md) => setFormValues((p) => ({ ...p, body_md: md }))}
+                onSave={handleSave}
+                updatedAt={selectedDoc?.updated_at ?? null}
               />
               <div style={{ display: 'flex', gap: 8, paddingBottom: 20 }}>
-                <button className="btn btn-primary" onClick={handleSave}>Save Document</button>
+                <button className="btn btn-primary" onClick={async () => { try { await handleSave(); } catch {} }}>Save Document</button>
                 <button className="btn" onClick={() => setEditing(false)}>Cancel</button>
               </div>
             </div>
@@ -162,7 +164,7 @@ function DocsPage() {
               <h1 style={{ marginBottom: 24, fontSize: '2rem', borderBottom: '1px solid var(--color-border)', paddingBottom: 16 }}>
                 {selectedDoc.title}
               </h1>
-              <MarkdownViewer content={selectedDoc.body_md} />
+              <MarkdownViewer content={selectedDoc.body_md} html={selectedDoc.body_html} />
             </div>
           ) : (
             <div style={{ 

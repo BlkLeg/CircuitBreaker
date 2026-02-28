@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 class StorageBase(BaseModel):
     name: str
     kind: str  # 'disk', 'pool', 'dataset', 'share'
+    icon_slug: Optional[str] = None
     hardware_id: Optional[int] = None
     capacity_gb: Optional[int] = None
     used_gb: Optional[int] = None
@@ -22,6 +23,7 @@ class StorageCreate(StorageBase):
 class StorageUpdate(BaseModel):
     name: Optional[str] = None
     kind: Optional[str] = None
+    icon_slug: Optional[str] = None
     hardware_id: Optional[int] = None
     capacity_gb: Optional[int] = None
     used_gb: Optional[int] = None

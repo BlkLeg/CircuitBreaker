@@ -51,6 +51,42 @@ const GROUPS = [
           </svg>
         ),
       },
+      {
+        key: 'themes',
+        label: 'Themes',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="4" cy="4" r="2" />
+            <circle cx="12" cy="4" r="2" />
+            <circle cx="4" cy="12" r="2" />
+            <circle cx="12" cy="12" r="2" />
+            <path d="M6 4h4M4 6v4M12 6v4M6 12h4" />
+          </svg>
+        ),
+      },
+      {
+        key: 'dock',
+        label: 'Dock',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="1" y="10" width="14" height="4" rx="1.5" />
+            <rect x="2" y="11" width="2.5" height="2" rx="0.5" />
+            <rect x="6" y="11" width="2.5" height="2" rx="0.5" />
+            <rect x="10.5" y="11" width="2.5" height="2" rx="0.5" />
+          </svg>
+        ),
+      },
+      {
+        key: 'branding',
+        label: 'Branding',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="8" cy="8" r="3" />
+            <path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
+            <path d="M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
+          </svg>
+        ),
+      },
     ],
   },
   {
@@ -63,6 +99,26 @@ const GROUPS = [
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M6 2v5L3 13h10L10 7V2" />
             <path d="M6 2h4" />
+          </svg>
+        ),
+      },
+      {
+        key: 'auth',
+        label: 'Authentication',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="3" y="7" width="10" height="7" rx="1.5" />
+            <path d="M5 7V5a3 3 0 0 1 6 0v2" />
+          </svg>
+        ),
+      },
+      {
+        key: 'admin',
+        label: 'Admin & Backup',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M8 1.5L2 4.5v4c0 3.3 2.5 6.4 6 7 3.5-.6 6-3.7 6-7v-4L8 1.5z" />
+            <path d="M5.5 8l1.5 1.5L10.5 6" />
           </svg>
         ),
       },

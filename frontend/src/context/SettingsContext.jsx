@@ -2,6 +2,16 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import PropTypes from 'prop-types';
 import { settingsApi } from '../api/client';
 import logger from '../utils/logger';
+import { applyTheme } from '../theme/applyTheme';
+import { THEME_PRESETS, DEFAULT_PRESET } from '../theme/presets';
+
+// Pre-apply cached theme synchronously on module import to eliminate flash on reload.
+// Runs before React renders; data-theme is not yet set so applyTheme runs in dark-mode
+// mode (which is the correct default). The context effect will correct it after load.
+const _cachedPreset = localStorage.getItem('cb-theme-preset');
+if (_cachedPreset && _cachedPreset !== 'custom' && THEME_PRESETS[_cachedPreset]) {
+  applyTheme(THEME_PRESETS[_cachedPreset], _cachedPreset);
+}
 
 const DEFAULTS = {
   id: 1,
@@ -54,6 +64,50 @@ export function SettingsProvider({ children }) {
     }
   }, [settings.theme]);
 
+  // Apply theme colors (preset or custom) via CSS variables whenever theme settings change.
+  // settings.theme is included so switching light/dark re-triggers applyTheme, allowing
+  // it to removeProperty bg/surface overrides in light mode.
+  useEffect(() => {
+    let colors;
+    const preset = settings.theme_preset;
+    if (preset && preset !== 'custom' && THEME_PRESETS[preset]) {
+      colors = THEME_PRESETS[preset];
+    } else if (preset === 'custom' && settings.theme_colors) {
+      colors = settings.theme_colors;
+    } else if (settings.branding?.primary_color) {
+      // Fallback: derive from branding for backwards compatibility
+      const accents = settings.branding.accent_colors ?? [];
+      colors = {
+        primary:    settings.branding.primary_color,
+        secondary:  '#0f172a',
+        accent1:    accents[0] ?? settings.branding.primary_color,
+        accent2:    accents[1] ?? settings.branding.primary_color,
+        background: '#080c14',
+        surface:    '#0d1117',
+      };
+    } else {
+      colors = THEME_PRESETS[DEFAULT_PRESET];
+    }
+    applyTheme(colors, preset ?? DEFAULT_PRESET);
+  }, [settings.theme_preset, settings.theme_colors, settings.branding, settings.theme]);
+
+  // Apply favicon and document title whenever branding changes
+  useEffect(() => {
+    const b = settings.branding;
+    if (!b) return;
+    if (b.favicon_path) {
+      let link = document.querySelector("link[rel='icon']");
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = `${b.favicon_path}?t=${Date.now()}`;
+    }
+    if (b.app_name) {
+      document.title = b.app_name;
+    }
+  }, [settings.branding]);
 
   const contextValue = useMemo(
     () => ({ settings, reloadSettings, loading }),

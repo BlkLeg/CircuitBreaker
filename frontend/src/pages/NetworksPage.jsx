@@ -7,9 +7,12 @@ import NetworkDetail from '../components/details/NetworkDetail';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
+import { useSettings } from '../context/SettingsContext';
+import { validateCidr, validateIpAddress, validateDuplicateName } from '../utils/validation';
 
 function NetworksPage() {
   const toast = useToast();
+  const { settings } = useSettings();
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [computeUnits, setComputeUnits] = useState([]);
@@ -170,6 +173,12 @@ function NetworksPage() {
         </div>
       )}
 
+      {!loading && items.length === 0 && settings?.show_page_hints && (
+        <div className="info-tip" style={{ marginBottom: 8 }}>
+          💡 <strong>Tip:</strong> It&apos;s recommended to add hardware first, then create networks. You can assign a hardware node as the gateway for each network.
+        </div>
+      )}
+
       {loading ? <p>Loading...</p> : (
         <EntityTable
           columns={COLUMNS}
@@ -195,6 +204,16 @@ function NetworksPage() {
         fields={FIELDS}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
+        onValidate={(values) => {
+          const errors = {};
+          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          if (nameErr) errors.name = nameErr;
+          const cidrErr = validateCidr(values.cidr);
+          if (cidrErr) errors.cidr = cidrErr;
+          const gwErr = validateIpAddress(values.gateway);
+          if (gwErr) errors.gateway = gwErr;
+          return errors;
+        }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
       />

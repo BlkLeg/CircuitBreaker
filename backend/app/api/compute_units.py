@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.db.models import ComputeNetwork
 from app.schemas.compute_units import ComputeUnit, ComputeUnitCreate, ComputeUnitUpdate
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/compute-units", tags=["compute-units"])
 
 ICON_UPLOAD_DIR = Path("data/user-icons")
 ICON_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-ALLOWED_TYPES = {"image/svg+xml", "image/png", "image/jpeg", "image/webp"}
+ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 MAX_SIZE = 1 * 1024 * 1024  # 1 MB
 
 
@@ -35,7 +36,7 @@ def list_compute_units(
 
 
 @router.post("", response_model=ComputeUnit, status_code=201)
-def create_compute_unit(payload: ComputeUnitCreate, db: Session = Depends(get_db)):
+def create_compute_unit(payload: ComputeUnitCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return compute_units_service.create_compute_unit(db, payload)
     except IntegrityError:
@@ -67,7 +68,6 @@ _MAGIC_BYTES: dict[str, list[bytes]] = {
     "image/png":  [b"\x89PNG"],
     "image/jpeg": [b"\xff\xd8\xff"],
     "image/webp": [b"RIFF"],  # RIFF....WEBP — checked in body below
-    "image/svg+xml": [],       # SVG is text/XML; magic-byte check not applicable
 }
 
 
@@ -88,10 +88,10 @@ def _verify_magic_bytes(data: bytes, content_type: str) -> bool:
 
 
 @router.post("/icons/upload")
-async def upload_icon(file: UploadFile = File(...)):
-    """Accept an SVG/PNG icon upload. Returns the slug and public path."""
+async def upload_icon(file: UploadFile = File(...), _=Depends(require_write_auth)):
+    """Accept a PNG/JPEG/WebP icon upload. SVG is blocked due to XSS risk."""
     if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(status_code=415, detail=f"Unsupported file type: {file.content_type}. Allowed: SVG, PNG, JPEG, WebP.")
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {file.content_type}. Allowed: PNG, JPEG, WebP.")
     data = await file.read()
     if len(data) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="File exceeds 1 MB limit.")
@@ -99,7 +99,7 @@ async def upload_icon(file: UploadFile = File(...)):
     # match the client-declared MIME type (prevents content-type spoofing).
     if not _verify_magic_bytes(data, file.content_type):
         raise HTTPException(status_code=415, detail="File content does not match the declared content type.")
-    suffix = Path(file.filename).suffix or ".svg"
+    suffix = Path(file.filename).suffix or ".png"
     slug = f"user-{uuid.uuid4().hex[:8]}{suffix}"
     dest = ICON_UPLOAD_DIR / slug
     dest.write_bytes(data)
@@ -107,7 +107,7 @@ async def upload_icon(file: UploadFile = File(...)):
 
 
 @router.delete("/icons/{slug}", status_code=204)
-def delete_icon(slug: str):
+def delete_icon(slug: str, _=Depends(require_write_auth)):
     """Delete a previously-uploaded user icon by slug."""
     if not slug.startswith("user-"):
         raise HTTPException(status_code=400, detail="Only user-uploaded icons can be deleted.")
@@ -141,7 +141,7 @@ def get_compute_unit(cu_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{cu_id}", response_model=ComputeUnit)
-def patch_compute_unit(cu_id: int, payload: ComputeUnitUpdate, db: Session = Depends(get_db)):
+def patch_compute_unit(cu_id: int, payload: ComputeUnitUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return compute_units_service.update_compute_unit(db, cu_id, payload)
     except ValueError as exc:
@@ -152,7 +152,7 @@ def patch_compute_unit(cu_id: int, payload: ComputeUnitUpdate, db: Session = Dep
 
 
 @router.delete("/{cu_id}", status_code=204)
-def delete_compute_unit(cu_id: int, db: Session = Depends(get_db)):
+def delete_compute_unit(cu_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         compute_units_service.delete_compute_unit(db, cu_id)
     except ValueError as exc:

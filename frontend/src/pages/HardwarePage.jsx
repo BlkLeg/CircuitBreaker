@@ -13,6 +13,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
+import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 
 const BASE_COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -213,6 +214,12 @@ function HardwarePage() {
         </select>
       </div>
 
+      {!loading && items.length === 0 && settings?.show_page_hints && (
+        <div className="info-tip" style={{ marginBottom: 12 }}>
+          💡 <strong>Tip:</strong> Start by adding hardware nodes — these represent physical machines and are required before creating compute units or services.
+        </div>
+      )}
+
       {loading ? <p>Loading...</p> : (
         <EntityTable
           columns={COLUMNS}
@@ -235,6 +242,14 @@ function HardwarePage() {
         fields={buildFields(editTarget?.vendor_icon_slug ?? null)}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
+        onValidate={(values) => {
+          const errors = {};
+          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          if (nameErr) errors.name = nameErr;
+          const ipErr = validateIpAddress(values.ip_address);
+          if (ipErr) errors.ip_address = ipErr;
+          return errors;
+        }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
       />

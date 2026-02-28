@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from app.core.markdown_render import render_markdown
 from app.db.models import Doc, EntityDoc
 from app.schemas.docs import DocCreate, DocUpdate, EntityDocAttach
 
@@ -26,7 +27,11 @@ def get_doc(db: Session, doc_id: int) -> dict:
 
 
 def create_doc(db: Session, payload: DocCreate) -> dict:
-    doc = Doc(title=payload.title, body_md=payload.body_md)
+    doc = Doc(
+        title=payload.title,
+        body_md=payload.body_md,
+        body_html=render_markdown(payload.body_md),
+    )
     db.add(doc)
     db.commit()
     db.refresh(doc)
@@ -37,8 +42,12 @@ def update_doc(db: Session, doc_id: int, payload: DocUpdate) -> dict:
     doc = db.get(Doc, doc_id)
     if doc is None:
         raise ValueError(f"Doc {doc_id} not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
         setattr(doc, field, value)
+    # Re-render HTML when body changes
+    if "body_md" in data:
+        doc.body_html = render_markdown(doc.body_md)
     doc.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(doc)

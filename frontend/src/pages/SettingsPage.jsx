@@ -1,11 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { settingsApi } from '../api/client';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { settingsApi, adminApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
+import { useAuth } from '../context/AuthContext.jsx';
 import IconLibraryManager from '../components/settings/IconLibraryManager';
 import ListEditor from '../components/settings/ListEditor';
+import BrandingSettings from '../components/settings/BrandingSettings';
+import ThemeSettings from '../components/settings/ThemeSettings';
+import DockSettings from '../components/settings/DockSettings';
 import SettingsNav from '../components/settings/SettingsNav';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import FirstUserDialog from '../components/auth/FirstUserDialog';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc'];
 
@@ -94,21 +99,31 @@ const S = {
 
 function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
+  const { setAuthEnabled, isAuthenticated } = useAuth();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   const [form, setForm] = useState(null);
   const [mapFilters, setMapFilters] = useState({ environment: '', include: ENTITY_TYPES.slice() });
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState(null);
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+  const [showFirstUserDialog, setShowFirstUserDialog] = useState(false);
   const [activeSection, setActiveSection] = useState('appearance');
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const sectionRefs = {
     appearance: useRef(null),
     defaults: useRef(null),
     lists: useRef(null),
     icons: useRef(null),
+    themes: useRef(null),
+    dock: useRef(null),
+    branding: useRef(null),
     experimental: useRef(null),
+    auth: useRef(null),
+    admin: useRef(null),
   };
 
   // Populate form from context settings
@@ -119,13 +134,17 @@ function SettingsPage() {
       default_environment: ctxSettings.default_environment ?? '',
       vendor_icon_mode: ctxSettings.vendor_icon_mode ?? 'custom_files',
       show_experimental_features: ctxSettings.show_experimental_features ?? false,
+      show_page_hints: ctxSettings.show_page_hints ?? true,
       api_base_url: ctxSettings.api_base_url ?? '',
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
       categories: ctxSettings.categories ?? [],
       locations: ctxSettings.locations ?? [],
+      auth_enabled: ctxSettings.auth_enabled ?? false,
+      session_timeout_hours: ctxSettings.session_timeout_hours ?? 24,
     });
+    setAuthEnabled(ctxSettings.auth_enabled ?? false);
     setMapFilters(parseMapFilters(ctxSettings.map_default_filters));
-  }, [ctxSettings]);
+  }, [ctxSettings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll-spy: track which section is in view
   useEffect(() => {
@@ -161,9 +180,17 @@ function SettingsPage() {
 
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
-  const handleSave = async () => {
+  const handleAuthToggle = (checked) => {
+    if (checked && !isAuthenticated) {
+      setShowFirstUserDialog(true);
+    } else {
+      set('auth_enabled', checked);
+    }
+  };
+
+  const handleFirstUserRegistered = async () => {
+    setShowFirstUserDialog(false);
     setSaving(true);
-    setBanner(null);
     try {
       const mapFiltersJson = JSON.stringify({
         environment: mapFilters.environment || null,
@@ -177,7 +204,39 @@ function SettingsPage() {
         environments: form.environments,
         categories: form.categories,
         locations: form.locations,
+        auth_enabled: true,
+        session_timeout_hours: form.session_timeout_hours,
       });
+      setAuthEnabled(true);
+      await reloadSettings();
+      navigate('/login', { state: { message: 'Account created successfully. Please sign in.' } });
+    } catch (err) {
+      setBanner({ type: 'error', msg: `Failed to enable authentication: ${err.message}` });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setBanner(null);
+    try {
+      const mapFiltersJson = JSON.stringify({
+        environment: mapFilters.environment || null,
+        include: mapFilters.include,
+      });
+      const updated = await settingsApi.update({
+        ...form,
+        api_base_url: form.api_base_url || null,
+        default_environment: form.default_environment || null,
+        map_default_filters: mapFiltersJson,
+        environments: form.environments,
+        categories: form.categories,
+        locations: form.locations,
+        auth_enabled: form.auth_enabled,
+        session_timeout_hours: form.session_timeout_hours,
+      });
+      setAuthEnabled(form.auth_enabled);
       await reloadSettings();
       setBanner({ type: 'success', msg: 'Settings saved.' });
     } catch (err) {
@@ -193,6 +252,7 @@ function SettingsPage() {
       default_environment: ctxSettings.default_environment ?? '',
       vendor_icon_mode: ctxSettings.vendor_icon_mode ?? 'custom_files',
       show_experimental_features: ctxSettings.show_experimental_features ?? false,
+      show_page_hints: ctxSettings.show_page_hints ?? true,
       api_base_url: ctxSettings.api_base_url ?? '',
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
       categories: ctxSettings.categories ?? [],
@@ -221,6 +281,53 @@ function SettingsPage() {
         }
       },
     });
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await adminApi.export();
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `circuit-breaker-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setBanner({ type: 'error', msg: `Export failed: ${err.message}` });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // eslint-disable-next-line no-param-reassign
+    e.target.value = ''; // reset so the same file can be re-selected
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      setConfirmState({
+        open: true,
+        message: 'This will WIPE all current entities and replace them with the backup. This is irreversible. Continue?',
+        onConfirm: async () => {
+          setConfirmState((s) => ({ ...s, open: false }));
+          setImporting(true);
+          try {
+            const data = JSON.parse(evt.target.result);
+            await adminApi.import(data, true);
+            await reloadSettings();
+            setBanner({ type: 'success', msg: 'Backup restored successfully.' });
+          } catch (err) {
+            setBanner({ type: 'error', msg: `Import failed: ${err.message}` });
+          } finally {
+            setImporting(false);
+          }
+        },
+      });
+    };
+    reader.readAsText(file);
   };
 
   const toggleInclude = (type) => {
@@ -350,6 +457,24 @@ function SettingsPage() {
               Stored for use in the Map view (Phase 3). Does not affect current filters per view.
             </span>
           </div>
+
+          <div style={S.checkRow}>
+            <label className="toggle-switch" htmlFor="show-page-hints">
+              <input
+                type="checkbox"
+                id="show-page-hints"
+                checked={form.show_page_hints}
+                onChange={(e) => set('show_page_hints', e.target.checked)}
+              />
+              <span className="toggle-switch-track" />
+            </label>
+            <span
+              style={{ fontSize: 13, cursor: 'pointer' }}
+              onClick={() => set('show_page_hints', !form.show_page_hints)}
+            >
+              Show helpful hints on empty pages
+            </span>
+          </div>
         </div>
 
         {/* ── Environments & Categories ──────────── */}
@@ -401,7 +526,6 @@ function SettingsPage() {
               >
                 <option value="none">None — hide vendor icons</option>
                 <option value="custom_files">Custom files (current behavior)</option>
-                <option value="built_in">Built-in (reserved, coming soon)</option>
               </select>
             </div>
             <span style={S.hint}>
@@ -420,20 +544,44 @@ function SettingsPage() {
           </div>
         </div>
 
+        {/* ── Themes ──────────────────────────────── */}
+        <div ref={sectionRefs.themes} style={S.section}>
+          <div style={S.sectionTitle}>Themes</div>
+          <ThemeSettings />
+        </div>
+
+        {/* ── Dock ────────────────────────────────── */}
+        <div ref={sectionRefs.dock} style={S.section}>
+          <div style={S.sectionTitle}>Dock</div>
+          <DockSettings />
+        </div>
+
+        {/* ── Branding ────────────────────────────── */}
+        <div ref={sectionRefs.branding} style={S.section}>
+          <div style={S.sectionTitle}>Branding</div>
+          <BrandingSettings />
+        </div>
+
         {/* ── Experimental / Advanced ─────────────── */}
         <div ref={sectionRefs.experimental} style={S.section}>
           <div style={S.sectionTitle}>Experimental &amp; Advanced</div>
 
           <div style={S.checkRow}>
-            <input
-              type="checkbox"
-              id="show-experimental"
-              checked={form.show_experimental_features}
-              onChange={(e) => set('show_experimental_features', e.target.checked)}
-            />
-            <label htmlFor="show-experimental" style={{ fontSize: 13, cursor: 'pointer' }}>
-              Show experimental features
+            <label className="toggle-switch" htmlFor="show-experimental">
+              <input
+                type="checkbox"
+                id="show-experimental"
+                checked={form.show_experimental_features}
+                onChange={(e) => set('show_experimental_features', e.target.checked)}
+              />
+              <span className="toggle-switch-track" />
             </label>
+            <span
+              style={{ fontSize: 13, cursor: 'pointer' }}
+              onClick={() => set('show_experimental_features', !form.show_experimental_features)}
+            >
+              Show experimental features
+            </span>
           </div>
 
           {form.api_base_url !== undefined && (
@@ -471,6 +619,118 @@ function SettingsPage() {
           </div>
         </div>
 
+        {/* ── Authentication ───────────────────────── */}
+        <div ref={sectionRefs.auth} style={S.section}>
+          <div style={S.sectionTitle}>Authentication</div>
+
+          <div style={S.checkRow}>
+            <label className="toggle-switch" htmlFor="auth-enabled">
+              <input
+                type="checkbox"
+                id="auth-enabled"
+                checked={form.auth_enabled}
+                onChange={(e) => handleAuthToggle(e.target.checked)}
+              />
+              <span className="toggle-switch-track" />
+            </label>
+            <span
+              style={{ fontSize: 13, cursor: 'pointer' }}
+              onClick={() => handleAuthToggle(!form.auth_enabled)}
+            >
+              Enable Authentication
+            </span>
+          </div>
+
+          <div style={{ ...S.hint, marginBottom: 16 }}>
+            {form.auth_enabled
+              ? 'Enabled — write operations (create / edit / delete) require a valid login.'
+              : 'Disabled — all operations are open without login.'}
+          </div>
+
+          {form.auth_enabled && (
+            <>
+              <div style={S.row}>
+                <div style={S.label}>JWT Secret</div>
+                <div style={{ ...S.readonlyField, fontSize: 12, lineHeight: '1.6' }}>
+                  A JWT secret is stored securely on the server and signs all authentication tokens.
+                  It is intentionally excluded from API responses to prevent exposure.
+                  To rotate the secret, disable then re-enable authentication.
+                </div>
+              </div>
+
+              <div style={S.row}>
+                <label htmlFor="session-timeout" style={S.label}>Session Timeout (hours)</label>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <input
+                    id="session-timeout"
+                    type="number"
+                    min={1}
+                    max={720}
+                    value={form.session_timeout_hours}
+                    onChange={(e) => set('session_timeout_hours', parseInt(e.target.value, 10) || 24)}
+                    style={{ width: 120 }}
+                  />
+                </div>
+                <span style={S.hint}>How long tokens stay valid (1–720 hours).</span>
+              </div>
+
+              <div style={{ ...S.readonlyField, marginTop: 8 }}>
+                <strong>First user registration:</strong>
+                <br />
+                <code style={{ fontSize: 11 }}>
+                  POST /api/v1/auth/register {'{'}&quot;email&quot;: &quot;you@example.com&quot;, &quot;password&quot;: &quot;…&quot;{'}'}
+                </code>
+                <br />
+                <span style={{ fontSize: 11 }}>Or use the Login button in the top-right avatar dropdown.</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Admin & Backup ─────────────────────── */}
+        <div ref={sectionRefs.admin} style={S.section}>
+          <div style={S.sectionTitle}>Admin &amp; Backup</div>
+
+          <div style={S.row}>
+            <div style={S.label}>Export Backup</div>
+            <span style={S.hint}>
+              Download a full JSON snapshot of all entities, relationships, tags, and docs.
+              Does not include users, settings, or logs.
+            </span>
+            <div style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                onClick={handleExport}
+                disabled={exporting}
+              >
+                {exporting ? 'Exporting…' : 'Download Backup'}
+              </button>
+            </div>
+          </div>
+
+          <div style={S.row}>
+            <div style={S.label}>Restore Backup</div>
+            <div style={{ ...S.banner(true), marginBottom: 8 }}>
+              ⚠ <strong>Warning</strong> — restoring a backup will <strong>permanently delete all current
+              entities</strong> and replace them with the backup data. This cannot be undone.
+            </div>
+            <label
+              className="btn btn-secondary btn-sm"
+              style={{ cursor: importing ? 'not-allowed' : 'pointer', display: 'inline-block' }}
+            >
+              {importing ? 'Importing…' : 'Choose Backup File…'}
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={handleImportFile}
+                disabled={importing}
+                style={{ display: 'none' }}
+              />
+            </label>
+          </div>
+        </div>
+
         </div>{/* end .settings-content */}
       </div>{/* end .settings-layout */}
 
@@ -479,6 +739,12 @@ function SettingsPage() {
         message={confirmState.message}
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
+
+      <FirstUserDialog
+        isOpen={showFirstUserDialog}
+        onClose={() => setShowFirstUserDialog(false)}
+        onRegistered={handleFirstUserRegistered}
       />
     </div>
   );

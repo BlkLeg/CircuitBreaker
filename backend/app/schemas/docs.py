@@ -21,6 +21,7 @@ class Doc(DocBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    body_html: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

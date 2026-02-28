@@ -1,9 +1,20 @@
 import axios from 'axios';
 import logger from '../utils/logger';
 
+const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
+
 const client = axios.create({
   baseURL: '/api/v1',
   headers: { 'Content-Type': 'application/json' },
+});
+
+// Attach JWT from localStorage on every request
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 client.interceptors.response.use(
@@ -139,6 +150,13 @@ export const docsApi = {
   detach: (data) => client.delete('/docs/attach', { data }),
   byEntity: (entity_type, entity_id) =>
     client.get('/docs/by-entity', { params: { entity_type, entity_id } }),
+  uploadImage: (docId, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post(`/docs/${docId}/upload-image`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 export const graphApi = {
@@ -155,6 +173,13 @@ export const settingsApi = {
   get: () => client.get('/settings'),
   update: (data) => client.put('/settings', data),
   reset: () => client.post('/settings/reset'),
+};
+
+export const adminApi = {
+  export: () => client.get('/admin/export'),
+  import: (data, wipeBeforeImport = false) =>
+    client.post('/admin/import', { wipe_before_import: wipeBeforeImport, data }),
+  recentChanges: (limit = 10) => client.get('/admin/recent-changes', { params: { limit } }),
 };
 
 export const logsApi = {

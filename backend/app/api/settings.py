@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.settings import AppSettingsRead, AppSettingsUpdate
 from app.services import settings_service
@@ -15,12 +16,12 @@ def get_settings(db: Session = Depends(get_db)):
 
 
 @router.put("", response_model=AppSettingsRead)
-def put_settings(payload: AppSettingsUpdate, db: Session = Depends(get_db)):
+def put_settings(payload: AppSettingsUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     """Merge-update app settings. Only supplied fields are changed."""
     return settings_service.update_settings(db, payload)
 
 
 @router.post("/reset", response_model=AppSettingsRead)
-def reset_settings(db: Session = Depends(get_db)):
+def reset_settings(db: Session = Depends(get_db), _=Depends(require_write_auth)):
     """Reset all settings to factory defaults."""
     return settings_service.reset_settings(db)

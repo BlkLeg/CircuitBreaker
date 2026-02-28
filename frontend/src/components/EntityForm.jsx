@@ -5,7 +5,7 @@ import { getOsOption } from '../icons/osOptions';
 import { CPU_BRAND_MAP } from '../config/cpuBrands';
 import { slugify } from '../utils/slugify';
 
-function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange, apiErrors = {} }) {
+function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange, apiErrors = {}, onValidate }) {
   // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
   const [values, setValuesInternal] = useState(() => {
     const init = { ...initialValues };
@@ -36,6 +36,7 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
   }
 
   const [clearedApiErrors, setClearedApiErrors] = React.useState({});
+  const [validationErrors, setValidationErrors] = React.useState({});
 
   const setValues = (updater) => {
     setValuesInternal((prev) => {
@@ -60,8 +61,10 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     } else {
       coerced = value;
     }
-    // Clear any API error for this field when the user edits it
+    // Clear any API/Validation error for this field when the user edits it
     setClearedApiErrors((prev) => ({ ...prev, [name]: true }));
+    setValidationErrors((prev) => ({ ...prev, [name]: null }));
+    
     setValues((prev) => {
       const next = { ...prev, [name]: coerced };
       // Auto-update any un-dirty slug fields that watch this field
@@ -78,11 +81,15 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
   const handleSlugChange = (e) => {
     const { name, value } = e.target;
     setSlugDirtyFields((prev) => ({ ...prev, [name]: true }));
+    setValidationErrors((prev) => ({ ...prev, [name]: null }));
+    setClearedApiErrors((prev) => ({ ...prev, [name]: true }));
     setValues((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleResetSlug = (fieldName, sourceFieldName) => {
     setSlugDirtyFields((prev) => ({ ...prev, [fieldName]: false }));
+    setValidationErrors((prev) => ({ ...prev, [fieldName]: null }));
+    setClearedApiErrors((prev) => ({ ...prev, [fieldName]: true }));
     setValues((prev) => ({ ...prev, [fieldName]: slugify(String(prev[sourceFieldName] ?? '')) }));
   };
 
@@ -97,6 +104,15 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
           : [];
       }
     });
+
+    if (onValidate) {
+      const errors = onValidate(submitted);
+      if (errors && Object.keys(errors).length > 0) {
+        setValidationErrors(errors);
+        return; // Block submission
+      }
+    }
+
     onSubmit(submitted);
   };
 
@@ -236,13 +252,16 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
     <form className="entity-form" onSubmit={handleSubmit}>
       {fields.map((field) => {
         const apiErr = !clearedApiErrors[field.name] ? apiErrors[field.name] : null;
+        const validErr = validationErrors[field.name];
+        const errorMsg = validErr || apiErr;
+        
         return (
           <div key={field.name} className="form-group">
             <label htmlFor={field.name}>{field.label}</label>
             {renderField(field)}
             {field.hint && <p className="form-hint">{field.hint}</p>}
-            {apiErr && (
-              <p style={{ margin: '4px 0 0', fontSize: 12, color: '#e74c3c' }}>{apiErr}</p>
+            {errorMsg && (
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: '#e74c3c' }}>{errorMsg}</p>
             )}
           </div>
         );
@@ -281,6 +300,7 @@ EntityForm.propTypes = {
   onCancel: PropTypes.func.isRequired,
   onDirtyChange: PropTypes.func,
   apiErrors: PropTypes.object,
+  onValidate: PropTypes.func,
 };
 
 export default EntityForm;

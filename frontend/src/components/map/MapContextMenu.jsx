@@ -17,9 +17,9 @@ const LINK_ITEMS = {
   service:  ['hardware', 'compute', 'storage', 'misc', 'network'],
   compute:  ['hardware', 'service', 'network'],
   hardware: ['compute', 'storage'],
-  network:  ['compute'],
+  network:  ['compute', 'service'],
   storage:  ['hardware', 'service'],
-  misc:     [],
+  misc:     ['service'],
 };
 
 const LINK_LABEL = {
@@ -47,9 +47,12 @@ const UPDATE_ICON_API = {
   hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
   compute:  (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
   service:  (id, slug) => servicesApi.update(id, { icon_slug: slug }),
+  storage:  (id, slug) => storageApi.update(id, { icon_slug: slug }),
+  network:  (id, slug) => networksApi.update(id, { icon_slug: slug }),
+  misc:     (id, slug) => miscApi.update(id, { icon_slug: slug }),
 };
 
-const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service']);
+const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service', 'storage', 'network', 'misc']);
 
 function getLabel(entity, type) {
   return entity.name || entity.hostname || entity.slug || entity.cidr || `#${entity.id}`;
@@ -92,10 +95,21 @@ async function performLink(srcNode, targetType, targetEntity) {
   }
   if (srcType === 'network') {
     if (targetType === 'compute')  return networksApi.addMember(srcId, { compute_id: tgtId });
+    if (targetType === 'service') {
+      // Resolve the service's hosting compute or hardware, then join that to the network
+      const svcRes = await servicesApi.get(tgtId);
+      const svc = svcRes.data;
+      if (svc.compute_id)  return networksApi.addMember(srcId, { compute_id: svc.compute_id });
+      if (svc.hardware_id) return networksApi.addHardwareMember(srcId, { hardware_id: svc.hardware_id });
+      throw new Error('Service has no hosting compute or hardware — cannot join network');
+    }
   }
   if (srcType === 'storage') {
     if (targetType === 'service')  return servicesApi.addStorage(tgtId, { storage_id: srcId });
     if (targetType === 'hardware') return storageApi.update(srcId, { hardware_id: tgtId });
+  }
+  if (srcType === 'misc') {
+    if (targetType === 'service')  return servicesApi.addMisc(tgtId, { misc_id: srcId });
   }
   throw new Error(`No API mapping for ${srcType} → ${targetType}`);
 }

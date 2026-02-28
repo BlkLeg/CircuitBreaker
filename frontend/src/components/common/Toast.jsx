@@ -54,10 +54,10 @@ export function useToast() {
 // ── Toast Stack UI ────────────────────────────────────────────────────────────
 
 const VARIANT_STYLES = {
-  success: { bg: '#1a3a2a', border: '#2ecc71', icon: '✓', color: '#2ecc71' },
-  error:   { bg: '#3a1a1a', border: '#e74c3c', icon: '✕', color: '#e74c3c' },
-  warn:    { bg: '#3a2e10', border: '#f39c12', icon: '⚠', color: '#f39c12' },
-  info:    { bg: '#1a2a3a', border: '#3498db', icon: 'ℹ', color: '#3498db' },
+  success: { bg: 'var(--color-surface)', border: '#2ecc71', icon: '\u2713', color: '#2ecc71' },
+  error:   { bg: 'var(--color-surface)', border: '#e74c3c', icon: '\u2715', color: '#e74c3c' },
+  warn:    { bg: 'var(--color-surface)', border: '#f39c12', icon: '\u26a0', color: '#f39c12' },
+  info:    { bg: 'var(--color-surface)', border: '#3498db', icon: '\u2139', color: '#3498db' },
 };
 
 function ToastStack({ toasts, onDismiss }) {

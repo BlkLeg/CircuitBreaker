@@ -11,6 +11,7 @@ import FormModal from '../components/common/FormModal';
 import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
+import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -190,9 +191,11 @@ function ComputeUnitsPage() {
         </button>
       </div>
 
-      <div className="info-tip">
-        💡 <strong>Hierarchy tip:</strong> A <em>Hardware</em> node is a physical machine. A <em>Compute Unit</em> is a VM or container running on that hardware. Services then run inside compute units (or directly on hardware for bare-metal). One hardware node can host many compute units.
-      </div>
+      {settings?.show_page_hints && (
+        <div className="info-tip">
+          💡 <strong>Hierarchy tip:</strong> A <em>Hardware</em> node is a physical machine. A <em>Compute Unit</em> is a VM or container running on that hardware. Services then run inside compute units (or directly on hardware for bare-metal). One hardware node can host many compute units.
+        </div>
+      )}
 
       <div className="filter-bar">
         <SearchBox value={q} onChange={setQ} />
@@ -213,6 +216,12 @@ function ComputeUnitsPage() {
           ))}
         </select>
       </div>
+
+      {!loading && items.length === 0 && settings?.show_page_hints && (
+        <div className="info-tip" style={{ marginBottom: 12 }}>
+          💡 <strong>Tip:</strong> Add compute units (VMs or containers) that run on your hardware nodes. Add hardware first, then create compute units here before assigning services to them.
+        </div>
+      )}
 
       {loading ? <p>Loading...</p> : (
         <EntityTable
@@ -236,6 +245,14 @@ function ComputeUnitsPage() {
         fields={buildFields(editTarget?.icon_slug ?? null)}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
+        onValidate={(values) => {
+          const errors = {};
+          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          if (nameErr) errors.name = nameErr;
+          const ipErr = validateIpAddress(values.ip_address);
+          if (ipErr) errors.ip_address = ipErr;
+          return errors;
+        }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
       />

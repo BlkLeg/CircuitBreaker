@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.misc import MiscItem, MiscItemCreate, MiscItemUpdate
 from app.services import misc_service
@@ -20,7 +21,7 @@ def list_misc(
 
 
 @router.post("", response_model=MiscItem, status_code=201)
-def create_misc_item(payload: MiscItemCreate, db: Session = Depends(get_db)):
+def create_misc_item(payload: MiscItemCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return misc_service.create_misc_item(db, payload)
     except IntegrityError:
@@ -37,7 +38,7 @@ def get_misc_item(item_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{item_id}", response_model=MiscItem)
-def patch_misc_item(item_id: int, payload: MiscItemUpdate, db: Session = Depends(get_db)):
+def patch_misc_item(item_id: int, payload: MiscItemUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return misc_service.update_misc_item(db, item_id, payload)
     except ValueError as exc:
@@ -48,7 +49,7 @@ def patch_misc_item(item_id: int, payload: MiscItemUpdate, db: Session = Depends
 
 
 @router.delete("/{item_id}", status_code=204)
-def delete_misc_item(item_id: int, db: Session = Depends(get_db)):
+def delete_misc_item(item_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         misc_service.delete_misc_item(db, item_id)
     except ValueError as exc:

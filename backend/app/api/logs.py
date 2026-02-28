@@ -6,6 +6,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+
+from app.core.security import require_write_auth
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, or_
 
@@ -91,7 +93,7 @@ def list_logs(
 
 
 @router.delete("")
-def clear_logs(db: Session = Depends(get_db)):
+def clear_logs(db: Session = Depends(get_db), _=Depends(require_write_auth)):
     deleted = db.execute(select(Log)).scalars().all()
     count = len(deleted)
     for row in deleted:

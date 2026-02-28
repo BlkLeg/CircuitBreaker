@@ -23,8 +23,16 @@ htmlcov/
 node_modules/
 frontend/build/
 frontend/.env.local
-frontend/.env.production.local
+frontend/.env.*.local
 .npm/
+
+# Env files with real secrets (frontend/.env contains only safe defaults)
+backend/.env
+backend/.env.*
+.env.local
+frontend/.env.local
+frontend/.env.*.local
+.env
 
 # Docker
 docker/data/

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 class MiscItemBase(BaseModel):
     name: str
     kind: Optional[str] = None
+    icon_slug: Optional[str] = None
     url: Optional[str] = None
     description: Optional[str] = None
     tags: list[str] = []
@@ -18,6 +19,7 @@ class MiscItemCreate(MiscItemBase):
 class MiscItemUpdate(BaseModel):
     name: Optional[str] = None
     kind: Optional[str] = None
+    icon_slug: Optional[str] = None
     url: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list[str]] = None

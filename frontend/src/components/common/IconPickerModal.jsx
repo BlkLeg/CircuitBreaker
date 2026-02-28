@@ -236,15 +236,16 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
           padding: '12px 18px', borderTop: '1px solid var(--color-border)', gap: 10, flexShrink: 0,
         }}>
           <div>
-            <input ref={fileRef} type="file" accept=".svg,.png" style={{ display: 'none' }} onChange={handleFileUpload} />
+            <input ref={fileRef} type="file" accept=".png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={handleFileUpload} />
             <button
               className="btn"
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
+              title="PNG, JPEG, or WebP — max 1 MB"
               style={{ display: 'flex', alignItems: 'center', gap: 6 }}
             >
               <Upload size={14} />
-              {uploading ? 'Uploading…' : 'Upload custom icon'}
+              {uploading ? 'Uploading…' : 'Upload icon (PNG/JPEG/WebP)'}
             </button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

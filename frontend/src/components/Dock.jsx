@@ -4,7 +4,7 @@ import { BookOpen, Cpu, GripHorizontal, Layers, Network, ScrollText, Server, Set
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
-const NAV_MAP = {
+export const NAV_MAP = {
   '/hardware':      { icon: Cpu,        label: 'Hardware' },
   '/compute-units': { icon: Server,     label: 'Compute'  },
   '/services':      { icon: Layers,     label: 'Services' },
@@ -15,7 +15,7 @@ const NAV_MAP = {
   '/settings':      { icon: Settings,   label: 'Settings' },
 };
 
-const DEFAULT_ORDER = [
+export const DEFAULT_ORDER = [
   '/map',
   '/hardware',
   '/compute-units',
@@ -47,8 +47,9 @@ function Dock() {
       ]
     : DEFAULT_ORDER;
 
+  const hiddenItems = new Set(settings?.dock_hidden_items ?? []);
   const navItems = order
-    .filter((path) => NAV_MAP[path])
+    .filter((path) => NAV_MAP[path] && !hiddenItems.has(path))
     .map((path) => ({ path, ...NAV_MAP[path] }));
 
   /* ── Horizontal scroll ───────────────────────────────── */

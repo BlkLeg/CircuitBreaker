@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { searchApi } from '../api/client';
+import { useAuth } from '../context/AuthContext.jsx';
 
 const DEFAULT_ITEMS = [
   { id: 'default-1', icon: '🖥️', title: 'Go to: Hardware',              action_url: '/hardware'       },
@@ -18,6 +19,9 @@ const DEFAULT_ITEMS = [
   { id: 'settings-defaults',    icon: '🏷️', title: 'Settings: Defaults',                  action_url: '/settings?section=defaults'          },
   { id: 'settings-icons',       icon: '🖼️', title: 'Settings: Icons & Vendors',           action_url: '/settings?section=icons'             },
   { id: 'settings-experimental',icon: '🧪', title: 'Settings: Experimental',              action_url: '/settings?section=experimental'      },
+  { id: 'settings-auth',        icon: '🔒', title: 'Open: Authentication Settings',        action_url: '/settings?section=auth'              },
+  { id: 'auth-login',           icon: '👤', title: 'Open: Login',                          action_fn: 'openAuthModal'                         },
+  { id: 'auth-profile',         icon: '🪪', title: 'Open: Profile',                        action_fn: 'openProfileModal'                      },
   { id: 'nav-logs',          icon: '🕐', title: 'Open: Logs',              action_url: '/logs' },
   { id: 'logs-filter-crud',  icon: '📋', title: 'Logs: Filter by CRUD',    action_url: '/logs' },
   { id: 'logs-filter-svc',   icon: '🔧', title: 'Logs: Filter by service', action_url: '/logs' },
@@ -45,6 +49,7 @@ function CommandPalette({ isOpen, onClose }) {
   const debounceRef = useRef(null);
   const panelRef = useRef(null);
   const navigate = useNavigate();
+  const { openAuthModal, openProfileModal } = useAuth();
 
   // Auto-focus when palette opens
   useEffect(() => {
@@ -94,8 +99,14 @@ function CommandPalette({ isOpen, onClose }) {
     debounceRef.current = setTimeout(() => doSearch(val), 200);
   };
 
-  const handleSelect = (url) => {
-    navigate(url);
+  const authFns = { openAuthModal, openProfileModal };
+
+  const handleSelect = (item) => {
+    if (item.action_fn && authFns[item.action_fn]) {
+      authFns[item.action_fn]();
+    } else if (item.action_url) {
+      navigate(item.action_url);
+    }
     onClose();
   };
 
@@ -142,7 +153,7 @@ function CommandPalette({ isOpen, onClose }) {
             <button
               key={item.id}
               className="palette-result-item"
-              onClick={() => handleSelect(item.action_url)}
+              onClick={() => handleSelect(item)}
             >
               {showDefaults ? (
                 <span className="palette-default-icon">{item.icon}</span>

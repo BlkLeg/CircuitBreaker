@@ -1,0 +1,191 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { authApi } from '../../api/auth.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+
+const RULES = [
+  { label: 'At least 8 characters', test: (p) => p.length >= 8 },
+  { label: 'One uppercase letter (A–Z)', test: (p) => /[A-Z]/.test(p) },
+  { label: 'One lowercase letter (a–z)', test: (p) => /[a-z]/.test(p) },
+  { label: 'One digit (0–9)', test: (p) => /[0-9]/.test(p) },
+  { label: 'One special character (!@#$%^&*…)', test: (p) => /[^A-Za-z0-9]/.test(p) },
+];
+
+function AuthModal({ isOpen, onClose }) {
+  const { login } = useAuth();
+  const [tab, setTab] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setEmail('');
+      setPassword('');
+      setError('');
+      setTab('login');
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  const validate = () => {
+    if (!email.includes('@')) return 'Enter a valid email address.';
+    if (tab === 'register') {
+      if (!RULES.every((r) => r.test(password))) return 'Password does not meet all requirements.';
+    } else {
+      if (password.length < 1) return 'Password is required.';
+    }
+    return null;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const validationError = validate();
+    if (validationError) { setError(validationError); return; }
+    setError('');
+    setLoading(true);
+    try {
+      const fn = tab === 'login' ? authApi.login : authApi.register;
+      const res = await fn(email, password);
+      login(res.data.token, res.data.user);
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Authentication failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="modal" style={{ width: 360 }}>
+        <h3 style={{ marginBottom: 20, textAlign: 'center' }}>
+          {tab === 'login' ? 'Login' : 'Register'}
+        </h3>
+
+        {/* Tab toggle */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          {['login', 'register'].map((t) => (
+            <button
+              key={t}
+              onClick={() => { setTab(t); setError(''); }}
+              style={{
+                flex: 1,
+                padding: '7px 0',
+                borderRadius: 6,
+                border: `1px solid ${tab === t ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                background: tab === t ? 'rgba(0,212,255,0.1)' : 'transparent',
+                color: tab === t ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                cursor: 'pointer',
+                fontSize: 13,
+                textTransform: 'capitalize',
+              }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} noValidate>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+              Email
+            </label>
+            <input
+              ref={inputRef}
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              autoComplete="email"
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+                borderRadius: 6, padding: '8px 12px',
+                color: 'var(--color-text)', fontSize: 14,
+              }}
+            />
+          </div>
+          <div style={{ marginBottom: tab === 'register' ? 8 : 20 }}>
+            <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+              Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete={tab === 'login' ? 'current-password' : 'new-password'}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+                borderRadius: 6, padding: '8px 12px',
+                color: 'var(--color-text)', fontSize: 14,
+              }}
+            />
+          </div>
+
+          {tab === 'register' && (
+            <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 20px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {RULES.map((rule) => {
+                const ok = rule.test(password);
+                return (
+                  <li key={rule.label} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <span style={{ color: ok ? 'var(--color-primary)' : 'var(--color-text-muted)', fontWeight: 700, lineHeight: 1 }}>
+                      {ok ? '✓' : '✗'}
+                    </span>
+                    <span style={{ color: ok ? 'var(--color-text)' : 'var(--color-text-muted)' }}>
+                      {rule.label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {error && (
+            <div style={{ color: 'var(--color-danger)', fontSize: 13, marginBottom: 14 }}>
+              {error}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onClose}
+              style={{ flex: 1 }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={loading}
+              style={{ flex: 1 }}
+            >
+              {loading ? '…' : (tab === 'login' ? 'Login' : 'Register')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default AuthModal;

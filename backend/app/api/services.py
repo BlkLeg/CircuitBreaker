@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.services import (
     Service,
@@ -36,7 +37,7 @@ def list_services(
 
 
 @router.post("", response_model=Service, status_code=201)
-def create_service(payload: ServiceCreate, db: Session = Depends(get_db)):
+def create_service(payload: ServiceCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return services_service.create_service(db, payload)
     except IntegrityError:
@@ -53,7 +54,7 @@ def get_service(service_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{service_id}", response_model=Service)
-def patch_service(service_id: int, payload: ServiceUpdate, db: Session = Depends(get_db)):
+def patch_service(service_id: int, payload: ServiceUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return services_service.update_service(db, service_id, payload)
     except ValueError as exc:
@@ -64,11 +65,14 @@ def patch_service(service_id: int, payload: ServiceUpdate, db: Session = Depends
 
 
 @router.delete("/{service_id}", status_code=204)
-def delete_service(service_id: int, db: Session = Depends(get_db)):
+def delete_service(service_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         services_service.delete_service(db, service_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Cannot delete: record is still referenced by other entities.")
 
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
@@ -80,7 +84,7 @@ def get_dependencies(service_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{service_id}/dependencies", response_model=ServiceDependency, status_code=201)
-def add_dependency(service_id: int, payload: ServiceDependencyCreate, db: Session = Depends(get_db)):
+def add_dependency(service_id: int, payload: ServiceDependencyCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return services_service.add_dependency(db, service_id, payload.depends_on_id)
     except ValueError as exc:
@@ -88,7 +92,7 @@ def add_dependency(service_id: int, payload: ServiceDependencyCreate, db: Sessio
 
 
 @router.delete("/{service_id}/dependencies/{depends_on_id}", status_code=204)
-def remove_dependency(service_id: int, depends_on_id: int, db: Session = Depends(get_db)):
+def remove_dependency(service_id: int, depends_on_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         services_service.remove_dependency(db, service_id, depends_on_id)
     except ValueError as exc:
@@ -104,7 +108,7 @@ def get_service_storage(service_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{service_id}/storage", response_model=ServiceStorageRead, status_code=201)
-def add_storage_link(service_id: int, payload: ServiceStorageLink, db: Session = Depends(get_db)):
+def add_storage_link(service_id: int, payload: ServiceStorageLink, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return services_service.add_storage_link(db, service_id, payload.storage_id, payload.purpose)
     except ValueError as exc:
@@ -112,7 +116,7 @@ def add_storage_link(service_id: int, payload: ServiceStorageLink, db: Session =
 
 
 @router.delete("/{service_id}/storage/{storage_id}", status_code=204)
-def remove_storage_link(service_id: int, storage_id: int, db: Session = Depends(get_db)):
+def remove_storage_link(service_id: int, storage_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         services_service.remove_storage_link(db, service_id, storage_id)
     except ValueError as exc:
@@ -128,7 +132,7 @@ def get_service_misc(service_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{service_id}/misc", response_model=ServiceMiscRead, status_code=201)
-def add_misc_link(service_id: int, payload: ServiceMiscLink, db: Session = Depends(get_db)):
+def add_misc_link(service_id: int, payload: ServiceMiscLink, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return services_service.add_misc_link(db, service_id, payload.misc_id, payload.purpose)
     except ValueError as exc:
@@ -136,7 +140,7 @@ def add_misc_link(service_id: int, payload: ServiceMiscLink, db: Session = Depen
 
 
 @router.delete("/{service_id}/misc/{misc_id}", status_code=204)
-def remove_misc_link(service_id: int, misc_id: int, db: Session = Depends(get_db)):
+def remove_misc_link(service_id: int, misc_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         services_service.remove_misc_link(db, service_id, misc_id)
     except ValueError as exc:

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate
 from app.services import hardware_service
@@ -20,7 +21,7 @@ def list_hardware(
 
 
 @router.post("", response_model=Hardware, status_code=201)
-def create_hardware(payload: HardwareCreate, db: Session = Depends(get_db)):
+def create_hardware(payload: HardwareCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return hardware_service.create_hardware(db, payload)
     except IntegrityError:
@@ -37,7 +38,7 @@ def get_hardware(hardware_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{hardware_id}", response_model=Hardware)
-def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = Depends(get_db)):
+def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     update = HardwareUpdate(**payload.model_dump())
     try:
         return hardware_service.update_hardware(db, hardware_id, update)
@@ -49,7 +50,7 @@ def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = De
 
 
 @router.patch("/{hardware_id}", response_model=Hardware)
-def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Session = Depends(get_db)):
+def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return hardware_service.update_hardware(db, hardware_id, payload)
     except ValueError as exc:
@@ -60,7 +61,7 @@ def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Session = Depe
 
 
 @router.delete("/{hardware_id}", status_code=204)
-def delete_hardware(hardware_id: int, db: Session = Depends(get_db)):
+def delete_hardware(hardware_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         hardware_service.delete_hardware(db, hardware_id)
     except ValueError as exc:

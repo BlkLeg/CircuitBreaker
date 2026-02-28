@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class NetworkBase(BaseModel):
     name: str
+    icon_slug: Optional[str] = None
     cidr: Optional[str] = None
     vlan_id: Optional[int] = None
     gateway: Optional[str] = None
@@ -18,6 +19,7 @@ class NetworkCreate(NetworkBase):
 
 class NetworkUpdate(BaseModel):
     name: Optional[str] = None
+    icon_slug: Optional[str] = None
     cidr: Optional[str] = None
     vlan_id: Optional[int] = None
     gateway: Optional[str] = None

@@ -119,7 +119,26 @@ def delete_service(db: Session, service_id: int) -> None:
     svc = db.get(Service, service_id)
     if svc is None:
         raise NotFoundError(f"Service {service_id} not found")
+    # Remove entity tags
     _sync_tags(db, "service", svc.id, [])
+    # Remove dependency rows referencing this service on either side
+    for dep in list(db.execute(
+        select(ServiceDependency).where(
+            (ServiceDependency.service_id == svc.id) |
+            (ServiceDependency.depends_on_id == svc.id)
+        )
+    ).scalars().all()):
+        db.delete(dep)
+    # Remove storage and misc links
+    for link in list(db.execute(
+        select(ServiceStorage).where(ServiceStorage.service_id == svc.id)
+    ).scalars().all()):
+        db.delete(link)
+    for link in list(db.execute(
+        select(ServiceMisc).where(ServiceMisc.service_id == svc.id)
+    ).scalars().all()):
+        db.delete(link)
+    db.flush()
     db.delete(svc)
     db.commit()
 

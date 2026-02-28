@@ -6,6 +6,7 @@ import { miscApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
+import { validateDuplicateName } from '../utils/validation';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -137,6 +138,12 @@ function MiscPage() {
         fields={FIELDS}
         initialValues={editTarget || {}}
         onSubmit={handleSubmit}
+        onValidate={(values) => {
+          const errors = {};
+          const nameErr = validateDuplicateName(values.name, items, editTarget?.id);
+          if (nameErr) errors.name = nameErr;
+          return errors;
+        }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
       />

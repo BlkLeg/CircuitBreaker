@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.storage import Storage, StorageCreate, StorageUpdate
 from app.services import storage_service
@@ -21,7 +22,7 @@ def list_storage(
 
 
 @router.post("", response_model=Storage, status_code=201)
-def create_storage(payload: StorageCreate, db: Session = Depends(get_db)):
+def create_storage(payload: StorageCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return storage_service.create_storage(db, payload)
     except IntegrityError:
@@ -38,7 +39,7 @@ def get_storage(storage_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{storage_id}", response_model=Storage)
-def patch_storage(storage_id: int, payload: StorageUpdate, db: Session = Depends(get_db)):
+def patch_storage(storage_id: int, payload: StorageUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         return storage_service.update_storage(db, storage_id, payload)
     except ValueError as exc:
@@ -49,7 +50,7 @@ def patch_storage(storage_id: int, payload: StorageUpdate, db: Session = Depends
 
 
 @router.delete("/{storage_id}", status_code=204)
-def delete_storage(storage_id: int, db: Session = Depends(get_db)):
+def delete_storage(storage_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     try:
         storage_service.delete_storage(db, storage_id)
     except ValueError as exc:

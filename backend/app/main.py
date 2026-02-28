@@ -11,9 +11,16 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import engine, Base
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs
+from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth
 from app.api.settings import router as settings_router
+from app.api.branding import router as branding_router
+from app.api.admin import router as admin_router
+from app.api.security_status import router as security_router
 from app.middleware.logging_middleware import LoggingMiddleware
+
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.rate_limit import limiter
 
 _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)
@@ -119,6 +126,54 @@ def _run_migrations(conn) -> None:
     st_cols = _get_columns(conn, "storage")
     if "used_gb" not in st_cols:
         conn.execute("ALTER TABLE storage ADD COLUMN used_gb INTEGER")
+    # app_settings: auth fields
+    settings_cols = _get_columns(conn, "app_settings")
+    if "auth_enabled" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN auth_enabled BOOLEAN DEFAULT FALSE")
+    if "jwt_secret" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN jwt_secret TEXT")
+    if "session_timeout_hours" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN session_timeout_hours INTEGER DEFAULT 24")
+    # docs.body_html
+    doc_cols = _get_columns(conn, "docs")
+    if "body_html" not in doc_cols:
+        conn.execute("ALTER TABLE docs ADD COLUMN body_html TEXT")
+    # app_settings: branding fields
+    settings_cols = _get_columns(conn, "app_settings")
+    if "app_name" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN app_name TEXT DEFAULT 'Circuit Breaker'")
+    if "favicon_path" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN favicon_path TEXT")
+    if "login_logo_path" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN login_logo_path TEXT")
+    if "primary_color" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN primary_color TEXT DEFAULT '#00d4ff'")
+    if "accent_colors" not in settings_cols:
+        conn.execute('ALTER TABLE app_settings ADD COLUMN accent_colors TEXT DEFAULT \'["#ff6b6b","#4ecdc4"]\'')
+    # app_settings: advanced theming
+    settings_cols = _get_columns(conn, "app_settings")
+    if "theme_preset" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN theme_preset TEXT DEFAULT 'cyberpunk-neon'")
+    if "custom_colors" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN custom_colors TEXT")
+    # storage.icon_slug
+    st_cols = _get_columns(conn, "storage")
+    if "icon_slug" not in st_cols:
+        conn.execute("ALTER TABLE storage ADD COLUMN icon_slug TEXT")
+    # networks.icon_slug
+    net_cols = _get_columns(conn, "networks")
+    if "icon_slug" not in net_cols:
+        conn.execute("ALTER TABLE networks ADD COLUMN icon_slug TEXT")
+    # misc_items.icon_slug
+    misc_cols = _get_columns(conn, "misc_items")
+    if "icon_slug" not in misc_cols:
+        conn.execute("ALTER TABLE misc_items ADD COLUMN icon_slug TEXT")
+    # app_settings: dock_hidden_items + show_page_hints
+    settings_cols = _get_columns(conn, "app_settings")
+    if "dock_hidden_items" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN dock_hidden_items TEXT")
+    if "show_page_hints" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_page_hints BOOLEAN DEFAULT TRUE")
 
 
 @asynccontextmanager
@@ -139,6 +194,10 @@ async def lifespan(app: FastAPI):
                 _run_migrations(conn)
     # Ensure user-icons upload dir exists
     Path("data/user-icons").mkdir(parents=True, exist_ok=True)
+    # Ensure profile photos upload dir exists
+    Path("data/uploads/profiles").mkdir(parents=True, exist_ok=True)
+    # Ensure branding upload dir exists
+    Path("data/uploads/branding").mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -151,6 +210,10 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Attach rate-limiter to app state so slowapi can use it
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +269,28 @@ app.include_router(graph.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(settings_router, prefix=settings.api_prefix)
 app.include_router(logs.router, prefix=settings.api_prefix)
+app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(branding_router, prefix=settings.api_prefix)
+app.include_router(admin_router, prefix=settings.api_prefix)
+app.include_router(security_router, prefix=settings.api_prefix)
 
 
 # Always serve user-uploaded icons, regardless of whether the SPA is built
 _user_icons_path = Path("data/user-icons")
 _user_icons_path.mkdir(parents=True, exist_ok=True)
 app.mount("/user-icons", StaticFiles(directory=_user_icons_path), name="user-icons")
+
+_profile_photos_path = Path("data/uploads/profiles")
+_profile_photos_path.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads/profiles", StaticFiles(directory=_profile_photos_path), name="profile-photos")
+
+_doc_uploads_path = Path("data/uploads/docs")
+_doc_uploads_path.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads/docs", StaticFiles(directory=_doc_uploads_path), name="doc-uploads")
+
+_branding_path = Path("data/uploads/branding")
+_branding_path.mkdir(parents=True, exist_ok=True)
+app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
 
 # Serve React Frontend (Static Files)
 # We check if the static directory exists (it should in Docker)

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 from app.db.session import Base
@@ -29,6 +29,7 @@ class Doc(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -178,6 +179,7 @@ class Storage(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)  # 'disk', 'pool', 'dataset', 'share'
+    icon_slug: Mapped[str | None] = mapped_column(String)
     hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID))
     capacity_gb: Mapped[int | None] = mapped_column(Integer)
     used_gb: Mapped[int | None] = mapped_column(Integer)
@@ -212,6 +214,7 @@ class Network(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     cidr: Mapped[str | None] = mapped_column(String)
     vlan_id: Mapped[int | None] = mapped_column(Integer)
     gateway: Mapped[str | None] = mapped_column(String)
@@ -266,6 +269,7 @@ class MiscItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str | None] = mapped_column(String)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     url: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -319,8 +323,39 @@ class AppSettings(Base):
     categories: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
     locations: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
     dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
+    dock_hidden_items: Mapped[str | None] = mapped_column(Text)  # JSON array of hidden path strings
+    show_page_hints: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auth_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    jwt_secret: Mapped[str | None] = mapped_column(Text)
+    session_timeout_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    # Branding
+    app_name: Mapped[str] = mapped_column(String, nullable=False, default="Circuit Breaker")
+    favicon_path: Mapped[str | None] = mapped_column(Text)
+    login_logo_path: Mapped[str | None] = mapped_column(Text)
+    primary_color: Mapped[str] = mapped_column(String, nullable=False, default="#00d4ff")
+    accent_colors: Mapped[str | None] = mapped_column(Text, default='["#ff6b6b","#4ecdc4"]')  # JSON array
+    # Advanced Theming
+    theme_preset: Mapped[str] = mapped_column(String, nullable=False, default="cyberpunk-neon")
+    custom_colors: Mapped[str | None] = mapped_column(Text)  # JSON: {primary,secondary,accent1,accent2,background,surface}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    gravatar_hash: Mapped[str | None] = mapped_column(Text)
+    profile_photo: Mapped[str | None] = mapped_column(Text)  # relative path to uploaded file
+    display_name: Mapped[str | None] = mapped_column(Text)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    last_login: Mapped[str | None] = mapped_column(Text)
 
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
