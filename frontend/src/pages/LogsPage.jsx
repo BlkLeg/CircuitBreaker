@@ -3,6 +3,32 @@ import { useNavigate } from 'react-router-dom';
 import { logsApi } from '../api/client';
 import { IconImg } from '../components/common/IconPickerModal';
 
+// ── Actor avatar ──────────────────────────────────────────────────────────────
+
+function ActorAvatar({ actor, gravatarHash, size = 20 }) {
+  if (gravatarHash) {
+    return (
+      <img
+        src={`https://www.gravatar.com/avatar/${gravatarHash}?s=${size * 2}&d=identicon`}
+        alt={actor || 'user'}
+        width={size}
+        height={size}
+        style={{ borderRadius: '50%', flexShrink: 0 }}
+      />
+    );
+  }
+  const initial = (actor && actor !== 'anonymous') ? actor[0].toUpperCase() : '?';
+  const hue = actor ? actor.split('').reduce((sum, c) => sum + c.charCodeAt(0), 0) % 360 : 200;
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      background: `hsl(${hue}, 50%, 35%)`, color: '#fff',
+      fontSize: size * 0.5, fontWeight: 600, lineHeight: 1,
+    }}>{initial}</span>
+  );
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatRelative(isoStr) {
@@ -146,7 +172,10 @@ function LogRow({ log, expanded, onToggle, navigate }) {
 
         {/* Actor / IP */}
         <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
-          {log.actor ?? 'user'}{log.ip_address ? ` @ ${log.ip_address}` : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ActorAvatar actor={log.actor} gravatarHash={log.actor_gravatar_hash} size={20} />
+            <span>{log.actor && log.actor !== 'anonymous' ? log.actor : (log.ip_address || 'anonymous')}</span>
+          </div>
         </td>
       </tr>
 

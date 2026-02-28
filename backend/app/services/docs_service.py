@@ -1,3 +1,6 @@
+import io
+import re
+import zipfile
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -5,6 +8,13 @@ from sqlalchemy import select
 from app.core.markdown_render import render_markdown
 from app.db.models import Doc, EntityDoc
 from app.schemas.docs import DocCreate, DocUpdate, EntityDocAttach
+
+_MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024    # 1 MB per .md entry
+_MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
+
+
+def _slugify(title: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", title).strip("_") or "doc"
 
 
 def _to_dict(doc: Doc) -> dict:
@@ -97,3 +107,26 @@ def docs_by_entity(db: Session, entity_type: str, entity_id: int) -> list[dict]:
         if doc:
             result.append(_to_dict(doc))
     return result
+
+
+def export_docs_zip(db: Session, ids: list[int] | None = None) -> bytes:
+    """Return an in-memory ZIP archive containing one .md file per doc."""
+    stmt = select(Doc)
+    if ids:
+        stmt = stmt.where(Doc.id.in_(ids))
+    docs = db.execute(stmt).scalars().all()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for doc in docs:
+            filename = f"{doc.id}-{_slugify(doc.title)}.md"
+            zf.writestr(filename, doc.body_md)
+    return buf.getvalue()
+
+
+def import_docs(db: Session, entries: list[tuple[str, str]]) -> list[dict]:
+    """Create docs from a list of (title, body_md) tuples; returns the created doc dicts."""
+    created = []
+    for title, body_md in entries:
+        doc = create_doc(db, DocCreate(title=title, body_md=body_md))
+        created.append(doc)
+    return created

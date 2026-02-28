@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
-import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi } from '../../api/client';
+import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi, clustersApi } from '../../api/client';
 import { Server, Globe, Layers, ExternalLink, Database } from 'lucide-react';
 import { getVendorIcon } from '../../icons/vendorIcons';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
@@ -20,6 +20,7 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   const [directMemberships, setDirectMemberships] = useState([]);
   const [hwServices, setHwServices] = useState([]);
   const [hwStorage, setHwStorage] = useState([]);
+  const [hwClusters, setHwClusters] = useState([]);
 
   const fetchData = useCallback(async () => {
     if (!hardware) return;
@@ -30,13 +31,15 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         hardwareApi.getNetworkMemberships(hardware.id),
         servicesApi.list({ hardware_id: hardware.id }),
         storageApi.list({ hardware_id: hardware.id }),
+        hardwareApi.getClusters(hardware.id),
       ];
       if (isRouter) fetches.push(networksApi.list({ gateway_hardware_id: hardware.id }));
-      const [cuRes, memRes, svcRes, stRes, routedRes] = await Promise.all(fetches);
+      const [cuRes, memRes, svcRes, stRes, clusterRes, routedRes] = await Promise.all(fetches);
       setComputeUnits(cuRes.data);
       setDirectMemberships(memRes.data);
       setHwServices(svcRes.data);
       setHwStorage(stRes.data);
+      setHwClusters(clusterRes.data);
       if (routedRes) setRoutedNetworks(routedRes.data);
     } catch (err) {
       logger.error(err);
@@ -67,6 +70,9 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         </button>
         <button className={`tab ${activeTab === 'storage' ? 'active' : ''}`} onClick={() => setActiveTab('storage')}>
           Storage {hwStorage.length > 0 && <span className="tab-badge">{hwStorage.length}</span>}
+        </button>
+        <button className={`tab ${activeTab === 'clusters' ? 'active' : ''}`} onClick={() => setActiveTab('clusters')}>
+          Clusters {hwClusters.length > 0 && <span className="tab-badge">{hwClusters.length}</span>}
         </button>
         <button className={`tab ${activeTab === 'docs' ? 'active' : ''}`} onClick={() => setActiveTab('docs')}>Docs</button>
       </div>
@@ -284,6 +290,40 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   </div>
                 );
               })
+            )}
+          </div>
+        )}
+
+        {activeTab === 'clusters' && (
+          <div className="detail-section">
+            <h4 style={{ marginBottom: 12 }}>Cluster Memberships</h4>
+            {hwClusters.length === 0 ? (
+              <p className="text-muted">This hardware is not assigned to any clusters.</p>
+            ) : (
+              hwClusters.map((item) => (
+                <div key={item.membership_id} style={{
+                  padding: '8px 12px', marginBottom: 6,
+                  border: '1px solid var(--color-border)', borderRadius: 6,
+                  background: 'var(--color-surface)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 600 }}>{item.cluster?.name ?? `Cluster #${item.membership_id}`}</span>
+                    {item.role && (
+                      <span style={{
+                        fontSize: '0.72rem', padding: '1px 6px', borderRadius: 3,
+                        background: 'var(--color-glow)', color: 'var(--color-primary)',
+                        textTransform: 'uppercase', letterSpacing: '0.04em',
+                      }}>
+                        {item.role}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 2, display: 'flex', gap: 10 }}>
+                    {item.cluster?.environment && <span>{item.cluster.environment}</span>}
+                    {item.cluster?.location && <span>{item.cluster.location}</span>}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         )}

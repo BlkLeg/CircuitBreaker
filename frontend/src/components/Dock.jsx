@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { BookOpen, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map } from 'lucide-react';
+import { BookOpen, Cloud, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
@@ -9,6 +9,7 @@ export const NAV_MAP = {
   '/compute-units': { icon: Server,     label: 'Compute'  },
   '/services':      { icon: Layers,     label: 'Services' },
   '/networks':      { icon: Network,    label: 'Network'  },
+  '/external-nodes': { icon: Cloud,      label: 'External' },
   '/storage':       { icon: HardDrive,  label: 'Storage'  },
   '/map':           { icon: Map,        label: 'Map'      },
   '/docs':          { icon: BookOpen,   label: 'Docs'     },
@@ -22,6 +23,7 @@ export const DEFAULT_ORDER = [
   '/compute-units',
   '/services',
   '/networks',
+  '/external-nodes',
   '/storage',
   '/docs',
   '/logs',

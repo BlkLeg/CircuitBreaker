@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import ComputeUnit, Hardware, MiscItem, Network, Service, Storage
+from app.db.models import ComputeUnit, Hardware, MiscItem, Network, Service, Storage, ExternalNode
 from app.db.session import get_db
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -26,6 +26,7 @@ SOURCES = [
     (Storage, "storage", "/storage", "notes"),
     (Network, "network", "/networks", "description"),
     (MiscItem, "misc", "/misc", "description"),
+    (ExternalNode, "external", "/external-nodes", "notes"),
 ]
 
 

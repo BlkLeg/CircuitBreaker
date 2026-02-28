@@ -88,6 +88,7 @@ export const hardwareApi = {
   replace: (id, data) => client.put(`/hardware/${id}`, data),
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
+  getClusters: (id) => client.get(`/hardware/${id}/clusters`),
 };
 
 export const computeUnitsApi = {
@@ -114,6 +115,9 @@ export const servicesApi = {
   getMisc: (id) => client.get(`/services/${id}/misc`),
   addMisc: (id, data) => client.post(`/services/${id}/misc`, data),
   removeMisc: (id, miscId) => client.delete(`/services/${id}/misc/${miscId}`),
+  getExternalDeps: (id) => client.get(`/services/${id}/external-dependencies`),
+  addExternalDep: (id, data) => client.post(`/services/${id}/external-dependencies`, data),
+  removeExternalDep: (id, relId) => client.delete(`/services/${id}/external-dependencies/${relId}`),
 };
 
 export const storageApi = {
@@ -163,6 +167,15 @@ export const docsApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  exportAll: () =>
+    client.get('/docs/export', { responseType: 'blob' }),
+  importDocs: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post('/docs/import', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 export const graphApi = {
@@ -186,12 +199,37 @@ export const adminApi = {
   import: (data, wipeBeforeImport = false) =>
     client.post('/admin/import', { wipe_before_import: wipeBeforeImport, data }),
   recentChanges: (limit = 10) => client.get('/admin/recent-changes', { params: { limit } }),
+  clearLab: () => client.post('/admin/clear-lab'),
+};
+
+export const clustersApi = {
+  list:         (params)        => client.get('/hardware-clusters', { params }),
+  get:          (id)            => client.get(`/hardware-clusters/${id}`),
+  create:       (data)          => client.post('/hardware-clusters', data),
+  update:       (id, data)      => client.patch(`/hardware-clusters/${id}`, data),
+  delete:       (id)            => client.delete(`/hardware-clusters/${id}`),
+  getMembers:   (id)            => client.get(`/hardware-clusters/${id}/members`),
+  addMember:    (id, data)      => client.post(`/hardware-clusters/${id}/members`, data),
+  updateMember: (id, mid, data) => client.patch(`/hardware-clusters/${id}/members/${mid}`, data),
+  removeMember: (id, mid)       => client.delete(`/hardware-clusters/${id}/members/${mid}`),
 };
 
 export const logsApi = {
   list:   (params) => client.get('/logs', { params }),
   clear:  ()       => client.delete('/logs'),
   stream: (since)  => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
+};
+
+export const externalNodesApi = {
+  list:           (params) => client.get('/external-nodes', { params }),
+  get:            (id)     => client.get(`/external-nodes/${id}`),
+  create:         (data)   => client.post('/external-nodes', data),
+  update:         (id, d)  => client.patch(`/external-nodes/${id}`, d),
+  delete:         (id)     => client.delete(`/external-nodes/${id}`),
+  getNetworks:    (id)     => client.get(`/external-nodes/${id}/networks`),
+  addNetwork:     (id, d)  => client.post(`/external-nodes/${id}/networks`, d),
+  removeNetwork:  (relId)  => client.delete(`/external-node-networks/${relId}`),
+  getServices:    (id)     => client.get(`/external-nodes/${id}/services`),
 };
 
 export default client;

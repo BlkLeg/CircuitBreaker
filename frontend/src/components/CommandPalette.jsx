@@ -30,6 +30,7 @@ const DEFAULT_ITEMS = [
   { id: 'map-link-node',     icon: '🔗', title: 'Map: Link selected node',              action_url: '/map'      },
   { id: 'map-storage',       icon: '💾', title: 'Map: Show storage details',            action_url: '/map'      },
   { id: 'hw-filter-storage', icon: '🗄️', title: 'Hardware: Filter by storage capacity', action_url: '/hardware' },
+  { id: 'nav-ext',  icon: '☁️', title: 'Open: External / Cloud Nodes',    action_url: '/external-nodes' },
 ];
 
 const TYPE_LABELS = {
@@ -39,6 +40,7 @@ const TYPE_LABELS = {
   storage:  'STR',
   network:  'NET',
   misc:     'MISC',
+  external: 'EXT',
 };
 
 function CommandPalette({ isOpen, onClose }) {

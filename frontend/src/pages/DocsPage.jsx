@@ -1,10 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MarkdownViewer from '../components/MarkdownViewer';
 import DocEditor from '../components/DocEditor';
 import { docsApi } from '../api/client';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import logger from '../utils/logger';
+
+/** Trigger a browser file download from a Blob without mutating the DOM. */
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Convert a doc title into a safe filename stem. */
+function slugify(title = 'doc') {
+  const safe = title.replaceAll(/[^A-Za-z0-9]+/g, '_').replaceAll(/(?:^_+|_+$)/g, '');
+  return safe || 'doc';
+}
 
 function DocsPage() {
   const toast = useToast();
@@ -13,6 +29,9 @@ function DocsPage() {
   const [editing, setEditing] = useState(false);
   const [formValues, setFormValues] = useState({ title: '', body_md: '' });
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importFileRef = useRef(null);
 
   const fetchDocs = useCallback(async () => {
     setLoading(true);
@@ -67,6 +86,49 @@ function DocsPage() {
     }
   }, [selectedDoc, formValues, fetchDocs, toast]);
 
+  // ── Export single doc as .md (client-side, no network call) ──────────────
+  const handleExportSingle = useCallback(() => {
+    if (!selectedDoc) return;
+    const blob = new Blob([selectedDoc.body_md], { type: 'text/markdown' });
+    triggerBlobDownload(blob, `${slugify(selectedDoc.title)}.md`);
+  }, [selectedDoc]);
+
+  // ── Batch export all docs as ZIP (backend) ────────────────────────────────
+  const handleExportAll = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const res = await docsApi.exportAll();
+      triggerBlobDownload(res.data, 'docs-export.zip');
+    } catch (err) {
+      logger.error(err);
+      toast.error(err.message || 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting, toast]);
+
+  // ── Import .md or .zip (backend) ──────────────────────────────────────────
+  const handleImportFileChange = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset input so the same file can be re-selected later
+    e.target.value = '';
+    setImporting(true);
+    try {
+      const res = await docsApi.importDocs(file);
+      const imported = res.data;
+      toast.success(`Imported ${imported.length} document${imported.length === 1 ? '' : 's'}.`);
+      await fetchDocs();
+      if (imported.length > 0) setSelectedDoc(imported[0]);
+    } catch (err) {
+      logger.error(err);
+      toast.error(err.message || 'Import failed.');
+    } finally {
+      setImporting(false);
+    }
+  }, [fetchDocs, toast]);
+
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const handleDelete = () => {
@@ -91,13 +153,37 @@ function DocsPage() {
     <div className="page">
       <div className="page-header">
         <h2>Documentation</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {selectedDoc && !editing && (
             <>
               <button className="btn btn-sm" onClick={handleEdit}>Edit</button>
+              <button className="btn btn-sm" onClick={handleExportSingle} title="Export this doc as .md">Export .md</button>
               <button className="btn btn-sm btn-danger" onClick={handleDelete}>Delete</button>
             </>
           )}
+          <button
+            className="btn btn-sm"
+            onClick={handleExportAll}
+            disabled={exporting || docs.length === 0}
+            title="Download all docs as a ZIP archive"
+          >
+            {exporting ? 'Exporting…' : 'Export All'}
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => importFileRef.current?.click()}
+            disabled={importing}
+            title="Import .md or .zip"
+          >
+            {importing ? 'Importing…' : 'Import'}
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".md,.zip"
+            style={{ display: 'none' }}
+            onChange={handleImportFileChange}
+          />
           <button className="btn btn-primary btn-sm" onClick={handleNew}>+ New Doc</button>
         </div>
       </div>
@@ -178,6 +264,9 @@ function DocsPage() {
             }}>
               <div style={{ fontSize: '3rem', opacity: 0.2 }}>📄</div>
               <p>Select a document from the list or create a new one.</p>
+              <div className="info-tip" style={{ maxWidth: 420, textAlign: 'left' }}>
+                <strong>Tip:</strong> Documents can be linked to any entity — hardware, services, compute, networks and more. Open a record and use the <em>Docs</em> tab to attach documents to it.
+              </div>
             </div>
           )}
         </div>

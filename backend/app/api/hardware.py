@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate
-from app.services import hardware_service
+from app.services import hardware_service, clusters_service
 
 router = APIRouter(prefix="/hardware", tags=["hardware"])
 
@@ -78,3 +78,13 @@ def get_network_memberships(hardware_id: int, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return hardware_service.list_network_memberships(db, hardware_id)
+
+
+@router.get("/{hardware_id}/clusters")
+def get_clusters_for_hardware(hardware_id: int, db: Session = Depends(get_db)):
+    """Return all hardware clusters this hardware belongs to."""
+    try:
+        hardware_service.get_hardware(db, hardware_id)  # 404 guard
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return clusters_service.list_for_hardware(db, hardware_id)

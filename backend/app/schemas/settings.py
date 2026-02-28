@@ -89,6 +89,7 @@ class AppSettingsRead(BaseModel):
     show_page_hints: bool = True
     auth_enabled: bool = False
     session_timeout_hours: int = 24
+    show_external_nodes_on_map: bool = True
     # Advanced Theming
     theme_preset: str = "cyberpunk-neon"
     custom_colors: Optional[str] = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -215,6 +216,7 @@ class AppSettingsUpdate(BaseModel):
     session_timeout_hours: Optional[int] = None
     branding: Optional[BrandingConfig] = None
     theme_preset: Optional[str] = None
+    show_external_nodes_on_map: Optional[bool] = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: Optional[dict[str, Any]] = None
 

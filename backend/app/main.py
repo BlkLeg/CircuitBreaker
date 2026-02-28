@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import engine, Base
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth
+from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes
 from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
 from app.api.admin import router as admin_router
@@ -122,6 +122,8 @@ def _run_migrations(conn) -> None:
     log_cols = _get_columns(conn, "logs")
     if "status_code" not in log_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN status_code INTEGER")
+    if "actor_gravatar_hash" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN actor_gravatar_hash TEXT")
     # storage.used_gb
     st_cols = _get_columns(conn, "storage")
     if "used_gb" not in st_cols:
@@ -174,6 +176,66 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN dock_hidden_items TEXT")
     if "show_page_hints" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_page_hints BOOLEAN DEFAULT TRUE")
+    # hardware_clusters + hardware_cluster_members (new tables — safe to CREATE IF NOT EXISTS)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hardware_clusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            environment TEXT,
+            location TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hardware_cluster_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster_id INTEGER NOT NULL REFERENCES hardware_clusters(id) ON DELETE CASCADE,
+            hardware_id INTEGER NOT NULL REFERENCES hardware(id) ON DELETE CASCADE,
+            role TEXT,
+            UNIQUE (cluster_id, hardware_id)
+        )
+    """)
+    # external_nodes + external_node_networks + service_external_nodes (off-prem / cloud)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS external_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            provider TEXT,
+            kind TEXT,
+            region TEXT,
+            ip_address TEXT,
+            icon_slug TEXT,
+            notes TEXT,
+            environment TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS external_node_networks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_node_id INTEGER NOT NULL REFERENCES external_nodes(id) ON DELETE CASCADE,
+            network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+            link_type TEXT,
+            notes TEXT,
+            UNIQUE (external_node_id, network_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS service_external_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+            external_node_id INTEGER NOT NULL REFERENCES external_nodes(id) ON DELETE CASCADE,
+            purpose TEXT,
+            UNIQUE (service_id, external_node_id)
+        )
+    """)
+    # app_settings: show_external_nodes_on_map
+    settings_cols = _get_columns(conn, "app_settings")
+    if "show_external_nodes_on_map" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_external_nodes_on_map BOOLEAN DEFAULT TRUE")
 
 
 @asynccontextmanager
@@ -273,6 +335,9 @@ app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(branding_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
 app.include_router(security_router, prefix=settings.api_prefix)
+app.include_router(clusters.router, prefix=settings.api_prefix)
+app.include_router(external_nodes.router, prefix=settings.api_prefix)
+app.include_router(external_nodes._rel_router, prefix=settings.api_prefix)
 
 
 # Always serve user-uploaded icons, regardless of whether the SPA is built

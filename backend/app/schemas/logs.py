@@ -12,6 +12,7 @@ class LogEntry(BaseModel):
     category: str
     action: str
     actor: Optional[str] = None
+    actor_gravatar_hash: Optional[str] = None
     entity_type: Optional[str] = None
     entity_id: Optional[int] = None
     old_value: Optional[str] = None

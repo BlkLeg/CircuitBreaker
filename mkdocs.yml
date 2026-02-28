@@ -1,0 +1,53 @@
+site_name: Circuit Breaker Docs
+site_description: Documentation for Circuit Breaker, the homelab topology mapper.
+site_author: Shawn Ji
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - search.share
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Welcome: index.md
+  - Getting Started: getting-started.md
+  - Features:
+      - Hardware: hardware.md
+      - Compute: compute.md
+      - Storage: storage.md
+      - Networks: networks.md
+      - Services: services.md
+      - Topology Map: topology-map.md
+      - Notes & Runbooks: notes.md
+  - Reference:
+      - Architecture Overview: overview.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true

@@ -85,6 +85,9 @@ class Hardware(Base):
     network_memberships: Mapped[list["HardwareNetwork"]] = relationship(
         "HardwareNetwork", back_populates="hardware"
     )
+    cluster_memberships: Mapped[list["HardwareClusterMember"]] = relationship(
+        "HardwareClusterMember", back_populates="hardware"
+    )
 
 
 # ── Compute Units ───────────────────────────────────────────────────────────
@@ -219,7 +222,7 @@ class Network(Base):
     vlan_id: Mapped[int | None] = mapped_column(Integer)
     gateway: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
-    gateway_hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=True)
+    gateway_hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -239,7 +242,7 @@ class HardwareNetwork(Base):
     __table_args__ = (UniqueConstraint("hardware_id", "network_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey("hardware.id"), nullable=False)
+    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String)
 
@@ -258,6 +261,38 @@ class ComputeNetwork(Base):
 
     compute_unit: Mapped["ComputeUnit"] = relationship("ComputeUnit", back_populates="network_memberships")
     network: Mapped["Network"] = relationship("Network", back_populates="compute_memberships")
+
+
+# ── Hardware Clusters ────────────────────────────────────────────────────────
+
+
+class HardwareCluster(Base):
+    __tablename__ = "hardware_clusters"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    environment: Mapped[str | None] = mapped_column(String)
+    location: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    members: Mapped[list["HardwareClusterMember"]] = relationship(
+        "HardwareClusterMember", back_populates="cluster", cascade="all, delete-orphan"
+    )
+
+
+class HardwareClusterMember(Base):
+    __tablename__ = "hardware_cluster_members"
+    __table_args__ = (UniqueConstraint("cluster_id", "hardware_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cluster_id: Mapped[int] = mapped_column(Integer, ForeignKey("hardware_clusters.id"), nullable=False)
+    hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
+    role: Mapped[str | None] = mapped_column(String)
+
+    cluster: Mapped["HardwareCluster"] = relationship("HardwareCluster", back_populates="members")
+    hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="cluster_memberships")
 
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
@@ -289,6 +324,59 @@ class ServiceMisc(Base):
 
     service: Mapped["Service"] = relationship("Service", back_populates="misc_links")
     misc_item: Mapped["MiscItem"] = relationship("MiscItem", back_populates="service_links")
+
+
+# ── External Nodes (Off-Prem / Cloud) ─────────────────────────────────────────
+
+
+class ExternalNode(Base):
+    __tablename__ = "external_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str | None] = mapped_column(String)          # e.g. 'Hetzner', 'AWS', 'Cloudflare'
+    kind: Mapped[str | None] = mapped_column(String)              # 'vps', 'managed_db', 'saas', 'vpn_gateway', etc.
+    region: Mapped[str | None] = mapped_column(String)            # 'us-west-2', 'nbg1', 'global', etc.
+    ip_address: Mapped[str | None] = mapped_column(String)        # primary IP or hostname
+    icon_slug: Mapped[str | None] = mapped_column(String)
+    notes: Mapped[str | None] = mapped_column(Text)
+    environment: Mapped[str | None] = mapped_column(String)       # 'prod', 'lab', 'shared'
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    network_links: Mapped[list["ExternalNodeNetwork"]] = relationship(
+        "ExternalNodeNetwork", back_populates="external_node", cascade="all, delete-orphan"
+    )
+    service_links: Mapped[list["ServiceExternalNode"]] = relationship(
+        "ServiceExternalNode", back_populates="external_node", cascade="all, delete-orphan"
+    )
+
+
+class ExternalNodeNetwork(Base):
+    __tablename__ = "external_node_networks"
+    __table_args__ = (UniqueConstraint("external_node_id", "network_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    external_node_id: Mapped[int] = mapped_column(Integer, ForeignKey("external_nodes.id", ondelete="CASCADE"), nullable=False)
+    network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id", ondelete="CASCADE"), nullable=False)
+    link_type: Mapped[str | None] = mapped_column(String)    # 'vpn', 'wan', 'wireguard', 'reverse_proxy', etc.
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="network_links")
+    network: Mapped["Network"] = relationship("Network")
+
+
+class ServiceExternalNode(Base):
+    __tablename__ = "service_external_nodes"
+    __table_args__ = (UniqueConstraint("service_id", "external_node_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
+    external_node_id: Mapped[int] = mapped_column(Integer, ForeignKey("external_nodes.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str | None] = mapped_column(String)      # 'db', 'auth', 'cache', 'upstream_api', etc.
+
+    service: Mapped["Service"] = relationship("Service")
+    external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="service_links")
 
 
 # ── Graph Layouts ─────────────────────────────────────────────────────────────
@@ -337,6 +425,8 @@ class AppSettings(Base):
     # Advanced Theming
     theme_preset: Mapped[str] = mapped_column(String, nullable=False, default="cyberpunk-neon")
     custom_colors: Mapped[str | None] = mapped_column(Text)  # JSON: {primary,secondary,accent1,accent2,background,surface}
+    # External nodes
+    show_external_nodes_on_map: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -369,7 +459,8 @@ class Log(Base):
     level:       Mapped[str]          = mapped_column(String, nullable=False, default="info")
     category:    Mapped[str]          = mapped_column(String, nullable=False)   # crud | settings | relationships | docs
     action:      Mapped[str]          = mapped_column(String, nullable=False)   # create_hardware, update_service, …
-    actor:       Mapped[str | None]   = mapped_column(String, default="user")
+    actor:       Mapped[str | None]   = mapped_column(String, default="anonymous")
+    actor_gravatar_hash: Mapped[str | None] = mapped_column(String)
     entity_type: Mapped[str | None]   = mapped_column(String)
     entity_id:   Mapped[int | None]   = mapped_column(Integer)
     old_value:   Mapped[str | None]   = mapped_column(Text)

@@ -15,7 +15,7 @@ import dagre from '@dagrejs/dagre';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import { useNavigate } from 'react-router-dom';
 import { X, ExternalLink } from 'lucide-react';
-import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networksApi, miscApi } from '../api/client';
+import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networksApi, miscApi, clustersApi, externalNodesApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
@@ -25,12 +25,14 @@ const elk = new ELK();
 
 // ── Node Styles ─────────────────────────────────────────────────────────────
 const NODE_STYLES = {
+  cluster:  { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' },  // violet
   hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' },  // steel blue
   compute:  { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' },  // green
   service:  { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' },  // orange
   storage:  { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' },  // purple
   network:  { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' },  // cyan
   misc:     { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' },  // gray
+  external: { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' },  // sky blue
 };
 
 // Per-relation edge accent colours
@@ -44,25 +46,30 @@ const EDGE_COLORS = {
   routes:          '#ff6b35',
   on_network:      '#00d4aa',
   has_storage:     '#c47a2a',
+  cluster_member:  '#a78bfa',
 };
 
 const NODE_TYPE_LABELS = {
+  cluster: 'Cluster',
   hardware: 'Hardware',
   compute: 'Compute',
   service: 'Service',
   storage: 'Storage',
   network: 'Network',
   misc: 'Misc',
+  external: 'External',
 };
 
 // Map node type → page route for "Open in HUD"
 const NODE_TYPE_ROUTES = {
+  cluster:  '/hardware',
   hardware: '/hardware',
   compute: '/compute-units',
   service: '/services',
   storage: '/storage',
   network: '/networks',
   misc: '/misc',
+  external: '/external-nodes',
 };
 
 const BASE_NODE_STYLE = {
@@ -99,6 +106,7 @@ function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
   if (type === 'hardware' && vendor)          return getVendorIcon(vendor)?.path ?? null;
   if (type === 'network')                     return getIconEntry('network')?.path ?? null;
   if (kind && KIND_ICON[kind])                return getIconEntry(KIND_ICON[kind])?.path ?? null;
+  if (type === 'external')                    return getIconEntry('internet')?.path ?? null;
   return null;
 }
 
@@ -244,40 +252,137 @@ const ENTITY_FIELDS = {
     { key: 'url',         label: 'URL' },
     { key: 'description', label: 'Description' },
   ],
+  cluster: [
+    { key: 'description',  label: 'Description' },
+    { key: 'environment',  label: 'Env' },
+    { key: 'location',     label: 'Location' },
+    { key: 'member_count', label: 'Members' },
+  ],
+  external: [
+    { key: 'provider',     label: 'Provider' },
+    { key: 'kind',         label: 'Kind' },
+    { key: 'region',       label: 'Region' },
+    { key: 'ip_address',   label: 'IP Address' },
+    { key: 'environment',  label: 'Environment' },
+    { key: 'notes',        label: 'Notes' },
+  ],
 };
 
 const ENTITY_API_GET = {
+  cluster:  (id) => clustersApi.get(id),
   hardware: (id) => hardwareApi.get(id),
   compute:  (id) => computeUnitsApi.get(id),
   service:  (id) => servicesApi.get(id),
   storage:  (id) => storageApi.get(id),
   network:  (id) => networksApi.get(id),
   misc:     (id) => miscApi.get(id),
+  external: (id) => externalNodesApi.get(id),
 };
 
 // ── Layout Algorithms ───────────────────────────────────────────────────────
 
-const getDagreLayout = (nodes, edges, direction = 'TB') => {
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: direction, ranksep: 120, nodesep: 100 });
-  g.setDefaultEdgeLabel(() => ({}));
-  nodes.forEach((node) => {
-    g.setNode(node.id, { width: node.style?.width || 140, height: 120 });
+function getNodeRank(node) {
+  const type = node.originalType || node.data?.originalType;
+  switch (type) {
+    case 'external': return 0;
+    case 'network':  return 1;
+    case 'cluster':  return 2;
+    case 'hardware': return 3;
+    case 'compute':  return 4;
+    case 'service':  return 5;
+    case 'storage':
+    case 'misc':     return 6;
+    default:         return 5;
+  }
+}
+
+// Build a rank map with fallback: if no external/network nodes exist,
+// promote hardware → rank 0, compute → rank 1 so the canvas starts at root.
+function computeEffectiveRanks(nodes) {
+  const hasTop = nodes.some(n => {
+    const r = getNodeRank(n);
+    return r === 0 || r === 1;
   });
-  edges.forEach((edge) => {
-    g.setEdge(edge.source, edge.target);
+  return new Map(nodes.map(n => {
+    let rank = getNodeRank(n);
+    if (!hasTop) {
+      // Shift all ranks down by 3 so hardware (3→0), compute (4→1), etc.
+      rank = Math.max(0, rank - 3);
+    }
+    return [n.id, rank];
+  }));
+}
+
+// Normalise edge direction for layout algorithms: ensure source rank ≤ target rank
+// so the layout engine always flows top→bottom. Stores _layoutReversed flag so
+// the visual arrowhead can be corrected without mutating logical source/target.
+function normalizeEdgesForLayout(nodes, edges) {
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  return edges.map(e => {
+    const src = nodeById.get(e.source);
+    const tgt = nodeById.get(e.target);
+    if (!src || !tgt) return e;
+    const srcRank = getNodeRank(src);
+    const tgtRank = getNodeRank(tgt);
+    if (srcRank > tgtRank) {
+      // Swap layout direction only
+      return { ...e, source: e.target, target: e.source, _layoutReversed: true };
+    }
+    return e;
   });
-  dagre.layout(g);
-  return {
-    nodes: nodes.map((node) => {
-      const { x, y } = g.node(node.id);
-      return { ...node, position: { x: x - (node.style?.width || 140) / 2, y: y - 60 } };
-    }),
-    edges,
-  };
+}
+
+const getHierarchicalLayout = (nodes, edges, direction = 'TB') => {
+  const LAYER_HEIGHT = 160;
+  const H_GAP = 220;
+
+  const effectiveRanks = computeEffectiveRanks(nodes);
+
+  // Group nodes by effective rank
+  const rankGroups = {};
+  nodes.forEach(node => {
+    const rank = effectiveRanks.get(node.id) ?? 5;
+    if (!rankGroups[rank]) rankGroups[rank] = [];
+    rankGroups[rank].push(node);
+  });
+
+  // Sort nodes within each rank by label to ensure deterministic ordering
+  Object.values(rankGroups).forEach(group => {
+    group.sort((a, b) => (a.data.label || '').localeCompare(b.data.label || ''));
+  });
+
+  const layoutedNodes = nodes.map(node => {
+    const rank = effectiveRanks.get(node.id) ?? 5;
+    const group = rankGroups[rank];
+    const index = group.indexOf(node);
+
+    // Center the group horizontally (TB) or vertically (LR)
+    const offset = (index - (group.length - 1) / 2) * H_GAP;
+
+    let x, y;
+    if (direction === 'TB') {
+      y = rank * LAYER_HEIGHT;
+      x = offset;
+    } else { // LR
+      x = rank * LAYER_HEIGHT;
+      y = offset;
+    }
+
+    return { ...node, position: { x, y } };
+  });
+
+  // Restore original edge source/target (normalisation was layout-only)
+  const restoredEdges = edges.map(e =>
+    e._layoutReversed ? { ...e, source: e.target, target: e.source, _layoutReversed: false } : e
+  );
+
+  return { nodes: layoutedNodes, edges: restoredEdges };
 };
 
 const getElkLayout = async (nodes, edges, algorithm = 'layered') => {
+  const effectiveRanks = computeEffectiveRanks(nodes);
+  const normalizedEdges = normalizeEdgesForLayout(nodes, edges);
+
   const graph = {
     id: 'root',
     layoutOptions: {
@@ -286,22 +391,38 @@ const getElkLayout = async (nodes, edges, algorithm = 'layered') => {
       'elk.spacing.nodeNode': '80',
       'elk.layered.spacing.nodeNodeBetweenLayers': '100',
     },
-    children: nodes.map((n) => ({ id: n.id, width: 140, height: 120 })),
-    edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
+    children: nodes.map((n) => {
+      const child = { id: n.id, width: 140, height: 120 };
+      // For layered algorithm, supply a layer constraint based on node rank so
+      // ELK respects the network-first hierarchy rather than edge topology alone.
+      if (algorithm === 'layered') {
+        child.layoutOptions = {
+          'elk.layered.layering.layerId': String(effectiveRanks.get(n.id) ?? 5),
+        };
+      }
+      return child;
+    }),
+    edges: normalizedEdges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
   };
   const layout = await elk.layout(graph);
   const layoutMap = {};
   layout.children.forEach((node) => { layoutMap[node.id] = { x: node.x, y: node.y }; });
+
+  // Restore original edge source/target (normalisation was layout-only)
+  const restoredEdges = edges.map(e =>
+    e._layoutReversed ? { ...e, source: e.target, target: e.source, _layoutReversed: false } : e
+  );
+
   return {
     nodes: nodes.map((node) => ({ ...node, position: layoutMap[node.id] || { x: 0, y: 0 } })),
-    edges,
+    edges: restoredEdges,
   };
 };
 
 const getGridLayout = (nodes, edges) => {
-  const groups = { hardware: [], compute: [], service: [], storage: [], network: [], misc: [] };
-  nodes.forEach(n => { if (groups[n.originalType]) groups[n.originalType].push(n); });
-  const ORDER = ['hardware', 'compute', 'service', 'network', 'storage', 'misc'];
+  const groups = { cluster: [], external: [], network: [], hardware: [], compute: [], service: [], storage: [], misc: [] };
+  nodes.forEach(n => { if (groups[n.originalType] !== undefined) groups[n.originalType].push(n); });
+  const ORDER = ['cluster', 'external', 'network', 'hardware', 'compute', 'service', 'storage', 'misc'];
   let y = 0;
   const newNodes = [];
   ORDER.forEach(type => {
@@ -329,7 +450,7 @@ function MapInternal() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [layoutEngine, setLayoutEngine] = useState('dagre');
+  const [layoutEngine, setLayoutEngine] = useState('hierarchical-tb');
   const [lastSaved, setLastSaved] = useState(null);
   const [dirty, setDirty] = useState(false);
 
@@ -337,8 +458,8 @@ function MapInternal() {
   const [envFilter, setEnvFilter] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [includeTypes, setIncludeTypes] = useState({
-    hardware: true, compute: true, service: true,
-    storage: true, network: true, misc: true,
+    cluster: true, hardware: true, compute: true, service: true,
+    storage: true, network: true, misc: true, external: true,
   });
 
   // Tooltip state
@@ -414,8 +535,8 @@ function MapInternal() {
   }, [debouncedTag, setNodes, setEdges]);
 
   const getIncludeCSV = (types) => {
-    const MAP = { hardware: 'hardware', compute: 'compute', service: 'services', storage: 'storage', network: 'networks', misc: 'misc' };
-    return Object.entries(types).filter(([, v]) => v).map(([k]) => MAP[k]).join(',') || 'hardware';
+    const MAP = { hardware: 'hardware', compute: 'compute', service: 'services', storage: 'storage', network: 'networks', misc: 'misc', external: 'external' };
+    return Object.entries(types).filter(([, v]) => v).map(([k]) => MAP[k]).filter(Boolean).join(',') || 'hardware';
   };
 
   const fetchData = useCallback(async () => {
@@ -428,28 +549,37 @@ function MapInternal() {
         include: includeCSV,
       });
 
-      const rawN = res.data.nodes.map(n => ({
-        id: n.id,
-        type: 'iconNode',
-        data: {
+      const rawN = res.data.nodes.map(n => {
+        const nodeShell = {
+          id: n.id,
+          type: 'iconNode',
+          data: {},
+          position: { x: 0, y: 0 },
+          style: { ...BASE_NODE_STYLE },
+          hidden: n.type === 'cluster' && !includeTypes.cluster,
+          originalType: n.type,
+          _tags: n.tags || [],
+          _refId: n.ref_id,
+          _computeId: n.compute_id || null,
+          _hwId: n.hardware_id || null,
+        };
+        // Compute rank early so it's available in node.data for tooltips/debug
+        const rank = getNodeRank(nodeShell);
+        nodeShell.data = {
           label: n.label,
           iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role),
           glowColor: NODE_STYLES[n.type]?.glowColor,
+          rank,
           ip_address: n.ip_address || null,
           cidr: n.cidr || null,
           storage_summary: n.storage_summary || null,
           storage_allocated: n.storage_allocated || null,
           capacity_gb: n.capacity_gb || null,
           used_gb: n.used_gb || null,
-        },
-        position: { x: 0, y: 0 },
-        style: { ...BASE_NODE_STYLE },
-        originalType: n.type,
-        _tags: n.tags || [],
-        _refId: n.ref_id,
-        _computeId: n.compute_id || null,
-        _hwId: n.hardware_id || null,
-      }));
+          ...(n.type === 'cluster' ? { member_count: n.member_count, environment: n.environment } : {}),
+        };
+        return nodeShell;
+      });
 
       const rawE = res.data.edges.map(e => {
         const color = EDGE_COLORS[e.relation] || '#6c7086';
@@ -491,9 +621,10 @@ function MapInternal() {
         setEdges(rawE);
         setLayoutEngine('manual');
       } else {
-        const layout = getDagreLayout(rawN, rawE);
+        const layout = getHierarchicalLayout(rawN, rawE, 'TB');
         setNodes(layout.nodes);
         setEdges(layout.edges);
+        setLayoutEngine('hierarchical-tb');
       }
 
       setTimeout(() => fitView({ padding: 0.2 }), 50);
@@ -509,12 +640,23 @@ function MapInternal() {
 
   const applyLayout = useCallback(async (engine) => {
     setLoading(true);
+
+    if (engine === 'manual') {
+      // Switch to manual mode: keep current node positions exactly as-is.
+      // The user can use the Refresh button to pull last saved positions from the server.
+      setLayoutEngine('manual');
+      setLoading(false);
+      return;
+    }
+
     setTimeout(async () => {
       let layout;
-      if (engine === 'dagre') layout = getDagreLayout(nodes, edges, 'TB');
-      else if (engine === 'dagre-lr') layout = getDagreLayout(nodes, edges, 'LR');
-      else if (engine === 'elk') layout = await getElkLayout(nodes, edges, 'layered');
+      if (engine === 'hierarchical-tb') layout = getHierarchicalLayout(nodes, edges, 'TB');
+      else if (engine === 'hierarchical-lr') layout = getHierarchicalLayout(nodes, edges, 'LR');
+      else if (engine === 'elk-force') layout = await getElkLayout(nodes, edges, 'force');
+      else if (engine === 'elk-layered') layout = await getElkLayout(nodes, edges, 'layered');
       else if (engine === 'grid') layout = getGridLayout(nodes, edges);
+
       if (layout) {
         setNodes([...layout.nodes]);
         setEdges([...layout.edges]);
@@ -524,7 +666,7 @@ function MapInternal() {
       setDirty(true);
       setLoading(false);
     }, 50);
-  }, [nodes, edges, setNodes, setEdges, fitView]);
+  }, [nodes, edges, setNodes, setEdges, fitView, fetchData]);
 
   const saveLayout = async () => {
     const positions = {};
@@ -655,13 +797,15 @@ function MapInternal() {
           <select
             value={layoutEngine}
             onChange={(e) => applyLayout(e.target.value)}
+            title="For hierarchical modes: Networks at top, flow down to services and storage."
             style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
           >
-            <option value="manual">Manual / Saved</option>
-            <option value="dagre">Hierarchical (Down)</option>
-            <option value="dagre-lr">Hierarchical (Right)</option>
-            <option value="elk">ELK Layered</option>
+            <option value="hierarchical-tb">Hierarchical (Down – Network-first)</option>
+            <option value="hierarchical-lr">Hierarchical (Right – Network-first)</option>
+            <option value="elk-force">Force-directed</option>
+            <option value="elk-layered">ELK Layered</option>
             <option value="grid">Grid</option>
+            <option value="manual">Manual / Saved</option>
           </select>
 
           <button className="btn btn-primary" onClick={saveLayout} disabled={loading} style={{ fontSize: 12, padding: '5px 12px' }}>
@@ -716,6 +860,27 @@ function MapInternal() {
           <Controls />
           <Background color={bgGridColor} gap={24} size={1} />
         </ReactFlow>
+
+        {/* Empty-canvas hint */}
+        {!loading && nodes.length === 0 && !error && settings?.show_page_hints && (
+          <div
+            className="info-tip"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              maxWidth: 400,
+              textAlign: 'center',
+              pointerEvents: 'none',
+              zIndex: 10,
+            }}
+          >
+            💡 Your map is empty. Add <strong>Hardware</strong>, <strong>Compute Units</strong>,{' '}
+            <strong>Services</strong>, or <strong>External Nodes</strong> from their pages to see
+            them appear here.
+          </div>
+        )}
 
         {/* Hover tooltip */}
         {tooltip && (

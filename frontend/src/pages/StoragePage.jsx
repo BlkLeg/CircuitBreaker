@@ -8,6 +8,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import StorageDetail from '../components/details/StorageDetail';
 import { useToast } from '../components/common/Toast';
 import { validateDuplicateName } from '../utils/validation';
+import { useSettings } from '../context/SettingsContext';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -23,6 +24,7 @@ const COLUMNS = [
 
 function StoragePage() {
   const toast = useToast();
+  const { settings } = useSettings();
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -140,6 +142,13 @@ function StoragePage() {
           <option value="share">Share</option>
         </select>
       </div>
+
+      {!loading && items.length === 0 && settings?.show_page_hints && (
+        <div className="info-tip" style={{ marginBottom: 12 }}>
+          💡 <strong>Tip:</strong> Storage represents disks, pools, datasets, or network shares.
+          Once added, attach volumes to services via the service’s <em>Storage</em> tab.
+        </div>
+      )}
 
       {loading ? <p>Loading...</p> : (
         <EntityTable

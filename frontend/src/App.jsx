@@ -21,6 +21,7 @@ import DocsPage from './pages/DocsPage';
 import MapPage from './pages/MapPage';
 import LogsPage from './pages/LogsPage';
 import SettingsPage from './pages/SettingsPage';
+import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
 
 function AppInner() {
@@ -52,6 +53,7 @@ function AppInner() {
             <Route path="/services" element={<ServicesPage />} />
             <Route path="/storage" element={<StoragePage />} />
             <Route path="/networks" element={<NetworksPage />} />
+            <Route path="/external-nodes" element={<ExternalNodesPage />} />
             <Route path="/misc" element={<MiscPage />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/map" element={<MapPage />} />

@@ -139,6 +139,7 @@ async def stream_logs(since: Optional[str] = None):
                         "category": row.category,
                         "action": row.action,
                         "actor": row.actor,
+                        "actor_gravatar_hash": row.actor_gravatar_hash,
                         "entity_type": row.entity_type,
                         "entity_id": row.entity_id,
                         "old_value": row.old_value,

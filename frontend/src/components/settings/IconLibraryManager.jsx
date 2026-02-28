@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Trash2, Upload } from 'lucide-react';
 import { LIBRARY_ICONS } from '../common/IconPickerModal';
 import ConfirmDialog from '../common/ConfirmDialog';
+import client from '../../api/client';
 
 // Group the static library icons by their 'group' field
 const STATIC_GROUPS = LIBRARY_ICONS.reduce((acc, icon) => {
@@ -9,7 +10,7 @@ const STATIC_GROUPS = LIBRARY_ICONS.reduce((acc, icon) => {
   return acc;
 }, {});
 
-const GROUP_ORDER = ['OS', 'Vendor', 'Network', 'Storage', 'Apps', 'Other'];
+const GROUP_ORDER = ['OS', 'Vendor', 'Network', 'Storage', 'Cloud', 'Apps', 'Other'];
 
 function IconGrid({ icons, onDelete }) {
   return (
@@ -111,9 +112,8 @@ function IconLibraryManager() {
   const fetchUploaded = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/v1/compute-units/icons');
-      if (!res.ok) throw new Error(res.statusText);
-      setUploadedIcons(await res.json());
+      const res = await client.get('/compute-units/icons');
+      setUploadedIcons(res.data);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -131,8 +131,9 @@ function IconLibraryManager() {
     try {
       const form = new FormData();
       form.append('file', file);
-      const res = await fetch('/api/v1/compute-units/icons/upload', { method: 'POST', body: form });
-      if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+      await client.post('/compute-units/icons/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
       await fetchUploaded();
     } catch (err) {
       setError(err.message);
@@ -151,8 +152,7 @@ function IconLibraryManager() {
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
         try {
-          const res = await fetch(`/api/v1/compute-units/icons/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-          if (!res.ok && res.status !== 204) throw new Error(res.statusText);
+          await client.delete(`/compute-units/icons/${encodeURIComponent(slug)}`);
           setUploadedIcons((prev) => prev.filter((i) => i.slug !== slug));
         } catch (err) {
           setError(err.message);

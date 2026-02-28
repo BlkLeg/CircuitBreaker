@@ -1,4 +1,10 @@
+import io
+import zipfile
+import uuid
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
@@ -6,13 +12,12 @@ from app.db.session import get_db
 from app.schemas.docs import Doc, DocCreate, DocUpdate, EntityDocAttach
 from app.services import docs_service
 
-import uuid
-from pathlib import Path
-
 router = APIRouter(prefix="/docs", tags=["docs"])
 
 _DOC_UPLOADS_DIR = Path("data/uploads/docs")
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024    # 5 MB
+_MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024   # 1 MB per .md
+_MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
 
 # Static routes MUST come before /{doc_id} to avoid path-matching conflicts
 
@@ -51,6 +56,92 @@ def list_docs(q: str | None = Query(None), db: Session = Depends(get_db)):
 @router.post("", response_model=Doc, status_code=201)
 def create_doc(payload: DocCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     return docs_service.create_doc(db, payload)
+
+
+_DEFAULT_IMPORT_TITLE = "Imported Document"
+
+
+def _parse_zip_entries(data: bytes) -> list[tuple[str, str]]:
+    """Parse a ZIP payload and return a list of (title, body_md) tuples.
+
+    Raises HTTPException on bad input.
+    """
+    if len(data) > _MAX_IMPORT_ZIP_BYTES:
+        raise HTTPException(status_code=413, detail="ZIP must be \u2264 10 MB")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+
+    entries: list[tuple[str, str]] = []
+    for info in zf.infolist():
+        if info.is_dir() or not info.filename.lower().endswith(".md"):
+            continue
+        # Prevent path traversal \u2014 keep only the bare filename
+        safe_name = Path(info.filename).name
+        if not safe_name:
+            continue
+        md_bytes = zf.read(info)
+        if len(md_bytes) > _MAX_IMPORT_MD_BYTES:
+            raise HTTPException(status_code=413, detail=f"{safe_name} exceeds 1 MB limit")
+        title = Path(safe_name).stem or _DEFAULT_IMPORT_TITLE
+        entries.append((title, md_bytes.decode("utf-8", errors="replace")))
+
+    if not entries:
+        raise HTTPException(status_code=400, detail="No .md files found in ZIP")
+    return entries
+
+
+def _parse_md_entry(filename: str | None, data: bytes) -> list[tuple[str, str]]:
+    """Parse a single .md payload and return a one-element (title, body_md) list.
+
+    Raises HTTPException on bad input.
+    """
+    if len(data) > _MAX_IMPORT_MD_BYTES:
+        raise HTTPException(status_code=413, detail=".md file must be \u2264 1 MB")
+    title = Path(filename or _DEFAULT_IMPORT_TITLE).stem or _DEFAULT_IMPORT_TITLE
+    return [(title, data.decode("utf-8", errors="replace"))]
+
+
+@router.get("/export")
+def export_docs(
+    ids: list[int] | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Export all docs (or a filtered subset by ?ids=1&ids=2) as a ZIP of .md files."""
+    data = docs_service.export_docs_zip(db, ids=ids)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="docs-export.zip"'},
+    )
+
+
+@router.post("/import", response_model=list[Doc], status_code=201)
+async def import_docs(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
+    """Import docs from a .md file or a .zip archive containing .md files."""
+    filename = (file.filename or "").lower()
+    data = await file.read()
+
+    is_zip = filename.endswith(".zip") or file.content_type in (
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/octet-stream",
+    )
+    is_md = filename.endswith(".md") or (file.content_type or "").startswith("text/")
+
+    if is_zip:
+        entries = _parse_zip_entries(data)
+    elif is_md:
+        entries = _parse_md_entry(file.filename, data)
+    else:
+        raise HTTPException(status_code=400, detail="File must be .md or .zip")
+
+    return docs_service.import_docs(db, entries)
 
 
 @router.get("/{doc_id}", response_model=Doc)

@@ -10,9 +10,11 @@ import ThemeSettings from '../components/settings/ThemeSettings';
 import DockSettings from '../components/settings/DockSettings';
 import SettingsNav from '../components/settings/SettingsNav';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import ClearLabDialog from '../components/common/ClearLabDialog';
 import FirstUserDialog from '../components/auth/FirstUserDialog';
+import { useToast } from '../components/common/Toast';
 
-const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc'];
+const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
 
 function parseMapFilters(raw) {
   if (!raw) return { environment: '', include: ENTITY_TYPES.slice() };
@@ -107,11 +109,14 @@ function SettingsPage() {
   const [mapFilters, setMapFilters] = useState({ environment: '', include: ENTITY_TYPES.slice() });
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState(null);
+  const toast = useToast();
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const [showFirstUserDialog, setShowFirstUserDialog] = useState(false);
   const [activeSection, setActiveSection] = useState('appearance');
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [clearLabOpen, setClearLabOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const sectionRefs = {
     appearance: useRef(null),
@@ -141,6 +146,7 @@ function SettingsPage() {
       locations: ctxSettings.locations ?? [],
       auth_enabled: ctxSettings.auth_enabled ?? false,
       session_timeout_hours: ctxSettings.session_timeout_hours ?? 24,
+      show_external_nodes_on_map: ctxSettings.show_external_nodes_on_map ?? true,
     });
     setAuthEnabled(ctxSettings.auth_enabled ?? false);
     setMapFilters(parseMapFilters(ctxSettings.map_default_filters));
@@ -339,6 +345,19 @@ function SettingsPage() {
     }));
   };
 
+  const handleClearLabConfirm = async () => {
+    setClearing(true);
+    try {
+      await adminApi.clearLab();
+      setClearLabOpen(false);
+      toast.success('Lab data cleared. Documents are preserved.');
+    } catch (err) {
+      toast.error(`Clear lab failed: ${err.message}`);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   if (!form) return <div className="page"><div className="page-header"><h2>Settings</h2></div></div>;
 
   return (
@@ -347,7 +366,9 @@ function SettingsPage() {
 
         {/* ── Sidebar nav ──────────────────────── */}
         <aside className="settings-sidebar">
-          <SettingsNav activeSection={activeSection} onNavClick={handleNavClick} />
+          <div className="settings-sidebar-inner">
+            <SettingsNav activeSection={activeSection} onNavClick={handleNavClick} />
+          </div>
         </aside>
 
         {/* ── Content ─────────────────────────── */}
@@ -475,6 +496,24 @@ function SettingsPage() {
               Show helpful hints on empty pages
             </span>
           </div>
+
+          <div style={S.checkRow}>
+            <label className="toggle-switch" htmlFor="show-ext-on-map">
+              <input
+                type="checkbox"
+                id="show-ext-on-map"
+                checked={form.show_external_nodes_on_map}
+                onChange={(e) => set('show_external_nodes_on_map', e.target.checked)}
+              />
+              <span className="toggle-switch-track" />
+            </label>
+            <span
+              style={{ fontSize: 13, cursor: 'pointer' }}
+              onClick={() => set('show_external_nodes_on_map', !form.show_external_nodes_on_map)}
+            >
+              Show external / cloud nodes on the topology map
+            </span>
+          </div>
         </div>
 
         {/* ── Environments & Categories ──────────── */}
@@ -540,6 +579,11 @@ function SettingsPage() {
             <span style={S.hint}>Upload custom icons and assign them to any entity.</span>
             <div style={{ marginTop: 8 }}>
               <IconLibraryManager />
+            </div>
+            <div className="info-tip" style={{ marginTop: 12 }}>
+              Looking for icons? Download high-quality PNG icons from{' '}
+              <em><a href="https://dashboardicons.com" target="_blank" rel="noopener noreferrer">dashboardicons.com</a></em>{' '}
+              — search by app name, then upload here.
             </div>
           </div>
         </div>
@@ -729,6 +773,24 @@ function SettingsPage() {
               />
             </label>
           </div>
+
+          <div style={S.row}>
+            <div style={S.label}>Clear Lab</div>
+            <span style={S.hint}>
+              Remove all lab entities (hardware, compute, services, storage, networks, clusters,
+              external nodes, tags) while keeping all documents intact.
+            </span>
+            <div style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-sm btn-danger"
+                type="button"
+                onClick={() => setClearLabOpen(true)}
+                disabled={clearing}
+              >
+                Clear Lab…
+              </button>
+            </div>
+          </div>
         </div>
 
         </div>{/* end .settings-content */}
@@ -739,6 +801,14 @@ function SettingsPage() {
         message={confirmState.message}
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((s) => ({ ...s, open: false }))}
+      />
+
+      <ClearLabDialog
+        open={clearLabOpen}
+        clearing={clearing}
+        onBackup={handleExport}
+        onConfirm={handleClearLabConfirm}
+        onCancel={() => setClearLabOpen(false)}
       />
 
       <FirstUserDialog

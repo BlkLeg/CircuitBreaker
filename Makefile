@@ -3,7 +3,7 @@ FRONTEND_PORT := 5173
 BACKEND_DIR   := backend
 FRONTEND_DIR  := frontend
 
-.PHONY: dev stop backend frontend help
+.PHONY: dev stop backend frontend docs docs-build help
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -27,3 +27,9 @@ backend: ## Kill port $(BACKEND_PORT) and restart the backend (foreground)
 frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend (foreground)
 	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
 	cd $(FRONTEND_DIR) && npm start
+
+docs: ## Serve docs locally with Zensical
+	.venv/bin/zensical serve
+
+docs-build: ## Build docs with Zensical
+	.venv/bin/zensical build

@@ -7,6 +7,8 @@ import {
   storageApi,
   networksApi,
   miscApi,
+  clustersApi,
+  externalNodesApi,
 } from '../../api/client';
 import { useToast } from '../common/Toast';
 import IconPickerModal from '../common/IconPickerModal';
@@ -14,12 +16,13 @@ import IconPickerModal from '../common/IconPickerModal';
 // ── Menu config ──────────────────────────────────────────────────────────────
 
 const LINK_ITEMS = {
-  service:  ['hardware', 'compute', 'storage', 'misc', 'network'],
+  service:  ['hardware', 'compute', 'storage', 'misc', 'network', 'external'],
   compute:  ['hardware', 'service', 'network'],
-  hardware: ['compute', 'storage'],
-  network:  ['hardware', 'compute', 'service'],
+  hardware: ['compute', 'storage', 'cluster'],
+  network:  ['hardware', 'compute', 'service', 'external'],
   storage:  ['hardware', 'service'],
   misc:     ['service'],
+  external: ['network'],
 };
 
 const LINK_LABEL = {
@@ -29,6 +32,8 @@ const LINK_LABEL = {
   storage:  'Link to Storage',
   network:  'Link to Network',
   misc:     'Link to Misc',
+  cluster:  'Add to Cluster',
+  external: 'Link to External',
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,6 +45,8 @@ const LIST_API = {
   storage:  (p) => storageApi.list(p),
   network:  (p) => networksApi.list(p),
   misc:     (p) => miscApi.list(p),
+  cluster:  (p) => clustersApi.list(p),
+  external: (p) => externalNodesApi.list(p),
 };
 
 // hardware uses vendor_icon_slug; storage/network/misc have no icon column yet
@@ -50,9 +57,10 @@ const UPDATE_ICON_API = {
   storage:  (id, slug) => storageApi.update(id, { icon_slug: slug }),
   network:  (id, slug) => networksApi.update(id, { icon_slug: slug }),
   misc:     (id, slug) => miscApi.update(id, { icon_slug: slug }),
+  external: (id, slug) => externalNodesApi.update(id, { icon_slug: slug }),
 };
 
-const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service', 'storage', 'network', 'misc']);
+const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service', 'storage', 'network', 'misc', 'external']);
 
 function getLabel(entity, type) {
   return entity.name || entity.hostname || entity.slug || entity.cidr || `#${entity.id}`;
@@ -65,6 +73,8 @@ function getSublabel(entity, type) {
   if (type === 'storage')  return entity.kind || (entity.capacity_gb ? `${entity.capacity_gb} GB` : null);
   if (type === 'network')  return entity.cidr || null;
   if (type === 'misc')     return entity.kind || null;
+  if (type === 'cluster')  return entity.environment || (entity.member_count != null ? `${entity.member_count} members` : null);
+  if (type === 'external') return entity.provider || entity.ip_address || null;
   return null;
 }
 
@@ -92,6 +102,7 @@ async function performLink(srcNode, targetType, targetEntity) {
   if (srcType === 'hardware') {
     if (targetType === 'compute')  return computeUnitsApi.update(tgtId, { hardware_id: srcId });
     if (targetType === 'storage')  return storageApi.update(tgtId, { hardware_id: srcId });
+    if (targetType === 'cluster')  return clustersApi.addMember(tgtId, { hardware_id: srcId });
   }
   if (srcType === 'network') {
     if (targetType === 'hardware') return networksApi.addHardwareMember(srcId, { hardware_id: tgtId });
@@ -111,6 +122,15 @@ async function performLink(srcNode, targetType, targetEntity) {
   }
   if (srcType === 'misc') {
     if (targetType === 'service')  return servicesApi.addMisc(tgtId, { misc_id: srcId });
+  }
+  if (srcType === 'service') {
+    if (targetType === 'external') return servicesApi.addExternalDep(srcId, { external_node_id: tgtId });
+  }
+  if (srcType === 'network') {
+    if (targetType === 'external') return externalNodesApi.addNetwork(tgtId, { network_id: srcId });
+  }
+  if (srcType === 'external') {
+    if (targetType === 'network') return externalNodesApi.addNetwork(srcId, { network_id: tgtId });
   }
   throw new Error(`No API mapping for ${srcType} → ${targetType}`);
 }
@@ -155,6 +175,21 @@ async function performUnlink(edge) {
   // service dependency
   if (rel === 'depends_on' && src.prefix === 'svc' && tgt.prefix === 'svc')
     return servicesApi.removeDependency(src.id, tgt.id);
+  // external node ↔ network
+  if (rel === 'connects_to' && src.prefix === 'ext' && tgt.prefix === 'net') {
+    // Find the relation ID by listing external node networks
+    const res = await externalNodesApi.getNetworks(src.id);
+    const link = (res.data || []).find(l => l.network_id === tgt.id);
+    if (link) return externalNodesApi.removeNetwork(link.id);
+    throw new Error('External node ↔ network link not found');
+  }
+  // service → external node
+  if (rel === 'depends_on' && src.prefix === 'svc' && tgt.prefix === 'ext') {
+    const res = await servicesApi.getExternalDeps(src.id);
+    const link = (res.data || []).find(l => l.external_node_id === tgt.id);
+    if (link) return servicesApi.removeExternalDep(src.id, link.id);
+    throw new Error('Service → external node link not found');
+  }
 
   throw new Error(`No unlink mapping for ${rel} (${src.prefix} → ${tgt.prefix})`);
 }

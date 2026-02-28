@@ -11,6 +11,8 @@ _logger = logging.getLogger(__name__)
 from app.db.session import get_db
 from app.db.models import (
     Hardware,
+    HardwareCluster,
+    HardwareClusterMember,
     ComputeUnit,
     Service,
     ServiceDependency,
@@ -21,6 +23,9 @@ from app.db.models import (
     HardwareNetwork,
     MiscItem,
     ServiceMisc,
+    ExternalNode,
+    ExternalNodeNetwork,
+    ServiceExternalNode,
     GraphLayout,
     Tag,
     EntityTag,
@@ -37,7 +42,7 @@ class LayoutUpdate(BaseModel):
 @router.get("/topology")
 def get_topology(
     environment: str | None = Query(None),
-    include: str = Query("hardware,compute,services,storage,networks,misc"),
+    include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     db: Session = Depends(get_db),
 ):
     include_set = {i.strip().lower() for i in include.split(",")}
@@ -139,7 +144,24 @@ def get_topology(
                     "relation": "on_network",
                 })
 
-    # 2. Hardware
+    # 2. Clusters (emitted before hardware so layout engines rank them as roots)
+    if "hardware" in include_set:
+        clusters = db.execute(select(HardwareCluster)).scalars().all()
+        included_cluster_ids: set[int] = set()
+        for cluster in clusters:
+            if not cluster.members:
+                continue
+            included_cluster_ids.add(cluster.id)
+            nodes.append({
+                "id": f"cluster-{cluster.id}",
+                "type": "cluster",
+                "ref_id": cluster.id,
+                "label": cluster.name,
+                "environment": cluster.environment,
+                "member_count": len(cluster.members),
+            })
+
+    # 3. Hardware
     if "hardware" in include_set:
         for hw in db.execute(select(Hardware)).scalars():
             # Build storage_summary by aggregating attached storage items
@@ -169,7 +191,20 @@ def get_topology(
                 "tags": get_tags("hardware", hw.id)
             })
 
-    # 3. Compute
+        # Cluster → Hardware member edges
+        hw_node_ids = {f"hw-{hw.id}" for hw in db.execute(select(Hardware)).scalars()}
+        for member in db.execute(select(HardwareClusterMember)).scalars().all():
+            cluster_node_id = f"cluster-{member.cluster_id}"
+            hw_node_id = f"hw-{member.hardware_id}"
+            if member.cluster_id in included_cluster_ids and hw_node_id in hw_node_ids:
+                edges.append({
+                    "id": f"e-cluster-{member.cluster_id}-hw-{member.hardware_id}",
+                    "source": cluster_node_id,
+                    "target": hw_node_id,
+                    "relation": "cluster_member",
+                })
+
+    # 5. Compute
     if "compute" in include_set:
         q = select(ComputeUnit)
         if environment:
@@ -202,7 +237,7 @@ def get_topology(
                     "relation": "hosts",
                 })
 
-    # 4. Services
+    # 6. Services
     if "services" in include_set:
         q = select(Service)
         if environment:
@@ -304,7 +339,7 @@ def get_topology(
                         "relation": "integrates_with",
                     })
 
-    # 5. Storage
+    # 6. Storage
     if "storage" in include_set:
         for st in db.execute(select(Storage)).scalars():
             nodes.append({
@@ -328,7 +363,7 @@ def get_topology(
                     "relation": "has_storage",
                 })
 
-    # 6. Misc
+    # 7. Misc
     if "misc" in include_set:
         for m in db.execute(select(MiscItem)).scalars():
             nodes.append({
@@ -338,6 +373,46 @@ def get_topology(
                 "label": m.name,
                 "tags": get_tags("misc", m.id)
             })
+
+    # 8. External Nodes (off-prem / cloud)
+    if "external" in include_set:
+        for ext in db.execute(select(ExternalNode)).scalars():
+            if environment and ext.environment and ext.environment != environment:
+                continue
+            nodes.append({
+                "id": f"ext-{ext.id}",
+                "type": "external",
+                "ref_id": ext.id,
+                "label": f"{ext.name} ({ext.provider})" if ext.provider else ext.name,
+                "icon_slug": ext.icon_slug,
+                "tags": get_tags("external", ext.id),
+                "meta": {
+                    "provider": ext.provider,
+                    "kind": ext.kind,
+                    "region": ext.region,
+                    "ip_address": ext.ip_address,
+                },
+            })
+
+        # External → Network edges
+        if "networks" in include_set:
+            for link in db.execute(select(ExternalNodeNetwork)).scalars().all():
+                edges.append({
+                    "id": f"e-ext-net-{link.id}",
+                    "source": f"ext-{link.external_node_id}",
+                    "target": f"net-{link.network_id}",
+                    "relation": "connects_to",
+                })
+
+        # Service → External edges
+        if "services" in include_set:
+            for link in db.execute(select(ServiceExternalNode)).scalars().all():
+                edges.append({
+                    "id": f"e-svc-ext-{link.id}",
+                    "source": f"svc-{link.service_id}",
+                    "target": f"ext-{link.external_node_id}",
+                    "relation": "depends_on",
+                })
 
     return {"nodes": nodes, "edges": edges}
 

@@ -119,6 +119,41 @@ def _cu_net_to_dict(r: models.ComputeNetwork) -> dict:
     return dict(id=r.id, compute_id=r.compute_id, network_id=r.network_id, ip_address=r.ip_address)
 
 
+def _cluster_to_dict(r: models.HardwareCluster) -> dict:
+    return dict(
+        id=r.id, name=r.name, description=r.description,
+        environment=r.environment, location=r.location,
+        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
+    )
+
+
+def _cluster_member_to_dict(r: models.HardwareClusterMember) -> dict:
+    return dict(id=r.id, cluster_id=r.cluster_id, hardware_id=r.hardware_id, role=r.role)
+
+
+def _ext_to_dict(r: models.ExternalNode) -> dict:
+    return dict(
+        id=r.id, name=r.name, provider=r.provider, kind=r.kind,
+        region=r.region, ip_address=r.ip_address, icon_slug=r.icon_slug,
+        notes=r.notes, environment=r.environment,
+        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
+    )
+
+
+def _ext_net_to_dict(r: models.ExternalNodeNetwork) -> dict:
+    return dict(
+        id=r.id, external_node_id=r.external_node_id,
+        network_id=r.network_id, link_type=r.link_type, notes=r.notes,
+    )
+
+
+def _svc_ext_to_dict(r: models.ServiceExternalNode) -> dict:
+    return dict(
+        id=r.id, service_id=r.service_id,
+        external_node_id=r.external_node_id, purpose=r.purpose,
+    )
+
+
 # ── Export ────────────────────────────────────────────────────────────────
 
 @router.get("/export")
@@ -146,6 +181,11 @@ def export_backup(db: Session = Depends(get_db), _=Depends(require_write_auth)):
         "service_misc":         [_svc_misc_to_dict(r)    for r in db.query(models.ServiceMisc).all()],
         "hardware_networks":    [_hw_net_to_dict(r)      for r in db.query(models.HardwareNetwork).all()],
         "compute_networks":     [_cu_net_to_dict(r)      for r in db.query(models.ComputeNetwork).all()],
+        "hardware_clusters":    [_cluster_to_dict(r)        for r in db.query(models.HardwareCluster).all()],
+        "hardware_cluster_members": [_cluster_member_to_dict(r) for r in db.query(models.HardwareClusterMember).all()],
+        "external_nodes":           [_ext_to_dict(r)     for r in db.query(models.ExternalNode).all()],
+        "external_node_networks":   [_ext_net_to_dict(r) for r in db.query(models.ExternalNodeNetwork).all()],
+        "service_external_nodes":   [_svc_ext_to_dict(r) for r in db.query(models.ServiceExternalNode).all()],
     }
 
 
@@ -159,6 +199,11 @@ class ImportPayload(BaseModel):
 def _wipe_entities(db: Session) -> None:
     """Delete all entity rows in reverse FK order to avoid constraint violations."""
     for model_cls in [
+        models.HardwareClusterMember,
+        models.HardwareCluster,
+        models.ServiceExternalNode,
+        models.ExternalNodeNetwork,
+        models.ExternalNode,
         models.ServiceMisc,
         models.ServiceStorage,
         models.ServiceDependency,
@@ -199,8 +244,13 @@ def _restore_entities(db: Session, data: dict) -> None:
     _insert_rows(db, models.ServiceDependency, data.get("service_dependencies", []))
     _insert_rows(db, models.ServiceStorage,    data.get("service_storage", []))
     _insert_rows(db, models.ServiceMisc,       data.get("service_misc", []))
-    _insert_rows(db, models.HardwareNetwork,   data.get("hardware_networks", []))
-    _insert_rows(db, models.ComputeNetwork,    data.get("compute_networks", []))
+    _insert_rows(db, models.HardwareNetwork,        data.get("hardware_networks", []))
+    _insert_rows(db, models.ComputeNetwork,         data.get("compute_networks", []))
+    _insert_rows(db, models.HardwareCluster,        data.get("hardware_clusters", []))
+    _insert_rows(db, models.HardwareClusterMember,  data.get("hardware_cluster_members", []))
+    _insert_rows(db, models.ExternalNode,            data.get("external_nodes", []))
+    _insert_rows(db, models.ExternalNodeNetwork,     data.get("external_node_networks", []))
+    _insert_rows(db, models.ServiceExternalNode,     data.get("service_external_nodes", []))
 
 
 @router.post("/import", status_code=201)
@@ -229,6 +279,51 @@ def import_backup(
     return {"imported": True}
 
 
+# ── Clear Lab ─────────────────────────────────────────────────────────────
+
+def _wipe_entities_keep_docs(db: Session) -> None:
+    """Delete all entity rows except docs and doc-attachment links."""
+    for model_cls in [
+        models.HardwareClusterMember,
+        models.HardwareCluster,
+        models.ServiceExternalNode,
+        models.ExternalNodeNetwork,
+        models.ExternalNode,
+        models.ServiceMisc,
+        models.ServiceStorage,
+        models.ServiceDependency,
+        models.HardwareNetwork,
+        models.ComputeNetwork,
+        models.EntityTag,
+        models.EntityDoc,
+        models.Service,
+        models.ComputeUnit,
+        models.Storage,
+        models.Network,
+        models.MiscItem,
+        models.Hardware,
+        models.Tag,
+        # models.Doc intentionally omitted — docs survive Clear Lab
+    ]:
+        db.query(model_cls).delete()
+
+
+@router.post("/clear-lab", status_code=200)
+def clear_lab(db: Session = Depends(get_db), _=Depends(require_write_auth)):
+    """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
+    clusters, external nodes, tags, and their relationships) while preserving all
+    documents and their content.
+    """
+    try:
+        _wipe_entities_keep_docs(db)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        _logger.exception("Clear lab failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Clear lab failed: {exc}") from exc
+    return {"cleared": True}
+
+
 # ── Recent Changes ────────────────────────────────────────────────────────
 
 _ENTITY_SOURCES = [
@@ -238,6 +333,7 @@ _ENTITY_SOURCES = [
     ("storage",  models.Storage,     "name"),
     ("network",  models.Network,     "name"),
     ("misc",     models.MiscItem,    "name"),
+    ("external", models.ExternalNode, "name"),
 ]
 
 

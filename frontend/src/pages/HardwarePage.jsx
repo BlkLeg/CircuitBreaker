@@ -2,8 +2,9 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { hardwareApi } from '../api/client';
+import { hardwareApi, clustersApi } from '../api/client';
 import HardwareDetail from '../components/details/HardwareDetail';
+import ClusterDetail from '../components/details/ClusterDetail';
 import { VENDORS } from '../config/vendors';
 import { HARDWARE_ROLES, HARDWARE_ROLE_LABELS } from '../config/hardwareRoles';
 import { CPU_BRANDS, CPU_BRAND_MAP } from '../config/cpuBrands';
@@ -45,11 +46,35 @@ const TAIL_COLUMNS = [
   { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
+const CLUSTER_COLUMNS = [
+  { key: 'id', label: 'ID' },
+  { key: 'name', label: 'Name' },
+  { key: 'environment', label: 'Environment' },
+  { key: 'location', label: 'Location' },
+  { key: 'member_count', label: 'Members' },
+  {
+    key: 'updated_at', label: 'Last Updated',
+    render: (v) => v ? new Date(v).toLocaleDateString() : '—',
+  },
+];
+
+const CLUSTER_FIELDS = (environments) => [
+  { name: 'name', label: 'Name', required: true },
+  environments?.length
+    ? { name: 'environment', label: 'Environment', type: 'select', options: environments.map((e) => ({ value: e, label: e })) }
+    : { name: 'environment', label: 'Environment' },
+  { name: 'location', label: 'Location' },
+  { name: 'description', label: 'Description', type: 'textarea' },
+];
+
 function HardwarePage() {
   const { settings } = useSettings();
   const toast = useToast();
   const vendorIconMode = settings?.vendor_icon_mode ?? 'custom_files';
   const locations = settings?.locations ?? [];
+  const environments = settings?.environments ?? [];
+
+  const [activeTab, setActiveTab] = useState('hardware');
 
   // Icon picker state (for vendor_icon_slug)
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -112,6 +137,8 @@ function HardwarePage() {
     },
     ...TAIL_COLUMNS,
   ], [vendorIconMode]);
+
+  // ── Hardware state ──────────────────────────────────────────────────────
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -121,6 +148,14 @@ function HardwarePage() {
   const [tagFilter, setTagFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+
+  // ── Cluster state ───────────────────────────────────────────────────────
+  const [clusters, setClusters] = useState([]);
+  const [clustersLoading, setClustersLoading] = useState(false);
+  const [clusterDetail, setClusterDetail] = useState(null);
+  const [showClusterForm, setShowClusterForm] = useState(false);
+  const [editCluster, setEditCluster] = useState(null);
+  const [clusterFormErrors, setClusterFormErrors] = useState({});
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -138,7 +173,23 @@ function HardwarePage() {
     }
   }, [q, tagFilter, roleFilter, toast]);
 
+  const fetchClusters = useCallback(async () => {
+    setClustersLoading(true);
+    try {
+      const res = await clustersApi.list();
+      setClusters(res.data);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setClustersLoading(false);
+    }
+  }, [toast]);
+
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (activeTab === 'clusters') fetchClusters();
+  }, [activeTab, fetchClusters]);
 
   const handleSubmit = async (values) => {
     try {
@@ -186,54 +237,148 @@ function HardwarePage() {
     });
   };
 
+  const handleClusterSubmit = async (values) => {
+    try {
+      if (editCluster) {
+        await clustersApi.update(editCluster.id, values);
+        toast.success('Cluster updated.');
+      } else {
+        await clustersApi.create(values);
+        toast.success('Cluster created.');
+      }
+      setShowClusterForm(false);
+      setEditCluster(null);
+      setClusterFormErrors({});
+      fetchClusters();
+    } catch (err) {
+      if (err.fieldErrors) {
+        setClusterFormErrors(err.fieldErrors);
+      } else {
+        toast.error(err.message);
+      }
+    }
+  };
+
+  const handleClusterDelete = async (id) => {
+    setConfirmState({
+      open: true,
+      message: 'Delete this cluster? All member assignments will also be removed.',
+      onConfirm: async () => {
+        setConfirmState((s) => ({ ...s, open: false }));
+        try {
+          await clustersApi.delete(id);
+          toast.success('Cluster deleted.');
+          fetchClusters();
+        } catch (err) {
+          toast.error(err.message);
+        }
+      },
+    });
+  };
+
   return (
     <div className="page">
       <div className="page-header">
-        <h2>Hardware</h2>
+        <h2>{activeTab === 'hardware' ? 'Hardware' : 'Hardware Clusters'}</h2>
+        {activeTab === 'hardware' ? (
+          <button
+            className="btn btn-primary"
+            onClick={() => { setEditTarget(null); setShowForm(true); }}
+          >
+            + Add Hardware
+          </button>
+        ) : (
+          <button
+            className="btn btn-primary"
+            onClick={() => { setEditCluster(null); setShowClusterForm(true); }}
+          >
+            + Add Cluster
+          </button>
+        )}
+      </div>
+
+      <div className="tab-bar" style={{ marginBottom: 16 }}>
         <button
-          className="btn btn-primary"
-          onClick={() => { setEditTarget(null); setShowForm(true); }}
+          className={`tab-btn${activeTab === 'hardware' ? ' active' : ''}`}
+          onClick={() => setActiveTab('hardware')}
         >
-          + Add Hardware
+          Hardware
+        </button>
+        <button
+          className={`tab-btn${activeTab === 'clusters' ? ' active' : ''}`}
+          onClick={() => setActiveTab('clusters')}
+        >
+          Clusters {clusters.length > 0 && <span className="tab-badge">{clusters.length}</span>}
         </button>
       </div>
 
-      <div className="filter-bar">
-        <SearchBox value={q} onChange={setQ} />
-        <TagFilter value={tagFilter} onChange={setTagFilter} />
-        <select
-          className="filter-select"
-          value={roleFilter}
-          onChange={(e) => setRoleFilter(e.target.value)}
-          title="Filter by role"
-        >
-          <option value="">All roles</option>
-          {HARDWARE_ROLES.map((r) => (
-            <option key={r.value} value={r.value}>{r.label}</option>
-          ))}
-        </select>
-      </div>
+      {activeTab === 'hardware' && (
+        <>
+          <div className="filter-bar">
+            <SearchBox value={q} onChange={setQ} />
+            <TagFilter value={tagFilter} onChange={setTagFilter} />
+            <select
+              className="filter-select"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+              title="Filter by role"
+            >
+              <option value="">All roles</option>
+              {HARDWARE_ROLES.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
 
-      {!loading && items.length === 0 && settings?.show_page_hints && (
-        <div className="info-tip" style={{ marginBottom: 12 }}>
-          💡 <strong>Tip:</strong> Start by adding hardware nodes — these represent physical machines and are required before creating compute units or services.
-        </div>
+          {!loading && items.length === 0 && settings?.show_page_hints && (
+            <div className="info-tip" style={{ marginBottom: 12 }}>
+              💡 <strong>Tip:</strong> Start by adding hardware nodes — these represent physical machines and are required before creating compute units or services.
+            </div>
+          )}
+
+          {loading ? <p>Loading...</p> : (
+            <EntityTable
+              columns={COLUMNS}
+              data={items}
+              onEdit={(row) => { setEditTarget(row); setShowForm(true); }}
+              onDelete={handleDelete}
+              onRowClick={(row) => setDetailTarget(row)}
+            />
+          )}
+        </>
       )}
 
-      {loading ? <p>Loading...</p> : (
-        <EntityTable
-          columns={COLUMNS}
-          data={items}
-          onEdit={(row) => { setEditTarget(row); setShowForm(true); }}
-          onDelete={handleDelete}
-          onRowClick={(row) => setDetailTarget(row)}
-        />
+      {activeTab === 'clusters' && (
+        <>
+          {!clustersLoading && clusters.length === 0 && settings?.show_page_hints && (
+            <div className="info-tip" style={{ marginBottom: 12 }}>
+              💡 <strong>Tip:</strong> Clusters group related hardware into logical units (e.g. a rack or HA pair).
+              Add hardware nodes first, then assign them to a cluster from the cluster’s detail panel.
+            </div>
+          )}
+          {clustersLoading ? <p>Loading...</p> : (
+            <EntityTable
+              columns={CLUSTER_COLUMNS}
+              data={clusters}
+              onEdit={(row) => { setEditCluster(row); setShowClusterForm(true); }}
+              onDelete={(id) => handleClusterDelete(id)}
+              onRowClick={(row) => setClusterDetail(row)}
+            />
+          )}
+        </>
       )}
 
       <HardwareDetail
         hardware={detailTarget}
         isOpen={!!detailTarget}
         onClose={() => setDetailTarget(null)}
+      />
+
+      <ClusterDetail
+        cluster={clusterDetail}
+        isOpen={!!clusterDetail}
+        onClose={() => setClusterDetail(null)}
+        onUpdate={fetchClusters}
       />
 
       <FormModal
@@ -252,6 +397,16 @@ function HardwarePage() {
         }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
+      />
+
+      <FormModal
+        open={showClusterForm}
+        title={editCluster ? 'Edit Cluster' : 'New Cluster'}
+        fields={CLUSTER_FIELDS(environments)}
+        initialValues={editCluster || {}}
+        onSubmit={handleClusterSubmit}
+        onClose={() => { setShowClusterForm(false); setEditCluster(null); setClusterFormErrors({}); }}
+        apiErrors={clusterFormErrors}
       />
 
       <ConfirmDialog

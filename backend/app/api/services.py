@@ -145,3 +145,58 @@ def remove_misc_link(service_id: int, misc_id: int, db: Session = Depends(get_db
         services_service.remove_misc_link(db, service_id, misc_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ── External dependency links ─────────────────────────────────────────────────
+
+from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
+from app.services import external_nodes_service
+
+
+@router.get("/{service_id}/external-dependencies", response_model=list[ServiceExternalNodeRead])
+def get_external_deps(service_id: int, db: Session = Depends(get_db)):
+    from app.db.models import ExternalNode, ServiceExternalNode, Service as ServiceModel
+    svc = db.get(ServiceModel, service_id)
+    if svc is None:
+        raise HTTPException(status_code=404, detail=f"Service {service_id} not found")
+    from sqlalchemy import select
+    links = db.execute(
+        select(ServiceExternalNode).where(ServiceExternalNode.service_id == service_id)
+    ).scalars().all()
+    result = []
+    for link in links:
+        ext = db.get(ExternalNode, link.external_node_id)
+        result.append({
+            "id": link.id,
+            "service_id": link.service_id,
+            "external_node_id": link.external_node_id,
+            "purpose": link.purpose,
+            "external_node_name": ext.name if ext else None,
+            "service_name": svc.name,
+        })
+    return result
+
+
+@router.post("/{service_id}/external-dependencies", response_model=ServiceExternalNodeRead, status_code=201)
+def add_external_dep(
+    service_id: int,
+    payload: ServiceExternalNodeLink,
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
+    try:
+        return external_nodes_service.link_service(db, service_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This link already exists.")
+
+
+@router.delete("/{service_id}/external-dependencies/{relation_id}", status_code=204)
+def remove_external_dep(service_id: int, relation_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+    try:
+        external_nodes_service.unlink_service(db, relation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+

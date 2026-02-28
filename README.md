@@ -1,63 +1,36 @@
 # Circuit Breaker
 
-The **Circuit Breaker** (formerly Service Layout Mapper) is a tool to document and visualize your homelab or small business network topology. It provides:
+> **⚠️ SECURITY WARNING (BETA RELEASE v0.1.0):**  
+> This application is currently in beta. It has not yet undergone a full security audit. Please run this application strictly on a secure, local network (e.g., your homelab or a private intranet). **Do not expose it directly to the public internet.** Ensure you take your own precautions for securing the app and safeguarding your data until the full production release.
+
+The **Circuit Breaker** (formerly Service Layout Mapper) is a tool designed to help you easily document, track, and visualize your homelab or small business network topology.
 
 ## Quick Start
 
-### Single Image (Recommended)
+The fastest and most reliable way to get started is using the pre-packaged Docker image.
 
 ```bash
-# Build
+# 1. Build the application image
 docker build -t circuit-breaker .
 
-# Run
+# 2. Run the application
 docker run --rm -p 8080:8080 -v $(pwd)/data:/data circuit-breaker
 ```
 
-The app will be at http://localhost:8080.
+Once the container is running, open your web browser and navigate to:  
+**http://localhost:8080**
 
-### Docker Compose (Dev)
+## Documentation
 
-```bash
-docker compose -f docker/docker-compose.yml up
-```
+For more information on using the tool and our upcoming plans, please refer to:
 
-Then open:
+- [Architecture & Overview](docs/OVERVIEW.md)
+- [Project Roadmap](docs/ROADMAP.md)
 
-- **App**: http://localhost:3000
-- **API docs (Swagger)**: http://localhost:8000/api/v1/docs
-
-## Tech Stack
-
-| Layer    | Technology                           |
-| -------- | ------------------------------------ |
-| Backend  | Python 3.12, FastAPI, SQLAlchemy 2.x |
-| Database | SQLite (v1), PostgreSQL-ready (v2)   |
-| Frontend | React 18, React Router v6, ReactFlow |
-| Deploy   | Docker Compose                       |
-
-## Development
-
-### Backend
+Build docs locally with Zensical:
 
 ```bash
-cd backend
-python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+make docs-build
+make docs
 ```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm start
-```
-
-## Docs
-
-- [Architecture Overview](docs/OVERVIEW.md)
-- [API & Entity Schema](docs/API-ENTITY-SCHEMA.md)
-- [Roadmap](docs/ROADMAP.md)

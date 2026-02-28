@@ -114,6 +114,34 @@ async def _read_response_body(response: Response) -> bytes:
     return body
 
 
+def _resolve_actor(request: Request) -> tuple[str, str | None]:
+    """Extract the user's display name and gravatar hash from the JWT, or return ('anonymous', None)."""
+    try:
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return "anonymous", None
+        token = auth_header[len("Bearer "):]
+
+        from app.services.settings_service import get_or_create_settings
+        from app.core.security import decode_token
+        from app.db.models import User
+        from sqlalchemy import select
+
+        with SessionLocal() as db:
+            cfg = get_or_create_settings(db)
+            if not cfg.auth_enabled or not cfg.jwt_secret:
+                return "anonymous", None
+            user_id = decode_token(token, cfg.jwt_secret)
+            if not user_id:
+                return "anonymous", None
+            user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+            if user:
+                return (user.display_name or user.email), user.gravatar_hash
+            return "anonymous", None
+    except Exception:
+        return "anonymous", None
+
+
 class LoggingMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
@@ -137,6 +165,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         entity_type, entity_id = _entity_type_from_path(path)
         user_agent = request.headers.get("user-agent")
         ip_address = request.client.host if request.client else None
+
+        # Resolve the actor from JWT if present
+        actor, actor_gravatar_hash = _resolve_actor(request)
 
         # Read request body (re-inject for downstream)
         req_body_bytes = await _read_body(request)
@@ -203,6 +234,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 user_agent=user_agent,
                 ip_address=ip_address,
                 details=req_body_str if category != "crud" else None,
+                actor=actor,
+                actor_gravatar_hash=actor_gravatar_hash,
             )
         except Exception as exc:
             _logger.warning("Audit log write failed: %s", exc)
@@ -259,6 +292,8 @@ def _write_log(
     user_agent: str | None,
     ip_address: str | None,
     details: str | None,
+    actor: str = "anonymous",
+    actor_gravatar_hash: str | None = None,
 ) -> None:
     with SessionLocal() as db:
         entry = Log(
@@ -266,7 +301,8 @@ def _write_log(
             level=level,
             category=category,
             action=action,
-            actor="user",
+            actor=actor,
+            actor_gravatar_hash=actor_gravatar_hash,
             entity_type=entity_type,
             entity_id=entity_id,
             old_value=old_value,
