@@ -380,8 +380,13 @@ _branding_path.mkdir(parents=True, exist_ok=True)
 app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
 
 
-@app.get(f"{settings.api_prefix}/health")
-def health():
+@app.api_route(f"{settings.api_prefix}/health", methods=["GET", "HEAD"])
+def health(request: Request):
+    # HEAD is used by wget --spider (Docker HEALTHCHECK) and Cloudflare health probes.
+    # FastAPI/Starlette do not auto-register HEAD for @app.get routes, so it must be
+    # declared explicitly here to prevent the SPA catch-all from swallowing it as a 404.
+    if request.method == "HEAD":
+        return Response(status_code=200)
     return {"status": "ok", "version": settings.app_version}
 
 # Serve React Frontend (Static Files)
