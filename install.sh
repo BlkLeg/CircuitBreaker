@@ -116,9 +116,13 @@ done
 # 0. Detect download region (for Docker mirror selection)
 Get_Region() {
   Show 2 "Detecting region..."
-  REGION=$(curl --connect-timeout 3 -s https://ipconfig.io/country_code 2>/dev/null || true)
+  REGION=$(curl --connect-timeout 3 -sf https://ipconfig.io/country_code 2>/dev/null || true)
   if [[ -z "$REGION" ]]; then
-    REGION=$(curl --connect-timeout 3 -s https://ifconfig.io/country_code 2>/dev/null || true)
+    REGION=$(curl --connect-timeout 3 -sf https://ifconfig.io/country_code 2>/dev/null || true)
+  fi
+  # Discard any response that isn't a valid 2-letter country code
+  if ! [[ "$REGION" =~ ^[A-Z]{2}$ ]]; then
+    REGION=""
   fi
   Show 0 "Region: ${REGION:-unknown}"
 }
@@ -275,6 +279,7 @@ Pull_And_Run() {
     --name  "$CB_CONTAINER" \
     -p      "127.0.0.1:${CB_PORT}:8080" \
     -v      "${CB_VOLUME}:/data" \
+    --security-opt seccomp=unconfined \
     --restart unless-stopped \
     "$CB_IMAGE" \
     || Show 1 "Failed to start container. Inspect logs with: docker logs $CB_CONTAINER"

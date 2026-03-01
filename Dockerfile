@@ -46,4 +46,4 @@ EXPOSE 8080
 
 # Run commands
 # Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "app/start.py"]
