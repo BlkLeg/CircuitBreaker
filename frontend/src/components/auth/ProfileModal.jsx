@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { authApi } from '../../api/auth.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
 function avatarUrl(user) {
   if (user?.profile_photo_url) return user.profile_photo_url;
@@ -42,7 +42,7 @@ function ProfileModal({ isOpen, onClose }) {
   const handleFile = (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (f.size > MAX_PHOTO_BYTES) { setError('Photo must be ≤ 5 MB.'); return; }
+    if (f.size > MAX_PHOTO_BYTES) { setError('Photo must be ≤ 10 MB.'); return; }
     if (!['image/jpeg', 'image/png'].includes(f.type)) {
       setError('Photo must be JPEG or PNG.');
       return;

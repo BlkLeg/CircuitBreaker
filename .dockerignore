@@ -1,0 +1,45 @@
+# Version control
+.git
+
+# Python virtual environment
+.venv
+
+# Node modules (will be installed fresh inside the builder stage)
+node_modules
+frontend/node_modules
+
+# Python bytecode
+**/__pycache__
+**/*.pyc
+**/*.pyo
+
+# Secrets and local env overrides
+backend/.env
+backend/.env.*
+
+# Build artefacts (rebuilt inside Docker)
+dist/
+frontend/dist/
+
+# Editor / IDE
+.cursor/
+.vscode/
+*.swp
+*.swo
+
+# Docs (not needed in the image)
+docs/
+
+# Markdown files (README is kept as it may be useful for context)
+*.md
+!README.md
+
+# Tests (not needed in the production image)
+backend/tests/
+
+# CI / GitHub Actions
+.github/
+
+# OS noise
+.DS_Store
+Thumbs.db

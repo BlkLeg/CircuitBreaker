@@ -20,6 +20,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "markdown-it-py[plugins]>=3.0.0",
     "bleach>=6.0.0",
+    "prometheus-client>=0.20.0",
 ]
 
 [project.optional-dependencies]

@@ -17,8 +17,10 @@ from app.db.models import AppSettings, Log, User
 from app.schemas.auth import AuthResponse, BootstrapInitializeResponse, BootstrapStatusResponse, UserProfile, BootstrapThemeResponse
 
 _logger = logging.getLogger(__name__)
-_PROFILES_DIR = Path("data/uploads/profiles")
-_MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB
+
+from app.core.config import settings as _settings  # noqa: E402
+_PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_TYPES = {"image/jpeg", "image/png"}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -242,7 +244,7 @@ async def update_profile(
 
         data = await profile_photo.read()
         if len(data) > _MAX_PHOTO_BYTES:
-            raise HTTPException(status_code=413, detail="Profile photo must be ≤ 5 MB")
+            raise HTTPException(status_code=413, detail="Profile photo must be ≤ 10 MB")
 
         # Optional: resize with Pillow
         try:

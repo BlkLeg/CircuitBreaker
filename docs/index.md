@@ -24,3 +24,7 @@ In Circuit Breaker, your lab is built upon these fundamental layers:
 4. **Storage & Networks**: Shared resources that Services and Hardware depend on, such as storage pools, ZFS datasets, and VLANs.
 
 To see how to begin adding these components, proceed to [Getting Started](getting-started.md).
+
+## Integrations
+
+- **[Prometheus Metrics](metrics.md)** — Scrape Circuit Breaker inventory data with Prometheus, Grafana Alloy, or any compatible agent. Includes a full metrics reference, scrape config examples, and PromQL queries.

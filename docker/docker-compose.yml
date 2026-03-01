@@ -8,6 +8,7 @@ services:
       - backend-data:/app/data
     environment:
       - DATABASE_URL=sqlite:////app/data/app.db
+      - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
     restart: unless-stopped
     healthcheck:

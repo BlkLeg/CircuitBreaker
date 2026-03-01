@@ -10,7 +10,10 @@ export const authApi = {
   },
   login: (email, password) => client.post('/auth/login', { email, password }),
   me: () => client.get('/auth/me'),
-  updateProfile: (formData) =>
-    client.put('/auth/me', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  updateProfile: (formData, tokenOverride) => {
+    const headers = { 'Content-Type': 'multipart/form-data' };
+    if (tokenOverride) headers.Authorization = `Bearer ${tokenOverride}`;
+    return client.put('/auth/me', formData, { headers });
+  },
   logout: () => client.post('/auth/logout'),
 };

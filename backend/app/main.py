@@ -16,6 +16,7 @@ from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
 from app.api.admin import router as admin_router
 from app.api.security_status import router as security_router
+from app.api.metrics import router as metrics_router
 from app.middleware.logging_middleware import LoggingMiddleware
 
 from slowapi import _rate_limit_exceeded_handler
@@ -353,22 +354,26 @@ app.include_router(security_router, prefix=settings.api_prefix)
 app.include_router(clusters.router, prefix=settings.api_prefix)
 app.include_router(external_nodes.router, prefix=settings.api_prefix)
 app.include_router(external_nodes._rel_router, prefix=settings.api_prefix)
+app.include_router(metrics_router, prefix=settings.api_prefix)
 
 
-# Always serve user-uploaded icons, regardless of whether the SPA is built
-_user_icons_path = Path("data/user-icons")
+# Serve all user-uploaded content. Directories are derived from settings.uploads_dir
+# so that UPLOADS_DIR=/data/uploads in Docker lands everything on the persistent volume.
+_uploads_base = Path(settings.uploads_dir)
+
+_user_icons_path = _uploads_base / "icons"
 _user_icons_path.mkdir(parents=True, exist_ok=True)
 app.mount("/user-icons", StaticFiles(directory=_user_icons_path), name="user-icons")
 
-_profile_photos_path = Path("data/uploads/profiles")
+_profile_photos_path = _uploads_base / "profiles"
 _profile_photos_path.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/profiles", StaticFiles(directory=_profile_photos_path), name="profile-photos")
 
-_doc_uploads_path = Path("data/uploads/docs")
+_doc_uploads_path = _uploads_base / "docs"
 _doc_uploads_path.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/docs", StaticFiles(directory=_doc_uploads_path), name="doc-uploads")
 
-_branding_path = Path("data/uploads/branding")
+_branding_path = _uploads_base / "branding"
 _branding_path.mkdir(parents=True, exist_ok=True)
 app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
 

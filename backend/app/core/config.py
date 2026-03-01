@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # Relative to the backend working directory. Override with STATIC_DIR env var
     # in single-container Docker deployments (e.g. STATIC_DIR=/app/frontend/dist).
     static_dir: str = "../frontend/dist"
+    # Base directory for all user uploads. Override with UPLOADS_DIR env var.
+    # In Docker (single image) set UPLOADS_DIR=/data/uploads so files land on the volume.
+    # In Docker Compose set UPLOADS_DIR=/app/data/uploads to match the compose volume.
+    uploads_dir: str = "data/uploads"
 
 
 settings = Settings()

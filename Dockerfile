@@ -10,26 +10,23 @@ RUN npm run build
 
 # Stage 2: Backend + Final Image
 FROM python:3.12-slim
-WORKDIR /app
-
-# Install system dependencies if needed (e.g. for some python packages)
-# RUN apt-get update && apt-get install -y --no-install-recommends ...
-
-# Copy backend code
-COPY backend /app/backend
 WORKDIR /app/backend
 
-# Install python dependencies from pyproject.toml
-# We use pip to install the package in editable mode or just dependencies
+# Install Python dependencies first (layer is cached until pyproject.toml changes)
+COPY backend/pyproject.toml ./
 RUN pip install --no-cache-dir .
 
+# Copy application source (changes here do NOT invalidate the pip layer above)
+COPY backend/app ./app
+
 # Copy built frontend assets from Stage 1
-# We'll place them in /app/frontend/dist so FastAPI can serve them
+# Placed in /app/frontend/dist so FastAPI can serve them as static files
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Environment variables
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
+ENV UPLOADS_DIR=/data/uploads
 # Ensure the data directory exists and create dedicated non-root user
 RUN mkdir -p /data \
     && groupadd --system breaker26 \

@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { authApi } from '../../api/auth.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 
+const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+
 const RULES = [
   { label: 'At least 8 characters', test: (p) => p.length >= 8 },
   { label: 'One uppercase letter (A–Z)', test: (p) => /[A-Z]/.test(p) },
@@ -16,15 +18,30 @@ function AuthModal({ isOpen, onClose }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const inputRef = useRef(null);
+  const photoFileRef = useRef(null);
+
+  const handlePhotoFile = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (f.size > PHOTO_MAX_BYTES) { setError('Photo must be ≤ 10 MB.'); return; }
+    if (!['image/jpeg', 'image/png'].includes(f.type)) { setError('Photo must be JPEG or PNG.'); return; }
+    setError('');
+    setPhotoFile(f);
+    setPhotoPreview(URL.createObjectURL(f));
+  };
 
   useEffect(() => {
     if (isOpen) {
       setEmail('');
       setPassword('');
       setDisplayName('');
+      setPhotoFile(null);
+      setPhotoPreview(null);
       setError('');
       setTab('login');
       setTimeout(() => inputRef.current?.focus(), 50);
@@ -57,13 +74,25 @@ function AuthModal({ isOpen, onClose }) {
     setError('');
     setLoading(true);
     try {
-      let res;
       if (tab === 'login') {
-        res = await authApi.login(email, password);
+        const res = await authApi.login(email, password);
+        login(res.data.token, res.data.user);
       } else {
-        res = await authApi.register(email, password, displayName || undefined);
+        const res = await authApi.register(email, password, displayName || undefined);
+        const token = res.data.token;
+        let user = res.data.user;
+        if (photoFile) {
+          try {
+            const fd = new FormData();
+            fd.append('profile_photo', photoFile);
+            const photoRes = await authApi.updateProfile(fd, token);
+            user = photoRes.data;
+          } catch {
+            // Photo upload failed — account was still created successfully
+          }
+        }
+        login(token, user);
       }
-      login(res.data.token, res.data.user);
       onClose();
     } catch (err) {
       setError(err.message || 'Authentication failed.');
@@ -89,7 +118,7 @@ function AuthModal({ isOpen, onClose }) {
           {['login', 'register'].map((t) => (
             <button
               key={t}
-              onClick={() => { setTab(t); setError(''); setDisplayName(''); }}
+              onClick={() => { setTab(t); setError(''); setDisplayName(''); setPhotoFile(null); setPhotoPreview(null); }}
               style={{
                 flex: 1,
                 padding: '7px 0',
@@ -108,6 +137,33 @@ function AuthModal({ isOpen, onClose }) {
         </div>
 
         <form onSubmit={handleSubmit} noValidate>
+          {tab === 'register' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: 16, gap: 6 }}>
+              <button
+                type="button"
+                className="oobe-avatar-btn"
+                onClick={() => photoFileRef.current?.click()}
+                title="Upload profile photo (optional)"
+              >
+                <img
+                  src={photoPreview || 'https://www.gravatar.com/avatar/?s=80&d=mp'}
+                  alt="Avatar preview"
+                  style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-border)', display: 'block' }}
+                />
+                <span className="oobe-avatar-overlay" aria-hidden="true">📷</span>
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                {photoFile ? photoFile.name : 'Click to add a photo (optional)'}
+              </span>
+              <input
+                ref={photoFileRef}
+                type="file"
+                accept="image/jpeg,image/png"
+                style={{ display: 'none' }}
+                onChange={handlePhotoFile}
+              />
+            </div>
+          )}
           <div style={{ marginBottom: 14 }}>
             <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
               Email

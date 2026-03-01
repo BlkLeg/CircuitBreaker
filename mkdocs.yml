@@ -1,6 +1,7 @@
 site_name: Circuit Breaker Docs
 site_description: Documentation for Circuit Breaker, the homelab topology mapper.
 site_author: Shawn Ji
+site_url: https://blkleg.github.io/CircuitBreaker/
 
 theme:
   name: material

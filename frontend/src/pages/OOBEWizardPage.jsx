@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -31,8 +31,21 @@ function OOBEWizardPage({ onCompleted }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState(DEFAULT_PRESET);
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const photoFileRef = useRef(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const handlePhotoFile = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (f.size > 10 * 1024 * 1024) { setError('Photo must be ≤ 10 MB.'); return; }
+    if (!['image/jpeg', 'image/png'].includes(f.type)) { setError('Photo must be JPEG or PNG.'); return; }
+    setError('');
+    setPhotoFile(f);
+    setPhotoPreview(URL.createObjectURL(f));
+  };
 
   useEffect(() => {
     const handler = (event) => {
@@ -84,8 +97,19 @@ function OOBEWizardPage({ onCompleted }) {
       });
 
       const token = response.data.token;
-      const user = response.data.user;
+      let user = response.data.user;
       const preset = response.data.theme?.preset || selectedPreset;
+
+      if (photoFile) {
+        try {
+          const fd = new FormData();
+          fd.append('profile_photo', photoFile);
+          const photoRes = await authApi.updateProfile(fd, token);
+          user = photoRes.data;
+        } catch {
+          // Photo upload failed — account was still created successfully
+        }
+      }
 
       if (THEME_PRESETS[preset]) {
         applyTheme(THEME_PRESETS[preset], preset);
@@ -162,7 +186,25 @@ function OOBEWizardPage({ onCompleted }) {
               <p className="login-card-subtitle">Create the first admin account for this installation.</p>
 
               <div className="oobe-avatar-wrap">
-                <img src={gravatarPreview} alt="Gravatar preview" className="oobe-avatar" />
+                <button
+                  type="button"
+                  className="oobe-avatar-btn"
+                  onClick={() => photoFileRef.current?.click()}
+                  title="Upload profile photo (optional)"
+                >
+                  <img src={photoPreview || gravatarPreview} alt="Avatar preview" className="oobe-avatar" />
+                  <span className="oobe-avatar-overlay" aria-hidden="true">📷</span>
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 6 }}>
+                  {photoFile ? photoFile.name : 'Click to add a photo (optional)'}
+                </span>
+                <input
+                  ref={photoFileRef}
+                  type="file"
+                  accept="image/jpeg,image/png"
+                  style={{ display: 'none' }}
+                  onChange={handlePhotoFile}
+                />
               </div>
 
               <div className="login-field">
@@ -269,7 +311,7 @@ function OOBEWizardPage({ onCompleted }) {
               <p className="login-card-subtitle">Review and complete setup.</p>
 
               <div className="oobe-summary">
-                <img src={gravatarPreview} alt="Avatar preview" className="oobe-avatar" />
+                <img src={photoPreview || gravatarPreview} alt="Avatar preview" className="oobe-avatar" />
                 <div>
                   <div><strong>Account</strong></div>
                   <div>Email: {email}</div>

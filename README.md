@@ -7,6 +7,14 @@
 
 The **Circuit Breaker** (formerly Service Layout Mapper) is a tool designed to help you easily document, track, and visualize your homelab or small business network topology.
 
+## TOP FEATURES
+
+- **Topology map with ready-to-use layouts:** Start fast with multiple pre-set map configurations (including cluster-centric and top-down styles) to visualize your infrastructure instantly.
+- **Customizable layout control:** Fine-tune positions and structure to match your real environment, then save and reload your preferred layouts across sessions.
+- **Rich theming options:** Choose from several built-in theme presets to personalize the UI and keep your dashboard readable in any setup.
+- **Gravatar compatibility:** User profiles support Gravatar so account identity and activity context feel familiar right away.
+- **Markdown docs with linkable content:** Built-in documentation tools let you write Markdown and generate linkable docs for services, systems, and operational notes.
+
 ## Quick Start
 
 You can run Circuit Breaker either as a **single container** (fastest local setup) or with **Docker Compose** (split frontend/backend services).
@@ -103,7 +111,7 @@ At the time, I also had a lesser understanding of various aspects of IT and serv
 
 This app was vibe coded from the ground up with a twist. I spent a week in the planning phase, simply listing the features and workflow I wanted to see in Notion. Then, each phase of the program was designed and tested in phases. At no point was any large element of this app built in "one shot". To keep the code honest, I use a combination of Dependabot, SonarQube, Snyk, and sentry to monitor for CVEs and bugs. Before the deployment of the BETA, all crictical and high risk vulnerabilities were patched.
 
-As we move closer to v1, the code itself will become increasingly optimized for stability and maintainability. This will include things like having code that has low cognitive complexity, is self-explanatory with minimal help from comments, 
+As we move closer to v1, the code itself will become increasingly optimized for stability and maintainability. This will include things like having code that has low cognitive complexity, is self-explanatory with minimal help from comments,
 
 ### Promises
 
