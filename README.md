@@ -17,11 +17,16 @@ You can run Circuit Breaker either as a **single container** (fastest local setu
 # 1) Build the image
 docker build -t circuit-breaker:beta .
 
-# 2) Run with a Docker-managed persistent volume
+# 2a) Run with localhost-only binding (recommended for homelab / beta):
+docker run --rm -p 127.0.0.1:8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
+
+# 2b) Run bound to all host interfaces (only if your router/firewall controls external access):
 docker run --rm -p 8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
 ```
 
 Open: [http://localhost:8080](http://localhost:8080)
+
+> **Note:** Option 2a binds the port exclusively to `127.0.0.1` so only the local machine can reach it. Option 2b binds to `0.0.0.0`, exposing the port on every host interface including any public-facing ones. Use 2b only if you are behind a firewall or intentionally serving your LAN.
 
 ### Option B — Docker Compose (`docker/docker-compose.yml`)
 
@@ -29,6 +34,8 @@ Open: [http://localhost:8080](http://localhost:8080)
 # Build and start both services (frontend + backend)
 docker compose -f docker/docker-compose.yml up -d --build
 ```
+
+> **Note:** The default Compose file exposes port 8080 on all interfaces. For local-only access, edit `docker/docker-compose.yml` and change `"8080:8080"` to `"127.0.0.1:8080:8080"` before starting.
 
 Open: [http://localhost:8080](http://localhost:8080)
 

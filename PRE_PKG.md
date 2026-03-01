@@ -118,18 +118,25 @@ npm run build
 
 ## 7) Security & Exposure Checks
 
-- [ ] Beta security warning present in `README.md`.
-- [ ] No direct public internet exposure for beta deployment.
-- [ ] Secrets not committed (quick scan + config review).
-- [ ] Dependency risk review completed (Snyk/Sonar/Dependabot context).
+- [x] Beta security warning present in `README.md`.
+- [x] No direct public internet exposure for beta deployment.
+- [x] Secrets not committed (quick scan + config review).
+- [x] Dependency risk review completed (Snyk/Sonar/Dependabot context).
+
+Evidence:
+
+- **7.1** — Warning block present at lines 5–6 of `README.md`: "Do not expose it directly to the public internet." Reviewed 2026-02-28.
+- **7.2** — `README.md` updated (2026-02-28) to add `-p 127.0.0.1:8080:8080` as the recommended local-only binding variant for both `docker run` (Option A) and Docker Compose (Option B). The `0.0.0.0` all-interfaces variant is retained with an explicit caveat requiring router/firewall control.
+- **7.3** — `git log --all --diff-filter=A -- '*.env' '*.pem' '*.key' '*.secret'` returned no results. `git ls-files | grep -E '\.env|\.pem|\.key|secret'` returns only `backend/.env.example` and `frontend/.env.example` (both contain safe structural defaults only). JWT secret is generated at OOBE time and stored in SQLite — never in env files. `CB_API_TOKEN` is env-var only with no hardcoded default. `Dockerfile` sets only path env vars (`STATIC_DIR`, `DATABASE_URL`). Scan date: 2026-02-28.
+- **7.4** — Snyk workspace rule active (`.cursor/rules/snyk_rules.mdc`); enforces code scan on all new first-party code. SonarQube warnings surface in Cursor lint output. Dependabot enabled on repo. README states all critical and high-risk CVEs patched prior to beta. Review date: 2026-02-28.
 
 Waivers (if used):
 
-- [ ] Check: ____________________
-  - Risk: ____________________
-  - Owner: ____________________
-  - Expiry: ____________________
-  - Mitigation: ____________________
+- [x] Check: Container process runs as `root` (non-root user `breaker26` created but not activated in `CMD`)
+  - Risk: Privilege escalation within the container if the app is compromised
+  - Owner: @BlkLeg
+  - Expiry: v1.0 production release
+  - Mitigation: Beta is homelab/LAN-only per README advisory. `USER breaker26` will be enforced and bind-mount compatibility resolved before v1.0.
 
 ---
 
