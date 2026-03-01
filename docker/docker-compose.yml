@@ -3,8 +3,6 @@ services:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
-    ports:
-      - "8000:8000"
     container_name: cb-backend
     volumes:
       - backend-data:/app/data
@@ -24,7 +22,7 @@ services:
       context: ..
       dockerfile: docker/frontend.Dockerfile
     ports:
-      - "3000:8080"
+      - "8080:8080"
     container_name: cb-frontend
     depends_on:
       backend:

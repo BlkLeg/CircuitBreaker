@@ -31,6 +31,16 @@ _PASS  = "Oobe1234!"
 # ---------------------------------------------------------------------------
 
 def _register(client, email=_EMAIL, password=_PASS):
+    status = client.get(f"{API}/bootstrap/status")
+    if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        return client.post(
+            f"{API}/bootstrap/initialize",
+            json={
+                "email": email,
+                "password": password,
+                "theme_preset": "one-dark",
+            },
+        )
     return client.post(f"{API}/auth/register", json={"email": email, "password": password})
 
 
@@ -425,8 +435,10 @@ class TestSecretCleanliness:
 
     def test_admin_export_excludes_user_data(self, client):
         """Admin export must not include user accounts or app_settings secrets."""
-        _register(client)
-        resp = client.get(f"{API}/admin/export")
+        reg = _register(client)
+        assert reg.status_code == 200
+        token = reg.json()["token"]
+        resp = client.get(f"{API}/admin/export", headers=_auth_header(token))
         assert resp.status_code == 200
         data = resp.json()
         assert "users" not in data, "Export must not include user rows"

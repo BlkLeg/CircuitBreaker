@@ -1,12 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+const ACK_KEY = 'cb:security-banner-ack';
+
 /**
  * SecurityBanner — fetches /api/v1/security/status on mount and displays a
- * persistent warning banner when authentication is disabled.
+ * warning banner when authentication is disabled.
  *
- * The banner is intentionally non-dismissible: admins must address the
- * underlying configuration (enable auth in Settings) to make it go away.
+ * The banner can be dismissed via "Acknowledge" (persisted in localStorage).
+ * The ack is cleared automatically if auth is later enabled, so re-disabling
+ * auth will surface the warning again.
  */
 export default function SecurityBanner() {
   const [show, setShow] = useState(false);
@@ -16,10 +19,23 @@ export default function SecurityBanner() {
     fetch('/api/v1/security/status')
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (data && !data.auth_enabled) setShow(true);
+        if (!data) return;
+        if (data.auth_enabled) {
+          // Clear any stale ack so re-disabling auth will show the banner again
+          localStorage.removeItem(ACK_KEY);
+          return;
+        }
+        if (!localStorage.getItem(ACK_KEY)) {
+          setShow(true);
+        }
       })
-      .catch(() => {}); // silently ignore — banner is best-effort
+      .catch(() => {});
   }, []);
+
+  const handleAcknowledge = () => {
+    localStorage.setItem(ACK_KEY, '1');
+    setShow(false);
+  };
 
   if (!show) return null;
 
@@ -62,6 +78,23 @@ export default function SecurityBanner() {
         }}
       >
         Enable in Settings →
+      </button>
+      <button
+        onClick={handleAcknowledge}
+        aria-label="Dismiss security warning"
+        style={{
+          background: 'transparent',
+          border: '1px solid rgba(234, 179, 8, 0.4)',
+          color: 'rgba(234, 179, 8, 0.8)',
+          borderRadius: 6,
+          padding: '4px 10px',
+          cursor: 'pointer',
+          fontSize: 12,
+          fontFamily: 'inherit',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        Acknowledge
       </button>
     </div>
   );

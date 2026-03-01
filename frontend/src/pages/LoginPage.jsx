@@ -120,11 +120,6 @@ function LoginPage() {
               />
             </div>
 
-            {/* Remember me — future-friendly slot for persistent sessions */}
-            <label className="login-remember">
-              <input type="checkbox" />{' '}Remember me
-            </label>
-
             {/* Backend error */}
             {error && (
               <div className="login-error-banner" role="alert">{error}</div>

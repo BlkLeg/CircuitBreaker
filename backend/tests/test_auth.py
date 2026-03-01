@@ -17,6 +17,17 @@ def _enable_auth(client):
 
 
 def _register(client, email="test@example.com", password="Secure1234!", display_name=None):
+    status = client.get("/api/v1/bootstrap/status")
+    if status.status_code == 200 and status.json().get("needs_bootstrap"):
+        body = {
+            "email": email,
+            "password": password,
+            "theme_preset": "one-dark",
+        }
+        if display_name:
+            body["display_name"] = display_name
+        return client.post("/api/v1/bootstrap/initialize", json=body)
+
     body = {"email": email, "password": password}
     if display_name:
         body["display_name"] = display_name
@@ -29,6 +40,56 @@ def _login(client, email="test@example.com", password="Secure1234!"):
 
 def _auth_header(token: str):
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_bootstrap_status_on_fresh_db(client):
+    resp = client.get("/api/v1/bootstrap/status")
+    assert resp.status_code == 200
+    assert resp.json()["needs_bootstrap"] is True
+    assert resp.json()["user_count"] == 0
+
+
+def test_bootstrap_initialize_creates_admin_and_enables_auth(client):
+    resp = client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "bootstrap@example.com",
+            "password": "Secure1234!",
+            "theme_preset": "one-dark",
+            "display_name": "Bootstrap Admin",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["token"]
+    assert data["user"]["is_admin"] is True
+    assert data["theme"]["preset"] == "one-dark"
+
+    settings_resp = client.get("/api/v1/settings")
+    assert settings_resp.status_code == 200
+    assert settings_resp.json()["auth_enabled"] is True
+
+
+def test_bootstrap_initialize_conflicts_after_first_user(client):
+    first = client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "first@example.com",
+            "password": "Secure1234!",
+            "theme_preset": "one-dark",
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "second@example.com",
+            "password": "Secure1234!",
+            "theme_preset": "dark-matter",
+        },
+    )
+    assert second.status_code == 409
 
 
 # ---------------------------------------------------------------------------

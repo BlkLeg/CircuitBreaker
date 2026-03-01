@@ -1,6 +1,8 @@
 import client from './client';
 
 export const authApi = {
+  bootstrapStatus: () => client.get('/bootstrap/status'),
+  bootstrapInitialize: (payload) => client.post('/bootstrap/initialize', payload),
   register: (email, password, displayName) => {
     const body = { email, password };
     if (displayName) body.display_name = displayName;

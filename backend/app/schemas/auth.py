@@ -25,3 +25,25 @@ class UserProfile(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     user: UserProfile
+
+
+class BootstrapStatusResponse(BaseModel):
+    needs_bootstrap: bool
+    user_count: int
+
+
+class BootstrapInitializeRequest(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+    theme_preset: str
+
+
+class BootstrapThemeResponse(BaseModel):
+    preset: str
+
+
+class BootstrapInitializeResponse(BaseModel):
+    token: str
+    user: UserProfile
+    theme: BootstrapThemeResponse

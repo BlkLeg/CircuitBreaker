@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SettingsProvider } from './context/SettingsContext';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ToastProvider } from './components/common/Toast';
+import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
 import Dock from './components/Dock';
 import Header from './components/Header';
@@ -23,6 +24,7 @@ import LogsPage from './pages/LogsPage';
 import SettingsPage from './pages/SettingsPage';
 import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
+import OOBEWizardPage from './pages/OOBEWizardPage';
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -70,16 +72,90 @@ function AppInner() {
   );
 }
 
+function AppRoutes() {
+  const { isAuthenticated, authEnabled, authReady } = useAuth();
+  const [bootstrapLoading, setBootstrapLoading] = useState(true);
+  const [needsBootstrap, setNeedsBootstrap] = useState(false);
+  const [bootstrapError, setBootstrapError] = useState('');
+
+  const fetchBootstrapStatus = useCallback(() => {
+    setBootstrapLoading(true);
+    setBootstrapError('');
+    authApi.bootstrapStatus()
+      .then((res) => {
+        setNeedsBootstrap(Boolean(res.data?.needs_bootstrap));
+      })
+      .catch((err) => {
+        const message = err?.message || 'Failed to determine setup state.';
+        console.error('Bootstrap status check failed:', message);
+        setBootstrapError(message);
+      })
+      .finally(() => {
+        setBootstrapLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchBootstrapStatus();
+  }, [fetchBootstrapStatus]);
+
+  if (bootstrapLoading || !authReady) {
+    return <div className="login-root" />;
+  }
+
+  if (bootstrapError) {
+    return (
+      <div className="login-root">
+        <div className="login-split" style={{ justifyContent: 'center' }}>
+          <div className="login-card" role="alert" aria-live="polite">
+            <h2 className="login-card-title">Setup check failed</h2>
+            <p className="login-card-subtitle">
+              Circuit Breaker could not determine whether first-run setup is required.
+            </p>
+            <div className="login-error-banner" style={{ marginBottom: 16 }}>
+              {bootstrapError}
+            </div>
+            <button type="button" className="btn btn-primary login-btn-submit" onClick={fetchBootstrapStatus}>
+              Retry setup check
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsBootstrap) {
+    return (
+      <Routes>
+        <Route path="*" element={<OOBEWizardPage onCompleted={() => setNeedsBootstrap(false)} />} />
+      </Routes>
+    );
+  }
+
+  if (authEnabled && !isAuthenticated) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
+  return (
+    <Routes>
+      <Route path="/login" element={<Navigate to="/map" replace />} />
+      <Route path="/*" element={<AppInner />} />
+    </Routes>
+  );
+}
+
 function App() {
   return (
     <BrowserRouter>
     <SettingsProvider>
     <AuthProvider>
     <ToastProvider>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/*" element={<AppInner />} />
-      </Routes>
+      <AppRoutes />
     </ToastProvider>
     </AuthProvider>
     </SettingsProvider>

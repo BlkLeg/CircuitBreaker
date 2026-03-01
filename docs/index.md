@@ -6,6 +6,8 @@ Unlike automated discovery tools that can be noisy or complex, Circuit Breaker p
 
 Curious about what's coming next? Check out our [Product Roadmap](roadmap.md) to see our plans for V1 and beyond.
 
+Shipping beta tonight? Use the [Beta Pre-Flight Checklist](../PRE_PKG.md) as the release gate.
+
 ## Why Circuit Breaker?
 
 - **Visualize Your Lab**: See how a single service maps down through a VM, to a physical node, and which storage or network it depends on.

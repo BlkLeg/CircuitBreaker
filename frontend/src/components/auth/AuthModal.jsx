@@ -15,6 +15,7 @@ function AuthModal({ isOpen, onClose }) {
   const [tab, setTab] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const inputRef = useRef(null);
@@ -23,6 +24,7 @@ function AuthModal({ isOpen, onClose }) {
     if (isOpen) {
       setEmail('');
       setPassword('');
+      setDisplayName('');
       setError('');
       setTab('login');
       setTimeout(() => inputRef.current?.focus(), 50);
@@ -55,8 +57,12 @@ function AuthModal({ isOpen, onClose }) {
     setError('');
     setLoading(true);
     try {
-      const fn = tab === 'login' ? authApi.login : authApi.register;
-      const res = await fn(email, password);
+      let res;
+      if (tab === 'login') {
+        res = await authApi.login(email, password);
+      } else {
+        res = await authApi.register(email, password, displayName || undefined);
+      }
       login(res.data.token, res.data.user);
       onClose();
     } catch (err) {
@@ -83,7 +89,7 @@ function AuthModal({ isOpen, onClose }) {
           {['login', 'register'].map((t) => (
             <button
               key={t}
-              onClick={() => { setTab(t); setError(''); }}
+              onClick={() => { setTab(t); setError(''); setDisplayName(''); }}
               style={{
                 flex: 1,
                 padding: '7px 0',
@@ -121,6 +127,25 @@ function AuthModal({ isOpen, onClose }) {
               }}
             />
           </div>
+          {tab === 'register' && (
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                Display Name <span style={{ opacity: 0.6 }}>(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                autoComplete="name"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+                  borderRadius: 6, padding: '8px 12px',
+                  color: 'var(--color-text)', fontSize: 14,
+                }}
+              />
+            </div>
+          )}
           <div style={{ marginBottom: tab === 'register' ? 8 : 20 }}>
             <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
               Password

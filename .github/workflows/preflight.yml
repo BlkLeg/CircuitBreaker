@@ -1,0 +1,58 @@
+name: Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+      - main
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./backend[dev]"
+
+      - name: Run backend tests
+        working-directory: backend
+        run: pytest -q
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build Docker image
+        run: docker build -t circuit-breaker:preflight .
+
+      - name: Run Docker smoke test
+        run: |
+          docker run -d --name circuit-breaker-smoke -p 8080:8080 circuit-breaker:preflight
+          sleep 15
+          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8080/api/v1/health
+
+      - name: Cleanup Docker container
+        if: always()
+        run: docker rm -f circuit-breaker-smoke || true

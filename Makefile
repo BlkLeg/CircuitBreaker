@@ -3,7 +3,7 @@ FRONTEND_PORT := 5173
 BACKEND_DIR   := backend
 FRONTEND_DIR  := frontend
 
-.PHONY: dev stop backend frontend docs docs-build help
+.PHONY: dev stop backend frontend docs docs-build test frontend-build docker-build preflight help
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -33,3 +33,22 @@ docs: ## Serve docs locally with Zensical
 
 docs-build: ## Build docs with Zensical
 	.venv/bin/zensical build
+
+test: ## Run backend tests
+	cd $(BACKEND_DIR) && ../.venv/bin/pytest -q
+
+frontend-build: ## Build frontend production bundle
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+
+docker-build: ## Build primary beta image
+	docker build -t circuit-breaker:beta .
+
+compose-up: ## Tear down stale containers, rebuild, and start docker compose stack (port 8080)
+	docker compose -f docker/docker-compose.yml down
+	docker compose -f docker/docker-compose.yml up --build -d
+
+compose-down: ## Stop and remove docker compose stack
+	docker compose -f docker/docker-compose.yml down
+
+preflight: test frontend-build docker-build ## Run tonight-safe preflight checks
+	@echo "Preflight command set completed. See PRE_PKG.md for manual matrix/signoff steps."

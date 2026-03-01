@@ -9,9 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.db.session import engine, Base
+from app.db.session import engine, Base, SessionLocal
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes
+from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap
 from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
 from app.api.admin import router as admin_router
@@ -254,6 +254,20 @@ async def lifespan(app: FastAPI):
         if Path(db_path).exists():
             with sqlite3.connect(db_path) as conn:
                 _run_migrations(conn)
+    try:
+        from app.services.settings_service import get_or_create_settings
+
+        with SessionLocal() as db:
+            cfg = get_or_create_settings(db)
+            user_count = db.query(models.User).count()
+            _logger.info(
+                "Bootstrap status: needs_bootstrap=%s user_count=%s auth_enabled=%s",
+                user_count == 0,
+                user_count,
+                bool(cfg.auth_enabled),
+            )
+    except Exception as exc:
+        _logger.warning("Bootstrap status logging failed: %s", exc)
     # Ensure user-icons upload dir exists
     Path("data/user-icons").mkdir(parents=True, exist_ok=True)
     # Ensure profile photos upload dir exists
@@ -332,6 +346,7 @@ app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(settings_router, prefix=settings.api_prefix)
 app.include_router(logs.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(bootstrap.router, prefix=settings.api_prefix)
 app.include_router(branding_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
 app.include_router(security_router, prefix=settings.api_prefix)
@@ -356,6 +371,11 @@ app.mount("/uploads/docs", StaticFiles(directory=_doc_uploads_path), name="doc-u
 _branding_path = Path("data/uploads/branding")
 _branding_path.mkdir(parents=True, exist_ok=True)
 app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
+
+
+@app.get(f"{settings.api_prefix}/health")
+def health():
+    return {"status": "ok", "version": settings.app_version}
 
 # Serve React Frontend (Static Files)
 # We check if the static directory exists (it should in Docker)
@@ -388,8 +408,3 @@ if static_path.exists():
         return HTMLResponse((static_path / "index.html").read_text(encoding="utf-8"))
 else:
     _logger.debug("Static directory %s not found — frontend not served (normal in dev)", static_path)
-
-
-@app.get(f"{settings.api_prefix}/health")
-def health():
-    return {"status": "ok", "version": settings.app_version}

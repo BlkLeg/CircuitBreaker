@@ -36,11 +36,9 @@ RUN mkdir -p /data \
     && useradd --system --gid breaker26 --no-create-home --shell /sbin/nologin breaker26 \
     && chown -R breaker26:breaker26 /app /data
 
-USER breaker26
-
 # Expose port (default 8080)
 EXPOSE 8080
 
 # Run commands
-# We run uvicorn on 0.0.0.0:8080
+# Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

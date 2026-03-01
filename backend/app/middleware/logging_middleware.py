@@ -24,6 +24,7 @@ _SKIP_PATHS = re.compile(
 # Patterns are matched in order; first match wins.
 # {entity} in action_template is replaced with the parsed entity type.
 _ROUTE_RULES: list[tuple[str, re.Pattern, str, str]] = [
+    ("POST",   re.compile(r"^/api/v1/bootstrap/initialize$"),             "bootstrap_create_user",      "bootstrap"),
     # Relationship endpoints (must come before simple CRUD patterns)
     ("POST",   re.compile(r"^/api/v1/services/\d+/dependencies$"),        "add_service_dependency",   "relationships"),
     ("DELETE", re.compile(r"^/api/v1/services/\d+/dependencies/\d+$"),    "remove_service_dependency","relationships"),

@@ -5,6 +5,7 @@ const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
 
 export const AuthContext = createContext({
   isAuthenticated: false,
+  authReady: false,
   user: null,
   token: null,
   authEnabled: false,
@@ -23,17 +24,22 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState(null);
   const [authEnabled, setAuthEnabled] = useState(false);
+  const [settingsReady, setSettingsReady] = useState(false);
+  // If no token exists on mount, /me won't be called so meReady starts true immediately.
+  const [meReady, setMeReady] = useState(() => !localStorage.getItem(TOKEN_KEY));
+  const authReady = settingsReady && meReady;
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const pendingActionRef = useRef(null);
   const navigate = useNavigate();
 
-  // F3-4: Sync authEnabled from backend on mount (before SettingsPage loads)
+  // Sync authEnabled from backend on mount (before SettingsPage loads)
   useEffect(() => {
     fetch('/api/v1/settings')
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((s) => setAuthEnabled(s.auth_enabled ?? false))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setSettingsReady(true));
   }, []);
 
   // Handle session expiry signalled by the axios interceptor (401 on any request)
@@ -48,9 +54,12 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('cb:session-expired', handler);
   }, []);
 
-  // Validate token on mount and whenever it changes
+  // Validate token on mount and whenever it changes; sets meReady when done
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setMeReady(true);
+      return;
+    }
     fetch('/api/v1/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -60,7 +69,8 @@ export function AuthProvider({ children }) {
         localStorage.removeItem(TOKEN_KEY);
         setToken(null);
         setUser(null);
-      });
+      })
+      .finally(() => setMeReady(true));
   }, [token]);
 
   const login = useCallback((newToken, newUser) => {
@@ -100,6 +110,7 @@ export function AuthProvider({ children }) {
 
   const value = {
     isAuthenticated: !!user,
+    authReady,
     user,
     token,
     authEnabled,

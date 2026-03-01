@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0-beta)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate backend/frontend version consistency
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          VERSION="${TAG#v}"
+          CORE_VERSION="${VERSION%%-*}"
+          BACKEND_VERSION=$(grep -E '^version = "' backend/pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+          FRONTEND_VERSION=$(node -p "require('./frontend/package.json').version")
+          test "$BACKEND_VERSION" = "$CORE_VERSION"
+          test "$FRONTEND_VERSION" = "$CORE_VERSION"
+
+      - name: Build release image
+        run: docker build -t circuit-breaker:${{ steps.vars.outputs.tag }} .
+
+      - name: Save image tarball
+        run: docker save circuit-breaker:${{ steps.vars.outputs.tag }} | gzip > circuit-breaker-${{ steps.vars.outputs.tag }}.tar.gz
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            circuit-breaker-${{ steps.vars.outputs.tag }}.tar.gz
