@@ -12,12 +12,17 @@ RUN npm run build
 FROM python:3.12.9-slim
 WORKDIR /app/backend
 
-# Install build tools required by Pillow, httptools, and uvloop for arm64
+# Install build tools required by Pillow, httptools, and uvloop for arm64.
+# tini: proper init process (SIGTERM forwarding, zombie reaping).
+# wget: used by the HEALTHCHECK instruction below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libjpeg-dev \
     zlib1g-dev \
     libffi-dev \
+    tini \
+    wget \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 1: install only third-party deps (cached until pyproject.toml changes)
@@ -42,21 +47,33 @@ ENV PYTHONPATH=/app/backend
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
 ENV UPLOADS_DIR=/data/uploads
-# Ensure the data directory exists and create dedicated non-root user
+# Suppress .pyc writes (rootfs is read-only at runtime); ensure stdout/stderr are unbuffered.
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Create dedicated non-root user with a fixed UID (1000) for predictable bind-mount ownership.
+# chown /app so the user can read the installed package; /data ownership is fixed at runtime
+# by the entrypoint script (covers pre-existing volumes that were created as root).
 RUN mkdir -p /data \
-    && groupadd --system breaker26 \
-    && useradd --system --gid breaker26 --no-create-home --shell /sbin/nologin breaker26 \
-    && chown -R breaker26:breaker26 /app /data
+    && groupadd -g 1000 breaker26 \
+    && useradd -u 1000 -g 1000 --no-create-home --shell /sbin/nologin breaker26 \
+    && chown -R breaker26:breaker26 /app
+
+# Copy entrypoint script that fixes /data ownership at startup and drops to breaker26 via gosu.
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Expose port (default 8080)
 EXPOSE 8080
 
-<<<<<<< HEAD
-# Run commands
-# Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
+# Health check — wget is available in this image (installed above).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
+
+# Container starts as root so that the entrypoint can fix /data volume ownership at runtime,
+# then drops to breaker26 (UID 1000) via gosu before execing the app.
+# tini as PID 1 ensures SIGTERM is forwarded to uvicorn and zombie processes are reaped.
+# start.py is used instead of raw uvicorn to retain the AF_UNIX socketpair monkeypatch
+# required for LXC/Proxmox container environments.
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
 CMD ["python", "app/start.py"]
-=======
-# Run as non-root user
-USER breaker26
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
->>>>>>> 0874df7 (Security.md created. Added security headers to the middleware. Fixed Dockerfile to run as non-root user. Pinned dockerfile base images to patch versions.)

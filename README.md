@@ -67,6 +67,11 @@ services:
   circuit-breaker:
     image: ghcr.io/blkleg/circuitbreaker:latest
     container_name: circuit-breaker
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
     ports:
       # Bind to 127.0.0.1 for local-only access (recommended for homelab / beta).
       # Change to "8080:8080" to expose on all interfaces (only if behind a firewall).
@@ -78,7 +83,7 @@ services:
       - UPLOADS_DIR=/data/uploads
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3

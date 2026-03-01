@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
@@ -16,7 +17,7 @@ from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(prefix="/branding", tags=["branding"])
 
-_BRANDING_DIR = Path("data/uploads/branding")
+_BRANDING_DIR = Path(settings.uploads_dir) / "branding"
 _MAX_FAVICON_BYTES = 512 * 1024   # 512 KB
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
 _FAVICON_ALLOWED = {".ico", ".png"}

@@ -23,6 +23,11 @@ services:
   circuit-breaker:
     image: ghcr.io/blkleg/circuitbreaker:latest
     container_name: circuit-breaker
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
     ports:
       # Binds to all interfaces so the app is reachable from the host's public IP,
       # a Cloudflare tunnel, or any reverse proxy. Secure with a host firewall.
@@ -35,7 +40,7 @@ services:
       - UPLOADS_DIR=/data/uploads
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
