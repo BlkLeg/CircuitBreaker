@@ -53,9 +53,41 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstal
 
 ### Option B — Docker Compose, no clone required
 
+**Option 1 — Download and run in one command:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml \
   -o docker-compose.yml && docker compose up -d
+```
+
+**Option 2 — Copy into your own `docker-compose.yml`:**
+
+```yaml
+services:
+  circuit-breaker:
+    image: ghcr.io/blkleg/circuitbreaker:latest
+    container_name: circuit-breaker
+    ports:
+      # Bind to 127.0.0.1 for local-only access (recommended for homelab / beta).
+      # Change to "8080:8080" to expose on all interfaces (only if behind a firewall).
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - circuit-breaker-data:/data
+    environment:
+      - DATABASE_URL=sqlite:////data/app.db
+      - UPLOADS_DIR=/data/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  circuit-breaker-data:
+    # Named volume — data persists across container restarts and updates.
+    # To inspect: docker volume inspect circuit-breaker-data
 ```
 
 Open: [http://localhost:8080](http://localhost:8080)

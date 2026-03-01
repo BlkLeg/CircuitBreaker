@@ -253,3 +253,33 @@ def test_delete_me_unauthenticated(client):
     )
     resp = client.delete("/api/v1/auth/me")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Audit log scrubbing — bootstrap credentials must never appear in logs
+# ---------------------------------------------------------------------------
+
+def test_bootstrap_logs_scrub_sensitive_data(client):
+    """Audit logs must not expose the bootstrap password or JWT token in plaintext."""
+    password = "Secure1234!"
+    resp = client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "admin@example.com",
+            "password": password,
+            "theme_preset": "one-dark",
+        },
+    )
+    assert resp.status_code == 200
+    token = resp.json()["token"]
+
+    # Bootstrap enables auth — provide the token to access logs
+    logs_resp = client.get(
+        "/api/v1/logs",
+        headers=_auth_header(token),
+    )
+    assert logs_resp.status_code == 200
+
+    logs_text = logs_resp.text
+    assert password not in logs_text, "Plaintext password found in audit logs"
+    assert token not in logs_text, "JWT token found in audit logs"

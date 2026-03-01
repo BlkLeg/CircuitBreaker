@@ -280,6 +280,34 @@ def _fetch_entity_json(entity_type: str, entity_id: int) -> str | None:
         return json.dumps(data)
 
 
+def _scrub_sensitive_data(json_str: str | None) -> str | None:
+    """Parse JSON, scrub sensitive keys like passwords and tokens, and re-serialize."""
+    if not json_str:
+        return json_str
+    try:
+        data = json.loads(json_str)
+    except Exception:
+        # If it's not valid JSON, we can't easily scrub it without risking data corruption,
+        # but the app generally only logs JSON.
+        return json_str
+
+    sensitive_keys = {"password", "token", "jwt_secret", "password_hash"}
+    
+    def _scrub(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.lower() in sensitive_keys:
+                    obj[k] = "********"
+                else:
+                    _scrub(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _scrub(item)
+
+    _scrub(data)
+    return json.dumps(data)
+
+
 def _write_log(
     *,
     action: str,
@@ -296,6 +324,11 @@ def _write_log(
     actor: str = "anonymous",
     actor_gravatar_hash: str | None = None,
 ) -> None:
+    # Scrub sensitive data from logs
+    scrubbed_old_value = _scrub_sensitive_data(old_value)
+    scrubbed_new_value = _scrub_sensitive_data(new_value)
+    scrubbed_details = _scrub_sensitive_data(details)
+
     with SessionLocal() as db:
         entry = Log(
             timestamp=datetime.now(timezone.utc),
@@ -306,11 +339,11 @@ def _write_log(
             actor_gravatar_hash=actor_gravatar_hash,
             entity_type=entity_type,
             entity_id=entity_id,
-            old_value=old_value,
-            new_value=new_value,
+            old_value=scrubbed_old_value,
+            new_value=scrubbed_new_value,
             user_agent=user_agent,
             ip_address=ip_address,
-            details=details,
+            details=scrubbed_details,
             status_code=status_code,
         )
         db.add(entry)
