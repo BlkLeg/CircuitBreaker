@@ -8,21 +8,17 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Backend + Final Image
-FROM python:3.12.9-slim
+# Stage 2: Python dependency builder — includes gcc and build tools, excluded from runtime.
+# Splitting into a separate stage sheds ~80-100 MB of compiler tooling from the final image.
+FROM python:3.12.9-slim AS python-builder
 WORKDIR /app/backend
 
-# Install build tools required by Pillow, httptools, and uvloop for arm64.
-# tini: proper init process (SIGTERM forwarding, zombie reaping).
-# wget: used by the HEALTHCHECK instruction below.
+# Build tools needed only for compiling C extensions (Pillow, httptools, uvloop on arm64).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libjpeg-dev \
     zlib1g-dev \
     libffi-dev \
-    tini \
-    wget \
-    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 1: install only third-party deps (cached until pyproject.toml changes)
@@ -37,6 +33,23 @@ subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir']
 # Layer 2: copy source and install the package itself (no re-download of deps)
 COPY backend/app ./app
 RUN pip install --no-cache-dir --no-deps .
+
+# Stage 3: Runtime image — build tools stripped; final image only carries what runs.
+FROM python:3.12.9-slim
+WORKDIR /app/backend
+
+# Runtime-only deps: tini (init), wget (healthcheck), gosu (privilege drop).
+# No gcc — all compilation was done in python-builder above.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tini \
+    wget \
+    gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pull compiled packages and app code from the builder stage.
+COPY --from=python-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=python-builder /usr/local/bin /usr/local/bin
+COPY --from=python-builder /app/backend/app ./app
 
 # Copy built frontend assets from Stage 1
 # Placed in /app/frontend/dist so FastAPI can serve them as static files
@@ -67,7 +80,9 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 8080
 
 # Health check — wget is available in this image (installed above).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+# start-period=45s: covers the entrypoint chown + Python/uvicorn cold start on Pi 4 SD card
+# (chown on a populated /data + uvicorn import chain can exceed 15s on arm64 slow storage).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
 
 # Container starts as root so that the entrypoint can fix /data volume ownership at runtime,

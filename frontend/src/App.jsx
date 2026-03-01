@@ -18,13 +18,16 @@ import ServicesPage from './pages/ServicesPage';
 import StoragePage from './pages/StoragePage';
 import NetworksPage from './pages/NetworksPage';
 import MiscPage from './pages/MiscPage';
-import DocsPage from './pages/DocsPage';
-import MapPage from './pages/MapPage';
 import LogsPage from './pages/LogsPage';
 import SettingsPage from './pages/SettingsPage';
 import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
+
+// Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor) are only
+// downloaded when the user first navigates to those routes.
+const DocsPage = React.lazy(() => import('./pages/DocsPage'));
+const MapPage = React.lazy(() => import('./pages/MapPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -48,6 +51,7 @@ function AppInner() {
       <SecurityBanner />
       <div className="page-content">
         <ErrorBoundary>
+          <React.Suspense fallback={null}>
           <Routes>
             <Route path="/" element={<Navigate to="/map" replace />} />
             <Route path="/hardware" element={<HardwarePage />} />
@@ -62,6 +66,7 @@ function AppInner() {
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
+          </React.Suspense>
         </ErrorBoundary>
       </div>
       <Dock />
