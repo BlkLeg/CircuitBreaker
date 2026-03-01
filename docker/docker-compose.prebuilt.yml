@@ -24,9 +24,10 @@ services:
     image: ghcr.io/blkleg/circuitbreaker:latest
     container_name: circuit-breaker
     ports:
-      # Bind to 127.0.0.1 for local-only access (recommended for homelab / beta).
-      # Change to "8080:8080" to expose on all interfaces (only if behind a firewall).
-      - "127.0.0.1:8080:8080"
+      # Binds to all interfaces so the app is reachable from the host's public IP,
+      # a Cloudflare tunnel, or any reverse proxy. Secure with a host firewall.
+      # To restrict to loopback only (behind a local reverse proxy): "127.0.0.1:8080:8080"
+      - "8080:8080"
     volumes:
       - circuit-breaker-data:/data
     environment:

@@ -20,18 +20,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first (layer is cached until pyproject.toml changes)
+# Layer 1: install only third-party deps (cached until pyproject.toml changes)
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir .
+RUN python3 -c "\
+import tomllib, subprocess, sys; \
+data = tomllib.load(open('pyproject.toml', 'rb')); \
+deps = data['project']['dependencies']; \
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + deps) \
+"
 
-# Copy application source (changes here do NOT invalidate the pip layer above)
+# Layer 2: copy source and install the package itself (no re-download of deps)
 COPY backend/app ./app
+RUN pip install --no-cache-dir --no-deps .
 
 # Copy built frontend assets from Stage 1
 # Placed in /app/frontend/dist so FastAPI can serve them as static files
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Environment variables
+ENV PYTHONPATH=/app/backend
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
 ENV UPLOADS_DIR=/data/uploads
@@ -46,4 +53,4 @@ EXPOSE 8080
 
 # Run commands
 # Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "app/start.py"]

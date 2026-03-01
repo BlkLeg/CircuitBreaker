@@ -162,4 +162,4 @@ As we move closer to v1, the code itself will become increasingly optimized for 
 ### Promises
 
 1. I will never charge for this app. As such, no paid contributors will be working on this app. Donations are always welcome, but don't feel obligated.
-2. O
+2. Due to the app pending optimization, please keep bug reports to limited to function and security. Not because I don't trust the recommendations, but because I don't want you guys to duplicate efforts.

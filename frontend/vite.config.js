@@ -14,18 +14,12 @@ export default defineConfig(({ mode }) => {
       // Minimum browser floor: these are the first versions to support color-mix(),
       // the most advanced CSS feature used in this app.
       target: ['chrome111', 'firefox113', 'safari16.4', 'edge111'],
-      rollupOptions: {
-        output: {
-          // Split large third-party libraries into separate hashed chunks.
-          // Each chunk is cached independently so an app code change does not
-          // bust the elkjs/reactflow download, which rarely changes.
-          manualChunks: {
-            'vendor-react':  ['react', 'react-dom', 'react-router-dom'],
-            'vendor-flow':   ['reactflow', '@dagrejs/dagre', 'elkjs'],
-            'vendor-editor': ['@uiw/react-md-editor', 'react-markdown', 'react-syntax-highlighter'],
-            'vendor-ui':     ['lucide-react', '@emoji-mart/react', '@emoji-mart/data'],
-          },
-        },
+      commonjsOptions: {
+        // elkjs/lib/elk.bundled.js is a browserify bundle that references 'web-worker'
+        // as an internal module. Vite's CJS transform tries to resolve it as an external
+        // ESM import, which fails at runtime. Ignoring it here causes elkjs to fall back
+        // to its built-in non-worker mode, which is correct for browser production builds.
+        ignore: ['web-worker'],
       },
     },
     server: {
