@@ -18,6 +18,7 @@ from app.api.admin import router as admin_router
 from app.api.security_status import router as security_router
 from app.api.metrics import router as metrics_router
 from app.middleware.logging_middleware import LoggingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -334,6 +335,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
 app.add_middleware(LoggingMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(hardware.router, prefix=settings.api_prefix)
 app.include_router(compute_units.router, prefix=settings.api_prefix)

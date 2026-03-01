@@ -13,6 +13,7 @@ set -e
 
 CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
 CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
+CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:latest}"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 COLOUR_RESET='\e[0m'
@@ -62,19 +63,23 @@ else
   Show 3 "Container '$CB_CONTAINER' not found — already removed or never installed."
 fi
 
-# Optionally remove the data volume
+# Remove the data volume
 echo ""
 Show 3 "Data volume: $CB_VOLUME"
 echo ""
 echo -e "  ${aCOLOUR[4]}WARNING:${COLOUR_RESET} Deleting the volume permanently removes all your inventory"
 echo -e "  data, including hardware, services, topology, and user accounts."
 echo ""
-printf "  Delete data volume '%s'? [y/N] " "$CB_VOLUME"
+printf "  Delete data volume '%s'? [Y/n] " "$CB_VOLUME"
 read -r REPLY < /dev/tty
 echo ""
 
 case "$REPLY" in
-  [yY][eE][sS]|[yY])
+  [nN][oO]|[nN])
+    Show 2 "Data volume retained."
+    echo "  To remove it later: docker volume rm $CB_VOLUME"
+    ;;
+  *)
     if docker volume inspect "$CB_VOLUME" >/dev/null 2>&1; then
       docker volume rm "$CB_VOLUME" >/dev/null
       Show 0 "Volume '$CB_VOLUME' deleted."
@@ -82,9 +87,31 @@ case "$REPLY" in
       Show 3 "Volume '$CB_VOLUME' not found — may have already been removed."
     fi
     ;;
+esac
+
+# Remove the Docker image
+echo ""
+Show 3 "Docker image: $CB_IMAGE"
+echo ""
+printf "  Remove Docker image '%s'? [Y/n] " "$CB_IMAGE"
+read -r REPLY < /dev/tty
+echo ""
+
+case "$REPLY" in
+  [nN][oO]|[nN])
+    Show 2 "Docker image retained."
+    echo "  To remove it later: docker rmi $CB_IMAGE"
+    ;;
   *)
-    Show 2 "Data volume retained."
-    echo "  To remove it later: docker volume rm $CB_VOLUME"
+    if docker image inspect "$CB_IMAGE" >/dev/null 2>&1; then
+      if docker rmi "$CB_IMAGE" >/dev/null 2>&1; then
+        Show 0 "Image '$CB_IMAGE' removed."
+      else
+        Show 3 "Image '$CB_IMAGE' could not be removed — it may still be in use by another container."
+      fi
+    else
+      Show 3 "Image '$CB_IMAGE' not found — may have already been removed."
+    fi
     ;;
 esac
 

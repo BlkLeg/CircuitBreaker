@@ -1,5 +1,5 @@
 # Stage 1: Build Frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:20.19.0-alpine3.21 AS frontend-builder
 WORKDIR /app/frontend
 # Install dependencies
 COPY frontend/package.json frontend/package-lock.json ./
@@ -9,7 +9,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Backend + Final Image
-FROM python:3.12-slim
+FROM python:3.12.9-slim
 WORKDIR /app/backend
 
 # Install build tools required by Pillow, httptools, and uvloop for arm64
@@ -51,6 +51,12 @@ RUN mkdir -p /data \
 # Expose port (default 8080)
 EXPOSE 8080
 
+<<<<<<< HEAD
 # Run commands
 # Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
 CMD ["python", "app/start.py"]
+=======
+# Run as non-root user
+USER breaker26
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+>>>>>>> 0874df7 (Security.md created. Added security headers to the middleware. Fixed Dockerfile to run as non-root user. Pinned dockerfile base images to patch versions.)
