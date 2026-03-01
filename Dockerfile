@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/pyproject.toml ./
 RUN python3 -c "\
 import tomllib, subprocess, sys; \
-data = tomllib.loads(open('pyproject.toml', 'rb').read()); \
+data = tomllib.load(open('pyproject.toml', 'rb')); \
 deps = data['project']['dependencies']; \
 subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + deps) \
 "
