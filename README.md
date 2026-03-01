@@ -15,6 +15,8 @@ The **Circuit Breaker** (formerly Service Layout Mapper) is a tool designed to h
 - **Gravatar compatibility:** User profiles support Gravatar so account identity and activity context feel familiar right away.
 - **Markdown docs with linkable content:** Built-in documentation tools let you write Markdown and generate linkable docs for services, systems, and operational notes.
 
+Find the quick user guide here [Circuit Breaker User Guide](https://blkleg.github.io/CircuitBreaker)
+
 ## Quick Start
 
 ### Option A — One-line install (recommended, no clone required)

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Search, Upload, Check } from 'lucide-react';
 import { useToast } from './Toast';
+import { computeUnitsApi } from '../../api/client';
 
 // All icons available in the library
 export const LIBRARY_ICONS = [
@@ -42,6 +43,9 @@ export const LIBRARY_ICONS = [
   { slug: 'ibm-light',         label: 'IBM (light)',     path: '/icons/vendors/ibm-light.png',         group: 'Vendor' },
   // Network
   { slug: 'cisco',             label: 'Cisco',           path: '/icons/vendors/cisco.svg',             group: 'Network' },
+  { slug: 'pfsense',           label: 'pfSense',         path: '/icons/vendors/pfsense.png',           group: 'Network' },
+  { slug: 'pfsense-light',     label: 'pfSense (light)', path: '/icons/vendors/pfsense-light.png',     group: 'Network' },
+  { slug: 'opnsense',          label: 'OPNsense',        path: '/icons/vendors/opnsense.png',          group: 'Network' },
   { slug: 'ubiquiti',          label: 'Ubiquiti',        path: '/icons/vendors/ubiquiti.svg',          group: 'Network' },
   { slug: 'ubiquiti-networks', label: 'Ubiquiti Networks', path: '/icons/vendors/ubiquiti-networks.svg', group: 'Network' },
   { slug: 'mikrotik-dark',     label: 'MikroTik',        path: '/icons/vendors/mikrotik-dark.svg',     group: 'Network' },
@@ -170,10 +174,9 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
 
   // Fetch previously-uploaded icons when the modal opens
   useEffect(() => {
-    fetch('/api/v1/compute-units/icons')
-      .then((r) => r.ok ? r.json() : [])
-      .then((data) => {
-        setUploadedIcons(data.map((i) => ({ ...i, group: 'Uploaded' })));
+    computeUnitsApi.listIcons()
+      .then((r) => {
+        setUploadedIcons(r.data.map((i) => ({ ...i, group: 'Uploaded' })));
       })
       .catch(() => {});
   }, []);
@@ -194,11 +197,8 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
 
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append('file', file);
-      const res = await fetch('/api/v1/compute-units/icons/upload', { method: 'POST', body: form });
-      if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
-      const { slug, path } = await res.json();
+      const res = await computeUnitsApi.uploadIcon(file);
+      const { slug, path } = res.data;
       const newEntry = { slug, label: file.name.replace(/\.[^.]+$/, ''), path, group: 'Uploaded' };
       setUploadedIcons((prev) => [...prev, newEntry]);
       setPreview(slug);

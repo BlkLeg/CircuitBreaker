@@ -98,6 +98,14 @@ export const computeUnitsApi = {
   create: (data) => client.post('/compute-units', data),
   update: (id, data) => client.patch(`/compute-units/${id}`, data),
   delete: (id) => client.delete(`/compute-units/${id}`),
+  uploadIcon: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post('/compute-units/icons/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  listIcons: () => client.get('/compute-units/icons'),
 };
 
 export const servicesApi = {

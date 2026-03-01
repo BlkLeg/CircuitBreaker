@@ -12,6 +12,8 @@ export const VENDOR_ICON_MAP = {
   gigabyte:   { label: 'Gigabyte',     path: '/icons/vendors/generic.svg' },
   asrock:     { label: 'ASRock',       path: '/icons/vendors/asrock.svg' },
   cisco:      { label: 'Cisco',        path: '/icons/vendors/cisco.svg' },
+  pfsense:    { label: 'pfSense',       path: '/icons/vendors/pfsense.png' },
+  opnsense:   { label: 'OPNsense',      path: '/icons/vendors/opnsense.png' },
   ubiquiti:   { label: 'Ubiquiti',     path: '/icons/vendors/ubiquiti.svg' },
   mikrotik:   { label: 'MikroTik',     path: '/icons/vendors/mikrotik-dark.svg' },
   synology:   { label: 'Synology',     path: '/icons/vendors/synology.svg' },

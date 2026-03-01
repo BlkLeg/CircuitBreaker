@@ -17,5 +17,7 @@ export const VENDORS = [
   { value: 'synology',   label: 'Synology' },
   { value: 'qnap',       label: 'QNAP' },
   { value: 'proxmox',    label: 'Proxmox' },
+  { value: 'pfsense',    label: 'pfSense' },
+  { value: 'opnsense',   label: 'OPNsense' },
   { value: 'other',      label: 'Other / Generic' },
 ];

@@ -6,7 +6,7 @@ VendorSlug = Literal[
     "amd", "intel", "nvidia", "arm", "apple",
     "dell", "hp", "lenovo", "supermicro", "asus",
     "gigabyte", "asrock", "cisco", "ubiquiti", "mikrotik",
-    "synology", "qnap", "proxmox", "other",
+    "synology", "qnap", "proxmox", "pfsense", "opnsense", "other",
 ]
 
 
