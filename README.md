@@ -194,9 +194,13 @@ At the time, I also had a lesser understanding of various aspects of IT and serv
 
 This app was vibe coded from the ground up with a twist. I spent a week in the planning phase, simply listing the features and workflow I wanted to see in Notion. Then, each phase of the program was designed and tested in phases. At no point was any large element of this app built in "one shot". To keep the code honest, I use a combination of Dependabot, SonarQube, Snyk, and sentry to monitor for CVEs and bugs. Before the deployment of the BETA, all crictical and high risk vulnerabilities were patched.
 
-As we move closer to v1, the code itself will become increasingly optimized for stability and maintainability. This will include things like having code that has low cognitive complexity, is self-explanatory with minimal help from comments,
+As we move closer to v1, the code itself will become increasingly optimized for stability and maintainability. This will include things like having code that has low cognitive complexity, is self-explanatory with minimal help from comments, etc. I advise **against** using the dev branch as it is **unstable**.
 
 ### Promises
 
 1. I will never charge for this app. As such, no paid contributors will be working on this app. Donations are always welcome, but don't feel obligated.
 2. Due to the app pending optimization, please keep bug reports to limited to function and security. Not because I don't trust the recommendations, but because I don't want you guys to duplicate efforts.
+
+Cash App: $blkleg
+
+Discord coming soon. Thank you for taking the time to check out my app!
