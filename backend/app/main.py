@@ -393,8 +393,8 @@ if static_path.exists():
     # or just serve everything. Mounting "/" as StaticFiles can interfere with API routes if not careful.
     # A common pattern for SPAs:
     
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
+    async def serve_spa(full_path: str, request: Request):
         # API routes should have been matched earlier; return a proper 404 if somehow reached here
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
@@ -405,6 +405,10 @@ if static_path.exists():
         resolved = (static_path / full_path).resolve()
         if not resolved.is_relative_to(static_root):
             raise HTTPException(status_code=404, detail="Not Found")
+
+        # HEAD requests (Cloudflare health probes, curl -I) — return headers only
+        if request.method == "HEAD":
+            return Response(status_code=200, media_type="text/html")
 
         if resolved.is_file():
             return FileResponse(resolved)

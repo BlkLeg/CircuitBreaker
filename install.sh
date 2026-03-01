@@ -275,9 +275,11 @@ Pull_And_Run() {
   fi
 
   Show 2 "Starting Circuit Breaker..."
+  # Bind to all interfaces so the app is reachable from the host's public IP and
+  # any reverse proxy or Cloudflare tunnel. Secure with a host firewall (ufw/iptables).
   docker run -d \
     --name  "$CB_CONTAINER" \
-    -p      "127.0.0.1:${CB_PORT}:8080" \
+    -p      "${CB_PORT}:8080" \
     -v      "${CB_VOLUME}:/data" \
     --security-opt seccomp=unconfined \
     --restart unless-stopped \
@@ -289,9 +291,11 @@ Pull_And_Run() {
 Wait_For_Ready() {
   Show 2 "Waiting for Circuit Breaker to be ready..."
   local tries=0
-  until docker exec "$CB_CONTAINER" curl -sf http://localhost:8080/api/v1/health >/dev/null 2>&1; do
+  # Use curl from the host against the exposed port — more reliable than docker exec
+  # (curl is not installed inside the container) and also validates the port mapping.
+  until curl -sf http://127.0.0.1:${CB_PORT}/api/v1/health >/dev/null 2>&1; do
     tries=$((tries + 1))
-    if [[ $tries -ge 20 ]]; then
+    if [[ $tries -ge 30 ]]; then
       Show 1 "Health check timed out after $((tries * 2))s. Check logs: docker logs $CB_CONTAINER"
     fi
     sleep 2
@@ -304,17 +308,33 @@ Wait_For_Ready() {
 ###############################################################################
 
 Welcome_Banner() {
+  # Try to resolve the public IP — useful on VPS/cloud where the host NIC only
+  # shows a private address and the public IP is assigned at the hypervisor.
+  local public_ip=""
+  public_ip=$(curl -4 -sf --connect-timeout 4 https://ipinfo.io/ip 2>/dev/null \
+              || curl -4 -sf --connect-timeout 4 https://ifconfig.me  2>/dev/null \
+              || true)
+  # Discard anything that doesn't look like an IPv4 address
+  if ! [[ "$public_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    public_ip=""
+  fi
+
   echo ""
   echo -e "$GREEN_LINE"
   echo -e " ${aCOLOUR[1]}Circuit Breaker is running at:${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
 
-  # Print all non-loopback IPv4 addresses
-  local found=0
+  # Public IP first (most relevant on VPS/cloud)
+  if [[ -n "$public_ip" ]]; then
+    echo -e "$GREEN_BULLET http://${public_ip}:${CB_PORT}  ${aCOLOUR[2]}← public / VPS address${COLOUR_RESET}"
+  fi
+
+  # Private LAN addresses
   if command -v ip >/dev/null 2>&1; then
     while IFS= read -r ip_addr; do
+      # Skip the address if it matches the public IP already printed
+      [[ "$ip_addr" == "$public_ip" ]] && continue
       echo -e "$GREEN_BULLET http://${ip_addr}:${CB_PORT}"
-      found=1
     done < <(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
   fi
 
