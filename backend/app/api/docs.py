@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.docs import Doc, DocCreate, DocUpdate, EntityDocAttach
@@ -14,7 +15,7 @@ from app.services import docs_service
 
 router = APIRouter(prefix="/docs", tags=["docs"])
 
-_DOC_UPLOADS_DIR = Path("data/uploads/docs")
+_DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024    # 5 MB
 _MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024   # 1 MB per .md
 _MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP

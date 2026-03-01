@@ -270,12 +270,12 @@ async def lifespan(app: FastAPI):
             )
     except Exception as exc:
         _logger.warning("Bootstrap status logging failed: %s", exc)
-    # Ensure user-icons upload dir exists
-    Path("data/user-icons").mkdir(parents=True, exist_ok=True)
-    # Ensure profile photos upload dir exists
-    Path("data/uploads/profiles").mkdir(parents=True, exist_ok=True)
-    # Ensure branding upload dir exists
-    Path("data/uploads/branding").mkdir(parents=True, exist_ok=True)
+    # Ensure all upload subdirectories exist on the persistent volume
+    _base = Path(settings.uploads_dir)
+    (_base / "icons").mkdir(parents=True, exist_ok=True)
+    (_base / "profiles").mkdir(parents=True, exist_ok=True)
+    (_base / "branding").mkdir(parents=True, exist_ok=True)
+    (_base / "docs").mkdir(parents=True, exist_ok=True)
     yield
 
 
