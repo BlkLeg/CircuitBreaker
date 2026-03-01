@@ -12,6 +12,9 @@ COPY backend/app ./app
 RUN pip install --no-cache-dir . \
     && mkdir -p /app/data
 
+ENV PYTHONPATH=/app
+ENV PORT=8000
+
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "app/start.py"]

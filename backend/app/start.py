@@ -6,6 +6,16 @@ Python's asyncio always calls socket.socketpair() when initializing any event
 loop on Unix. When that syscall is blocked, we substitute an equivalent pair of
 connected TCP loopback sockets, which asyncio's _make_self_pipe uses identically.
 """
+import os
+import sys
+from pathlib import Path
+
+# Ensure the backend root is on sys.path so 'import app' resolves correctly
+# regardless of WORKDIR or whether the package is installed in site-packages.
+_backend_root = str(Path(__file__).resolve().parent.parent)
+if _backend_root not in sys.path:
+    sys.path.insert(0, _backend_root)
+
 import socket
 
 _orig_socketpair = socket.socketpair
@@ -36,4 +46,4 @@ socket.socketpair = _safe_socketpair
 
 import uvicorn
 
-uvicorn.run("app.main:app", host="0.0.0.0", port=8080, loop="asyncio")
+uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), loop="asyncio")
