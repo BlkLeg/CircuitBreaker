@@ -12,6 +12,14 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app/backend
 
+# Install build tools required by Pillow, httptools, and uvloop for arm64
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libjpeg-dev \
+    zlib1g-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies first (layer is cached until pyproject.toml changes)
 COPY backend/pyproject.toml ./
 RUN pip install --no-cache-dir .
