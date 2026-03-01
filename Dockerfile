@@ -51,12 +51,6 @@ RUN mkdir -p /data \
 # Expose port (default 8080)
 EXPOSE 8080
 
-<<<<<<< HEAD
-# Run commands
-# Keep root runtime for bind-mounted host /data compatibility in beta packaging checks.
-CMD ["python", "app/start.py"]
-=======
 # Run as non-root user
 USER breaker26
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
->>>>>>> 0874df7 (Security.md created. Added security headers to the middleware. Fixed Dockerfile to run as non-root user. Pinned dockerfile base images to patch versions.)
