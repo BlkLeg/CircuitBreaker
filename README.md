@@ -17,46 +17,92 @@ The **Circuit Breaker** (formerly Service Layout Mapper) is a tool designed to h
 
 ## Quick Start
 
-You can run Circuit Breaker either as a **single container** (fastest local setup) or with **Docker Compose** (split frontend/backend services).
+### Option A — One-line install (recommended, no clone required)
 
-### Option A — Single Image (`docker run`)
+Requires Linux and Docker (the script will offer to install Docker if it isn't found):
 
 ```bash
-# 1) Build the image
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
+```
+
+Open: [http://localhost:8080](http://localhost:8080)
+
+The installer checks your system, pulls the pre-built image from GHCR, starts the container, and prints every LAN address it is reachable on.
+
+**Customization** — set env vars before piping to override defaults:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CB_PORT` | `8080` | Host port to expose |
+| `CB_VOLUME` | `circuit-breaker-data` | Docker volume name or host path for data |
+| `CB_IMAGE` | `ghcr.io/blkleg/circuitbreaker:latest` | Docker image to pull |
+| `CB_CONTAINER` | `circuit-breaker` | Container name |
+
+```bash
+# Example: run on port 9090
+CB_PORT=9090 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
+```
+
+**To uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash
+```
+
+---
+
+### Option B — Docker Compose, no clone required
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml \
+  -o docker-compose.yml && docker compose up -d
+```
+
+Open: [http://localhost:8080](http://localhost:8080)
+
+To update to the latest release: `docker compose pull && docker compose up -d`
+
+---
+
+### Option C — Build from source (single image)
+
+```bash
+# 1) Clone and build
+git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
 docker build -t circuit-breaker:beta .
 
 # 2a) Run with localhost-only binding (recommended for homelab / beta):
 docker run --rm -p 127.0.0.1:8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
 
-# 2b) Run bound to all host interfaces (only if your router/firewall controls external access):
+# 2b) Run bound to all interfaces (only if behind a firewall):
 docker run --rm -p 8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
 ```
 
-Open: [http://localhost:8080](http://localhost:8080)
+> **Note:** Option 2a binds the port exclusively to `127.0.0.1` so only the local machine can reach it. Option 2b binds to `0.0.0.0`, exposing the port on every interface including public-facing ones.
 
-> **Note:** Option 2a binds the port exclusively to `127.0.0.1` so only the local machine can reach it. Option 2b binds to `0.0.0.0`, exposing the port on every host interface including any public-facing ones. Use 2b only if you are behind a firewall or intentionally serving your LAN.
+---
 
-### Option B — Docker Compose (`docker/docker-compose.yml`)
+### Option D — Build from source (Docker Compose)
 
 ```bash
-# Build and start both services (frontend + backend)
+git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
 docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-> **Note:** The default Compose file exposes port 8080 on all interfaces. For local-only access, edit `docker/docker-compose.yml` and change `"8080:8080"` to `"127.0.0.1:8080:8080"` before starting.
+> **Note:** The default Compose file exposes port 8080 on all interfaces. For local-only access, change `"8080:8080"` to `"127.0.0.1:8080:8080"` in `docker/docker-compose.yml` before starting.
 
-Open: [http://localhost:8080](http://localhost:8080)
+---
 
-### First-run OOBE / reset data
+### First-run setup / reset data
 
-- On a fresh database, the app opens the first-run OOBE wizard to create the initial admin account.
+- On a fresh database the app opens the setup wizard to create the initial admin account.
 - To reset to a fresh state:
 
 ```bash
-# Single-image volume reset
+# Remove the data volume (Options A, B, C)
 docker volume rm -f circuit-breaker-data
 
-# Compose stack + volume reset
+# Compose stack + volume reset (Option D)
 docker compose -f docker/docker-compose.yml down -v
 ```
 

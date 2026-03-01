@@ -9,6 +9,7 @@ BACKEND_DIR   ?= backend
 FRONTEND_DIR  ?= frontend
 VERSION       ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0-dev")
 OS_ARCH       := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
+DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.git$$//' | sed 's/^/ghcr.io\//' | tr '[:upper:]' '[:lower:]')
 
 # ==============================================================================
 # CORE TARGETS
@@ -97,14 +98,21 @@ build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 		$(BACKEND_DIR)/app/main.py
 	@echo "✅ Native binary created in dist/"
 
+docker-publish: ## Build and push a multi-arch Docker image to DOCKER_REPO
+	@echo "Building and publishing multi-arch image to $(DOCKER_REPO)..."
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t "$(DOCKER_REPO):$(VERSION)" \
+		-t "$(DOCKER_REPO):latest" \
+		--push .
+
 docker-multiarch: ## Build and push a multi-arch Docker image (requires login)
 	@echo "Building multi-arch image for $(VERSION)..."
-	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
-		-t circuit-breaker:$(VERSION) --push .
+	docker buildx build --platform linux/amd64,linux/arm64 \
+		-t $(DOCKER_REPO):$(VERSION) --push .
 
 test-pi-local: ## Test the ARM64 Docker image locally using emulation
 	@echo "Testing ARM64 image..."
-	docker run --rm -d --name cb-pi-test -p 8080:8080 --platform linux/arm64 circuit-breaker:$(VERSION)
+	docker run --rm -d --name cb-pi-test -p 8080:8080 --platform linux/arm64 $(DOCKER_REPO):$(VERSION)
 	@echo "Giving container 10s to start..."
 	@sleep 10
 	@curl -f http://localhost:8080/health
