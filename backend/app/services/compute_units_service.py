@@ -1,9 +1,16 @@
-from datetime import datetime, timezone
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, inspect as sa_inspect
+from fastapi import HTTPException
 
 from app.db.models import ComputeUnit, ComputeNetwork, Service, EntityTag, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
+from app.services.environments_service import resolve_environment_id
+from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map
+from app.core.time import utcnow, utcnow_iso
+
+_logger = logging.getLogger(__name__)
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -49,6 +56,7 @@ def _to_dict(db: Session, cu: ComputeUnit) -> dict:
         d["storage_allocated"] = {"disk_gb": cu.disk_gb, "storage_pools": pools}
     else:
         d["storage_allocated"] = None
+    d["environment_name"] = cu.environment_rel.name if cu.environment_rel else None
     return d
 
 
@@ -58,6 +66,7 @@ def list_compute_units(
     kind: str | None = None,
     hardware_id: int | None = None,
     environment: str | None = None,
+    environment_id: int | None = None,
     tag: str | None = None,
     q: str | None = None,
 ) -> list[dict]:
@@ -66,7 +75,9 @@ def list_compute_units(
         stmt = stmt.where(ComputeUnit.kind == kind)
     if hardware_id:
         stmt = stmt.where(ComputeUnit.hardware_id == hardware_id)
-    if environment:
+    if environment_id is not None:
+        stmt = stmt.where(ComputeUnit.environment_id == environment_id)
+    elif environment:
         stmt = stmt.where(ComputeUnit.environment == environment)
     if q:
         stmt = stmt.where(or_(ComputeUnit.name.ilike(f"%{q}%"), ComputeUnit.notes.ilike(f"%{q}%")))
@@ -77,17 +88,57 @@ def list_compute_units(
             .where(Tag.name == tag)
         )
     rows = db.execute(stmt).scalars().all()
-    return [_to_dict(db, r) for r in rows]
+    conflict_map = bulk_conflict_map(db)
+    result = []
+    for r in rows:
+        d = _to_dict(db, r)
+        d["ip_conflict"] = conflict_map.get(("compute_unit", r.id), False)
+        result.append(d)
+    return result
 
 
 def get_compute_unit(db: Session, cu_id: int) -> dict:
     cu = db.get(ComputeUnit, cu_id)
     if cu is None:
         raise ValueError(f"ComputeUnit {cu_id} not found")
-    return _to_dict(db, cu)
+    d = _to_dict(db, cu)
+    if cu.ip_address:
+        conflicts = check_ip_conflict(
+            db,
+            ip=cu.ip_address,
+            ports=None,
+            exclude_entity_type="compute_unit",
+            exclude_entity_id=cu_id,
+        )
+        d["ip_conflict"] = len(conflicts) > 0
+        d["ip_conflict_details"] = [c.to_dict() for c in conflicts]
+    else:
+        d["ip_conflict"] = False
+        d["ip_conflict_details"] = []
+    return d
 
 
 def create_compute_unit(db: Session, payload: ComputeUnitCreate) -> dict:
+    if payload.ip_address:
+        conflicts = check_ip_conflict(
+            db,
+            ip=payload.ip_address,
+            ports=None,
+            exclude_entity_type="compute_unit",
+            exclude_entity_id=None,
+        )
+        if conflicts:
+            _logger.warning(
+                "IP conflict blocked save for compute_unit %r: %s already used by %s",
+                payload.name,
+                payload.ip_address,
+                ", ".join(c.entity_name for c in conflicts),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+            )
+    resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     cu = ComputeUnit(
         name=payload.name,
         kind=payload.kind,
@@ -100,6 +151,7 @@ def create_compute_unit(db: Session, payload: ComputeUnitCreate) -> dict:
         ip_address=payload.ip_address,
         cpu_brand=payload.cpu_brand,
         environment=payload.environment,
+        environment_id=resolved_env_id,
         notes=payload.notes,
     )
     db.add(cu)
@@ -114,9 +166,36 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
     cu = db.get(ComputeUnit, cu_id)
     if cu is None:
         raise ValueError(f"ComputeUnit {cu_id} not found")
-    for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
+    effective_ip = payload.ip_address if payload.ip_address is not None else cu.ip_address
+    if effective_ip:
+        conflicts = check_ip_conflict(
+            db,
+            ip=effective_ip,
+            ports=None,
+            exclude_entity_type="compute_unit",
+            exclude_entity_id=cu_id,
+        )
+        if conflicts:
+            _logger.warning(
+                "IP conflict blocked save for compute_unit %r: %s already used by %s",
+                cu.name,
+                effective_ip,
+                ", ".join(c.entity_name for c in conflicts),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+            )
+    data = payload.model_dump(exclude_unset=True, exclude={"tags"})
+    env_str = data.pop("environment", None)
+    env_id = data.pop("environment_id", None)
+    if env_str is not None or env_id is not None:
+        data["environment_id"] = resolve_environment_id(db, env_id, env_str)
+        if env_str is not None:
+            data["environment"] = env_str
+    for field, value in data.items():
         setattr(cu, field, value)
-    cu.updated_at = datetime.now(timezone.utc)
+    cu.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "compute", cu.id, payload.tags)
     db.commit()

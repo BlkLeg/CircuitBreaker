@@ -15,7 +15,7 @@ import dagre from '@dagrejs/dagre';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import { useNavigate } from 'react-router-dom';
 import { X, ExternalLink } from 'lucide-react';
-import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networksApi, miscApi, clustersApi, externalNodesApi } from '../api/client';
+import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networksApi, miscApi, clustersApi, externalNodesApi, telemetryApi, environmentsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
@@ -121,8 +121,24 @@ function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
 // ReactFlow can route edges to any side.  Opacity/size kept at zero.
 const INVISIBLE_HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0 };
 
+const TELEMETRY_RING = {
+  healthy:  { shadow: '0 0 0 2.5px #22c55e, 0 0 8px 2px #22c55e66', animation: 'tm-pulse 2s ease-in-out infinite' },
+  degraded: { shadow: '0 0 0 2.5px #eab308', animation: 'none' },
+  critical: { shadow: '0 0 0 3px #ef4444, 0 0 12px 4px #ef444466', animation: 'none' },
+};
+
 function IconNode({ data }) {
   const glow = data.glowColor || '#4a7fa5';
+  const tStatus = data.telemetry_status;
+  const tRing = (tStatus && tStatus !== 'unknown') ? TELEMETRY_RING[tStatus] : null;
+  const tData = data.telemetry_data || {};
+  const hasIpConflict = !!data.ip_conflict;
+
+  const baseShadow = `0 0 20px 5px ${glow}44, 0 0 6px 1px ${glow}88, inset 0 0 10px ${glow}15`;
+  const ringStyle = tRing
+    ? { boxShadow: `${baseShadow}, ${tRing.shadow}`, animation: tRing.animation }
+    : { boxShadow: baseShadow };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, userSelect: 'none', cursor: 'pointer' }}>
       {/* 4 target handles — one per side */}
@@ -132,33 +148,59 @@ function IconNode({ data }) {
       <Handle type="target" id="t-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
 
       {/* Glow ring + icon */}
-      <div style={{
-        width: 64,
-        height: 64,
-        borderRadius: '50%',
-        background: `radial-gradient(circle, ${glow}28 0%, ${glow}0a 70%, transparent 100%)`,
-        boxShadow: `0 0 20px 5px ${glow}44, 0 0 6px 1px ${glow}88, inset 0 0 10px ${glow}15`,
-        border: `1.5px solid ${glow}99`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: 8,
-        flexShrink: 0,
-        transition: 'box-shadow 0.2s ease',
-      }}>
-        {data.iconSrc ? (
-          <img
-            src={data.iconSrc}
-            alt=""
-            width={38}
-            height={38}
-            style={{ objectFit: 'contain', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))' }}
-            onError={(e) => { e.target.style.display = 'none'; }}
-          />
-        ) : (
-          <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)' }}>
-            {data.label?.[0]?.toUpperCase() || '?'}
-          </span>
+      <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
+        <div style={{
+          width: 64,
+          height: 64,
+          borderRadius: '50%',
+          background: `radial-gradient(circle, ${glow}28 0%, ${glow}0a 70%, transparent 100%)`,
+          border: `1.5px solid ${glow}99`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'box-shadow 0.2s ease',
+          ...ringStyle,
+        }}>
+          {data.iconSrc ? (
+            <img
+              src={data.iconSrc}
+              alt=""
+              width={38}
+              height={38}
+              style={{ objectFit: 'contain', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))' }}
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
+          ) : (
+            <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)' }}>
+              {data.label?.[0]?.toUpperCase() || '?'}
+            </span>
+          )}
+        </div>
+        {/* IP conflict badge — amber ! in top-right corner */}
+        {hasIpConflict && (
+          <div
+            title="IP conflict detected"
+            style={{
+              position: 'absolute',
+              top: -2,
+              right: -2,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              background: '#f59e0b',
+              border: '2px solid var(--color-bg, #0d0d1a)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 10,
+              fontWeight: 800,
+              color: '#1a1a1a',
+              zIndex: 10,
+              lineHeight: 1,
+            }}
+          >
+            !
+          </div>
         )}
       </div>
 
@@ -207,6 +249,22 @@ function IconNode({ data }) {
         );
       })()}
 
+      {/* Telemetry badge — cpu_temp / power when available */}
+      {tRing && (tData.cpu_temp != null || tData.system_power_w != null) && (
+        <div style={{ marginTop: 3, display: 'flex', gap: 5 }}>
+          {tData.cpu_temp != null && (
+            <span style={{ fontSize: 9, fontFamily: 'monospace', color: tData.cpu_temp >= 80 ? '#ef4444' : 'var(--color-text-muted)' }}>
+              {tData.cpu_temp}°C
+            </span>
+          )}
+          {tData.system_power_w != null && (
+            <span style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+              {tData.system_power_w}W
+            </span>
+          )}
+        </div>
+      )}
+
       {/* 4 source handles — one per side */}
       <Handle type="source" id="s-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
       <Handle type="source" id="s-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
@@ -248,7 +306,7 @@ const ENTITY_FIELDS = {
     { key: 'status',      label: 'Status' },
     { key: 'ip_address',  label: 'IP Address' },
     { key: 'url',         label: 'URL' },
-    { key: 'ports',       label: 'Ports' },
+    { key: 'ports', label: 'Ports', fmt: (v) => Array.isArray(v) ? v.map(p => p.port ? `${p.port}/${p.protocol || 'tcp'}` : '—').filter(Boolean).join(', ') || '—' : String(v ?? '—') },
     { key: 'environment', label: 'Env' },
     { key: 'description', label: 'Description' },
   ],
@@ -557,11 +615,14 @@ function MapInternal() {
 
   // Filters
   const [envFilter, setEnvFilter] = useState('');
+  const [environmentsList, setEnvironmentsList] = useState([]);
   const [tagFilter, setTagFilter] = useState('');
   const [includeTypes, setIncludeTypes] = useState({
     cluster: true, hardware: true, compute: true, service: true,
     storage: true, network: true, misc: true, external: true,
   });
+  // Sub-role filter for hardware nodes (null = show all)
+  const [hwRoleFilter, setHwRoleFilter] = useState(null);
 
   // Tooltip state
   const [tooltip, setTooltip] = useState(null); // { x, y, node }
@@ -604,12 +665,21 @@ function MapInternal() {
   const tagDebounceRef = useRef(null);
   const [debouncedTag, setDebouncedTag] = useState('');
 
+  // Fetch environments list for filter dropdown
+  useEffect(() => {
+    environmentsApi.list().then((r) => setEnvironmentsList(r.data)).catch(() => {});
+  }, []);
+
   // Settings initialization (run once after settings load)
   const settingsApplied = useRef(false);
   useEffect(() => {
     if (settings && !settingsApplied.current) {
       settingsApplied.current = true;
-      if (settings.default_environment) setEnvFilter(settings.default_environment);
+      if (settings.default_environment) {
+        // Match default_environment string to an environment id
+        // (will be reconciled after environmentsList loads)
+        setEnvFilter(settings.default_environment);
+      }
       if (settings.map_default_filters && typeof settings.map_default_filters === 'object') {
         const f = settings.map_default_filters;
         if (f.include && typeof f.include === 'object') {
@@ -638,14 +708,50 @@ function MapInternal() {
     }));
   }, [debouncedTag, setNodes, setEdges]);
 
+  // Hardware sub-role filter — hide/show hardware nodes by role
+  useEffect(() => {
+    setNodes(prev => prev.map(n => {
+      if (n.originalType !== 'hardware') return n;
+      return { ...n, hidden: hwRoleFilter ? n._hwRole !== hwRoleFilter : false };
+    }));
+  }, [hwRoleFilter, setNodes]);
+
+  // Telemetry polling — refresh every 60s for hardware nodes that have active telemetry
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      setNodes(prev => {
+        const liveHwNodes = prev.filter(n => n.originalType === 'hardware' && n.data.telemetry_status && n.data.telemetry_status !== 'unknown');
+        if (liveHwNodes.length === 0) return prev;
+        liveHwNodes.forEach(async (n) => {
+          try {
+            const res = await telemetryApi.get(n._refId);
+            setNodes(current => current.map(cn => {
+              if (cn.id !== n.id) return cn;
+              return {
+                ...cn,
+                data: {
+                  ...cn.data,
+                  telemetry_status: res.status || 'unknown',
+                  telemetry_data: res.data || null,
+                  telemetry_last_polled: res.last_polled || null,
+                },
+              };
+            }));
+          } catch { /* silent — connection may be unavailable */ }
+        });
+        return prev; // return unchanged synchronously; async updates follow
+      });
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [setNodes]);
+
   const getIncludeCSV = (types) => {
     const MAP = { hardware: 'hardware', compute: 'compute', service: 'services', storage: 'storage', network: 'networks', misc: 'misc', external: 'external' };
     return Object.entries(types).filter(([, v]) => v).map(([k]) => MAP[k]).filter(Boolean).join(',') || 'hardware';
   };
 
   const getLayoutName = useCallback(() => {
-    const scopedEnv = (envFilter || '').trim();
-    return scopedEnv ? `default::env:${scopedEnv}` : 'default';
+    return envFilter ? `default::envid:${envFilter}` : 'default';
   }, [envFilter]);
 
   const fetchData = useCallback(async () => {
@@ -654,7 +760,7 @@ function MapInternal() {
     try {
       const includeCSV = getIncludeCSV(includeTypes);
       const res = await graphApi.topology({
-        environment: envFilter || undefined,
+        environment_id: envFilter || undefined,
         include: includeCSV,
       });
 
@@ -671,12 +777,14 @@ function MapInternal() {
           _refId: n.ref_id,
           _computeId: n.compute_id || null,
           _hwId: n.hardware_id || null,
+          _hwRole: n.type === 'hardware' ? (n.role || null) : null,
         };
         // Compute rank early so it's available in node.data for tooltips/debug
         const rank = getNodeRank(nodeShell);
         nodeShell.data = {
           label: n.label,
           iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role),
+          icon_slug: n.icon_slug ?? null,
           glowColor: NODE_STYLES[n.type]?.glowColor,
           rank,
           ip_address: n.ip_address || null,
@@ -686,6 +794,12 @@ function MapInternal() {
           capacity_gb: n.capacity_gb || null,
           used_gb: n.used_gb || null,
           ...(n.type === 'cluster' ? { member_count: n.member_count, environment: n.environment } : {}),
+          telemetry_status: n.telemetry_status || 'unknown',
+          telemetry_data: n.telemetry_data || null,
+          telemetry_last_polled: n.telemetry_last_polled || null,
+          u_height: n.u_height ?? 1,
+          rack_unit: n.rack_unit ?? null,
+          ip_conflict: n.ip_conflict ?? false,
         };
         return nodeShell;
       });
@@ -943,6 +1057,7 @@ function MapInternal() {
   return (
     <MapEdgeCallbacksContext.Provider value={edgeCallbacksRef}>
     <div className="page map-page" style={{ height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      <style>{`@keyframes tm-pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }`}</style>
       {/* Header + Toolbar */}
       <div className="page-header" style={{ marginBottom: 0, paddingBottom: 10, borderBottom: '1px solid var(--color-border)', flexWrap: 'wrap', gap: 8 }}>
         <h2 style={{ marginRight: 16 }}>Topology</h2>
@@ -951,12 +1066,14 @@ function MapInternal() {
           {/* Environment */}
           <select
             value={envFilter}
-            onChange={(e) => setEnvFilter(e.target.value)}
+            onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
             style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
           >
             <option value="">All Environments</option>
-            {(settings?.environments ?? ['prod', 'staging', 'dev']).map(e => (
-              <option key={e} value={e}>{e}</option>
+            {environmentsList.map((e) => (
+              <option key={e.id} value={e.id} style={e.color ? { color: e.color } : {}}>
+                {e.name}
+              </option>
             ))}
           </select>
 
@@ -989,6 +1106,33 @@ function MapInternal() {
               {NODE_TYPE_LABELS[type]}
             </button>
           ))}
+
+          {/* Hardware sub-role chips */}
+          {includeTypes.hardware && (
+            <>
+              <span style={{ color: 'var(--color-text-muted)', fontSize: 11, borderLeft: '1px solid var(--color-border)', paddingLeft: 8 }}>Role:</span>
+              {[
+                { value: 'ups',          label: 'UPS' },
+                { value: 'pdu',          label: 'PDU' },
+                { value: 'access_point', label: 'AP' },
+                { value: 'sbc',          label: 'SBC' },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setHwRoleFilter(prev => prev === value ? null : value)}
+                  style={{
+                    padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                    border: '1px solid #4a7fa5',
+                    background: hwRoleFilter === value ? '#4a7fa5' : 'transparent',
+                    color: hwRoleFilter === value ? '#fff' : '#4a7fa5',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </>
+          )}
 
           {/* Divider */}
           <span style={{ color: 'var(--color-text-muted)', borderLeft: '1px solid var(--color-border)', paddingLeft: 8, fontSize: 11 }}>Layout:</span>
@@ -1301,6 +1445,28 @@ function MapInternal() {
                 );
               })()}
             </div>
+
+            {/* IP Conflict Warning */}
+            {nodeDetails?.ip_conflict && (nodeDetails.ip_conflict_details || []).length > 0 && (
+              <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', background: 'rgba(245,158,11,0.08)' }}>
+                <div style={{ color: '#f59e0b', fontWeight: 600, fontSize: 11, marginBottom: 6 }}>
+                  ⚠ IP Conflict Detected
+                </div>
+                {nodeDetails.ip_conflict_details.map((c) => (
+                  <div key={`${c.entity_type}-${c.entity_id}`} style={{ fontSize: 11, color: 'var(--color-text)', marginBottom: 4 }}>
+                    <span style={{ textTransform: 'capitalize', color: 'var(--color-text-muted)' }}>
+                      {c.entity_type.replace('_', ' ')}:
+                    </span>{' '}
+                    <strong>{c.entity_name}</strong>
+                    {' — '}
+                    <span style={{ fontFamily: 'monospace' }}>{c.conflicting_ip}</span>
+                    {c.conflicting_port != null && (
+                      <span style={{ fontFamily: 'monospace' }}>:{c.conflicting_port}/{c.protocol || 'tcp'}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Storage – hardware nodes */}
             {selectedNode.originalType === 'hardware' && selectedNode.data.storage_summary && (() => {

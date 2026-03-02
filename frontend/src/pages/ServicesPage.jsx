@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { servicesApi, computeUnitsApi, hardwareApi } from '../api/client';
+import { servicesApi, computeUnitsApi, hardwareApi, categoriesApi, environmentsApi } from '../api/client';
 import ServiceDetail from '../components/details/ServiceDetail';
 import FormModal from '../components/common/FormModal';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
@@ -23,20 +23,41 @@ const COLUMNS = [
   { key: 'name', label: 'Name' },
   { key: 'slug', label: 'Slug' },
   { key: 'runs_on_label', label: 'Runs On' },
-  { key: 'category', label: 'Category' },
+  { key: 'category_name', label: 'Category' },
   { key: 'url', label: 'URL' },
-  { key: 'environment', label: 'Env' },
+  { key: 'environment_name', label: 'Env', render: (v, row) => v ?? row.environment ?? '—' },
   { key: 'status', label: 'Status', render: (v) => v ? <span className={`status-${v.toLowerCase()}`}>{v.charAt(0).toUpperCase() + v.slice(1)}</span> : <span style={{ color: 'var(--color-text-muted)' }}>—</span> },
-  { key: 'ip_address', label: 'IP Address' },
-  { key: 'port', label: 'Port', render: (v, r) => r.ports?.split(',')[0] || '-' },
+  {
+    key: 'effective_ip',
+    label: 'IP Address',
+    render: (v, row) => v
+      ? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: row.ip_conflict ? '#f59e0b' : undefined, fontFamily: 'monospace', fontSize: 12 }}>{v}</span>
+          {row.ip_conflict && (
+            <span
+              title="IP/port conflict: this address is already assigned to another entity"
+              style={{
+                width: 14, height: 14, borderRadius: '50%',
+                background: '#f59e0b', color: '#111',
+                fontSize: 9, fontWeight: 800, flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >!</span>
+          )}
+        </span>
+      )
+      : '—',
+  },
+  { key: 'port', label: 'Port', render: (v, r) => Array.isArray(r.ports) && r.ports[0]?.port ? `${r.ports[0].port}/${r.ports[0].protocol || 'tcp'}` : '-' },
   { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 function ServicesPage() {
   const { settings } = useSettings();
   const toast = useToast();
-  const environments = settings?.environments ?? ['prod', 'staging', 'dev'];
-  const categories = settings?.categories ?? [];
+  const [categoriesList, setCategoriesList] = useState([]);
+  const [environmentsList, setEnvironmentsList] = useState([]);
   const [items, setItems] = useState([]);
   const [computeUnits, setComputeUnits] = useState([]);
   const [hardware, setHardware] = useState([]);
@@ -60,7 +81,7 @@ function ServicesPage() {
       if (q) params.q = q;
       if (tagFilter) params.tag = tagFilter;
       if (categoryFilter) params.category = categoryFilter;
-      if (envFilter) params.environment = envFilter;
+      if (envFilter) params.environment_id = envFilter;
       const [svcRes, cuRes, hwRes] = await Promise.all([
         servicesApi.list(params),
         computeUnitsApi.list(),
@@ -82,10 +103,11 @@ function ServicesPage() {
           : cu
             ? `${cu.name} on ${hwMap[cu.hardware_id]?.name ?? cu.hardware_id}`
             : '—';
+        // effective_ip is for table display only; ip_address stays as the service's own value for editing
         return {
           ...item,
           runs_on_label: runsOnLabel,
-          ip_address: cu?.ip_address || hw?.ip_address || null,
+          effective_ip: item.ip_address || cu?.ip_address || hw?.ip_address || null,
         };
       });
       setItems(enhancedItems);
@@ -97,6 +119,11 @@ function ServicesPage() {
   }, [q, tagFilter, categoryFilter, envFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    categoriesApi.list().then((r) => setCategoriesList(r.data)).catch(() => {});
+    environmentsApi.list().then((r) => setEnvironmentsList(r.data)).catch(() => {});
+  }, []);
 
   // Build combined "Runs On" options: hardware first (direct), then compute units (grouped label).
   const runsOnOptions = [
@@ -115,15 +142,11 @@ function ServicesPage() {
         ? '⚠️ No hardware or compute units yet. Add a Hardware node first, then optionally add a Compute Unit on it.'
         : '🖥️ Select hardware (bare-metal) or a VM/container (compute unit) this service runs on.' },
     {
-      name: 'category', label: 'Category', type: 'select',
-      options: categories.map((c) => ({ value: c, label: c })),
+      name: 'category_id', label: 'Category', type: 'category-combobox',
     },
     { name: 'url', label: 'URL' },
-    { name: 'ports', label: 'Ports (e.g. 80/tcp,443/tcp)' },
-    {
-      name: 'environment', label: 'Environment', type: 'select',
-      options: environments.map((e) => ({ value: e, label: e })),
-    },
+    { name: 'ports', label: 'Ports', type: 'ports-editor', ipFieldName: 'ip_address' },
+    { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
     {
       name: 'status', label: 'Status', type: 'select',
       options: [
@@ -133,7 +156,7 @@ function ServicesPage() {
         { value: 'maintenance', label: 'Maintenance' },
       ],
     },
-    { name: 'ip_address', label: 'IP Address (optional)', placeholder: '10.0.1.4' },
+    { name: 'ip_address', label: 'IP Address (optional)', type: 'ip-address-input', placeholder: '10.0.1.4', portsFieldName: 'ports' },
     { name: 'description', label: 'Description', type: 'textarea' },
     { name: 'icon_slug', label: 'Icon', type: 'icon-picker',
       currentSlug: currentIconSlug,
@@ -219,15 +242,15 @@ function ServicesPage() {
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
             <option value="">All categories</option>
-            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+            {categoriesList.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
           </select>
           <select
             className="filter-select"
             value={envFilter}
-            onChange={(e) => setEnvFilter(e.target.value)}
+            onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}
           >
             <option value="">All environments</option>
-            {environments.map((e) => <option key={e} value={e}>{e}</option>)}
+            {environmentsList.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
       </div>
 
@@ -267,6 +290,8 @@ function ServicesPage() {
         }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
+        entityType="service"
+        entityId={editTarget?.id}
       />
 
       {iconPickerOpen && (

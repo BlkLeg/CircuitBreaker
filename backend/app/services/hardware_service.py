@@ -1,9 +1,18 @@
-from datetime import datetime, timezone
+import json
+import logging
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
+from fastapi import HTTPException
 
 from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
+from app.services.environments_service import resolve_environment_id
+from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map
+from app.services.log_service import write_log
+from app.core.time import utcnow
+
+_logger = logging.getLogger(__name__)
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -40,6 +49,17 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
 def _to_dict(db: Session, hw: Hardware) -> dict:
     d = {c.name: getattr(hw, c.name) for c in hw.__table__.columns}
     d["tags"] = get_tags_for(db, "hardware", hw.id)
+    # Deserialize JSON text columns into dicts for API responses
+    if isinstance(d.get("telemetry_config"), str):
+        try:
+            d["telemetry_config"] = json.loads(d["telemetry_config"])
+        except (json.JSONDecodeError, TypeError):
+            d["telemetry_config"] = None
+    if isinstance(d.get("telemetry_data"), str):
+        try:
+            d["telemetry_data"] = json.loads(d["telemetry_data"])
+        except (json.JSONDecodeError, TypeError):
+            d["telemetry_data"] = {}
     if hw.storage_items:
         total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
         used_gb_vals = [s.used_gb for s in hw.storage_items if s.used_gb is not None]
@@ -53,6 +73,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
         }
     else:
         d["storage_summary"] = None
+    d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
     return d
 
 
@@ -75,17 +96,69 @@ def list_hardware(
             .where(Tag.name == tag)
         )
     rows = db.execute(stmt).scalars().all()
-    return [_to_dict(db, r) for r in rows]
+    conflict_map = bulk_conflict_map(db)
+    result = []
+    for r in rows:
+        d = _to_dict(db, r)
+        d["ip_conflict"] = conflict_map.get(("hardware", r.id), False)
+        result.append(d)
+    return result
 
 
 def get_hardware(db: Session, hardware_id: int) -> dict:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
         raise ValueError(f"Hardware {hardware_id} not found")
-    return _to_dict(db, hw)
+    d = _to_dict(db, hw)
+    if hw.ip_address:
+        conflicts = check_ip_conflict(
+            db,
+            ip=hw.ip_address,
+            ports=None,
+            exclude_entity_type="hardware",
+            exclude_entity_id=hardware_id,
+        )
+        d["ip_conflict"] = len(conflicts) > 0
+        d["ip_conflict_details"] = [c.to_dict() for c in conflicts]
+    else:
+        d["ip_conflict"] = False
+        d["ip_conflict_details"] = []
+    return d
 
 
 def create_hardware(db: Session, payload: HardwareCreate) -> dict:
+    if payload.ip_address:
+        conflicts = check_ip_conflict(
+            db,
+            ip=payload.ip_address,
+            ports=None,
+            exclude_entity_type="hardware",
+            exclude_entity_id=None,
+        )
+        if conflicts:
+            _logger.warning(
+                "IP conflict blocked save for hardware %r: %s already used by %s",
+                payload.name,
+                payload.ip_address,
+                ", ".join(c.entity_name for c in conflicts),
+            )
+            write_log(
+                db,
+                action="ip_conflict",
+                entity_type="hardware",
+                entity_name=payload.name,
+                severity="warn",
+                details=f"IP conflict for {payload.ip_address}: already used by {', '.join(c.entity_name for c in conflicts)}",
+                category="crud",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+            )
+    telemetry_config_json = None
+    if payload.telemetry_config is not None:
+        telemetry_config_json = payload.telemetry_config.model_dump_json()
+    resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     hw = Hardware(
         name=payload.name,
         role=payload.role,
@@ -99,6 +172,12 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         wan_uplink=payload.wan_uplink,
         cpu_brand=payload.cpu_brand,
         vendor_icon_slug=payload.vendor_icon_slug,
+        vendor_catalog_key=payload.vendor_catalog_key,
+        model_catalog_key=payload.model_catalog_key,
+        u_height=payload.u_height,
+        rack_unit=payload.rack_unit,
+        telemetry_config=telemetry_config_json,
+        environment_id=resolved_env_id,
     )
     db.add(hw)
     db.flush()
@@ -112,9 +191,39 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
     hw = db.get(Hardware, hardware_id)
     if hw is None:
         raise ValueError(f"Hardware {hardware_id} not found")
-    for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
+    effective_ip = payload.ip_address if payload.ip_address is not None else hw.ip_address
+    if effective_ip:
+        conflicts = check_ip_conflict(
+            db,
+            ip=effective_ip,
+            ports=None,
+            exclude_entity_type="hardware",
+            exclude_entity_id=hardware_id,
+        )
+        if conflicts:
+            _logger.warning(
+                "IP conflict blocked save for hardware %r: %s already used by %s",
+                hw.name,
+                effective_ip,
+                ", ".join(c.entity_name for c in conflicts),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+            )
+    update_data = payload.model_dump(exclude_unset=True, exclude={"tags"})
+    # Serialize TelemetryConfig Pydantic model to JSON string for storage
+    if "telemetry_config" in update_data and update_data["telemetry_config"] is not None:
+        tc = payload.telemetry_config
+        update_data["telemetry_config"] = tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(update_data["telemetry_config"])
+    # Resolve environment from inline name or id
+    env_str = update_data.pop("environment", None)
+    env_id = update_data.pop("environment_id", None)
+    if env_str is not None or env_id is not None:
+        update_data["environment_id"] = resolve_environment_id(db, env_id, env_str)
+    for field, value in update_data.items():
         setattr(hw, field, value)
-    hw.updated_at = datetime.now(timezone.utc)
+    hw.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "hardware", hw.id, payload.tags)
     db.commit()

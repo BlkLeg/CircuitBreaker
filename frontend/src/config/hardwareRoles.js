@@ -10,6 +10,10 @@ export const HARDWARE_ROLES = [
   { value: 'raspberry_pi', label: 'Raspberry Pi' },
   { value: 'switch',       label: 'Network Switch' },
   { value: 'ap',           label: 'Access Point' },
+  { value: 'ups',          label: 'UPS' },
+  { value: 'pdu',          label: 'PDU' },
+  { value: 'access_point', label: 'WiFi AP' },
+  { value: 'sbc',          label: 'Single Board Computer' },
   { value: 'other',        label: 'Other' },
 ];
 

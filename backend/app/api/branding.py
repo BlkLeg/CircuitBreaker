@@ -1,6 +1,5 @@
 """Branding endpoints: favicon upload, login logo upload, Theme Park export/import."""
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import require_write_auth
+from app.core.time import utcnow
 from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
@@ -65,7 +65,7 @@ async def upload_favicon(
 
     row = get_or_create_settings(db)
     row.favicon_path = "/branding/favicon.ico"
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
     return _build_branding(row)
@@ -92,7 +92,7 @@ async def upload_login_logo(
 
     row = get_or_create_settings(db)
     row.login_logo_path = f"/branding/login-logo{suffix}"
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
     return _build_branding(row)
@@ -136,7 +136,7 @@ def import_theme(
         row.primary_color = payload.primary_color
     if payload.accent_colors is not None:
         row.accent_colors = json.dumps(payload.accent_colors)
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
     return _build_branding(row)

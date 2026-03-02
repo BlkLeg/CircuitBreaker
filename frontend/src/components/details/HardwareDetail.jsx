@@ -10,6 +10,7 @@ import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import { IconImg } from '../common/IconPickerModal';
 import { useSettings } from '../../context/SettingsContext';
 import { HARDWARE_ROLES } from '../../config/hardwareRoles';
+import TelemetryPanel from '../TelemetryPanel';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
   const { settings } = useSettings();
@@ -330,6 +331,9 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
 
         {activeTab === 'docs' && <DocsPanel entityType="hardware" entityId={hardware.id} />}
       </div>
+
+      <TelemetryPanel hardwareId={hardware.id} />
+
       <style>{`
         .tabs { display: flex; border-bottom: 1px solid var(--color-border); gap: 16px; flex-wrap: wrap; }
         .tab { background: none; border: none; padding: 8px 0; color: var(--color-text-muted); cursor: pointer; border-bottom: 2px solid transparent; }

@@ -4,6 +4,8 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    snmp \
+    ipmitool \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy metadata and source, then install

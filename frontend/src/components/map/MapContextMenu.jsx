@@ -489,7 +489,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
         {/* Edit Icon — only for types that have an icon column in the backend */}
         {ICON_SUPPORTED_TYPES.has(node.originalType) && (
           <button
-            onClick={() => { setShowIconPicker(true); }}
+            onClick={() => { setActiveSubmenu(null); setShowIconPicker(true); }}
             style={{
               width: '100%',
               background: 'transparent',
@@ -515,9 +515,9 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
       {/* Icon picker modal */}
       {showIconPicker && (
         <IconPickerModal
-          currentSlug={null}
+          currentSlug={node.data?.icon_slug ?? null}
           onSelect={handleIconSelect}
-          onClose={() => { setShowIconPicker(false); onClose(); }}
+          onClose={() => setShowIconPicker(false)}
         />
       )}
 

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as Sentry from '@sentry/react';
 import logger from '../utils/logger';
 
 const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
@@ -42,6 +43,10 @@ client.interceptors.response.use(
     if (status >= 500) {
       message = 'A server error occurred. Please try again or contact support.';
       logger.error(`API ${status}:`, data);
+      Sentry.captureException(error, {
+        tags: { api_status: status },
+        extra: { url: error.config?.url, responseData: data },
+      });
     } else {
       // 4xx — surface the API's error detail
       const detail = data?.detail;
@@ -202,6 +207,10 @@ export const settingsApi = {
   reset: () => client.post('/settings/reset'),
 };
 
+export const timezonesApi = {
+  list: () => client.get('/timezones'),
+};
+
 export const adminApi = {
   export: () => client.get('/admin/export'),
   import: (data, wipeBeforeImport = false) =>
@@ -223,9 +232,10 @@ export const clustersApi = {
 };
 
 export const logsApi = {
-  list:   (params) => client.get('/logs', { params }),
-  clear:  ()       => client.delete('/logs'),
-  stream: (since)  => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
+  list:    (params) => client.get('/logs', { params }),
+  actions: ()       => client.get('/logs/actions'),
+  clear:   ()       => client.delete('/logs'),
+  stream:  (since)  => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
 };
 
 export const externalNodesApi = {
@@ -238,6 +248,36 @@ export const externalNodesApi = {
   addNetwork:     (id, d)  => client.post(`/external-nodes/${id}/networks`, d),
   removeNetwork:  (relId)  => client.delete(`/external-node-networks/${relId}`),
   getServices:    (id)     => client.get(`/external-nodes/${id}/services`),
+};
+
+export const catalogApi = {
+  vendors: ()    => client.get('/catalog/vendors').then((r) => r.data),
+  search:  (q)   => client.get('/catalog/search', { params: { q } }).then((r) => r.data),
+  devices: (vendorKey) => client.get(`/catalog/vendors/${vendorKey}/devices`).then((r) => r.data),
+};
+
+export const telemetryApi = {
+  get:       (id)      => client.get(`/hardware/${id}/telemetry`).then((r) => r.data),
+  setConfig: (id, cfg) => client.post(`/hardware/${id}/telemetry/config`, cfg).then((r) => r.data),
+  pollNow:   (id)      => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
+};
+
+export const categoriesApi = {
+  list:   ()            => client.get('/categories'),
+  create: (payload)     => client.post('/categories', payload),
+  update: (id, payload) => client.patch(`/categories/${id}`, payload),
+  remove: (id)          => client.delete(`/categories/${id}`),
+};
+
+export const environmentsApi = {
+  list:   (params)      => client.get('/environments', { params }),
+  create: (payload)     => client.post('/environments', payload),
+  update: (id, payload) => client.patch(`/environments/${id}`, payload),
+  remove: (id)          => client.delete(`/environments/${id}`),
+};
+
+export const ipCheckApi = {
+  check: (payload) => client.post('/ip-check', payload),
 };
 
 export default client;

@@ -1,0 +1,324 @@
+{
+  "dell": {
+    "label": "Dell Technologies",
+    "icon": "dell.svg",
+    "devices": {
+      "poweredge-r710": {
+        "label": "PowerEdge R710",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "idrac6"
+      },
+      "poweredge-r720": {
+        "label": "PowerEdge R720",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "idrac7"
+      },
+      "poweredge-r730": {
+        "label": "PowerEdge R730",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "idrac8"
+      },
+      "poweredge-r740": {
+        "label": "PowerEdge R740",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "idrac9",
+        "data_points": [
+          "cpu_temp",
+          "psu1_load",
+          "psu2_load",
+          "fan_rpm",
+          "memory_ecc",
+          "system_power"
+        ]
+      },
+      "poweredge-r750": {
+        "label": "PowerEdge R750",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "idrac9"
+      },
+      "poweredge-t440": {
+        "label": "PowerEdge T440",
+        "role": "server",
+        "u_height": 5,
+        "telemetry_profile": "idrac9"
+      },
+      "optiplex-7080": {
+        "label": "OptiPlex 7080 SFF",
+        "role": "compute",
+        "u_height": 0
+      },
+      "powerconnect-6248": {
+        "label": "PowerConnect 6248",
+        "role": "switch",
+        "u_height": 1
+      }
+    }
+  },
+  "hp": {
+    "label": "Hewlett Packard Enterprise",
+    "icon": "hp.svg",
+    "devices": {
+      "proliant-dl360-g9": {
+        "label": "ProLiant DL360 Gen9",
+        "role": "server",
+        "u_height": 1,
+        "telemetry_profile": "ilo4"
+      },
+      "proliant-dl380-g10": {
+        "label": "ProLiant DL380 Gen10",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "ilo5",
+        "data_points": ["cpu_temp", "fan_rpm", "psu1_load", "health_status"]
+      },
+      "proliant-dl380-g11": {
+        "label": "ProLiant DL380 Gen11",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "ilo6"
+      },
+      "elitedesk-800-g5": {
+        "label": "EliteDesk 800 G5 SFF",
+        "role": "compute",
+        "u_height": 0
+      }
+    }
+  },
+  "supermicro": {
+    "label": "Supermicro",
+    "icon": "supermicro.svg",
+    "devices": {
+      "x11ssl-f": {
+        "label": "X11SSL-F",
+        "role": "server",
+        "u_height": 1,
+        "telemetry_profile": "ipmi_generic"
+      },
+      "sys-1029p": {
+        "label": "SYS-1029P-WTR",
+        "role": "server",
+        "u_height": 1,
+        "telemetry_profile": "ipmi_generic"
+      },
+      "cse-826": {
+        "label": "CSE-826 Storage",
+        "role": "server",
+        "u_height": 2,
+        "telemetry_profile": "ipmi_generic"
+      }
+    }
+  },
+  "ubiquiti": {
+    "label": "Ubiquiti",
+    "icon": "ubiquiti.svg",
+    "devices": {
+      "udm-pro": {
+        "label": "UniFi Dream Machine Pro",
+        "role": "router",
+        "u_height": 1
+      },
+      "udm-se": {
+        "label": "UniFi Dream Machine SE",
+        "role": "router",
+        "u_height": 1
+      },
+      "usg-pro-4": {
+        "label": "UniFi Security Gateway Pro 4",
+        "role": "router",
+        "u_height": 1
+      },
+      "usw-pro-48": { "label": "USW Pro 48", "role": "switch", "u_height": 1 },
+      "usw-pro-24": { "label": "USW Pro 24", "role": "switch", "u_height": 1 },
+      "usw-lite-16-poe": {
+        "label": "USW Lite 16 PoE",
+        "role": "switch",
+        "u_height": 0
+      },
+      "u6-pro": { "label": "U6 Pro AP", "role": "access_point", "u_height": 0 },
+      "u6-lite": {
+        "label": "U6 Lite AP",
+        "role": "access_point",
+        "u_height": 0
+      },
+      "uap-ac-pro": {
+        "label": "UAP-AC-Pro",
+        "role": "access_point",
+        "u_height": 0
+      }
+    }
+  },
+  "mikrotik": {
+    "label": "MikroTik",
+    "icon": "mikrotik-dark.svg",
+    "devices": {
+      "ccr2004": {
+        "label": "CCR2004-1G-12S+2XS",
+        "role": "router",
+        "u_height": 1
+      },
+      "ccr1036": { "label": "CCR1036-12G-4S", "role": "router", "u_height": 1 },
+      "rb4011": { "label": "RB4011iGS+RM", "role": "router", "u_height": 1 },
+      "css326": {
+        "label": "CSS326-24G-2S+RM",
+        "role": "switch",
+        "u_height": 1
+      },
+      "hex-s": { "label": "hEX S", "role": "router", "u_height": 0 }
+    }
+  },
+  "pfsense": {
+    "label": "pfSense / Netgate",
+    "icon": "pfsense.png",
+    "devices": {
+      "netgate-1100": {
+        "label": "Netgate 1100",
+        "role": "firewall",
+        "u_height": 0
+      },
+      "netgate-4100": {
+        "label": "Netgate 4100",
+        "role": "firewall",
+        "u_height": 1
+      },
+      "netgate-6100": {
+        "label": "Netgate 6100",
+        "role": "firewall",
+        "u_height": 1
+      }
+    }
+  },
+  "opnsense": {
+    "label": "OPNsense / Deciso",
+    "icon": "opnsense.png",
+    "devices": {
+      "dec740": { "label": "DEC740", "role": "firewall", "u_height": 1 },
+      "dec3840": { "label": "DEC3840", "role": "firewall", "u_height": 1 }
+    }
+  },
+  "apc": {
+    "label": "APC by Schneider Electric",
+    "icon": "apc.png",
+    "devices": {
+      "smart-ups-750": {
+        "label": "Smart-UPS 750VA",
+        "role": "ups",
+        "u_height": 2,
+        "telemetry_profile": "apc_ups",
+        "data_points": [
+          "battery_capacity",
+          "battery_runtime",
+          "load_percent",
+          "input_voltage",
+          "output_voltage",
+          "battery_temp"
+        ]
+      },
+      "smart-ups-1500": {
+        "label": "Smart-UPS 1500VA",
+        "role": "ups",
+        "u_height": 2,
+        "telemetry_profile": "apc_ups",
+        "data_points": [
+          "battery_capacity",
+          "battery_runtime",
+          "load_percent",
+          "input_voltage",
+          "output_voltage",
+          "battery_temp"
+        ]
+      },
+      "smart-ups-3000": {
+        "label": "Smart-UPS 3000VA",
+        "role": "ups",
+        "u_height": 2,
+        "telemetry_profile": "apc_ups"
+      },
+      "ap7920": { "label": "AP7920 PDU", "role": "pdu", "u_height": 1 }
+    }
+  },
+  "cyberpower": {
+    "label": "CyberPower",
+    "icon": "cyberpower.png",
+    "devices": {
+      "or1500lcdrm1u": {
+        "label": "OR1500LCDRM1U",
+        "role": "ups",
+        "u_height": 1,
+        "telemetry_profile": "cyberpower_ups"
+      },
+      "pr1500ert2u": {
+        "label": "PR1500ERT2U",
+        "role": "ups",
+        "u_height": 2,
+        "telemetry_profile": "cyberpower_ups"
+      }
+    }
+  },
+  "synology": {
+    "label": "Synology",
+    "icon": "synology.svg",
+    "devices": {
+      "ds923plus": { "label": "DS923+", "role": "nas", "u_height": 0 },
+      "ds1522plus": { "label": "DS1522+", "role": "nas", "u_height": 0 },
+      "rs1221plus": { "label": "RS1221+", "role": "nas", "u_height": 1 }
+    }
+  },
+  "truenas": {
+    "label": "TrueNAS (iXsystems)",
+    "icon": "truenas.svg",
+    "devices": {
+      "m50": { "label": "TrueNAS M50", "role": "nas", "u_height": 2 },
+      "mini-x": { "label": "TrueNAS Mini X+", "role": "nas", "u_height": 0 }
+    }
+  },
+  "raspberry_pi": {
+    "label": "Raspberry Pi Foundation",
+    "icon": "raspberrypi.png",
+    "devices": {
+      "pi5-8gb": {
+        "label": "Raspberry Pi 5 8GB",
+        "role": "sbc",
+        "u_height": 0
+      },
+      "pi4-8gb": {
+        "label": "Raspberry Pi 4 8GB",
+        "role": "sbc",
+        "u_height": 0
+      },
+      "pi4-4gb": {
+        "label": "Raspberry Pi 4 4GB",
+        "role": "sbc",
+        "u_height": 0
+      },
+      "pi-zero-2w": {
+        "label": "Raspberry Pi Zero 2W",
+        "role": "sbc",
+        "u_height": 0
+      }
+    }
+  },
+  "intel": {
+    "label": "Intel",
+    "icon": "intel.svg",
+    "devices": {
+      "nuc-13pro": { "label": "NUC 13 Pro", "role": "compute", "u_height": 0 },
+      "nuc-12pro": { "label": "NUC 12 Pro", "role": "compute", "u_height": 0 }
+    }
+  },
+  "proxmox": {
+    "label": "Proxmox",
+    "icon": "proxmox-dark.svg",
+    "devices": {
+      "proxmox-ve": {
+        "label": "Proxmox VE Node",
+        "role": "hypervisor",
+        "u_height": 0
+      }
+    }
+  }
+}

@@ -27,12 +27,14 @@ def list_compute_units(
     kind: str | None = Query(None),
     hardware_id: int | None = Query(None),
     environment: str | None = Query(None),
+    environment_id: int | None = Query(None),
     tag: str | None = Query(None),
     q: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     return compute_units_service.list_compute_units(
-        db, kind=kind, hardware_id=hardware_id, environment=environment, tag=tag, q=q
+        db, kind=kind, hardware_id=hardware_id, environment=environment,
+        environment_id=environment_id, tag=tag, q=q
     )
 
 

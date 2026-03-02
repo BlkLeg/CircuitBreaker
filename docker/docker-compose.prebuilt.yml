@@ -38,6 +38,10 @@ services:
     environment:
       - DATABASE_URL=sqlite:////data/app.db
       - UPLOADS_DIR=/data/uploads
+      # Optional: set a persistent Fernet key for the telemetry credential vault.
+      # If unset, an ephemeral key is generated each restart (credentials lost on restart).
+      # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - CB_VAULT_KEY=
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]

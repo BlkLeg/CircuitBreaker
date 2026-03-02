@@ -39,11 +39,14 @@ FROM python:3.12.9-slim
 WORKDIR /app/backend
 
 # Runtime-only deps: tini (init), wget (healthcheck), gosu (privilege drop).
+# snmp / ipmitool: used by telemetry integration clients (SNMP polling, IPMI).
 # No gcc — all compilation was done in python-builder above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     wget \
     gosu \
+    snmp \
+    ipmitool \
     && rm -rf /var/lib/apt/lists/*
 
 # Pull compiled packages and app code from the builder stage.

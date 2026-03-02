@@ -20,7 +20,7 @@ import EntityForm from '../EntityForm';
  *     onSave={handleSubmit}   // optional, defaults to onSubmit
  *   />
  */
-function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose, apiErrors = {} }) {
+function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose, apiErrors = {}, onValidate, entityType, entityId, onOpenEntity }) {
   const [isDirty, setIsDirty] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const backdropRef = useRef(null);
@@ -88,6 +88,10 @@ function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose,
             onCancel={requestClose}
             onDirtyChange={setIsDirty}
             apiErrors={apiErrors}
+            onValidate={onValidate}
+            entityType={entityType}
+            entityId={entityId}
+            onOpenEntity={onOpenEntity}
           />
         </div>
       </div>
@@ -147,6 +151,10 @@ FormModal.propTypes = {
   onSubmit: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
   apiErrors: PropTypes.object,
+  onValidate: PropTypes.func,
+  entityType: PropTypes.string,
+  entityId: PropTypes.number,
+  onOpenEntity: PropTypes.func,
 };
 
 export default FormModal;

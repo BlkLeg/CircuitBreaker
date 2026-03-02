@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { logsApi } from '../api/client';
 import { IconImg } from '../components/common/IconPickerModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
+import TimestampCell from '../components/TimestampCell.jsx';
+import { formatAbsolute } from '../lib/time.js';
 
-// ── Actor avatar ──────────────────────────────────────────────────────────────
+// ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
 
 function ActorAvatar({ actor, gravatarHash, size = 20 }) {
   if (gravatarHash) {
@@ -30,50 +32,60 @@ function ActorAvatar({ actor, gravatarHash, size = 20 }) {
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatRelative(isoStr) {
-  if (!isoStr) return '—';
-  const diff = Date.now() - new Date(isoStr).getTime();
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function formatIso(isoStr) {
-  if (!isoStr) return '';
-  return new Date(isoStr).toLocaleString();
-}
+// ── Helpers ──────────────────────────────────────────────────────────────────────────────
 
 const ACTION_COLOR = {
-  create: 'var(--color-online)',
-  update: 'var(--color-primary)',
-  delete: 'var(--color-danger)',
-  add:    'var(--color-online)',
-  remove: 'var(--color-danger)',
-  attach: 'var(--color-primary)',
-  detach: '#f9a825',
-  reset:  '#f9a825',
+  create:        'var(--color-online)',
+  created:       'var(--color-online)',
+  add:           'var(--color-online)',
+  update:        'var(--color-primary)',
+  updated:       'var(--color-primary)',
+  attach:        'var(--color-primary)',
+  placed:        'var(--color-primary)',
+  moved:         'var(--color-primary)',
+  login_success: 'var(--color-online)',
+  delete:        'var(--color-danger)',
+  deleted:       'var(--color-danger)',
+  remove:        'var(--color-danger)',
+  removed:       'var(--color-danger)',
+  detach:        '#f9a825',
+  reset:         '#f9a825',
+  login_failed:  '#f9a825',
 };
 
 function actionColor(action) {
-  const prefix = action?.split('_')[0];
+  if (!action) return 'var(--color-text-muted)';
+  if (ACTION_COLOR[action]) return ACTION_COLOR[action];
+  const prefix = action.split('_')[0];
   return ACTION_COLOR[prefix] ?? 'var(--color-text-muted)';
 }
 
 const ENTITY_ROUTES = {
-  hardware: '/hardware',
-  compute:  '/compute-units',
-  service:  '/services',
-  storage:  '/storage',
-  network:  '/networks',
-  misc:     '/misc',
+  hardware:      '/hardware',
+  compute:       '/compute-units',
+  service:       '/services',
+  storage:       '/storage',
+  network:       '/networks',
+  misc:          '/misc',
+  cluster:       '/clusters',
+  external_node: '/external-nodes',
+  rack:          '/hardware',
+  category:      '/services',
+  environment:   '/settings',
+  settings:      '/settings',
+  auth:          null,
+  oobe:          null,
+  telemetry:     '/hardware',
+  topology:      '/topology',
 };
 
 const LIMIT_OPTIONS = [25, 50, 100, 500];
-const CATEGORY_OPTIONS = ['', 'crud', 'settings', 'relationships', 'docs'];
-const ENTITY_OPTIONS = ['', 'hardware', 'compute', 'service', 'storage', 'network', 'misc'];
+const ENTITY_OPTIONS = [
+  '', 'hardware', 'compute', 'service', 'storage', 'network', 'misc',
+  'cluster', 'external_node', 'rack', 'category', 'environment', 'settings', 'auth', 'telemetry', 'topology',
+];
+const SEVERITY_OPTIONS = ['info', 'warn', 'error'];
+const SEVERITY_COLORS = { info: 'var(--color-primary)', warn: '#f9a825', error: 'var(--color-danger)' };
 
 const TIME_PRESETS = [
   { label: 'Last 1h',  minutes: 60 },
@@ -82,27 +94,94 @@ const TIME_PRESETS = [
   { label: 'All time', minutes: null },
 ];
 
-// ── Row expansion ─────────────────────────────────────────────────────────────
+// ── Diff Viewer ────────────────────────────────────────────────────────────────
+
+function RedactedPill() {
+  return (
+    <span style={{
+      display: 'inline-block',
+      background: 'rgba(120,120,120,0.18)',
+      color: 'var(--color-text-muted)',
+      borderRadius: 10,
+      padding: '1px 8px',
+      fontSize: 10,
+      letterSpacing: '0.15em',
+      fontFamily: 'monospace',
+    }}>●●●●●●</span>
+  );
+}
+
+function renderDiffValue(val) {
+  if (val === '***REDACTED***') return <RedactedPill />;
+  if (val === null || val === undefined) return <span style={{ color: 'var(--color-text-muted)', fontStyle: 'italic' }}>—</span>;
+  if (typeof val === 'object') return <code style={{ fontSize: 10 }}>{JSON.stringify(val)}</code>;
+  return <span>{String(val)}</span>;
+}
+
+function DiffTable({ diffStr, oldValueStr, newValueStr }) {
+  let before = null;
+  let after = null;
+
+  if (diffStr) {
+    try {
+      const parsed = JSON.parse(diffStr);
+      before = parsed.before;
+      after = parsed.after;
+    } catch { /* ignore */ }
+  }
+
+  if (before === undefined && after === undefined) {
+    try { before = oldValueStr ? JSON.parse(oldValueStr) : null; } catch { before = null; }
+    try { after  = newValueStr ? JSON.parse(newValueStr) : null; } catch { after  = null; }
+  }
+
+  if (before === null && after === null) return null;
+
+  const keys = new Set([
+    ...(before && typeof before === 'object' ? Object.keys(before) : []),
+    ...(after  && typeof after  === 'object' ? Object.keys(after)  : []),
+  ]);
+
+  const isUpdate = before !== null && after !== null;
+  const displayKeys = isUpdate
+    ? [...keys].filter(k => JSON.stringify(before?.[k]) !== JSON.stringify(after?.[k]))
+    : [...keys];
+
+  if (displayKeys.length === 0 && isUpdate) {
+    return <p style={{ fontSize: 11, color: 'var(--color-text-muted)', fontStyle: 'italic', margin: '4px 0' }}>No field changes detected.</p>;
+  }
+
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+      <thead>
+        <tr>
+          <th style={{ textAlign: 'left', padding: '3px 8px', color: 'var(--color-text-muted)', fontWeight: 600, width: '28%', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Field</th>
+          <th style={{ textAlign: 'left', padding: '3px 8px', color: '#f9a825', fontWeight: 600, width: '36%', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Before</th>
+          <th style={{ textAlign: 'left', padding: '3px 8px', color: 'var(--color-online)', fontWeight: 600, width: '36%', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>After</th>
+        </tr>
+      </thead>
+      <tbody>
+        {displayKeys.map(k => (
+          <tr key={k} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+            <td style={{ padding: '3px 8px', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>{k}</td>
+            <td style={{ padding: '3px 8px' }}>{renderDiffValue(before?.[k] ?? null)}</td>
+            <td style={{ padding: '3px 8px' }}>{renderDiffValue(after?.[k]  ?? null)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function JsonBlock({ value }) {
   if (!value) return null;
   let display = value;
-  try {
-    display = JSON.stringify(JSON.parse(value), null, 2);
-  } catch { /* keep raw */ }
+  try { display = JSON.stringify(JSON.parse(value), null, 2); } catch { /* keep raw */ }
   return (
     <pre style={{
-      background: 'var(--color-bg)',
-      border: '1px solid var(--color-border)',
-      borderRadius: 4,
-      padding: '8px 10px',
-      fontSize: 11,
-      color: 'var(--color-text)',
-      whiteSpace: 'pre-wrap',
-      wordBreak: 'break-all',
-      maxHeight: 200,
-      overflowY: 'auto',
-      margin: '4px 0',
+      background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+      borderRadius: 4, padding: '8px 10px', fontSize: 11, color: 'var(--color-text)',
+      whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: 200, overflowY: 'auto', margin: '4px 0',
     }}>{display}</pre>
   );
 }
@@ -110,29 +189,47 @@ function JsonBlock({ value }) {
 // ── Log row ───────────────────────────────────────────────────────────────────
 
 function LogRow({ log, expanded, onToggle, navigate }) {
-  const color = actionColor(log.action);
+  const color = actionColor(log.action);  const isLoginFailed = log.action === 'login_failed';
 
-  const newValueObj = (() => {
-    try { return log.new_value ? JSON.parse(log.new_value) : null; } catch { return null; }
-  })();
+  const entityName = log.entity_name
+    || (() => { try { return log.new_value ? JSON.parse(log.new_value)?.name : null; } catch { return null; } })()
+    || null;
 
-  const vendor = newValueObj?.vendor ?? (log.entity_type === 'hardware' ? null : null);
-  const iconSlug = newValueObj?.icon_slug ?? null;
+  const isDeleted = log.action === 'deleted' || log.action?.endsWith('_deleted');
+  const entityRoute = log.entity_type ? ENTITY_ROUTES[log.entity_type] : null;
+
+  const handleEntityClick = (e) => {
+    e.stopPropagation();
+    if (!entityRoute) return;
+    const dest = log.entity_id ? `${entityRoute}?highlight=${log.entity_id}` : entityRoute;
+    navigate(dest);
+  };
+
+  const hasDiff = !!(log.diff || log.old_value || log.new_value);
+  const iconSlug = (() => { try { return log.new_value ? JSON.parse(log.new_value)?.icon_slug : null; } catch { return null; } })();
 
   return (
     <>
       <tr
         onClick={onToggle}
-        style={{ cursor: 'pointer', borderBottom: '1px solid rgba(30,42,58,0.6)', transition: 'background 0.1s' }}
+        style={{
+          cursor: hasDiff ? 'pointer' : 'default',
+          borderBottom: '1px solid rgba(30,42,58,0.6)',
+          transition: 'background 0.1s',
+          borderLeft: isLoginFailed ? '3px solid #f9a825' : '3px solid transparent',
+        }}
         onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(0,212,255,0.03)'}
         onMouseLeave={(e) => e.currentTarget.style.background = ''}
       >
         {/* Time */}
-        <td style={{ padding: '10px 12px', fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={formatIso(log.timestamp)}>
-          {formatRelative(log.timestamp)}
+        <td style={{ padding: '10px 12px', fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+          <TimestampCell
+            isoString={log.created_at_utc ?? log.timestamp}
+            elapsedSeconds={log.elapsed_seconds ?? null}
+          />
         </td>
 
-        {/* Action */}
+        {/* Action badge */}
         <td style={{ padding: '10px 12px' }}>
           <span style={{
             display: 'inline-block',
@@ -153,60 +250,66 @@ function LogRow({ log, expanded, onToggle, navigate }) {
         {/* Entity */}
         <td style={{ padding: '10px 12px', fontSize: 12 }}>
           {log.entity_type ? (
-            <button
-              onClick={(e) => { e.stopPropagation(); navigate(ENTITY_ROUTES[log.entity_type] ?? '/'); }}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-primary)', fontSize: 12, padding: 0 }}
-            >
-              {iconSlug && <IconImg slug={iconSlug} size={14} />}
-              <span style={{ textTransform: 'capitalize' }}>{log.entity_type}</span>
-              {log.entity_id && <span style={{ color: 'var(--color-text-muted)' }}>#{log.entity_id}</span>}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {log.entity_type}
+              </span>
+              {isDeleted ? (
+                <span style={{ textDecoration: 'line-through', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {iconSlug && <IconImg slug={iconSlug} size={13} />}
+                  {entityName || (log.entity_id ? `#${log.entity_id}` : '—')}
+                  <span style={{ fontSize: 10, color: 'var(--color-danger)', textDecoration: 'none' }}>(deleted)</span>
+                </span>
+              ) : entityRoute ? (
+                <button
+                  onClick={handleEntityClick}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-primary)', fontSize: 12, padding: 0, textAlign: 'left' }}
+                >
+                  {iconSlug && <IconImg slug={iconSlug} size={13} />}
+                  {entityName || (log.entity_id ? `#${log.entity_id}` : '—')}
+                </button>
+              ) : (
+                <span style={{ color: 'var(--color-text)' }}>{entityName || (log.entity_id ? `#${log.entity_id}` : '—')}</span>
+              )}
+            </div>
           ) : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
         </td>
 
-        {/* Details preview */}
-        <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--color-text-muted)', maxWidth: 260 }}>
-          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {newValueObj?.name ?? newValueObj?.title ?? log.details?.slice(0, 80) ?? '—'}
-          </span>
-        </td>
-
-        {/* Actor / IP */}
+        {/* Actor */}
         <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ActorAvatar actor={log.actor} gravatarHash={log.actor_gravatar_hash} size={20} />
-            <span>{log.actor && log.actor !== 'anonymous' ? log.actor : (log.ip_address || 'anonymous')}</span>
+            <ActorAvatar actor={log.actor} gravatarHash={log.actor_gravatar_hash} size={18} />
+            <span>{log.actor_name || log.actor || 'anonymous'}</span>
           </div>
+        </td>
+
+        {/* IP */}
+        <td style={{ padding: '10px 12px', fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+          {log.ip_address
+            ? <span style={{ fontWeight: isLoginFailed ? 700 : 400, color: isLoginFailed ? '#f9a825' : undefined }}>{log.ip_address}</span>
+            : <span style={{ opacity: 0.4 }}>—</span>}
         </td>
       </tr>
 
-      {/* Expanded detail row */}
+      {/* Expanded diff panel */}
       {expanded && (
         <tr style={{ background: 'var(--color-surface)' }}>
           <td colSpan={5} style={{ padding: '8px 16px 12px', borderBottom: '1px solid var(--color-border)' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {log.old_value && (
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Before</div>
-                  <JsonBlock value={log.old_value} />
-                </div>
-              )}
-              {log.new_value && (
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>After</div>
-                  <JsonBlock value={log.new_value} />
-                </div>
-              )}
-              {!log.old_value && !log.new_value && log.details && (
-                <div style={{ gridColumn: '1/-1' }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Details</div>
-                  <JsonBlock value={log.details} />
-                </div>
-              )}
-              <div style={{ gridColumn: '1/-1', fontSize: 11, color: 'var(--color-text-muted)' }}>
-                <span style={{ marginRight: 16 }}>Full timestamp: {formatIso(log.timestamp)}</span>
-                {log.user_agent && <span>UA: {log.user_agent.slice(0, 80)}</span>}
+            {hasDiff ? (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>▼ Changes</div>
+                <DiffTable diffStr={log.diff} oldValueStr={log.old_value} newValueStr={log.new_value} />
               </div>
+            ) : log.details ? (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Details</div>
+                <JsonBlock value={log.details} />
+              </div>
+            ) : null}
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--color-text-muted)' }}>
+              <span style={{ marginRight: 16 }}>Full timestamp: {formatAbsolute(log.created_at_utc ?? log.timestamp)}</span>
+              {log.user_agent && <span style={{ marginRight: 16 }}>UA: {log.user_agent.slice(0, 80)}</span>}
+              {log.status_code && <span>HTTP {log.status_code}</span>}
             </div>
           </td>
         </tr>
@@ -215,10 +318,11 @@ function LogRow({ log, expanded, onToggle, navigate }) {
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+// ── Main Page ───────────────────────────────────────────────────────────────────────────────
 
 function LogsPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const [logs, setLogs] = useState([]);
@@ -226,100 +330,116 @@ function LogsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+  const [availableActions, setAvailableActions] = useState([]);
 
-  // Filters
-  const [limit, setLimit] = useState(50);
-  const [offset, setOffset] = useState(0);
-  const [category, setCategory] = useState('');
-  const [entityType, setEntityType] = useState('');
-  const [search, setSearch] = useState('');
-  const [timePreset, setTimePreset] = useState(null);   // minutes | null
+  const [timestampSort, setTimestampSort] = useState(() => searchParams.get('sort') || 'desc');
+  const [limit, setLimit] = useState(() => Number(searchParams.get('limit')) || 100);
+  const [offset, setOffset] = useState(() => Number(searchParams.get('offset')) || 0);
+  const [entityType, setEntityType] = useState(() => searchParams.get('entity_type') || '');
+  const [actionFilter, setActionFilter] = useState(() => searchParams.get('action') || '');
+  const [severity, setSeverity] = useState(() => searchParams.get('severity') || '');
+  const [search, setSearch] = useState(() => searchParams.get('search') || '');
+  const [timePreset, setTimePreset] = useState(null);
 
-  // Live mode (SSE)
   const [liveMode, setLiveMode] = useState(false);
   const sseRef = useRef(null);
   const lastTimestampRef = useRef(null);
+  const searchDebounceRef = useRef(null);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
 
-  // ── Fetch ────────────────────────────────────────────────────────────────
+  // ── Load distinct actions ─────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    logsApi.actions()
+      .then(r => setAvailableActions(r.data.actions || []))
+      .catch(() => {});
+  }, []);
+
+  // ── Debounce search ────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => setDebouncedSearch(search), 400);
+    return () => clearTimeout(searchDebounceRef.current);
+  }, [search]);
+
+  // ── Sync filters → URL ───────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const p = {};
+    if (entityType)      p.entity_type = entityType;
+    if (actionFilter)    p.action      = actionFilter;
+    if (severity)        p.severity    = severity;
+    if (debouncedSearch) p.search      = debouncedSearch;
+    if (timestampSort !== 'desc') p.sort = timestampSort;
+    if (limit !== 100)   p.limit       = String(limit);
+    if (offset)          p.offset      = String(offset);
+    setSearchParams(p, { replace: true });
+  }, [entityType, actionFilter, severity, debouncedSearch, timestampSort, limit, offset, setSearchParams]);
+
+  // ── Fetch ───────────────────────────────────────────────────────────────────────────
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const params = { limit, offset };
-      if (category) params.category = category;
-      if (entityType) params.entity_type = entityType;
-      if (search.trim()) params.search = search.trim();
+      const params = { limit, offset, sort: timestampSort };
+      if (entityType)          params.entity_type = entityType;
+      if (actionFilter)        params.action      = actionFilter;
+      if (severity)            params.severity    = severity;
+      if (debouncedSearch.trim()) params.search   = debouncedSearch.trim();
       if (timePreset) {
-        const since = new Date(Date.now() - timePreset * 60_000);
-        params.start_time = since.toISOString();
+        params.start_time = new Date(Date.now() - timePreset * 60_000).toISOString();
       }
       const res = await logsApi.list(params);
       setLogs(res.data.logs);
       setTotalCount(res.data.total_count);
-      if (res.data.logs.length > 0) {
-        lastTimestampRef.current = res.data.logs[0].timestamp;
-      }
+      if (res.data.logs.length > 0) lastTimestampRef.current = res.data.logs[0].timestamp;
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [limit, offset, category, entityType, search, timePreset]);
+  }, [limit, offset, entityType, actionFilter, severity, debouncedSearch, timePreset, timestampSort]);
 
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
+  useEffect(() => { setOffset(0); }, [limit, entityType, actionFilter, severity, debouncedSearch, timePreset, timestampSort]);
 
-  // Reset offset when filters change (but not when offset itself changes)
-  useEffect(() => { setOffset(0); }, [limit, category, entityType, search, timePreset]);
-
-  // ── SSE Live Mode ────────────────────────────────────────────────────────
+  // ── SSE Live Mode ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!liveMode) {
-      sseRef.current?.close();
-      sseRef.current = null;
-      return;
-    }
-
-    const url = logsApi.stream(lastTimestampRef.current ?? new Date().toISOString());
-    const es = new EventSource(url);
-
+    if (!liveMode) { sseRef.current?.close(); sseRef.current = null; return; }
+    const es = new EventSource(logsApi.stream(lastTimestampRef.current ?? new Date().toISOString()));
     es.onmessage = (event) => {
       try {
         const entry = JSON.parse(event.data);
         setLogs(prev => [entry, ...prev]);
         setTotalCount(prev => prev + 1);
         lastTimestampRef.current = entry.timestamp;
-      } catch { /* ignore malformed */ }
+      } catch { /* ignore */ }
     };
-
-    es.onerror = () => {
-      // SSE reconnects automatically; no need to do anything
-    };
-
     sseRef.current = es;
     return () => { es.close(); };
   }, [liveMode]);
 
-  // ── Export ───────────────────────────────────────────────────────────────
+  // ── Export / Clear ────────────────────────────────────────────────────────────
 
   const handleExport = () => {
-    const header = 'timestamp,level,category,action,entity_type,entity_id,actor,ip_address,details\n';
+    const header = 'timestamp,severity,action,entity_type,entity_id,entity_name,actor,ip_address\n';
     const rows = logs.map(l => [
-      l.timestamp, l.level, l.category, l.action,
-      l.entity_type ?? '', l.entity_id ?? '',
-      l.actor ?? '', l.ip_address ?? '',
-      JSON.stringify(l.details ?? ''),
+      l.created_at_utc ?? l.timestamp,
+      l.severity ?? l.level ?? '',
+      l.action ?? '', l.entity_type ?? '', l.entity_id ?? '',
+      JSON.stringify(l.entity_name ?? ''),
+      l.actor_name ?? l.actor ?? '', l.ip_address ?? '',
     ].join(',')).join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `circuit-breaker-logs-${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = `circuit-breaker-audit-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
-
-  // ── Clear ────────────────────────────────────────────────────────────────
 
   const handleClear = () => {
     setConfirmState({
@@ -327,19 +447,21 @@ function LogsPage() {
       message: 'Clear all logs? This cannot be undone.',
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
-        try {
-          await logsApi.clear();
-          setLogs([]);
-          setTotalCount(0);
-          lastTimestampRef.current = null;
-        } catch (err) {
-          setError(err.message);
-        }
-      }
+        try { await logsApi.clear(); setLogs([]); setTotalCount(0); lastTimestampRef.current = null; }
+        catch (err) { setError(err.message); }
+      },
     });
   };
 
-  // ── Pagination ───────────────────────────────────────────────────────────
+  // ── Clear filters ───────────────────────────────────────────────────────────
+
+  const hasActiveFilters = !!(entityType || actionFilter || severity || debouncedSearch || timePreset);
+  const clearFilters = () => {
+    setEntityType(''); setActionFilter(''); setSeverity('');
+    setSearch(''); setTimePreset(null); setOffset(0);
+  };
+
+  // ── Pagination ───────────────────────────────────────────────────────────────────
 
   const totalPages = Math.max(1, Math.ceil(totalCount / limit));
   const currentPage = Math.floor(offset / limit) + 1;
@@ -350,99 +472,98 @@ function LogsPage() {
     <div className="page" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
       {/* Header */}
       <div className="page-header" style={{ marginBottom: 0, paddingBottom: 10, borderBottom: '1px solid var(--color-border)', flexWrap: 'wrap', gap: 8 }}>
-        <h2>System Logs</h2>
+        <h2>Audit Log</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+
           {/* Time presets */}
           <div style={{ display: 'flex', gap: 4 }}>
             {TIME_PRESETS.map(p => (
-              <button
-                key={p.label}
-                onClick={() => setTimePreset(p.minutes)}
-                style={{
-                  padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-                  border: '1px solid var(--color-border)',
-                  background: timePreset === p.minutes ? 'rgba(0,212,255,0.12)' : 'transparent',
-                  color: timePreset === p.minutes ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                }}
-              >{p.label}</button>
+              <button key={p.label} onClick={() => setTimePreset(p.minutes)} style={{
+                padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+                border: '1px solid var(--color-border)',
+                background: timePreset === p.minutes ? 'rgba(0,212,255,0.12)' : 'transparent',
+                color: timePreset === p.minutes ? 'var(--color-primary)' : 'var(--color-text-muted)',
+              }}>{p.label}</button>
             ))}
           </div>
 
-          {/* Category */}
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
-          >
-            <option value="">All categories</option>
-            {CATEGORY_OPTIONS.filter(Boolean).map(c => <option key={c} value={c}>{c}</option>)}
+          {/* Entity type */}
+          <select value={entityType} onChange={(e) => setEntityType(e.target.value)} style={{
+            padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)',
+            background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12,
+          }}>
+            <option value="">All entity types</option>
+            {ENTITY_OPTIONS.filter(Boolean).map(e => <option key={e} value={e}>{e}</option>)}
           </select>
 
-          {/* Entity type */}
-          <select
-            value={entityType}
-            onChange={(e) => setEntityType(e.target.value)}
-            style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
-          >
-            <option value="">All entity types</option>
-            {ENTITY_OPTIONS.filter(Boolean).map(e => <option key={e} value={e} style={{ textTransform: 'capitalize' }}>{e}</option>)}
+          {/* Action dropdown */}
+          <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} style={{
+            padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)',
+            background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12,
+          }}>
+            <option value="">All actions</option>
+            {availableActions.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
+
+          {/* Severity chips */}
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            {SEVERITY_OPTIONS.map(s => {
+              const active = severity === s;
+              const col = SEVERITY_COLORS[s];
+              return (
+                <button key={s} onClick={() => setSeverity(active ? '' : s)} style={{
+                  padding: '3px 10px', borderRadius: 10, fontSize: 11, cursor: 'pointer',
+                  border: `1px solid ${active ? col : 'var(--color-border)'}`,
+                  background: active ? `${col}22` : 'transparent',
+                  color: active ? col : 'var(--color-text-muted)',
+                  fontWeight: active ? 700 : 400, textTransform: 'capitalize',
+                }}>{s}</button>
+              );
+            })}
+          </div>
 
           {/* Search */}
-          <input
-            type="text"
-            placeholder="Search logs…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+          <input type="text" placeholder="🔍 Search…" value={search} onChange={(e) => setSearch(e.target.value)}
             style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12, width: 160 }}
           />
 
+          {/* Clear filters */}
+          {hasActiveFilters && (
+            <button onClick={clearFilters} style={{
+              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+              border: '1px solid var(--color-danger)', background: 'rgba(243,139,168,0.08)',
+              color: 'var(--color-danger)',
+            }}>✕ Clear filters</button>
+          )}
+
           {/* Limit */}
-          <select
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
-          >
+          <select value={limit} onChange={(e) => setLimit(Number(e.target.value))} style={{
+            padding: '5px 8px', borderRadius: 6, border: '1px solid var(--color-border)',
+            background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12,
+          }}>
             {LIMIT_OPTIONS.map(n => <option key={n} value={n}>{n} / page</option>)}
           </select>
 
           {/* Live toggle */}
-          <button
-            onClick={() => setLiveMode(v => !v)}
-            style={{
-              padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
-              border: `1px solid ${liveMode ? 'var(--color-online)' : 'var(--color-border)'}`,
-              background: liveMode ? 'rgba(0,255,136,0.08)' : 'transparent',
-              color: liveMode ? 'var(--color-online)' : 'var(--color-text-muted)',
-              display: 'flex', alignItems: 'center', gap: 5,
-            }}
-          >
+          <button onClick={() => setLiveMode(v => !v)} style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+            border: `1px solid ${liveMode ? 'var(--color-online)' : 'var(--color-border)'}`,
+            background: liveMode ? 'rgba(0,255,136,0.08)' : 'transparent',
+            color: liveMode ? 'var(--color-online)' : 'var(--color-text-muted)',
+            display: 'flex', alignItems: 'center', gap: 5,
+          }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: liveMode ? 'var(--color-online)' : 'var(--color-text-muted)', display: 'inline-block', boxShadow: liveMode ? '0 0 6px var(--color-online)' : 'none' }} />
             Live
           </button>
 
-          {/* Refresh */}
-          <button className="btn btn-sm" onClick={fetchLogs} disabled={loading} style={{ fontSize: 11 }}>
-            {loading ? '…' : '↻ Refresh'}
-          </button>
-
-          {/* Export */}
-          <button className="btn btn-sm" onClick={handleExport} disabled={logs.length === 0} style={{ fontSize: 11 }}>
-            ↓ Export CSV
-          </button>
-
-          {/* Clear */}
-          <button className="btn btn-sm btn-danger" onClick={handleClear} style={{ fontSize: 11 }}>
-            🗑 Clear
-          </button>
+          <button className="btn btn-sm" onClick={fetchLogs} disabled={loading} style={{ fontSize: 11 }}>{loading ? '…' : '↻ Refresh'}</button>
+          <button className="btn btn-sm" onClick={handleExport} disabled={logs.length === 0} style={{ fontSize: 11 }}>↓ Export CSV</button>
+          <button className="btn btn-sm btn-danger" onClick={handleClear} style={{ fontSize: 11 }}>🗑 Clear</button>
         </div>
       </div>
 
-      {/* Error */}
       {error && (
-        <div style={{ background: 'rgba(243,139,168,0.1)', border: '1px solid var(--color-danger)', color: 'var(--color-danger)', padding: '6px 12px', fontSize: 12 }}>
-          {error}
-        </div>
+        <div style={{ background: 'rgba(243,139,168,0.1)', border: '1px solid var(--color-danger)', color: 'var(--color-danger)', padding: '6px 12px', fontSize: 12 }}>{error}</div>
       )}
 
       {/* Table */}
@@ -450,36 +571,27 @@ function LogsPage() {
         <table className="entity-table" style={{ tableLayout: 'fixed' }}>
           <colgroup>
             <col style={{ width: 90 }} />
-            <col style={{ width: 220 }} />
-            <col style={{ width: 140 }} />
-            <col />
-            <col style={{ width: 150 }} />
+            <col style={{ width: 200 }} />
+            <col style={{ width: 160 }} />
+            <col style={{ width: 130 }} />
+            <col style={{ width: 110 }} />
           </colgroup>
           <thead>
             <tr>
-              <th>Time</th>
+              <th onClick={() => setTimestampSort(s => s === 'desc' ? 'asc' : 'desc')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }} title="Click to toggle sort order">
+                Time {timestampSort === 'desc' ? '↓' : '↑'}
+              </th>
               <th>Action</th>
               <th>Entity</th>
-              <th>Details</th>
               <th>Actor</th>
+              <th>IP</th>
             </tr>
           </thead>
           <tbody>
-            {loading && logs.length === 0 && (
-              <tr>
-                <td colSpan={5} className="empty-row">Loading…</td>
-              </tr>
-            )}
-            {!loading && logs.length === 0 && (
-              <tr>
-                <td colSpan={5} className="empty-row">No activity recorded yet. Perform a CRUD action to see it here.</td>
-              </tr>
-            )}
+            {loading && logs.length === 0 && <tr><td colSpan={5} className="empty-row">Loading…</td></tr>}
+            {!loading && logs.length === 0 && <tr><td colSpan={5} className="empty-row">No activity recorded yet.</td></tr>}
             {logs.map(log => (
-              <LogRow
-                key={log.id}
-                log={log}
-                expanded={expandedId === log.id}
+              <LogRow key={log.id} log={log} expanded={expandedId === log.id}
                 onToggle={() => setExpandedId(prev => prev === log.id ? null : log.id)}
                 navigate={navigate}
               />
@@ -491,9 +603,7 @@ function LogsPage() {
       {/* Pagination */}
       <div style={{ borderTop: '1px solid var(--color-border)', padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'var(--color-text-muted)', flexShrink: 0 }}>
         <span>
-          {totalCount > 0
-            ? `Showing ${offset + 1}–${Math.min(offset + limit, totalCount)} of ${totalCount.toLocaleString()} logs`
-            : 'No logs'}
+          {totalCount > 0 ? `Showing ${offset + 1}–${Math.min(offset + limit, totalCount)} of ${totalCount.toLocaleString()} entries` : 'No logs'}
         </span>
         <div style={{ display: 'flex', gap: 6 }}>
           <button className="btn btn-sm" disabled={!hasPrev} onClick={() => setOffset(0)} style={{ fontSize: 11 }}>⏮ First</button>
@@ -503,6 +613,7 @@ function LogsPage() {
           <button className="btn btn-sm" disabled={!hasMore} onClick={() => setOffset((totalPages - 1) * limit)} style={{ fontSize: 11 }}>Last ⏭</button>
         </div>
       </div>
+
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}
@@ -514,3 +625,4 @@ function LogsPage() {
 }
 
 export default LogsPage;
+

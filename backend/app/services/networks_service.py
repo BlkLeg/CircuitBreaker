@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
 from app.db.models import Network, ComputeNetwork, HardwareNetwork, EntityTag, Tag
 from app.schemas.networks import NetworkCreate, NetworkUpdate
+from app.core.time import utcnow
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -87,6 +88,7 @@ def create_network(db: Session, payload: NetworkCreate) -> dict:
         gateway=payload.gateway,
         description=payload.description,
         gateway_hardware_id=payload.gateway_hardware_id,
+        icon_slug=payload.icon_slug,
     )
     db.add(net)
     db.flush()
@@ -102,7 +104,7 @@ def update_network(db: Session, network_id: int, payload: NetworkUpdate) -> dict
         raise ValueError(f"Network {network_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(net, field, value)
-    net.updated_at = datetime.now(timezone.utc)
+    net.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "network", net.id, payload.tags)
     db.commit()

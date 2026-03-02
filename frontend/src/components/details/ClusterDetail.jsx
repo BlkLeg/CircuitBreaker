@@ -6,6 +6,7 @@ import { clustersApi, hardwareApi } from '../../api/client';
 import { Server, X, Plus } from 'lucide-react';
 import logger from '../../utils/logger';
 import { useToast } from '../common/Toast';
+import TimestampCell from '../TimestampCell.jsx';
 
 function ClusterDetail({ cluster, isOpen, onClose, onUpdate }) {
   const toast = useToast();
@@ -115,7 +116,7 @@ function ClusterDetail({ cluster, isOpen, onClose, onUpdate }) {
             {cluster.created_at && (
               <div className="field-group">
                 <span className="field-label">Created</span>
-                <div>{new Date(cluster.created_at).toLocaleString()}</div>
+                <div><TimestampCell isoString={cluster.created_at} /></div>
               </div>
             )}
           </div>

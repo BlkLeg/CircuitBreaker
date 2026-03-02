@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SettingsProvider } from './context/SettingsContext';
+import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ToastProvider } from './components/common/Toast';
 import { authApi } from './api/auth.js';
@@ -158,11 +159,13 @@ function App() {
   return (
     <BrowserRouter>
     <SettingsProvider>
+    <TimezoneProvider>
     <AuthProvider>
     <ToastProvider>
       <AppRoutes />
     </ToastProvider>
     </AuthProvider>
+    </TimezoneProvider>
     </SettingsProvider>
     </BrowserRouter>
   );

@@ -21,6 +21,10 @@ dependencies = [
     "markdown-it-py[plugins]>=3.0.0",
     "bleach>=6.0.0",
     "prometheus-client>=0.20.0",
+    "pyipmi>=0.4.0",
+    "cryptography>=42.0.8",
+    "requests>=2.32.3",
+    "sentry-sdk[fastapi]>=2.0.0",
 ]
 
 [project.optional-dependencies]

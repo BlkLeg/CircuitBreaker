@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
 from app.db.models import MiscItem, EntityTag, Tag
 from app.schemas.misc import MiscItemCreate, MiscItemUpdate
+from app.core.time import utcnow
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -91,7 +92,7 @@ def update_misc_item(db: Session, item_id: int, payload: MiscItemUpdate) -> dict
         raise ValueError(f"MiscItem {item_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(item, field, value)
-    item.updated_at = datetime.now(timezone.utc)
+    item.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "misc", item.id, payload.tags)
     db.commit()

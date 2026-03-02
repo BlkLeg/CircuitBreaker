@@ -25,6 +25,7 @@ const DEFAULTS = {
   categories: [],
   locations: [],
   dock_order: null,
+  timezone: 'UTC',
 };
 
 const SettingsContext = createContext({
