@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 _logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
+from app.services.ip_reservation import bulk_conflict_map
 from app.db.models import (
     Hardware,
     HardwareCluster,
@@ -42,13 +44,17 @@ class LayoutUpdate(BaseModel):
 @router.get("/topology")
 def get_topology(
     environment: str | None = Query(None),
+    environment_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     db: Session = Depends(get_db),
 ):
     include_set = {i.strip().lower() for i in include.split(",")}
     nodes: list[dict] = []
     edges: list[dict] = []
-    
+
+    # Bulk-compute IP conflict flags once per request to avoid N individual queries
+    conflict_map = bulk_conflict_map(db)  # (etype, eid) -> bool
+
     # Helper to fetch tags for a set of entities
     # Optimization: Loading tags for all entities can be N+1 if not careful.
     # For v1 homelab scale, we can just fetch them or rely on lazy loading if eager is set.
@@ -109,6 +115,7 @@ def get_topology(
                 "ref_id": net.id,
                 "label": net.name,
                 "cidr": net.cidr,
+                "icon_slug": net.icon_slug,
                 "tags": get_tags("networks", net.id)
             })
 
@@ -180,6 +187,12 @@ def get_topology(
                     "primary_pool": primary_pool,
                     "count": len(hw.storage_items),
                 }
+            telemetry_data = None
+            if hw.telemetry_data:
+                try:
+                    telemetry_data = json.loads(hw.telemetry_data)
+                except (json.JSONDecodeError, TypeError):
+                    pass
             nodes.append({
                 "id": f"hw-{hw.id}",
                 "type": "hardware",
@@ -190,7 +203,13 @@ def get_topology(
                 "icon_slug": hw.vendor_icon_slug,
                 "ip_address": hw.ip_address,
                 "storage_summary": storage_summary,
-                "tags": get_tags("hardware", hw.id)
+                "tags": get_tags("hardware", hw.id),
+                "telemetry_status": hw.telemetry_status or "unknown",
+                "telemetry_data": telemetry_data,
+                "telemetry_last_polled": hw.telemetry_last_polled.isoformat() if hw.telemetry_last_polled else None,
+                "u_height": hw.u_height,
+                "rack_unit": hw.rack_unit,
+                "ip_conflict": conflict_map.get(("hardware", hw.id), False),
             })
 
         # Cluster → Hardware member edges
@@ -209,7 +228,9 @@ def get_topology(
     # 5. Compute
     if "compute" in include_set:
         q = select(ComputeUnit)
-        if environment:
+        if environment_id is not None:
+            q = q.where(ComputeUnit.environment_id == environment_id)
+        elif environment:
             q = q.where(ComputeUnit.environment == environment)
         for cu in db.execute(q).scalars():
             pools = cu_storage_pools.get(cu.id, [])
@@ -228,7 +249,8 @@ def get_topology(
                 "icon_slug": cu.icon_slug,
                 "ip_address": cu.ip_address,
                 "storage_allocated": storage_allocated,
-                "tags": get_tags("compute", cu.id)
+                "tags": get_tags("compute", cu.id),
+                "ip_conflict": conflict_map.get(("compute_unit", cu.id), False),
             })
             # Link to Hardware
             if "hardware" in include_set:
@@ -242,7 +264,9 @@ def get_topology(
     # 6. Services
     if "services" in include_set:
         q = select(Service)
-        if environment:
+        if environment_id is not None:
+            q = q.where(Service.environment_id == environment_id)
+        elif environment:
             q = q.where(Service.environment == environment)
         services = db.execute(q).scalars().all()
         service_ids = {s.id for s in services}
@@ -262,7 +286,8 @@ def get_topology(
                 "ip_address": effective_ip,
                 "compute_id": svc.compute_id,
                 "hardware_id": svc.hardware_id,
-                "tags": get_tags("services", svc.id)
+                "tags": get_tags("services", svc.id),
+                "ip_conflict": conflict_map.get(("service", svc.id), False),
             })
             # Link to Compute
             if svc.compute_id and "compute" in include_set:

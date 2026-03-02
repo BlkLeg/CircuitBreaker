@@ -4,12 +4,18 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     container_name: cb-backend
+    env_file:
+      - ../backend/.env
     volumes:
       - backend-data:/app/data
     environment:
       - DATABASE_URL=sqlite:////app/data/app.db
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
+      # Optional: set a persistent Fernet key for the telemetry credential vault.
+      # If unset, an ephemeral key is generated each restart (credentials lost on restart).
+      # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - CB_VAULT_KEY=
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -22,6 +28,9 @@ services:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_SENTRY_ENVIRONMENT: ${VITE_SENTRY_ENVIRONMENT:-production}
     ports:
       - "8080:8080"
     container_name: cb-frontend

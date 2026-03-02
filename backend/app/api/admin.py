@@ -1,6 +1,6 @@
 """Admin endpoints: full backup export, restore import, and recent-changes feed."""
 import logging
-from datetime import datetime, timezone
+
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.db import models
+from app.core.time import utcnow, utcnow_iso
 
 _logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def export_backup(db: Session = Depends(get_db), _=Depends(require_write_auth)):
     """
     return {
         "version": 2,
-        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "exported_at": utcnow_iso(),
         "hardware":             [_hw_to_dict(r)   for r in db.query(models.Hardware).all()],
         "compute_units":        [_cu_to_dict(r)   for r in db.query(models.ComputeUnit).all()],
         "services":             [_svc_to_dict(r)  for r in db.query(models.Service).all()],

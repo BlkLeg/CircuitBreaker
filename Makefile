@@ -22,7 +22,7 @@ help: ## Show available targets
 
 dev: stop ## Start backend + frontend for local development
 	@echo "Starting backend  → http://localhost:$(BACKEND_PORT)"
-	@cd $(BACKEND_DIR) && ../.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
 	@echo "Starting frontend → http://localhost:$(FRONTEND_PORT)"
 	@cd $(FRONTEND_DIR) && npm start &
 
@@ -34,7 +34,7 @@ stop: ## Kill any process holding the dev ports
 backend: ## Kill port $(BACKEND_PORT) and restart the backend
 	@lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 2>/dev/null || true
 	@echo "Starting backend → http://localhost:$(BACKEND_PORT)"
-	cd $(BACKEND_DIR) && ../.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
+	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
@@ -44,11 +44,25 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 # ==============================================================================
 # BUILD & TEST
 # ==============================================================================
-.PHONY: test docs docs-build frontend-build
+.PHONY: test test-backend test-frontend test-all test-coverage docs docs-build frontend-build
 
 test: ## Run backend tests
 	@echo "Running backend tests..."
-	@cd $(BACKEND_DIR) && ../.venv/bin/pytest -q
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest -q
+
+test-backend: ## Run backend tests with verbose output
+	@echo "Running backend tests..."
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ -v --asyncio-mode=auto
+
+test-frontend: ## Run frontend component tests
+	@echo "Running frontend tests..."
+	@cd $(FRONTEND_DIR) && npm test
+
+test-all: test-backend test-frontend ## Run all backend + frontend tests
+
+test-coverage: ## Run all tests with coverage reports
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ --cov=app --cov-report=term-missing --asyncio-mode=auto
+	@cd $(FRONTEND_DIR) && npm run test:coverage
 
 docs: ## Serve docs locally with Zensical
 	@echo "Serving docs at http://localhost:8001"

@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db.models import Hardware, HardwareCluster, HardwareClusterMember
 from app.schemas.clusters import HardwareClusterCreate, HardwareClusterUpdate
+from app.core.time import utcnow
 
 
 def _to_dict(cluster: HardwareCluster) -> dict:
@@ -63,7 +64,7 @@ def update_cluster(db: Session, cluster_id: int, payload: HardwareClusterUpdate)
         raise ValueError(f"Hardware cluster {cluster_id} not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(cluster, field, value)
-    cluster.updated_at = datetime.now(timezone.utc)
+    cluster.updated_at = utcnow()
     db.commit()
     db.refresh(cluster)
     return _to_dict(cluster)

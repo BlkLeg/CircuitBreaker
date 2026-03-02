@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clock } from 'lucide-react';
 import { adminApi } from '../../api/client';
+import TimestampCell from '../TimestampCell.jsx';
 
 // ── Route map ─────────────────────────────────────────────────────────────
 
@@ -31,21 +32,6 @@ const ENTITY_COLOR = {
   network:  '#0891b2',
   misc:     '#db2777',
 };
-
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-function relativeTime(isoString) {
-  if (!isoString) return '';
-  const delta = Date.now() - new Date(isoString).getTime();
-  const s = Math.floor(delta / 1000);
-  if (s < 60)  return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60)  return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24)  return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  return `${d}d ago`;
-}
 
 // ── Component ─────────────────────────────────────────────────────────────
 
@@ -222,7 +208,7 @@ export default function RecentChanges() {
                     color: 'var(--color-text-muted)',
                     flexShrink: 0,
                   }}>
-                    {relativeTime(item.updated_at)}
+                    <TimestampCell isoString={item.updated_at} />
                   </span>
                 </button>
               );

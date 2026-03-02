@@ -7,6 +7,7 @@
     "@emoji-mart/data": "^1.2.1",
     "@emoji-mart/react": "^1.1.1",
     "@reactflow/node-resizer": "^2.2.14",
+    "@sentry/react": "^10.40.0",
     "@uiw/react-md-editor": "^4.0.11",
     "axios": "^1.7.0",
     "elkjs": "^0.11.0",
@@ -22,10 +23,21 @@
   "scripts": {
     "start": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
+    "@sentry/vite-plugin": "^5.1.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^5.1.4",
-    "vite": "^7.3.1"
+    "@vitest/coverage-v8": "^4.0.18",
+    "jsdom": "^28.1.0",
+    "msw": "^2.12.10",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18"
   }
 }

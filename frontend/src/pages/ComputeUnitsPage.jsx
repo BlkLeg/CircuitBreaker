@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { computeUnitsApi, hardwareApi } from '../api/client';
+import { computeUnitsApi, hardwareApi, environmentsApi } from '../api/client';
 import ComputeDetail from '../components/details/ComputeDetail';
 import IconPickerModal, { IconImg, getIconEntry } from '../components/common/IconPickerModal';
 import { OS_OPTIONS, getOsOption } from '../icons/osOptions';
@@ -52,15 +52,36 @@ const COLUMNS = [
     },
   },
   { key: 'hardware_name', label: 'Hardware' },
-  { key: 'ip_address', label: 'IP' },
-  { key: 'environment', label: 'Env' },
+  {
+    key: 'ip_address',
+    label: 'IP',
+    render: (v, row) => v
+      ? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: row.ip_conflict ? '#f59e0b' : undefined, fontFamily: 'monospace', fontSize: 12 }}>{v}</span>
+          {row.ip_conflict && (
+            <span
+              title="IP conflict: this IP is already assigned to another entity"
+              style={{
+                width: 14, height: 14, borderRadius: '50%',
+                background: '#f59e0b', color: '#111',
+                fontSize: 9, fontWeight: 800, flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >!</span>
+          )}
+        </span>
+      )
+      : '—',
+  },
+  { key: 'environment_name', label: 'Env', render: (v, row) => v ?? row.environment ?? '—' },
   { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 function ComputeUnitsPage() {
   const { settings } = useSettings();
   const toast = useToast();
-  const environments = settings?.environments ?? ['prod', 'staging', 'dev'];
+  const [environmentsList, setEnvironmentsList] = useState([]);
   const [items, setItems] = useState([]);
   const [hardware, setHardware] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -86,7 +107,7 @@ function ComputeUnitsPage() {
       if (q) params.q = q;
       if (tagFilter) params.tag = tagFilter;
       if (kindFilter) params.kind = kindFilter;
-      if (envFilter) params.environment = envFilter;
+      if (envFilter) params.environment_id = envFilter;
       if (hwFilter) params.hardware_id = hwFilter;
       const [cuRes, hwRes] = await Promise.all([
         computeUnitsApi.list(params),
@@ -103,6 +124,10 @@ function ComputeUnitsPage() {
   }, [q, tagFilter, kindFilter, envFilter, hwFilter, toast]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    environmentsApi.list().then((r) => setEnvironmentsList(r.data)).catch(() => {});
+  }, []);
 
   // Build fields dynamically so icon slug state can be passed in
   const buildFields = (currentIconSlug) => [
@@ -130,13 +155,12 @@ function ComputeUnitsPage() {
         setIconPickerOpen(true);
       },
     },
-    { name: 'ip_address', label: 'IP Address' },
+    { name: 'ip_address', label: 'IP Address', type: 'ip-address-input' },
     { name: 'cpu_cores', label: 'CPU Cores', type: 'number' },
     { name: 'cpu_brand', label: 'CPU Brand', type: 'cpu-select', options: CPU_BRANDS },
     { name: 'memory_mb', label: 'Memory (MB)', type: 'number' },
     { name: 'disk_gb', label: 'Disk (GB)', type: 'number' },
-    { name: 'environment', label: 'Environment', type: 'select',
-      options: environments.map((e) => ({ value: e, label: e })) },
+    { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
     { name: 'notes', label: 'Notes', type: 'textarea' },
     { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
   ];
@@ -205,9 +229,9 @@ function ComputeUnitsPage() {
           <option value="vm">VM</option>
           <option value="container">Container</option>
         </select>
-        <select className="filter-select" value={envFilter} onChange={(e) => setEnvFilter(e.target.value)}>
+        <select className="filter-select" value={envFilter} onChange={(e) => setEnvFilter(e.target.value ? Number(e.target.value) : '')}>
           <option value="">All environments</option>
-          {environments.map((e) => <option key={e} value={e}>{e}</option>)}
+          {environmentsList.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
         <select className="filter-select" value={hwFilter} onChange={(e) => setHwFilter(e.target.value)}>
           <option value="">All hardware</option>
@@ -255,6 +279,8 @@ function ComputeUnitsPage() {
         }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
+        entityType="compute_unit"
+        entityId={editTarget?.id}
       />
 
       {iconPickerOpen && (

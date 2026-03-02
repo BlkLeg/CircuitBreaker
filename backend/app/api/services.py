@@ -26,13 +26,15 @@ def list_services(
     hardware_id: int | None = Query(None),
     category: str | None = Query(None),
     environment: str | None = Query(None),
+    environment_id: int | None = Query(None),
     tag: str | None = Query(None),
     q: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
     return services_service.list_services(
         db, compute_id=compute_id, hardware_id=hardware_id,
-        category=category, environment=environment, tag=tag, q=q
+        category=category, environment=environment, environment_id=environment_id,
+        tag=tag, q=q
     )
 
 

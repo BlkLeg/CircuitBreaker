@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+.venv-mkdocs/
 venv/
 dist/
 build/
@@ -21,7 +22,9 @@ htmlcov/
 
 # Node / React
 node_modules/
+docker/node_modules/
 frontend/build/
+frontend/dist/
 frontend/.env.local
 frontend/.env.*.local
 .npm/
@@ -29,6 +32,7 @@ frontend/.env.*.local
 # Env files with real secrets (frontend/.env contains only safe defaults)
 backend/.env
 backend/.env.*
+docker/.env
 .env.local
 frontend/.env.local
 frontend/.env.*.local
@@ -37,6 +41,14 @@ frontend/.env.*.local
 # Docker
 docker/data/
 
+# Runtime user data (preserve folder structure via .gitkeep)
+backend/data/uploads/**
+!backend/data/uploads/**/
+!backend/data/uploads/**/.gitkeep
+backend/data/user-icons/**
+!backend/data/user-icons/**/
+!backend/data/user-icons/**/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db
@@ -44,12 +56,14 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
 
-# Snyk Security Extension - AI Rules (auto-generated)
-.github/instructions/snyk_rules.instructions.md
+# Tool / editor caches
+.cache/
 
+# Internal / auto-generated
 .INTERNAL/
 
 # Snyk Security Extension - AI Rules (auto-generated)
-.cursor/rules/snyk_rules.mdc
+.github/instructions/snyk_rules.instructions.md

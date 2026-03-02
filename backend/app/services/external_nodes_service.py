@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
+from app.core.time import utcnow
 from app.db.models import ExternalNode, ExternalNodeNetwork, ServiceExternalNode, Network, Service, EntityTag, Tag
 from app.schemas.external_nodes import (
     ExternalNodeCreate,
@@ -123,7 +124,7 @@ def update_external_node(db: Session, node_id: int, payload: ExternalNodeUpdate)
         raise ValueError(f"ExternalNode {node_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(item, field, value)
-    item.updated_at = datetime.now(timezone.utc)
+    item.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, item.id, payload.tags)
     db.commit()

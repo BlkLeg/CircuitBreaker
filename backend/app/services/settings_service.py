@@ -1,10 +1,12 @@
 import json
 import secrets
-from datetime import datetime, timezone
+import zoneinfo
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models import AppSettings
+from app.core.time import utcnow, utcnow_iso
+from app.db.models import AppSettings, Log
 from app.schemas.settings import AppSettingsUpdate
 
 _DEFAULTS = dict(
@@ -62,6 +64,12 @@ def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
             # clears the stale custom_colors from the DB.
             row.custom_colors = json.dumps(value) if value is not None else None
             continue
+        if field == "timezone":
+            if value is not None and value != "UTC" and value not in zoneinfo.available_timezones():
+                raise HTTPException(status_code=422, detail=f'Invalid timezone "{value}"')
+            setattr(row, field, value)
+            _write_timezone_log(db, value or "UTC")
+            continue
         if field in ("map_default_filters", "environments", "categories", "locations", "dock_order", "dock_hidden_items"):
             # Accept list/dict → serialize to JSON string; None → None
             if value is not None and not isinstance(value, str):
@@ -70,10 +78,24 @@ def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
     # Auto-generate JWT secret when auth is being enabled for the first time
     if data.get("auth_enabled") and not row.jwt_secret:
         row.jwt_secret = secrets.token_hex(32)
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
     return row
+
+
+def _write_timezone_log(db: Session, timezone: str) -> None:
+    """Write a user-visible audit log entry when the timezone preference is changed."""
+    now_iso = utcnow_iso()
+    log_entry = Log(
+        level="info",
+        category="settings",
+        action="update_timezone",
+        actor="system",
+        details=f'Timezone updated to "{timezone}"',
+        created_at_utc=now_iso,
+    )
+    db.add(log_entry)
 
 
 def reset_settings(db: Session) -> AppSettings:
@@ -82,7 +104,7 @@ def reset_settings(db: Session) -> AppSettings:
         if field == "id":
             continue
         setattr(row, field, value)
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = utcnow()
     db.commit()
     db.refresh(row)
     return row

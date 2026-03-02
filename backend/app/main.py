@@ -1,3 +1,4 @@
+from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi/sentry_sdk import
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
@@ -11,18 +12,31 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.db.session import engine, Base, SessionLocal
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap
+from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap, catalog, telemetry as telemetry_api, categories, environments
+from app.api.ip_check import router as ip_check_router
 from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
 from app.api.admin import router as admin_router
 from app.api.security_status import router as security_router
 from app.api.metrics import router as metrics_router
+from app.api.timezones import router as timezones_router
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.rate_limit import limiter
+import sentry_sdk
+
+if settings.sentry_dsn:
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        send_default_pii=True,
+        enable_logs=True,
+        traces_sample_rate=1.0,
+        profile_session_sample_rate=1.0,
+        profile_lifecycle="trace",
+    )
 
 _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)
@@ -31,6 +45,38 @@ _logger = logging.getLogger(__name__)
 def _get_columns(conn, table: str) -> list[str]:
     """Return the column names for a SQLite table."""
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]  # noqa: S608
+
+
+def _backfill_log_timestamps(db) -> None:
+    """Backfill created_at_utc for log rows that still have NULL in that column.
+
+    Reads from the `timestamp` DateTime column (set at insert time by write_log)
+    and converts it to a UTC ISO-8601 string.  Rows where `timestamp` is None
+    or cannot be parsed receive the epoch sentinel "1970-01-01T00:00:00+00:00".
+
+    Accepts either an ORM Session (test fixtures) or a raw SQLite connection
+    (migration path).
+    """
+    from datetime import datetime, timezone as _tz
+    from sqlalchemy import text
+
+    _EPOCH = "1970-01-01T00:00:00+00:00"
+    rows = db.execute(
+        text("SELECT id, timestamp FROM logs WHERE created_at_utc IS NULL")
+    ).fetchall()
+    for log_id, ts in rows:
+        val = _EPOCH
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts))
+                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=_tz.utc).isoformat()
+            except (ValueError, TypeError):
+                pass
+        db.execute(
+            text("UPDATE logs SET created_at_utc = :val WHERE id = :id"),
+            {"val": val, "id": log_id},
+        )
+    db.commit()
 
 
 def _run_migrations(conn) -> None:
@@ -238,6 +284,165 @@ def _run_migrations(conn) -> None:
     settings_cols = _get_columns(conn, "app_settings")
     if "show_external_nodes_on_map" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_external_nodes_on_map BOOLEAN DEFAULT TRUE")
+    # v0.1.2: hardware vendor catalog + telemetry fields
+    hw_cols = _get_columns(conn, "hardware")
+    if "vendor_catalog_key" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN vendor_catalog_key TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "model_catalog_key" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN model_catalog_key TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "u_height" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN u_height INTEGER")
+    hw_cols = _get_columns(conn, "hardware")
+    if "rack_unit" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN rack_unit INTEGER")
+    hw_cols = _get_columns(conn, "hardware")
+    if "telemetry_config" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN telemetry_config TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "telemetry_data" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN telemetry_data TEXT DEFAULT '{}'")
+    hw_cols = _get_columns(conn, "hardware")
+    if "telemetry_status" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN telemetry_status TEXT DEFAULT 'unknown'")
+    hw_cols = _get_columns(conn, "hardware")
+    if "telemetry_last_polled" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN telemetry_last_polled TIMESTAMP")
+    # v0.1.3: categories table + category_id FK on services
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS categories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            color      TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc'))
+        )
+    """)
+    svc_cols = _get_columns(conn, "services")
+    if "category_id" not in svc_cols:
+        conn.execute(
+            "ALTER TABLE services ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL"
+        )
+    # Backfill: migrate legacy category strings → category_id
+    rows = conn.execute(
+        "SELECT id, category FROM services WHERE category IS NOT NULL AND category_id IS NULL"
+    ).fetchall()
+    for svc_id, cat_name in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO categories (name, created_at) VALUES (?, datetime('now','utc'))",
+            (cat_name,),
+        )
+        cat_row = conn.execute(
+            "SELECT id FROM categories WHERE name = ? COLLATE NOCASE", (cat_name,)
+        ).fetchone()
+        if cat_row:
+            conn.execute(
+                "UPDATE services SET category_id = ? WHERE id = ?", (cat_row[0], svc_id)
+            )
+    # v0.1.4: environments table + environment_id FK on hardware/compute_units/services
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS environments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            color      TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc'))
+        )
+    """)
+    for table in ("hardware", "compute_units", "services"):
+        tbl_cols = _get_columns(conn, table)
+        if "environment_id" not in tbl_cols:
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN environment_id INTEGER REFERENCES environments(id) ON DELETE SET NULL"  # noqa: S608
+            )
+    # Backfill compute_units and services (hardware has no legacy environment column)
+    backfill_count = 0
+    for table in ("compute_units", "services"):
+        rows = conn.execute(
+            f"SELECT id, environment FROM {table} WHERE environment IS NOT NULL AND environment_id IS NULL"  # noqa: S608
+        ).fetchall()
+        for row_id, env_name in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO environments (name, created_at) VALUES (?, datetime('now','utc'))",
+                (env_name,),
+            )
+            env_row = conn.execute(
+                "SELECT id FROM environments WHERE name = ? COLLATE NOCASE", (env_name,)
+            ).fetchone()
+            if env_row:
+                conn.execute(
+                    f"UPDATE {table} SET environment_id = ? WHERE id = ?",  # noqa: S608
+                    (env_row[0], row_id),
+                )
+                backfill_count += 1
+    _logger.info("Environments backfill: %d rows updated", backfill_count)
+    # v0.1.5: services.ports_json — structured port bindings replacing freeform string
+    import re as _re
+    import json as _json
+    svc_cols = _get_columns(conn, "services")
+    if "ports_json" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN ports_json TEXT")
+    # Backfill: parse legacy ports string into structured JSON array
+    rows = conn.execute(
+        "SELECT id, ports FROM services WHERE ports IS NOT NULL AND ports_json IS NULL"
+    ).fetchall()
+    for svc_id, ports_str in rows:
+        entries = []
+        for token in [t.strip() for t in ports_str.split(",") if t.strip()]:
+            m = _re.match(r"^(\d+)/(\w+)$", token)
+            if m:
+                entries.append({"port": int(m.group(1)), "protocol": m.group(2), "ip": None})
+            elif _re.match(r"^\d+$", token):
+                entries.append({"port": int(token), "protocol": "tcp", "ip": None})
+            else:
+                entries.append({"port": None, "protocol": None, "ip": None, "raw": token})
+        conn.execute(
+            "UPDATE services SET ports_json = ? WHERE id = ?",
+            (_json.dumps(entries), svc_id),
+        )
+    _logger.info("ports_json backfill: %d service rows processed", len(rows))
+
+    # v0.1.6: logs.created_at_utc — reliable UTC ISO 8601 string for frontend display
+    from datetime import datetime, timezone as _tz
+    log_cols = _get_columns(conn, "logs")
+    if "created_at_utc" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN created_at_utc TEXT")
+    _EPOCH = "1970-01-01T00:00:00+00:00"
+    log_rows = conn.execute(
+        "SELECT id, timestamp FROM logs WHERE created_at_utc IS NULL"
+    ).fetchall()
+    for log_id, ts in log_rows:
+        val = _EPOCH
+        if ts:
+            try:
+                dt = datetime.fromisoformat(str(ts))
+                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=_tz.utc).isoformat()
+            except (ValueError, TypeError):
+                pass
+        conn.execute("UPDATE logs SET created_at_utc = ? WHERE id = ?", (val, log_id))
+    _logger.info("Log timestamp backfill: %d rows updated", len(log_rows))
+
+    # v0.1.6: app_settings.timezone — IANA timezone preference
+    settings_cols = _get_columns(conn, "app_settings")
+    if "timezone" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
+
+    # Feature 6: audit log structured columns
+    log_cols = _get_columns(conn, "logs")
+    if "actor_id" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN actor_id INTEGER")
+    log_cols = _get_columns(conn, "logs")
+    if "actor_name" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN actor_name TEXT NOT NULL DEFAULT 'admin'")
+    log_cols = _get_columns(conn, "logs")
+    if "entity_name" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN entity_name TEXT")
+    log_cols = _get_columns(conn, "logs")
+    if "diff" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN diff TEXT")
+    log_cols = _get_columns(conn, "logs")
+    if "severity" not in log_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN severity TEXT NOT NULL DEFAULT 'info'")
+    _logger.info("Audit log schema: structured columns present")
 
 
 @asynccontextmanager
@@ -325,6 +530,7 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     _logger.exception(
         "Unhandled exception [%s %s]", request.method, request.url.path, exc_info=exc
     )
+    sentry_sdk.capture_exception(exc)
     return _error_json("internal_error", "An unexpected error occurred.", 500)
 
 app.add_middleware(
@@ -357,6 +563,12 @@ app.include_router(clusters.router, prefix=settings.api_prefix)
 app.include_router(external_nodes.router, prefix=settings.api_prefix)
 app.include_router(external_nodes._rel_router, prefix=settings.api_prefix)
 app.include_router(metrics_router, prefix=settings.api_prefix)
+app.include_router(catalog.router, prefix=settings.api_prefix)
+app.include_router(telemetry_api.router, prefix=settings.api_prefix)
+app.include_router(categories.router, prefix=settings.api_prefix)
+app.include_router(environments.router, prefix=settings.api_prefix)
+app.include_router(ip_check_router, prefix=settings.api_prefix)
+app.include_router(timezones_router, prefix=settings.api_prefix)
 
 
 # Serve all user-uploaded content. Directories are derived from settings.uploads_dir
@@ -378,6 +590,11 @@ app.mount("/uploads/docs", StaticFiles(directory=_doc_uploads_path), name="doc-u
 _branding_path = _uploads_base / "branding"
 _branding_path.mkdir(parents=True, exist_ok=True)
 app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
+
+
+@app.get("/sentry-debug")
+async def trigger_error():
+    division_by_zero = 1 / 0
 
 
 @app.api_route(f"{settings.api_prefix}/health", methods=["GET", "HEAD"])

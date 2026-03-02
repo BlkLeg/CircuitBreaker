@@ -90,6 +90,7 @@ class AppSettingsRead(BaseModel):
     auth_enabled: bool = False
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
+    timezone: str = "UTC"
     # Advanced Theming
     theme_preset: str = "cyberpunk-neon"
     custom_colors: Optional[str] = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -217,6 +218,7 @@ class AppSettingsUpdate(BaseModel):
     branding: Optional[BrandingConfig] = None
     theme_preset: Optional[str] = None
     show_external_nodes_on_map: Optional[bool] = None
+    timezone: Optional[str] = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: Optional[dict[str, Any]] = None
 

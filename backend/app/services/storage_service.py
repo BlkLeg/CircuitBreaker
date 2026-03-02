@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 
 from app.db.models import Storage, EntityTag, Tag
 from app.schemas.storage import StorageCreate, StorageUpdate
+from app.core.time import utcnow
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -97,7 +98,7 @@ def update_storage(db: Session, storage_id: int, payload: StorageUpdate) -> dict
         raise ValueError(f"Storage {storage_id} not found")
     for field, value in payload.model_dump(exclude_unset=True, exclude={"tags"}).items():
         setattr(st, field, value)
-    st.updated_at = datetime.now(timezone.utc)
+    st.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "storage", st.id, payload.tags)
     db.commit()

@@ -15,6 +15,8 @@ class ComputeUnitBase(BaseModel):
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None
     environment: Optional[str] = None
+    # v0.1.4: environment registry
+    environment_id: Optional[int] = None
     notes: Optional[str] = None
     tags: list[str] = []
 
@@ -35,6 +37,8 @@ class ComputeUnitUpdate(BaseModel):
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None
     environment: Optional[str] = None
+    # v0.1.4: environment registry
+    environment_id: Optional[int] = None
     notes: Optional[str] = None
     tags: Optional[list[str]] = None
 
@@ -46,3 +50,5 @@ class ComputeUnit(ComputeUnitBase):
     created_at: datetime
     updated_at: datetime
     storage_allocated: Optional[dict] = None
+    # v0.1.4: environment registry
+    environment_name: Optional[str] = None

@@ -34,4 +34,5 @@ def initialize_bootstrap(
         payload.password,
         payload.theme_preset,
         payload.display_name,
+        payload.timezone,
     )

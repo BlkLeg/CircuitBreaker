@@ -3,7 +3,6 @@ import logging
 import re
 import secrets as _secrets
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
+from app.core.time import utcnow, utcnow_iso
 from app.db.models import AppSettings, Log, User
 from app.schemas.auth import AuthResponse, BootstrapInitializeResponse, BootstrapStatusResponse, UserProfile, BootstrapThemeResponse
 
@@ -81,7 +81,7 @@ def register(
     # First user becomes admin
     is_admin = db.query(User).count() == 0
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = utcnow_iso()
     user = User(
         email=email.strip().lower(),
         password_hash=hash_password(password),
@@ -134,6 +134,7 @@ def bootstrap_initialize(
     password: str,
     theme_preset: str,
     display_name: Optional[str] = None,
+    timezone: Optional[str] = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if not _EMAIL_RE.match(email_norm):
@@ -161,7 +162,7 @@ def bootstrap_initialize(
         db.query(User).delete()
         db.flush()
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = utcnow_iso()
     user = User(
         email=email_norm,
         password_hash=hash_password(password),
@@ -176,9 +177,27 @@ def bootstrap_initialize(
     cfg.theme_preset = theme_preset
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets.token_hex(32)
+    if timezone:
+        from zoneinfo import available_timezones
+        if timezone == "UTC" or timezone in available_timezones():
+            cfg.timezone = timezone
+            _ts_tz = utcnow()
+            tz_log = Log(
+                timestamp=_ts_tz,
+                created_at_utc=_ts_tz.isoformat(),
+                level="info",
+                category="settings",
+                action="update_timezone",
+                actor="system",
+                details=f'Timezone set to "{timezone}" during initial setup',
+                status_code=200,
+            )
+            db.add(tz_log)
 
+    _ts = utcnow()
     audit_log = Log(
-        timestamp=datetime.now(timezone.utc),
+        timestamp=_ts,
+        created_at_utc=_ts.isoformat(),
         level="info",
         category="bootstrap",
         action="bootstrap_create_user",
@@ -205,14 +224,40 @@ def bootstrap_initialize(
     )
 
 
-def login(db: Session, email: str, password: str, cfg: AppSettings) -> AuthResponse:
+def login(db: Session, email: str, password: str, cfg: AppSettings, ip_address: str | None = None) -> AuthResponse:
+    from app.services.log_service import write_log
+
     user = db.query(User).filter(User.email == email.strip().lower()).first()
     if not user or not verify_password(password, user.password_hash):
+        write_log(
+            db=None,
+            action="login_failed",
+            entity_type="auth",
+            entity_name=email.strip().lower(),
+            severity="warn",
+            category="auth",
+            ip_address=ip_address,
+            actor_name="anonymous",
+            details=f"Failed login attempt for {email.strip().lower()!r}",
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    user.last_login = datetime.now(timezone.utc).isoformat()
+    user.last_login = utcnow_iso()
     db.commit()
     db.refresh(user)
+
+    write_log(
+        db=None,
+        action="login_success",
+        entity_type="auth",
+        entity_id=user.id,
+        entity_name=user.display_name or user.email,
+        severity="info",
+        category="auth",
+        ip_address=ip_address,
+        actor_name=user.display_name or user.email,
+        actor_id=user.id,
+    )
 
     token = _make_token(user, cfg)
     return AuthResponse(token=token, user=_to_profile(user))

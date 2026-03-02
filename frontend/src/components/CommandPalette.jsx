@@ -31,6 +31,9 @@ const DEFAULT_ITEMS = [
   { id: 'map-storage',       icon: '💾', title: 'Map: Show storage details',            action_url: '/map'      },
   { id: 'hw-filter-storage', icon: '🗄️', title: 'Hardware: Filter by storage capacity', action_url: '/hardware' },
   { id: 'nav-ext',  icon: '☁️', title: 'Open: External / Cloud Nodes',    action_url: '/external-nodes' },
+  { id: 'settings-categories', icon: '🏷️', title: 'Settings: Manage Categories', action_url: '/settings?section=categories' },
+  { id: 'settings-environments', icon: '🌐', title: 'Settings: Manage Environments', action_url: '/settings?section=environments' },
+  { id: 'settings-timezone', icon: '🕐', title: 'Settings: Change Timezone', action_url: '/settings?section=appearance' },
 ];
 
 const TYPE_LABELS = {

@@ -1,12 +1,13 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from sqlalchemy import Boolean, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
+from app.core.time import utcnow
 from app.db.session import Base
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utcnow()
 
 
 _FK_HARDWARE_ID = "hardware.id"
@@ -77,10 +78,24 @@ class Hardware(Base):
     ip_address: Mapped[str | None] = mapped_column(String)
     wan_uplink: Mapped[str | None] = mapped_column(String)
     cpu_brand: Mapped[str | None] = mapped_column(String)
+    # v0.1.2: catalog linkage
+    vendor_catalog_key: Mapped[str | None] = mapped_column(String)
+    model_catalog_key: Mapped[str | None] = mapped_column(String)
+    # v0.1.2: rack positioning
+    u_height: Mapped[int | None] = mapped_column(Integer)
+    rack_unit: Mapped[int | None] = mapped_column(Integer)
+    # v0.1.2: telemetry (JSON stored as Text for SQLite compatibility)
+    telemetry_config: Mapped[str | None] = mapped_column(Text)
+    telemetry_data: Mapped[str | None] = mapped_column(Text)
+    telemetry_status: Mapped[str | None] = mapped_column(String, default="unknown")
+    telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # v0.1.4: environment registry
+    environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     compute_units: Mapped[list["ComputeUnit"]] = relationship("ComputeUnit", back_populates="hardware")
+    environment_rel: Mapped["Environment | None"] = relationship("Environment", back_populates="hardware", foreign_keys=[environment_id])
     storage_items: Mapped[list["Storage"]] = relationship("Storage", back_populates="hardware")
     network_memberships: Mapped[list["HardwareNetwork"]] = relationship(
         "HardwareNetwork", back_populates="hardware"
@@ -108,15 +123,48 @@ class ComputeUnit(Base):
     disk_gb: Mapped[int | None] = mapped_column(Integer)
     ip_address: Mapped[str | None] = mapped_column(String)
     environment: Mapped[str | None] = mapped_column(String)
+    # v0.1.4: environment registry
+    environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
     hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="compute_units")
+    environment_rel: Mapped["Environment | None"] = relationship("Environment", back_populates="compute_units", foreign_keys=[environment_id])
     services: Mapped[list["Service"]] = relationship("Service", back_populates="compute_unit")
     network_memberships: Mapped[list["ComputeNetwork"]] = relationship(
         "ComputeNetwork", back_populates="compute_unit"
     )
+
+
+# ── Categories ──────────────────────────────────────────────────────────────
+
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id:         Mapped[int]      = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name:       Mapped[str]      = mapped_column(String, nullable=False, unique=True)
+    color:      Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str]      = mapped_column(String, nullable=False)
+
+    services: Mapped[list["Service"]] = relationship("Service", back_populates="category_rel")
+
+
+# ── Environments ─────────────────────────────────────────────────────────────
+
+
+class Environment(Base):
+    __tablename__ = "environments"
+
+    id:         Mapped[int]        = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name:       Mapped[str]        = mapped_column(String, nullable=False, unique=True)
+    color:      Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str]        = mapped_column(String, nullable=False)
+
+    hardware:      Mapped[list["Hardware"]]    = relationship("Hardware",    back_populates="environment_rel")
+    compute_units: Mapped[list["ComputeUnit"]] = relationship("ComputeUnit", back_populates="environment_rel")
+    services:      Mapped[list["Service"]]     = relationship("Service",     back_populates="environment_rel")
 
 
 # ── Services ────────────────────────────────────────────────────────────────
@@ -132,10 +180,14 @@ class Service(Base):
     hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True)
     icon_slug: Mapped[str | None] = mapped_column(String)
     category: Mapped[str | None] = mapped_column(String)
+    category_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("categories.id"), nullable=True)
     url: Mapped[str | None] = mapped_column(String)
     ports: Mapped[str | None] = mapped_column(String)
+    ports_json: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
+    # v0.1.4: environment registry
+    environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
     ip_address: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -143,6 +195,8 @@ class Service(Base):
 
     compute_unit: Mapped["ComputeUnit | None"] = relationship("ComputeUnit", back_populates="services")
     hardware: Mapped["Hardware | None"] = relationship("Hardware")
+    category_rel: Mapped["Category | None"] = relationship("Category", back_populates="services")
+    environment_rel: Mapped["Environment | None"] = relationship("Environment", back_populates="services", foreign_keys=[environment_id])
     dependencies: Mapped[list["ServiceDependency"]] = relationship(
         "ServiceDependency",
         foreign_keys="ServiceDependency.service_id",
@@ -427,6 +481,8 @@ class AppSettings(Base):
     custom_colors: Mapped[str | None] = mapped_column(Text)  # JSON: {primary,secondary,accent1,accent2,background,surface}
     # External nodes
     show_external_nodes_on_map: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Timezone preference (IANA name, e.g. "America/Denver")
+    timezone: Mapped[str] = mapped_column(String, nullable=False, default="UTC")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -469,3 +525,10 @@ class Log(Base):
     ip_address:  Mapped[str | None]   = mapped_column(String)
     details:     Mapped[str | None]   = mapped_column(Text)
     status_code: Mapped[int | None]   = mapped_column(Integer)   # HTTP response status (added for error tracking)
+    created_at_utc: Mapped[str | None] = mapped_column(String)   # ISO 8601 UTC string; canonical timestamp for frontend display
+    # Feature 6: structured audit fields
+    actor_id:    Mapped[int | None]   = mapped_column(Integer)
+    actor_name:  Mapped[str | None]   = mapped_column(String, default="admin")
+    entity_name: Mapped[str | None]   = mapped_column(String)    # denormalised name at write time
+    diff:        Mapped[str | None]   = mapped_column(Text)       # JSON: {"before": {...}, "after": {...}}
+    severity:    Mapped[str | None]   = mapped_column(String, default="info")  # info | warn | error

@@ -2,7 +2,7 @@
 import hashlib
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Optional
 
 import bcrypt
@@ -10,6 +10,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.core.time import utcnow
 from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def gravatar_hash(email: str) -> str:
 def create_token(user_id: int, secret: str, timeout_hours: int) -> str:
     payload = {
         "user_id": user_id,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=timeout_hours),
+        "exp": utcnow() + timedelta(hours=timeout_hours),
     }
     return jwt.encode(payload, secret, algorithm="HS256")
 

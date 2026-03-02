@@ -1,11 +1,19 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, createRef } from 'react';
 import PropTypes from 'prop-types';
 import { getIconEntry } from './common/IconPickerModal';
 import { getOsOption } from '../icons/osOptions';
 import { CPU_BRAND_MAP } from '../config/cpuBrands';
 import { slugify } from '../utils/slugify';
+import CatalogSearch from './CatalogSearch';
+import CategoryCombobox from './common/CategoryCombobox';
+import EnvironmentCombobox from './common/EnvironmentCombobox';
+import IPAddressInput from './IPAddressInput';
+import PortsEditor from './PortsEditor';
 
-function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange, apiErrors = {}, onValidate }) {
+function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyChange, apiErrors = {}, onValidate, entityType, entityId, onOpenEntity }) {
+  // Refs for IPAddressInput fields so we can call hasConflicts() on submit
+  const ipInputRefsRef = useRef({});
+
   // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
   const [values, setValuesInternal] = useState(() => {
     const init = { ...initialValues };
@@ -113,10 +121,68 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
       }
     }
 
+    // Block submit if any IPAddressInput has active conflicts
+    let hasIpConflict = false;
+    for (const ref of Object.values(ipInputRefsRef.current)) {
+      if (ref?.current?.hasConflicts?.()) {
+        ref.current.flashConflicts?.();
+        hasIpConflict = true;
+      }
+    }
+    if (hasIpConflict) return;
+
     onSubmit(submitted);
   };
 
   const renderField = (field) => {
+    // ── IP address input with conflict detection ──────────────────────────────
+    if (field.type === 'ip-address-input') {
+      if (!ipInputRefsRef.current[field.name]) {
+        ipInputRefsRef.current[field.name] = createRef();
+      }
+      // For services: find the ports field value to pass along
+      const portsFieldName = field.portsFieldName || 'ports';
+      const portsValue = values[portsFieldName];
+      return (
+        <IPAddressInput
+          ref={ipInputRefsRef.current[field.name]}
+          id={field.name}
+          name={field.name}
+          value={values[field.name] ?? ''}
+          onChange={(e) => {
+            setClearedApiErrors((prev) => ({ ...prev, [field.name]: true }));
+            setValidationErrors((prev) => ({ ...prev, [field.name]: null }));
+            setValues((prev) => ({ ...prev, [field.name]: e.target.value }));
+          }}
+          entityType={field.entityType || entityType}
+          entityId={field.entityId !== undefined ? field.entityId : entityId}
+          ports={Array.isArray(portsValue) ? portsValue : undefined}
+          disabled={field.disabled}
+          placeholder={field.placeholder}
+          onOpenEntity={onOpenEntity}
+        />
+      );
+    }
+
+    // ── Ports editor (structured port bindings) ───────────────────────────────
+    if (field.type === 'ports-editor') {
+      const ipFieldName = field.ipFieldName || 'ip_address';
+      return (
+        <PortsEditor
+          value={values[field.name]}
+          onChange={(newPorts) => {
+            setClearedApiErrors((prev) => ({ ...prev, [field.name]: true }));
+            setValidationErrors((prev) => ({ ...prev, [field.name]: null }));
+            setValues((prev) => ({ ...prev, [field.name]: newPorts }));
+          }}
+          entityType={field.entityType || entityType}
+          entityId={field.entityId !== undefined ? field.entityId : entityId}
+          serviceIp={values[ipFieldName]}
+          onOpenEntity={onOpenEntity}
+        />
+      );
+    }
+
     // ── OS select with icon preview ───────────────────────────────────────────
     if (field.type === 'os-select') {
       const opt = getOsOption(values[field.name]);
@@ -185,6 +251,55 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
             </button>
           )}
         </div>
+      );
+    }
+
+    // ── Category combobox (search/create against /categories) ──────────────
+    if (field.type === 'category-combobox') {
+      return (
+        <CategoryCombobox
+          value={values[field.name] ?? null}
+          onChange={(id) => {
+            setClearedApiErrors((prev) => ({ ...prev, [field.name]: true }));
+            setValidationErrors((prev) => ({ ...prev, [field.name]: null }));
+            setValues((prev) => ({ ...prev, [field.name]: id }));
+          }}
+        />
+      );
+    }
+
+    // ── Environment combobox (search/create against /environments) ───────────
+    if (field.type === 'environment-combobox') {
+      return (
+        <EnvironmentCombobox
+          value={values[field.name] ?? null}
+          onChange={(id) => {
+            setClearedApiErrors((prev) => ({ ...prev, [field.name]: true }));
+            setValidationErrors((prev) => ({ ...prev, [field.name]: null }));
+            setValues((prev) => ({ ...prev, [field.name]: id }));
+          }}
+        />
+      );
+    }
+
+    // ── Catalog typeahead (name + auto-fill vendor/model/u_height/role) ───────
+    if (field.type === 'catalog-search') {
+      return (
+        <CatalogSearch
+          value={values[field.name] ?? ''}
+          onChange={(val) => {
+            setClearedApiErrors((prev) => ({ ...prev, [field.name]: true }));
+            setValidationErrors((prev) => ({ ...prev, [field.name]: null }));
+            setValues((prev) => ({ ...prev, [field.name]: val }));
+          }}
+          onSelect={(result) => {
+            field.onSelect?.(result, (updates) => {
+              setValues((prev) => ({ ...prev, ...updates }));
+            });
+          }}
+          placeholder={field.placeholder}
+          disabled={field.disabled}
+        />
       );
     }
 
@@ -293,6 +408,11 @@ EntityForm.propTypes = {
       required: PropTypes.bool,
       hint: PropTypes.string,
       onOpenPicker: PropTypes.func,
+      // ip-address-input / ports-editor specific
+      entityType: PropTypes.string,
+      entityId: PropTypes.number,
+      portsFieldName: PropTypes.string,
+      ipFieldName: PropTypes.string,
     })
   ).isRequired,
   initialValues: PropTypes.object,
@@ -301,6 +421,9 @@ EntityForm.propTypes = {
   onDirtyChange: PropTypes.func,
   apiErrors: PropTypes.object,
   onValidate: PropTypes.func,
+  entityType: PropTypes.string,
+  entityId: PropTypes.number,
+  onOpenEntity: PropTypes.func,
 };
 
 export default EntityForm;

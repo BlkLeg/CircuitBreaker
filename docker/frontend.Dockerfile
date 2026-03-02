@@ -7,6 +7,14 @@ COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci
 
 COPY frontend/ ./
+
+# Bake Sentry DSN into the JS bundle at build time (VITE_* vars are inlined
+# by Vite and not available at runtime in the browser).
+ARG VITE_SENTRY_DSN
+ARG VITE_SENTRY_ENVIRONMENT=production
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+ENV VITE_SENTRY_ENVIRONMENT=$VITE_SENTRY_ENVIRONMENT
+
 RUN npm run build
 
 # ── Serve stage ──────────────────────────────────────────────────────────────

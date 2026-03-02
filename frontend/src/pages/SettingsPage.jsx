@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { settingsApi, adminApi } from '../api/client';
+import { settingsApi, adminApi, categoriesApi, environmentsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useTimezone } from '../context/TimezoneContext.jsx';
 import IconLibraryManager from '../components/settings/IconLibraryManager';
 import ListEditor from '../components/settings/ListEditor';
 import BrandingSettings from '../components/settings/BrandingSettings';
@@ -13,6 +14,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import ClearLabDialog from '../components/common/ClearLabDialog';
 import FirstUserDialog from '../components/auth/FirstUserDialog';
 import { useToast } from '../components/common/Toast';
+import TimezoneSelect from '../components/TimezoneSelect.jsx';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
 
@@ -102,6 +104,7 @@ const S = {
 function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
   const { setAuthEnabled, isAuthenticated } = useAuth();
+  const { timezone: ctxTimezone, setTimezone } = useTimezone();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -118,10 +121,43 @@ function SettingsPage() {
   const [clearLabOpen, setClearLabOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
 
+  // Timezone-specific state (managed independently from the main settings form)
+  const [selectedTimezone, setSelectedTimezone] = useState(ctxTimezone);
+  const [savingTimezone, setSavingTimezone] = useState(false);
+
+  // Keep selectedTimezone in sync when ctxTimezone changes (e.g. on initial load)
+  useEffect(() => {
+    setSelectedTimezone(ctxTimezone);
+  }, [ctxTimezone]);
+
+  // Categories CRUD state
+  const [catList, setCatList]           = useState([]);
+  const [catAddingRow, setCatAddingRow] = useState(false);
+  const [catNewName, setCatNewName]     = useState('');
+  const [catNewColor, setCatNewColor]   = useState('');
+  const [catEditId, setCatEditId]       = useState(null);
+  const [catEditName, setCatEditName]   = useState('');
+  const [catEditColor, setCatEditColor] = useState('');
+  const [catDelConfirm, setCatDelConfirm] = useState(null);
+  const [catColorPop, setCatColorPop]   = useState(null);
+
+  // Environments CRUD state
+  const [envList, setEnvList]             = useState([]);
+  const [envAddingRow, setEnvAddingRow]   = useState(false);
+  const [envNewName, setEnvNewName]       = useState('');
+  const [envNewColor, setEnvNewColor]     = useState('');
+  const [envEditId, setEnvEditId]         = useState(null);
+  const [envEditName, setEnvEditName]     = useState('');
+  const [envEditColor, setEnvEditColor]   = useState('');
+  const [envDelConfirm, setEnvDelConfirm] = useState(null);
+  const [envColorPop, setEnvColorPop]     = useState(null);
+
   const sectionRefs = {
     appearance: useRef(null),
     defaults: useRef(null),
     lists: useRef(null),
+    categories: useRef(null),
+    environments: useRef(null),
     icons: useRef(null),
     themes: useRef(null),
     dock: useRef(null),
@@ -265,7 +301,22 @@ function SettingsPage() {
       locations: ctxSettings.locations ?? [],
     });
     setMapFilters(parseMapFilters(ctxSettings.map_default_filters));
+    setSelectedTimezone(ctxTimezone);
     setBanner(null);
+  };
+
+  const handleSaveTimezone = async () => {
+    setSavingTimezone(true);
+    try {
+      await settingsApi.update({ timezone: selectedTimezone });
+      setTimezone(selectedTimezone);
+      toast.success(`Timezone updated to ${selectedTimezone}`);
+    } catch (err) {
+      const detail = err.response?.data?.detail ?? err.message ?? 'Failed to update timezone';
+      toast.error(detail);
+    } finally {
+      setSavingTimezone(false);
+    }
   };
 
   const handleReset = async () => {
@@ -358,6 +409,122 @@ function SettingsPage() {
     }
   };
 
+  // ── Category handlers ──────────────────────────────────────────────────────
+  const CAT_COLOR_PRESETS = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db','#9b59b6','#1abc9c','#e91e63'];
+
+  const fetchCats = () =>
+    categoriesApi.list().then((r) => setCatList(r.data)).catch(() => {});
+
+  useEffect(() => { fetchCats(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleCatCreate = async () => {
+    const name = catNewName.trim();
+    if (!name) return;
+    try {
+      await categoriesApi.create({ name, color: catNewColor || null });
+      setCatAddingRow(false);
+      setCatNewName('');
+      setCatNewColor('');
+      fetchCats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message || 'Failed to create category');
+    }
+  };
+
+  const handleCatSaveEdit = async (id) => {
+    try {
+      await categoriesApi.update(id, { name: catEditName.trim(), color: catEditColor || null });
+      setCatEditId(null);
+      fetchCats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message || 'Failed to update category');
+    }
+  };
+
+  const handleCatDelete = async (id) => {
+    try {
+      await categoriesApi.remove(id);
+      setCatDelConfirm(null);
+      fetchCats();
+    } catch (err) {
+      const blocking = err.response?.data?.blocking_services;
+      if (blocking) {
+        toast.error(`Cannot delete — used by: ${blocking.map((s) => s.name).join(', ')}`);
+      } else {
+        toast.error(err.message || 'Failed to delete category');
+      }
+      setCatDelConfirm(null);
+    }
+  };
+
+  const handleCatColorPatch = async (id, color) => {
+    setCatColorPop(null);
+    try {
+      await categoriesApi.update(id, { color });
+      fetchCats();
+    } catch { /* ignore */ }
+  };
+
+  // ── Environment handlers ────────────────────────────────────────────────────
+  const ENV_COLOR_PRESETS = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db','#9b59b6','#1abc9c','#e91e63'];
+
+  const fetchEnvs = () =>
+    environmentsApi.list().then((r) => setEnvList(r.data)).catch(() => {});
+
+  useEffect(() => { fetchEnvs(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleEnvCreate = async () => {
+    const name = envNewName.trim();
+    if (!name) return;
+    try {
+      await environmentsApi.create({ name, color: envNewColor || null });
+      setEnvAddingRow(false);
+      setEnvNewName('');
+      setEnvNewColor('');
+      fetchEnvs();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message || 'Failed to create environment');
+    }
+  };
+
+  const handleEnvSaveEdit = async (id) => {
+    try {
+      await environmentsApi.update(id, { name: envEditName.trim(), color: envEditColor || null });
+      setEnvEditId(null);
+      fetchEnvs();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || err.message || 'Failed to update environment');
+    }
+  };
+
+  const handleEnvDelete = async (id) => {
+    try {
+      await environmentsApi.remove(id);
+      setEnvDelConfirm(null);
+      fetchEnvs();
+    } catch (err) {
+      const blocking = err.response?.data?.blocking;
+      if (blocking) {
+        const parts = [];
+        if (blocking.hardware?.length) parts.push(`${blocking.hardware.length} hw`);
+        if (blocking.compute_units?.length) parts.push(`${blocking.compute_units.length} cu`);
+        if (blocking.services?.length) parts.push(`${blocking.services.length} svc`);
+        toast.error(`Cannot delete — used by: ${parts.join(', ')}`);
+      } else {
+        toast.error(err.message || 'Failed to delete environment');
+      }
+      setEnvDelConfirm(null);
+    }
+  };
+
+  const handleEnvColorPatch = async (id, color) => {
+    setEnvColorPop(null);
+    try {
+      await environmentsApi.update(id, { color });
+      fetchEnvs();
+    } catch { /* ignore */ }
+  };
+
   if (!form) return <div className="page"><div className="page-header"><h2>Settings</h2></div></div>;
 
   return (
@@ -416,6 +583,28 @@ function SettingsPage() {
             <span style={S.hint}>
               Theme applies immediately on save. Auto follows your OS preference.
             </span>
+          </div>
+
+          <div style={S.row}>
+            <div style={S.label}>Timezone</div>
+            <span style={{ ...S.hint, marginBottom: 8, display: 'block' }}>
+              Your local timezone for displaying timestamps across the app.
+            </span>
+            <TimezoneSelect
+              value={selectedTimezone}
+              onChange={setSelectedTimezone}
+              disabled={savingTimezone}
+            />
+            <div style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={handleSaveTimezone}
+                disabled={savingTimezone || selectedTimezone === ctxTimezone}
+              >
+                {savingTimezone ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -518,7 +707,7 @@ function SettingsPage() {
 
         {/* ── Environments & Categories ──────────── */}
         <div ref={sectionRefs.lists} style={S.section}>
-          <div style={S.sectionTitle}>Environments &amp; Categories</div>
+          <div style={S.sectionTitle}>Environments &amp; Locations</div>
 
           <div style={S.row}>
             <div style={S.label}>Environments</div>
@@ -531,16 +720,6 @@ function SettingsPage() {
           </div>
 
           <div style={S.row}>
-            <div style={S.label}>Service Categories</div>
-            <span style={S.hint}>Used as dropdown options in the Services category field.</span>
-            <ListEditor
-              items={form.categories ?? []}
-              onChange={(v) => set('categories', v)}
-              placeholder="e.g. monitoring"
-            />
-          </div>
-
-          <div style={S.row}>
             <div style={S.label}>Locations</div>
             <span style={S.hint}>Used as dropdown options in the Hardware location field.</span>
             <ListEditor
@@ -549,6 +728,297 @@ function SettingsPage() {
               placeholder="e.g. Server Room A"
             />
           </div>
+        </div>
+        {/* ── Categories ────────────────────────────── */}
+        <div ref={sectionRefs.categories} style={S.section}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--color-border)' }}>
+            <div style={{ ...S.sectionTitle, marginBottom: 0, paddingBottom: 0, borderBottom: 'none' }}>Categories</div>
+            {!catAddingRow && (
+              <button className="btn btn-sm" onClick={() => { setCatAddingRow(true); setCatNewName(''); setCatNewColor(''); }}>
+                + Add Category
+              </button>
+            )}
+          </div>
+
+          {/* Add row */}
+          {catAddingRow && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+              <input
+                autoFocus
+                type="text"
+                placeholder="Category name"
+                value={catNewName}
+                onChange={(e) => setCatNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCatCreate(); if (e.key === 'Escape') setCatAddingRow(false); }}
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              <input
+                type="color"
+                value={catNewColor || '#6c7086'}
+                onChange={(e) => setCatNewColor(e.target.value)}
+                style={{ width: 32, height: 32, padding: 2, border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', background: 'transparent' }}
+                title="Pick color"
+              />
+              <button className="btn btn-sm btn-primary" onClick={handleCatCreate} disabled={!catNewName.trim()}>Save</button>
+              <button className="btn btn-sm" onClick={() => setCatAddingRow(false)}>Cancel</button>
+            </div>
+          )}
+
+          {catList.length === 0 && !catAddingRow ? (
+            <div style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No categories yet. Click &ldquo;+ Add Category&rdquo; to create one.</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Name</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Color</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Services</th>
+                  <th style={{ width: 80 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {catList.map((cat) => (
+                  <tr key={cat.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                    <td style={{ padding: '7px 8px' }}>
+                      {catEditId === cat.id ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={catEditName}
+                          onChange={(e) => setCatEditName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleCatSaveEdit(cat.id); if (e.key === 'Escape') setCatEditId(null); }}
+                          style={{ fontSize: 13, width: '100%' }}
+                        />
+                      ) : (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {cat.color && <span style={{ width: 9, height: 9, borderRadius: '50%', background: cat.color, flexShrink: 0 }} />}
+                          {cat.name}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '7px 8px', position: 'relative' }}>
+                      {catEditId === cat.id ? (
+                        <input
+                          type="color"
+                          value={catEditColor || '#6c7086'}
+                          onChange={(e) => setCatEditColor(e.target.value)}
+                          style={{ width: 28, height: 28, padding: 2, border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', background: 'transparent' }}
+                        />
+                      ) : (
+                        <div style={{ position: 'relative', display: 'inline-block' }}>
+                          <div
+                            onClick={() => setCatColorPop(catColorPop === cat.id ? null : cat.id)}
+                            style={{ width: 22, height: 22, borderRadius: 4, background: cat.color || 'var(--color-border)', border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                            title="Change color"
+                          />
+                          {catColorPop === cat.id && (
+                            <div style={{
+                              position: 'absolute', top: '110%', left: 0, zIndex: 600,
+                              background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                              borderRadius: 8, padding: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                              display: 'flex', flexDirection: 'column', gap: 8,
+                            }}>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: 148 }}>
+                                {CAT_COLOR_PRESETS.map((c) => (
+                                  <div
+                                    key={c}
+                                    onClick={() => handleCatColorPatch(cat.id, c)}
+                                    style={{ width: 22, height: 22, borderRadius: 4, background: c, cursor: 'pointer', border: cat.color === c ? '2px solid white' : '1px solid transparent' }}
+                                  />
+                                ))}
+                              </div>
+                              <input
+                                type="color"
+                                defaultValue={cat.color || '#6c7086'}
+                                onChange={(e) => handleCatColorPatch(cat.id, e.target.value)}
+                                style={{ width: '100%', cursor: 'pointer', height: 28 }}
+                                title="Custom color"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '7px 8px', color: 'var(--color-text-muted)' }}>{cat.service_count}</td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right' }}>
+                      {catEditId === cat.id ? (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <button className="btn btn-sm btn-primary" onClick={() => handleCatSaveEdit(cat.id)}>Save</button>
+                          <button className="btn btn-sm" onClick={() => setCatEditId(null)}>Cancel</button>
+                        </span>
+                      ) : catDelConfirm === cat.id ? (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', fontSize: 12 }}>
+                          <span style={{ color: 'var(--color-text-muted)' }}>Delete?</span>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleCatDelete(cat.id)}>Yes</button>
+                          <button className="btn btn-sm" onClick={() => setCatDelConfirm(null)}>No</button>
+                        </span>
+                      ) : (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => { setCatEditId(cat.id); setCatEditName(cat.name); setCatEditColor(cat.color || ''); }}
+                            title="Rename"
+                          >✎</button>
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => cat.service_count > 0 ? toast.error(`Cannot delete — used by ${cat.service_count} service${cat.service_count !== 1 ? 's' : ''}`) : setCatDelConfirm(cat.id)}
+                            title={cat.service_count > 0 ? `In use by ${cat.service_count} service(s)` : 'Delete'}
+                            style={{ opacity: cat.service_count > 0 ? 0.4 : 1 }}
+                          >🗑</button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        {/* ── Environments ──────────────────────────── */}
+        <div ref={sectionRefs.environments} style={S.section}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--color-border)' }}>
+            <div style={{ ...S.sectionTitle, marginBottom: 0, paddingBottom: 0, borderBottom: 'none' }}>Environments</div>
+            {!envAddingRow && (
+              <button className="btn btn-sm" onClick={() => { setEnvAddingRow(true); setEnvNewName(''); setEnvNewColor(''); }}>
+                + Add Environment
+              </button>
+            )}
+          </div>
+
+          {envAddingRow && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+              <input
+                autoFocus
+                type="text"
+                placeholder="Environment name"
+                value={envNewName}
+                onChange={(e) => setEnvNewName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleEnvCreate(); if (e.key === 'Escape') setEnvAddingRow(false); }}
+                style={{ flex: 1, fontSize: 13 }}
+              />
+              <input
+                type="color"
+                value={envNewColor || '#6c7086'}
+                onChange={(e) => setEnvNewColor(e.target.value)}
+                style={{ width: 32, height: 32, padding: 2, border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', background: 'transparent' }}
+                title="Pick color"
+              />
+              <button className="btn btn-sm btn-primary" onClick={handleEnvCreate} disabled={!envNewName.trim()}>Save</button>
+              <button className="btn btn-sm" onClick={() => setEnvAddingRow(false)}>Cancel</button>
+            </div>
+          )}
+
+          {envList.length === 0 && !envAddingRow ? (
+            <div style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No environments yet. Click &ldquo;+ Add Environment&rdquo; to create one.</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Name</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Color</th>
+                  <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500, color: 'var(--color-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Used By</th>
+                  <th style={{ width: 80 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {envList.map((env) => (
+                  <tr key={env.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                    <td style={{ padding: '7px 8px' }}>
+                      {envEditId === env.id ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={envEditName}
+                          onChange={(e) => setEnvEditName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleEnvSaveEdit(env.id); if (e.key === 'Escape') setEnvEditId(null); }}
+                          style={{ fontSize: 13, width: '100%' }}
+                        />
+                      ) : (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {env.color && <span style={{ width: 9, height: 9, borderRadius: '50%', background: env.color, flexShrink: 0 }} />}
+                          {env.name}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '7px 8px', position: 'relative' }}>
+                      {envEditId === env.id ? (
+                        <input
+                          type="color"
+                          value={envEditColor || '#6c7086'}
+                          onChange={(e) => setEnvEditColor(e.target.value)}
+                          style={{ width: 28, height: 28, padding: 2, border: '1px solid var(--color-border)', borderRadius: 4, cursor: 'pointer', background: 'transparent' }}
+                        />
+                      ) : (
+                        <div style={{ position: 'relative', display: 'inline-block' }}>
+                          <div
+                            onClick={() => setEnvColorPop(envColorPop === env.id ? null : env.id)}
+                            style={{ width: 22, height: 22, borderRadius: 4, background: env.color || 'var(--color-border)', border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                            title="Change color"
+                          />
+                          {envColorPop === env.id && (
+                            <div style={{
+                              position: 'absolute', top: '110%', left: 0, zIndex: 600,
+                              background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                              borderRadius: 8, padding: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                              display: 'flex', flexDirection: 'column', gap: 8,
+                            }}>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: 148 }}>
+                                {ENV_COLOR_PRESETS.map((c) => (
+                                  <div
+                                    key={c}
+                                    onClick={() => handleEnvColorPatch(env.id, c)}
+                                    style={{ width: 22, height: 22, borderRadius: 4, background: c, cursor: 'pointer', border: env.color === c ? '2px solid white' : '1px solid transparent' }}
+                                  />
+                                ))}
+                              </div>
+                              <input
+                                type="color"
+                                defaultValue={env.color || '#6c7086'}
+                                onChange={(e) => handleEnvColorPatch(env.id, e.target.value)}
+                                style={{ width: '100%', cursor: 'pointer', height: 28 }}
+                                title="Custom color"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '7px 8px', color: 'var(--color-text-muted)' }}>
+                      {env.usage_count > 0 ? env.usage_count : <span style={{ opacity: 0.4 }}>0</span>}
+                    </td>
+                    <td style={{ padding: '7px 8px', textAlign: 'right' }}>
+                      {envEditId === env.id ? (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <button className="btn btn-sm btn-primary" onClick={() => handleEnvSaveEdit(env.id)}>Save</button>
+                          <button className="btn btn-sm" onClick={() => setEnvEditId(null)}>Cancel</button>
+                        </span>
+                      ) : envDelConfirm === env.id ? (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', fontSize: 12 }}>
+                          <span style={{ color: 'var(--color-text-muted)' }}>Delete?</span>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleEnvDelete(env.id)}>Yes</button>
+                          <button className="btn btn-sm" onClick={() => setEnvDelConfirm(null)}>No</button>
+                        </span>
+                      ) : (
+                        <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => { setEnvEditId(env.id); setEnvEditName(env.name); setEnvEditColor(env.color || ''); }}
+                            title="Rename"
+                          >✎</button>
+                          <button
+                            className="btn btn-sm"
+                            onClick={() => env.usage_count > 0 ? toast.error(`Cannot delete — used by ${env.usage_count} entit${env.usage_count !== 1 ? 'ies' : 'y'}`) : setEnvDelConfirm(env.id)}
+                            title={env.usage_count > 0 ? `In use by ${env.usage_count} entit${env.usage_count !== 1 ? 'ies' : 'y'}` : 'Delete'}
+                            style={{ opacity: env.usage_count > 0 ? 0.4 : 1 }}
+                          >🗑</button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
 
         {/* ── Icons & Vendors ─────────────────────── */}

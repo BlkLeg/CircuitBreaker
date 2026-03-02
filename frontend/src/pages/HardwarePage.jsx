@@ -23,7 +23,28 @@ const BASE_COLUMNS = [
 ];
 
 const TAIL_COLUMNS = [
-  { key: 'ip_address', label: 'IP Address' },
+  {
+    key: 'ip_address',
+    label: 'IP Address',
+    render: (v, row) => v
+      ? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: row.ip_conflict ? '#f59e0b' : undefined, fontFamily: 'monospace', fontSize: 12 }}>{v}</span>
+          {row.ip_conflict && (
+            <span
+              title="IP conflict: this IP is already assigned to another entity"
+              style={{
+                width: 14, height: 14, borderRadius: '50%',
+                background: '#f59e0b', color: '#111',
+                fontSize: 9, fontWeight: 800, flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >!</span>
+          )}
+        </span>
+      )
+      : '—',
+  },
   { key: 'wan_uplink', label: 'WAN / Uplink' },
   {
     key: 'cpu_brand', label: 'CPU Brand',
@@ -85,7 +106,26 @@ function HardwarePage() {
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
   const buildFields = (currentIconSlug) => [
-    { name: 'name',       label: 'Name', required: true },
+    {
+      name: 'name', label: 'Name / Device Lookup', required: true,
+      type: 'catalog-search',
+      placeholder: 'Search catalog or type a custom name…',
+      onSelect: (result, updateValues) => {
+        if (result._freeform) {
+          updateValues({ name: result.device_label });
+        } else {
+          updateValues({
+            name: result.device_label,
+            vendor: result.vendor_key ?? null,
+            model: result.device_label,
+            vendor_catalog_key: result.vendor_key ?? null,
+            model_catalog_key: result.model_key ?? null,
+            u_height: result.u_height ?? null,
+            role: result.role ?? null,
+          });
+        }
+      },
+    },
     { name: 'role',       label: 'Role', type: 'select', options: HARDWARE_ROLES },
     { name: 'vendor',     label: 'Vendor', type: 'select', options: VENDORS },
     {
@@ -98,7 +138,9 @@ function HardwarePage() {
       },
     },
     { name: 'model',      label: 'Model' },
-    { name: 'ip_address', label: 'IP Address' },
+    { name: 'u_height',   label: 'Rack Height (U)', type: 'number', hint: 'Rack units occupied (e.g. 1, 2, 4)' },
+    { name: 'rack_unit',  label: 'Rack Position (U)', type: 'number', hint: 'Starting rack unit where device is mounted' },
+    { name: 'ip_address', label: 'IP Address', type: 'ip-address-input' },
     { name: 'wan_uplink', label: 'WAN / Uplink', hint: 'e.g. ISP — 1Gbps fiber, or upstream interface name' },
     { name: 'cpu_brand',  label: 'CPU Brand', type: 'cpu-select', options: CPU_BRANDS },
     { name: 'cpu',        label: 'CPU' },
@@ -106,6 +148,7 @@ function HardwarePage() {
     locations.length
       ? { name: 'location', label: 'Location', type: 'select', options: locations.map((l) => ({ value: l, label: l })) }
       : { name: 'location', label: 'Location' },
+    { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
     { name: 'notes',      label: 'Notes', type: 'textarea' },
     { name: 'tags',       label: 'Tags (comma-separated)', type: 'tags' },
   ];
@@ -397,6 +440,8 @@ function HardwarePage() {
         }}
         onClose={() => { setShowForm(false); setEditTarget(null); setFormApiErrors({}); }}
         apiErrors={formApiErrors}
+        entityType="hardware"
+        entityId={editTarget?.id}
       />
 
       <FormModal

@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # In Docker (single image) set UPLOADS_DIR=/data/uploads so files land on the volume.
     # In Docker Compose set UPLOADS_DIR=/app/data/uploads to match the compose volume.
     uploads_dir: str = "data/uploads"
+    # Sentry DSN for error monitoring. Set SENTRY_DSN in backend/.env (gitignored).
+    # Leave empty (default) to disable Sentry.
+    sentry_dsn: str = ""
 
 
 settings = Settings()

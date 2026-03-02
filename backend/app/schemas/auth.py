@@ -37,6 +37,7 @@ class BootstrapInitializeRequest(BaseModel):
     password: str
     display_name: Optional[str] = None
     theme_preset: str
+    timezone: Optional[str] = "UTC"
 
 
 class BootstrapThemeResponse(BaseModel):

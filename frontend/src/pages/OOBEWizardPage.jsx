@@ -6,6 +6,7 @@ import { useSettings } from '../context/SettingsContext.jsx';
 import { applyTheme } from '../theme/applyTheme';
 import { DEFAULT_PRESET, PRESET_LABELS, THEME_PRESETS } from '../theme/presets';
 import { gravatarHash } from '../utils/md5.js';
+import TimezoneSelect from '../components/TimezoneSelect.jsx';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -31,6 +32,9 @@ function OOBEWizardPage({ onCompleted }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState(DEFAULT_PRESET);
+  const [timezone, setTimezone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const photoFileRef = useRef(null);
@@ -72,7 +76,7 @@ function OOBEWizardPage({ onCompleted }) {
       return;
     }
     setError('');
-    setStep((value) => Math.min(4, value + 1));
+    setStep((value) => Math.min(5, value + 1));
   };
 
   const goBack = () => {
@@ -94,6 +98,7 @@ function OOBEWizardPage({ onCompleted }) {
         password,
         display_name: displayName || undefined,
         theme_preset: selectedPreset,
+        timezone,
       });
 
       const token = response.data.token;
@@ -158,7 +163,7 @@ function OOBEWizardPage({ onCompleted }) {
         </div>
 
         <div className="login-card oobe-card">
-          <div className="oobe-progress">Step {step}/4</div>
+          <div className="oobe-progress">Step {step}/5</div>
 
           {step === 1 && (
             <>
@@ -307,6 +312,28 @@ function OOBEWizardPage({ onCompleted }) {
 
           {step === 4 && (
             <>
+              <h2 className="login-card-title">Where are you located?</h2>
+              <p className="login-card-subtitle">
+                Circuit Breaker uses your timezone to display timestamps in local time throughout the app.
+              </p>
+              <div style={{ margin: '20px 0' }}>
+                <TimezoneSelect
+                  value={timezone}
+                  onChange={setTimezone}
+                />
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '8px 0 0' }}>
+                You can change this anytime in Settings → General.
+              </p>
+              <div className="oobe-actions">
+                <button type="button" className="btn btn-secondary" onClick={goBack}>Back</button>
+                <button type="button" className="btn btn-primary" onClick={goNext}>Continue →</button>
+              </div>
+            </>
+          )}
+
+          {step === 5 && (
+            <>
               <h2 className="login-card-title">Confirmation</h2>
               <p className="login-card-subtitle">Review and complete setup.</p>
 
@@ -317,6 +344,7 @@ function OOBEWizardPage({ onCompleted }) {
                   <div>Email: {email}</div>
                   <div>Display Name: {displayName || '(auto from email)'}</div>
                   <div><strong>Theme:</strong> {PRESET_LABELS[selectedPreset] ?? selectedPreset}</div>
+                  <div><strong>Timezone:</strong> {timezone}</div>
                 </div>
               </div>
 

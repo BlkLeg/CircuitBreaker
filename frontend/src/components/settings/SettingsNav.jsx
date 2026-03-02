@@ -32,10 +32,32 @@ const GROUPS = [
     items: [
       {
         key: 'lists',
-        label: 'Environments & Categories',
+        label: 'Environments & Locations',
         icon: (
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
             <path d="M3 4h10M3 8h7M3 12h5" />
+          </svg>
+        ),
+      },
+      {
+        key: 'categories',
+        label: 'Categories',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="4" cy="5" r="1.5" />
+            <path d="M8 5h5M8 11h5" />
+            <circle cx="4" cy="11" r="1.5" />
+          </svg>
+        ),
+      },
+      {
+        key: 'environments',
+        label: 'Environments',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <ellipse cx="8" cy="5" rx="6" ry="2.5" />
+            <path d="M2 5v6c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V5" />
+            <path d="M2 8c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5" />
           </svg>
         ),
       },

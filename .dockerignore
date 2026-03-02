@@ -1,12 +1,14 @@
 # Version control
 .git
 
-# Python virtual environment
+# Python virtual environments
 .venv
+.venv-mkdocs/
 
 # Node modules (will be installed fresh inside the builder stage)
 node_modules
 frontend/node_modules
+docker/node_modules
 
 # Python bytecode
 **/__pycache__
@@ -16,19 +18,41 @@ frontend/node_modules
 # Secrets and local env overrides
 backend/.env
 backend/.env.*
+docker/.env
 
 # Build artefacts (rebuilt inside Docker)
 dist/
 frontend/dist/
+build/
+*.spec
 
-# Editor / IDE
+# Editor / IDE and tool caches
 .cursor/
 .vscode/
+.cache/
 *.swp
 *.swo
 
+# Internal planning docs
+.INTERNAL/
+
 # Docs (not needed in the image)
 docs/
+mkdocs.yml
+
+# MkDocs HTML output (tracked in git for GitHub Pages, not needed in image)
+site/
+
+# Screenshots and icon source library (not needed at runtime)
+screenshots/
+cb-icon_lib/
+
+# Root-level runtime data (SQLite db etc.)
+data/
+
+# Host install/uninstall scripts (not needed inside container)
+install.sh
+uninstall.sh
 
 # Markdown files (README is kept as it may be useful for context)
 *.md

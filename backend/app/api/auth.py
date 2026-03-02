@@ -25,7 +25,8 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
 @limiter.limit("5/minute")
 def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
     cfg = get_or_create_settings(db)
-    return auth_service.login(db, payload.email, payload.password, cfg)
+    client_ip = request.client.host if request.client else None
+    return auth_service.login(db, payload.email, payload.password, cfg, ip_address=client_ip)
 
 
 @router.get("/me", response_model=UserProfile)

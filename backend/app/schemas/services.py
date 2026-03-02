@@ -3,6 +3,13 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 
+class PortEntry(BaseModel):
+    ip: Optional[str] = None          # per-port IP override; inherits service ip_address if None
+    port: Optional[int] = None
+    protocol: Optional[str] = "tcp"   # "tcp" | "udp" | "sctp"
+    label: Optional[str] = None
+
+
 class ServiceBase(BaseModel):
     name: str
     slug: str
@@ -10,10 +17,13 @@ class ServiceBase(BaseModel):
     hardware_id: Optional[int] = None
     icon_slug: Optional[str] = None
     category: Optional[str] = None
+    category_id: Optional[int] = None
     url: Optional[str] = None
-    ports: Optional[str] = None
+    ports: Optional[list[PortEntry]] = None   # structured port bindings (replaces freeform string)
     description: Optional[str] = None
     environment: Optional[str] = None
+    # v0.1.4: environment registry
+    environment_id: Optional[int] = None
     status: Optional[str] = None  # running | stopped | degraded | maintenance
     ip_address: Optional[str] = None
     tags: list[str] = []
@@ -30,10 +40,13 @@ class ServiceUpdate(BaseModel):
     hardware_id: Optional[int] = None
     icon_slug: Optional[str] = None
     category: Optional[str] = None
+    category_id: Optional[int] = None
     url: Optional[str] = None
-    ports: Optional[str] = None
+    ports: Optional[list[PortEntry]] = None   # structured port bindings
     description: Optional[str] = None
     environment: Optional[str] = None
+    # v0.1.4: environment registry
+    environment_id: Optional[int] = None
     status: Optional[str] = None  # running | stopped | degraded | maintenance
     ip_address: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -43,6 +56,9 @@ class Service(ServiceBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    category_name: Optional[str] = None
+    # v0.1.4: environment registry
+    environment_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

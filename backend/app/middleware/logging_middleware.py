@@ -2,7 +2,6 @@
 import json
 import re
 import logging
-from datetime import datetime, timezone
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -10,7 +9,6 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from app.db.session import SessionLocal
-from app.db.models import Log
 
 _logger = logging.getLogger(__name__)
 
@@ -57,6 +55,8 @@ _ENTITY_ALIASES = {
     "docs":          "doc",
     "settings":      "settings",
     "graphs":        "graph",
+    "categories":    "category",
+    "environments":  "environment",
 }
 
 
@@ -221,7 +221,33 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
 
-        # Write log entry (always — including errors)
+        # Extract entity_name from response JSON (best-effort)
+        entity_name = ""
+        if new_value_str:
+            try:
+                _parsed = json.loads(new_value_str)
+                entity_name = _parsed.get("name") or _parsed.get("title") or ""
+            except Exception:
+                pass
+        # Fall back to request body name if response had none
+        if not entity_name and req_body_str:
+            try:
+                _parsed = json.loads(req_body_str)
+                entity_name = _parsed.get("name") or _parsed.get("title") or ""
+            except Exception:
+                pass
+
+        # Build structured diff from old/new values
+        diff: dict | None = None
+        try:
+            before = json.loads(old_value_str) if old_value_str else None
+            after  = json.loads(new_value_str) if new_value_str else None
+            if before is not None or after is not None:
+                diff = {"before": before, "after": after}
+        except Exception:
+            pass
+
+        # Write log entry via the centralised service (always — including errors)
         try:
             _write_log(
                 action=action,
@@ -230,6 +256,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 status_code=status_code,
                 entity_type=entity_type,
                 entity_id=entity_id,
+                entity_name=entity_name,
+                diff=diff,
                 old_value=old_value_str,
                 new_value=new_value_str,
                 user_agent=user_agent,
@@ -281,31 +309,15 @@ def _fetch_entity_json(entity_type: str, entity_id: int) -> str | None:
 
 
 def _scrub_sensitive_data(json_str: str | None) -> str | None:
-    """Parse JSON, scrub sensitive keys like passwords and tokens, and re-serialize."""
+    """Parse JSON, scrub sensitive keys, and re-serialize (legacy compat shim)."""
     if not json_str:
         return json_str
     try:
         data = json.loads(json_str)
     except Exception:
-        # If it's not valid JSON, we can't easily scrub it without risking data corruption,
-        # but the app generally only logs JSON.
         return json_str
-
-    sensitive_keys = {"password", "token", "jwt_secret", "password_hash"}
-    
-    def _scrub(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k.lower() in sensitive_keys:
-                    obj[k] = "********"
-                else:
-                    _scrub(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                _scrub(item)
-
-    _scrub(data)
-    return json.dumps(data)
+    from app.services.log_service import sanitise_diff
+    return json.dumps(sanitise_diff(data))
 
 
 def _write_log(
@@ -316,6 +328,8 @@ def _write_log(
     status_code: int | None = None,
     entity_type: str | None,
     entity_id: int | None,
+    entity_name: str = "",
+    diff: dict | None = None,
     old_value: str | None,
     new_value: str | None,
     user_agent: str | None,
@@ -324,27 +338,30 @@ def _write_log(
     actor: str = "anonymous",
     actor_gravatar_hash: str | None = None,
 ) -> None:
-    # Scrub sensitive data from logs
+    """Delegate to log_service.write_log — the single write path for the audit log."""
+    # Scrub sensitive data from legacy JSON blobs
     scrubbed_old_value = _scrub_sensitive_data(old_value)
     scrubbed_new_value = _scrub_sensitive_data(new_value)
     scrubbed_details = _scrub_sensitive_data(details)
 
-    with SessionLocal() as db:
-        entry = Log(
-            timestamp=datetime.now(timezone.utc),
-            level=level,
-            category=category,
-            action=action,
-            actor=actor,
-            actor_gravatar_hash=actor_gravatar_hash,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            old_value=scrubbed_old_value,
-            new_value=scrubbed_new_value,
-            user_agent=user_agent,
-            ip_address=ip_address,
-            details=scrubbed_details,
-            status_code=status_code,
-        )
-        db.add(entry)
-        db.commit()
+    from app.services.log_service import write_log
+    write_log(
+        db=None,  # log_service opens its own session
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        entity_name=entity_name,
+        diff=diff,
+        actor_name=actor,
+        ip_address=ip_address,
+        severity=level,
+        category=category,
+        level=level,
+        status_code=status_code,
+        old_value=scrubbed_old_value,
+        new_value=scrubbed_new_value,
+        user_agent=user_agent,
+        details=scrubbed_details,
+        actor=actor,
+        actor_gravatar_hash=actor_gravatar_hash,
+    )

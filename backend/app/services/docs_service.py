@@ -1,13 +1,14 @@
 import io
 import re
 import zipfile
-from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.core.markdown_render import render_markdown
 from app.db.models import Doc, EntityDoc
 from app.schemas.docs import DocCreate, DocUpdate, EntityDocAttach
+from app.core.time import utcnow
 
 _MAX_IMPORT_MD_BYTES = 1 * 1024 * 1024    # 1 MB per .md entry
 _MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
@@ -58,7 +59,7 @@ def update_doc(db: Session, doc_id: int, payload: DocUpdate) -> dict:
     # Re-render HTML when body changes
     if "body_md" in data:
         doc.body_html = render_markdown(doc.body_md)
-    doc.updated_at = datetime.now(timezone.utc)
+    doc.updated_at = utcnow()
     db.commit()
     db.refresh(doc)
     return _to_dict(doc)
