@@ -575,18 +575,31 @@ async def lifespan(app: FastAPI):
     if settings.database_url.startswith(_SQLITE_SCHEME):
         db_path = Path(settings.database_url[len(_SQLITE_SCHEME):])
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure writable for WAL mode and migrations
+        if db_path.exists():
+            try:
+                db_path.chmod(0o666)
+            except Exception:
+                pass
 
+    # CRITICAL: Create all tables first
     Base.metadata.create_all(bind=engine)
 
     if settings.database_url.startswith(_SQLITE_SCHEME):
         import sqlite3
         db_path_str = settings.database_url[len(_SQLITE_SCHEME):]
-        with sqlite3.connect(db_path_str) as conn:
-            _run_migrations(conn)
-            conn.commit()
+        # For in-memory DBs, we can't just use a new connect() because it's a DIFFERENT DB
+        # But our engine usually handles connection pooling.
+        # However, for migrations we use a raw connection.
+        with engine.connect() as conn:
+            # We must use the connection from the engine to see the tables in memory
+            # sqlalchemy's engine.connect() returns a Connection object.
+            # We need the underlying DBAPI connection for raw SQL if using it.
+            raw_conn = conn.connection
+            _run_migrations(raw_conn)
+            raw_conn.commit()
 
-    # Backfill log timestamps via ORM session (handles any remaining NULLs
-    # that slipped through the raw-SQLite migration above on non-SQLite DBs)
+    # Backfill log timestamps via ORM session
     db = SessionLocal()
     try:
         _backfill_log_timestamps(db)
@@ -752,14 +765,16 @@ if _frontend_dir:
     if _icons.exists():
         app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
 
-    # User-uploaded data (avatars, doc images)
     _data_dir = Path("/app/data")
     _uploads_dir = _data_dir / "uploads"
     _user_icons_dir = _data_dir / "user-icons"
+    _branding_dir_data = _uploads_dir / "branding"
     if _uploads_dir.exists():
         app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
     if _user_icons_dir.exists():
         app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
+    if _branding_dir_data.exists():
+        app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str, request: Request):

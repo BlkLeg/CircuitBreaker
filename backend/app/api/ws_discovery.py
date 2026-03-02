@@ -55,13 +55,17 @@ async def _ping_loop(ws: WebSocket):
 
 @router.websocket("/api/v1/discovery/stream")
 async def discovery_stream(websocket: WebSocket):
+    # Always accept regardless of origin — token is checked as first message
     await websocket.accept()
 
     try:
         # Wait for auth token
-        raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        try:
+            raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        except (asyncio.TimeoutError, WebSocketDisconnect):
+            return
         
-        # Verify Token — always required regardless of auth_enabled
+        # Verify Token
         authenticated = False
         api_token = _get_api_token()
 
@@ -87,7 +91,6 @@ async def discovery_stream(websocket: WebSocket):
 
         try:
             while True:
-                # Keep connection alive and listen for client messages (if any)
                 await websocket.receive_text()
         except WebSocketDisconnect:
             pass
@@ -95,11 +98,6 @@ async def discovery_stream(websocket: WebSocket):
             ping_task.cancel()
             ws_manager.disconnect(websocket)
 
-    except asyncio.TimeoutError:
-        await websocket.close(code=1008, reason="Auth timeout")
-    except WebSocketDisconnect:
-        # Client disconnected before auth completed — socket was never registered
-        pass
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         try:

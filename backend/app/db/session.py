@@ -1,7 +1,10 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+import logging
 
 from app.core.config import settings
+
+_logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.database_url,
@@ -20,10 +23,14 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record):
                            still guaranteeing durability on OS crash.
     """
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA cache_size=-32768")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA cache_size=-32768")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    except Exception as e:
+        _logger.warning(f"Failed to set SQLite pragmas: {e}")
+    finally:
+        cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

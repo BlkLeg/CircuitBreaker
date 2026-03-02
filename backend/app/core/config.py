@@ -19,7 +19,11 @@ def _read_version_file() -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     app_name: str = "Circuit Breaker"
     # APP_VERSION env var overrides at runtime (set via Docker build arg / compose).

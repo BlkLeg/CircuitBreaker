@@ -32,6 +32,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next):
+        # WebSocket handshakes don't support these headers in the same way 
+        # and BaseHTTPMiddleware can interfere with the handshake.
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+            
         response = await call_next(request)
         for header, value in _SECURITY_HEADERS.items():
             response.headers[header] = value
