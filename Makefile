@@ -115,6 +115,7 @@ build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 docker-publish: ## Build and push a multi-arch Docker image to DOCKER_REPO
 	@echo "Building and publishing multi-arch image to $(DOCKER_REPO)..."
 	docker buildx build --platform linux/amd64,linux/arm64 \
+		--no-cache \
 		-t "$(DOCKER_REPO):$(VERSION)" \
 		-t "$(DOCKER_REPO):latest" \
 		--push .
