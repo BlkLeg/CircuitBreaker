@@ -21,6 +21,7 @@ import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
 import MapContextMenu from '../components/map/MapContextMenu';
 import SmartEdge from '../components/map/SmartEdge';
+import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 
 // Stable context for passing edge interaction callbacks to SmartEdge without
 // re-rendering every edge when the callback ref changes.
@@ -613,6 +614,17 @@ function MapInternal() {
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
 
+  // Pending discoveries badge
+  const [pendingDiscoveries, setPendingDiscoveries] = useState(0);
+  useEffect(() => {
+    import('../api/discovery.js').then(({ getPendingResults }) => {
+      getPendingResults({ limit: 1 }).then((r) => setPendingDiscoveries(r.data?.total ?? 0)).catch(() => {});
+    });
+    const onAdded = () => setPendingDiscoveries((c) => c + 1);
+    discoveryEmitter.on('result:added', onAdded);
+    return () => discoveryEmitter.off('result:added', onAdded);
+  }, []);
+
   // Filters
   const [envFilter, setEnvFilter] = useState('');
   const [environmentsList, setEnvironmentsList] = useState([]);
@@ -1156,6 +1168,20 @@ function MapInternal() {
           <button className="btn" onClick={fetchData} disabled={loading} style={{ fontSize: 12, padding: '5px 12px' }}>
             Refresh
           </button>
+          {pendingDiscoveries > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate('/discovery?tab=review')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '4px 10px', borderRadius: 5, border: 'none',
+                background: 'rgba(245,158,11,0.18)', color: '#f59e0b',
+                cursor: 'pointer', fontSize: 11, fontWeight: 600,
+              }}
+            >
+              🔍 {pendingDiscoveries} pending
+            </button>
+          )}
           {lastSaved && <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Saved: {new Date(lastSaved).toLocaleTimeString()}</span>}
         </div>
       </div>

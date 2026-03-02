@@ -4,38 +4,44 @@ WORKDIR /app/frontend
 # Install dependencies
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-# Copy source and build
+# Copy source and build — syncversion reads ../VERSION to stamp the bundle
+COPY VERSION ../VERSION
 COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Python dependency builder — includes gcc and build tools, excluded from runtime.
 # Splitting into a separate stage sheds ~80-100 MB of compiler tooling from the final image.
-FROM python:3.12.9-slim AS python-builder
+FROM python:3.12.9-slim-bookworm AS python-builder
 WORKDIR /app/backend
 
-# Build tools needed only for compiling C extensions (Pillow, httptools, uvloop on arm64).
+# Build tools needed for compiling C extensions on platforms without manylinux wheels
+# (e.g. arm64/armv7). On amd64 all deps have prebuilt wheels — gcc/cargo are only
+# exercised on ARM where source builds are necessary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libjpeg-dev \
     zlib1g-dev \
     libffi-dev \
+    libssl-dev \
+    cargo \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 1: install only third-party deps (cached until pyproject.toml changes)
-COPY backend/pyproject.toml ./
-RUN python3 -c "\
-import tomllib, subprocess, sys; \
-data = tomllib.load(open('pyproject.toml', 'rb')); \
-deps = data['project']['dependencies']; \
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir'] + deps) \
-"
+# --- Dependency layer (cached until requirements.txt changes) ---
+# requirements.txt is generated from poetry.lock via: python3 scripts/gen_requirements.py
+# Using a pinned file instead of resolving from pyproject.toml avoids PyPI read timeouts
+# and makes the build fully deterministic.
+COPY backend/requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 120 --retries 5 -r requirements.txt
 
-# Layer 2: copy source and install the package itself (no re-download of deps)
+# --- App layer (invalidated only when source changes) ---
+COPY VERSION ../VERSION
+COPY backend/pyproject.toml ./
 COPY backend/app ./app
 RUN pip install --no-cache-dir --no-deps .
 
 # Stage 3: Runtime image — build tools stripped; final image only carries what runs.
-FROM python:3.12.9-slim
+FROM python:3.12.9-slim-bookworm
 WORKDIR /app/backend
 
 # Runtime-only deps: tini (init), wget (healthcheck), gosu (privilege drop).
@@ -47,6 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gosu \
     snmp \
     ipmitool \
+    nmap \
+    net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Pull compiled packages and app code from the builder stage.
@@ -66,6 +74,12 @@ ENV UPLOADS_DIR=/data/uploads
 # Suppress .pyc writes (rootfs is read-only at runtime); ensure stdout/stderr are unbuffered.
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+
+# Bake version into the image; overridable at `docker build` time via:
+#   docker build --build-arg APP_VERSION=1.2.3 .
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
+# APP_VERSION is read by pydantic-settings as settings.app_version at runtime.
 
 # Create dedicated non-root user with a fixed UID (1000) for predictable bind-mount ownership.
 # chown /app so the user can read the installed package; /data ownership is fixed at runtime

@@ -12,7 +12,7 @@ class PortEntry(BaseModel):
 
 class ServiceBase(BaseModel):
     name: str
-    slug: str
+    slug: Optional[str] = None   # auto-derived from name if not provided
     compute_id: Optional[int] = None
     hardware_id: Optional[int] = None
     icon_slug: Optional[str] = None
@@ -61,6 +61,10 @@ class Service(ServiceBase):
     environment_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    # IP conflict classification
+    ip_mode: str = "explicit"
+    ip_conflict: bool = False
+    ip_conflict_with: list[dict] = []
 
 
 class ServiceDependencyCreate(BaseModel):

@@ -11,7 +11,7 @@ from app.schemas.networks import (
 )
 from app.services import networks_service
 
-router = APIRouter(prefix="/networks", tags=["networks"])
+router = APIRouter(tags=["networks"])
 
 
 @router.get("", response_model=list[Network])

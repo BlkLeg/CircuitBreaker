@@ -143,6 +143,8 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
       // For services: find the ports field value to pass along
       const portsFieldName = field.portsFieldName || 'ports';
       const portsValue = values[portsFieldName];
+      // For services: pass the current runs_on value so host-chain-aware check works
+      const runsOnValue = field.runsOnField ? values[field.runsOnField] : undefined;
       return (
         <IPAddressInput
           ref={ipInputRefsRef.current[field.name]}
@@ -160,6 +162,7 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
           disabled={field.disabled}
           placeholder={field.placeholder}
           onOpenEntity={onOpenEntity}
+          runsOnValue={runsOnValue}
         />
       );
     }

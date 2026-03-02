@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate
 from app.services import hardware_service, clusters_service
 
-router = APIRouter(prefix="/hardware", tags=["hardware"])
+router = APIRouter(tags=["hardware"])
 
 
 @router.get("", response_model=list[Hardware])

@@ -1,4 +1,7 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,8 +19,29 @@ from app.schemas.services import (
     ServiceMiscRead,
 )
 from app.services import services_service
+from app.services.ip_reservation import resolve_ip_conflict
+from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
+from app.services import external_nodes_service
 
-router = APIRouter(prefix="/services", tags=["services"])
+router = APIRouter(tags=["services"])
+
+
+class ServiceIpCheckRequest(BaseModel):
+    ip_address: str
+    compute_id: Optional[int] = None
+    hardware_id: Optional[int] = None
+    exclude_service_id: Optional[int] = None
+
+
+@router.post("/check-ip")
+def check_service_ip(payload: ServiceIpCheckRequest, db: Session = Depends(get_db)):
+    return resolve_ip_conflict(
+        db,
+        service_id=payload.exclude_service_id,
+        ip_address=payload.ip_address,
+        compute_id=payload.compute_id,
+        hardware_id=payload.hardware_id,
+    )
 
 
 @router.get("", response_model=list[Service])
@@ -150,9 +174,6 @@ def remove_misc_link(service_id: int, misc_id: int, db: Session = Depends(get_db
 
 
 # ── External dependency links ─────────────────────────────────────────────────
-
-from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
-from app.services import external_nodes_service
 
 
 @router.get("/{service_id}/external-dependencies", response_model=list[ServiceExternalNodeRead])

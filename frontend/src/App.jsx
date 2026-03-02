@@ -24,15 +24,21 @@ import SettingsPage from './pages/SettingsPage';
 import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
+import DiscoveryPage from './pages/DiscoveryPage';
+import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
 
 // Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor) are only
 // downloaded when the user first navigates to those routes.
 const DocsPage = React.lazy(() => import('./pages/DocsPage'));
-const MapPage = React.lazy(() => import('./pages/MapPage'));
+const MapPage  = React.lazy(() => import('./pages/MapPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
+  const { pendingCount } = useDiscoveryStream();
+
+  const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
+  const handleOpenPalette  = useCallback(() => setPaletteOpen(true),  []);
 
   useEffect(() => {
     const handler = (e) => {
@@ -47,8 +53,8 @@ function AppInner() {
 
   return (
     <div className="app-shell">
-      <CommandPalette isOpen={paletteOpen} onClose={() => setPaletteOpen(false)} />
-      <Header onOpenPalette={() => setPaletteOpen(true)} />
+      <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
+      <Header onOpenPalette={handleOpenPalette} />
       <SecurityBanner />
       <div className="page-content">
         <ErrorBoundary>
@@ -66,11 +72,12 @@ function AppInner() {
             <Route path="/map" element={<MapPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/discovery" element={<DiscoveryPage />} />
           </Routes>
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock />
+      <Dock pendingCount={pendingCount} />
       <ThemePalette />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />

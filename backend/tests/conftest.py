@@ -9,8 +9,8 @@ from sqlalchemy.pool import StaticPool
 from app.db.session import Base, get_db
 from app.core.rate_limit import limiter
 limiter.enabled = False  # Disable rate-limiting during tests
-from app.db import models  # noqa: F401 — register models with metadata
-from app.main import app
+from app.db import models  # noqa: F401 E402 — register models with metadata
+from app.main import app  # noqa: E402
 
 TEST_DB_URL = "sqlite:///:memory:"
 

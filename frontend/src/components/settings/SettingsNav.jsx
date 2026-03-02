@@ -112,6 +112,22 @@ const GROUPS = [
     ],
   },
   {
+    heading: 'Network',
+    items: [
+      {
+        key: 'discovery',
+        label: 'Discovery',
+        icon: (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <circle cx="8" cy="8" r="3" />
+            <circle cx="8" cy="8" r="6.5" strokeDasharray="2 2" />
+            <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     heading: 'Advanced',
     items: [
       {

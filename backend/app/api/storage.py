@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.schemas.storage import Storage, StorageCreate, StorageUpdate
 from app.services import storage_service
 
-router = APIRouter(prefix="/storage", tags=["storage"])
+router = APIRouter(tags=["storage"])
 
 
 @router.get("", response_model=list[Storage])

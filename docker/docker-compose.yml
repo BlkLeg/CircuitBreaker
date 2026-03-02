@@ -23,14 +23,34 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    # ──────────────────────────────────────────────────────────────────
+    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (OPTIONAL)
+    #
+    # The ARP scan phase requires elevated Linux capabilities to send
+    # raw network packets. This enables MAC address resolution and
+    # more reliable local subnet host detection.
+    #
+    # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
+    # container the ability to craft and send arbitrary raw packets.
+    # Only enable this on trusted, isolated homelab networks.
+    #
+    # If left commented out, Circuit Breaker will automatically skip
+    # the ARP phase and fall back to nmap TCP/ICMP host detection.
+    # All other scan phases (nmap, SNMP, HTTP) work without these caps.
+    #
+    # To enable ARP scanning, uncomment the section below:
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    #
+    # For full documentation see:
+    # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
+    # ──────────────────────────────────────────────────────────────────
 
   frontend:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
-      args:
-        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
-        VITE_SENTRY_ENVIRONMENT: ${VITE_SENTRY_ENVIRONMENT:-production}
     ports:
       - "8080:8080"
     container_name: cb-frontend

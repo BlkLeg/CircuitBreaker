@@ -4,36 +4,33 @@ import { useNavigate } from 'react-router-dom';
 import { searchApi } from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
 
+// Navigation items — only honest entries that navigate directly to what they say.
+// Ghost commands (actions that just navigate to a route without applying a filter/action)
+// and the append-only audit-log "clear" command have been removed.
 const DEFAULT_ITEMS = [
-  { id: 'default-1', icon: '🖥️', title: 'Go to: Hardware',              action_url: '/hardware'       },
-  { id: 'default-2', icon: '➕', title: 'Go to: Services',               action_url: '/services'       },
-  { id: 'nav-net',   icon: '🔗', title: 'Open: Networks',                action_url: '/networks'       },
-  { id: 'default-4', icon: '💾', title: 'Go to: Storage',                action_url: '/storage'        },
-  { id: 'nav-map',        icon: '🗺️', title: 'Open: Topology Map',            action_url: '/map'            },
-  { id: 'nav-cb-map',    icon: '⚡', title: 'Open: Circuit Breaker Map',     action_url: '/map'            },
-  { id: 'map-filter-env',icon: '🌍', title: 'Map: Filter by environment',    action_url: '/map'            },
-  { id: 'map-filter-tag',icon: '🏷️', title: 'Map: Filter by tag',            action_url: '/map'            },
-  { id: 'nav-docs',  icon: '📄', title: 'Open: Documentation',           action_url: '/docs'           },
-  { id: 'settings-open',        icon: '⚙️', title: 'Open: Settings',                      action_url: '/settings'                          },
-  { id: 'settings-appearance',  icon: '🎨', title: 'Settings: Appearance',                action_url: '/settings?section=appearance'        },
-  { id: 'settings-defaults',    icon: '🏷️', title: 'Settings: Defaults',                  action_url: '/settings?section=defaults'          },
-  { id: 'settings-icons',       icon: '🖼️', title: 'Settings: Icons & Vendors',           action_url: '/settings?section=icons'             },
-  { id: 'settings-experimental',icon: '🧪', title: 'Settings: Experimental',              action_url: '/settings?section=experimental'      },
-  { id: 'settings-auth',        icon: '🔒', title: 'Open: Authentication Settings',        action_url: '/settings?section=auth'              },
-  { id: 'auth-login',           icon: '👤', title: 'Open: Login',                          action_fn: 'openAuthModal'                         },
-  { id: 'auth-profile',         icon: '🪪', title: 'Open: Profile',                        action_fn: 'openProfileModal'                      },
-  { id: 'nav-logs',          icon: '🕐', title: 'Open: Logs',              action_url: '/logs' },
-  { id: 'logs-filter-crud',  icon: '📋', title: 'Logs: Filter by CRUD',    action_url: '/logs' },
-  { id: 'logs-filter-svc',   icon: '🔧', title: 'Logs: Filter by service', action_url: '/logs' },
-  { id: 'logs-export',       icon: '⬇️', title: 'Logs: Export logs',       action_url: '/logs' },
-  { id: 'logs-clear',        icon: '🗑️', title: 'Logs: Clear logs',        action_url: '/logs' },
-  { id: 'map-link-node',     icon: '🔗', title: 'Map: Link selected node',              action_url: '/map'      },
-  { id: 'map-storage',       icon: '💾', title: 'Map: Show storage details',            action_url: '/map'      },
-  { id: 'hw-filter-storage', icon: '🗄️', title: 'Hardware: Filter by storage capacity', action_url: '/hardware' },
-  { id: 'nav-ext',  icon: '☁️', title: 'Open: External / Cloud Nodes',    action_url: '/external-nodes' },
-  { id: 'settings-categories', icon: '🏷️', title: 'Settings: Manage Categories', action_url: '/settings?section=categories' },
-  { id: 'settings-environments', icon: '🌐', title: 'Settings: Manage Environments', action_url: '/settings?section=environments' },
-  { id: 'settings-timezone', icon: '🕐', title: 'Settings: Change Timezone', action_url: '/settings?section=appearance' },
+  // ── Navigation ──────────────────────────────────────────────────────────────
+  { id: 'nav-hardware',     icon: '🖥️', title: 'Go to: Hardware',              action_url: '/hardware'       },
+  { id: 'nav-compute',      icon: '💻', title: 'Go to: Compute',               action_url: '/compute-units'  },
+  { id: 'nav-services',     icon: '🛠️', title: 'Go to: Services',              action_url: '/services'       },
+  { id: 'nav-networks',     icon: '🔗', title: 'Go to: Networks',              action_url: '/networks'       },
+  { id: 'nav-storage',      icon: '💾', title: 'Go to: Storage',               action_url: '/storage'        },
+  { id: 'nav-map',          icon: '🗺️', title: 'Go to: Topology Map',          action_url: '/map'            },
+  { id: 'nav-logs',         icon: '📋', title: 'Go to: Logs',                  action_url: '/logs'           },
+  { id: 'nav-ext',          icon: '☁️', title: 'Go to: External / Cloud Nodes',action_url: '/external-nodes' },
+  { id: 'nav-docs',         icon: '📄', title: 'Go to: Documentation',         action_url: '/docs'           },
+  // ── Settings ─────────────────────────────────────────────────────────────────
+  { id: 'settings-open',         icon: '⚙️', title: 'Go to: Settings',                   action_url: '/settings'                     },
+  { id: 'settings-appearance',   icon: '🎨', title: 'Settings: Appearance',              action_url: '/settings?section=appearance'  },
+  { id: 'settings-defaults',     icon: '🔧', title: 'Settings: Defaults',                action_url: '/settings?section=defaults'    },
+  { id: 'settings-icons',        icon: '🖼️', title: 'Settings: Icons & Vendors',        action_url: '/settings?section=icons'       },
+  { id: 'settings-categories',   icon: '🏷️', title: 'Settings: Manage Categories',      action_url: '/settings?section=categories'  },
+  { id: 'settings-environments', icon: '🌐', title: 'Settings: Manage Environments',    action_url: '/settings?section=environments'},
+  { id: 'settings-timezone',     icon: '🕐', title: 'Settings: Change Timezone',        action_url: '/settings?section=appearance'  },
+  { id: 'settings-auth',         icon: '🔒', title: 'Settings: Authentication',         action_url: '/settings?section=auth'        },
+  { id: 'settings-experimental', icon: '🧪', title: 'Settings: Experimental',           action_url: '/settings?section=experimental'},
+  // ── Actions (open modals / overlays) ─────────────────────────────────────────
+  { id: 'auth-login',   icon: '👤', title: 'Open: Login',   action_fn: 'openAuthModal'    },
+  { id: 'auth-profile', icon: '🪪', title: 'Open: Profile', action_fn: 'openProfileModal' },
 ];
 
 const TYPE_LABELS = {
@@ -50,20 +47,32 @@ function CommandPalette({ isOpen, onClose }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef(null);
   const debounceRef = useRef(null);
   const panelRef = useRef(null);
+  const activeItemRef = useRef(null);
   const navigate = useNavigate();
   const { openAuthModal, openProfileModal } = useAuth();
 
-  // Auto-focus when palette opens
+  // Stable ref-backed action map — avoids stale closures without recreating handleSelect
+  const authFnsRef = useRef({});
+  authFnsRef.current = { openAuthModal, openProfileModal };
+
+  // Auto-focus and reset state when palette opens
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setResults([]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setSelectedIndex(0);
+      requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [isOpen]);
+
+  // Scroll active item into view whenever selectedIndex changes
+  useEffect(() => {
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
 
   // Close on Escape
   useEffect(() => {
@@ -84,6 +93,11 @@ function CommandPalette({ isOpen, onClose }) {
     return () => document.removeEventListener('mousedown', handler);
   }, [isOpen, onClose]);
 
+  // Clean up any pending debounce on unmount
+  useEffect(() => {
+    return () => clearTimeout(debounceRef.current);
+  }, []);
+
   const doSearch = useCallback(async (q) => {
     if (!q.trim()) { setResults([]); setLoading(false); return; }
     setLoading(true);
@@ -100,19 +114,32 @@ function CommandPalette({ isOpen, onClose }) {
   const handleInput = (e) => {
     const val = e.target.value;
     setQuery(val);
+    setSelectedIndex(0);
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => doSearch(val), 200);
   };
 
-  const authFns = { openAuthModal, openProfileModal };
-
-  const handleSelect = (item) => {
-    if (item.action_fn && authFns[item.action_fn]) {
-      authFns[item.action_fn]();
+  const handleSelect = useCallback((item) => {
+    if (item.action_fn && authFnsRef.current[item.action_fn]) {
+      authFnsRef.current[item.action_fn]();
     } else if (item.action_url) {
       navigate(item.action_url);
     }
     onClose();
+  }, [navigate, onClose]);
+
+  const handleKeyDown = (e) => {
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.min(i + 1, items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSelect(items[selectedIndex]);
+    }
   };
 
   if (!isOpen) return null;
@@ -142,6 +169,7 @@ function CommandPalette({ isOpen, onClose }) {
             aria-label="Search commands"
             value={query}
             onChange={handleInput}
+            onKeyDown={handleKeyDown}
             autoComplete="off"
             spellCheck={false}
           />
@@ -155,25 +183,30 @@ function CommandPalette({ isOpen, onClose }) {
             <div className="palette-empty">No results for "{query}"</div>
           )}
 
-          {!loading && items.map((item) => (
-            <button
-              key={item.id}
-              className="palette-result-item"
-              onClick={() => handleSelect(item)}
-            >
-              {showDefaults ? (
-                <span className="palette-default-icon">{item.icon}</span>
-              ) : (
-                <span className={`palette-type-badge palette-type-${item.type}`}>
-                  {TYPE_LABELS[item.type] ?? item.type}
-                </span>
-              )}
-              <span className="palette-item-title">{item.title}</span>
-              {item.description && (
-                <span className="palette-item-desc">{item.description}</span>
-              )}
-            </button>
-          ))}
+          {!loading && items.map((item, idx) => {
+            const isActive = idx === selectedIndex;
+            return (
+              <button
+                key={item.id}
+                ref={isActive ? activeItemRef : null}
+                className={`palette-result-item${isActive ? ' palette-result-item--active' : ''}`}
+                onClick={() => handleSelect(item)}
+                onMouseEnter={() => setSelectedIndex(idx)}
+              >
+                {showDefaults ? (
+                  <span className="palette-default-icon">{item.icon}</span>
+                ) : (
+                  <span className={`palette-type-badge palette-type-${item.type}`}>
+                    {TYPE_LABELS[item.type] ?? item.type}
+                  </span>
+                )}
+                <span className="palette-item-title">{item.title}</span>
+                {item.description && (
+                  <span className="palette-item-desc">{item.description}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>

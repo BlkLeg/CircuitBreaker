@@ -1,3 +1,4 @@
+import json
 import logging
 
 from sqlalchemy.orm import Session
@@ -7,8 +8,8 @@ from fastapi import HTTPException
 from app.db.models import ComputeUnit, ComputeNetwork, Service, EntityTag, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map
-from app.core.time import utcnow, utcnow_iso
+from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
+from app.core.time import utcnow
 
 _logger = logging.getLogger(__name__)
 
@@ -200,6 +201,15 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
         _sync_tags(db, "compute", cu.id, payload.tags)
     db.commit()
     db.refresh(cu)
+    # Re-evaluate IP conflict state for all services on this compute unit
+    affected = db.execute(select(Service).where(Service.compute_id == cu_id)).scalars().all()
+    for svc in affected:
+        result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
+        svc.ip_mode = result["ip_mode"]
+        svc.ip_conflict = result["is_conflict"]
+        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+    if affected:
+        db.commit()
     return _to_dict(db, cu)
 
 

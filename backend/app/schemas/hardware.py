@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 VendorSlug = Literal[
     "amd", "intel", "nvidia", "arm", "apple",
@@ -9,6 +9,23 @@ VendorSlug = Literal[
     "synology", "qnap", "proxmox", "pfsense", "opnsense",
     "apc", "cyberpower", "truenas", "raspberry_pi", "other",
 ]
+
+# Set of known vendor slugs used for coercion validation
+_KNOWN_VENDORS: set[str] = set(VendorSlug.__args__)  # type: ignore[attr-defined]
+
+
+def _coerce_vendor(v: Optional[str]) -> Optional[str]:
+    """Normalise vendor values on write.
+
+    - None / empty string  → None
+    - Known VendorSlug     → returned as-is
+    - Any other string     → coerced to 'other' (prevents Literal validation
+      failures when discovery writes OS strings like 'Linux' into the vendor
+      column and the frontend echoes them back on PATCH)
+    """
+    if not v:
+        return None
+    return v if v in _KNOWN_VENDORS else "other"
 
 
 # Allowed role slugs (enforced by frontend dropdown; kept as str for DB compatibility)
@@ -32,7 +49,9 @@ class TelemetryConfig(BaseModel):
 class HardwareBase(BaseModel):
     name: str
     role: Optional[str] = None
-    vendor: Optional[VendorSlug] = None
+    # Accept any string on inbound payloads; unknown values are coerced to
+    # 'other' by the validator below so the DB always stores a valid slug.
+    vendor: Optional[str] = None
     model: Optional[str] = None
     cpu: Optional[str] = None
     memory_gb: Optional[int] = None
@@ -55,6 +74,11 @@ class HardwareBase(BaseModel):
     environment_id: Optional[int] = None
     environment: Optional[str] = None
 
+    @field_validator("vendor", mode="before")
+    @classmethod
+    def normalise_vendor(cls, v: Optional[str]) -> Optional[str]:
+        return _coerce_vendor(v)
+
 
 class HardwareCreate(HardwareBase):
     pass
@@ -63,7 +87,7 @@ class HardwareCreate(HardwareBase):
 class HardwareUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
-    vendor: Optional[VendorSlug] = None
+    vendor: Optional[str] = None
     model: Optional[str] = None
     cpu: Optional[str] = None
     memory_gb: Optional[int] = None
@@ -83,9 +107,20 @@ class HardwareUpdate(BaseModel):
     environment_id: Optional[int] = None
     environment: Optional[str] = None
 
+    @field_validator("vendor", mode="before")
+    @classmethod
+    def normalise_vendor(cls, v: Optional[str]) -> Optional[str]:
+        return _coerce_vendor(v)
+
 
 class Hardware(HardwareBase):
     model_config = ConfigDict(from_attributes=True)
+
+    # Override vendor with plain Optional[str] for reads — the DB may contain
+    # legacy or discovery-written values (e.g. 'Linux') outside the VendorSlug
+    # Literal enum. Strict VendorSlug validation is still enforced on
+    # HardwareCreate and HardwareUpdate (write paths).
+    vendor: Optional[str] = None
 
     id: int
     created_at: datetime

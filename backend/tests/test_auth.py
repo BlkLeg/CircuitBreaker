@@ -3,7 +3,6 @@ Auth system tests — covers gaps F3-1 through F3-7.
 
 Uses the existing ``client`` / ``db`` fixtures from conftest.py (in-memory SQLite).
 """
-import pytest
 
 
 # ---------------------------------------------------------------------------

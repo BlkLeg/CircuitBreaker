@@ -1,5 +1,4 @@
 import React from 'react';
-import * as Sentry from '@sentry/react';
 
 /**
  * Catches unexpected render-phase errors for the wrapped subtree and shows a
@@ -23,7 +22,6 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, info) {
     // Log to the browser console so devs can see the full stack
     console.error('[ErrorBoundary] Uncaught render error:', error, info);
-    Sentry.captureException(error, { contexts: { react: { componentStack: info.componentStack } } });
   }
 
   handleReload = () => {

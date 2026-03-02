@@ -4,6 +4,7 @@ import { settingsApi } from '../api/client';
 import logger from '../utils/logger';
 import { applyTheme } from '../theme/applyTheme';
 import { THEME_PRESETS, DEFAULT_PRESET } from '../theme/presets';
+import { useAppFont } from '../hooks/useAppFont';
 
 // Pre-apply cached theme synchronously on module import to eliminate flash on reload.
 // Runs before React renders; data-theme is not yet set so applyTheme runs in dark-mode
@@ -91,6 +92,9 @@ export function SettingsProvider({ children }) {
     }
     applyTheme(colors, preset ?? DEFAULT_PRESET);
   }, [settings.theme_preset, settings.theme_colors, settings.branding, settings.theme]);
+
+  // Apply font family and font size preferences instantly via CSS variables.
+  useAppFont(settings?.ui_font ?? 'inter', settings?.ui_font_size ?? 'medium');
 
   // Apply favicon and document title whenever branding changes
   useEffect(() => {

@@ -11,7 +11,7 @@ from app.schemas.auth import (
 from app.services import auth_service
 from app.services.settings_service import get_or_create_settings
 
-router = APIRouter(prefix="/bootstrap", tags=["bootstrap"])
+router = APIRouter(tags=["bootstrap"])
 
 
 @router.get("/status", response_model=BootstrapStatusResponse)

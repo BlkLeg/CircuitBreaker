@@ -4,7 +4,6 @@ Covers sanitise_diff unit tests, log filter/pagination, immutability,
 and log entries produced by hardware/service/network/auth operations.
 """
 import json
-import pytest
 
 from app.services.log_service import sanitise_diff
 
@@ -36,7 +35,7 @@ def test_hardware_create_produces_log(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "hardware" and l.get("action") == "create_hardware"),
+        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "create_hardware"),
         None,
     )
     assert entry is not None, "Expected 'create_hardware' log"
@@ -55,7 +54,7 @@ def test_hardware_update_produces_log_with_diff(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "hardware" and l.get("action") == "update_hardware"),
+        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "update_hardware"),
         None,
     )
     assert entry is not None, "Expected 'update_hardware' log"
@@ -73,7 +72,7 @@ def test_hardware_delete_produces_log(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "hardware" and l.get("action") == "delete_hardware"),
+        (log for log in logs if log.get("entity_type") == "hardware" and log.get("action") == "delete_hardware"),
         None,
     )
     assert entry is not None, "Expected 'delete_hardware' log"
@@ -91,8 +90,8 @@ def test_service_create_update_delete_logs(client):
     client.delete(f"/api/v1/services/{svc['id']}")
 
     logs = client.get("/api/v1/logs").json()["logs"]
-    svc_logs = [l for l in logs if l.get("entity_type") == "service"]
-    actions = {l["action"] for l in svc_logs}
+    svc_logs = [log for log in logs if log.get("entity_type") == "service"]
+    actions = {log["action"] for log in svc_logs}
     assert "create_service" in actions, "Expected 'create_service' log"
     assert "update_service" in actions, "Expected 'update_service' log"
     assert "delete_service" in actions, "Expected 'delete_service' log"
@@ -106,8 +105,8 @@ def test_network_create_update_delete_logs(client):
     client.delete(f"/api/v1/networks/{net['id']}")
 
     logs = client.get("/api/v1/logs").json()["logs"]
-    net_logs = [l for l in logs if l.get("entity_type") == "network"]
-    actions = {l["action"] for l in net_logs}
+    net_logs = [log for log in logs if log.get("entity_type") == "network"]
+    actions = {log["action"] for log in net_logs}
     assert "create_network" in actions, "Expected 'create_network' log"
     assert "update_network" in actions, "Expected 'update_network' log"
     assert "delete_network" in actions, "Expected 'delete_network' log"
@@ -119,7 +118,7 @@ def test_login_success_produces_log(client, auth_headers):
     # auth_headers fixture performs bootstrap + login; we check the resulting log
     logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "auth" and l.get("action") == "login_success"),
+        (log for log in logs if log.get("entity_type") == "auth" and log.get("action") == "login_success"),
         None,
     )
     assert entry is not None, "Expected 'login_success' auth log"
@@ -140,7 +139,7 @@ def test_login_failure_produces_warn_log(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("action") == "login_failed"),
+        (log for log in logs if log.get("action") == "login_failed"),
         None,
     )
     assert entry is not None, "Expected 'login_failed' log entry"
@@ -185,7 +184,7 @@ def test_logs_filter_by_entity_type(client):
     assert resp.status_code == 200
     logs = resp.json()["logs"]
     assert len(logs) > 0
-    assert all(l["entity_type"] == "hardware" for l in logs)
+    assert all(log["entity_type"] == "hardware" for log in logs)
 
 
 def test_logs_filter_by_action(client):
@@ -195,7 +194,7 @@ def test_logs_filter_by_action(client):
     assert resp.status_code == 200
     logs = resp.json()["logs"]
     assert len(logs) > 0
-    assert all(l["action"] == "create_hardware" for l in logs)
+    assert all(log["action"] == "create_hardware" for log in logs)
 
 
 def test_logs_filter_by_severity(client):
@@ -214,7 +213,7 @@ def test_logs_filter_by_severity(client):
     assert resp.status_code == 200
     logs = resp.json()["logs"]
     assert len(logs) > 0
-    assert all(l.get("severity") == "warn" for l in logs)
+    assert all(log.get("severity") == "warn" for log in logs)
 
 
 def test_logs_search_by_entity_name(client):
@@ -224,7 +223,7 @@ def test_logs_search_by_entity_name(client):
     assert resp.status_code == 200
     logs = resp.json()["logs"]
     assert len(logs) > 0
-    names = [l.get("entity_name") or "" for l in logs]
+    names = [log.get("entity_name") or "" for log in logs]
     assert any("unique-device" in n for n in names)
 
 
@@ -260,7 +259,7 @@ def test_oobe_complete_produces_log(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("action") == "bootstrap_create_user"),
+        (log for log in logs if log.get("action") == "bootstrap_create_user"),
         None,
     )
     assert entry is not None, "Expected 'bootstrap_create_user' log entry"

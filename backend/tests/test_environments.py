@@ -4,8 +4,6 @@ Environment write endpoints require auth only when auth_enabled=True.
 On a fresh in-memory DB, auth_enabled=False, so tests can call freely.
 The auth_headers fixture is only used in tests that explicitly need auth.
 """
-import json
-import pytest
 
 from app.db.models import Environment
 from app.services.environments_service import resolve_environment_id
@@ -164,7 +162,7 @@ def test_environment_log_on_create(client):
     _create_env(client, name="prod")
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "environment" and l.get("action") == "create_environment"),
+        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "create_environment"),
         None,
     )
     assert entry is not None, "Expected a 'create_environment' log for environment"
@@ -177,7 +175,7 @@ def test_environment_log_on_rename(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "environment" and l.get("action") == "update_environment"),
+        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "update_environment"),
         None,
     )
     assert entry is not None, "Expected a 'update_environment' log for environment"
@@ -189,7 +187,7 @@ def test_environment_log_on_delete(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "environment" and l.get("action") == "delete_environment"),
+        (log for log in logs if log.get("entity_type") == "environment" and log.get("action") == "delete_environment"),
         None,
     )
     assert entry is not None, "Expected a 'delete_environment' log for environment"

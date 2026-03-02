@@ -9,9 +9,9 @@ from app.db.models import Hardware
 from app.integrations.dispatcher import poll_hardware
 from app.services.credential_vault import get_vault, CredentialVault
 from app.schemas.hardware import TelemetryConfig
-from app.core.time import utcnow, utcnow_iso
+from app.core.time import utcnow
 
-router = APIRouter(prefix="/hardware", tags=["telemetry"])
+router = APIRouter(tags=["telemetry"])
 
 
 @router.get("/{hardware_id}/telemetry")

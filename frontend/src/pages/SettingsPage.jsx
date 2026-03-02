@@ -15,6 +15,7 @@ import ClearLabDialog from '../components/common/ClearLabDialog';
 import FirstUserDialog from '../components/auth/FirstUserDialog';
 import { useToast } from '../components/common/Toast';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
+import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
 
@@ -162,6 +163,7 @@ function SettingsPage() {
     themes: useRef(null),
     dock: useRef(null),
     branding: useRef(null),
+    discovery: useRef(null),
     experimental: useRef(null),
     auth: useRef(null),
     admin: useRef(null),
@@ -1199,6 +1201,12 @@ function SettingsPage() {
               </div>
             </>
           )}
+        </div>
+
+        {/* ── Discovery ─────────────────────────── */}
+        <div ref={sectionRefs.discovery} style={S.section}>
+          <div style={S.sectionTitle}>Discovery</div>
+          <DiscoverySettingsPage />
         </div>
 
         {/* ── Admin & Backup ─────────────────────── */}

@@ -48,6 +48,8 @@ class BrandingConfig(BaseModel):
 VALID_PRESETS = {
     "cyberpunk-neon", "dark-matter", "solarized-dark", "nord",
     "dracula", "gruvbox-dark", "monokai", "one-dark", "custom",
+    # theme.park vendored palettes
+    "tp-maroon", "tp-hotline", "tp-aquamarine", "tp-space-gray", "tp-hotpink", "tp-overseer",
 }
 
 
@@ -91,6 +93,19 @@ class AppSettingsRead(BaseModel):
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
     timezone: str = "UTC"
+    # Auto-Discovery
+    discovery_enabled: bool = False
+    discovery_auto_merge: bool = False
+    discovery_default_cidr: str = ""
+    discovery_nmap_args: str = "-sV -O --open -T4"
+    discovery_snmp_community: str = Field(default="", exclude=True)
+    discovery_schedule_cron: str = ""
+    discovery_http_probe: bool = True
+    discovery_retention_days: int = 30
+    scan_ack_accepted: bool = False
+    # Font preferences
+    ui_font: str = "inter"
+    ui_font_size: str = "medium"
     # Advanced Theming
     theme_preset: str = "cyberpunk-neon"
     custom_colors: Optional[str] = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -219,6 +234,19 @@ class AppSettingsUpdate(BaseModel):
     theme_preset: Optional[str] = None
     show_external_nodes_on_map: Optional[bool] = None
     timezone: Optional[str] = None
+    # Auto-Discovery
+    discovery_enabled: Optional[bool] = None
+    discovery_auto_merge: Optional[bool] = None
+    discovery_default_cidr: Optional[str] = None
+    discovery_nmap_args: Optional[str] = None
+    discovery_snmp_community: Optional[str] = None
+    discovery_schedule_cron: Optional[str] = None
+    discovery_http_probe: Optional[bool] = None
+    discovery_retention_days: Optional[int] = None
+    scan_ack_accepted: Optional[bool] = None
+    # Font preferences
+    ui_font: Optional[str] = None
+    ui_font_size: Optional[str] = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: Optional[dict[str, Any]] = None
 

@@ -170,6 +170,79 @@ def check_ip_conflict(
     return conflicts
 
 
+def resolve_ip_conflict(
+    db: Session,
+    service_id: int | None,
+    ip_address: str | None,
+    compute_id: int | None,
+    hardware_id: int | None,
+) -> dict:
+    """Host-chain-aware conflict classification for a single service.
+
+    Returns:
+    {
+        "is_conflict": bool,
+        "ip_mode": "inherited_from_compute" | "inherited_from_hardware"
+                   | "inherited_from_hardware_via_compute" | "explicit" | "none",
+        "conflict_with": [{"entity_type", "entity_id", "entity_name", "entity_ip"}, ...]
+    }
+    """
+    norm_ip = _norm(ip_address)
+    if not norm_ip:
+        return {"is_conflict": False, "ip_mode": "none", "conflict_with": []}
+
+    # Build the set of (type, id) pairs that are allowed to share this IP
+    allowed: set[tuple[str, int]] = set()
+    if service_id:
+        allowed.add(("service", service_id))
+
+    cu = None
+    if compute_id:
+        cu = db.execute(select(ComputeUnit).where(ComputeUnit.id == compute_id)).scalar_one_or_none()
+        if cu:
+            allowed.add(("compute_unit", cu.id))
+            if cu.hardware_id:
+                allowed.add(("hardware", cu.hardware_id))
+    if hardware_id:
+        allowed.add(("hardware", hardware_id))
+
+    # Determine ip_mode
+    ip_mode = "explicit"
+    if compute_id and cu:
+        if _norm(cu.ip_address) == norm_ip:
+            ip_mode = "inherited_from_compute"
+        elif cu.hardware_id:
+            hw = db.execute(select(Hardware).where(Hardware.id == cu.hardware_id)).scalar_one_or_none()
+            if hw and _norm(hw.ip_address) == norm_ip:
+                ip_mode = "inherited_from_hardware_via_compute"
+    elif hardware_id:
+        hw = db.execute(select(Hardware).where(Hardware.id == hardware_id)).scalar_one_or_none()
+        if hw and _norm(hw.ip_address) == norm_ip:
+            ip_mode = "inherited_from_hardware"
+
+    if ip_mode != "explicit":
+        return {"is_conflict": False, "ip_mode": ip_mode, "conflict_with": []}
+
+    # Explicit IP — check for real conflicts against other entities
+    conflicts = []
+    for hw in db.execute(select(Hardware).where(Hardware.ip_address == ip_address)).scalars().all():
+        if ("hardware", hw.id) not in allowed:
+            conflicts.append({"entity_type": "hardware", "entity_id": hw.id,
+                               "entity_name": hw.name, "entity_ip": hw.ip_address})
+    for cu_row in db.execute(select(ComputeUnit).where(ComputeUnit.ip_address == ip_address)).scalars().all():
+        if ("compute_unit", cu_row.id) not in allowed:
+            conflicts.append({"entity_type": "compute_unit", "entity_id": cu_row.id,
+                               "entity_name": cu_row.name, "entity_ip": cu_row.ip_address})
+    for svc in db.execute(select(Service).where(
+        Service.ip_address == ip_address,
+        Service.id != (service_id or -1),
+    )).scalars().all():
+        conflicts.append({"entity_type": "service", "entity_id": svc.id,
+                           "entity_name": svc.name, "entity_ip": svc.ip_address})
+
+    return {"is_conflict": len(conflicts) > 0, "ip_mode": ip_mode, "conflict_with": conflicts}
+
+
 def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:
     """Return a mapping of (entity_type, entity_id) -> has_conflict.
 
@@ -253,9 +326,25 @@ def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:
             for sid in svc_ids:
                 result[("service", sid)] = True
 
-    # Portless services on an IP that also belongs to a hardware/compute node
-    for svc_id, _, svc_eff_ip, svc_ports in svc_rows:
-        if svc_eff_ip and not svc_ports and (svc_eff_ip in ip_to_hw or svc_eff_ip in ip_to_cu):
-            result[("service", svc_id)] = True
+    # Portless services: only flag if their OWN ip_address (not inherited) conflicts
+    # with a hardware/compute that is NOT their own host chain.
+    for svc in svc_objs:
+        own_ip = _norm(svc.ip_address)
+        if not own_ip or _parse_ports_json(svc.ports_json):
+            continue
+        # Build the set of host IDs that are allowed to share this IP
+        allowed_hw: set[int] = set()
+        allowed_cu: set[int] = set()
+        if svc.compute_id:
+            allowed_cu.add(svc.compute_id)
+            hw_id = cu_id_to_hw_id.get(svc.compute_id)
+            if hw_id:
+                allowed_hw.add(hw_id)
+        if svc.hardware_id:
+            allowed_hw.add(svc.hardware_id)
+        conflicting_hws = [hid for hid in ip_to_hw.get(own_ip, []) if hid not in allowed_hw]
+        conflicting_cus = [cid for cid in ip_to_cu.get(own_ip, []) if cid not in allowed_cu]
+        if conflicting_hws or conflicting_cus:
+            result[("service", svc.id)] = True
 
     return result

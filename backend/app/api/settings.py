@@ -6,7 +6,7 @@ from app.db.session import get_db
 from app.schemas.settings import AppSettingsRead, AppSettingsUpdate
 from app.services import settings_service
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(tags=["settings"])
 @router.get("", response_model=AppSettingsRead)
 def get_settings(db: Session = Depends(get_db)):
     """Return the current app settings, initializing defaults on first access."""

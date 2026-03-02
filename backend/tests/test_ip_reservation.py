@@ -1,9 +1,8 @@
 """Feature 3 — IP/Port reservation tests."""
 import json
-import pytest
 
 from app.db.models import Service
-from app.core.time import utcnow, utcnow_iso
+from app.core.time import utcnow
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -181,13 +180,13 @@ def test_conflict_log_entry(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     conflict_entry = next(
-        (l for l in logs if "conflict" in (l.get("action") or "")),
+        (log for log in logs if "conflict" in (log.get("action") or "")),
         None,
     )
     # Either a specific conflict action or a warn-severity entry referencing the IP
     warn_entry = next(
-        (l for l in logs if l.get("severity") == "warn" and "10.0.0.1" in (l.get("details") or ""
-         or l.get("entity_name") or "")),
+        (log for log in logs if log.get("severity") == "warn" and "10.0.0.1" in (log.get("details") or ""
+         or log.get("entity_name") or "")),
         None,
     )
     assert conflict_entry is not None or warn_entry is not None, \

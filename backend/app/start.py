@@ -16,7 +16,7 @@ _backend_root = str(Path(__file__).resolve().parent.parent)
 if _backend_root not in sys.path:
     sys.path.insert(0, _backend_root)
 
-import socket
+import socket  # noqa: E402
 
 _orig_socketpair = socket.socketpair
 
@@ -44,6 +44,6 @@ def _safe_socketpair(family=socket.AF_UNIX, type=socket.SOCK_STREAM, proto=0):
 
 socket.socketpair = _safe_socketpair
 
-import uvicorn
+import uvicorn  # noqa: E402
 
 uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), loop="asyncio")

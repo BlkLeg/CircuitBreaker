@@ -77,12 +77,15 @@ const ENTITY_ROUTES = {
   oobe:          null,
   telemetry:     '/hardware',
   topology:      '/topology',
+  scan_job:      '/discovery',
+  scan_result:   '/discovery',
 };
 
 const LIMIT_OPTIONS = [25, 50, 100, 500];
 const ENTITY_OPTIONS = [
   '', 'hardware', 'compute', 'service', 'storage', 'network', 'misc',
   'cluster', 'external_node', 'rack', 'category', 'environment', 'settings', 'auth', 'telemetry', 'topology',
+  'scan_job', 'scan_result',
 ];
 const SEVERITY_OPTIONS = ['info', 'warn', 'error'];
 const SEVERITY_COLORS = { info: 'var(--color-primary)', warn: '#f9a825', error: 'var(--color-danger)' };

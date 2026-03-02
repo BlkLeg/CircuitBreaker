@@ -31,6 +31,10 @@ class Doc(Base):
     title: Mapped[str] = mapped_column(String, nullable=False)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.1.2: sidebar organisation & per-doc identity
+    category: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    icon: Mapped[str] = mapped_column(String, nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -91,6 +95,13 @@ class Hardware(Base):
     telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
+    # v0.1.4: auto-discovery
+    mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
+    last_seen: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
+    os_version: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -190,6 +201,10 @@ class Service(Base):
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
     ip_address: Mapped[str | None] = mapped_column(String)
+    # IP conflict classification (host-chain-aware)
+    ip_mode: Mapped[str] = mapped_column(Text, default="explicit", server_default="explicit")
+    ip_conflict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    ip_conflict_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -483,8 +498,97 @@ class AppSettings(Base):
     show_external_nodes_on_map: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Timezone preference (IANA name, e.g. "America/Denver")
     timezone: Mapped[str] = mapped_column(String, nullable=False, default="UTC")
+    # Auto-Discovery settings
+    discovery_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discovery_auto_merge: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discovery_default_cidr: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_nmap_args: Mapped[str] = mapped_column(String, nullable=False, default="-sV -O --open -T4")
+    discovery_snmp_community: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_schedule_cron: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_http_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    discovery_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    scan_ack_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Font preferences
+    ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
+    ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Auto Discovery ────────────────────────────────────────────────────────────
+
+
+class DiscoveryProfile(Base):
+    __tablename__ = "discovery_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    cidr: Mapped[str] = mapped_column(String, nullable=False)
+    scan_types: Mapped[str] = mapped_column(String, default='["nmap"]')
+    nmap_arguments: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_community_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_version: Mapped[str] = mapped_column(String, default="2c")
+    snmp_port: Mapped[int] = mapped_column(Integer, default=161)
+    schedule_cron: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    last_run: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    jobs: Mapped[list["ScanJob"]] = relationship("ScanJob", back_populates="profile")
+
+
+class ScanJob(Base):
+    __tablename__ = "scan_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    profile_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("discovery_profiles.id"), nullable=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_cidr: Mapped[str] = mapped_column(String, nullable=False)
+    scan_types_json: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    hosts_found: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_new: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_updated: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_conflict: Mapped[int] = mapped_column(Integer, default=0)
+    error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    triggered_by: Mapped[str] = mapped_column(String, default="api")
+    progress_phase: Mapped[str] = mapped_column(String, default="queued")
+    progress_message: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    profile: Mapped["DiscoveryProfile | None"] = relationship("DiscoveryProfile", back_populates="jobs")
+    results: Mapped[list["ScanResult"]] = relationship("ScanResult", back_populates="job")
+
+
+class ScanResult(Base):
+    __tablename__ = "scan_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    scan_job_id: Mapped[int] = mapped_column(Integer, ForeignKey("scan_jobs.id"), nullable=False)
+    ip_address: Mapped[str] = mapped_column(String, nullable=False)
+    mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    hostname: Mapped[str | None] = mapped_column(String, nullable=True)
+    open_ports_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_family: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_vendor: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_sys_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_sys_descr: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_interfaces_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_storage_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_nmap_xml: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="new")
+    conflicts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    matched_entity_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    matched_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    merge_status: Mapped[str] = mapped_column(String, default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    reviewed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="results")
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────

@@ -4,14 +4,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Form, Request, Response, UploadFile, File
 from sqlalchemy.orm import Session
 
-from app.core.security import get_optional_user, require_write_auth
+from app.core.security import get_optional_user
 from app.db.session import get_db
 from app.core.rate_limit import limiter
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, UserProfile
 from app.services import auth_service
 from app.services.settings_service import get_or_create_settings
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(tags=["auth"])
 
 
 @router.post("/register", response_model=AuthResponse)

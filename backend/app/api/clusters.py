@@ -12,7 +12,7 @@ from app.schemas.clusters import (
 )
 from app.services import clusters_service
 
-router = APIRouter(prefix="/hardware-clusters", tags=["hardware-clusters"])
+router = APIRouter(tags=["hardware-clusters"])
 
 
 # ── Cluster CRUD ─────────────────────────────────────────────────────────────

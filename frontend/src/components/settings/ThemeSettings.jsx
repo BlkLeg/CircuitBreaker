@@ -4,6 +4,7 @@ import { useToast } from '../common/Toast';
 import { settingsApi } from '../../api/client';
 import { THEME_PRESETS, PRESET_LABELS, DEFAULT_PRESET } from '../../theme/presets';
 import { applyTheme } from '../../theme/applyTheme';
+import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../../lib/fonts';
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -19,6 +20,22 @@ const S = {
   divider: {
     borderTop: '1px solid var(--color-border)',
     margin: '20px 0',
+  },
+  sectionDivider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    margin: '14px 0 10px',
+    color: 'var(--color-text-muted)',
+    fontSize: 11,
+    fontWeight: 600,
+    letterSpacing: '0.07em',
+    textTransform: 'uppercase',
+  },
+  sectionDividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'var(--color-border)',
   },
   grid: {
     display: 'grid',
@@ -77,6 +94,23 @@ const S = {
     color: 'rgba(156,163,175,0.7)',
     marginTop: 6,
   },
+  fontSizeRow: {
+    display: 'flex',
+    gap: 8,
+    marginBottom: 4,
+  },
+  sizePill: (active) => ({
+    flex: 1,
+    padding: '6px 0',
+    border: `1px solid ${active ? 'var(--color-primary)' : 'var(--color-border)'}`,
+    borderRadius: 6,
+    background: active ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-surface)',
+    color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
+    fontSize: 12,
+    cursor: 'pointer',
+    transition: 'border-color 0.15s, color 0.15s',
+    textAlign: 'center',
+  }),
   preview: {
     marginTop: 12,
     borderRadius: 6,
@@ -147,6 +181,8 @@ export default function ThemeSettings() {
 
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET);
   const [customColors, setCustomColors] = useState(THEME_PRESETS[DEFAULT_PRESET]);
+  const [activeFont, setActiveFont] = useState('inter');
+  const [activeFontSize, setActiveFontSize] = useState('medium');
   const [saving, setSaving] = useState(false);
 
   // Sync local state from settings once the API response arrives.
@@ -161,9 +197,11 @@ export default function ThemeSettings() {
         THEME_PRESETS[settings.theme_preset] ??
         THEME_PRESETS[DEFAULT_PRESET]
       );
+      if (settings.ui_font)      setActiveFont(settings.ui_font);
+      if (settings.ui_font_size) setActiveFontSize(settings.ui_font_size);
       synced.current = true;
     }
-  }, [settings?.theme_preset, settings?.theme_colors]);
+  }, [settings?.theme_preset, settings?.theme_colors, settings?.ui_font, settings?.ui_font_size]);
 
   const handleSelectPreset = (key) => {
     setActivePreset(key);
@@ -172,6 +210,23 @@ export default function ThemeSettings() {
     settingsApi.update({ theme_preset: key, theme_colors: null }).catch((err) => {
       toast.error(`Failed to save theme: ${err.message}`);
     });
+  };
+
+  const applyFontInstant = (fontId, fontSizeId) => {
+    const font = FONT_OPTIONS.find((f) => f.id === fontId) ?? FONT_OPTIONS[0];
+    const size = FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ?? FONT_SIZE_OPTIONS[1];
+    const existingLink = document.getElementById('cb-font-link');
+    if (font.googleUrl) {
+      const link = existingLink ?? document.createElement('link');
+      link.id = 'cb-font-link';
+      link.rel = 'stylesheet';
+      link.href = font.googleUrl;
+      if (!existingLink) document.head.appendChild(link);
+    } else {
+      existingLink?.remove();
+    }
+    document.documentElement.style.setProperty('--font', font.stack);
+    document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
   };
 
   const isLight = document.documentElement.getAttribute('data-theme') === 'light';
@@ -196,6 +251,8 @@ export default function ThemeSettings() {
       await settingsApi.update({
         theme_preset: activePreset,
         theme_colors: activePreset === 'custom' ? customColors : null,
+        ui_font: activeFont,
+        ui_font_size: activeFontSize,
       });
       await reloadSettings();
       toast.success('Theme saved.');
@@ -235,30 +292,46 @@ export default function ThemeSettings() {
     ? customColors[modeKey]
     : customColors;
 
+  // Split presets into native and theme.park groups
+  const nativeEntries = Object.entries(THEME_PRESETS).filter(([k]) => !k.startsWith('tp-'));
+  const themeparkEntries = Object.entries(THEME_PRESETS).filter(([k]) => k.startsWith('tp-'));
+
+  const presetCard = (key, colors) => (
+    <div
+      key={key}
+      style={S.card(activePreset === key)}
+      onClick={() => handleSelectPreset(key)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === 'Enter' && handleSelectPreset(key)}
+      aria-pressed={activePreset === key}
+    >
+      <div style={S.cardName}>{PRESET_LABELS[key]}</div>
+      <div style={S.swatchRow}>
+        <span style={S.swatch(colors[modeKey]?.primary)} title="Primary" />
+        <span style={S.swatch(colors[modeKey]?.accent1)} title="Accent 1" />
+        <span style={S.swatch(colors[modeKey]?.accent2)} title="Accent 2" />
+        <span style={S.swatch(colors[modeKey]?.background)} title="Background" />
+      </div>
+    </div>
+  );
+
   return (
     <div>
       {/* ── Presets ─────────────────────────────── */}
       <div style={S.subTitle}>Presets</div>
       <div style={S.grid}>
-        {Object.entries(THEME_PRESETS).map(([key, colors]) => (
-          <div
-            key={key}
-            style={S.card(activePreset === key)}
-            onClick={() => handleSelectPreset(key)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === 'Enter' && handleSelectPreset(key)}
-            aria-pressed={activePreset === key}
-          >
-            <div style={S.cardName}>{PRESET_LABELS[key]}</div>
-            <div style={S.swatchRow}>
-              <span style={S.swatch(colors[modeKey]?.primary)} title="Primary" />
-              <span style={S.swatch(colors[modeKey]?.accent1)} title="Accent 1" />
-              <span style={S.swatch(colors[modeKey]?.accent2)} title="Accent 2" />
-              <span style={S.swatch(colors[modeKey]?.background)} title="Background" />
-            </div>
-          </div>
-        ))}
+        {nativeEntries.map(([key, colors]) => presetCard(key, colors))}
+      </div>
+
+      {/* ── theme.park section ─────────────────── */}
+      <div style={S.sectionDivider}>
+        <span style={S.sectionDividerLine} />
+        <span>theme.park</span>
+        <span style={S.sectionDividerLine} />
+      </div>
+      <div style={S.grid}>
+        {themeparkEntries.map(([key, colors]) => presetCard(key, colors))}
       </div>
 
       <div style={S.divider} />
@@ -303,7 +376,49 @@ export default function ThemeSettings() {
       <span style={S.hint}>Some themes are more saturated — ensure readability for your environment.</span>
 
       <div style={S.divider} />
+      {/* ── Font ─────────────────────────────────────── */}
+      <div style={S.subTitle}>Font</div>
 
+      {/* Font Family */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={S.label}>Font Family</div>
+        <select
+          className="form-control"
+          style={{ marginBottom: 6 }}
+          value={activeFont}
+          onChange={(e) => {
+            setActiveFont(e.target.value);
+            applyFontInstant(e.target.value, activeFontSize);
+          }}
+        >
+          {FONT_OPTIONS.map((f) => (
+            <option key={f.id} value={f.id}>{f.label}</option>
+          ))}
+        </select>
+        <span style={S.hint}>ℹ️ Applied instantly. Requires internet access for hosted fonts (not System Default).</span>
+      </div>
+
+      {/* Font Size */}
+      <div style={{ marginBottom: 8 }}>
+        <div style={S.label}>Font Size</div>
+        <div style={S.fontSizeRow}>
+          {FONT_SIZE_OPTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              style={S.sizePill(activeFontSize === s.id)}
+              onClick={() => {
+                setActiveFontSize(s.id);
+                applyFontInstant(activeFont, s.id);
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.divider} />
       {/* ── Save / Reset ─────────────────────────── */}
       <div style={{ display: 'flex', gap: 10 }}>
         <button

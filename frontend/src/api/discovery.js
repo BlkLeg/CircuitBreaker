@@ -1,0 +1,17 @@
+import client from './client.jsx';
+
+export const getDiscoveryStatus  = ()          => client.get('/discovery/status');
+export const getProfiles         = ()          => client.get('/discovery/profiles');
+export const createProfile       = (data)      => client.post('/discovery/profiles', data);
+export const updateProfile       = (id, data)  => client.patch(`/discovery/profiles/${id}`, data);
+export const deleteProfile       = (id)        => client.delete(`/discovery/profiles/${id}`);
+export const runProfile          = (id)        => client.post(`/discovery/profiles/${id}/run`);
+export const startAdHocScan      = (data)      => client.post('/discovery/scan', data);
+export const getJobs             = (params)    => client.get('/discovery/jobs', { params });
+export const getJob              = (id)        => client.get(`/discovery/jobs/${id}`);
+export const cancelJob           = (id)        => client.delete(`/discovery/jobs/${id}`);
+export const getJobResults       = (jobId, params) => client.get(`/discovery/jobs/${jobId}/results`, { params });
+export const getResult           = (id)        => client.get(`/discovery/results/${id}`);
+export const mergeResult         = (id, data)  => client.post(`/discovery/results/${id}/merge`, data);
+export const bulkMerge           = (data)      => client.post('/discovery/results/bulk-merge', data);
+export const getPendingResults   = (params)    => client.get('/discovery/results', { params: { status: 'pending', ...params } });

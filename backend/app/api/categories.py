@@ -12,7 +12,7 @@ from app.services.categories_service import (
     CategoryInUseError,
 )
 
-router = APIRouter(prefix="/categories", tags=["categories"])
+router = APIRouter(tags=["categories"])
 
 
 @router.get("", response_model=list[CategoryRead])

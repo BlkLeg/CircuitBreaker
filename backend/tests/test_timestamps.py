@@ -3,7 +3,6 @@
 Tests cover the app.core.time module (unit) and timestamp behaviour in log responses (integration).
 """
 from datetime import timedelta, datetime, timezone
-import pytest
 from sqlalchemy import text
 
 from app.core.time import utcnow, utcnow_iso, elapsed_seconds

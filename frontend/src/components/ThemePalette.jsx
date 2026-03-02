@@ -37,36 +37,49 @@ export default function ThemePalette() {
     }
   };
 
+  const nativeThemes = Object.entries(THEME_PRESETS).filter(([k]) => !k.startsWith('tp-'));
+  const themeparkThemes = Object.entries(THEME_PRESETS).filter(([k]) => k.startsWith('tp-'));
+
+  const themeButton = (key, colors) => {
+    const c = colors[modeKey] ?? colors.dark;
+    const isActive = key === activePreset;
+    return (
+      <button
+        key={key}
+        title={PRESET_LABELS[key] ?? key}
+        aria-label={PRESET_LABELS[key] ?? key}
+        aria-pressed={isActive}
+        role="menuitemradio"
+        aria-checked={isActive}
+        style={S.card(isActive, c.primary)}
+        onClick={() => handleSelect(key)}
+      >
+        <div style={S.swatchRow}>
+          <span style={S.dot(c.primary)} />
+          <span style={S.dot(c.accent1)} />
+          <span style={S.dot(c.accent2)} />
+          <span style={S.dot(c.background)} />
+        </div>
+        <div style={S.label}>{PRESET_LABELS[key] ?? key}</div>
+      </button>
+    );
+  };
+
   return (
     <div ref={containerRef} style={S.wrapper}>
       {open && (
         <div style={S.popover} role="menu" aria-label="Theme options">
           <div style={S.popoverTitle}>Theme</div>
           <div style={S.grid}>
-            {Object.entries(THEME_PRESETS).map(([key, colors]) => {
-              const c = colors[modeKey] ?? colors.dark;
-              const isActive = key === activePreset;
-              return (
-                <button
-                  key={key}
-                  title={PRESET_LABELS[key] ?? key}
-                  aria-label={PRESET_LABELS[key] ?? key}
-                  aria-pressed={isActive}
-                  role="menuitemradio"
-                  aria-checked={isActive}
-                  style={S.card(isActive, c.primary)}
-                  onClick={() => handleSelect(key)}
-                >
-                  <div style={S.swatchRow}>
-                    <span style={S.dot(c.primary)} />
-                    <span style={S.dot(c.accent1)} />
-                    <span style={S.dot(c.accent2)} />
-                    <span style={S.dot(c.background)} />
-                  </div>
-                  <div style={S.label}>{PRESET_LABELS[key] ?? key}</div>
-                </button>
-              );
-            })}
+            {nativeThemes.map(([key, colors]) => themeButton(key, colors))}
+          </div>
+          <div style={S.groupDivider}>
+            <span style={S.groupDividerLine} />
+            <span>theme.park</span>
+            <span style={S.groupDividerLine} />
+          </div>
+          <div style={S.grid}>
+            {themeparkThemes.map(([key, colors]) => themeButton(key, colors))}
           </div>
         </div>
       )}
@@ -123,6 +136,23 @@ const S = {
     letterSpacing: '0.08em',
     color: 'var(--color-text-muted)',
     marginBottom: 10,
+  },
+  groupDivider: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    margin: '10px 0 8px',
+    color: 'var(--color-text-muted)',
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: '0.07em',
+    textTransform: 'uppercase',
+  },
+  groupDividerLine: {
+    flex: 1,
+    height: 1,
+    background: 'var(--color-border)',
+    display: 'block',
   },
   grid: {
     display: 'grid',

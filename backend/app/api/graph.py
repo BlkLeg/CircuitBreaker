@@ -5,9 +5,6 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-
-_logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.services.ip_reservation import bulk_conflict_map
@@ -33,7 +30,9 @@ from app.db.models import (
     EntityTag,
 )
 
-router = APIRouter(prefix="/graph", tags=["graph"])
+_logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["graph"])
 
 
 class LayoutUpdate(BaseModel):
@@ -287,7 +286,7 @@ def get_topology(
                 "compute_id": svc.compute_id,
                 "hardware_id": svc.hardware_id,
                 "tags": get_tags("services", svc.id),
-                "ip_conflict": conflict_map.get(("service", svc.id), False),
+                "ip_conflict": bool(svc.ip_conflict),
             })
             # Link to Compute
             if svc.compute_id and "compute" in include_set:

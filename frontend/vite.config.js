@@ -1,23 +1,26 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
-import { sentryVitePlugin } from '@sentry/vite-plugin'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+
+// Read the canonical VERSION file from the repo root at build time.
+// This value is baked into the JS bundle as import.meta.env.VITE_APP_VERSION.
+const APP_VERSION = readFileSync(resolve(__dirname, '../VERSION'), 'utf8').trim()
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiTarget = env.API_TARGET || 'http://localhost:8000'
 
   return {
+    define: {
+      // Expose as import.meta.env.VITE_APP_VERSION throughout the app.
+      // VITE_APP_VERSION env var (e.g. from CI) overrides the VERSION file.
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(
+        env.VITE_APP_VERSION || APP_VERSION
+      ),
+    },
     plugins: [
       react(),
-      // Uploads source maps to Sentry and strips them from the public bundle.
-      // SENTRY_AUTH_TOKEN must be set in the build environment; if absent the
-      // plugin is a no-op so local dev builds still work without a token.
-      sentryVitePlugin({
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        silent: !process.env.SENTRY_AUTH_TOKEN,
-      }),
     ],
     optimizeDeps: {
       include: ['react-markdown', 'style-to-js'],

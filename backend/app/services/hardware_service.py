@@ -5,10 +5,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
 from fastapi import HTTPException
 
-from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag
+from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag  # noqa: F401 (Service used for reactive cascade)
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map
+from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
 from app.services.log_service import write_log
 from app.core.time import utcnow
 
@@ -228,6 +228,23 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         _sync_tags(db, "hardware", hw.id, payload.tags)
     db.commit()
     db.refresh(hw)
+    # Re-evaluate services directly on this hardware
+    affected: list[Service] = list(
+        db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all()
+    )
+    # Also services on compute units hosted by this hardware
+    cus = db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id)).scalars().all()
+    for cu in cus:
+        affected += list(
+            db.execute(select(Service).where(Service.compute_id == cu.id)).scalars().all()
+        )
+    for svc in affected:
+        result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
+        svc.ip_mode = result["ip_mode"]
+        svc.ip_conflict = result["is_conflict"]
+        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+    if affected:
+        db.commit()
     return _to_dict(db, hw)
 
 

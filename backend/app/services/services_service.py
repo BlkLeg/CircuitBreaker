@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_
@@ -8,7 +9,7 @@ from fastapi import HTTPException
 from app.db.models import Service, ServiceDependency, ServiceStorage, ServiceMisc, EntityTag, Tag, Category
 from app.schemas.services import ServiceCreate, ServiceUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, _parse_ports_json, bulk_conflict_map
+from app.services.ip_reservation import resolve_ip_conflict
 from app.services.log_service import write_log
 from app.core.time import utcnow, utcnow_iso
 
@@ -115,6 +116,13 @@ def _to_dict(db: Session, svc: Service) -> dict:
     d["tags"] = get_tags_for(db, "service", svc.id)
     d["category_name"] = svc.category_rel.name if svc.category_rel else None
     d["environment_name"] = svc.environment_rel.name if svc.environment_rel else None
+    # IP conflict classification
+    d["ip_mode"] = svc.ip_mode or "explicit"
+    d["ip_conflict"] = bool(svc.ip_conflict)
+    try:
+        d["ip_conflict_with"] = json.loads(svc.ip_conflict_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["ip_conflict_with"] = []
     return d
 
 
@@ -151,11 +159,9 @@ def list_services(
             .where(Tag.name == tag)
         )
     rows = db.execute(stmt).scalars().all()
-    conflict_map = bulk_conflict_map(db)
     result = []
     for r in rows:
-        d = _to_dict(db, r)
-        d["ip_conflict"] = conflict_map.get(("service", r.id), False)
+        d = _to_dict(db, r)  # ip_mode, ip_conflict, ip_conflict_with included from stored columns
         result.append(d)
     return result
 
@@ -165,64 +171,45 @@ def get_service(db: Session, service_id: int) -> dict:
     if svc is None:
         raise ValueError(f"Service {service_id} not found")
     d = _to_dict(db, svc)
-    if svc.ip_address:
-        existing_ports = _parse_ports_json(svc.ports_json)
-        conflicts = check_ip_conflict(
-            db,
-            ip=svc.ip_address,
-            ports=existing_ports,
-            exclude_entity_type="service",
-            exclude_entity_id=service_id,
-        )
-        d["ip_conflict"] = len(conflicts) > 0
-        d["ip_conflict_details"] = [c.to_dict() for c in conflicts]
-    else:
-        d["ip_conflict"] = False
-        d["ip_conflict_details"] = []
+    # Re-compute live for accurate single-fetch response
+    conflict_result = resolve_ip_conflict(db, service_id, svc.ip_address, svc.compute_id, svc.hardware_id)
+    d["ip_mode"] = conflict_result["ip_mode"]
+    d["ip_conflict"] = conflict_result["is_conflict"]
+    d["ip_conflict_with"] = conflict_result["conflict_with"]
     return d
 
 
 def create_service(db: Session, payload: ServiceCreate) -> dict:
-    if payload.ip_address:
-        ports_as_dicts = [pe.model_dump() for pe in payload.ports] if payload.ports else None
-        conflicts = check_ip_conflict(
-            db,
-            ip=payload.ip_address,
-            ports=ports_as_dicts,
-            exclude_entity_type="service",
-            exclude_entity_id=None,
-            incoming_entity_type="service",
+    conflict_result = resolve_ip_conflict(
+        db, None, payload.ip_address, payload.compute_id, payload.hardware_id
+    )
+    if conflict_result["is_conflict"]:
+        _logger.warning(
+            "IP conflict blocked save for service %r: %s",
+            payload.name,
+            payload.ip_address,
         )
-        # Only block on service-to-service port clashes; hardware/compute IP
-        # matches are reported in the conflict list but don't block creation
-        # (a service is allowed to share an IP with its hosting hardware).
-        blocking_conflicts = [c for c in conflicts if c.entity_type == "service"]
-        if blocking_conflicts:
-            _logger.warning(
-                "IP conflict blocked save for service %r: %s already used by %s",
-                payload.name,
-                payload.ip_address,
-                ", ".join(c.entity_name for c in conflicts),
-            )
-            write_log(
-                db,
-                action="ip_conflict",
-                entity_type="service",
-                entity_name=payload.name,
-                severity="warn",
-                details=f"IP conflict for {payload.ip_address}: already used by {', '.join(c.entity_name for c in conflicts)}",
-                category="crud",
-            )
-            raise HTTPException(
-                status_code=409,
-                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
-            )
+        write_log(
+            db,
+            action="ip_conflict",
+            entity_type="service",
+            entity_name=payload.name,
+            severity="warn",
+            details=f"IP conflict for {payload.ip_address}: already used by "
+                    + ", ".join(c["entity_name"] for c in conflict_result["conflict_with"]),
+            category="crud",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": "IP conflict detected", "conflicts": conflict_result["conflict_with"]},
+        )
     resolved_cat_id = _resolve_category(db, payload.category_id, payload.category)
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     ports_json = _ports_to_json(payload.ports)
+    slug = payload.slug or re.sub(r'[^a-z0-9]+', '-', payload.name.lower()).strip('-')
     svc = Service(
         name=payload.name,
-        slug=payload.slug,
+        slug=slug,
         compute_id=payload.compute_id,
         hardware_id=payload.hardware_id,
         icon_slug=payload.icon_slug,
@@ -234,6 +221,9 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
         status=payload.status,
         ip_address=payload.ip_address,
         category_id=resolved_cat_id,
+        ip_mode=conflict_result["ip_mode"],
+        ip_conflict=False,
+        ip_conflict_json="[]",
     )
     db.add(svc)
     db.flush()
@@ -247,33 +237,23 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
     svc = db.get(Service, service_id)
     if svc is None:
         raise ValueError(f"Service {service_id} not found")
-    # Determine effective IP and ports for conflict check
+    data_check = payload.model_dump(exclude_unset=True, exclude={"tags"})
     effective_ip = payload.ip_address if payload.ip_address is not None else svc.ip_address
-    if effective_ip:
-        if payload.ports is not None:
-            ports_for_check = [pe.model_dump() for pe in payload.ports]
-        else:
-            # Use existing ports if not being updated
-            ports_for_check = _parse_ports_json(svc.ports_json)
-        conflicts = check_ip_conflict(
-            db,
-            ip=effective_ip,
-            ports=ports_for_check,
-            exclude_entity_type="service",
-            exclude_entity_id=service_id,
-            incoming_entity_type="service",
+    effective_compute = payload.compute_id if "compute_id" in data_check else svc.compute_id
+    effective_hardware = payload.hardware_id if "hardware_id" in data_check else svc.hardware_id
+    conflict_result = resolve_ip_conflict(
+        db, service_id, effective_ip, effective_compute, effective_hardware
+    )
+    if conflict_result["is_conflict"]:
+        _logger.warning(
+            "IP conflict blocked save for service %r: %s",
+            svc.name,
+            effective_ip,
         )
-        if conflicts:
-            _logger.warning(
-                "IP conflict blocked save for service %r: %s already used by %s",
-                svc.name,
-                effective_ip,
-                ", ".join(c.entity_name for c in conflicts),
-            )
-            raise HTTPException(
-                status_code=409,
-                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
-            )
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": "IP conflict detected", "conflicts": conflict_result["conflict_with"]},
+        )
     data = payload.model_dump(exclude_unset=True, exclude={"tags"})
     cat_str = data.pop("category", None)
     cat_id = data.pop("category_id", None)
@@ -291,6 +271,9 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         data["ports_json"] = _ports_to_json(ports_list)
     for field, value in data.items():
         setattr(svc, field, value)
+    svc.ip_mode = conflict_result["ip_mode"]
+    svc.ip_conflict = conflict_result["is_conflict"]
+    svc.ip_conflict_json = json.dumps(conflict_result["conflict_with"])
     svc.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "service", svc.id, payload.tags)

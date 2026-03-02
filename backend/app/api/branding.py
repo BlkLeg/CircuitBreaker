@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,7 +14,7 @@ from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
 
-router = APIRouter(prefix="/branding", tags=["branding"])
+router = APIRouter(tags=["branding"])
 
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
 _MAX_FAVICON_BYTES = 512 * 1024   # 512 KB

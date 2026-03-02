@@ -30,6 +30,15 @@ _DEFAULTS = dict(
     accent_colors='["#ff6b6b","#4ecdc4"]',
     theme_preset="cyberpunk-neon",
     custom_colors=None,
+    discovery_enabled=False,
+    discovery_auto_merge=False,
+    discovery_default_cidr="",
+    discovery_nmap_args="-sV -O --open -T4",
+    discovery_snmp_community="",
+    discovery_schedule_cron="",
+    discovery_http_probe=True,
+    discovery_retention_days=30,
+    scan_ack_accepted=False,
 )
 
 

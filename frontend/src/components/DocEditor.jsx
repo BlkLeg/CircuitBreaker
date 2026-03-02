@@ -30,6 +30,7 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
   const dirtyRef = useRef(false);
   const backendTimerRef = useRef(null);
   const editorRef = useRef(null);
+  const headingLevelRef = useRef(null);
 
   // ── Draft recovery on mount ──────────────────────────────────
   useEffect(() => {
@@ -148,6 +149,29 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
     e.preventDefault();
   }, []);
 
+  // ── ⌘S / Ctrl+S keyboard shortcut ─────────────────────────
+  useEffect(() => {
+    const handleKeyDown = async (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        if (!dirtyRef.current) return;
+        clearTimeout(backendTimerRef.current);
+        setSaveStatus('saving');
+        try {
+          await onSave(value);
+          dirtyRef.current = false;
+          setSaveStatus('saved');
+          if (docId) localStorage.removeItem(`${DRAFT_PREFIX}${docId}`);
+        } catch (err) {
+          logger.error('⌘S save failed:', err);
+          setSaveStatus('error');
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [value, docId, onSave]);
+
   // ── Custom toolbar commands ─────────────────────────────────
 
   // Emoji picker command
@@ -157,6 +181,34 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
     buttonProps: { 'aria-label': 'Insert emoji', title: 'Emoji' },
     icon: <span style={{ fontSize: 16 }}>😀</span>,
     execute: () => setShowEmoji(prev => !prev),
+  };
+
+  // Heading dropdown command (replaces separate h1/h2/h3 buttons)
+  const headingCommand = {
+    name: 'heading',
+    keyCommand: 'heading',
+    buttonProps: { 'aria-label': 'Heading level', title: 'Heading level' },
+    icon: (
+      <select
+        style={{ background: 'transparent', border: 'none', color: 'var(--color-text-muted)', fontSize: 12, cursor: 'pointer', outline: 'none', padding: '0 2px' }}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => { headingLevelRef.current = e.target.value; e.target.value = ''; }}
+        defaultValue=""
+      >
+        <option value="" disabled>¶ H▾</option>
+        <option value="p">Paragraph</option>
+        <option value="1">Heading 1</option>
+        <option value="2">Heading 2</option>
+        <option value="3">Heading 3</option>
+      </select>
+    ),
+    execute: (state, api) => {
+      const level = headingLevelRef.current;
+      if (!level || level === 'p') { api.replaceSelection(state.selectedText.replace(/^#{1,6} /, '')); return; }
+      const prefix = '#'.repeat(Number(level)) + ' ';
+      const stripped = state.selectedText.replace(/^#{1,6} /, '');
+      api.replaceSelection(prefix + (stripped || 'heading'));
+    },
   };
 
   // Image upload command
@@ -191,17 +243,28 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
 
   // ── Toolbar config ──────────────────────────────────────────
   const toolbarCommands = [
+    // Undo / redo
+    commands.undo, commands.redo,
+    commands.divider,
+    // Inline formatting
     commands.bold, commands.italic, commands.strikethrough,
     commands.divider,
-    commands.title1, commands.title2, commands.title3,
+    // Heading dropdown (replaces h1/h2/h3 separate buttons)
+    headingCommand,
     commands.divider,
+    // Block elements
     commands.quote, commands.code, commands.codeBlock,
     commands.divider,
+    // Links & images
     commands.link, commands.image, imageUploadCommand,
     commands.divider,
+    // Lists
     commands.unorderedListCommand, commands.orderedListCommand, commands.checkedListCommand,
     commands.divider,
+    // Table
     commands.table,
+    commands.divider,
+    // Emoji — at end, separated by divider
     emojiCommand,
   ];
 
@@ -215,11 +278,14 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
 
   // ── Render ──────────────────────────────────────────────────
   const statusLabels = {
-    saved: 'Saved',
+    saved: 'Saved  (⌘S)',
     saving: 'Saving…',
-    unsaved: 'Unsaved changes',
+    unsaved: 'Unsaved — ⌘S to save',
     error: 'Save failed — will retry',
   };
+
+  const wordCount = (value || '').trim().split(/\s+/).filter(Boolean).length;
+  const readingMins = Math.ceil(wordCount / 200);
 
   return (
     <div className="doc-editor-wrapper" data-color-mode="dark">
@@ -232,10 +298,13 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
         </div>
       )}
 
-      {/* Save status */}
+      {/* Save status + word count + reading time */}
       <div className="doc-editor-status">
         <span className={`status-dot ${saveStatus}`} />
         <span>{statusLabels[saveStatus]}</span>
+        <span className="doc-editor-wordcount">
+          {wordCount > 0 && `${wordCount.toLocaleString()} word${wordCount === 1 ? '' : 's'} · ~${readingMins} min read`}
+        </span>
         {imageError && <span style={{ color: '#f44336', marginLeft: 'auto' }}>⚠ {imageError}</span>}
       </div>
 
@@ -250,12 +319,12 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
           value={value}
           onChange={handleChange}
           commands={toolbarCommands}
-          extraCommands={[commands.codeEdit, commands.codeLive, commands.codePreview]}
+          extraCommands={[commands.divider, commands.codeEdit, commands.codeLive, commands.codePreview]}
           preview="live"
           height="100%"
           visibleDragbar
           textareaProps={{
-            placeholder: 'Write Markdown here…',
+            placeholder: 'Start writing…',
           }}
         />
 

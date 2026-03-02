@@ -1,3 +1,5 @@
+import { THEMEPARK_PRESETS, THEMEPARK_LABELS } from './themepark';
+
 export const THEME_PRESETS = {
   'cyberpunk-neon': {
     dark: {
@@ -223,6 +225,7 @@ export const THEME_PRESETS = {
       gridLine:   'rgba(64,120,192,0.1)',
     }
   },
+  ...THEMEPARK_PRESETS,
 };
 
 export const PRESET_LABELS = {
@@ -234,6 +237,7 @@ export const PRESET_LABELS = {
   'gruvbox-dark':    'Gruvbox Dark',
   'monokai':         'Monokai',
   'one-dark':        'One Dark',
+  ...THEMEPARK_LABELS,
 };
 
 export const DEFAULT_PRESET = 'cyberpunk-neon';

@@ -1,17 +1,17 @@
 {
   "name": "circuit-breaker-ui",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "private": true,
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
     "@emoji-mart/data": "^1.2.1",
     "@emoji-mart/react": "^1.1.1",
     "@reactflow/node-resizer": "^2.2.14",
-    "@sentry/react": "^10.40.0",
     "@uiw/react-md-editor": "^4.0.11",
     "axios": "^1.7.0",
     "elkjs": "^0.11.0",
     "lucide-react": "^0.574.0",
+    "mitt": "^3.0.1",
     "prop-types": "^15.8.1",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
@@ -21,15 +21,15 @@
     "reactflow": "^11.11.4"
   },
   "scripts": {
+    "syncversion": "node -e \"const fs=require('fs');const v=fs.readFileSync('../VERSION','utf8').trim();const p=JSON.parse(fs.readFileSync('./package.json','utf8'));p.version=v;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n');console.log('version synced to '+v);\"",
     "start": "vite",
-    "build": "vite build",
+    "build": "npm run syncversion && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@sentry/vite-plugin": "^5.1.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

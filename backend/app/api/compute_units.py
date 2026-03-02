@@ -12,10 +12,9 @@ from app.db.models import ComputeNetwork
 from app.schemas.compute_units import ComputeUnit, ComputeUnitCreate, ComputeUnitUpdate
 from app.schemas.networks import ComputeNetworkRead
 from app.services import compute_units_service
-
-router = APIRouter(prefix="/compute-units", tags=["compute-units"])
-
 from app.core.config import settings
+
+router = APIRouter(tags=["compute-units"])
 
 ICON_UPLOAD_DIR = Path(settings.uploads_dir) / "icons"
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}

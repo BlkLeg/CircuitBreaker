@@ -1,20 +1,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { BookOpen, Cloud, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map } from 'lucide-react';
+import { BookOpen, Cloud, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map, ScanSearch } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
 export const NAV_MAP = {
-  '/hardware':      { icon: Cpu,        label: 'Hardware' },
-  '/compute-units': { icon: Server,     label: 'Compute'  },
-  '/services':      { icon: Layers,     label: 'Services' },
-  '/networks':      { icon: Network,    label: 'Network'  },
-  '/external-nodes': { icon: Cloud,      label: 'External' },
-  '/storage':       { icon: HardDrive,  label: 'Storage'  },
-  '/map':           { icon: Map,        label: 'Map'      },
-  '/docs':          { icon: BookOpen,   label: 'Docs'     },
-  '/logs':          { icon: ScrollText, label: 'Logs'     },
-  '/settings':      { icon: Settings,   label: 'Settings' },
+  '/hardware':      { icon: Cpu,        label: 'Hardware'   },
+  '/compute-units': { icon: Server,     label: 'Compute'    },
+  '/services':      { icon: Layers,     label: 'Services'   },
+  '/networks':      { icon: Network,    label: 'Network'    },
+  '/external-nodes':{ icon: Cloud,      label: 'External'   },
+  '/storage':       { icon: HardDrive,  label: 'Storage'    },
+  '/map':           { icon: Map,        label: 'Map'        },
+  '/discovery':     { icon: ScanSearch, label: 'Discovery'  },
+  '/docs':          { icon: BookOpen,   label: 'Docs'       },
+  '/logs':          { icon: ScrollText, label: 'Logs'       },
+  '/settings':      { icon: Settings,   label: 'Settings'   },
 };
 
 export const DEFAULT_ORDER = [
@@ -25,12 +26,13 @@ export const DEFAULT_ORDER = [
   '/networks',
   '/external-nodes',
   '/storage',
+  '/discovery',
   '/docs',
   '/logs',
   '/settings',
 ];
 
-function Dock() {
+function Dock({ pendingCount = 0 }) {
   const navRef = useRef(null);
   const dragItem = useRef(null);
   const dragOver = useRef(null);
@@ -136,7 +138,19 @@ function Dock() {
           title={editMode ? `Drag to reorder — ${label}` : label}
           aria-label={label}
         >
-          <Icon size={22} strokeWidth={1.5} />
+          <span style={{ position: 'relative', display: 'inline-flex' }}>
+            <Icon size={22} strokeWidth={1.5} />
+            {path === '/discovery' && pendingCount > 0 && (
+              <span style={{
+                position: 'absolute', top: -5, right: -7,
+                background: '#f59e0b', color: '#000',
+                borderRadius: 9, fontSize: 9, fontWeight: 700,
+                padding: '0 4px', lineHeight: '16px', minWidth: 16, textAlign: 'center',
+              }}>
+                {pendingCount > 99 ? '99+' : pendingCount}
+              </span>
+            )}
+          </span>
           <span>{label}</span>
         </NavLink>
       ))}
