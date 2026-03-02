@@ -1,8 +1,9 @@
 import json
 import logging
+import re
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from fastapi import HTTPException
 
 from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag  # noqa: F401 (Service used for reactive cascade)
@@ -13,6 +14,17 @@ from app.services.log_service import write_log
 from app.core.time import utcnow
 
 _logger = logging.getLogger(__name__)
+
+
+def _norm_mac(mac: str | None) -> str | None:
+    """Normalize a MAC address to uppercase colon-separated format (AA:BB:CC:DD:EE:FF).
+    Returns None if input is None or empty."""
+    if not mac:
+        return None
+    cleaned = re.sub(r'[^0-9a-fA-F]', '', mac)
+    if len(cleaned) != 12:
+        return mac.strip().upper()  # Can't normalize — return uppercased original
+    return ':'.join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -74,6 +86,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
     else:
         d["storage_summary"] = None
     d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
+    d["rack_name"] = hw.rack.name if hw.rack else None
     return d
 
 
@@ -155,13 +168,48 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
                 status_code=409,
                 detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
             )
+
+    # CB-LEARN-002: auto-fill u_height/role from catalog when null but catalog keys present
+    u_height = payload.u_height
+    role = payload.role
+    rack_id = payload.rack_id
+    if payload.vendor_catalog_key and payload.model_catalog_key:
+        from app.services.catalog_service import get_device_spec
+        spec = get_device_spec(payload.vendor_catalog_key, payload.model_catalog_key)
+        if spec:
+            if u_height is None and spec.get("u_height"):
+                u_height = spec["u_height"]
+            if role is None and spec.get("role"):
+                role = spec["role"]
+
+    # CB-RACK-002: rack overlap check
+    rack_unit = payload.rack_unit
+    if rack_id is not None and rack_unit is not None and u_height is not None:
+        from app.services.rack_service import check_rack_overlap
+        overlaps = check_rack_overlap(db, rack_id, rack_unit, u_height)
+        if overlaps:
+            raise HTTPException(
+                status_code=422,
+                detail={"detail": "Rack slot overlap", "conflicts": overlaps},
+            )
+
+    # CB-PATTERN-001: MAC normalization + soft-alert on duplicate
+    mac = _norm_mac(getattr(payload, 'mac_address', None))
+    if mac:
+        existing = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
+        if existing:
+            _logger.warning(
+                "Duplicate MAC %s: new hardware %r, existing hardware %r (id=%d). Saving both (freeform-first).",
+                mac, payload.name, existing.name, existing.id,
+            )
+
     telemetry_config_json = None
     if payload.telemetry_config is not None:
         telemetry_config_json = payload.telemetry_config.model_dump_json()
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     hw = Hardware(
         name=payload.name,
-        role=payload.role,
+        role=role,
         vendor=payload.vendor,
         model=payload.model,
         cpu=payload.cpu,
@@ -174,10 +222,11 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         vendor_icon_slug=payload.vendor_icon_slug,
         vendor_catalog_key=payload.vendor_catalog_key,
         model_catalog_key=payload.model_catalog_key,
-        u_height=payload.u_height,
-        rack_unit=payload.rack_unit,
+        u_height=u_height,
+        rack_unit=rack_unit,
         telemetry_config=telemetry_config_json,
         environment_id=resolved_env_id,
+        rack_id=rack_id,
     )
     db.add(hw)
     db.flush()
@@ -221,8 +270,24 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
     env_id = update_data.pop("environment_id", None)
     if env_str is not None or env_id is not None:
         update_data["environment_id"] = resolve_environment_id(db, env_id, env_str)
+
+    # CB-RACK-002: rack overlap check on update
+    effective_rack_id = update_data.get("rack_id", hw.rack_id)
+    effective_rack_unit = update_data.get("rack_unit", hw.rack_unit)
+    effective_u_height = update_data.get("u_height", hw.u_height)
+    if effective_rack_id is not None and effective_rack_unit is not None and effective_u_height is not None:
+        from app.services.rack_service import check_rack_overlap
+        overlaps = check_rack_overlap(db, effective_rack_id, effective_rack_unit, effective_u_height, exclude_hardware_id=hardware_id)
+        if overlaps:
+            raise HTTPException(
+                status_code=422,
+                detail={"detail": "Rack slot overlap", "conflicts": overlaps},
+            )
+
     for field, value in update_data.items():
         setattr(hw, field, value)
+    # CB-STATE-005: touch last_seen on any update
+    hw.last_seen = utcnow().isoformat()
     hw.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "hardware", hw.id, payload.tags)
@@ -277,6 +342,34 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
     _sync_tags(db, "hardware", hw.id, [])
     db.delete(hw)
     db.commit()
+
+
+def find_orphans(db: Session) -> list[dict]:
+    """CB-PATTERN-003: Find hardware with no compute_units, services, or storage attached."""
+    all_hw = db.execute(select(Hardware)).scalars().all()
+    orphans = []
+    for hw in all_hw:
+        has_cu = db.execute(select(ComputeUnit.id).where(ComputeUnit.hardware_id == hw.id).limit(1)).first()
+        has_svc = db.execute(select(Service.id).where(Service.hardware_id == hw.id).limit(1)).first()
+        has_st = db.execute(select(Storage.id).where(Storage.hardware_id == hw.id).limit(1)).first()
+        if not has_cu and not has_svc and not has_st:
+            orphans.append(_to_dict(db, hw))
+    return orphans
+
+
+def list_hardware_groups(db: Session) -> list[dict]:
+    """CB-PATTERN-004: Group hardware by vendor+model with counts."""
+    rows = db.execute(
+        select(
+            Hardware.vendor,
+            Hardware.model,
+            func.count(Hardware.id).label("count"),
+        ).group_by(Hardware.vendor, Hardware.model)
+    ).all()
+    return [
+        {"vendor": r.vendor, "model": r.model, "count": r.count}
+        for r in rows
+    ]
 
 
 def list_network_memberships(db: Session, hardware_id: int) -> list[dict]:

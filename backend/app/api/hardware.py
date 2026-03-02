@@ -29,6 +29,18 @@ def create_hardware(payload: HardwareCreate, db: Session = Depends(get_db), _=De
         raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
 
 
+@router.get("/orphans")
+def get_orphans(db: Session = Depends(get_db)):
+    """CB-PATTERN-003: Hardware with no compute_units, services, or storage."""
+    return hardware_service.find_orphans(db)
+
+
+@router.get("/groups")
+def get_groups(db: Session = Depends(get_db)):
+    """CB-PATTERN-004: Hardware grouped by vendor+model with counts."""
+    return hardware_service.list_hardware_groups(db)
+
+
 @router.get("/{hardware_id}", response_model=Hardware)
 def get_hardware(hardware_id: int, db: Session = Depends(get_db)):
     try:

@@ -207,11 +207,19 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     ports_json = _ports_to_json(payload.ports)
     slug = payload.slug or re.sub(r'[^a-z0-9]+', '-', payload.name.lower()).strip('-')
+    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    effective_hardware_id = payload.hardware_id
+    if payload.compute_id and not effective_hardware_id:
+        from app.db.models import ComputeUnit as _CU
+        cu = db.get(_CU, payload.compute_id)
+        if cu:
+            effective_hardware_id = cu.hardware_id
+
     svc = Service(
         name=payload.name,
         slug=slug,
         compute_id=payload.compute_id,
-        hardware_id=payload.hardware_id,
+        hardware_id=effective_hardware_id,
         icon_slug=payload.icon_slug,
         url=payload.url,
         ports_json=ports_json,
@@ -230,6 +238,11 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     _sync_tags(db, "service", svc.id, payload.tags)
     db.commit()
     db.refresh(svc)
+    # CB-STATE-002: recalculate compute status if compute-bound
+    if svc.compute_id:
+        from app.services.status_service import recalculate_compute_status
+        recalculate_compute_status(db, svc.compute_id)
+        db.commit()
     return _to_dict(db, svc)
 
 
@@ -265,10 +278,18 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         data["environment_id"] = resolve_environment_id(db, env_id, env_str)
         if env_str is not None:
             data["environment"] = env_str
+    # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
+    effective_compute = data.get("compute_id", svc.compute_id)
+    if effective_compute and "hardware_id" not in data:
+        from app.db.models import ComputeUnit as _CU
+        cu = db.get(_CU, effective_compute)
+        if cu:
+            data["hardware_id"] = cu.hardware_id
     # Convert structured ports list to ports_json; remove "ports" from generic setattr loop
     if "ports" in data:
         ports_list = data.pop("ports")
         data["ports_json"] = _ports_to_json(ports_list)
+    old_compute_id = svc.compute_id
     for field, value in data.items():
         setattr(svc, field, value)
     svc.ip_mode = conflict_result["ip_mode"]
@@ -279,6 +300,17 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         _sync_tags(db, "service", svc.id, payload.tags)
     db.commit()
     db.refresh(svc)
+    # CB-STATE-002: recalculate compute status for old and new compute parents
+    from app.services.status_service import recalculate_compute_status
+    affected_cu_ids = set()
+    if old_compute_id:
+        affected_cu_ids.add(old_compute_id)
+    if svc.compute_id:
+        affected_cu_ids.add(svc.compute_id)
+    for cu_id in affected_cu_ids:
+        recalculate_compute_status(db, cu_id)
+    if affected_cu_ids:
+        db.commit()
     return _to_dict(db, svc)
 
 
@@ -286,6 +318,7 @@ def delete_service(db: Session, service_id: int) -> None:
     svc = db.get(Service, service_id)
     if svc is None:
         raise ValueError(f"Service {service_id} not found")
+    compute_id_to_recalc = svc.compute_id
     # Remove entity tags
     _sync_tags(db, "service", svc.id, [])
     # Remove dependency rows referencing this service on either side
@@ -308,6 +341,11 @@ def delete_service(db: Session, service_id: int) -> None:
     db.flush()
     db.delete(svc)
     db.commit()
+    # CB-STATE-002: recalculate compute status after service deletion
+    if compute_id_to_recalc:
+        from app.services.status_service import recalculate_compute_status
+        recalculate_compute_status(db, compute_id_to_recalc)
+        db.commit()
 
 
 # ── Dependencies ─────────────────────────────────────────────────────────────

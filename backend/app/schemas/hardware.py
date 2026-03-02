@@ -73,6 +73,9 @@ class HardwareBase(BaseModel):
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
     environment: Optional[str] = None
+    # v0.1.4-cortex: rack assignment + discovery lineage
+    rack_id: Optional[int] = None
+    source_scan_result_id: Optional[int] = None
 
     @field_validator("vendor", mode="before")
     @classmethod
@@ -106,6 +109,8 @@ class HardwareUpdate(BaseModel):
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
     environment: Optional[str] = None
+    # v0.1.4-cortex: rack assignment
+    rack_id: Optional[int] = None
 
     @field_validator("vendor", mode="before")
     @classmethod
@@ -132,3 +137,12 @@ class Hardware(HardwareBase):
     telemetry_last_polled: Optional[datetime] = None
     # v0.1.4: environment registry
     environment_name: Optional[str] = None
+    # v0.1.4-cortex: rack info + discovery fields
+    rack_name: Optional[str] = None
+    last_seen: Optional[str] = None
+    status: Optional[str] = None
+    source: Optional[str] = None
+    mac_address: Optional[str] = None
+    discovered_at: Optional[str] = None
+    os_version: Optional[str] = None
+    source_scan_result_id: Optional[int] = None

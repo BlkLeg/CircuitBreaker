@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     debug: bool = False
     database_url: str = "sqlite:///./data/app.db"
     api_prefix: str = "/api/v1"
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    cors_origins: list[str] = ["*"]
     # Relative to the backend working directory. Override with STATIC_DIR env var
     # in single-container Docker deployments (e.g. STATIC_DIR=/app/frontend/dist).
     static_dir: str = "../frontend/dist"

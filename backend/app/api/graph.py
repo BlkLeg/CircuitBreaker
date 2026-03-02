@@ -28,6 +28,7 @@ from app.db.models import (
     GraphLayout,
     Tag,
     EntityTag,
+    Rack,
 )
 
 _logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class LayoutUpdate(BaseModel):
 def get_topology(
     environment: str | None = Query(None),
     environment_id: int | None = Query(None),
+    rack_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     db: Session = Depends(get_db),
 ):
@@ -169,9 +171,29 @@ def get_topology(
                 "member_count": len(cluster.members),
             })
 
+    # 2b. Racks (group nodes)
+    if "hardware" in include_set:
+        racks = db.execute(select(Rack)).scalars().all()
+        for rack in racks:
+            member_count = len(rack.hardware)
+            if member_count == 0:
+                continue
+            nodes.append({
+                "id": f"rack-{rack.id}",
+                "type": "rack",
+                "ref_id": rack.id,
+                "label": rack.name,
+                "height_u": rack.height_u,
+                "location": rack.location,
+                "member_count": member_count,
+            })
+
     # 3. Hardware
     if "hardware" in include_set:
-        for hw in db.execute(select(Hardware)).scalars():
+        hw_query = select(Hardware)
+        if rack_id is not None:
+            hw_query = hw_query.where(Hardware.rack_id == rack_id)
+        for hw in db.execute(hw_query).scalars():
             # Build storage_summary by aggregating attached storage items
             storage_summary = None
             if hw.storage_items:
@@ -208,8 +230,18 @@ def get_topology(
                 "telemetry_last_polled": hw.telemetry_last_polled.isoformat() if hw.telemetry_last_polled else None,
                 "u_height": hw.u_height,
                 "rack_unit": hw.rack_unit,
+                "rack_id": hw.rack_id,
+                "rack_name": hw.rack.name if hw.rack else None,
                 "ip_conflict": conflict_map.get(("hardware", hw.id), False),
             })
+            # Rack → Hardware member edges
+            if hw.rack_id:
+                edges.append({
+                    "id": f"e-rack-{hw.rack_id}-hw-{hw.id}",
+                    "source": f"rack-{hw.rack_id}",
+                    "target": f"hw-{hw.id}",
+                    "relation": "rack_member",
+                })
 
         # Cluster → Hardware member edges
         hw_node_ids = {f"hw-{hw.id}" for hw in db.execute(select(Hardware)).scalars()}

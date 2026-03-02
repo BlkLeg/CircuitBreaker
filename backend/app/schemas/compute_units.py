@@ -17,6 +17,8 @@ class ComputeUnitBase(BaseModel):
     environment: Optional[str] = None
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
+    # v0.1.4-cortex: derived status
+    status: Optional[str] = None
     notes: Optional[str] = None
     tags: list[str] = []
 
@@ -39,6 +41,8 @@ class ComputeUnitUpdate(BaseModel):
     environment: Optional[str] = None
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
+    # v0.1.4-cortex: derived status
+    status: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[list[str]] = None
 

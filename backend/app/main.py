@@ -13,6 +13,7 @@ from app.core.errors import AppError
 from app.db.session import engine, Base, SessionLocal
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap, catalog, telemetry as telemetry_api, categories, environments
+from app.api import rack as rack_api
 from app.api.discovery import router as discovery_router
 from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ip_check import router as ip_check_router
@@ -524,6 +525,30 @@ def _run_migrations(conn) -> None:
         )
     """)
 
+    # v0.1.4-cortex: racks table + hardware.rack_id, hardware.source_scan_result_id, compute_units.status
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS racks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            height_u INTEGER NOT NULL DEFAULT 42,
+            location TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','utc'))
+        )
+    """)
+    hw_cols = _get_columns(conn, "hardware")
+    if "rack_id" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN rack_id INTEGER REFERENCES racks(id)")
+    hw_cols = _get_columns(conn, "hardware")
+    if "source_scan_result_id" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN source_scan_result_id INTEGER REFERENCES scan_results(id)")
+    cu_cols = _get_columns(conn, "compute_units")
+    if "status" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN status TEXT DEFAULT 'unknown'")
+    # MAC unique index (partial — only non-NULL values)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hardware_mac ON hardware(mac_address) WHERE mac_address IS NOT NULL AND mac_address != ''")
+
     # v0.1.4-discovery: app_settings discovery columns
     settings_cols = _get_columns(conn, "app_settings")
     if "discovery_auto_merge" not in settings_cols:
@@ -693,6 +718,7 @@ app.include_router(admin_router,          prefix=f"{_V1}/admin",             tag
 app.include_router(security_router,       prefix=f"{_V1}/security",          tags=["security"])
 app.include_router(metrics_router,        prefix=f"{_V1}/metrics",           tags=["metrics"])
 app.include_router(timezones_router,      prefix=f"{_V1}/timezones",         tags=["timezones"])
+app.include_router(rack_api.router,       prefix=f"{_V1}/racks",             tags=["racks"])
 
 
 # ── Health check ───────────────────────────────────────────────────────────

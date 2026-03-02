@@ -39,6 +39,16 @@ logger = logging.getLogger(__name__)
 
 _ARP_CAPABLE: Optional[bool] = None
 
+def _norm_mac(mac: str | None) -> str | None:
+    """Normalize MAC to uppercase colon-separated format."""
+    if not mac:
+        return None
+    cleaned = re.sub(r'[^0-9a-fA-F]', '', mac)
+    if len(cleaned) != 12:
+        return mac.strip().upper()
+    return ':'.join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
+
+
 PORT_SERVICE_MAP = {
     80: {"name": "HTTP", "type": "web_server"},
     443: {"name": "HTTPS", "type": "web_server"},
@@ -721,80 +731,99 @@ def merge_scan_result(
 
     # ── accept ───────────────────────────────────────────────────────────────
     if action == "accept":
-        # conflict / matched: update existing entity with overrides
-        if result.state in ("matched", "conflict") and result.matched_entity_type == "hardware":
-            hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
-            if hw:
-                hw.last_seen = now
-                hw.status = "online"
-                if not hw.mac_address and result.mac_address:
-                    hw.mac_address = result.mac_address
-                if not hw.os_version and result.os_family:
-                    hw.os_version = result.os_family
+        # CB-CASCADE-005: wrap accept branch in a savepoint for atomicity
+        sp = db.begin_nested()
+        try:
+            # Normalize MAC before writing (CB-PATTERN-001)
+            norm_mac = _norm_mac(result.mac_address)
+
+            # conflict / matched: update existing entity with overrides
+            if result.state in ("matched", "conflict") and result.matched_entity_type == "hardware":
+                hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
+                if hw:
+                    hw.last_seen = now
+                    hw.status = "online"
+                    # CB-REL-001: link scan result to hardware
+                    hw.source_scan_result_id = result.id
+                    if not hw.mac_address and norm_mac:
+                        hw.mac_address = norm_mac
+                    if not hw.os_version and result.os_family:
+                        hw.os_version = result.os_family
+                    for k, v in overrides.items():
+                        if hasattr(hw, k):
+                            setattr(hw, k, v)
+                    db.flush()
+
+                result.merge_status = "accepted"
+                result.reviewed_by = actor
+                result.reviewed_at = now
+                db.flush()
+                sp.commit()
+                db.commit()
+                write_log(
+                    db,
+                    action="result_accepted",
+                    entity_type=result.matched_entity_type or "hardware",
+                    entity_id=result.matched_entity_id,
+                    category="discovery",
+                    details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
+                )
+                return {"updated": True}
+
+            # new host: create hardware entity
+            if result.state == "new":
+                name = overrides.get("name") or result.hostname or result.snmp_sys_name or f"Discovered Host - {result.ip_address}"
+                role = overrides.get("role") or "server"
+
+                hw = Hardware(
+                    name=name,
+                    role=role,
+                    ip_address=result.ip_address,
+                    mac_address=norm_mac,
+                    vendor=result.os_vendor,
+                    status="online",
+                    source="discovery",
+                    discovered_at=now,
+                    last_seen=now,
+                    source_scan_result_id=result.id,  # CB-REL-001
+                    created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
+                    updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
+                )
                 for k, v in overrides.items():
                     if hasattr(hw, k):
                         setattr(hw, k, v)
+                db.add(hw)
+                db.flush()
+
+                result.matched_entity_type = "hardware"
+                result.matched_entity_id = hw.id
+                result.merge_status = "accepted"
+                result.reviewed_by = actor
+                result.reviewed_at = now
+                db.flush()
+                sp.commit()
                 db.commit()
+                db.refresh(hw)
 
-            result.merge_status = "accepted"
-            result.reviewed_by = actor
-            result.reviewed_at = now
-            db.commit()
-            write_log(
-                db,
-                action="result_accepted",
-                entity_type=result.matched_entity_type or "hardware",
-                entity_id=result.matched_entity_id,
-                category="discovery",
-                details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
-            )
-            return {"updated": True}
+                write_log(
+                    db,
+                    action="result_accepted",
+                    entity_type="hardware",
+                    entity_id=hw.id,
+                    category="discovery",
+                    details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
+                )
+                return {
+                    "entity_type": "hardware",
+                    "entity_id": hw.id,
+                    "ports": _build_ports_list(result.open_ports_json),
+                }
 
-        # new host: create hardware entity
-        if result.state == "new":
-            name = overrides.get("name") or result.hostname or result.snmp_sys_name or f"Discovered Host - {result.ip_address}"
-            role = overrides.get("role") or "server"
-
-            hw = Hardware(
-                name=name,
-                role=role,
-                ip_address=result.ip_address,
-                mac_address=result.mac_address,
-                vendor=result.os_vendor,
-                status="online",
-                source="discovery",
-                discovered_at=now,
-                last_seen=now,
-                created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-                updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-            )
-            for k, v in overrides.items():
-                if hasattr(hw, k):
-                    setattr(hw, k, v)
-            db.add(hw)
-            db.commit()
-            db.refresh(hw)
-
-            result.matched_entity_type = "hardware"
-            result.matched_entity_id = hw.id
-            result.merge_status = "accepted"
-            result.reviewed_by = actor
-            result.reviewed_at = now
-            db.commit()
-
-            write_log(
-                db,
-                action="result_accepted",
-                entity_type="hardware",
-                entity_id=hw.id,
-                category="discovery",
-                details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
-            )
-            return {
-                "entity_type": "hardware",
-                "entity_id": hw.id,
-                "ports": _build_ports_list(result.open_ports_json),
-            }
+            # If we reach here inside the savepoint without matching a branch, commit savepoint
+            sp.commit()
+        except Exception:
+            sp.rollback()
+            raise
 
     return {"skipped": True}
 

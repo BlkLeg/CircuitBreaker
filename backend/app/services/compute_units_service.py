@@ -196,6 +196,7 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
             data["environment"] = env_str
     for field, value in data.items():
         setattr(cu, field, value)
+    old_hardware_id = cu.hardware_id
     cu.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "compute", cu.id, payload.tags)
@@ -208,7 +209,17 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
         svc.ip_mode = result["ip_mode"]
         svc.ip_conflict = result["is_conflict"]
         svc.ip_conflict_json = json.dumps(result["conflict_with"])
+    # CB-REL-002: cascade hardware_id change to services on this compute unit
+    new_hardware_id = cu.hardware_id
+    if new_hardware_id != old_hardware_id:
+        for svc in affected:
+            svc.hardware_id = new_hardware_id
     if affected:
+        db.commit()
+    # CB-STATE-001: recalculate hardware status for parent hardware
+    from app.services.status_service import recalculate_hardware_status
+    if cu.hardware_id:
+        recalculate_hardware_status(db, cu.hardware_id)
         db.commit()
     return _to_dict(db, cu)
 

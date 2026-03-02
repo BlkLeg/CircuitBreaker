@@ -12,6 +12,7 @@ def _now() -> datetime:
 
 _FK_HARDWARE_ID = "hardware.id"
 _FK_SERVICES_ID = "services.id"
+_FK_RACKS_ID = "racks.id"
 
 
 # ── Common ─────────────────────────────────────────────────────────────────
@@ -63,6 +64,23 @@ class EntityDoc(Base):
     doc: Mapped["Doc"] = relationship("Doc")
 
 
+# ── Racks ──────────────────────────────────────────────────────────────────
+
+
+class Rack(Base):
+    __tablename__ = "racks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    height_u: Mapped[int] = mapped_column(Integer, nullable=False, default=42)
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    hardware: Mapped[list["Hardware"]] = relationship("Hardware", back_populates="rack")
+
+
 # ── Hardware ────────────────────────────────────────────────────────────────
 
 
@@ -95,6 +113,9 @@ class Hardware(Base):
     telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
+    # v0.1.4-cortex: rack assignment + discovery lineage
+    rack_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_RACKS_ID), nullable=True)
+    source_scan_result_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("scan_results.id"), nullable=True)
     # v0.1.4: auto-discovery
     mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
@@ -105,6 +126,7 @@ class Hardware(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
+    rack: Mapped["Rack | None"] = relationship("Rack", back_populates="hardware", foreign_keys=[rack_id])
     compute_units: Mapped[list["ComputeUnit"]] = relationship("ComputeUnit", back_populates="hardware")
     environment_rel: Mapped["Environment | None"] = relationship("Environment", back_populates="hardware", foreign_keys=[environment_id])
     storage_items: Mapped[list["Storage"]] = relationship("Storage", back_populates="hardware")
@@ -136,6 +158,8 @@ class ComputeUnit(Base):
     environment: Mapped[str | None] = mapped_column(String)
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
+    # v0.1.4-cortex: derived status from child services
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
