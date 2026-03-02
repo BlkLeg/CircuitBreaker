@@ -23,6 +23,8 @@ Say goodbye to entirely manual data entry. We are building a robust, agentless d
 
 Visualizing logical connections is great, but physical context is just as important. The Rack Map will allow you to build digital twins of your server racks.
 
+> **v0.1.2 foundation:** Hardware nodes now store **Rack Height (U)** and **Rack Position (U)** fields. Fill these in now and the rack simulator will use them automatically when it ships.
+
 - **Drag-and-Drop Elevation:** Position your 1U/2U servers, switches, and patch panels within standard rack enclosures.
 - **Spatially Aware Inventory:** The rack view _is_ your hardware inventory. Moving a server in the rack updates its location metadata instantly.
 - **Power Budgeting:** Track power draw across the rack to ensure you aren't overloading your UPS or PDU circuits.
@@ -36,7 +38,7 @@ As we work towards V1, several other major feature sprints are planned to round 
 ### IP & Network Intelligence
 
 - **Visual IPAM:** See exactly which IP addresses are allocated, available, or generating conflicts within your defined subnets.
-- **Port Conflict Warnings:** Receive immediate alerts if multiple services on the same compute unit attempt to bind to the same network port.
+- **Port Conflict Warnings:** ~~Receive immediate alerts if multiple services on the same compute unit attempt to bind to the same network port.~~ ✅ **Shipped in v0.1.2** — IP and port conflict detection is live. Conflicts are caught inline as you type with a direct link to the conflicting entity.
 
 ### Service Health & Alerting
 

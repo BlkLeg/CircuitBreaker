@@ -18,13 +18,16 @@ Curious about what's coming next? Check out our [Product Roadmap](roadmap.md) to
 
 In Circuit Breaker, your lab is built upon these fundamental layers:
 
-1. **Hardware**: Physical components like servers (nodes), switches, firewalls, and NAS units.
+1. **Hardware**: Physical components like servers (nodes), switches, firewalls, NAS units, UPS devices, and more.
 2. **Compute**: Virtualized environments that run on your Hardware, such as VMs and LXC containers.
 3. **Services**: The actual applications you host (e.g., Plex, Home Assistant, databases), which run on your Compute units.
 4. **Storage & Networks**: Shared resources that Services and Hardware depend on, such as storage pools, ZFS datasets, and VLANs.
+5. **Topology Map**: The live visual map of how all your documented components connect — including real-time device health status rings when telemetry is configured.
+6. **Audit Log**: An append-only record of every meaningful change: what happened, who did it, and the before/after diff.
 
 To see how to begin adding these components, proceed to [Getting Started](getting-started.md).
 
 ## Integrations
 
+- **[Hardware Telemetry](hardware.md#telemetry)** — Connect to Dell iDRAC, HPE iLO, APC/CyberPower UPS, or any SNMP device to show live health data directly on the topology map.
 - **[Prometheus Metrics](metrics.md)** — Scrape Circuit Breaker inventory data with Prometheus, Grafana Alloy, or any compatible agent. Includes a full metrics reference, scrape config examples, and PromQL queries.
