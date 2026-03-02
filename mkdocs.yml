@@ -37,9 +37,11 @@ nav:
       - Networks: networks.md
       - Services: services.md
       - Topology Map: topology-map.md
+      - Audit Log: audit-log.md
       - Notes & Runbooks: notes.md
   - Reference:
       - Architecture Overview: overview.md
+      - Metrics: metrics.md
 
 markdown_extensions:
   - admonition

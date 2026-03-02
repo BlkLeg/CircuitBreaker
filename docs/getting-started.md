@@ -2,6 +2,15 @@
 
 This guide will walk you through the basic workflow for documenting your infrastructure in Circuit Breaker.
 
+## First Launch
+
+On first launch, Circuit Breaker runs a short setup wizard. You'll be asked to:
+
+- Set a username and password
+- **Choose your timezone** — all timestamps across the app (logs, telemetry readings, entity records) display in your local time. You can change this anytime from **Settings → General**.
+
+---
+
 ## The Basic Workflow
 
 Documentation in Circuit Breaker works best when you build from the "ground up." We recommend the following sequence when adding a new service or mapping out your lab for the first time:
@@ -20,6 +29,8 @@ Documentation in Circuit Breaker works best when you build from the "ground up."
 
 5. **Attach Documentation**
    Add any installation notes, update procedures, or runbooks to the service using the built-in Markdown editor. (See [Notes & Runbooks](notes.md))
+
+> **Tip:** Category and environment fields throughout the app support inline creation — type a new name and select **Create "…"** to add it on the spot, without leaving the form.
 
 ## Navigation Overview
 
