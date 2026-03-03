@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from app.db.models import Service, ServiceDependency, ServiceStorage, ServiceMisc, EntityTag, Tag, Category
 from app.schemas.services import ServiceCreate, ServiceUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import resolve_ip_conflict
+from app.services.ip_reservation import resolve_ip_conflict, _parse_ports_json
 from app.services.log_service import write_log
 from app.core.time import utcnow, utcnow_iso
 
@@ -172,7 +172,8 @@ def get_service(db: Session, service_id: int) -> dict:
         raise ValueError(f"Service {service_id} not found")
     d = _to_dict(db, svc)
     # Re-compute live for accurate single-fetch response
-    conflict_result = resolve_ip_conflict(db, service_id, svc.ip_address, svc.compute_id, svc.hardware_id)
+    existing_ports = _parse_ports_json(svc.ports_json)
+    conflict_result = resolve_ip_conflict(db, service_id, svc.ip_address, svc.compute_id, svc.hardware_id, ports=existing_ports)
     d["ip_mode"] = conflict_result["ip_mode"]
     d["ip_conflict"] = conflict_result["is_conflict"]
     d["ip_conflict_with"] = conflict_result["conflict_with"]
@@ -180,8 +181,10 @@ def get_service(db: Session, service_id: int) -> dict:
 
 
 def create_service(db: Session, payload: ServiceCreate) -> dict:
+    incoming_ports = [{"port": p.port, "protocol": p.protocol} for p in (payload.ports or [])]
     conflict_result = resolve_ip_conflict(
-        db, None, payload.ip_address, payload.compute_id, payload.hardware_id
+        db, None, payload.ip_address, payload.compute_id, payload.hardware_id,
+        ports=incoming_ports,
     )
     if conflict_result["is_conflict"]:
         _logger.warning(
@@ -254,8 +257,10 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
     effective_ip = payload.ip_address if payload.ip_address is not None else svc.ip_address
     effective_compute = payload.compute_id if "compute_id" in data_check else svc.compute_id
     effective_hardware = payload.hardware_id if "hardware_id" in data_check else svc.hardware_id
+    effective_ports = [{"port": p.port, "protocol": p.protocol} for p in (payload.ports or [])] if payload.ports is not None else _parse_ports_json(svc.ports_json)
     conflict_result = resolve_ip_conflict(
-        db, service_id, effective_ip, effective_compute, effective_hardware
+        db, service_id, effective_ip, effective_compute, effective_hardware,
+        ports=effective_ports,
     )
     if conflict_result["is_conflict"]:
         _logger.warning(

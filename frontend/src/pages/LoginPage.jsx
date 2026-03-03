@@ -20,6 +20,7 @@ function LoginPage() {
   const [focused,  setFocused]  = useState('');
 
   const successMessage = location.state?.message ?? null;
+  const loginBg = branding?.login_bg_path;
 
   useEffect(() => {
     if (isAuthenticated) navigate('/map', { replace: true });
@@ -44,39 +45,65 @@ function LoginPage() {
 
   return (
     <div className="login-root">
-      {/* Bokeh depth glows */}
-      <div className="login-bokeh-tl" aria-hidden="true" />
-      <div className="login-bokeh-br" aria-hidden="true" />
+      {/* Bokeh depth glows — hidden when a custom BG is active */}
+      {!loginBg && <div className="login-bokeh-tl" aria-hidden="true" />}
+      {!loginBg && <div className="login-bokeh-br" aria-hidden="true" />}
 
       <div className="login-split">
 
         {/* ── Brand column ── */}
-        <div className="login-brand">
-          <div className="login-brand-logo">
-            <img
-              src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
-              alt={branding?.app_name ?? 'Circuit Breaker'}
-              style={{ width: 400, height: 'auto' }}
+        <div
+          className="login-brand"
+          style={loginBg ? {
+            backgroundImage: `url(${loginBg}?t=${Date.now()})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundRepeat: 'no-repeat',
+            borderRadius: 12,
+            padding: 32,
+            minHeight: 420,
+            position: 'relative',
+          } : undefined}
+        >
+          {/* Dark overlay for readability when a BG image is present */}
+          {loginBg && (
+            <div
+              aria-hidden="true"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0,0,0,0.45)',
+                borderRadius: 12,
+                backdropFilter: 'brightness(0.8) contrast(1.1)',
+              }}
             />
-            <h1 className="login-brand-name">{branding?.app_name ?? 'Circuit Breaker'}</h1>
-          </div>
+          )}
+          <div style={loginBg ? { position: 'relative', zIndex: 1 } : undefined}>
+            <div className="login-brand-logo">
+              <img
+                src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
+                alt={branding?.app_name ?? 'Circuit Breaker'}
+                style={{ width: 400, height: 'auto', maxWidth: '100%' }}
+              />
+            </div>
 
-          <p className="login-brand-tagline">Visualize your homelab.</p>
+            <p className="login-brand-tagline">Visualize your homelab.</p>
 
-          <ul className="login-bullet-list" aria-label="Features">
-            <li><span className="login-bullet-icon"><Server  size={14} /></span>{' '}Rack simulator</li>
-            <li><span className="login-bullet-icon"><Network size={14} /></span>{' '}Service map</li>
-            <li><span className="login-bullet-icon"><Monitor size={14} /></span>{' '}Server layout at a glance</li>
-          </ul>
+            <ul className="login-bullet-list" aria-label="Features">
+              <li><span className="login-bullet-icon"><Server  size={14} /></span>{' '}Rack simulator</li>
+              <li><span className="login-bullet-icon"><Network size={14} /></span>{' '}Service map</li>
+              <li><span className="login-bullet-icon"><Monitor size={14} /></span>{' '}Server layout at a glance</li>
+            </ul>
 
-          <div className="login-status">
-            <span className="login-status-dot" aria-hidden="true" />{' '}All systems nominal
+            <div className="login-status">
+              <span className="login-status-dot status-indicator--online" aria-hidden="true" />{' '}All systems nominal
+            </div>
           </div>
         </div>
 
         {/* ── Form card ── */}
         <div className="login-card">
-          <h2 className="login-card-title">Sign in to {branding?.app_name ?? 'Circuit Breaker'}</h2>
+          {/* Card title removed - logo and context are sufficient */}
           <p  className="login-card-subtitle">Enter your credentials to continue.</p>
 
           {/* Success banner (e.g. from post-registration redirect) */}
@@ -139,7 +166,7 @@ function LoginPage() {
           </form>
 
           <p className="login-footer">
-            {'Need help? '}<a href="/docs" onClick={(e) => { e.preventDefault(); navigate('/docs'); }}>See the docs</a>.
+            {'Need help? '}<a href="https://blkleg.github.io/CircuitBreaker/" target="_blank" rel="noopener noreferrer">See the docs</a>.
           </p>
         </div>
 

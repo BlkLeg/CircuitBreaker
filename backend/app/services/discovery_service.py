@@ -315,22 +315,29 @@ async def run_scan_job(job_id: int):
         
         hosts_found = 0
         
-        # 2. Phase 1: ARP / Ping Discovery (Nmap handles this mostly, but if 'arp' in scan_types we do manual)
+        # 2 & 3. Phases 1 and 2: ARP and NMAP in parallel
         active_ips = set()
-        if "arp" in scan_types and _arp_available():
-            await _update_job_progress(db, job, "arp", "ARP scanning subnet...")
-            arp_results = await _run_arp_scan(job.target_cidr)
-            for r in arp_results:
-                active_ips.add(r["ip"])
-                # We could immediately create generic ScanResults here if we wanted
+        arp_task = None
+        nmap_task = None
         
-        # 3. Phase 2: NMAP Scanning
-        nmap_results = {}
-        if "nmap" in scan_types:
-            await _update_job_progress(db, job, "nmap", f"nmap scanning {job.target_cidr}...")
-            nmap_results = await _run_nmap_scan(job.target_cidr, nmap_args)
-            for ip in nmap_results.keys():
-                active_ips.add(ip)
+        async def _arp_phase():
+            if "arp" in scan_types and _arp_available():
+                await _update_job_progress(db, job, "arp", "Running ARP (12%)")
+                return await _run_arp_scan(job.target_cidr)
+            return []
+
+        async def _nmap_phase():
+            if "nmap" in scan_types:
+                await _update_job_progress(db, job, "nmap", f"Running nmap (67%)")
+                return await _run_nmap_scan(job.target_cidr, nmap_args)
+            return {}
+
+        arp_results, nmap_results = await asyncio.gather(_arp_phase(), _nmap_phase())
+
+        for r in arp_results:
+            active_ips.add(r["ip"])
+        for ip in nmap_results.keys():
+            active_ips.add(ip)
                 
         # 4. Phase 3 & 4: Deep Probes per IP
         n_active = len(active_ips)
@@ -855,6 +862,192 @@ def bulk_merge_results(db: Session, result_ids: list[int], action: str, actor: s
             skipped += 1
     return {"accepted": accepted, "rejected": rejected, "skipped": skipped}
 
+
+def enhanced_bulk_merge(db: Session, payload, actor: str = "api") -> dict:
+    """Enhanced bulk merge: accept scan results + optionally create/link cluster,
+    network, rack assignment, per-node overrides, and auto-create services.
+
+    Returns summary dict with created entity counts and hardware IDs.
+    """
+    from app.db.models import (
+        HardwareCluster, HardwareClusterMember, Network as NetworkModel,
+        HardwareNetwork,
+    )
+    from app.services.bulk_suggest import EXTENDED_PORT_SERVICE_MAP, _parse_ports
+
+    merged = 0
+    skipped = 0
+    hardware_ids = []
+    created_clusters = 0
+    created_networks = 0
+    created_services = 0
+    errors = []
+
+    # Build per-result assignment lookup
+    assignment_map = {}
+    for a in (payload.assignments or []):
+        assignment_map[a.result_id] = a
+
+    # ── Step A: Cluster ──────────────────────────────────────────────────────
+    cluster_id = None
+    if payload.cluster:
+        existing_cluster = db.query(HardwareCluster).filter(
+            HardwareCluster.name == payload.cluster.name
+        ).first()
+        if existing_cluster:
+            cluster_id = existing_cluster.id
+        else:
+            cluster = HardwareCluster(
+                name=payload.cluster.name,
+                description=payload.cluster.description,
+                environment=payload.cluster.environment,
+                location=payload.cluster.location,
+            )
+            db.add(cluster)
+            db.flush()
+            cluster_id = cluster.id
+            created_clusters = 1
+
+    # ── Step B: Network ──────────────────────────────────────────────────────
+    network_id = None
+    if payload.network:
+        if payload.network.existing_id:
+            network_id = payload.network.existing_id
+        else:
+            # Check for existing by CIDR
+            if payload.network.cidr:
+                existing_net = db.query(NetworkModel).filter(
+                    NetworkModel.cidr == payload.network.cidr
+                ).first()
+                if existing_net:
+                    network_id = existing_net.id
+            if not network_id:
+                net = NetworkModel(
+                    name=payload.network.name,
+                    cidr=payload.network.cidr,
+                    vlan_id=payload.network.vlan_id,
+                    gateway=payload.network.gateway,
+                    description=payload.network.description,
+                )
+                db.add(net)
+                db.flush()
+                network_id = net.id
+                created_networks = 1
+
+    # ── Step C: Merge each result ────────────────────────────────────────────
+    for rid in payload.result_ids:
+        result = db.query(ScanResult).filter(ScanResult.id == rid).first()
+        if not result:
+            skipped += 1
+            continue
+        if result.state == "conflict":
+            skipped += 1
+            continue
+        if result.merge_status != "pending":
+            skipped += 1
+            continue
+
+        # Build overrides from per-node assignment
+        overrides = {}
+        assignment = assignment_map.get(rid)
+        if assignment:
+            for field in ("vendor", "vendor_catalog_key", "model_catalog_key",
+                          "vendor_icon_slug", "role", "name", "rack_unit", "u_height"):
+                val = getattr(assignment, field, None)
+                if val is not None:
+                    overrides[field] = val
+
+        # Apply rack_id from payload-level
+        if payload.rack_id:
+            overrides["rack_id"] = payload.rack_id
+
+        try:
+            merge_result = merge_scan_result(
+                db, rid, "accept", overrides=overrides, actor=actor
+            )
+        except Exception as e:
+            logger.error(f"Enhanced bulk merge failed for result {rid}: {e}")
+            errors.append({"result_id": rid, "error": str(e)})
+            skipped += 1
+            continue
+
+        merged += 1
+        entity_id = merge_result.get("entity_id")
+        if not entity_id and merge_result.get("updated"):
+            # For matched results, get the hardware ID from the result
+            entity_id = result.matched_entity_id
+
+        if entity_id:
+            hardware_ids.append(entity_id)
+
+            # Link to cluster
+            if cluster_id:
+                existing_member = db.query(HardwareClusterMember).filter(
+                    HardwareClusterMember.cluster_id == cluster_id,
+                    HardwareClusterMember.hardware_id == entity_id,
+                ).first()
+                if not existing_member:
+                    role = overrides.get("role") or (assignment.role if assignment else None)
+                    member = HardwareClusterMember(
+                        cluster_id=cluster_id,
+                        hardware_id=entity_id,
+                        role=role,
+                    )
+                    db.add(member)
+                    db.flush()
+
+            # Link to network
+            if network_id:
+                existing_link = db.query(HardwareNetwork).filter(
+                    HardwareNetwork.network_id == network_id,
+                    HardwareNetwork.hardware_id == entity_id,
+                ).first()
+                if not existing_link:
+                    hw_net = HardwareNetwork(
+                        network_id=network_id,
+                        hardware_id=entity_id,
+                        ip_address=result.ip_address,
+                    )
+                    db.add(hw_net)
+                    db.flush()
+
+            # Auto-create services
+            if payload.create_services:
+                ports = _parse_ports(result.open_ports_json)
+                for p in ports:
+                    port_num = int(p.get("port", 0))
+                    svc_info = EXTENDED_PORT_SERVICE_MAP.get(port_num)
+                    if svc_info:
+                        svc_name = svc_info["name"]
+                        slug = _make_service_slug(db, svc_name, entity_id)
+                        svc = Service(
+                            name=svc_name,
+                            slug=slug,
+                            hardware_id=entity_id,
+                            port=port_num,
+                            protocol=p.get("protocol", "tcp"),
+                            status="active",
+                            source="discovery",
+                        )
+                        db.add(svc)
+                        db.flush()
+                        created_services += 1
+
+    db.commit()
+
+    return {
+        "merged": merged,
+        "skipped": skipped,
+        "created": {
+            "clusters": created_clusters,
+            "networks": created_networks,
+            "services": created_services,
+        },
+        "hardware_ids": hardware_ids,
+        "errors": errors,
+    }
+
+
 def _make_service_slug(db: Session, name: str, hardware_id: int) -> str:
     """Generate a unique slug for a discovery-created service.
 
@@ -872,4 +1065,29 @@ def _make_service_slug(db: Session, name: str, hardware_id: int) -> str:
         candidate = f"{base}-hw{hardware_id}-{counter}"
         counter += 1
     return candidate
+
+def refresh_ip_pool():
+    """
+    Scheduled job to refresh IP statuses in the live_metrics table.
+    Checks reachability of known IP addresses and updates last_seen and status.
+    """
+    db = SessionLocal()
+    try:
+        from app.db.models import LiveMetric
+        from datetime import datetime, timezone, timedelta
+        
+        # This is a stub for the full implementation of refresh_ip_pool
+        # that handles Ping/ARP to verify host status
+        metrics = db.query(LiveMetric).all()
+        now = datetime.now(timezone.utc)
+        
+        for metric in metrics:
+            if metric.last_seen and (now - metric.last_seen) > timedelta(days=1):
+                metric.status = "offline"
+                
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error in refresh_ip_pool: {e}")
+    finally:
+        db.close()
 

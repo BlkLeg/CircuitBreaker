@@ -15,7 +15,9 @@ _CSP = (
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://www.gravatar.com; "
-    "connect-src 'self'; "
+    # wss: is required so WebSocket connections work when the app is served
+    # over HTTPS (a browser will block wss:// otherwise under strict CSP).
+    "connect-src 'self' ws: wss:; "
     "frame-ancestors 'none';"
 )
 

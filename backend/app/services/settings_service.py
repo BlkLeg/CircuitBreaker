@@ -26,6 +26,7 @@ _DEFAULTS = dict(
     app_name="Circuit Breaker",
     favicon_path=None,
     login_logo_path=None,
+    login_bg_path=None,
     primary_color="#00d4ff",
     accent_colors='["#ff6b6b","#4ecdc4"]',
     theme_preset="cyberpunk-neon",

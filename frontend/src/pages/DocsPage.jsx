@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import MarkdownViewer from '../components/MarkdownViewer';
-import DocEditor from '../components/DocEditor';
+const DocEditor = React.lazy(() => import('../components/DocEditor'));
 import DocLinkModal from '../components/DocLinkModal';
 import { docsApi } from '../api/client';
 import ConfirmDialog from '../components/common/ConfirmDialog';
@@ -651,13 +651,15 @@ function DocsPage() {
                   className="docs-title-input"
                 />
               </div>
-              <DocEditor
-                docId={selectedDoc?.id ?? null}
-                value={formValues.body_md}
-                onChange={(md) => setFormValues((p) => ({ ...p, body_md: md }))}
-                onSave={handleSave}
-                updatedAt={selectedDoc?.updated_at ?? null}
-              />
+              <Suspense fallback={<div style={{ padding: '2rem', opacity: 0.5 }}>Loading editor…</div>}>
+                <DocEditor
+                  docId={selectedDoc?.id ?? null}
+                  value={formValues.body_md}
+                  onChange={(md) => setFormValues((p) => ({ ...p, body_md: md }))}
+                  onSave={handleSave}
+                  updatedAt={selectedDoc?.updated_at ?? null}
+                />
+              </Suspense>
             </div>
           ) : selectedDoc ? (
             <div className="docs-view-area">

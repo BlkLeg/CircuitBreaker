@@ -2,7 +2,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, Query, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -39,7 +39,11 @@ router = APIRouter(tags=["graph"])
 class LayoutUpdate(BaseModel):
     name: str = "default"
     layout_data: str  # JSON string
+    constraints: dict = Field(default_factory=dict)
 
+class PlaceNodeInput(BaseModel):
+    node_id: str
+    environment: str = "default"
 
 @router.get("/topology")
 def get_topology(
@@ -485,18 +489,26 @@ def get_layout(name: str = "default", db: Session = Depends(get_db)):
 
 @router.post("/layout")
 def save_layout(data: LayoutUpdate, db: Session = Depends(get_db)):
-    layout = db.execute(select(GraphLayout).where(GraphLayout.name == data.name)).scalar_one_or_none()
-    if layout:
-        layout.layout_data = data.layout_data
-    else:
-        layout = GraphLayout(name=data.name, layout_data=data.layout_data)
-        db.add(layout)
-    
     try:
+        layout = db.execute(select(GraphLayout).where(GraphLayout.name == data.name)).scalar_one_or_none()
+        if layout:
+            layout.layout_data = data.layout_data
+        else:
+            layout = GraphLayout(name=data.name, layout_data=data.layout_data)
+            db.add(layout)
         db.commit()
+        return {"status": "ok"}
     except Exception as e:
         db.rollback()
         _logger.exception("Failed to save graph layout: %s", e)
         raise HTTPException(status_code=500, detail="An internal error occurred while saving the layout.")
 
-    return {"status": "ok"}
+@router.post("/place-node")
+def place_node(data: PlaceNodeInput, db: Session = Depends(get_db)):
+    from app.services.graph_service import place_node_safe
+    safe_pos = place_node_safe(db, data.node_id, environment=data.environment)
+    return {
+        "x": safe_pos.get("x"),
+        "y": safe_pos.get("y"),
+        "layout": "auto"
+    }

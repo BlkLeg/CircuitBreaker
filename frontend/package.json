@@ -9,7 +9,10 @@
     "@reactflow/node-resizer": "^2.2.14",
     "@uiw/react-md-editor": "^4.0.11",
     "axios": "^1.7.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "elkjs": "^0.11.0",
+    "framer-motion": "^12.34.4",
     "lucide-react": "^0.574.0",
     "mitt": "^3.0.1",
     "prop-types": "^15.8.1",
@@ -18,7 +21,8 @@
     "react-markdown": "^9.0.1",
     "react-router-dom": "^6.24.0",
     "react-syntax-highlighter": "^16.1.1",
-    "reactflow": "^11.11.4"
+    "reactflow": "^11.11.4",
+    "tailwind-merge": "^3.5.0"
   },
   "scripts": {
     "syncversion": "node -e \"const fs=require('fs');const v=fs.readFileSync('../VERSION','utf8').trim();const p=JSON.parse(fs.readFileSync('./package.json','utf8'));p.version=v;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n');console.log('version synced to '+v);\"",
@@ -35,8 +39,11 @@
     "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.0.18",
+    "autoprefixer": "^10.4.27",
     "jsdom": "^28.1.0",
     "msw": "^2.12.10",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.19",
     "vite": "^7.3.1",
     "vitest": "^4.0.18"
   }

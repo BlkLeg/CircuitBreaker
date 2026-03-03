@@ -46,6 +46,17 @@ class TelemetryConfig(BaseModel):
     enabled: bool = True
 
 
+class PortEntry(BaseModel):
+    port_id: int
+    label: Optional[str] = None           # "LAN1", "WAN", "MGMT" etc.
+    type: str = "ethernet"                # ethernet | sfp | sfp+ | usb | console
+    speed_mbps: Optional[int] = None      # 100, 1000, 2500, 10000
+    connected_hardware_id: Optional[int] = None
+    connected_compute_id: Optional[int] = None
+    vlan_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
 class HardwareBase(BaseModel):
     name: str
     role: Optional[str] = None
@@ -76,6 +87,15 @@ class HardwareBase(BaseModel):
     # v0.1.4-cortex: rack assignment + discovery lineage
     rack_id: Optional[int] = None
     source_scan_result_id: Optional[int] = None
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    wifi_standards: Optional[list[str]] = None
+    wifi_bands: Optional[list[str]] = None
+    max_tx_power_dbm: Optional[int] = None
+    port_count: Optional[int] = None
+    software_platform: Optional[str] = None
+    download_speed_mbps: Optional[int] = None
+    upload_speed_mbps: Optional[int] = None
+    port_map: Optional[list[PortEntry]] = None
 
     @field_validator("vendor", mode="before")
     @classmethod
@@ -111,6 +131,15 @@ class HardwareUpdate(BaseModel):
     environment: Optional[str] = None
     # v0.1.4-cortex: rack assignment
     rack_id: Optional[int] = None
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    wifi_standards: Optional[list[str]] = None
+    wifi_bands: Optional[list[str]] = None
+    max_tx_power_dbm: Optional[int] = None
+    port_count: Optional[int] = None
+    software_platform: Optional[str] = None
+    download_speed_mbps: Optional[int] = None
+    upload_speed_mbps: Optional[int] = None
+    port_map: Optional[list[PortEntry]] = None
 
     @field_validator("vendor", mode="before")
     @classmethod

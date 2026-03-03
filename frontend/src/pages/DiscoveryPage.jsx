@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Play, Trash2, MoreHorizontal, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Play, Trash2, MoreHorizontal, ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import { AnimatePresence } from 'framer-motion';
 import '../styles/discovery.css';
 import NmapArgsField from '../components/discovery/NmapArgsField.jsx';
 import {
@@ -13,6 +14,7 @@ import { useToast } from '../components/common/Toast';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 import ScanProfileForm from '../components/discovery/ScanProfileForm.jsx';
 import ReviewDrawer from '../components/discovery/ReviewDrawer.jsx';
+import BulkActionsDrawer from '../components/discovery/BulkActionsDrawer.jsx';
 import ServiceChecklistModal from '../components/discovery/ServiceChecklistModal.jsx';
 import ScanAckModal from '../components/discovery/ScanAckModal.jsx';
 import JobStatusBadge from '../components/discovery/JobStatusBadge.jsx';
@@ -441,6 +443,7 @@ function ReviewTab({ setPendingCount }) {
   const [loading,   setLoading]   = useState(true);
   const [selected,  setSelected]  = useState(new Set());
   const [reviewing, setReviewing] = useState(null);
+  const [bulkDrawerOpen, setBulkDrawerOpen] = useState(false);
   const [checklist, setChecklist] = useState(null);
   const [filterState, setFilterState] = useState('all');
   const [rejectConfirm, setRejectConfirm] = useState(null);
@@ -547,7 +550,10 @@ function ReviewTab({ setPendingCount }) {
         </select>
         {selected.size > 0 && (
           <>
-            <button type="button" className="btn btn-primary" style={{ fontSize: 12 }} onClick={handleBulkAccept}>Accept Selected</button>
+            <button type="button" className="btn btn-primary" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => setBulkDrawerOpen(true)}>
+              <Layers size={13} /> Bulk Actions ({selected.size})
+            </button>
+            <button type="button" className="btn btn-secondary" style={{ fontSize: 12 }} onClick={handleBulkAccept}>Quick Accept</button>
             <button type="button" className="btn btn-danger" style={{ fontSize: 12 }} onClick={handleBulkReject}>Reject Selected</button>
           </>
         )}
@@ -622,6 +628,21 @@ function ReviewTab({ setPendingCount }) {
           onClose={() => { setChecklist(null); }}
         />
       )}
+
+      <AnimatePresence>
+        {bulkDrawerOpen && (
+          <BulkActionsDrawer
+            results={results.filter((r) => selected.has(r.id))}
+            onClose={() => setBulkDrawerOpen(false)}
+            onComplete={() => {
+              setBulkDrawerOpen(false);
+              setSelected(new Set());
+              discoveryEmitter.emit('badge:refresh');
+              load();
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

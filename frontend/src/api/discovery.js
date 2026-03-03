@@ -14,4 +14,7 @@ export const getJobResults       = (jobId, params) => client.get(`/discovery/job
 export const getResult           = (id)        => client.get(`/discovery/results/${id}`);
 export const mergeResult         = (id, data)  => client.post(`/discovery/results/${id}/merge`, data);
 export const bulkMerge           = (data)      => client.post('/discovery/results/bulk-merge', data);
+export const enhancedBulkMerge   = (data)      => client.post('/discovery/results/enhanced-bulk-merge', data);
+export const suggestBulkActions  = (data)      => client.post('/discovery/results/suggest', data);
+export const getVendorCatalog    = ()          => client.get('/discovery/vendor-catalog');
 export const getPendingResults   = (params)    => client.get('/discovery/results', { params: { status: 'pending', ...params } });

@@ -96,7 +96,7 @@ export function SettingsProvider({ children }) {
   // Apply font family and font size preferences instantly via CSS variables.
   useAppFont(settings?.ui_font ?? 'inter', settings?.ui_font_size ?? 'medium');
 
-  // Apply favicon and document title whenever branding changes
+  // Apply favicon, document title, and PWA manifest whenever branding changes
   useEffect(() => {
     const b = settings.branding;
     if (!b) return;
@@ -111,6 +111,11 @@ export function SettingsProvider({ children }) {
     }
     if (b.app_name) {
       document.title = b.app_name;
+    }
+    // Update PWA manifest to reflect current branding
+    let manifest = document.querySelector("link[rel='manifest']");
+    if (manifest) {
+      manifest.href = `/api/v1/branding/manifest.json?t=${Date.now()}`;
     }
   }, [settings.branding]);
 

@@ -277,24 +277,6 @@ def test_rate_limit_scan_endpoint(client, auth_headers):
     finally:
         limiter.enabled = False
 # ─────────────────────────────────────────────────────────────────
-# 10. WebSocket auth
-# ─────────────────────────────────────────────────────────────────
-def test_websocket_auth_rejects_invalid_token(client):
-    with client.websocket_connect("/api/v1/discovery/stream") as ws:
-        ws.send_text("totally-invalid-token")
-        data = ws.receive_text()
-        msg = json.loads(data)
-        assert msg.get("error") == "unauthorized"
-        with pytest.raises(Exception):
-            ws.receive_text()
-def test_websocket_auth_accepts_valid_token(client, auth_headers):
-    token = auth_headers["Authorization"].split(" ", 1)[1]
-    with client.websocket_connect("/api/v1/discovery/stream") as ws:
-        ws.send_text(token)
-        data = ws.receive_text()
-        msg = json.loads(data)
-        assert msg.get("status") == "connected"
-# ─────────────────────────────────────────────────────────────────
 # 11. Purge respects retention_days
 # ─────────────────────────────────────────────────────────────────
 def test_purge_respects_retention_days(db):

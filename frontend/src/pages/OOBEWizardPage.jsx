@@ -156,9 +156,9 @@ function OOBEWizardPage({ onCompleted }) {
             src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
             alt={branding?.app_name ?? 'Circuit Breaker'}
           />
-          <span className="oobe-brand-name">{branding?.app_name ?? 'Circuit Breaker'}</span>
+          {/* Brand name removed - logo is sufficient */}
           <div className="login-status" style={{ marginTop: 4 }}>
-            <span className="login-status-dot" aria-hidden="true" />{' '}First-run setup
+            <span className="login-status-dot status-indicator--online" aria-hidden="true" />{' '}First-run setup
           </div>
         </div>
 
@@ -167,7 +167,7 @@ function OOBEWizardPage({ onCompleted }) {
 
           {step === 1 && (
             <>
-              <h2 className="login-card-title">Welcome to Circuit Breaker</h2>
+              {/* Card title removed - logo and context are sufficient */}
               <p className="login-card-subtitle">
                 Let’s create your first admin account and personalize your dashboard.
               </p>

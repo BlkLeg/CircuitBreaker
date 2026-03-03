@@ -176,15 +176,22 @@ def resolve_ip_conflict(
     ip_address: str | None,
     compute_id: int | None,
     hardware_id: int | None,
+    ports: list[dict] | None = None,
 ) -> dict:
     """Host-chain-aware conflict classification for a single service.
+
+    Services sharing an IP with hardware/compute are NOT blocked — services
+    naturally run on hosts.  Only service-to-service port collisions (same IP
+    + same port + same protocol) set ``is_conflict=True``.  Hardware/compute
+    IP overlaps are still reported in *conflict_with* for informational
+    purposes.
 
     Returns:
     {
         "is_conflict": bool,
         "ip_mode": "inherited_from_compute" | "inherited_from_hardware"
                    | "inherited_from_hardware_via_compute" | "explicit" | "none",
-        "conflict_with": [{"entity_type", "entity_id", "entity_name", "entity_ip"}, ...]
+        "conflict_with": [{"entity_type", "entity_id", "entity_name", "entity_ip", ...}, ...]
     }
     """
     norm_ip = _norm(ip_address)
@@ -223,8 +230,11 @@ def resolve_ip_conflict(
     if ip_mode != "explicit":
         return {"is_conflict": False, "ip_mode": ip_mode, "conflict_with": []}
 
-    # Explicit IP — check for real conflicts against other entities
-    conflicts = []
+    # Explicit IP — check for conflicts against other entities
+    # Hardware/compute matches are informational; only service port clashes block.
+    conflicts: list[dict] = []
+    has_port_clash = False
+
     for hw in db.execute(select(Hardware).where(Hardware.ip_address == ip_address)).scalars().all():
         if ("hardware", hw.id) not in allowed:
             conflicts.append({"entity_type": "hardware", "entity_id": hw.id,
@@ -233,14 +243,53 @@ def resolve_ip_conflict(
         if ("compute_unit", cu_row.id) not in allowed:
             conflicts.append({"entity_type": "compute_unit", "entity_id": cu_row.id,
                                "entity_name": cu_row.name, "entity_ip": cu_row.ip_address})
+
+    # ── Service-to-service: port-level conflict detection ────────────────
+    incoming_ports = ports or []
+    incoming_bindings: set[tuple[str, int, str]] = set()
+    for pe in incoming_ports:
+        p_port = pe.get("port") if isinstance(pe, dict) else getattr(pe, "port", None)
+        p_proto = (pe.get("protocol") if isinstance(pe, dict) else getattr(pe, "protocol", None)) or "tcp"
+        if p_port is not None:
+            incoming_bindings.add((norm_ip, int(p_port), p_proto.lower()))
+
     for svc in db.execute(select(Service).where(
         Service.ip_address == ip_address,
         Service.id != (service_id or -1),
     )).scalars().all():
-        conflicts.append({"entity_type": "service", "entity_id": svc.id,
-                           "entity_name": svc.name, "entity_ip": svc.ip_address})
+        if not incoming_bindings:
+            # Incoming service has no ports — IP-only match is still a conflict
+            conflicts.append({"entity_type": "service", "entity_id": svc.id,
+                               "entity_name": svc.name, "entity_ip": svc.ip_address})
+            has_port_clash = True
+            continue
 
-    return {"is_conflict": len(conflicts) > 0, "ip_mode": ip_mode, "conflict_with": conflicts}
+        svc_ports = _parse_ports_json(svc.ports_json)
+        if not svc_ports:
+            # Existing service has no ports — portless overlap is a conflict
+            conflicts.append({"entity_type": "service", "entity_id": svc.id,
+                               "entity_name": svc.name, "entity_ip": svc.ip_address})
+            has_port_clash = True
+            continue
+
+        for spe in svc_ports:
+            if spe.get("port") is None:
+                continue
+            spe_port = int(spe["port"])
+            spe_proto = (spe.get("protocol") or "tcp").lower()
+            svc_ip = _norm(svc.ip_address)
+            if svc_ip and (svc_ip, spe_port, spe_proto) in incoming_bindings:
+                conflicts.append({
+                    "entity_type": "service",
+                    "entity_id": svc.id,
+                    "entity_name": svc.name,
+                    "entity_ip": svc.ip_address,
+                    "conflicting_port": spe_port,
+                    "protocol": spe_proto,
+                })
+                has_port_clash = True
+
+    return {"is_conflict": has_port_clash, "ip_mode": ip_mode, "conflict_with": conflicts}
 
 
 def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:

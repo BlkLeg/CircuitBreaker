@@ -108,6 +108,50 @@ class BulkMergeRequest(BaseModel):
     result_ids: list[int]
     action: str
 
+
+class BulkAssignment(BaseModel):
+    """Per-node overrides for enhanced bulk merge."""
+    result_id: int
+    vendor: str | None = None
+    vendor_catalog_key: str | None = None
+    model_catalog_key: str | None = None
+    vendor_icon_slug: str | None = None
+    role: str | None = None
+    name: str | None = None
+    rack_unit: int | None = None
+    u_height: int | None = None
+
+
+class EnhancedBulkMergeCluster(BaseModel):
+    name: str
+    description: str | None = None
+    environment: str | None = None
+    location: str | None = None
+
+
+class EnhancedBulkMergeNetwork(BaseModel):
+    name: str
+    cidr: str | None = None
+    vlan_id: int | None = None
+    gateway: str | None = None
+    description: str | None = None
+    existing_id: int | None = None  # Link to existing network instead of creating
+
+
+class EnhancedBulkMergeRequest(BaseModel):
+    """Full-featured bulk merge with cluster, network, rack, and per-node assignments."""
+    result_ids: list[int]
+    cluster: EnhancedBulkMergeCluster | None = None
+    network: EnhancedBulkMergeNetwork | None = None
+    rack_id: int | None = None
+    assignments: list[BulkAssignment] = []
+    create_services: bool = False
+
+
+class BulkSuggestRequest(BaseModel):
+    result_ids: list[int]
+
+
 class DiscoveryStatusOut(BaseModel):
     discovery_enabled: bool
     scan_ack_accepted: bool

@@ -123,6 +123,15 @@ class Hardware(Base):
     discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
     os_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    wifi_standards: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+    wifi_bands: Mapped[str | None] = mapped_column(Text, nullable=True)      # JSON array
+    max_tx_power_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    port_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    port_map_json: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON array
+    software_platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    download_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    upload_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -513,6 +522,7 @@ class AppSettings(Base):
     app_name: Mapped[str] = mapped_column(String, nullable=False, default="Circuit Breaker")
     favicon_path: Mapped[str | None] = mapped_column(Text)
     login_logo_path: Mapped[str | None] = mapped_column(Text)
+    login_bg_path: Mapped[str | None] = mapped_column(Text)
     primary_color: Mapped[str] = mapped_column(String, nullable=False, default="#00d4ff")
     accent_colors: Mapped[str | None] = mapped_column(Text, default='["#ff6b6b","#4ecdc4"]')  # JSON array
     # Advanced Theming
@@ -660,3 +670,30 @@ class Log(Base):
     entity_name: Mapped[str | None]   = mapped_column(String)    # denormalised name at write time
     diff:        Mapped[str | None]   = mapped_column(Text)       # JSON: {"before": {...}, "after": {...}}
     severity:    Mapped[str | None]   = mapped_column(String, default="info")  # info | warn | error
+
+
+class UserIcon(Base):
+    __tablename__ = "user_icons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String)
+    category: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Live Metrics ────────────────────────────────────────────────────────────
+
+
+class LiveMetric(Base):
+    __tablename__ = "live_metrics"
+
+    ip: Mapped[str] = mapped_column(String, primary_key=True)
+    node_id: Mapped[str | None] = mapped_column(String)  # e.g., hw-123
+    node_type: Mapped[str | None] = mapped_column(String)  # hardware/service
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(String)  # up/down/offline
+    assigned_to: Mapped[str | None] = mapped_column(String)  # service slug or null
+    subnet: Mapped[str | None] = mapped_column(String)  # 10.10.10.0/24
+

@@ -50,7 +50,8 @@ function Header({ onOpenPalette }) {
         <img
           src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
           alt={branding?.app_name ?? 'Circuit Breaker'}
-          style={{ width: 80, height: 'auto' }}
+          className="header-logo"
+          style={{ height: 40, width: 'auto', maxWidth: 120 }}
         />
       </Link>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, pointerEvents: 'auto' }}>

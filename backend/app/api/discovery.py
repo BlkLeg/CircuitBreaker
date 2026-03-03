@@ -10,10 +10,11 @@ from app.core.rate_limit import limiter
 from app.schemas.discovery import (
     DiscoveryProfileCreate, DiscoveryProfileUpdate, DiscoveryProfileOut,
     ScanJobOut, ScanResultOut, AdHocScanRequest, MergeRequest, BulkMergeRequest,
-    DiscoveryStatusOut
+    EnhancedBulkMergeRequest, BulkSuggestRequest, DiscoveryStatusOut
 )
 from app.services import discovery_profiles_service, discovery_service
 from app.services.settings_service import get_or_create_settings
+from app.services.bulk_suggest import suggest_bulk_actions, get_vendor_catalog
 from app.db.models import ScanJob, ScanResult
 from app.core.scheduler import _scheduler
 
@@ -217,3 +218,25 @@ def bulk_merge(
     db: Session = Depends(get_db)
 ):
     return discovery_service.bulk_merge_results(db, payload.result_ids, payload.action, actor="api")
+
+
+@router.post("/results/enhanced-bulk-merge")
+def enhanced_bulk_merge(
+    payload: EnhancedBulkMergeRequest,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db)
+):
+    return discovery_service.enhanced_bulk_merge(db, payload, actor="api")
+
+
+@router.post("/results/suggest")
+def suggest_actions(
+    payload: BulkSuggestRequest,
+    db: Session = Depends(get_db),
+):
+    return suggest_bulk_actions(db, payload.result_ids)
+
+
+@router.get("/vendor-catalog")
+def vendor_catalog():
+    return get_vendor_catalog()

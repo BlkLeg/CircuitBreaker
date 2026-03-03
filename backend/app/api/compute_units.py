@@ -1,6 +1,6 @@
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.db.session import get_db
-from app.db.models import ComputeNetwork
+from app.db.models import ComputeNetwork, UserIcon
 from app.schemas.compute_units import ComputeUnit, ComputeUnitCreate, ComputeUnitUpdate
 from app.schemas.networks import ComputeNetworkRead
 from app.services import compute_units_service
@@ -50,17 +50,31 @@ def create_compute_unit(payload: ComputeUnitCreate, db: Session = Depends(get_db
 # Must be registered BEFORE /{cu_id} to avoid FastAPI matching "icons" as an int.
 
 @router.get("/icons")
-def list_icons():
-    """Return all previously-uploaded user icons as [{slug, path, label}]."""
+def list_icons(db: Session = Depends(get_db)):
+    """Return all previously-uploaded user icons as [{slug, path, label, category}]."""
     icons = []
+    
+    # Let's map from db
+    db_icons = {icon.slug: icon for icon in db.query(UserIcon).all()}
+
     if ICON_UPLOAD_DIR.exists():
         for f in sorted(ICON_UPLOAD_DIR.iterdir()):
             if f.is_file():
                 slug = f.name
+                label = f.stem
+                category = "UPLOADED"
+                
+                if slug in db_icons:
+                    if db_icons[slug].name:
+                        label = db_icons[slug].name
+                    if db_icons[slug].category:
+                        category = db_icons[slug].category
+
                 icons.append({
                     "slug": slug,
                     "path": f"/user-icons/{slug}",
-                    "label": f.stem,
+                    "label": label,
+                    "category": category
                 })
     return icons
 
@@ -90,8 +104,14 @@ def _verify_magic_bytes(data: bytes, content_type: str) -> bool:
 
 
 @router.post("/icons/upload")
-async def upload_icon(file: UploadFile = File(...), _=Depends(require_write_auth)):
-    """Accept a PNG/JPEG/WebP icon upload. SVG is blocked due to XSS risk."""
+async def upload_icon(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+    category: str | None = Form(None),
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth)
+):
+    """Accept a PNG/JPEG/WebP icon upload with metadata. SVG is blocked due to XSS risk."""
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail=f"Unsupported file type: {file.content_type}. Allowed: PNG, JPEG, WebP.")
     data = await file.read()
@@ -101,15 +121,29 @@ async def upload_icon(file: UploadFile = File(...), _=Depends(require_write_auth
     # match the client-declared MIME type (prevents content-type spoofing).
     if not _verify_magic_bytes(data, file.content_type):
         raise HTTPException(status_code=415, detail="File content does not match the declared content type.")
+    
+    # Ensure directory exists before saving (fix for brand-new instances handling first uploads)
+    ICON_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    
     suffix = Path(file.filename).suffix or ".png"
     slug = f"user-{uuid.uuid4().hex[:8]}{suffix}"
     dest = ICON_UPLOAD_DIR / slug
     dest.write_bytes(data)
-    return {"slug": slug, "path": f"/user-icons/{slug}"}
+    
+    db_icon = UserIcon(slug=slug, name=name, category=category)
+    db.add(db_icon)
+    db.commit()
+    
+    return {
+        "slug": slug,
+        "path": f"/user-icons/{slug}",
+        "label": name or dest.stem,
+        "category": category or "UPLOADED"
+    }
 
 
 @router.delete("/icons/{slug}", status_code=204)
-def delete_icon(slug: str, _=Depends(require_write_auth)):
+def delete_icon(slug: str, db: Session = Depends(get_db), _=Depends(require_write_auth)):
     """Delete a previously-uploaded user icon by slug."""
     if not slug.startswith("user-"):
         raise HTTPException(status_code=400, detail="Only user-uploaded icons can be deleted.")
@@ -121,7 +155,14 @@ def delete_icon(slug: str, _=Depends(require_write_auth)):
         raise HTTPException(status_code=400, detail="Invalid icon slug.")
     if not dest.exists():
         raise HTTPException(status_code=404, detail="Icon not found.")
+    
     dest.unlink()
+    
+    db_icon = db.query(UserIcon).filter(UserIcon.slug == slug).first()
+    if db_icon:
+        db.delete(db_icon)
+        db.commit()
+        
     return JSONResponse(status_code=204, content=None)
 
 

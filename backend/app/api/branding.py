@@ -1,9 +1,11 @@
-"""Branding endpoints: favicon upload, login logo upload, Theme Park export/import."""
+"""Branding endpoints: favicon upload, login logo upload, login BG upload,
+asset deletion, dynamic manifest, Theme Park export/import."""
 import json
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -19,8 +21,10 @@ router = APIRouter(tags=["branding"])
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
 _MAX_FAVICON_BYTES = 512 * 1024   # 512 KB
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
+_MAX_BG_BYTES = 5 * 1024 * 1024    # 5 MB
 _FAVICON_ALLOWED = {".ico", ".png"}
 _LOGO_ALLOWED = {".png", ".jpg", ".jpeg", ".svg"}
+_BG_ALLOWED = {".jpg", ".jpeg", ".png"}
 
 
 def _build_branding(row) -> BrandingConfig:
@@ -38,6 +42,7 @@ def _build_branding(row) -> BrandingConfig:
         app_name=row.app_name or "Circuit Breaker",
         favicon_path=row.favicon_path,
         login_logo_path=row.login_logo_path,
+        login_bg_path=getattr(row, 'login_bg_path', None),
         primary_color=row.primary_color or "#00d4ff",
         accent_colors=accent_colors,
     )
@@ -95,6 +100,120 @@ async def upload_login_logo(
     db.commit()
     db.refresh(row)
     return _build_branding(row)
+
+
+@router.post("/upload-login-bg", response_model=BrandingConfig)
+async def upload_login_bg(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
+    """Upload a custom login background (.jpg/.png, max 5 MB).
+
+    Large images are resized to fit within 1920×1080 using Pillow.
+    The result is always saved as JPEG for consistency.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _BG_ALLOWED:
+        raise HTTPException(status_code=400, detail=f"Login background must be .jpg or .png, got {suffix!r}")
+
+    data = await file.read()
+    if len(data) > _MAX_BG_BYTES:
+        raise HTTPException(status_code=400, detail="Login background must be ≤ 5 MB")
+
+    _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Resize large images to max 1920×1080 with Pillow
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(data))
+        img.thumbnail((1920, 1080), Image.LANCZOS)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        data = buf.getvalue()
+    except Exception:
+        # If Pillow fails, save the raw upload — it's already validated by extension
+        pass
+
+    dest = _BRANDING_DIR / "login-bg.jpg"
+    dest.write_bytes(data)
+
+    row = get_or_create_settings(db)
+    row.login_bg_path = "/branding/login-bg.jpg"
+    row.updated_at = utcnow()
+    db.commit()
+    db.refresh(row)
+    return _build_branding(row)
+
+
+# ── Asset Deletion ────────────────────────────────────────────────────────────
+
+_ASSET_MAP = {
+    "favicon": ("favicon_path", ["favicon.ico"]),
+    "login-logo": ("login_logo_path", ["login-logo.png", "login-logo.jpg", "login-logo.jpeg", "login-logo.svg"]),
+    "login-bg": ("login_bg_path", ["login-bg.jpg"]),
+}
+
+
+@router.delete("/{asset_type}", response_model=BrandingConfig)
+def delete_branding_asset(
+    asset_type: str,
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
+    """Remove a branding asset (favicon, login-logo, or login-bg).
+
+    Deletes the file from disk and clears the corresponding DB path.
+    """
+    if asset_type not in _ASSET_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset_type!r}. Must be one of: {', '.join(_ASSET_MAP)}")
+
+    col_name, candidate_files = _ASSET_MAP[asset_type]
+
+    # Delete file(s) from disk
+    for fname in candidate_files:
+        fpath = _BRANDING_DIR / fname
+        if fpath.exists():
+            fpath.unlink(missing_ok=True)
+
+    # Clear DB column
+    row = get_or_create_settings(db)
+    setattr(row, col_name, None)
+    row.updated_at = utcnow()
+    db.commit()
+    db.refresh(row)
+    return _build_branding(row)
+
+
+# ── Dynamic PWA Manifest ──────────────────────────────────────────────────────
+
+@router.get("/manifest.json")
+def dynamic_manifest(db: Session = Depends(get_db)):
+    """Generate a PWA manifest.json reflecting current branding settings."""
+    row = get_or_create_settings(db)
+    app_name = row.app_name or "Circuit Breaker"
+    favicon_url = row.favicon_path or "/favicon.ico"
+
+    manifest = {
+        "name": app_name,
+        "short_name": app_name[:12] if len(app_name) > 12 else app_name,
+        "icons": [
+            {"src": favicon_url, "sizes": "any", "type": "image/x-icon"},
+            {"src": "/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png"},
+        ],
+        "theme_color": row.primary_color or "#00d4ff",
+        "background_color": "#080c14",
+        "display": "standalone",
+    }
+    # If a custom favicon was uploaded, insert it as the first 192/512 entry too
+    if row.favicon_path:
+        manifest["icons"].insert(0, {"src": row.favicon_path, "sizes": "192x192", "type": "image/png"})
+
+    return JSONResponse(content=manifest, media_type="application/manifest+json")
 
 
 class ThemeParkExport(BaseModel):

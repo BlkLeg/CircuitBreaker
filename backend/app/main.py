@@ -73,6 +73,18 @@ def _backfill_log_timestamps(db) -> None:
 
 def _run_migrations(conn) -> None:
     """Apply lightweight schema migrations to an existing SQLite database."""
+    # user_icons (new table)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_icons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT,
+            category TEXT,
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+    """)
+
     # compute_units.icon_slug
     cu_cols = _get_columns(conn, "compute_units")
     if "icon_slug" not in cu_cols:
@@ -198,6 +210,8 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN primary_color TEXT DEFAULT '#00d4ff'")
     if "accent_colors" not in settings_cols:
         conn.execute('ALTER TABLE app_settings ADD COLUMN accent_colors TEXT DEFAULT \'["#ff6b6b","#4ecdc4"]\'')
+    if "login_bg_path" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN login_bg_path TEXT")
     # app_settings: advanced theming
     settings_cols = _get_columns(conn, "app_settings")
     if "theme_preset" not in settings_cols:
@@ -559,8 +573,40 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_snmp_community TEXT")
     if "discovery_http_probe" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_http_probe BOOLEAN DEFAULT TRUE")
+
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    hw_cols = _get_columns(conn, "hardware")
+    if "wifi_standards" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN wifi_standards TEXT DEFAULT NULL")
+    if "wifi_bands" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN wifi_bands TEXT DEFAULT NULL")
+    if "max_tx_power_dbm" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN max_tx_power_dbm INTEGER DEFAULT NULL")
+    if "port_count" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN port_count INTEGER DEFAULT NULL")
+    if "port_map_json" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN port_map_json TEXT DEFAULT NULL")
+    if "software_platform" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN software_platform TEXT DEFAULT NULL")
+    if "download_speed_mbps" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL")
+    if "upload_speed_mbps" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
     if "discovery_retention_days" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_retention_days INTEGER DEFAULT 30")
+
+    # live_metrics table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS live_metrics (
+            ip TEXT PRIMARY KEY,
+            node_id TEXT,
+            node_type TEXT,
+            last_seen DATETIME,
+            status TEXT,
+            assigned_to TEXT,
+            subnet TEXT
+        )
+    """)
 
 
 # ── App startup / lifespan ──────────────────────────────────────────────────
@@ -622,6 +668,15 @@ async def lifespan(app: FastAPI):
         trigger=CronTrigger(hour=3, minute=0),
         id="purge_old_scan_results",
         replace_existing=True,
+    )
+
+    # IP Pool refresh every hour
+    scheduler.add_job(
+        discovery_service.refresh_ip_pool,
+        trigger=CronTrigger(minute=0),
+        id="refresh_ip_pool",
+        replace_existing=True,
+        max_instances=1,
     )
 
     # Load enabled discovery profiles and schedule them
@@ -765,16 +820,18 @@ if _frontend_dir:
     if _icons.exists():
         app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
 
-    _data_dir = Path("/app/data")
-    _uploads_dir = _data_dir / "uploads"
-    _user_icons_dir = _data_dir / "user-icons"
+    _uploads_dir = Path(settings.uploads_dir)
+    _user_icons_dir = _uploads_dir / "icons"
     _branding_dir_data = _uploads_dir / "branding"
-    if _uploads_dir.exists():
-        app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
-    if _user_icons_dir.exists():
-        app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
-    if _branding_dir_data.exists():
-        app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
+    
+    # Ensure directories exist so mounting never fails
+    _uploads_dir.mkdir(parents=True, exist_ok=True)
+    _user_icons_dir.mkdir(parents=True, exist_ok=True)
+    _branding_dir_data.mkdir(parents=True, exist_ok=True)
+
+    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+    app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
+    app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str, request: Request):

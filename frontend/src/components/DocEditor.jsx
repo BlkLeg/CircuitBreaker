@@ -1,8 +1,34 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import MDEditor, { commands } from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
-import data from '@emoji-mart/data';
-import Picker from '@emoji-mart/react';
+import { Undo2, Redo2 } from 'lucide-react';
+
+// Emoji picker loaded on-demand (~680 kB) — only when user clicks the emoji button
+let _emojiModules = null;
+const loadEmojiPicker = async () => {
+  if (!_emojiModules) {
+    const [dataModule, pickerModule] = await Promise.all([
+      import('@emoji-mart/data'),
+      import('@emoji-mart/react'),
+    ]);
+    _emojiModules = { data: dataModule.default, Picker: pickerModule.default };
+  }
+  return _emojiModules;
+};
+
+/* ── Custom undo/redo commands (removed in @uiw/react-md-editor v4) ──── */
+const undoCommand = {
+  name: 'undo',
+  keyCommand: 'undo',
+  icon: React.createElement(Undo2, { size: 14 }),
+  execute: () => { document.execCommand('undo'); },
+};
+const redoCommand = {
+  name: 'redo',
+  keyCommand: 'redo',
+  icon: React.createElement(Redo2, { size: 14 }),
+  execute: () => { document.execCommand('redo'); },
+};
 import { docsApi } from '../api/client';
 import logger from '../utils/logger';
 import './DocEditor.css';
@@ -25,6 +51,8 @@ const BACKEND_DEBOUNCE = 15000; // 15 seconds
 export default function DocEditor({ docId, value, onChange, onSave, updatedAt }) {
   const [saveStatus, setSaveStatus] = useState('saved'); // saved | saving | unsaved | error
   const [showEmoji, setShowEmoji] = useState(false);
+  const [emojiReady, setEmojiReady] = useState(false);
+  const emojiRef = useRef(null); // { data, Picker }
   const [draftBanner, setDraftBanner] = useState(null); // { draftBody }
   const [imageError, setImageError] = useState(null);
   const dirtyRef = useRef(false);
@@ -180,7 +208,17 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
     keyCommand: 'emoji',
     buttonProps: { 'aria-label': 'Insert emoji', title: 'Emoji' },
     icon: <span style={{ fontSize: 16 }}>😀</span>,
-    execute: () => setShowEmoji(prev => !prev),
+    execute: () => {
+      if (!emojiReady) {
+        loadEmojiPicker().then((mods) => {
+          emojiRef.current = mods;
+          setEmojiReady(true);
+          setShowEmoji(true);
+        });
+      } else {
+        setShowEmoji(prev => !prev);
+      }
+    },
   };
 
   // Heading dropdown command (replaces separate h1/h2/h3 buttons)
@@ -244,7 +282,7 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
   // ── Toolbar config ──────────────────────────────────────────
   const toolbarCommands = [
     // Undo / redo
-    commands.undo, commands.redo,
+    undoCommand, redoCommand,
     commands.divider,
     // Inline formatting
     commands.bold, commands.italic, commands.strikethrough,
@@ -329,12 +367,12 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
         />
 
         {/* Emoji picker popover */}
-        {showEmoji && (
+        {showEmoji && emojiRef.current && (
           <>
             <div className="emoji-picker-backdrop" onClick={() => setShowEmoji(false)} />
             <div className="emoji-picker-popover">
-              <Picker
-                data={data}
+              <emojiRef.current.Picker
+                data={emojiRef.current.data}
                 onEmojiSelect={handleEmojiSelect}
                 theme="dark"
                 previewPosition="none"

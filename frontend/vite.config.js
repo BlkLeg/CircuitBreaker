@@ -31,7 +31,10 @@ export default defineConfig(({ mode }) => {
       target: ['chrome111', 'firefox113', 'safari16.4', 'edge111'],
       sourcemap: 'hidden',
       assetsInlineLimit: 4096,      // inline assets < 4 KB as base64 (reduces requests)
-      chunkSizeWarningLimit: 1000,  // 1 MB threshold (map chunk legitimately exceeds 500 KB)
+      // elk.bundled (~1.4 MB, indivisible Java→JS) and DocEditor deps (~1.6 MB,
+      // tightly coupled @uiw + react-markdown + react-syntax-highlighter) are both
+      // lazy-loaded and cannot be split further without library-level changes.
+      chunkSizeWarningLimit: 1700,
       commonjsOptions: {
         // elkjs/lib/elk.bundled.js is a browserify bundle that references 'web-worker'
         // as an internal module. Vite's CJS transform tries to resolve it as an external
@@ -41,15 +44,25 @@ export default defineConfig(({ mode }) => {
       },
       rollupOptions: {
         output: {
-          manualChunks: {
-            // Core React runtime — downloaded once, browser-cached across all pages
-            vendor: ['react', 'react-dom', 'react-router-dom', 'axios'],
-            // Heavy graph/topology libs — only fetched when /map is visited
-            map: ['reactflow', 'elkjs', '@dagrejs/dagre', '@reactflow/node-resizer'],
-            // Markdown editor + syntax highlighting — only needed on /docs
-            editor: ['@uiw/react-md-editor', 'react-syntax-highlighter'],
-            // Emoji picker — infrequently used; keep isolated
-            emoji: ['@emoji-mart/react', '@emoji-mart/data'],
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              // Emoji picker (infrequently used, large ~510 kB) — lazy-loaded on click
+              if (id.includes('@emoji-mart')) {
+                return 'emoji';
+              }
+              // Core React runtime
+              // framer-motion MUST be here: its UMD bundle references React as a bare global.
+              if (
+                id.match(/\/node_modules\/(react|react-dom|react-router|react-router-dom|axios|framer-motion|style-to-js)\//)
+              ) {
+                return 'vendor';
+              }
+              // All other vendor deps (editor, markdown, syntax-hl) are left for Vite
+              // to bundle into lazy async chunks naturally via React.lazy / dynamic import.
+              // Splitting @uiw, react-markdown, and react-syntax-highlighter into separate
+              // manual chunks causes circular dependency warnings because they import
+              // each other internally.
+            }
           },
         },
       },

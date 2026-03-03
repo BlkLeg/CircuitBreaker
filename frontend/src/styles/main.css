@@ -125,6 +125,202 @@ body {
 
 .dock::-webkit-scrollbar { display: none; }
 
+/* Status indicator pulsing */
+@keyframes status-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-success) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 0%, transparent); }
+}
+
+.status-indicator--online {
+  animation: status-pulse 2.4s ease-in-out infinite;
+  background: var(--color-success) !important;
+}
+
+/* Mobile Navigation */
+.mobile-tab-bar {
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 1000;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.mobile-tab-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.18s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-tab-item.active {
+  color: var(--color-primary);
+}
+
+.mobile-tab-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mobile-tab-icon-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-tab-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  border: 1px solid var(--color-surface);
+}
+
+/* Mobile Overflow Sheet */
+.mobile-overflow-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: 1100;
+  display: flex;
+  align-items: flex-end;
+}
+
+.mobile-overflow-sheet {
+  width: 100%;
+  max-height: 70%;
+  background: var(--color-surface-2, var(--color-surface));
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
+  padding: 16px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.4);
+  animation: slide-up 0.2s ease-out;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.mobile-overflow-handle {
+  width: 32px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  margin: 0 auto 16px;
+}
+
+.mobile-overflow-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.mobile-overflow-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.mobile-overflow-close {
+  background: var(--color-border);
+  border: none;
+  color: var(--color-text);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.mobile-overflow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px 12px;
+  overflow-y: auto;
+}
+
+.mobile-overflow-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--color-text-muted);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-overflow-item.active {
+  color: var(--color-primary);
+}
+
+.mobile-overflow-item span {
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.mobile-overflow-icon-wrapper {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  background: var(--color-border);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text);
+  transition: all 0.2s;
+}
+
+.mobile-overflow-item.active .mobile-overflow-icon-wrapper {
+  background: var(--color-primary);
+  color: #000;
+}
+
+.mobile-overflow-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  background: var(--color-primary);
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 2px solid var(--color-surface);
+}
+
 /* Each nav item is its own floating pill */
 .dock-item {
   display: flex;
@@ -2181,10 +2377,20 @@ body {
   .login-brand {
     text-align: center;
     align-items: center;
+    min-height: auto !important;
+    /* When a BG image is active, ensure it covers on mobile */
+    background-size: cover !important;
+    background-position: center !important;
   }
 
   .login-card {
     width: 100%;
+  }
+
+  /* Header compact logo shrinks on mobile */
+  .header-logo {
+    height: 32px !important;
+    max-width: 80px !important;
   }
 
   .oobe-theme-grid {
@@ -2280,6 +2486,16 @@ body {
   }
 }
 
+/* Switch node pulse animation */
+@keyframes switch-pulse {
+  0%, 100% { border-color: var(--color-border); }
+  50%       { border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+}
+
+.node-switch.react-flow__node.animated {
+  animation: switch-pulse 3s ease-in-out infinite;
+}
+
 /* =====================================================================
    ACCESSIBILITY UTILITIES
    ===================================================================== */
@@ -2313,4 +2529,11 @@ body {
 .react-flow__edge:hover .smart-edge-bend-handle,
 .react-flow__edge.selected .smart-edge-bend-handle {
   opacity: 0.85;
+}
+
+/* ── Dark-mode login BG filter ─────────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  .login-brand[style*="backgroundImage"] {
+    filter: brightness(0.8) contrast(1.1);
+  }
 }

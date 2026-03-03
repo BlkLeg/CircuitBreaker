@@ -14,6 +14,7 @@ class BrandingConfig(BaseModel):
     app_name: str = "Circuit Breaker"
     favicon_path: Optional[str] = None
     login_logo_path: Optional[str] = None
+    login_bg_path: Optional[str] = None
     primary_color: str = "#00d4ff"
     accent_colors: list[str] = ["#ff6b6b", "#4ecdc4"]
 
@@ -114,6 +115,7 @@ class AppSettingsRead(BaseModel):
     app_name: str = Field(default="Circuit Breaker", exclude=True)
     favicon_path: Optional[str] = Field(default=None, exclude=True)
     login_logo_path: Optional[str] = Field(default=None, exclude=True)
+    login_bg_path: Optional[str] = Field(default=None, exclude=True)
     primary_color: str = Field(default="#00d4ff", exclude=True)
     accent_colors: Optional[str] = Field(default='["#ff6b6b","#4ecdc4"]', exclude=True)
     # Nested branding object (computed in model_validator)
@@ -137,6 +139,7 @@ class AppSettingsRead(BaseModel):
             app_name=self.app_name or 'Circuit Breaker',
             favicon_path=self.favicon_path,
             login_logo_path=self.login_logo_path,
+            login_bg_path=self.login_bg_path,
             primary_color=self.primary_color or '#00d4ff',
             accent_colors=accent_colors,
         )

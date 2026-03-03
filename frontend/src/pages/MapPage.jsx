@@ -11,23 +11,34 @@ import ReactFlow, {
   useReactFlow,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import dagre from '@dagrejs/dagre';
-import ELK from 'elkjs/lib/elk.bundled.js';
 import { useNavigate } from 'react-router-dom';
 import { X, ExternalLink } from 'lucide-react';
 import { graphApi, hardwareApi, computeUnitsApi, servicesApi, storageApi, networksApi, miscApi, clustersApi, externalNodesApi, telemetryApi, environmentsApi } from '../api/client';
+import { getPendingResults } from '../api/discovery.js';
 import { useSettings } from '../context/SettingsContext';
 import { getIconEntry } from '../components/common/IconPickerModal';
 import { getVendorIcon } from '../icons/vendorIcons';
 import MapContextMenu from '../components/map/MapContextMenu';
 import SmartEdge from '../components/map/SmartEdge';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
+import { useIsMobile } from '../hooks/useIsMobile';
+import WifiOverlay from '../components/map/WifiOverlay';
+import { useToast } from '../components/common/Toast';
 
 // Stable context for passing edge interaction callbacks to SmartEdge without
 // re-rendering every edge when the callback ref changes.
 export const MapEdgeCallbacksContext = React.createContext({ current: null });
 
-const elk = new ELK();
+// ELK is loaded on-demand inside getElkLayout() to avoid bundling ~650 kB
+// into the initial MapPage chunk.
+let _elkInstance = null;
+const getElkInstance = async () => {
+  if (!_elkInstance) {
+    const { default: ELK } = await import('elkjs/lib/elk.bundled.js');
+    _elkInstance = new ELK();
+  }
+  return _elkInstance;
+};
 
 // ── Node Styles ─────────────────────────────────────────────────────────────
 const NODE_STYLES = {
@@ -481,6 +492,7 @@ const getElkLayout = async (nodes, edges, algorithm = 'layered') => {
     }),
     edges: normalizedEdges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
   };
+  const elk = await getElkInstance();
   const layout = await elk.layout(graph);
   const layoutMap = {};
   layout.children.forEach((node) => { layoutMap[node.id] = { x: node.x, y: node.y }; });
@@ -580,8 +592,10 @@ function parseLayoutData(raw) {
 // ── Main Component ──────────────────────────────────────────────────────────
 
 function MapInternal() {
+  const isMobile = useIsMobile();
   const { fitView, project } = useReactFlow();
   const { settings } = useSettings();
+  const toast = useToast();
   const navigate = useNavigate();
 
   const isLight = settings.theme === 'light' ||
@@ -596,6 +610,17 @@ function MapInternal() {
   const [layoutEngine, setLayoutEngine] = useState('hierarchical-tb');
   const [lastSaved, setLastSaved] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [showLabels, setShowLabels] = useState(!isMobile);
+
+  const [legendOpen, setLegendOpen] = useState(() => {
+    const saved = localStorage.getItem('cb-legend-open');
+    if (saved !== null) return saved === 'true';
+    return !isMobile;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('cb-legend-open', legendOpen);
+  }, [legendOpen]);
 
   // Edge override state — { edgeId: { source_side, target_side, control_point? } }
   const [edgeOverrides, setEdgeOverrides] = useState({});
@@ -617,9 +642,7 @@ function MapInternal() {
   // Pending discoveries badge
   const [pendingDiscoveries, setPendingDiscoveries] = useState(0);
   useEffect(() => {
-    import('../api/discovery.js').then(({ getPendingResults }) => {
-      getPendingResults({ limit: 1 }).then((r) => setPendingDiscoveries(r.data?.total ?? 0)).catch(() => {});
-    });
+    getPendingResults({ limit: 1 }).then((r) => setPendingDiscoveries(r.data?.total ?? 0)).catch(() => {});
     const onAdded = () => setPendingDiscoveries((c) => c + 1);
     discoveryEmitter.on('result:added', onAdded);
     return () => discoveryEmitter.off('result:added', onAdded);
@@ -780,6 +803,7 @@ function MapInternal() {
         const nodeShell = {
           id: n.id,
           type: 'iconNode',
+          className: n.role === 'switch' ? 'node-switch' : '',
           data: {},
           position: { x: 0, y: 0 },
           style: { ...BASE_NODE_STYLE },
@@ -812,6 +836,8 @@ function MapInternal() {
           u_height: n.u_height ?? 1,
           rack_unit: n.rack_unit ?? null,
           ip_conflict: n.ip_conflict ?? false,
+          download_speed_mbps: n.download_speed_mbps ?? null,
+          upload_speed_mbps: n.upload_speed_mbps ?? null,
         };
         return nodeShell;
       });
@@ -823,7 +849,7 @@ function MapInternal() {
           source: e.source,
           target: e.target,
           type: 'smart',
-          label: e.relation,
+          label: showLabels ? e.relation : '',
           animated: e.relation === 'depends_on' || e.relation === 'runs',
           style: { stroke: color, strokeWidth: 1.5, opacity: 0.75 },
           _relation: e.relation,
@@ -852,18 +878,10 @@ function MapInternal() {
       } catch { /* no saved layout */ }
 
       if (savedNodePositions) {
-        const autoLayout = getHierarchicalLayout(rawN, rawE, 'TB');
-        const autoPositions = Object.fromEntries(autoLayout.nodes.map(n => [n.id, n.position]));
-        let newIdx = 0;
         const mergedNodes = rawN.map(n => {
           if (savedNodePositions[n.id]) return { ...n, position: savedNodePositions[n.id] };
-          if (n.originalType === 'cluster' && autoPositions[n.id]) {
-            return { ...n, position: autoPositions[n.id] };
-          }
-          const col = newIdx % 4;
-          const row = Math.floor(newIdx / 4);
-          newIdx++;
-          return { ...n, position: { x: 80 + col * 220, y: 80 + row * 180 } };
+          // Mark for auto placement
+          return { ...n, position: { x: 0, y: 0 }, _needsAutoPlace: true };
         });
         setEdgeOverrides(savedEdgeOverrides);
         edgeOverridesRef.current = savedEdgeOverrides;
@@ -871,20 +889,31 @@ function MapInternal() {
         setEdges(applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides));
         setLayoutEngine('manual');
       } else {
-        const layout = getHierarchicalLayout(rawN, rawE, 'TB');
+        // Node count heuristic: If > 50 nodes and no saved layout, 
+        // use a faster initial layout for mobile.
+        const useElk = rawN.length > 50 && !isMobile;
+        const layout = useElk 
+          ? await getElkLayout(rawN, rawE, 'layered')
+          : getHierarchicalLayout(rawN, rawE, 'TB');
         setNodes(layout.nodes);
         setEdges(applyEdgeSides(layout.nodes, layout.edges, {}));
-        setLayoutEngine('hierarchical-tb');
+        setLayoutEngine(useElk ? 'elk-layered' : 'hierarchical-tb');
       }
 
-      setTimeout(() => fitView({ padding: 0.2 }), 50);
+      setTimeout(() => {
+        fitView({ padding: 0.2 });
+        if (isMobile) {
+          // Defer edge labels for smoother initial paint on mobile
+          setTimeout(() => setShowLabels(true), 300);
+        }
+      }, 50);
     } catch (err) {
       setError(err.message || 'Failed to load topology');
     } finally {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [envFilter, includeTypes, fitView, getLayoutName]);
+  }, [envFilter, includeTypes, fitView, getLayoutName, isMobile, showLabels]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -917,6 +946,30 @@ function MapInternal() {
       setLoading(false);
     }, 50);
   }, [nodes, edges, setNodes, setEdges, fitView, fetchData]);
+
+  const updateNodePos = useCallback((id, pos) => {
+    setNodes(nds => nds.map(n => n.id === id ? { ...n, position: pos, _needsAutoPlace: false } : n));
+  }, [setNodes]);
+
+  const autoPlaceNew = useCallback(async (newNodeId) => {
+    try {
+      const res = await graphApi.placeNode(newNodeId, envFilter || 'default');
+      updateNodePos(newNodeId, { x: res.data.x, y: res.data.y });
+      toast.success('Node auto-placed safely', { toastId: `placed-${newNodeId}`, autoClose: 2000 });
+      setDirty(true); // Persist automatically on next save
+    } catch (e) {
+      console.error('Auto-place failed', e);
+    }
+  }, [envFilter, updateNodePos]);
+
+  useEffect(() => {
+    // Look for nodes marked with _needsAutoPlace
+    const nodesToPlace = nodes.filter(n => n._needsAutoPlace);
+    if (nodesToPlace.length > 0) {
+      // Process one at a time to prevent overlapping auto-placements
+      autoPlaceNew(nodesToPlace[0].id);
+    }
+  }, [nodes, autoPlaceNew]);
 
   const saveLayout = async () => {
     const nodePositions = {};
@@ -1217,21 +1270,83 @@ function MapInternal() {
           minZoom={0.1}
           preventScrolling  /* keep page from scrolling when pointer is over map */
         >
-          {/* Legend */}
-          <Panel position="top-right" style={{ background: 'var(--color-surface)', padding: 10, borderRadius: 8, fontSize: 11, color: 'var(--color-text)', border: '1px solid var(--color-border)' }}>
-            <div style={{ fontWeight: 600, marginBottom: 6, color: 'var(--color-text-muted)' }}>Legend</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {Object.entries(NODE_STYLES).map(([type, style]) => (
-                <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 12, height: 12, background: style.background, borderRadius: 2, border: `1px solid ${style.borderColor}` }} />
-                  <span style={{ textTransform: 'capitalize', color: includeTypes[type] ? 'var(--color-text)' : 'var(--color-text-muted)' }}>{type}</span>
-                </div>
-              ))}
+          {/* Loading overlay */}
+          {loading && nodes.length === 0 && (
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--color-bg)',
+              zIndex: 100,
+            }}>
+              <div className="login-spin" style={{ width: 48, height: 48, border: '4px solid var(--color-border)', borderTopColor: 'var(--color-primary)', borderRadius: '50%' }} />
+              <p style={{ marginTop: 16, color: 'var(--color-text-muted)', fontSize: 14 }}>Loading topology…</p>
             </div>
+          )}
+
+          {/* Legend */}
+          <Panel position="top-right">
+            {!legendOpen ? (
+              <button
+                onClick={() => setLegendOpen(true)}
+                style={{
+                  background: 'var(--color-surface)',
+                  padding: '6px 12px',
+                  borderRadius: 20,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: 'var(--color-text)',
+                  border: '1px solid var(--color-border)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                }}
+              >
+                <span>Legend</span>
+                <span style={{ fontSize: 10 }}>▼</span>
+              </button>
+            ) : (
+              <div style={{
+                background: 'var(--color-surface)',
+                padding: 12,
+                borderRadius: 8,
+                fontSize: 11,
+                color: 'var(--color-text)',
+                border: '1px solid var(--color-border)',
+                minWidth: 120,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+                position: 'relative'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600, color: 'var(--color-text-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Legend</div>
+                  <button
+                    onClick={() => setLegendOpen(false)}
+                    style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 2, display: 'flex' }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {Object.entries(NODE_STYLES).map(([type, style]) => (
+                    <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ width: 10, height: 10, background: style.background, borderRadius: 2, border: `1px solid ${style.borderColor}` }} />
+                      <span style={{ textTransform: 'capitalize', color: includeTypes[type] ? 'var(--color-text)' : 'var(--color-text-muted)' }}>{type}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </Panel>
           <Controls />
           <Background color={bgGridColor} gap={24} size={1} />
         </ReactFlow>
+
+        <WifiOverlay nodes={nodes} />
 
         {/* Empty-canvas hint */}
         {!loading && nodes.length === 0 && !error && settings?.show_page_hints && (

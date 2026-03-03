@@ -72,6 +72,18 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
             d["telemetry_data"] = json.loads(d["telemetry_data"])
         except (json.JSONDecodeError, TypeError):
             d["telemetry_data"] = {}
+    
+    # Deserialize networking extensions (v0.1.7)
+    for field in ("wifi_standards", "wifi_bands", "port_map_json"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                d[field] = [] if field != "port_map_json" else []
+    
+    # Expose port_map_json as port_map in the API
+    d["port_map"] = d.pop("port_map_json", [])
+
     if hw.storage_items:
         total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
         used_gb_vals = [s.used_gb for s in hw.storage_items if s.used_gb is not None]
@@ -137,6 +149,21 @@ def get_hardware(db: Session, hardware_id: int) -> dict:
         d["ip_conflict"] = False
         d["ip_conflict_details"] = []
     return d
+
+
+def _sync_port_edges(db: Session, hardware_id: int, port_map: list) -> None:
+    """Sync 'connects_to' graph edges based on port map connectivity."""
+    from app.services.graph_service import create_edge
+    
+    for p in port_map:
+        data = p.model_dump() if hasattr(p, 'model_dump') else p
+        target_hw_id = data.get("connected_hardware_id")
+        target_cu_id = data.get("connected_compute_id")
+        
+        if target_hw_id:
+            create_edge(db, "hardware", hardware_id, "hardware", target_hw_id, "connects_to")
+        if target_cu_id:
+            create_edge(db, "hardware", hardware_id, "compute", target_cu_id, "connects_to")
 
 
 def create_hardware(db: Session, payload: HardwareCreate) -> dict:
@@ -227,10 +254,22 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         telemetry_config=telemetry_config_json,
         environment_id=resolved_env_id,
         rack_id=rack_id,
+        # v0.1.7: Networking extensions
+        wifi_standards=json.dumps(payload.wifi_standards) if payload.wifi_standards else None,
+        wifi_bands=json.dumps(payload.wifi_bands) if payload.wifi_bands else None,
+        max_tx_power_dbm=payload.max_tx_power_dbm,
+        port_count=payload.port_count,
+        port_map_json=json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in payload.port_map]) if payload.port_map else None,
+        software_platform=payload.software_platform,
+        download_speed_mbps=payload.download_speed_mbps,
+        upload_speed_mbps=payload.upload_speed_mbps,
     )
     db.add(hw)
     db.flush()
     _sync_tags(db, "hardware", hw.id, payload.tags)
+    # CB-PORTMAP-001: Sync graph edges from port map
+    if payload.port_map:
+        _sync_port_edges(db, hw.id, payload.port_map)
     db.commit()
     db.refresh(hw)
     return _to_dict(db, hw)
@@ -260,11 +299,25 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
                 status_code=409,
                 detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
             )
-    update_data = payload.model_dump(exclude_unset=True, exclude={"tags"})
+    update_data = payload.model_dump(exclude_unset=True, exclude={"tags", "port_map"})
     # Serialize TelemetryConfig Pydantic model to JSON string for storage
-    if "telemetry_config" in update_data and update_data["telemetry_config"] is not None:
+    if "telemetry_config" in payload.model_fields_set and payload.telemetry_config is not None:
         tc = payload.telemetry_config
-        update_data["telemetry_config"] = tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(update_data["telemetry_config"])
+        update_data["telemetry_config"] = tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(tc)
+    
+    # Serialize networking extensions (v0.1.7)
+    if "wifi_standards" in payload.model_fields_set and payload.wifi_standards is not None:
+        update_data["wifi_standards"] = json.dumps(payload.wifi_standards)
+    if "wifi_bands" in payload.model_fields_set and payload.wifi_bands is not None:
+        update_data["wifi_bands"] = json.dumps(payload.wifi_bands)
+    
+    if "port_map" in payload.model_fields_set:
+        if payload.port_map is not None:
+            update_data["port_map_json"] = json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in payload.port_map])
+            _sync_port_edges(db, hardware_id, payload.port_map)
+        else:
+            update_data["port_map_json"] = None
+
     # Resolve environment from inline name or id
     env_str = update_data.pop("environment", None)
     env_id = update_data.pop("environment_id", None)

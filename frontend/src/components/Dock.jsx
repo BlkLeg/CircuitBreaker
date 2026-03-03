@@ -3,6 +3,8 @@ import { NavLink } from 'react-router-dom';
 import { BookOpen, Cloud, Cpu, GripHorizontal, HardDrive, Layers, Network, ScrollText, Server, Settings, Map, ScanSearch } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
+import { useIsMobile } from '../hooks/useIsMobile';
+import MobileTabBar from './MobileTabBar';
 
 export const NAV_MAP = {
   '/hardware':      { icon: Cpu,        label: 'Hardware'   },
@@ -33,6 +35,7 @@ export const DEFAULT_ORDER = [
 ];
 
 function Dock({ pendingCount = 0 }) {
+  const isMobile = useIsMobile();
   const navRef = useRef(null);
   const dragItem = useRef(null);
   const dragOver = useRef(null);
@@ -58,10 +61,14 @@ function Dock({ pendingCount = 0 }) {
     .filter((path) => NAV_MAP[path] && !hiddenItems.has(path))
     .map((path) => ({ path, ...NAV_MAP[path] }));
 
+  // Mobile navigation prep
+  const mobilePrimaryPaths = ['/map', '/hardware', '/services', '/networks'];
+  const overflowItems = navItems.filter(item => !mobilePrimaryPaths.includes(item.path));
+
   /* ── Horizontal scroll ───────────────────────────────── */
   useEffect(() => {
     const el = navRef.current;
-    if (!el) return;
+    if (!el || isMobile) return;
     const onWheel = (e) => {
       if (e.deltaY === 0) return;
       e.preventDefault();
@@ -69,7 +76,7 @@ function Dock({ pendingCount = 0 }) {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [isMobile]);
 
   /* ── Exit edit mode on Escape ────────────────────────── */
   useEffect(() => {
@@ -117,6 +124,10 @@ function Dock({ pendingCount = 0 }) {
       setLocalOrder(null);
     }
   }, [order, reloadSettings]);
+
+  if (isMobile) {
+    return <MobileTabBar overflowItems={overflowItems} pendingCount={pendingCount} />;
+  }
 
   return (
     <nav aria-label="Main Navigation" ref={navRef} className="dock" onDoubleClick={() => setEditMode((m) => !m)}>

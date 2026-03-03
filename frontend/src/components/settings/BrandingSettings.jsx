@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
 import { settingsApi } from '../../api/client';
@@ -117,10 +118,12 @@ export default function BrandingSettings() {
   );
   const [colorErrors, setColorErrors] = useState({});
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState({ favicon: false, logo: false });
+  const [uploading, setUploading] = useState({ favicon: false, logo: false, bg: false });
+  const [deleting, setDeleting] = useState({ favicon: false, logo: false, bg: false });
 
   const faviconRef = useRef(null);
   const logoRef = useRef(null);
+  const bgRef = useRef(null);
 
   const validateColors = (primary, accents) => {
     const errs = {};
@@ -188,6 +191,35 @@ export default function BrandingSettings() {
     }
   };
 
+  const handleUploadBg = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading((u) => ({ ...u, bg: true }));
+    try {
+      await brandingApi.uploadLoginBg(file);
+      await reloadSettings();
+      toast.success('Login background updated.');
+    } catch (err) {
+      toast.error(`Background upload failed: ${err.response?.data?.detail ?? err.message}`);
+    } finally {
+      setUploading((u) => ({ ...u, bg: false }));
+      if (bgRef.current) bgRef.current.value = '';
+    }
+  };
+
+  const handleDeleteAsset = async (assetType, label) => {
+    setDeleting((d) => ({ ...d, [assetType]: true }));
+    try {
+      await brandingApi.deleteAsset(assetType);
+      await reloadSettings();
+      toast.success(`${label} removed.`);
+    } catch (err) {
+      toast.error(`Failed to remove ${label}: ${err.response?.data?.detail ?? err.message}`);
+    } finally {
+      setDeleting((d) => ({ ...d, [assetType]: false }));
+    }
+  };
+
   const handleExport = async () => {
     try {
       const res = await brandingApi.exportTheme();
@@ -225,6 +257,9 @@ export default function BrandingSettings() {
   const logoSrc = branding.login_logo_path
     ? `${branding.login_logo_path}?t=${Date.now()}`
     : '/CB-AZ_Final.png';
+  const bgSrc = branding.login_bg_path
+    ? `${branding.login_bg_path}?t=${Date.now()}`
+    : null;
 
   return (
     <div>
@@ -319,15 +354,29 @@ export default function BrandingSettings() {
             style={{ display: 'none' }}
             onChange={handleUploadFavicon}
           />
-          <button
-            className="btn btn-secondary btn-sm"
-            type="button"
-            disabled={uploading.favicon}
-            onClick={() => faviconRef.current?.click()}
-          >
-            {uploading.favicon ? 'Uploading…' : 'Upload Favicon'}
-          </button>
-          <span style={{ ...S.hint, marginTop: 0, marginLeft: 8, display: 'inline' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              disabled={uploading.favicon}
+              onClick={() => faviconRef.current?.click()}
+            >
+              {uploading.favicon ? 'Uploading…' : 'Upload Favicon'}
+            </button>
+            {branding.favicon_path && (
+              <button
+                className="btn btn-sm"
+                type="button"
+                disabled={deleting.favicon}
+                onClick={() => handleDeleteAsset('favicon', 'Favicon')}
+                title="Remove custom favicon"
+                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Trash2 size={12} />{deleting.favicon ? 'Removing…' : 'Remove'}
+              </button>
+            )}
+          </div>
+          <span style={{ ...S.hint, marginTop: 4 }}>
             .ico or .png, max 512 KB
           </span>
         </div>
@@ -348,19 +397,89 @@ export default function BrandingSettings() {
             style={{ display: 'none' }}
             onChange={handleUploadLogo}
           />
-          <button
-            className="btn btn-secondary btn-sm"
-            type="button"
-            disabled={uploading.logo}
-            onClick={() => logoRef.current?.click()}
-          >
-            {uploading.logo ? 'Uploading…' : 'Upload Login Logo'}
-          </button>
-          <span style={{ ...S.hint, marginTop: 0, marginLeft: 8, display: 'inline' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              disabled={uploading.logo}
+              onClick={() => logoRef.current?.click()}
+            >
+              {uploading.logo ? 'Uploading…' : 'Upload Login Logo'}
+            </button>
+            {branding.login_logo_path && (
+              <button
+                className="btn btn-sm"
+                type="button"
+                disabled={deleting.logo}
+                onClick={() => handleDeleteAsset('login-logo', 'Login logo')}
+                title="Remove custom login logo"
+                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Trash2 size={12} />{deleting.logo ? 'Removing…' : 'Remove'}
+              </button>
+            )}
+          </div>
+          <span style={{ ...S.hint, marginTop: 4 }}>
             .png / .jpg / .svg, max 2 MB
           </span>
           <span style={{ ...S.hint, display: 'block' }}>
             Ideal size 512×512 px, transparent background recommended.
+          </span>
+        </div>
+      </div>
+
+      <div style={S.divider} />
+
+      {/* ── Login Background ────────────────────── */}
+      <div style={S.subTitle}>Login Background</div>
+      <span style={S.hint}>
+        Shown as the hero image on the login page brand column. Leave empty for default gradient.
+      </span>
+
+      <div style={{ ...S.uploadRow, marginTop: 10 }}>
+        {bgSrc ? (
+          <img
+            src={bgSrc}
+            alt="Login background"
+            style={{ width: 160, height: 90, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+          />
+        ) : (
+          <div style={{ width: 160, height: 90, borderRadius: 4, border: '1px dashed var(--color-border)', background: 'var(--color-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--color-text-muted)' }}>
+            No background
+          </div>
+        )}
+        <div>
+          <input
+            ref={bgRef}
+            type="file"
+            accept=".jpg,.jpeg,.png"
+            style={{ display: 'none' }}
+            onChange={handleUploadBg}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              disabled={uploading.bg}
+              onClick={() => bgRef.current?.click()}
+            >
+              {uploading.bg ? 'Uploading…' : 'Upload Background'}
+            </button>
+            {branding.login_bg_path && (
+              <button
+                className="btn btn-sm"
+                type="button"
+                disabled={deleting.bg}
+                onClick={() => handleDeleteAsset('login-bg', 'Background')}
+                title="Remove login background"
+                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+              >
+                <Trash2 size={12} />{deleting.bg ? 'Removing…' : 'Remove'}
+              </button>
+            )}
+          </div>
+          <span style={{ ...S.hint, marginTop: 4 }}>
+            .jpg / .png, max 5 MB. Auto-resized to 1920×1080.
           </span>
         </div>
       </div>

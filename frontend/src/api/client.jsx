@@ -192,6 +192,7 @@ export const graphApi = {
   topology: (params) => client.get('/graph/topology', { params }),
   getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
   saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
+  placeNode: (node_id, environment = 'default') => client.post('/graph/place-node', { node_id, environment }),
 };
 
 export const searchApi = {
