@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, func
 from fastapi import HTTPException
 
-from app.db.models import Hardware, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag  # noqa: F401 (Service used for reactive cascade)
+from app.db.models import Hardware, HardwareConnection, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag  # noqa: F401 (Service used for reactive cascade)
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
 from app.services.environments_service import resolve_environment_id
 from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
@@ -363,6 +363,10 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         svc.ip_conflict_json = json.dumps(result["conflict_with"])
     if affected:
         db.commit()
+    # CB-STATE-001: recalculate hardware status (respects status_override)
+    from app.services.status_service import recalculate_hardware_status
+    recalculate_hardware_status(db, hardware_id)
+    db.commit()
     return _to_dict(db, hw)
 
 
@@ -423,6 +427,41 @@ def list_hardware_groups(db: Session) -> list[dict]:
         {"vendor": r.vendor, "model": r.model, "count": r.count}
         for r in rows
     ]
+
+
+def add_hardware_connection(db: Session, source_id: int, target_id: int) -> dict:
+    """Create a direct hardware-to-hardware physical connection."""
+    get_hardware(db, source_id)  # 404 guard
+    get_hardware(db, target_id)  # 404 guard
+    conn = HardwareConnection(
+        source_hardware_id=source_id,
+        target_hardware_id=target_id,
+        connection_type="ethernet",
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return {"id": conn.id, "source_hardware_id": conn.source_hardware_id, "target_hardware_id": conn.target_hardware_id, "connection_type": conn.connection_type, "bandwidth_mbps": conn.bandwidth_mbps}
+
+
+def remove_hardware_connection(db: Session, connection_id: int) -> None:
+    """Delete a hardware-to-hardware connection by its ID."""
+    conn = db.get(HardwareConnection, connection_id)
+    if conn is None:
+        raise ValueError(f"Hardware connection {connection_id} not found.")
+    db.delete(conn)
+    db.commit()
+
+
+def update_hardware_connection_type(db: Session, connection_id: int, connection_type: str) -> dict:
+    """Update the connection_type on a hardware-to-hardware link."""
+    conn = db.get(HardwareConnection, connection_id)
+    if conn is None:
+        raise ValueError(f"Hardware connection {connection_id} not found.")
+    conn.connection_type = connection_type
+    db.commit()
+    db.refresh(conn)
+    return {"id": conn.id, "connection_type": conn.connection_type}
 
 
 def list_network_memberships(db: Session, hardware_id: int) -> list[dict]:

@@ -41,6 +41,11 @@ def recalculate_hardware_status(db: Session, hardware_id: int) -> str:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
         return "unknown"
+    # v2: manual override takes precedence over auto-derivation
+    if hw.status_override:
+        hw.status = hw.status_override
+        db.flush()
+        return hw.status_override
     child_statuses = []
     if hw.telemetry_status:
         child_statuses.append(hw.telemetry_status)
@@ -61,6 +66,11 @@ def recalculate_compute_status(db: Session, cu_id: int) -> str:
     cu = db.get(ComputeUnit, cu_id)
     if cu is None:
         return "unknown"
+    # v2: manual override takes precedence over auto-derivation
+    if cu.status_override:
+        cu.status = cu.status_override
+        db.flush()
+        return cu.status_override
     svc_statuses = []
     for svc in db.execute(select(Service).where(Service.compute_id == cu_id)).scalars().all():
         if svc.status:

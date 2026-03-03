@@ -89,6 +89,8 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
+  addConnection: (sourceId, targetId) => client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
+  removeConnection: (connectionId) => client.delete(`/hardware-connections/${connectionId}`),
 };
 
 export const computeUnitsApi = {
@@ -193,6 +195,8 @@ export const graphApi = {
   getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
   saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
   placeNode: (node_id, environment = 'default') => client.post('/graph/place-node', { node_id, environment }),
+  deleteEdge: (edge_id) => client.delete(`/graph/edges/${edge_id}`),
+  updateEdgeType: (edge_id, connection_type) => client.patch(`/graph/edges/${edge_id}`, { connection_type }),
 };
 
 export const searchApi = {

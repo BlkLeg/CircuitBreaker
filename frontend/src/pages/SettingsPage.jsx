@@ -39,7 +39,7 @@ function parseMapFilters(raw) {
 
 export default function SettingsPage() {
   const { settings: ctxSettings, reloadSettings } = useSettings();
-  const { setAuthEnabled, isAuthenticated } = useAuth();
+  const { setAuthEnabled } = useAuth();
   const { timezone: ctxTimezone, setTimezone } = useTimezone();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
@@ -73,6 +73,10 @@ export default function SettingsPage() {
       auth_enabled: ctxSettings.auth_enabled ?? false,
       session_timeout_hours: ctxSettings.session_timeout_hours ?? 24,
       show_external_nodes_on_map: ctxSettings.show_external_nodes_on_map ?? true,
+      show_header_widgets: ctxSettings.show_header_widgets ?? true,
+      show_time_widget: ctxSettings.show_time_widget ?? true,
+      show_weather_widget: ctxSettings.show_weather_widget ?? true,
+      weather_location: ctxSettings.weather_location ?? 'Phoenix, AZ',
       timezone: ctxSettings.timezone ?? 'UTC',
     };
     setForm(initialForm);
@@ -357,6 +361,65 @@ export default function SettingsPage() {
 
                 <SettingSection title="Navigation Dock">
                   <DockSettings />
+                </SettingSection>
+                <SettingSection title="Personalization">
+                  <SettingField
+                    label="Show Header Widgets"
+                    hint="Display compact time and weather widgets in the global header."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">Show Header Widgets</span>
+                      <input
+                        type="checkbox"
+                        checked={form.show_header_widgets}
+                        onChange={(e) => set('show_header_widgets', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
+
+                  {form.show_header_widgets && (
+                    <>
+                      <SettingField label="Time/Date" hint="Show a live 24-hour clock with date.">
+                        <label className="toggle-switch">
+                          <span className="sr-only">Time and Date Widget</span>
+                          <input
+                            type="checkbox"
+                            checked={form.show_time_widget}
+                            onChange={(e) => set('show_time_widget', e.target.checked)}
+                          />
+                          <span className="toggle-switch-track" />
+                        </label>
+                      </SettingField>
+
+                      <SettingField label="Weather" hint="Show current weather for the configured location.">
+                        <label className="toggle-switch">
+                          <span className="sr-only">Weather Widget</span>
+                          <input
+                            type="checkbox"
+                            checked={form.show_weather_widget}
+                            onChange={(e) => set('show_weather_widget', e.target.checked)}
+                          />
+                          <span className="toggle-switch-track" />
+                        </label>
+                      </SettingField>
+
+                      {form.show_weather_widget && (
+                        <SettingField
+                          label="Weather Location"
+                          hint="City and region format, e.g. Phoenix, AZ."
+                        >
+                          <input
+                            className="form-control"
+                            type="text"
+                            value={form.weather_location}
+                            placeholder="Phoenix, AZ"
+                            onChange={(e) => set('weather_location', e.target.value)}
+                          />
+                        </SettingField>
+                      )}
+                    </>
+                  )}
                 </SettingSection>
               </>
             )}

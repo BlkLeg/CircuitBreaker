@@ -236,6 +236,16 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN dock_hidden_items TEXT")
     if "show_page_hints" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_page_hints BOOLEAN DEFAULT TRUE")
+    # app_settings: header widgets
+    settings_cols = _get_columns(conn, "app_settings")
+    if "show_header_widgets" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_header_widgets BOOLEAN DEFAULT TRUE")
+    if "show_time_widget" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_time_widget BOOLEAN DEFAULT TRUE")
+    if "show_weather_widget" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_weather_widget BOOLEAN DEFAULT TRUE")
+    if "weather_location" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN weather_location TEXT DEFAULT 'Phoenix, AZ'")
     # hardware_clusters + hardware_cluster_members (new tables — safe to CREATE IF NOT EXISTS)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_clusters (
@@ -560,6 +570,10 @@ def _run_migrations(conn) -> None:
     cu_cols = _get_columns(conn, "compute_units")
     if "status" not in cu_cols:
         conn.execute("ALTER TABLE compute_units ADD COLUMN status TEXT DEFAULT 'unknown'")
+    if "download_speed_mbps" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL")
+    if "upload_speed_mbps" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
     # MAC unique index (partial — only non-NULL values)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hardware_mac ON hardware(mac_address) WHERE mac_address IS NOT NULL AND mac_address != ''")
 
@@ -605,6 +619,45 @@ def _run_migrations(conn) -> None:
             status TEXT,
             assigned_to TEXT,
             subnet TEXT
+        )
+    """)
+
+    # ── v2 Map: status_override columns ─────────────────────────────────
+    hw_cols = _get_columns(conn, "hardware")
+    if "status_override" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN status_override TEXT")
+    cu_cols = _get_columns(conn, "compute_units")
+    if "status_override" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN status_override TEXT")
+
+    # ── v2 Map: connection_type / bandwidth_mbps on join tables ──────────
+    _JOIN_TABLES_V2 = [
+        "hardware_networks",
+        "compute_networks",
+        "service_dependencies",
+        "service_storage",
+        "service_misc",
+        "external_node_networks",
+        "service_external_nodes",
+    ]
+    for _tbl in _JOIN_TABLES_V2:
+        _cols = _get_columns(conn, _tbl)
+        if "connection_type" not in _cols:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN connection_type TEXT DEFAULT 'ethernet'")
+        if "bandwidth_mbps" not in _cols:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN bandwidth_mbps INTEGER")
+
+    # ── hardware_connections: direct hardware-to-hardware physical links ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hardware_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_hardware_id INTEGER NOT NULL REFERENCES hardware(id) ON DELETE CASCADE,
+            target_hardware_id INTEGER NOT NULL REFERENCES hardware(id) ON DELETE CASCADE,
+            connection_type TEXT DEFAULT 'ethernet',
+            bandwidth_mbps INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            UNIQUE (source_hardware_id, target_hardware_id)
         )
     """)
 
@@ -760,6 +813,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 _V1 = "/api/v1"
 
 app.include_router(hardware.router,       prefix=f"{_V1}/hardware",          tags=["hardware"])
+app.include_router(hardware.hw_conn_router, prefix=f"{_V1}",                 tags=["hardware"])
 app.include_router(compute_units.router,  prefix=f"{_V1}/compute-units",     tags=["compute-units"])
 app.include_router(services.router,       prefix=f"{_V1}/services",          tags=["services"])
 app.include_router(storage.router,        prefix=f"{_V1}/storage",           tags=["storage"])

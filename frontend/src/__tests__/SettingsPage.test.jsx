@@ -2,7 +2,6 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import SettingsPage from '../pages/SettingsPage';
-import { SettingsProvider } from '../context/SettingsContext';
 import { AuthProvider } from '../context/AuthContext';
 import { TimezoneProvider } from '../context/TimezoneContext';
 
@@ -82,7 +81,7 @@ describe('SettingsPage Redesign', () => {
 
   test('shows action bar when dirty', () => {
     renderPage();
-    const timezoneSelect = screen.getByDisplayValue('UTC');
+    screen.getByDisplayValue('UTC');
     // This is a simplification; in real app it might be more complex to trigger dirty
     // But we are testing if the SettingsActionBar is rendered when isDirty is true
     // Our SettingPage uses useMemo for isDirty based on form/origForm

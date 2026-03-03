@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Play, Trash2, MoreHorizontal, ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import PropTypes from 'prop-types';
+import { useSearchParams } from 'react-router-dom';
+import { Plus, Play, Trash2, ChevronDown, ChevronRight, Layers } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import '../styles/discovery.css';
 import NmapArgsField from '../components/discovery/NmapArgsField.jsx';
@@ -19,6 +20,8 @@ import ServiceChecklistModal from '../components/discovery/ServiceChecklistModal
 import ScanAckModal from '../components/discovery/ScanAckModal.jsx';
 import JobStatusBadge from '../components/discovery/JobStatusBadge.jsx';
 import TimestampCell from '../components/TimestampCell.jsx';
+import ConfirmDialog from '../components/common/ConfirmDialog.jsx';
+import logger from '../utils/logger.js';
 
 const TABS = ['profiles', 'adhoc', 'review', 'history'];
 const TAB_LABELS = { profiles: 'Scan Profiles', adhoc: 'Ad-hoc Scan', review: 'Review Queue', history: 'Scan History' };
@@ -49,11 +52,34 @@ function StateBadge({ state }) {
   );
 }
 
+StateBadge.propTypes = {
+  state: PropTypes.string.isRequired,
+};
+
+function logApiWarning(scope, error) {
+  logger.warn(`[DiscoveryPage] ${scope}`, error);
+}
+
+function pluralize(value, singular, plural = `${singular}s`) {
+  return value === 1 ? singular : plural;
+}
+
+function getReviewTabLabel(pendingCount) {
+  if (pendingCount > 0) {
+    return `${TAB_LABELS.review} (${pendingCount})`;
+  }
+  return TAB_LABELS.review;
+}
+
+function getProgressFillClass(status) {
+  if (status === 'running') return 'progress-fill indeterminate';
+  if (status === 'completed' || status === 'done') return 'progress-fill full';
+  return 'progress-fill';
+}
+
 export default function DiscoveryPage() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { settings, reloadSettings } = useSettings();
-  const toast = useToast();
 
   const activeTab = searchParams.get('tab') || 'profiles';
   const setTab = (t) => setSearchParams({ tab: t });
@@ -71,7 +97,7 @@ export default function DiscoveryPage() {
   useEffect(() => {
     getPendingResults({ limit: 1 })
       .then((res) => setPendingCount(res.data?.total ?? res.data?.length ?? 0))
-      .catch(() => {});
+      .catch((error) => logApiWarning('Failed to fetch pending results count', error));
   }, []);
 
   // Scan ack gate
@@ -111,7 +137,7 @@ export default function DiscoveryPage() {
               transition: 'all 0.15s',
             }}
           >
-            {t === 'review' ? `${TAB_LABELS[t]}${pendingCount > 0 ? ` (${pendingCount})` : ''}` : TAB_LABELS[t]}
+            {t === 'review' ? getReviewTabLabel(pendingCount) : TAB_LABELS[t]}
           </button>
         ))}
       </div>
@@ -135,11 +161,14 @@ function ProfilesTab({ requireAck, onJobStart }) {
   const [loading,  setLoading]  = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [editing,  setEditing]  = useState(null);
-  const [menuOpen, setMenuOpen] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    getProfiles().then((r) => setProfiles(r.data)).catch(() => {}).finally(() => setLoading(false));
+    getProfiles()
+      .then((r) => setProfiles(r.data))
+      .catch((error) => logApiWarning('Failed to load profiles', error))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -157,13 +186,14 @@ function ProfilesTab({ requireAck, onJobStart }) {
     });
   };
 
-  const handleDelete = async (profile) => {
-    if (!window.confirm(`Delete profile "${profile.name}"?`)) return;
+  const handleDelete = async () => {
+    if (!deleteConfirm) return;
     try {
-      await deleteProfile(profile.id);
-      toast.success(`Profile '${profile.name}' deleted`);
+      await deleteProfile(deleteConfirm.id);
+      toast.success(`Profile '${deleteConfirm.name}' deleted`);
       load();
     } catch (err) { toast.error(err?.message || 'Failed to delete'); }
+    setDeleteConfirm(null);
   };
 
   if (loading) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading profiles…</p>;
@@ -215,7 +245,7 @@ function ProfilesTab({ requireAck, onJobStart }) {
                       <Play size={11} /> Run
                     </button>
                     <button type="button" className="btn btn-secondary" style={{ padding: '3px 10px', fontSize: 11 }} onClick={() => { setEditing(p); setFormOpen(true); }}>Edit</button>
-                    <button type="button" className="btn btn-danger" style={{ padding: '3px 8px', fontSize: 11 }} onClick={() => handleDelete(p)}><Trash2 size={11} /></button>
+                    <button type="button" className="btn btn-danger" style={{ padding: '3px 8px', fontSize: 11 }} onClick={() => setDeleteConfirm(p)}><Trash2 size={11} /></button>
                   </div>
                 </td>
               </tr>
@@ -223,6 +253,13 @@ function ProfilesTab({ requireAck, onJobStart }) {
           </tbody>
         </table>
       )}
+
+      <ConfirmDialog
+        open={Boolean(deleteConfirm)}
+        message={deleteConfirm ? `Delete profile "${deleteConfirm.name}"?` : ''}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteConfirm(null)}
+      />
 
       {formOpen && (
         <ScanProfileForm
@@ -234,6 +271,11 @@ function ProfilesTab({ requireAck, onJobStart }) {
     </div>
   );
 }
+
+ProfilesTab.propTypes = {
+  requireAck: PropTypes.func.isRequired,
+  onJobStart: PropTypes.func.isRequired,
+};
 
 // ─────────────────────────────────────────────────────────────────
 // Tab 2 — Ad-hoc Scan
@@ -250,6 +292,7 @@ function AdHocTab({ requireAck, onViewResults }) {
   const [activeJob,   setActiveJob]   = useState(null);
   const [logLines,    setLogLines]    = useState([]);
   const [jobDone,     setJobDone]     = useState(false);
+  const logIdRef = useRef(0);
 
   // Subscribe to WebSocket job events
   useEffect(() => {
@@ -257,7 +300,12 @@ function AdHocTab({ requireAck, onViewResults }) {
 
     const onProgress = ({ job_id, phase, message }) => {
       if (job_id !== activeJob.id) return;
-      if (message) setLogLines((prev) => [...prev.slice(-99), message]);
+      if (message) {
+        setLogLines((prev) => [
+          ...prev.slice(-99),
+          { id: `${activeJob.id}-${logIdRef.current++}`, text: message },
+        ]);
+      }
       if (phase) setActiveJob((j) => j ? { ...j, progress_phase: phase, progress_message: message } : j);
     };
 
@@ -314,7 +362,7 @@ function AdHocTab({ requireAck, onViewResults }) {
     } catch (err) { toast.error(err?.message || 'Failed to cancel'); }
   };
 
-  const isRunning = activeJob && activeJob.status === 'running';
+  const isRunning = activeJob?.status === 'running';
 
   return (
     <div>
@@ -323,12 +371,12 @@ function AdHocTab({ requireAck, onViewResults }) {
       {/* Form */}
       <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div className="cb-field">
-          <label className="cb-label">Target Network</label>
-          <input className="cb-input" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="192.168.1.0/24" />
+          <label className="cb-label" htmlFor="adhoc-target-network">Target Network</label>
+          <input id="adhoc-target-network" className="cb-input" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="192.168.1.0/24" />
         </div>
 
         <div>
-          <label style={labelStyle}>Scan Types</label>
+          <span style={labelStyle}>Scan Types</span>
           <div style={{ display: 'flex', gap: 12 }}>
             {['nmap', 'snmp', 'arp', 'http'].map((t) => (
               <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: 13 }}>
@@ -347,8 +395,8 @@ function AdHocTab({ requireAck, onViewResults }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingLeft: 16, borderLeft: '2px solid var(--color-border)' }}>
             <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />
             <div className="cb-field">
-              <label className="cb-label">SNMP Community</label>
-              <input className="cb-input" type="password" value={snmpCom} onChange={(e) => setSnmpCom(e.target.value)} placeholder="public" autoComplete="off" />
+              <label className="cb-label" htmlFor="adhoc-snmp-community">SNMP Community</label>
+              <input id="adhoc-snmp-community" className="cb-input" type="password" value={snmpCom} onChange={(e) => setSnmpCom(e.target.value)} placeholder="public" autoComplete="off" />
             </div>
           </div>
         )}
@@ -392,25 +440,19 @@ function AdHocTab({ requireAck, onViewResults }) {
               <div className="progress-message">{activeJob.progress_message}</div>
             )}
             <div className="progress-stats">
-              <span>{activeJob.hosts_found} host{activeJob.hosts_found !== 1 ? 's' : ''} found</span>
+              <span>{activeJob.hosts_found} {pluralize(activeJob.hosts_found, 'host')} found</span>
               {activeJob.hosts_new > 0 && <span>{activeJob.hosts_new} new</span>}
               {activeJob.hosts_conflict > 0 && <span>{activeJob.hosts_conflict} conflicts</span>}
             </div>
             <div className="progress-track">
-              <div className={
-                activeJob.status === 'running'
-                  ? 'progress-fill indeterminate'
-                  : (activeJob.status === 'completed' || activeJob.status === 'done')
-                    ? 'progress-fill full'
-                    : 'progress-fill'
-              } />
+              <div className={getProgressFillClass(activeJob.status)} />
             </div>
           </div>
 
           {/* Live log */}
           {logLines.length > 0 && (
             <div style={{ maxHeight: 160, overflowY: 'auto', background: 'var(--color-bg)', borderRadius: 4, padding: '8px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--color-text-muted)' }}>
-              {logLines.map((l, i) => <div key={i}>✓ {l}</div>)}
+              {logLines.map((line) => <div key={line.id}>✓ {line.text}</div>)}
             </div>
           )}
 
@@ -418,9 +460,9 @@ function AdHocTab({ requireAck, onViewResults }) {
           {jobDone && (
             <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 12 }}>
-                Scan complete. {activeJob.hosts_found} hosts found:&nbsp;
-                <strong>{activeJob.hosts_new}</strong> new,&nbsp;
-                <strong>{activeJob.hosts_conflict}</strong> conflict,&nbsp;
+                Scan complete. {activeJob.hosts_found} hosts found:{' '}
+                <strong>{activeJob.hosts_new}</strong> new,{' '}
+                <strong>{activeJob.hosts_conflict}</strong> conflict,{' '}
                 <strong>{activeJob.hosts_updated}</strong> matched.
               </span>
               <button type="button" className="btn btn-primary" style={{ fontSize: 11 }} onClick={onViewResults}>
@@ -433,6 +475,11 @@ function AdHocTab({ requireAck, onViewResults }) {
     </div>
   );
 }
+
+AdHocTab.propTypes = {
+  requireAck: PropTypes.func.isRequired,
+  onViewResults: PropTypes.func.isRequired,
+};
 
 // ─────────────────────────────────────────────────────────────────
 // Tab 3 — Review Queue
@@ -457,7 +504,7 @@ function ReviewTab({ setPendingCount }) {
         const pending = data.filter((x) => x.merge_status === 'pending').length;
         setPendingCount(pending);
       })
-      .catch(() => {})
+      .catch((error) => logApiWarning('Failed to load review results', error))
       .finally(() => setLoading(false));
   }, [setPendingCount]);
 
@@ -488,7 +535,11 @@ function ReviewTab({ setPendingCount }) {
     if (state !== 'new') return; // conflict rows can't be bulk-selected
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -498,7 +549,8 @@ function ReviewTab({ setPendingCount }) {
     try {
       const res = await bulkMerge({ result_ids: ids, action: 'accept' });
       const { accepted = 0, skipped = 0 } = res.data;
-      toast.success(`${accepted} host${accepted !== 1 ? 's' : ''} accepted${skipped ? `, ${skipped} skipped` : ''}`);
+      const skippedSuffix = skipped ? `, ${skipped} skipped` : '';
+      toast.success(`${accepted} ${pluralize(accepted, 'host')} accepted${skippedSuffix}`);
       setSelected(new Set());
       discoveryEmitter.emit('badge:refresh');
       load();
@@ -509,7 +561,8 @@ function ReviewTab({ setPendingCount }) {
     const ids = [...selected];
     try {
       const res = await bulkMerge({ result_ids: ids, action: 'reject' });
-      toast.success(`${res.data.rejected ?? ids.length} host${ids.length !== 1 ? 's' : ''} rejected`);
+      const rejected = res.data.rejected ?? ids.length;
+      toast.success(`${rejected} ${pluralize(rejected, 'host')} rejected`);
       setSelected(new Set());
       discoveryEmitter.emit('badge:refresh');
       load();
@@ -647,6 +700,10 @@ function ReviewTab({ setPendingCount }) {
   );
 }
 
+ReviewTab.propTypes = {
+  setPendingCount: PropTypes.func.isRequired,
+};
+
 // ─────────────────────────────────────────────────────────────────
 // Tab 4 — Scan History
 // ─────────────────────────────────────────────────────────────────
@@ -659,7 +716,10 @@ function HistoryTab() {
 
   useEffect(() => {
     setLoading(true);
-    getJobs({ limit: 50 }).then((r) => setJobs(Array.isArray(r.data) ? r.data : (r.data?.jobs ?? []))).catch(() => {}).finally(() => setLoading(false));
+    getJobs({ limit: 50 })
+      .then((r) => setJobs(Array.isArray(r.data) ? r.data : (r.data?.jobs ?? [])))
+      .catch((error) => logApiWarning('Failed to load job history', error))
+      .finally(() => setLoading(false));
   }, []);
 
   const toggleExpand = async (job) => {
@@ -668,13 +728,44 @@ function HistoryTab() {
     next.add(job.id);
     setExpanded(next);
     if (!expandedResults[job.id]) {
-      const res = await getJobResults(job.id, { limit: 50 }).catch(() => ({ data: [] }));
+      const res = await getJobResults(job.id, { limit: 50 }).catch((error) => {
+        logApiWarning(`Failed to load results for job ${job.id}`, error);
+        return { data: [] };
+      });
       const data = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
       setExpandedResults((prev) => ({ ...prev, [job.id]: data }));
     }
   };
 
   const filtered = filterStatus === 'all' ? jobs : jobs.filter((j) => j.status === filterStatus);
+
+  const renderExpandedResults = (jobId) => {
+    const jobResults = expandedResults[jobId];
+    if (!jobResults) {
+      return <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>Loading…</p>;
+    }
+    if (jobResults.length === 0) {
+      return <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>No results for this job.</p>;
+    }
+    return (
+      <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>{['IP', 'Hostname', 'OS', 'State', 'Status'].map((h) => <th key={h} style={{ ...thStyle, fontSize: 10 }}>{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {jobResults.map((r) => (
+            <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+              <td style={tdStyle}>{r.ip_address}</td>
+              <td style={tdStyle}>{r.hostname || '—'}</td>
+              <td style={tdStyle}>{r.os_family || '—'}</td>
+              <td style={tdStyle}><StateBadge state={r.state} /></td>
+              <td style={tdStyle}>{r.merge_status}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  };
 
   if (loading) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading history…</p>;
 
@@ -702,7 +793,7 @@ function HistoryTab() {
           </thead>
           <tbody>
             {filtered.map((j) => {
-              const types = (() => { try { return JSON.parse(j.scan_types_json); } catch { return []; } })();
+              const types = parseJsonArray(j.scan_types_json);
               const isExpanded = expanded.has(j.id);
               return (
                 <React.Fragment key={j.id}>
@@ -721,30 +812,7 @@ function HistoryTab() {
                   {isExpanded && (
                     <tr>
                       <td colSpan={7} style={{ padding: '8px 16px', background: 'var(--color-bg)' }}>
-                        {expandedResults[j.id] ? (
-                          expandedResults[j.id].length === 0 ? (
-                            <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>No results for this job.</p>
-                          ) : (
-                            <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
-                              <thead>
-                                <tr>{['IP', 'Hostname', 'OS', 'State', 'Status'].map((h) => <th key={h} style={{ ...thStyle, fontSize: 10 }}>{h}</th>)}</tr>
-                              </thead>
-                              <tbody>
-                                {expandedResults[j.id].map((r) => (
-                                  <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                                    <td style={tdStyle}>{r.ip_address}</td>
-                                    <td style={tdStyle}>{r.hostname || '—'}</td>
-                                    <td style={tdStyle}>{r.os_family || '—'}</td>
-                                    <td style={tdStyle}><StateBadge state={r.state} /></td>
-                                    <td style={tdStyle}>{r.merge_status}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          )
-                        ) : (
-                          <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>Loading…</p>
-                        )}
+                        {renderExpandedResults(j.id)}
                       </td>
                     </tr>
                   )}
@@ -771,13 +839,17 @@ function TypePill({ type }) {
   );
 }
 
+TypePill.propTypes = {
+  type: PropTypes.string.isRequired,
+};
+
 function PortPills({ ports }) {
   const shown = ports.slice(0, 4);
   const extra = ports.length - shown.length;
   return (
     <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', alignItems: 'center' }}>
-      {shown.map((p, i) => (
-        <span key={i} style={{ padding: '1px 5px', borderRadius: 3, fontSize: 10, background: 'rgba(107,114,128,0.15)', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
+      {shown.map((p) => (
+        <span key={`${p.port}-${p.proto ?? p.protocol ?? 'unknown'}`} style={{ padding: '1px 5px', borderRadius: 3, fontSize: 10, background: 'rgba(107,114,128,0.15)', color: 'var(--color-text-muted)', fontFamily: 'monospace' }}>
           {p.port}
         </span>
       ))}
@@ -786,9 +858,25 @@ function PortPills({ ports }) {
   );
 }
 
+PortPills.propTypes = {
+  ports: PropTypes.arrayOf(PropTypes.shape({
+    port: PropTypes.number.isRequired,
+  })).isRequired,
+};
+
 function parsePorts(json) {
   if (!json) return [];
   try { return JSON.parse(json); } catch { return []; }
+}
+
+function parseJsonArray(json) {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 const thStyle = { textAlign: 'left', padding: '8px 10px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--color-text-muted)', borderBottom: '1px solid var(--color-border)' };

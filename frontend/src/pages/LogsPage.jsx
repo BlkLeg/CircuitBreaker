@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import PropTypes from 'prop-types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { logsApi } from '../api/client';
 import { IconImg } from '../components/common/IconPickerModal';
@@ -21,7 +22,7 @@ function ActorAvatar({ actor, gravatarHash, size = 20 }) {
     );
   }
   const initial = (actor && actor !== 'anonymous') ? actor[0].toUpperCase() : '?';
-  const hue = actor ? actor.split('').reduce((sum, c) => sum + c.charCodeAt(0), 0) % 360 : 200;
+  const hue = actor ? actor.split('').reduce((sum, c) => sum + (c.codePointAt(0) ?? 0), 0) % 360 : 200;
   return (
     <span style={{
       width: size, height: size, borderRadius: '50%', flexShrink: 0,
@@ -31,6 +32,18 @@ function ActorAvatar({ actor, gravatarHash, size = 20 }) {
     }}>{initial}</span>
   );
 }
+
+ActorAvatar.propTypes = {
+  actor: PropTypes.string,
+  gravatarHash: PropTypes.string,
+  size: PropTypes.number,
+};
+
+ActorAvatar.defaultProps = {
+  actor: null,
+  gravatarHash: null,
+  size: 20,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────────────
 
@@ -121,7 +134,7 @@ function renderDiffValue(val) {
   return <span>{String(val)}</span>;
 }
 
-function DiffTable({ diffStr, oldValueStr, newValueStr }) {
+function parseBeforeAfter(diffStr, oldValueStr, newValueStr) {
   let before = null;
   let after = null;
 
@@ -138,17 +151,28 @@ function DiffTable({ diffStr, oldValueStr, newValueStr }) {
     try { after  = newValueStr ? JSON.parse(newValueStr) : null; } catch { after  = null; }
   }
 
-  if (before === null && after === null) return null;
+  return { before, after };
+}
 
+function getDisplayKeys(before, after) {
   const keys = new Set([
     ...(before && typeof before === 'object' ? Object.keys(before) : []),
     ...(after  && typeof after  === 'object' ? Object.keys(after)  : []),
   ]);
 
   const isUpdate = before !== null && after !== null;
-  const displayKeys = isUpdate
+  return isUpdate
     ? [...keys].filter(k => JSON.stringify(before?.[k]) !== JSON.stringify(after?.[k]))
     : [...keys];
+}
+
+function DiffTable({ diffStr, oldValueStr, newValueStr }) {
+  const { before, after } = parseBeforeAfter(diffStr, oldValueStr, newValueStr);
+
+  if (before === null && after === null) return null;
+
+  const displayKeys = getDisplayKeys(before, after);
+  const isUpdate = before !== null && after !== null;
 
   if (displayKeys.length === 0 && isUpdate) {
     return <p style={{ fontSize: 11, color: 'var(--color-text-muted)', fontStyle: 'italic', margin: '4px 0' }}>No field changes detected.</p>;
@@ -176,6 +200,18 @@ function DiffTable({ diffStr, oldValueStr, newValueStr }) {
   );
 }
 
+DiffTable.propTypes = {
+  diffStr: PropTypes.string,
+  oldValueStr: PropTypes.string,
+  newValueStr: PropTypes.string,
+};
+
+DiffTable.defaultProps = {
+  diffStr: null,
+  oldValueStr: null,
+  newValueStr: null,
+};
+
 function JsonBlock({ value }) {
   if (!value) return null;
   let display = value;
@@ -189,17 +225,36 @@ function JsonBlock({ value }) {
   );
 }
 
-// ── Log row ───────────────────────────────────────────────────────────────────
+JsonBlock.propTypes = {
+  value: PropTypes.string,
+};
 
-function LogRow({ log, expanded, onToggle, navigate }) {
-  const color = actionColor(log.action);  const isLoginFailed = log.action === 'login_failed';
+JsonBlock.defaultProps = {
+  value: null,
+};
 
-  const entityName = log.entity_name
-    || (() => { try { return log.new_value ? JSON.parse(log.new_value)?.name : null; } catch { return null; } })()
-    || null;
+function getEntityName(log) {
+  if (log.entity_name) return log.entity_name;
+  try {
+    return log.new_value ? JSON.parse(log.new_value)?.name : null;
+  } catch {
+    return null;
+  }
+}
 
+function getIconSlug(log) {
+  try {
+    return log.new_value ? JSON.parse(log.new_value)?.icon_slug : null;
+  } catch {
+    return null;
+  }
+}
+
+function EntityCell({ log, navigate }) {
+  const entityName = getEntityName(log);
   const isDeleted = log.action === 'deleted' || log.action?.endsWith('_deleted');
   const entityRoute = log.entity_type ? ENTITY_ROUTES[log.entity_type] : null;
+  const iconSlug = getIconSlug(log);
 
   const handleEntityClick = (e) => {
     e.stopPropagation();
@@ -208,8 +263,83 @@ function LogRow({ log, expanded, onToggle, navigate }) {
     navigate(dest);
   };
 
+  const label = entityName || (log.entity_id ? `#${log.entity_id}` : '—');
+
+  if (!log.entity_type) return <span style={{ color: 'var(--color-text-muted)' }}>—</span>;
+
+  const renderEntityContent = () => {
+    if (isDeleted) {
+      return (
+        <span style={{ textDecoration: 'line-through', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+          {iconSlug && <IconImg slug={iconSlug} size={13} />}
+          {label}
+          <span style={{ fontSize: 10, color: 'var(--color-danger)', textDecoration: 'none' }}>(deleted)</span>
+        </span>
+      );
+    }
+
+    if (entityRoute) {
+      return (
+        <button
+          onClick={handleEntityClick}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-primary)', fontSize: 12, padding: 0, textAlign: 'left' }}
+        >
+          {iconSlug && <IconImg slug={iconSlug} size={13} />}
+          {label}
+        </button>
+      );
+    }
+
+    return <span style={{ color: 'var(--color-text)' }}>{label}</span>;
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {log.entity_type}
+      </span>
+      {renderEntityContent()}
+    </div>
+  );
+}
+
+EntityCell.propTypes = {
+  log: PropTypes.object.isRequired,
+  navigate: PropTypes.func.isRequired,
+};
+
+function ExpandedContent({ log }) {
   const hasDiff = !!(log.diff || log.old_value || log.new_value);
-  const iconSlug = (() => { try { return log.new_value ? JSON.parse(log.new_value)?.icon_slug : null; } catch { return null; } })();
+
+  if (hasDiff) {
+    return (
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>▼ Changes</div>
+        <DiffTable diffStr={log.diff} oldValueStr={log.old_value} newValueStr={log.new_value} />
+      </div>
+    );
+  }
+
+  if (log.details) {
+    return (
+      <div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Details</div>
+        <JsonBlock value={log.details} />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+ExpandedContent.propTypes = {
+  log: PropTypes.object.isRequired,
+};
+
+function LogRow({ log, expanded, onToggle, navigate }) {
+  const color = actionColor(log.action);
+  const isLoginFailed = log.action === 'login_failed';
+  const hasDiff = !!(log.diff || log.old_value || log.new_value);
 
   return (
     <>
@@ -252,30 +382,7 @@ function LogRow({ log, expanded, onToggle, navigate }) {
 
         {/* Entity */}
         <td style={{ padding: '10px 12px', fontSize: 12 }}>
-          {log.entity_type ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {log.entity_type}
-              </span>
-              {isDeleted ? (
-                <span style={{ textDecoration: 'line-through', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {iconSlug && <IconImg slug={iconSlug} size={13} />}
-                  {entityName || (log.entity_id ? `#${log.entity_id}` : '—')}
-                  <span style={{ fontSize: 10, color: 'var(--color-danger)', textDecoration: 'none' }}>(deleted)</span>
-                </span>
-              ) : entityRoute ? (
-                <button
-                  onClick={handleEntityClick}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-primary)', fontSize: 12, padding: 0, textAlign: 'left' }}
-                >
-                  {iconSlug && <IconImg slug={iconSlug} size={13} />}
-                  {entityName || (log.entity_id ? `#${log.entity_id}` : '—')}
-                </button>
-              ) : (
-                <span style={{ color: 'var(--color-text)' }}>{entityName || (log.entity_id ? `#${log.entity_id}` : '—')}</span>
-              )}
-            </div>
-          ) : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
+          <EntityCell log={log} navigate={navigate} />
         </td>
 
         {/* Actor */}
@@ -298,17 +405,7 @@ function LogRow({ log, expanded, onToggle, navigate }) {
       {expanded && (
         <tr style={{ background: 'var(--color-surface)' }}>
           <td colSpan={5} style={{ padding: '8px 16px 12px', borderBottom: '1px solid var(--color-border)' }}>
-            {hasDiff ? (
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>▼ Changes</div>
-                <DiffTable diffStr={log.diff} oldValueStr={log.old_value} newValueStr={log.new_value} />
-              </div>
-            ) : log.details ? (
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Details</div>
-                <JsonBlock value={log.details} />
-              </div>
-            ) : null}
+            <ExpandedContent log={log} />
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--color-text-muted)' }}>
               <span style={{ marginRight: 16 }}>Full timestamp: {formatAbsolute(log.created_at_utc ?? log.timestamp)}</span>
               {log.user_agent && <span style={{ marginRight: 16 }}>UA: {log.user_agent.slice(0, 80)}</span>}
@@ -320,6 +417,13 @@ function LogRow({ log, expanded, onToggle, navigate }) {
     </>
   );
 }
+
+LogRow.propTypes = {
+  log: PropTypes.object.isRequired,
+  expanded: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+  navigate: PropTypes.func.isRequired,
+};
 
 // ── Main Page ───────────────────────────────────────────────────────────────────────────────
 
@@ -556,7 +660,7 @@ function LogsPage() {
             display: 'flex', alignItems: 'center', gap: 5,
           }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: liveMode ? 'var(--color-online)' : 'var(--color-text-muted)', display: 'inline-block', boxShadow: liveMode ? '0 0 6px var(--color-online)' : 'none' }} />
-            Live
+            {' Live'}
           </button>
 
           <button className="btn btn-sm" onClick={fetchLogs} disabled={loading} style={{ fontSize: 11 }}>{loading ? '…' : '↻ Refresh'}</button>

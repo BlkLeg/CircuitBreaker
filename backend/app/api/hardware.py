@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -10,40 +12,42 @@ from app.services.compute_units_service import get_compute_unit
 
 router = APIRouter(tags=["hardware"])
 
+DUPLICATE_IDENTIFIER_ERROR = "A record with this identifier already exists."
+
 
 @router.get("", response_model=list[Hardware])
 def list_hardware(
-    tag: str | None = Query(None),
-    role: str | None = Query(None),
-    q: str | None = Query(None),
-    db: Session = Depends(get_db),
+    tag: Annotated[str | None, Query()] = None,
+    role: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
+    db: Annotated[Session, Depends(get_db)] = None,
 ):
     return hardware_service.list_hardware(db, tag=tag, role=role, q=q)
 
 
-@router.post("", response_model=Hardware, status_code=201)
-def create_hardware(payload: HardwareCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+@router.post("", response_model=Hardware, status_code=201, responses={409: {"description": "A record with this identifier already exists."}})
+def create_hardware(payload: HardwareCreate, db: Annotated[Session, Depends(get_db)] = None, _: Annotated[None, Depends(require_write_auth)] = None):
     try:
         return hardware_service.create_hardware(db, payload)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
+        raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR)
 
 
 @router.get("/orphans")
-def get_orphans(db: Session = Depends(get_db)):
+def get_orphans(db: Annotated[Session, Depends(get_db)] = None):
     """CB-PATTERN-003: Hardware with no compute_units, services, or storage."""
     return hardware_service.find_orphans(db)
 
 
 @router.get("/groups")
-def get_groups(db: Session = Depends(get_db)):
+def get_groups(db: Annotated[Session, Depends(get_db)] = None):
     """CB-PATTERN-004: Hardware grouped by vendor+model with counts."""
     return hardware_service.list_hardware_groups(db)
 
 
-@router.get("/{hardware_id}", response_model=Hardware)
-def get_hardware(hardware_id: int, db: Session = Depends(get_db)):
+@router.get("/{hardware_id}", response_model=Hardware, responses={404: {"description": "Hardware not found."}})
+def get_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)] = None):
     try:
         return hardware_service.get_hardware(db, hardware_id)
     except ValueError as exc:
@@ -51,7 +55,7 @@ def get_hardware(hardware_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{hardware_id}", response_model=Hardware)
-def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Annotated[Session, Depends(get_db)] = None, _: Annotated[None, Depends(require_write_auth)] = None):
     update = HardwareUpdate(**payload.model_dump())
     try:
         return hardware_service.update_hardware(db, hardware_id, update)
@@ -59,22 +63,22 @@ def replace_hardware(hardware_id: int, payload: HardwareCreate, db: Session = De
         raise HTTPException(status_code=404, detail=str(exc))
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
+        raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR)
 
 
 @router.patch("/{hardware_id}", response_model=Hardware)
-def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def patch_hardware(hardware_id: int, payload: HardwareUpdate, db: Annotated[Session, Depends(get_db)] = None, _: Annotated[None, Depends(require_write_auth)] = None):
     try:
         return hardware_service.update_hardware(db, hardware_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
+        raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR)
 
 
 @router.delete("/{hardware_id}", status_code=204)
-def delete_hardware(hardware_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)] = None, _: Annotated[None, Depends(require_write_auth)] = None):
     try:
         hardware_service.delete_hardware(db, hardware_id)
     except ValueError as exc:
@@ -84,7 +88,7 @@ def delete_hardware(hardware_id: int, db: Session = Depends(get_db), _=Depends(r
 
 
 @router.get("/{hardware_id}/network-memberships")
-def get_network_memberships(hardware_id: int, db: Session = Depends(get_db)):
+def get_network_memberships(hardware_id: int, db: Annotated[Session, Depends(get_db)] = None):
     """Return all networks this hardware node is directly a member of."""
     try:
         hardware_service.get_hardware(db, hardware_id)  # 404 guard
@@ -94,7 +98,7 @@ def get_network_memberships(hardware_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{hardware_id}/clusters")
-def get_clusters_for_hardware(hardware_id: int, db: Session = Depends(get_db)):
+def get_clusters_for_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)] = None):
     """Return all hardware clusters this hardware belongs to."""
     try:
         hardware_service.get_hardware(db, hardware_id)  # 404 guard
@@ -104,7 +108,7 @@ def get_clusters_for_hardware(hardware_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{hardware_id}/ports")
-def get_hardware_ports(hardware_id: int, db: Session = Depends(get_db)) -> list[dict]:
+def get_hardware_ports(hardware_id: int, db: Annotated[Session, Depends(get_db)] = None) -> list[dict]:
     try:
         hw = hardware_service.get_hardware(db, hardware_id)
         return hw.get("port_map", [])
@@ -116,8 +120,8 @@ def get_hardware_ports(hardware_id: int, db: Session = Depends(get_db)) -> list[
 def update_hardware_ports(
     hardware_id: int,
     payload: list[PortEntry],  # Expects a list of PortEntry objects
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    db: Annotated[Session, Depends(get_db)] = None,
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ) -> list[dict]:
     # Validate uniqueness of port_id within the payload
     port_ids = [p.port_id for p in payload if p.port_id is not None]
@@ -148,4 +152,50 @@ def update_hardware_ports(
         raise HTTPException(status_code=404, detail=str(exc))
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="A record with this identifier already exists.")
+        raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR)
+
+
+# ── Hardware-to-Hardware connections ─────────────────────────────────────────
+
+from pydantic import BaseModel as _BaseModel
+
+class HardwareConnectionCreate(_BaseModel):
+    target_hardware_id: int
+
+
+@router.post("/{hardware_id}/connections", status_code=201)
+def create_hardware_connection(
+    hardware_id: int,
+    payload: HardwareConnectionCreate,
+    db: Annotated[Session, Depends(get_db)] = None,
+    _: Annotated[None, Depends(require_write_auth)] = None,
+):
+    """Create a direct physical connection between two hardware nodes."""
+    try:
+        return hardware_service.add_hardware_connection(db, hardware_id, payload.target_hardware_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A connection between these hardware nodes already exists.")
+
+
+# ── Standalone hardware-connection delete (by relation ID) ───────────────────
+
+from fastapi import APIRouter as _APIRouter
+
+hw_conn_router = _APIRouter(tags=["hardware"])
+
+
+@hw_conn_router.delete("/hardware-connections/{connection_id}", status_code=204)
+def delete_hardware_connection(
+    connection_id: int,
+    db: Annotated[Session, Depends(get_db)] = None,
+    _: Annotated[None, Depends(require_write_auth)] = None,
+):
+    """Delete a hardware-to-hardware connection by its ID."""
+    try:
+        hardware_service.remove_hardware_connection(db, connection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+

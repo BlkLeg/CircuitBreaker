@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import PropTypes from 'prop-types';
 import {
   hardwareApi,
   servicesApi,
@@ -22,7 +23,7 @@ const ENTITY_TYPES = [
   { key: 'environment',  label: 'Environments', icon: '🏷',  api: (q) => environmentsApi.list(q ? { q } : undefined) },
 ];
 
-function getEntityName(entity, type) {
+function getEntityName(entity) {
   return entity.name || entity.title || `#${entity.id}`;
 }
 
@@ -48,7 +49,7 @@ function getEntitySub(entity, type) {
  *   onClose     — close without changes
  *   onLinked    — called after a successful attach/detach to trigger refresh
  */
-export default function DocLinkModal({ docId, docTitle, existingLinks = [], onClose, onLinked }) {
+function DocLinkModalContent({ docId, docTitle, existingLinks = [], onClose, onLinked }) {
   const toast = useToast();
   const [activeType, setActiveType] = useState(ENTITY_TYPES[0].key);
   const [items, setItems] = useState([]);
@@ -59,11 +60,11 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
   const searchDebounce = useRef(null);
 
   // Set of already-linked entity ids for the current type
-  const linkedIds = new Set(
+  const linkedIds = useMemo(() => new Set(
     existingLinks
       .filter((l) => l.entity_type === activeType)
       .map((l) => l.entity_id)
-  );
+  ), [existingLinks, activeType]);
 
   const fetchItems = useCallback(async (type, q) => {
     const cfg = ENTITY_TYPES.find((t) => t.key === type);
@@ -106,10 +107,10 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
     try {
       if (isLinked) {
         await docsApi.detach({ doc_id: docId, entity_type: activeType, entity_id: entity.id });
-        toast.success(`Unlinked from ${getEntityName(entity, activeType)}`);
+        toast.success(`Unlinked from ${getEntityName(entity)}`);
       } else {
         await docsApi.attach({ doc_id: docId, entity_type: activeType, entity_id: entity.id });
-        toast.success(`Linked to ${getEntityName(entity, activeType)}`);
+        toast.success(`Linked to ${getEntityName(entity)}`);
       }
       onLinked?.();
     } catch (err) {
@@ -129,11 +130,9 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div
+      <dialog
         className="modal doc-link-modal"
         onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
         aria-label="Link document to entity"
       >
         {/* Header */}
@@ -141,7 +140,7 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
           <div>
             <div className="doc-link-modal-title">Link to Entity</div>
             <div className="doc-link-modal-subtitle">
-              Attach <em>"{docTitle}"</em> to a record in your lab
+              Attach <em>&quot;{docTitle}&quot;</em> to a record in your lab
             </div>
           </div>
           <button className="modal-close-btn" onClick={onClose} aria-label="Close">✕</button>
@@ -195,7 +194,7 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
                   onClick={() => !busy && handleToggle(entity)}
                 >
                   <div className="doc-link-item-info">
-                    <span className="doc-link-item-name">{getEntityName(entity, activeType)}</span>
+                    <span className="doc-link-item-name">{getEntityName(entity)}</span>
                     {sub && <span className="doc-link-item-sub">{sub}</span>}
                   </div>
                   <button
@@ -215,11 +214,31 @@ export default function DocLinkModal({ docId, docTitle, existingLinks = [], onCl
         {/* Footer */}
         <div className="doc-link-footer">
           <span className="doc-link-footer-hint">
-            {existingLinks.length} total link{existingLinks.length !== 1 ? 's' : ''} on this doc
+            {existingLinks.length} total link{existingLinks.length === 1 ? '' : 's'} on this doc
           </span>
           <button className="btn btn-sm" onClick={onClose}>Done</button>
         </div>
-      </div>
+      </dialog>
     </div>
   );
 }
+
+DocLinkModalContent.propTypes = {
+  docId: PropTypes.string.isRequired,
+  docTitle: PropTypes.string.isRequired,
+  existingLinks: PropTypes.arrayOf(
+    PropTypes.shape({
+      entity_type: PropTypes.string.isRequired,
+      entity_id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+    })
+  ),
+  onClose: PropTypes.func.isRequired,
+  onLinked: PropTypes.func,
+};
+
+DocLinkModalContent.defaultProps = {
+  existingLinks: [],
+  onLinked: undefined,
+};
+
+export default DocLinkModalContent;

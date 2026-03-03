@@ -131,6 +131,8 @@ class HardwareUpdate(BaseModel):
     environment: Optional[str] = None
     # v0.1.4-cortex: rack assignment
     rack_id: Optional[int] = None
+    # v2: manual status override (clears auto-derivation when set)
+    status_override: Optional[str] = None
     # v0.1.7: Networking (Router/AP) hardware extensions
     wifi_standards: Optional[list[str]] = None
     wifi_bands: Optional[list[str]] = None
@@ -175,3 +177,5 @@ class Hardware(HardwareBase):
     discovered_at: Optional[str] = None
     os_version: Optional[str] = None
     source_scan_result_id: Optional[int] = None
+    # v2: manual status override
+    status_override: Optional[str] = None

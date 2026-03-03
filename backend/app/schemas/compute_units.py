@@ -14,6 +14,8 @@ class ComputeUnitBase(BaseModel):
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None
+    download_speed_mbps: Optional[int] = None
+    upload_speed_mbps: Optional[int] = None
     environment: Optional[str] = None
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
@@ -38,11 +40,15 @@ class ComputeUnitUpdate(BaseModel):
     memory_mb: Optional[int] = None
     disk_gb: Optional[int] = None
     ip_address: Optional[str] = None
+    download_speed_mbps: Optional[int] = None
+    upload_speed_mbps: Optional[int] = None
     environment: Optional[str] = None
     # v0.1.4: environment registry
     environment_id: Optional[int] = None
     # v0.1.4-cortex: derived status
     status: Optional[str] = None
+    # v2: manual status override (clears auto-derivation when set)
+    status_override: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[list[str]] = None
 
@@ -56,3 +62,5 @@ class ComputeUnit(ComputeUnitBase):
     storage_allocated: Optional[dict] = None
     # v0.1.4: environment registry
     environment_name: Optional[str] = None
+    # v2: manual status override
+    status_override: Optional[str] = None

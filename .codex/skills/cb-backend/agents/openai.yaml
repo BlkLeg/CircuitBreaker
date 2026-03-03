@@ -1,0 +1,3 @@
+display_name: "CB Backend"
+short_description: "Work on the Circuit Breaker FastAPI/SQLAlchemy backend"
+default_prompt: "Help me add a new API endpoint and service layer for Circuit Breaker's backend"

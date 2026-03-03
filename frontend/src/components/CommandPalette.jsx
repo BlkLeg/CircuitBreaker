@@ -153,10 +153,8 @@ function CommandPalette({ isOpen, onClose }) {
 
   return (
     <div className="palette-overlay">
-      <div
+      <dialog
         ref={panelRef}
-        role="dialog"
-        aria-modal="true"
         className="command-palette"
         aria-label="Command palette"
       >
@@ -180,7 +178,7 @@ function CommandPalette({ isOpen, onClose }) {
           {loading && <div className="palette-empty">Searching…</div>}
 
           {!loading && items.length === 0 && query.trim() && (
-            <div className="palette-empty">No results for "{query}"</div>
+            <div className="palette-empty">No results for &quot;{query}&quot;</div>
           )}
 
           {!loading && items.map((item, idx) => {
@@ -208,7 +206,7 @@ function CommandPalette({ isOpen, onClose }) {
             );
           })}
         </div>
-      </div>
+      </dialog>
     </div>
   );
 }

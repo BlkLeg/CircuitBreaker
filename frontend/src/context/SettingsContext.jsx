@@ -26,6 +26,10 @@ const DEFAULTS = {
   categories: [],
   locations: [],
   dock_order: null,
+  show_header_widgets: true,
+  show_time_widget: true,
+  show_weather_widget: true,
+  weather_location: 'Phoenix, AZ',
   timezone: 'UTC',
 };
 
@@ -59,10 +63,10 @@ export function SettingsProvider({ children }) {
     const root = document.documentElement;
     const theme = settings.theme ?? 'dark';
     if (theme === 'auto') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+      const prefersDark = globalThis.matchMedia('(prefers-color-scheme: dark)').matches;
+      root.dataset.theme = prefersDark ? 'dark' : 'light';
     } else {
-      root.setAttribute('data-theme', theme);
+      root.dataset.theme = theme;
     }
   }, [settings.theme]);
 

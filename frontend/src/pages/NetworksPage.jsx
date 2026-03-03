@@ -82,13 +82,6 @@ function NetworksPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Filter networks client-side by hardware: keep networks that have at least one
-  // compute unit (on the selected hardware) as a member. Since membership data
-  // requires per-network fetches we filter on compute units that belong to hwFilter.
-  const cuIdsOnHw = hwFilter
-    ? new Set(computeUnits.filter((cu) => String(cu.hardware_id) === hwFilter).map((cu) => cu.id))
-    : null;
-
   // We can only pre-filter if we have member data, which NetworkDetail fetches lazily.
   // For now, display all networks but show a "filtered by hardware" chip to
   // communicate intent; full filtering happens in NetworkDetail members tab.

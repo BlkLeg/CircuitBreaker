@@ -309,7 +309,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
   };
 
   return (
-    <div style={{
+    <div className="icon-picker-modal" style={{
       position: 'fixed', inset: 0, zIndex: 2000,
       background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -339,7 +339,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
         </div>
 
         {/* Group tabs */}
-        <div style={{ display: 'flex', gap: 4, padding: '8px 14px', borderBottom: '1px solid var(--color-border)', overflowX: 'auto', flexShrink: 0 }}>
+        <div className="icon-picker-groups" style={{ display: 'flex', gap: 4, padding: '8px 14px', borderBottom: '1px solid var(--color-border)', overflowX: 'auto', flexShrink: 0 }}>
           {groups.map((g) => (
             <button key={g} onClick={() => setActiveGroup(g)} style={{
               padding: '4px 12px', borderRadius: 20, border: 'none', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', whiteSpace: 'nowrap',
@@ -351,7 +351,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
         </div>
 
         {/* Icon grid */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8, alignContent: 'start' }}>
+        <div className="icon-picker-grid" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8, alignContent: 'start' }}>
           {filtered.map((icon) => {
             const isSelected = preview === icon.slug;
             return (
@@ -392,7 +392,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
           })}
           {filtered.length === 0 && (
             <div style={{ gridColumn: '1/-1', textAlign: 'center', color: 'var(--color-text-muted)', padding: 32, fontSize: 13 }}>
-              No icons match "{search}"
+              No icons match &quot;{search}&quot;
             </div>
           )}
         </div>

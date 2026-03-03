@@ -7,6 +7,48 @@ from app.db.models import GraphLayout
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_layout_nodes(layout_data: str | None) -> list[dict]:
+    """Extract node position records from supported layout formats.
+
+    Supports:
+    - {"nodes": {"node-id": {"x": ..., "y": ...}}, "edges": {...}}
+    - {"node-id": {"x": ..., "y": ...}} (legacy)
+    - {"nodes": [{"id": "...", "position": {"x": ..., "y": ...}}, ...]}
+    """
+    if not layout_data:
+        return []
+
+    try:
+        parsed = json.loads(layout_data)
+    except json.JSONDecodeError:
+        return []
+
+    raw_nodes: Any = parsed.get("nodes", parsed) if isinstance(parsed, dict) else []
+    nodes: list[dict] = []
+
+    if isinstance(raw_nodes, list):
+        for item in raw_nodes:
+            if not isinstance(item, dict):
+                continue
+            position = item.get("position")
+            if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
+                nodes.append({"position": {"x": position.get("x"), "y": position.get("y")}})
+        return nodes
+
+    if isinstance(raw_nodes, dict):
+        for node_id, value in raw_nodes.items():
+            if not isinstance(value, dict):
+                continue
+            if value.get("x") is not None and value.get("y") is not None:
+                nodes.append({"id": node_id, "position": {"x": value.get("x"), "y": value.get("y")}})
+                continue
+            position = value.get("position")
+            if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
+                nodes.append({"id": node_id, "position": {"x": position.get("x"), "y": position.get("y")}})
+
+    return nodes
+
 def overlaps(test_x: float, test_y: float, nodes: list[dict], threshold: float = 60.0) -> bool:
     """Check if the given coordinate overlaps with any existing nodes within the threshold."""
     for node in nodes:
@@ -34,13 +76,7 @@ def place_node_safe(db: Session, node_id: str, environment: str = "default") -> 
     layout_name = f"env_{environment}" if environment and environment != "default" else "default"
     layout = db.query(GraphLayout).filter(GraphLayout.name == layout_name).first()
     
-    nodes = []
-    if layout and layout.layout_data:
-        try:
-            parsed = json.loads(layout.layout_data)
-            nodes = parsed.get("nodes", [])
-        except json.JSONDecodeError:
-            pass
+    nodes = _extract_layout_nodes(layout.layout_data if layout else None)
 
     # Basic bounding box fallback center if no intelligent layout algorithm is available on backend
     center_x, center_y = 450.0, 320.0

@@ -119,6 +119,7 @@ class Hardware(Base):
     # v0.1.4: auto-discovery
     mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
+    status_override: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     last_seen: Mapped[str | None] = mapped_column(String, nullable=True)
     discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
@@ -145,6 +146,12 @@ class Hardware(Base):
     cluster_memberships: Mapped[list["HardwareClusterMember"]] = relationship(
         "HardwareClusterMember", back_populates="hardware"
     )
+    outgoing_connections: Mapped[list["HardwareConnection"]] = relationship(
+        "HardwareConnection", foreign_keys="HardwareConnection.source_hardware_id", back_populates="source_hardware"
+    )
+    incoming_connections: Mapped[list["HardwareConnection"]] = relationship(
+        "HardwareConnection", foreign_keys="HardwareConnection.target_hardware_id", back_populates="target_hardware"
+    )
 
 
 # ── Compute Units ───────────────────────────────────────────────────────────
@@ -164,11 +171,14 @@ class ComputeUnit(Base):
     memory_mb: Mapped[int | None] = mapped_column(Integer)
     disk_gb: Mapped[int | None] = mapped_column(Integer)
     ip_address: Mapped[str | None] = mapped_column(String)
+    download_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    upload_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     environment: Mapped[str | None] = mapped_column(String)
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     # v0.1.4-cortex: derived status from child services
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
+    status_override: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -266,6 +276,8 @@ class ServiceDependency(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     depends_on_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship(
         "Service", foreign_keys=[service_id], back_populates="dependencies"
@@ -306,6 +318,8 @@ class ServiceStorage(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     storage_id: Mapped[int] = mapped_column(Integer, ForeignKey("storage.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service", back_populates="storage_links")
     storage: Mapped["Storage"] = relationship("Storage", back_populates="service_links")
@@ -347,6 +361,8 @@ class HardwareNetwork(Base):
     hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="network_memberships")
     network: Mapped["Network"] = relationship("Network", back_populates="hardware_memberships")
@@ -360,9 +376,28 @@ class ComputeNetwork(Base):
     compute_id: Mapped[int] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=False)
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     compute_unit: Mapped["ComputeUnit"] = relationship("ComputeUnit", back_populates="network_memberships")
     network: Mapped["Network"] = relationship("Network", back_populates="compute_memberships")
+
+
+class HardwareConnection(Base):
+    """Direct hardware-to-hardware physical connection (e.g. switch uplink, crossover cable)."""
+    __tablename__ = "hardware_connections"
+    __table_args__ = (UniqueConstraint("source_hardware_id", "target_hardware_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
+    target_hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    source_hardware: Mapped["Hardware"] = relationship("Hardware", foreign_keys=[source_hardware_id], back_populates="outgoing_connections")
+    target_hardware: Mapped["Hardware"] = relationship("Hardware", foreign_keys=[target_hardware_id], back_populates="incoming_connections")
 
 
 # ── Hardware Clusters ────────────────────────────────────────────────────────
@@ -423,6 +458,8 @@ class ServiceMisc(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     misc_id: Mapped[int] = mapped_column(Integer, ForeignKey("misc_items.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service", back_populates="misc_links")
     misc_item: Mapped["MiscItem"] = relationship("MiscItem", back_populates="service_links")
@@ -463,6 +500,8 @@ class ExternalNodeNetwork(Base):
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id", ondelete="CASCADE"), nullable=False)
     link_type: Mapped[str | None] = mapped_column(String)    # 'vpn', 'wan', 'wireguard', 'reverse_proxy', etc.
     notes: Mapped[str | None] = mapped_column(Text)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="network_links")
     network: Mapped["Network"] = relationship("Network")
@@ -476,6 +515,8 @@ class ServiceExternalNode(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
     external_node_id: Mapped[int] = mapped_column(Integer, ForeignKey("external_nodes.id", ondelete="CASCADE"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)      # 'db', 'auth', 'cache', 'upstream_api', etc.
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service")
     external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="service_links")
@@ -515,6 +556,10 @@ class AppSettings(Base):
     dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
     dock_hidden_items: Mapped[str | None] = mapped_column(Text)  # JSON array of hidden path strings
     show_page_hints: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_header_widgets: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_time_widget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_weather_widget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    weather_location: Mapped[str] = mapped_column(String, nullable=False, default="Phoenix, AZ")
     auth_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     jwt_secret: Mapped[str | None] = mapped_column(Text)
     session_timeout_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../components/common/Toast';
 import ScanAckModal from '../../components/discovery/ScanAckModal';
 

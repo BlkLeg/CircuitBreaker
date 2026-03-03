@@ -90,6 +90,10 @@ class AppSettingsRead(BaseModel):
     dock_order: Optional[list[str]] = None
     dock_hidden_items: Optional[list[str]] = None
     show_page_hints: bool = True
+    show_header_widgets: bool = True
+    show_time_widget: bool = True
+    show_weather_widget: bool = True
+    weather_location: str = "Phoenix, AZ"
     auth_enabled: bool = False
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
@@ -231,6 +235,10 @@ class AppSettingsUpdate(BaseModel):
     dock_order: Optional[list[str]] = None
     dock_hidden_items: Optional[list[str]] = None
     show_page_hints: Optional[bool] = None
+    show_header_widgets: Optional[bool] = None
+    show_time_widget: Optional[bool] = None
+    show_weather_widget: Optional[bool] = None
+    weather_location: Optional[str] = None
     auth_enabled: Optional[bool] = None
     session_timeout_hours: Optional[int] = None
     branding: Optional[BrandingConfig] = None

@@ -1,14 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
+import PropTypes from 'prop-types';
 import { Palette } from 'lucide-react';
 import { THEME_PRESETS, PRESET_LABELS } from '../theme/presets';
 import { applyTheme } from '../theme/applyTheme';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
 
-export default function ThemePalette() {
+export default function ThemePalette({ placement = 'floating' }) {
   const { settings, reloadSettings } = useSettings();
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
+  const isHeaderPlacement = placement === 'header';
 
   const activePreset = settings?.theme_preset ?? 'cyberpunk-neon';
   const modeKey = settings?.theme === 'light' ? 'light' : 'dark';
@@ -48,7 +50,6 @@ export default function ThemePalette() {
         key={key}
         title={PRESET_LABELS[key] ?? key}
         aria-label={PRESET_LABELS[key] ?? key}
-        aria-pressed={isActive}
         role="menuitemradio"
         aria-checked={isActive}
         style={S.card(isActive, c.primary)}
@@ -66,9 +67,9 @@ export default function ThemePalette() {
   };
 
   return (
-    <div ref={containerRef} style={S.wrapper}>
+    <div ref={containerRef} style={isHeaderPlacement ? S.inlineWrapper : S.wrapper}>
       {open && (
-        <div style={S.popover} role="menu" aria-label="Theme options">
+        <div style={isHeaderPlacement ? S.inlinePopover : S.popover} role="menu" aria-label="Theme options">
           <div style={S.popoverTitle}>Theme</div>
           <div style={S.grid}>
             {nativeThemes.map(([key, colors]) => themeButton(key, colors))}
@@ -85,7 +86,7 @@ export default function ThemePalette() {
       )}
 
       <button
-        style={S.trigger(activeColors?.primary)}
+        style={isHeaderPlacement ? S.inlineTrigger(open, activeColors?.primary) : S.trigger(activeColors?.primary)}
         title="Quick theme switcher"
         aria-label="Quick theme switcher"
         aria-expanded={open}
@@ -105,6 +106,10 @@ const S = {
     left: 16,
     zIndex: 200,
   },
+  inlineWrapper: {
+    position: 'relative',
+    zIndex: 220,
+  },
   trigger: (color) => ({
     width: 34,
     height: 34,
@@ -118,10 +123,36 @@ const S = {
     boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
     transition: 'transform 0.15s',
   }),
+  inlineTrigger: (open, color) => ({
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    background: open ? 'var(--color-border)' : 'transparent',
+    border: `1px solid ${open ? (color ?? 'var(--color-primary)') : 'var(--color-border)'}`,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    color: open ? (color ?? 'var(--color-primary)') : 'var(--color-text-muted)',
+    transition: 'all 0.15s',
+    flexShrink: 0,
+  }),
   popover: {
     position: 'absolute',
     bottom: 44,
     left: 0,
+    background: 'var(--color-surface)',
+    border: '1px solid var(--color-border)',
+    borderRadius: 10,
+    padding: '12px 12px 8px',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+    width: 220,
+  },
+  inlinePopover: {
+    position: 'fixed',
+    top: 'calc(var(--header-height, 52px) + 6px)',
+    right: 16,
+    zIndex: 320,
     background: 'var(--color-surface)',
     border: '1px solid var(--color-border)',
     borderRadius: 10,
@@ -187,4 +218,8 @@ const S = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+};
+
+ThemePalette.propTypes = {
+  placement: PropTypes.oneOf(['floating', 'header']),
 };

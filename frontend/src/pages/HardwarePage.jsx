@@ -149,6 +149,16 @@ function HardwarePage() {
       ? { name: 'location', label: 'Location', type: 'select', options: locations.map((l) => ({ value: l, label: l })) }
       : { name: 'location', label: 'Location' },
     { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
+    {
+      name: 'status_override', label: 'Status Override', type: 'select',
+      options: [
+        { value: '',            label: '— Auto (derived) —' },
+        { value: 'online',      label: 'Online' },
+        { value: 'offline',     label: 'Offline' },
+        { value: 'degraded',    label: 'Degraded' },
+        { value: 'maintenance', label: 'Maintenance' },
+      ],
+    },
     { name: 'notes',      label: 'Notes', type: 'textarea' },
     { name: 'tags',       label: 'Tags (comma-separated)', type: 'tags' },
   ];

@@ -57,7 +57,7 @@ export default function ScanAckModal({ onConfirm, onCancel }) {
         </p>
         <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
           Only scan networks you own or have written permission to scan. Unauthorized scanning
-          may violate local laws and your network provider's terms of service.
+          may violate local laws and your network provider&apos;s terms of service.
         </p>
 
         {/* Checkbox */}

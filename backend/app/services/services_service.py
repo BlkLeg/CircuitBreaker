@@ -306,15 +306,23 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
     db.commit()
     db.refresh(svc)
     # CB-STATE-002: recalculate compute status for old and new compute parents
-    from app.services.status_service import recalculate_compute_status
+    from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
+    from app.db.models import ComputeUnit
     affected_cu_ids = set()
     if old_compute_id:
         affected_cu_ids.add(old_compute_id)
     if svc.compute_id:
         affected_cu_ids.add(svc.compute_id)
+    # Cascade: service → compute → hardware
+    affected_hw_ids = set()
     for cu_id in affected_cu_ids:
         recalculate_compute_status(db, cu_id)
-    if affected_cu_ids:
+        cu_obj = db.get(ComputeUnit, cu_id)
+        if cu_obj and cu_obj.hardware_id:
+            affected_hw_ids.add(cu_obj.hardware_id)
+    for hw_id in affected_hw_ids:
+        recalculate_hardware_status(db, hw_id)
+    if affected_cu_ids or affected_hw_ids:
         db.commit()
     return _to_dict(db, svc)
 
@@ -346,10 +354,14 @@ def delete_service(db: Session, service_id: int) -> None:
     db.flush()
     db.delete(svc)
     db.commit()
-    # CB-STATE-002: recalculate compute status after service deletion
+    # CB-STATE-002: recalculate compute → hardware status after service deletion
     if compute_id_to_recalc:
-        from app.services.status_service import recalculate_compute_status
+        from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
+        from app.db.models import ComputeUnit
         recalculate_compute_status(db, compute_id_to_recalc)
+        cu_obj = db.get(ComputeUnit, compute_id_to_recalc)
+        if cu_obj and cu_obj.hardware_id:
+            recalculate_hardware_status(db, cu_obj.hardware_id)
         db.commit()
 
 

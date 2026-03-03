@@ -94,7 +94,7 @@ export const handlers = [
   http.delete(`${BASE}/discovery/profiles/:id`, () =>
     new HttpResponse(null, { status: 204 })
   ),
-  http.post(`${BASE}/discovery/profiles/:id/run`, ({ params }) =>
+  http.post(`${BASE}/discovery/profiles/:id/run`, () =>
     HttpResponse.json({ id: 99, target_cidr: '192.168.1.0/24', status: 'queued',
       scan_types_json: '["nmap"]', hosts_found: 0, hosts_new: 0,
       hosts_updated: 0, hosts_conflict: 0, created_at: new Date().toISOString() })

@@ -189,7 +189,9 @@ function buildConflictRows(result) {
   if (result.conflicts_json) {
     try {
       return JSON.parse(result.conflicts_json);
-    } catch {}
+    } catch {
+      return rows;
+    }
   }
   // Fallback: surface mac and hostname as common conflict candidates
   if (result.mac_address) rows.push({ field: 'mac_address', stored: null, discovered: result.mac_address });

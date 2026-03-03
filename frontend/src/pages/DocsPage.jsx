@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
+import PropTypes from 'prop-types';
 import MarkdownViewer from '../components/MarkdownViewer';
 const DocEditor = React.lazy(() => import('../components/DocEditor'));
 import DocLinkModal from '../components/DocLinkModal';
@@ -19,7 +20,7 @@ function useSidebarWidth() {
     try {
       const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
       if (stored) {
-        const n = parseInt(stored, 10);
+        const n = Number.parseInt(stored, 10);
         if (n >= SIDEBAR_MIN && n <= SIDEBAR_MAX) return n;
       }
     } catch { /* ignore */ }
@@ -46,7 +47,7 @@ function useSidebarWidth() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       // Persist after drag ends
-      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(Math.round(startW.current + (window._lastSidebarDelta ?? 0)))); } catch { /* ignore */ }
+      try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(Math.round(startW.current + (globalThis._lastSidebarDelta ?? 0)))); } catch { /* ignore */ }
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -57,7 +58,16 @@ function useSidebarWidth() {
     try { localStorage.setItem(SIDEBAR_STORAGE_KEY, String(width)); } catch { /* ignore */ }
   }, [width]);
 
-  return { width, onMouseDown };
+  const onKeyDown = useCallback((e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setWidth((prev) => {
+      const delta = e.key === 'ArrowLeft' ? -12 : 12;
+      return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, prev + delta));
+    });
+  }, []);
+
+  return { width, onMouseDown, onKeyDown };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -98,10 +108,10 @@ function parseHeadings(md = '') {
   const lines = md.split('\n');
   const result = [];
   for (const line of lines) {
-    const m = line.match(/^(#{1,3})\s+(.+)/);
+    const m = /^(#{1,3})\s+(.+)/.exec(line);
     if (m) {
       const text = m[2].trim();
-      const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const slug = text.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-').replaceAll(/^-+|-+$/g, '');
       result.push({ level: m[1].length, text, slug });
     }
   }
@@ -145,18 +155,37 @@ function DocRowMenu({ doc, menuPos, onPin, onSetCategory, onDuplicate, onExport,
   };
 
   return (
-    <div ref={ref} className="doc-row-menu doc-row-menu-fixed" style={style} onClick={(e) => e.stopPropagation()}>
-      <button onClick={() => { onPin(); onClose(); }}>
+    <div ref={ref} className="doc-row-menu doc-row-menu-fixed" style={style}>
+      <button onClick={(e) => { e.stopPropagation(); onPin(); onClose(); }}>
         {doc.pinned ? '📌 Unpin' : '📌 Pin to top'}
       </button>
-      <button onClick={() => { onSetCategory(); onClose(); }}>🗂 Set category</button>
-      <button onClick={() => { onDuplicate(); onClose(); }}>📋 Duplicate</button>
-      <button onClick={() => { onExport(); onClose(); }}>⬇ Export .md</button>
-      <button onClick={() => { onLink(); onClose(); }}>🔗 Link to entity</button>
-      <button className="danger" onClick={() => { onDelete(); onClose(); }}>🗑 Delete</button>
+      <button onClick={(e) => { e.stopPropagation(); onSetCategory(); onClose(); }}>🗂 Set category</button>
+      <button onClick={(e) => { e.stopPropagation(); onDuplicate(); onClose(); }}>📋 Duplicate</button>
+      <button onClick={(e) => { e.stopPropagation(); onExport(); onClose(); }}>⬇ Export .md</button>
+      <button onClick={(e) => { e.stopPropagation(); onLink(); onClose(); }}>🔗 Link to entity</button>
+      <button className="danger" onClick={(e) => { e.stopPropagation(); onDelete(); onClose(); }}>🗑 Delete</button>
     </div>
   );
 }
+
+DocRowMenu.propTypes = {
+  doc: PropTypes.object.isRequired,
+  menuPos: PropTypes.shape({
+    x: PropTypes.number,
+    y: PropTypes.number,
+  }),
+  onPin: PropTypes.func.isRequired,
+  onSetCategory: PropTypes.func.isRequired,
+  onDuplicate: PropTypes.func.isRequired,
+  onExport: PropTypes.func.isRequired,
+  onLink: PropTypes.func.isRequired,
+  onDelete: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
+
+DocRowMenu.defaultProps = {
+  menuPos: null,
+};
 
 // ── Right panel (outline + backlinks) ─────────────────────────────────────
 
@@ -181,6 +210,24 @@ function DocRightPanel({ docId, bodyMd, linksRevision = 0 }) {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
+  let backlinksContent;
+  if (entitiesLoading) {
+    backlinksContent = <p className="docs-right-empty">Loading…</p>;
+  } else if (entities.length === 0) {
+    backlinksContent = <p className="docs-right-empty">Not linked to any entity.</p>;
+  } else {
+    backlinksContent = (
+      <div className="docs-backlinks">
+        {entities.map((e) => (
+          <span key={`${e.entity_type}-${e.entity_id}`} className="docs-entity-chip">
+            <span className="docs-entity-chip-type">{entityTypeLabel(e.entity_type)}</span>
+            #{e.entity_id}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="docs-right-panel">
       {/* Outline */}
@@ -190,14 +237,19 @@ function DocRightPanel({ docId, bodyMd, linksRevision = 0 }) {
           <p className="docs-right-empty">No headings found.</p>
         ) : (
           <ul className="docs-outline-list">
-            {headings.map((h, i) => (
+            {headings.map((h) => (
               <li
-                key={i}
-                className={`docs-outline-item docs-outline-h${h.level}`}
-                onClick={() => scrollToHeading(h.slug)}
-                title={h.text}
+                key={`${h.slug}-${h.level}`}
+                className={`docs-outline-h${h.level}`}
               >
-                {h.text}
+                <button
+                  type="button"
+                  className="docs-outline-item"
+                  onClick={() => scrollToHeading(h.slug)}
+                  title={h.text}
+                >
+                  {h.text}
+                </button>
               </li>
             ))}
           </ul>
@@ -208,25 +260,24 @@ function DocRightPanel({ docId, bodyMd, linksRevision = 0 }) {
       {docId && (
         <div className="docs-right-section">
           <div className="docs-right-section-header">Linked to</div>
-          {entitiesLoading ? (
-            <p className="docs-right-empty">Loading…</p>
-          ) : entities.length === 0 ? (
-            <p className="docs-right-empty">Not linked to any entity.</p>
-          ) : (
-            <div className="docs-backlinks">
-              {entities.map((e, i) => (
-                <span key={i} className="docs-entity-chip">
-                  <span className="docs-entity-chip-type">{entityTypeLabel(e.entity_type)}</span>
-                  #{e.entity_id}
-                </span>
-              ))}
-            </div>
-          )}
+          {backlinksContent}
         </div>
       )}
     </div>
   );
 }
+
+DocRightPanel.propTypes = {
+  docId: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  bodyMd: PropTypes.string,
+  linksRevision: PropTypes.number,
+};
+
+DocRightPanel.defaultProps = {
+  docId: null,
+  bodyMd: '',
+  linksRevision: 0,
+};
 
 // ── Icon picker (emoji swatch beside title) ───────────────────────────────
 
@@ -261,7 +312,7 @@ function DocIconPicker({ value, onChange }) {
       </button>
       {open && (
         <>
-          <div className="emoji-picker-backdrop" onClick={() => setOpen(false)} />
+          <button type="button" className="emoji-picker-backdrop" aria-label="Close emoji picker" onClick={() => setOpen(false)} />
           <div className="emoji-picker-popover doc-icon-picker-popover">
             {Picker && pickerData ? (
               <Picker
@@ -281,6 +332,15 @@ function DocIconPicker({ value, onChange }) {
     </div>
   );
 }
+
+DocIconPicker.propTypes = {
+  value: PropTypes.string,
+  onChange: PropTypes.func.isRequired,
+};
+
+DocIconPicker.defaultProps = {
+  value: '',
+};
 
 // ── Main page ──────────────────────────────────────────────────────────────
 
@@ -413,8 +473,8 @@ function DocsPage() {
   }, [selectedDoc, fetchDocs, toast, searchQuery]);
 
   const handleSetCategory = useCallback(async (doc) => {
-    // eslint-disable-next-line no-alert
-    const newCat = window.prompt('Category name (leave blank for General):', doc.category || '');
+     
+    const newCat = globalThis.prompt('Category name (leave blank for General):', doc.category || '');
     if (newCat === null) return;
     try {
       const res = await docsApi.update(doc.id, { category: newCat.trim() });
@@ -501,11 +561,17 @@ function DocsPage() {
     <div
       key={doc.id}
       className={`doc-list-item${selectedDoc?.id === doc.id ? ' selected' : ''}`}
-      onClick={() => handleSelect(doc)}
     >
       <div className="doc-list-item-inner">
-        <span className="doc-list-icon">{doc.icon || '📄'}</span>
-        <span className="doc-list-title">{doc.title}</span>
+        <button
+          type="button"
+          className="doc-list-select-btn"
+          onClick={() => handleSelect(doc)}
+          title={doc.title}
+        >
+          <span className="doc-list-icon">{doc.icon || '📄'}</span>
+          <span className="doc-list-title">{doc.title}</span>
+        </button>
         <button
           className="doc-list-menu-btn"
           title="More actions"
@@ -518,7 +584,7 @@ function DocsPage() {
               const rect = e.currentTarget.getBoundingClientRect();
               // Position menu below-right of the button; flip left if too close to right edge
               const menuWidth = 180;
-              const x = rect.right + menuWidth > window.innerWidth
+              const x = rect.right + menuWidth > globalThis.innerWidth
                 ? rect.right - menuWidth
                 : rect.left;
               setMenuPos({ x, y: rect.bottom + 4 });
@@ -545,6 +611,97 @@ function DocsPage() {
   );
 
   const hasDocs = docs.length > 0;
+
+  let sidebarContent;
+  if (loading) {
+    sidebarContent = <p className="docs-sidebar-hint">Loading…</p>;
+  } else if (hasDocs) {
+    sidebarContent = (
+      <>
+        {pinnedDocs.length > 0 && (
+          <div className="docs-sidebar-group">
+            <div className="docs-sidebar-group-label">📌 Pinned</div>
+            {pinnedDocs.map(renderDocRow)}
+          </div>
+        )}
+        {groupedDocs.map(([groupName, groupDocs]) => (
+          <div key={groupName} className="docs-sidebar-group">
+            <div className="docs-sidebar-group-label">{groupName}</div>
+            {groupDocs.map(renderDocRow)}
+          </div>
+        ))}
+      </>
+    );
+  } else {
+    sidebarContent = (
+      <div className="docs-sidebar-empty">
+        <p>No documents yet.</p>
+        <button className="btn btn-sm btn-primary" onClick={handleNew}>+ New Doc</button>
+      </div>
+    );
+  }
+
+  let mainContent;
+  if (editing) {
+    mainContent = (
+      <div className="docs-edit-area">
+        <div className="docs-title-row">
+          <DocIconPicker
+            value={formValues.icon}
+            onChange={(icon) => setFormValues((p) => ({ ...p, icon }))}
+          />
+          <input
+            type="text"
+            placeholder="Document title…"
+            value={formValues.title}
+            autoFocus
+            onChange={(e) => setFormValues((p) => ({ ...p, title: e.target.value }))}
+            className="docs-title-input"
+          />
+        </div>
+        <Suspense fallback={<div style={{ padding: '2rem', opacity: 0.5 }}>Loading editor…</div>}>
+          <DocEditor
+            docId={selectedDoc?.id ?? null}
+            value={formValues.body_md}
+            onChange={(md) => setFormValues((p) => ({ ...p, body_md: md }))}
+            onSave={handleSave}
+            updatedAt={selectedDoc?.updated_at ?? null}
+          />
+        </Suspense>
+      </div>
+    );
+  } else if (selectedDoc) {
+    mainContent = (
+      <div className="docs-view-area">
+        <div className="docs-view-header">
+          <div className="docs-view-icon">{selectedDoc.icon || '📄'}</div>
+          <h1 className="docs-view-title">{selectedDoc.title}</h1>
+          <div className="docs-view-meta">
+            Last updated {relativeTime(selectedDoc.updated_at)}
+            {selectedDoc.category && (
+              <span className="docs-view-category">{selectedDoc.category}</span>
+            )}
+          </div>
+        </div>
+        <MarkdownViewer content={selectedDoc.body_md} html={selectedDoc.body_html} />
+      </div>
+    );
+  } else {
+    mainContent = (
+      <div className="docs-empty-state">
+        <div className="docs-empty-icon">📄</div>
+        <p>Select a document from the list or create a new one.</p>
+        <div className="info-tip docs-empty-tip">
+          <strong>Tip:</strong> Documents can be linked to any entity — hardware, services,
+          compute, networks and more. Open a record and use the <em>Docs</em> tab to attach
+          documents to it.
+        </div>
+        <button className="btn btn-primary" onClick={handleNew} style={{ marginTop: 16 }}>
+          + New Doc
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -600,96 +757,22 @@ function DocsPage() {
           </div>
 
           <div className="docs-sidebar-scroll">
-            {loading ? (
-              <p className="docs-sidebar-hint">Loading…</p>
-            ) : !hasDocs ? (
-              <div className="docs-sidebar-empty">
-                <p>No documents yet.</p>
-                <button className="btn btn-sm btn-primary" onClick={handleNew}>+ New Doc</button>
-              </div>
-            ) : (
-              <>
-                {pinnedDocs.length > 0 && (
-                  <div className="docs-sidebar-group">
-                    <div className="docs-sidebar-group-label">📌 Pinned</div>
-                    {pinnedDocs.map(renderDocRow)}
-                  </div>
-                )}
-                {groupedDocs.map(([groupName, groupDocs]) => (
-                  <div key={groupName} className="docs-sidebar-group">
-                    <div className="docs-sidebar-group-label">{groupName}</div>
-                    {groupDocs.map(renderDocRow)}
-                  </div>
-                ))}
-              </>
-            )}
+            {sidebarContent}
           </div>
 
           {/* Drag-to-resize handle */}
-          <div
+          <button
+            type="button"
             className="docs-sidebar-resizer"
             onMouseDown={sidebar.onMouseDown}
+            onKeyDown={sidebar.onKeyDown}
+            aria-label="Resize docs sidebar"
             title="Drag to resize sidebar"
           />
         </div>
 
         {/* Main editor / viewer */}
-        <div className="docs-main">
-          {editing ? (
-            <div className="docs-edit-area">
-              <div className="docs-title-row">
-                <DocIconPicker
-                  value={formValues.icon}
-                  onChange={(icon) => setFormValues((p) => ({ ...p, icon }))}
-                />
-                <input
-                  type="text"
-                  placeholder="Document title…"
-                  value={formValues.title}
-                  autoFocus
-                  onChange={(e) => setFormValues((p) => ({ ...p, title: e.target.value }))}
-                  className="docs-title-input"
-                />
-              </div>
-              <Suspense fallback={<div style={{ padding: '2rem', opacity: 0.5 }}>Loading editor…</div>}>
-                <DocEditor
-                  docId={selectedDoc?.id ?? null}
-                  value={formValues.body_md}
-                  onChange={(md) => setFormValues((p) => ({ ...p, body_md: md }))}
-                  onSave={handleSave}
-                  updatedAt={selectedDoc?.updated_at ?? null}
-                />
-              </Suspense>
-            </div>
-          ) : selectedDoc ? (
-            <div className="docs-view-area">
-              <div className="docs-view-header">
-                <div className="docs-view-icon">{selectedDoc.icon || '📄'}</div>
-                <h1 className="docs-view-title">{selectedDoc.title}</h1>
-                <div className="docs-view-meta">
-                  Last updated {relativeTime(selectedDoc.updated_at)}
-                  {selectedDoc.category && (
-                    <span className="docs-view-category">{selectedDoc.category}</span>
-                  )}
-                </div>
-              </div>
-              <MarkdownViewer content={selectedDoc.body_md} html={selectedDoc.body_html} />
-            </div>
-          ) : (
-            <div className="docs-empty-state">
-              <div className="docs-empty-icon">📄</div>
-              <p>Select a document from the list or create a new one.</p>
-              <div className="info-tip docs-empty-tip">
-                <strong>Tip:</strong> Documents can be linked to any entity — hardware, services,
-                compute, networks and more. Open a record and use the <em>Docs</em> tab to attach
-                documents to it.
-              </div>
-              <button className="btn btn-primary" onClick={handleNew} style={{ marginTop: 16 }}>
-                + New Doc
-              </button>
-            </div>
-          )}
-        </div>
+        <div className="docs-main">{mainContent}</div>
 
         {/* Right panel: shown when editing or viewing a doc */}
         {(editing || selectedDoc) && (

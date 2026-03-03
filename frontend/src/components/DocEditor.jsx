@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import PropTypes from 'prop-types';
 import MDEditor, { commands } from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
 import { Undo2, Redo2 } from 'lucide-react';
@@ -48,7 +49,7 @@ const BACKEND_DEBOUNCE = 15000; // 15 seconds
  *   onSave      — async function to persist to backend
  *   updatedAt   — ISO timestamp of last backend save
  */
-export default function DocEditor({ docId, value, onChange, onSave, updatedAt }) {
+function DocEditor({ docId, value, onChange, onSave, updatedAt }) {
   const [saveStatus, setSaveStatus] = useState('saved'); // saved | saving | unsaved | error
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiReady, setEmojiReady] = useState(false);
@@ -330,7 +331,7 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
       {/* Draft recovery banner */}
       {draftBanner && (
         <div className="doc-editor-draft-banner">
-          <span>📝 A local draft was found that's newer than the last save.</span>
+          <span>📝 A local draft was found that&apos;s newer than the last save.</span>
           <button className="restore" onClick={restoreDraft}>Restore draft</button>
           <button onClick={discardDraft}>Discard</button>
         </div>
@@ -346,43 +347,53 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
         {imageError && <span style={{ color: '#f44336', marginLeft: 'auto' }}>⚠ {imageError}</span>}
       </div>
 
-      {/* Editor */}
-      <div
-        ref={editorRef}
-        style={{ flex: 1, minHeight: 0, position: 'relative' }}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-      >
-        <MDEditor
-          value={value}
-          onChange={handleChange}
-          commands={toolbarCommands}
-          extraCommands={[commands.divider, commands.codeEdit, commands.codeLive, commands.codePreview]}
-          preview="live"
-          height="100%"
-          visibleDragbar
-          textareaProps={{
-            placeholder: 'Start writing…',
-          }}
-        />
-
-        {/* Emoji picker popover */}
-        {showEmoji && emojiRef.current && (
-          <>
-            <div className="emoji-picker-backdrop" onClick={() => setShowEmoji(false)} />
-            <div className="emoji-picker-popover">
-              <emojiRef.current.Picker
-                data={emojiRef.current.data}
-                onEmojiSelect={handleEmojiSelect}
-                theme="dark"
-                previewPosition="none"
-                skinTonePosition="none"
-                maxFrequentRows={2}
-              />
-            </div>
-          </>
-        )}
-      </div>
+        {/* Editor */}
+        <div
+          ref={editorRef}
+          style={{ flex: 1, minHeight: 0, position: 'relative' }}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+        >
+          <MDEditor
+            value={value}
+            onChange={handleChange}
+            commands={toolbarCommands}
+            extraCommands={[commands.divider, commands.codeEdit, commands.codeLive, commands.codePreview]}
+            preview="live"
+            height="100%"
+            visibleDragbar
+            textareaProps={{
+              placeholder: 'Start writing…',
+            }}
+          />
+  
+          {/* Emoji picker popover */}
+          {showEmoji && emojiRef.current && (
+            <>
+              <div className="emoji-picker-backdrop" onClick={() => setShowEmoji(false)} />
+              <div className="emoji-picker-popover">
+                <emojiRef.current.Picker
+                  data={emojiRef.current.data}
+                  onEmojiSelect={handleEmojiSelect}
+                  theme="dark"
+                  previewPosition="none"
+                  skinTonePosition="none"
+                  maxFrequentRows={2}
+                />
+              </div>
+            </>
+          )}
+        </div>
     </div>
   );
 }
+
+DocEditor.propTypes = {
+  docId: PropTypes.number,
+  value: PropTypes.string.isRequired,
+  onChange: PropTypes.func.isRequired,
+  onSave: PropTypes.func.isRequired,
+  updatedAt: PropTypes.string,
+};
+
+export default DocEditor;

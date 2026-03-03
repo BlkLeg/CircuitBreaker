@@ -14,7 +14,6 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
   // Refs for IPAddressInput fields so we can call hasConflicts() on submit
   const ipInputRefsRef = useRef({});
 
-  // eslint-disable-next-line react-naming-convention/use-state -- wrapper needed for dirty tracking
   const [values, setValuesInternal] = useState(() => {
     const init = { ...initialValues };
     fields.forEach((f) => {

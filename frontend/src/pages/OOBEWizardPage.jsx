@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -57,8 +58,8 @@ function OOBEWizardPage({ onCompleted }) {
         event.preventDefault();
       }
     };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
+    globalThis.addEventListener('keydown', handler, true);
+    return () => globalThis.removeEventListener('keydown', handler, true);
   }, []);
 
   const emailValid = EMAIL_RE.test(email);
@@ -364,5 +365,9 @@ function OOBEWizardPage({ onCompleted }) {
   );
 
 }
+
+OOBEWizardPage.propTypes = {
+  onCompleted: PropTypes.func,
+};
 
 export default OOBEWizardPage;

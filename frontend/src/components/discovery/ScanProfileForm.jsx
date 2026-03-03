@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import { X, AlertTriangle, Info, Eye, EyeOff } from 'lucide-react';
 import { createProfile, updateProfile } from '../../api/discovery.js';
