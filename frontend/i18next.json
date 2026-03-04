@@ -1,0 +1,8 @@
+{
+  "locales": ["en", "es", "fr", "de", "zh", "ja"],
+  "defaultNamespace": "common",
+  "namespaceSeparator": ":",
+  "keySeparator": ".",
+  "source": "src",
+  "destination": "public/locales"
+}

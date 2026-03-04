@@ -1,0 +1,20 @@
+{
+  "header": {
+    "hardware": "ハードウェア",
+    "compute": "コンピュート",
+    "services": "サービス",
+    "network": "ネットワーク",
+    "external": "外部",
+    "storage": "ストレージ",
+    "map": "マップ",
+    "discovery": "検出",
+    "docs": "ドキュメント",
+    "logs": "ログ",
+    "settings": "設定"
+  },
+  "map": {
+    "ethernet": "イーサネット",
+    "wireless": "ワイヤレス",
+    "linkToNetwork": "ネットワークに接続"
+  }
+}

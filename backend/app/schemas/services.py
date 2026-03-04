@@ -16,6 +16,7 @@ class ServiceBase(BaseModel):
     compute_id: Optional[int] = None
     hardware_id: Optional[int] = None
     icon_slug: Optional[str] = None
+    custom_icon: Optional[str] = None
     category: Optional[str] = None
     category_id: Optional[int] = None
     url: Optional[str] = None
@@ -39,6 +40,7 @@ class ServiceUpdate(BaseModel):
     compute_id: Optional[int] = None
     hardware_id: Optional[int] = None
     icon_slug: Optional[str] = None
+    custom_icon: Optional[str] = None
     category: Optional[str] = None
     category_id: Optional[int] = None
     url: Optional[str] = None

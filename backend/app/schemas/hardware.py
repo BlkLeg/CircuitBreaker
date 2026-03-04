@@ -72,6 +72,7 @@ class HardwareBase(BaseModel):
     wan_uplink: Optional[str] = None
     cpu_brand: Optional[str] = None
     vendor_icon_slug: Optional[str] = None
+    custom_icon: Optional[str] = None
     tags: list[str] = []
     # v0.1.2: catalog linkage
     vendor_catalog_key: Optional[str] = None
@@ -120,6 +121,7 @@ class HardwareUpdate(BaseModel):
     wan_uplink: Optional[str] = None
     cpu_brand: Optional[str] = None
     vendor_icon_slug: Optional[str] = None
+    custom_icon: Optional[str] = None
     tags: Optional[list[str]] = None
     vendor_catalog_key: Optional[str] = None
     model_catalog_key: Optional[str] = None

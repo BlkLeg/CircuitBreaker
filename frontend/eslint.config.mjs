@@ -55,7 +55,7 @@ export default defineConfig([
     },
   },
   {
-    files: ["vite.config.js", "eslint.config.mjs"],
+    files: ["vite.config.js", "eslint.config.mjs", ".eslintrc.js", "i18next-scanner.config.js"],
     languageOptions: {
       globals: {
         ...globals.node,

@@ -11,8 +11,8 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
  */
 export function useAppFont(fontId, fontSizeId) {
   useEffect(() => {
-    const font = FONT_OPTIONS.find((f) => f.id === fontId) ?? FONT_OPTIONS[0];
-    const size = FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ?? FONT_SIZE_OPTIONS[1];
+    const font = FONT_OPTIONS.find((f) => f.id === fontId) ?? FONT_OPTIONS.find((f) => f.id === 'inter') ?? FONT_OPTIONS[0];
+    const size = FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ?? FONT_SIZE_OPTIONS.find((s) => s.id === 'medium') ?? FONT_SIZE_OPTIONS[0];
 
     // Inject or update Google Fonts <link> for hosted fonts; remove it for system fonts
     const existingLink = document.getElementById('cb-font-link');
@@ -30,5 +30,6 @@ export function useAppFont(fontId, fontSizeId) {
     // Apply CSS custom properties — body uses var(--font), html uses var(--font-size-base)
     document.documentElement.style.setProperty('--font', font.stack);
     document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
+    document.documentElement.style.fontSize = `${size.rootPx}px`;
   }, [fontId, fontSizeId]);
 }

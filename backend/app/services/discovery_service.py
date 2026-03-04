@@ -328,7 +328,7 @@ async def run_scan_job(job_id: int):
 
         async def _nmap_phase():
             if "nmap" in scan_types:
-                await _update_job_progress(db, job, "nmap", f"Running nmap (67%)")
+                await _update_job_progress(db, job, "nmap", "Running nmap (67%)")
                 return await _run_nmap_scan(job.target_cidr, nmap_args)
             return {}
 

@@ -51,11 +51,25 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 # ==============================================================================
 # BUILD & TEST
 # ==============================================================================
-.PHONY: test test-backend test-frontend test-all test-coverage docs docs-build frontend-build
+.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build
+
+lint: ## Run backend and frontend linters
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check app --select F
+	@cd $(FRONTEND_DIR) && npm run lint
+
+format: ## Format backend and frontend code
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff format .
+	@cd $(FRONTEND_DIR) && npm run format
+
+ci: lint test ## Run linting and tests
+
+release: ## Build and push v0.1.4 multi-arch image
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.1.4 --push .
 
 test: ## Run backend tests
 	@echo "Running backend tests..."
 	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest -q
+	@cd $(FRONTEND_DIR) && npm run test
 
 test-backend: ## Run backend tests with verbose output
 	@echo "Running backend tests..."

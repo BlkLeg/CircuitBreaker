@@ -103,9 +103,17 @@ export const computeUnitsApi = {
   uploadIcon: (file) => {
     const form = new FormData();
     form.append('file', file);
-    return client.post('/compute-units/icons/upload', form, {
+    return client.post('/assets/user-icon', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    }).then((res) => ({
+      ...res,
+      data: {
+        ...res.data,
+        slug: res.data.filename,
+        path: res.data.url,
+        label: file.name.replace(/\.[^.]+$/, ''),
+      },
+    }));
   },
   listIcons: () => client.get('/compute-units/icons'),
 };

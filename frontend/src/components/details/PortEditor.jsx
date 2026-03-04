@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Plus, X, Link, HardDrive, Wifi, Cloud, ArrowRight, Save, Loader2, Ethernet } from 'lucide-react';
+import { Plus, X, Link, Save, Loader2, Ethernet } from 'lucide-react';
 import { hardwareApi, computeUnitsApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 import FormModal from '../common/FormModal';
@@ -15,45 +15,49 @@ const PORT_TYPES = [
   { value: 'console', label: 'Console' },
 ];
 
-const CONNECTION_OPTIONS = [
-  { value: 'hardware', label: 'Hardware' },
-  { value: 'compute', label: 'Compute Unit' },
-];
-
-const ConnectionSelector = ({ value, onChange, hardwareId, currentPortId, excludedHardwareIds = [] }) => {
+const ConnectionSelector = ({ value, onChange, hardwareId, excludedHardwareIds = [] }) => {
   const toast = useToast();
   const [search, setSearch] = useState('');
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  const fetchOptions = useCallback(debounce(async (query) => {
-    if (!query) { setOptions([]); return; }
-    setLoading(true);
-    try {
-      const hardwareRes = await hardwareApi.list({ q: query, exclude_id: [...excludedHardwareIds, hardwareId] });
-      const computeRes = await computeUnitsApi.list({ q: query });
+  const fetchOptions = useMemo(
+    () => debounce(async (query) => {
+      if (!query) {
+        setOptions([]);
+        return;
+      }
+      setLoading(true);
+      try {
+        const hardwareRes = await hardwareApi.list({ q: query, exclude_id: [...excludedHardwareIds, hardwareId] });
+        const computeRes = await computeUnitsApi.list({ q: query });
 
-      const hardwareOpts = hardwareRes.data.map(h => ({
-        value: `hardware-${h.id}`,
-        label: `HW: ${h.name} (${h.ip_address || 'no IP'})`,
-        data: h,
-        type: 'hardware',
-      }));
-      const computeOpts = computeRes.data.map(c => ({
-        value: `compute-${c.id}`,
-        label: `CU: ${c.name} (${c.ip_address || 'no IP'})`,
-        data: c,
-        type: 'compute',
-      }));
-      setOptions([...hardwareOpts, ...computeOpts]);
-    } catch (err) {
-      toast.error('Failed to fetch connection options.');
-    } finally {
-      setLoading(false);
-    }
-  }, 300), [toast, hardwareId, excludedHardwareIds]);
+        const hardwareOpts = hardwareRes.data.map(h => ({
+          value: `hardware-${h.id}`,
+          label: `HW: ${h.name} (${h.ip_address || 'no IP'})`,
+          data: h,
+          type: 'hardware',
+        }));
+        const computeOpts = computeRes.data.map(c => ({
+          value: `compute-${c.id}`,
+          label: `CU: ${c.name} (${c.ip_address || 'no IP'})`,
+          data: c,
+          type: 'compute',
+        }));
+        setOptions([...hardwareOpts, ...computeOpts]);
+      } catch {
+        toast.error('Failed to fetch connection options.');
+      } finally {
+        setLoading(false);
+      }
+    }, 300),
+    [toast, hardwareId, excludedHardwareIds],
+  );
 
-  useEffect(() => { fetchOptions(search); }, [search, fetchOptions]);
+  useEffect(() => {
+    fetchOptions(search);
+    return () => fetchOptions.cancel();
+  }, [search, fetchOptions]);
 
   const selectedOption = useMemo(() => {
     if (!value?.connected_hardware_id && !value?.connected_compute_id) return null;
@@ -116,7 +120,6 @@ ConnectionSelector.propTypes = {
   }),
   onChange: PropTypes.func.isRequired,
   hardwareId: PropTypes.number.isRequired,
-  currentPortId: PropTypes.number.isRequired,
   excludedHardwareIds: PropTypes.arrayOf(PropTypes.number),
 };
 
@@ -191,7 +194,6 @@ function PortEditor({ hardware, onSave, onCancel }) {
                     updateValues({ connected_hardware_id, connected_compute_id });
                 }}
                 hardwareId={hardware.id}
-                currentPortId={formValues.port_id}
                 excludedHardwareIds={excludedHardwareIds}
             />
         )
@@ -200,8 +202,11 @@ function PortEditor({ hardware, onSave, onCancel }) {
     { name: 'notes', label: 'Notes', type: 'textarea' },
   ], [hardware.id, excludedHardwareIds]);
 
-  const currentPortToEdit = editPortIdx !== null ? ports[editPortIdx] : {};
-  const initialPortFormValues = useMemo(() => currentPortToEdit, [currentPortToEdit]);
+  const initialPortFormValues = useMemo(
+    () => (editPortIdx !== null ? ports[editPortIdx] : {}),
+    [editPortIdx, ports],
+  );
+  const currentPortToEdit = editPortIdx !== null ? ports[editPortIdx] ?? {} : {};
 
   const handleSave = useCallback(async () => {
     setLoading(true);

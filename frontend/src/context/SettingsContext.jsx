@@ -5,6 +5,7 @@ import logger from '../utils/logger';
 import { applyTheme } from '../theme/applyTheme';
 import { THEME_PRESETS, DEFAULT_PRESET } from '../theme/presets';
 import { useAppFont } from '../hooks/useAppFont';
+import i18n from '../i18n';
 
 // Pre-apply cached theme synchronously on module import to eliminate flash on reload.
 // Runs before React renders; data-theme is not yet set so applyTheme runs in dark-mode
@@ -31,6 +32,7 @@ const DEFAULTS = {
   show_weather_widget: true,
   weather_location: 'Phoenix, AZ',
   timezone: 'UTC',
+  language: 'en',
 };
 
 const SettingsContext = createContext({
@@ -111,7 +113,7 @@ export function SettingsProvider({ children }) {
         link.rel = 'icon';
         document.head.appendChild(link);
       }
-      link.href = `${b.favicon_path}?t=${Date.now()}`;
+      link.href = `/favicon.ico?t=${Date.now()}`;
     }
     if (b.app_name) {
       document.title = b.app_name;
@@ -122,6 +124,13 @@ export function SettingsProvider({ children }) {
       manifest.href = `/api/v1/branding/manifest.json?t=${Date.now()}`;
     }
   }, [settings.branding]);
+
+  useEffect(() => {
+    const lang = settings.language || 'en';
+    if (i18n.language !== lang) {
+      i18n.changeLanguage(lang);
+    }
+  }, [settings.language]);
 
   const contextValue = useMemo(
     () => ({ settings, reloadSettings, loading }),

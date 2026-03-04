@@ -3,14 +3,15 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
-import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi, clustersApi } from '../../api/client';
-import { Server, Globe, Layers, ExternalLink, Database, Wifi, HardDrive, Cpu, Router, Cable } from 'lucide-react';
+import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi } from '../../api/client';
+import { Server, Layers, ExternalLink, Database, Wifi, HardDrive, Router, Cable, Link } from 'lucide-react';
 import { getVendorIcon } from '../../icons/vendorIcons';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import { IconImg } from '../common/IconPickerModal';
 import { useSettings } from '../../context/SettingsContext';
 import { HARDWARE_ROLES } from '../../config/hardwareRoles';
 import TelemetryPanel from '../TelemetryPanel';
+import PortEditor from './PortEditor';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
   const { settings } = useSettings();

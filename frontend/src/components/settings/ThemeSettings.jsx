@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
 import { settingsApi } from '../../api/client';
@@ -96,6 +97,7 @@ const S = {
   },
   fontSizeRow: {
     display: 'flex',
+    flexWrap: 'wrap',
     gap: 8,
     marginBottom: 4,
   },
@@ -149,6 +151,24 @@ const S = {
     fontSize: 11,
     color: 'var(--color-text-muted)',
   },
+  typePreview: {
+    marginTop: 10,
+    border: '1px solid var(--color-border)',
+    borderRadius: 8,
+    background: 'var(--color-bg)',
+    padding: '10px 12px',
+  },
+  typePreviewHeadline: {
+    fontSize: '1.05rem',
+    fontWeight: 600,
+    color: 'var(--color-text)',
+    marginBottom: 4,
+  },
+  typePreviewBody: {
+    fontSize: '0.9rem',
+    color: 'var(--color-text-muted)',
+    lineHeight: 1.55,
+  },
 };
 
 function ColorInput({ label, value, onChange }) {
@@ -174,6 +194,12 @@ function ColorInput({ label, value, onChange }) {
     </div>
   );
 }
+
+ColorInput.propTypes = {
+  label: PropTypes.string.isRequired,
+  value: PropTypes.string.isRequired,
+  onChange: PropTypes.func.isRequired,
+};
 
 export default function ThemeSettings() {
   const { settings, reloadSettings } = useSettings();
@@ -213,8 +239,8 @@ export default function ThemeSettings() {
   };
 
   const applyFontInstant = (fontId, fontSizeId) => {
-    const font = FONT_OPTIONS.find((f) => f.id === fontId) ?? FONT_OPTIONS[0];
-    const size = FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ?? FONT_SIZE_OPTIONS[1];
+    const font = FONT_OPTIONS.find((f) => f.id === fontId) ?? FONT_OPTIONS.find((f) => f.id === 'inter') ?? FONT_OPTIONS[0];
+    const size = FONT_SIZE_OPTIONS.find((s) => s.id === fontSizeId) ?? FONT_SIZE_OPTIONS.find((s) => s.id === 'medium') ?? FONT_SIZE_OPTIONS[0];
     const existingLink = document.getElementById('cb-font-link');
     if (font.googleUrl) {
       const link = existingLink ?? document.createElement('link');
@@ -227,13 +253,14 @@ export default function ThemeSettings() {
     }
     document.documentElement.style.setProperty('--font', font.stack);
     document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
+    document.documentElement.style.fontSize = `${size.rootPx}px`;
   };
 
-  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  const isLight = document.documentElement.dataset.theme === 'light';
   const modeKey = isLight ? 'light' : 'dark';
 
   const handleCustomColor = (field, value) => {
-    const isStructured = customColors && customColors.dark && customColors.light;
+    const isStructured = Boolean(customColors?.dark && customColors?.light);
     const next = isStructured
       ? { ...customColors, [modeKey]: { ...customColors[modeKey], [field]: value } }
       : { ...customColors, [field]: value };
@@ -288,7 +315,7 @@ export default function ThemeSettings() {
     { key: 'surfaceAlt', label: 'Surface Alt' },
   ];
 
-  const currentModeVariant = (customColors && customColors.dark && customColors.light)
+  const currentModeVariant = (customColors?.dark && customColors?.light)
     ? customColors[modeKey]
     : customColors;
 
@@ -297,13 +324,11 @@ export default function ThemeSettings() {
   const themeparkEntries = Object.entries(THEME_PRESETS).filter(([k]) => k.startsWith('tp-'));
 
   const presetCard = (key, colors) => (
-    <div
+    <button
       key={key}
+      type="button"
       style={S.card(activePreset === key)}
       onClick={() => handleSelectPreset(key)}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => e.key === 'Enter' && handleSelectPreset(key)}
       aria-pressed={activePreset === key}
     >
       <div style={S.cardName}>{PRESET_LABELS[key]}</div>
@@ -313,7 +338,7 @@ export default function ThemeSettings() {
         <span style={S.swatch(colors[modeKey]?.accent2)} title="Accent 2" />
         <span style={S.swatch(colors[modeKey]?.background)} title="Background" />
       </div>
-    </div>
+    </button>
   );
 
   return (
@@ -411,10 +436,19 @@ export default function ThemeSettings() {
                 setActiveFontSize(s.id);
                 applyFontInstant(activeFont, s.id);
               }}
+              title={`${s.rootPx}px base`}
             >
               {s.label}
             </button>
           ))}
+        </div>
+        <span style={S.hint}>Base size controls overall UI readability across pages.</span>
+
+        <div style={S.typePreview}>
+          <div style={S.typePreviewHeadline}>Typography Preview</div>
+          <div style={S.typePreviewBody}>
+            The quick brown fox jumps over the lazy dog. 0123456789
+          </div>
         </div>
       </div>
 

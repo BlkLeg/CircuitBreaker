@@ -224,6 +224,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
         compute_id=payload.compute_id,
         hardware_id=effective_hardware_id,
         icon_slug=payload.icon_slug,
+        custom_icon=payload.custom_icon,
         url=payload.url,
         ports_json=ports_json,
         description=payload.description,

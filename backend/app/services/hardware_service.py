@@ -247,6 +247,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         wan_uplink=payload.wan_uplink,
         cpu_brand=payload.cpu_brand,
         vendor_icon_slug=payload.vendor_icon_slug,
+        custom_icon=payload.custom_icon,
         vendor_catalog_key=payload.vendor_catalog_key,
         model_catalog_key=payload.model_catalog_key,
         u_height=u_height,

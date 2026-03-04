@@ -9,13 +9,12 @@ import ipaddress
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
-    Hardware, HardwareNetwork, Network, Rack, ScanResult,
+    Hardware, Network, Rack, ScanResult,
 )
 
 logger = logging.getLogger(__name__)

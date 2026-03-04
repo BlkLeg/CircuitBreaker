@@ -210,7 +210,14 @@ function CustomNode({ data, selected }) {
               width={38}
               height={38}
               style={{ objectFit: 'contain', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))' }}
-              onError={(e) => { e.target.style.display = 'none'; }}
+              onError={(e) => {
+                if (!e.target.dataset.fallbackApplied) {
+                  e.target.dataset.fallbackApplied = '1';
+                  e.target.src = '/icons/vendors/generic.svg';
+                  return;
+                }
+                e.target.style.display = 'none';
+              }}
             />
           ) : (
             <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)' }}>

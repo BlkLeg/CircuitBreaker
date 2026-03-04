@@ -142,6 +142,9 @@ const ROLE_ICON = {
 };
 
 function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
+  if (icon_slug && (icon_slug.startsWith('/') || icon_slug.startsWith('http://') || icon_slug.startsWith('https://'))) {
+    return icon_slug;
+  }
   if (icon_slug)                              return getIconEntry(icon_slug)?.path ?? null;
   if (type === 'hardware' && ROLE_ICON[role]) return getIconEntry(ROLE_ICON[role])?.path ?? null;
   if (type === 'hardware' && vendor)          return getVendorIcon(vendor)?.path ?? null;
@@ -298,13 +301,6 @@ function buildNodeStatusDetails(node) {
   };
 }
 
-// Storage usage bar colour extracted to avoid nested ternaries.
-function getBarColor(pct) {
-  if (pct >= 85) return 'var(--color-danger)';
-  if (pct >= 60) return '#f7c948';
-  return 'var(--color-online)';
-}
-
 // ── Node rank — used for dagre ordering and debug tooltips ──────────────────
 // Lower rank = higher in the hierarchy (closer to root).
 function getNodeRank(node) {
@@ -396,17 +392,6 @@ const ENTITY_FIELDS = {
   ],
 };
 
-const ENTITY_API_GET = {
-  cluster:  (id) => clustersApi.get(id),
-  hardware: (id) => hardwareApi.get(id),
-  compute:  (id) => computeUnitsApi.get(id),
-  service:  (id) => servicesApi.get(id),
-  storage:  (id) => storageApi.get(id),
-  network:  (id) => networksApi.get(id),
-  misc:     (id) => miscApi.get(id),
-  external: (id) => externalNodesApi.get(id),
-};
-
 const ENTITY_API_UPDATE_ICON = {
   hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
   compute:  (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
@@ -460,12 +445,6 @@ const STATUS_OPTION_LABEL = {
   running: '🟢 Running',
   stopped: '⏹️ Stopped',
 };
-
-function encodeRunsOn(item) {
-  if (item.hardware_id) return `hw_${item.hardware_id}`;
-  if (item.compute_id) return `cu_${item.compute_id}`;
-  return '';
-}
 
 function isLightTheme(settings) {
   return settings.theme === 'light'
@@ -1389,7 +1368,7 @@ function MapInternal() {
     } finally {
       setLoading(false);
     }
-  }, [envFilter, includeTypes, fitView, getLayoutName, isMobile, showLabels, cloudViewEnabled]);
+  }, [envFilter, includeTypes, fitView, getLayoutName, isMobile, showLabels, cloudViewEnabled, setEdges, setNodes]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -1456,7 +1435,7 @@ function MapInternal() {
     } catch (e) {
       console.error('Auto-place failed', e);
     }
-  }, [envFilter, updateNodePos]);
+  }, [envFilter, updateNodePos, toast]);
 
   useEffect(() => {
     // Look for nodes marked with _needsAutoPlace

@@ -6,8 +6,10 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { applyTheme } from '../theme/applyTheme';
 import { DEFAULT_PRESET, PRESET_LABELS, THEME_PRESETS } from '../theme/presets';
+import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
 import { gravatarHash } from '../utils/md5.js';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
+import { useTranslation } from 'react-i18next';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -22,6 +24,7 @@ const RULES = [
 const PRESET_KEYS = Object.keys(THEME_PRESETS);
 
 function OOBEWizardPage({ onCompleted }) {
+  const { i18n } = useTranslation();
   const navigate = useNavigate();
   const { login, setAuthEnabled } = useAuth();
   const { settings, reloadSettings } = useSettings();
@@ -33,6 +36,9 @@ function OOBEWizardPage({ onCompleted }) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [selectedPreset, setSelectedPreset] = useState(DEFAULT_PRESET);
+  const [selectedFont, setSelectedFont] = useState(settings?.ui_font ?? 'inter');
+  const [selectedFontSize, setSelectedFontSize] = useState(settings?.ui_font_size ?? 'medium');
+  const [language, setLanguage] = useState(settings?.language ?? 'en');
   const [timezone, setTimezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   );
@@ -41,6 +47,15 @@ function OOBEWizardPage({ onCompleted }) {
   const photoFileRef = useRef(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const languages = [
+    { value: 'en', label: 'English' },
+    { value: 'es', label: 'Español' },
+    { value: 'fr', label: 'Français' },
+    { value: 'de', label: 'Deutsch' },
+    { value: 'zh', label: '中文 (简体)' },
+    { value: 'ja', label: '日本語' },
+  ];
 
   const handlePhotoFile = (e) => {
     const f = e.target.files[0];
@@ -85,6 +100,27 @@ function OOBEWizardPage({ onCompleted }) {
     setStep((value) => Math.max(1, value - 1));
   };
 
+  const applyFontInstant = (fontId, fontSizeId) => {
+    const font = FONT_OPTIONS.find((entry) => entry.id === fontId) ?? FONT_OPTIONS.find((entry) => entry.id === 'inter') ?? FONT_OPTIONS[0];
+    const size = FONT_SIZE_OPTIONS.find((entry) => entry.id === fontSizeId) ?? FONT_SIZE_OPTIONS.find((entry) => entry.id === 'medium') ?? FONT_SIZE_OPTIONS[0];
+
+    const existingLink = document.getElementById('cb-font-link');
+    if (font.googleUrl) {
+      const link = existingLink ?? document.createElement('link');
+      link.id = 'cb-font-link';
+      link.rel = 'stylesheet';
+      link.href = font.googleUrl;
+      if (!existingLink) document.head.appendChild(link);
+      else link.href = font.googleUrl;
+    } else {
+      existingLink?.remove();
+    }
+
+    document.documentElement.style.setProperty('--font', font.stack);
+    document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
+    document.documentElement.style.fontSize = `${size.rootPx}px`;
+  };
+
   const submitBootstrap = async () => {
     if (!accountValid) {
       setStep(2);
@@ -100,6 +136,9 @@ function OOBEWizardPage({ onCompleted }) {
         display_name: displayName || undefined,
         theme_preset: selectedPreset,
         timezone,
+        language,
+        ui_font: selectedFont,
+        ui_font_size: selectedFontSize,
       });
 
       const token = response.data.token;
@@ -120,6 +159,7 @@ function OOBEWizardPage({ onCompleted }) {
       if (THEME_PRESETS[preset]) {
         applyTheme(THEME_PRESETS[preset], preset);
       }
+      await i18n.changeLanguage(language);
 
       login(token, user);
       setAuthEnabled(true);
@@ -304,6 +344,45 @@ function OOBEWizardPage({ onCompleted }) {
                   );
                 })}
               </div>
+
+              <div style={{ marginTop: 16 }}>
+                <label className="login-label" htmlFor="oobe-font-family">Font Family</label>
+                <select
+                  id="oobe-font-family"
+                  className="form-control"
+                  value={selectedFont}
+                  onChange={(e) => {
+                    const nextFont = e.target.value;
+                    setSelectedFont(nextFont);
+                    applyFontInstant(nextFont, selectedFontSize);
+                  }}
+                >
+                  {FONT_OPTIONS.map((fontOption) => (
+                    <option key={fontOption.id} value={fontOption.id}>{fontOption.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <label className="login-label" htmlFor="oobe-font-size-options">Font Size</label>
+                <div id="oobe-font-size-options" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {FONT_SIZE_OPTIONS.map((sizeOption) => (
+                    <button
+                      key={sizeOption.id}
+                      type="button"
+                      className={`btn btn-sm ${selectedFontSize === sizeOption.id ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => {
+                        setSelectedFontSize(sizeOption.id);
+                        applyFontInstant(selectedFont, sizeOption.id);
+                      }}
+                      title={`${sizeOption.rootPx}px base`}
+                    >
+                      {sizeOption.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="oobe-actions">
                 <button type="button" className="btn btn-secondary" onClick={goBack}>Back</button>
                 <button type="button" className="btn btn-primary" onClick={goNext}>Next</button>
@@ -313,10 +392,23 @@ function OOBEWizardPage({ onCompleted }) {
 
           {step === 4 && (
             <>
-              <h2 className="login-card-title">Where are you located?</h2>
+              <h2 className="login-card-title">Regional Preferences</h2>
               <p className="login-card-subtitle">
-                Circuit Breaker uses your timezone to display timestamps in local time throughout the app.
+                Choose your preferred language and timezone.
               </p>
+              <div style={{ margin: '0 0 12px' }}>
+                <label className="login-label" htmlFor="oobe-language">Preferred Language</label>
+                <select
+                  id="oobe-language"
+                  className="form-control"
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                >
+                  {languages.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
               <div style={{ margin: '20px 0' }}>
                 <TimezoneSelect
                   value={timezone}
@@ -345,6 +437,9 @@ function OOBEWizardPage({ onCompleted }) {
                   <div>Email: {email}</div>
                   <div>Display Name: {displayName || '(auto from email)'}</div>
                   <div><strong>Theme:</strong> {PRESET_LABELS[selectedPreset] ?? selectedPreset}</div>
+                  <div><strong>Font:</strong> {FONT_OPTIONS.find((entry) => entry.id === selectedFont)?.label ?? selectedFont}</div>
+                  <div><strong>Font Size:</strong> {FONT_SIZE_OPTIONS.find((entry) => entry.id === selectedFontSize)?.label ?? selectedFontSize}</div>
+                  <div><strong>Language:</strong> {languages.find((entry) => entry.value === language)?.label ?? language}</div>
                   <div><strong>Timezone:</strong> {timezone}</div>
                 </div>
               </div>

@@ -8,7 +8,6 @@ from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
 from app.services import hardware_service, clusters_service
-from app.services.compute_units_service import get_compute_unit
 
 router = APIRouter(tags=["hardware"])
 

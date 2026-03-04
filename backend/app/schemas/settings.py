@@ -98,6 +98,7 @@ class AppSettingsRead(BaseModel):
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
     timezone: str = "UTC"
+    language: str = "en"
     # Auto-Discovery
     discovery_enabled: bool = False
     discovery_auto_merge: bool = False
@@ -245,6 +246,7 @@ class AppSettingsUpdate(BaseModel):
     theme_preset: Optional[str] = None
     show_external_nodes_on_map: Optional[bool] = None
     timezone: Optional[str] = None
+    language: Optional[Literal["en", "es", "fr", "de", "zh", "ja"]] = None
     # Auto-Discovery
     discovery_enabled: Optional[bool] = None
     discovery_auto_merge: Optional[bool] = None

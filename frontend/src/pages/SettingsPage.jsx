@@ -21,6 +21,7 @@ import ClearLabDialog from '../components/common/ClearLabDialog';
 import FirstUserDialog from '../components/auth/FirstUserDialog';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
 import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
+import { useTranslation } from 'react-i18next';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
 
@@ -38,6 +39,7 @@ function parseMapFilters(raw) {
 }
 
 export default function SettingsPage() {
+  const { i18n, t } = useTranslation();
   const { settings: ctxSettings, reloadSettings } = useSettings();
   const { setAuthEnabled } = useAuth();
   const { timezone: ctxTimezone, setTimezone } = useTimezone();
@@ -78,6 +80,7 @@ export default function SettingsPage() {
       show_weather_widget: ctxSettings.show_weather_widget ?? true,
       weather_location: ctxSettings.weather_location ?? 'Phoenix, AZ',
       timezone: ctxSettings.timezone ?? 'UTC',
+      language: ctxSettings.language ?? 'en',
     };
     setForm(initialForm);
     setOrigForm(initialForm);
@@ -119,6 +122,10 @@ export default function SettingsPage() {
       
       if (form.timezone !== ctxTimezone) {
         setTimezone(form.timezone);
+      }
+
+      if ((form.language || 'en') !== (i18n.language || 'en')) {
+        await i18n.changeLanguage(form.language || 'en');
       }
       
       setAuthEnabled(form.auth_enabled);
@@ -215,7 +222,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     // If current tab is filtered out, switch to first available
-    if (searchQuery && !filteredTabs.find(t => t.id === activeTab)) {
+    if (searchQuery && !filteredTabs.some((t) => t.id === activeTab)) {
       if (filteredTabs.length > 0) setActiveTab(filteredTabs[0].id);
     }
   }, [filteredTabs, searchQuery, activeTab]);
@@ -250,8 +257,26 @@ export default function SettingsPage() {
           <div className="settings-scroll-area">
             {/* ── General Tab ────────────────────────── */}
             {activeTab === 'general' && (
-              <>
+              <div className="settings-sections-grid">
                 <SettingSection title="Regional">
+                  <SettingField
+                    label={t('language', { ns: 'settings', defaultValue: 'Language' })}
+                    hint="Application language used across labels and UI text."
+                  >
+                    <select
+                      className="form-control"
+                      value={form.language}
+                      onChange={(e) => set('language', e.target.value)}
+                    >
+                      <option value="en">English</option>
+                      <option value="es">Español</option>
+                      <option value="fr">Français</option>
+                      <option value="de">Deutsch</option>
+                      <option value="zh">中文 (简体)</option>
+                      <option value="ja">日本語</option>
+                    </select>
+                  </SettingField>
+
                   <SettingField 
                     label="Timezone" 
                     hint="Your local timezone for displaying timestamps across the app."
@@ -318,6 +343,7 @@ export default function SettingsPage() {
                 <SettingSection title="UX Preferences">
                   <SettingField label="Empty Page Hints" hint="Show helpful guidance when a view has no data.">
                     <label className="toggle-switch">
+                      <span className="sr-only">Empty Page Hints</span>
                       <input
                         type="checkbox"
                         checked={form.show_page_hints}
@@ -329,6 +355,7 @@ export default function SettingsPage() {
                   
                   <SettingField label="External Nodes on Map" hint="Visualize cloud and external services on the topology map.">
                     <label className="toggle-switch">
+                      <span className="sr-only">External Nodes on Map</span>
                       <input
                         type="checkbox"
                         checked={form.show_external_nodes_on_map}
@@ -338,13 +365,13 @@ export default function SettingsPage() {
                     </label>
                   </SettingField>
                 </SettingSection>
-              </>
+              </div>
             )}
 
             {/* ── Appearance Tab ─────────────────────── */}
             {activeTab === 'appearance' && (
-              <>
-                <SettingSection title="Theme Engine">
+              <div className="settings-sections-grid">
+                <SettingSection title="Theme Engine" className="settings-section--full">
                   <SettingField label="Color Mode" hint="System preference will automatically follow your OS light/dark setting.">
                     <select className="form-control" value={form.theme} onChange={(e) => set('theme', e.target.value)}>
                       <option value="auto">Auto (System)</option>
@@ -355,7 +382,7 @@ export default function SettingsPage() {
                   <ThemeSettings />
                 </SettingSection>
 
-                <SettingSection title="Branding">
+                <SettingSection title="Branding" className="settings-section--full">
                   <BrandingSettings />
                 </SettingSection>
 
@@ -421,12 +448,12 @@ export default function SettingsPage() {
                     </>
                   )}
                 </SettingSection>
-              </>
+              </div>
             )}
 
             {/* ── Resources Tab ──────────────────────── */}
             {activeTab === 'resources' && (
-              <>
+              <div className="settings-sections-grid">
                 <SettingSection title="Locations" description="Physical or logical places where hardware resides (e.g. Rack A, Server Room).">
                   <ListEditor
                     items={form.locations ?? []}
@@ -443,16 +470,16 @@ export default function SettingsPage() {
                   />
                 </SettingSection>
                 
-                <SettingSection title="Icon Library" description="Custom SVG/PNG icons for your lab entities.">
+                <SettingSection title="Icon Library" className="settings-section--full" description="Custom SVG/PNG icons for your lab entities.">
                   <IconLibraryManager />
                 </SettingSection>
-              </>
+              </div>
             )}
 
             {/* ── Connectivity Tab ───────────────────── */}
             {activeTab === 'connectivity' && (
-              <>
-                <SettingSection title="Auto-Discovery">
+              <div className="settings-sections-grid">
+                <SettingSection title="Auto-Discovery" className="settings-section--full">
                   <DiscoverySettingsPage />
                 </SettingSection>
 
@@ -470,15 +497,16 @@ export default function SettingsPage() {
                     />
                   </SettingField>
                 </SettingSection>
-              </>
+              </div>
             )}
 
             {/* ── Security Tab ───────────────────────── */}
             {activeTab === 'security' && (
-              <>
+              <div className="settings-sections-grid">
                 <SettingSection title="Authentication">
                   <SettingField label="Enable Login" hint="Require credentials for all write operations.">
                     <label className="toggle-switch">
+                      <span className="sr-only">Enable Login</span>
                       <input
                         type="checkbox"
                         checked={form.auth_enabled}
@@ -496,18 +524,18 @@ export default function SettingsPage() {
                         min={1}
                         max={720}
                         value={form.session_timeout_hours}
-                        onChange={(e) => set('session_timeout_hours', parseInt(e.target.value, 10) || 24)}
+                        onChange={(e) => set('session_timeout_hours', Number.parseInt(e.target.value, 10) || 24)}
                         style={{ width: 100 }}
                       />
                     </SettingField>
                   )}
                 </SettingSection>
-              </>
+              </div>
             )}
 
             {/* ── System Tab ─────────────────────────── */}
             {activeTab === 'system' && (
-              <>
+              <div className="settings-sections-grid">
                 <SettingSection title="Data Management">
                   <SettingField label="Full Backup" hint="Export a JSON snapshot of all lab entities and relationships.">
                     <button className="btn btn-secondary btn-sm" onClick={handleExport}>Download Backup</button>
@@ -521,6 +549,7 @@ export default function SettingsPage() {
                 <SettingSection title="Advanced">
                   <SettingField label="Experimental Features" hint="Enable features still in beta. May be unstable.">
                     <label className="toggle-switch">
+                      <span className="sr-only">Experimental Features</span>
                       <input
                         type="checkbox"
                         checked={form.show_experimental_features}
@@ -534,7 +563,7 @@ export default function SettingsPage() {
                     <button className="btn btn-danger btn-sm" onClick={handleReset}>Reset to Defaults</button>
                   </SettingField>
                 </SettingSection>
-              </>
+              </div>
             )}
           </div>
         </main>

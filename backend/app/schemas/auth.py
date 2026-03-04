@@ -19,6 +19,7 @@ class UserProfile(BaseModel):
     display_name: Optional[str] = None
     gravatar_hash: Optional[str] = None
     is_admin: bool
+    language: str = "en"
     profile_photo_url: Optional[str] = None
 
 
@@ -38,6 +39,9 @@ class BootstrapInitializeRequest(BaseModel):
     display_name: Optional[str] = None
     theme_preset: str
     timezone: Optional[str] = "UTC"
+    language: Optional[str] = "en"
+    ui_font: Optional[str] = "inter"
+    ui_font_size: Optional[str] = "medium"
 
 
 class BootstrapThemeResponse(BaseModel):

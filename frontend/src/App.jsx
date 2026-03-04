@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { SettingsProvider } from './context/SettingsContext';
+import { I18nextProvider } from 'react-i18next';
+import i18n from './i18n';
+import { SettingsProvider, useSettings } from './context/SettingsContext';
 import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { useSettings } from './context/SettingsContext';
 import { ToastProvider } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -209,17 +210,19 @@ function AppRoutes() {
 
 function App() {
   return (
-    <BrowserRouter>
-    <SettingsProvider>
-    <TimezoneProvider>
-    <AuthProvider>
-    <ToastProvider>
-      <AppRoutes />
-    </ToastProvider>
-    </AuthProvider>
-    </TimezoneProvider>
-    </SettingsProvider>
-    </BrowserRouter>
+    <I18nextProvider i18n={i18n}>
+      <BrowserRouter>
+      <SettingsProvider>
+      <TimezoneProvider>
+      <AuthProvider>
+      <ToastProvider>
+        <AppRoutes />
+      </ToastProvider>
+      </AuthProvider>
+      </TimezoneProvider>
+      </SettingsProvider>
+      </BrowserRouter>
+    </I18nextProvider>
   );
 }
 

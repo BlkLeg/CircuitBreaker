@@ -3,6 +3,7 @@ import secrets
 import zoneinfo
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow, utcnow_iso
@@ -27,6 +28,7 @@ _DEFAULTS = dict(
     show_time_widget=True,
     show_weather_widget=True,
     weather_location="Phoenix, AZ",
+    language="en",
     app_name="Circuit Breaker",
     favicon_path=None,
     login_logo_path=None,
@@ -122,3 +124,19 @@ def reset_settings(db: Session) -> AppSettings:
     db.commit()
     db.refresh(row)
     return row
+
+
+def update_user_language(db: Session, user_id: int, language: str) -> None:
+    db.execute(
+        text("UPDATE users SET language = :lang WHERE id = :id"),
+        {"lang": language, "id": user_id},
+    )
+    db.commit()
+
+
+def get_user_language(db: Session, user_id: int) -> str:
+    result = db.scalar(
+        text("SELECT language FROM users WHERE id = :id"),
+        {"id": user_id},
+    )
+    return result or "en"

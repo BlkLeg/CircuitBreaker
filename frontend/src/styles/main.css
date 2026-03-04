@@ -28,6 +28,10 @@
   --color-grid-line: rgba(30, 42, 58, 0.2);
 }
 
+html {
+  font-size: var(--font-size-base);
+}
+
 
 
 
@@ -36,7 +40,7 @@ body {
   font-family: var(--font);
   background: var(--color-bg);
   color: var(--color-text);
-  font-size: var(--font-size-base);
+  font-size: 1rem;
   line-height: 1.5;
 }
 
@@ -320,6 +324,7 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(4px);
   backdrop-filter: blur(4px);
   z-index: 1100;
   display: flex;
@@ -459,6 +464,7 @@ body {
   font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  -webkit-user-select: none;
   user-select: none;
   /* Individual pill glass */
   background: rgba(13, 17, 23, 0.75);                                         /* fallback: no color-mix */
@@ -1210,7 +1216,8 @@ body {
 
 .docs-search-wrap {
   padding: 10px 10px 8px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid rgba(30, 42, 58, 0.82);                             /* fallback: no color-mix */
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-primary) 18%);
   flex-shrink: 0;
 }
 
@@ -1929,7 +1936,7 @@ body {
 .settings-content {
   flex: 1;
   min-width: 0;
-  max-width: 680px;
+  max-width: 1200px;
 }
 
 .settings-content-header {
@@ -1951,6 +1958,69 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.settings-scroll-area {
+  padding: 4px 0 8px;
+}
+
+.settings-sections-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 1500px) {
+  .settings-sections-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.setting-section {
+  margin-bottom: 0 !important;
+  height: 100%;
+}
+
+.settings-section--full {
+  grid-column: 1 / -1;
+}
+
+.settings-scroll-area .form-control,
+.settings-scroll-area .form-group input,
+.settings-scroll-area .form-group select,
+.settings-scroll-area .form-group textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-primary) 18%);
+  border-radius: 8px;
+  color: var(--color-text);
+  padding: 8px 10px;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.settings-scroll-area .form-control::placeholder,
+.settings-scroll-area .form-group input::placeholder,
+.settings-scroll-area .form-group textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.settings-scroll-area .form-control:focus,
+.settings-scroll-area .form-group input:focus,
+.settings-scroll-area .form-group select:focus,
+.settings-scroll-area .form-group textarea:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 14%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 58%, var(--color-surface));
+}
+
+[data-theme='light'] .settings-scroll-area .form-control,
+[data-theme='light'] .settings-scroll-area .form-group input,
+[data-theme='light'] .settings-scroll-area .form-group select,
+[data-theme='light'] .settings-scroll-area .form-group textarea {
+  background: color-mix(in srgb, var(--color-surface) 92%, #ffffff);
 }
 
 /* Light theme overrides for settings sidebar */
@@ -2011,6 +2081,11 @@ body {
   .settings-content {
     max-width: 100%;
   }
+
+  .settings-sections-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
 }
 
 /* =====================================================================
@@ -2051,6 +2126,31 @@ body {
   overflow: hidden;
 }
 
+.login-root--with-bg {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.login-root--with-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-bg) 72%, transparent),
+    color-mix(in srgb, var(--color-bg) 58%, transparent)
+  );
+  -webkit-backdrop-filter: brightness(0.78) contrast(1.1);
+  backdrop-filter: brightness(0.78) contrast(1.1);
+  z-index: 0;
+}
+
+.login-root--with-bg .login-split {
+  position: relative;
+  z-index: 1;
+}
+
 /* Bokeh glows — top-left and bottom-right accents */
 .login-bokeh-tl,
 .login-bokeh-br {
@@ -2086,11 +2186,12 @@ body {
   position: relative;
   z-index: 1;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  gap: 64px;
-  width: 100%;
-  max-width: 900px;
+  justify-content: center;
+  gap: 16px;
+  width: auto;
+  max-width: min(92vw, 560px);
   animation: loginFadeIn 0.5s ease both;
 }
 
@@ -2177,6 +2278,44 @@ body {
   border-radius: 12px;
   padding: 36px 32px;
   animation: loginSlideUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
+}
+
+.login-auth-pane {
+  width: 380px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.login-brand--under-form {
+  width: 100%;
+  align-items: center;
+  text-align: center;
+}
+
+.login-brand--under-form .login-bullet-list {
+  margin: 0 0 16px;
+}
+
+.login-brand--under-form .login-bullet-list li {
+  justify-content: center;
+}
+
+.login-brand--under-form .login-brand-tagline {
+  margin: 0 0 14px;
+}
+
+.login-brand--under-form .login-status {
+  justify-content: center;
+}
+
+.login-auth-logo {
+  width: min(360px, 92%);
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.3));
 }
 
 .login-card-title {
@@ -2555,22 +2694,20 @@ body {
 /* Responsive: single column */
 @media (max-width: 768px) {
   .login-split {
-    flex-direction: column;
-    gap: 28px;
+    gap: 16px;
     align-items: stretch;
-  }
-
-  .login-brand {
-    text-align: center;
-    align-items: center;
-    min-height: auto !important;
-    /* When a BG image is active, ensure it covers on mobile */
-    background-size: cover !important;
-    background-position: center !important;
   }
 
   .login-card {
     width: 100%;
+  }
+
+  .login-auth-pane {
+    width: 100%;
+  }
+
+  .login-auth-logo {
+    width: min(320px, 92%);
   }
 
   /* Header compact logo shrinks on mobile */

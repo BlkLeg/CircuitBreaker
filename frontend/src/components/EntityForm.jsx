@@ -44,6 +44,7 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
 
   const [clearedApiErrors, setClearedApiErrors] = React.useState({});
   const [validationErrors, setValidationErrors] = React.useState({});
+  const [uploadingField, setUploadingField] = React.useState({});
 
   const setValues = (updater) => {
     setValuesInternal((prev) => {
@@ -251,6 +252,44 @@ function EntityForm({ fields, initialValues = {}, onSubmit, onCancel, onDirtyCha
             <button type="button" className="btn btn-sm btn-danger" onClick={() => setValues((prev) => ({ ...prev, [field.name]: null }))}>
               ✕
             </button>
+          )}
+        </div>
+      );
+    }
+
+    // ── Image uploader (stores returned URL) ─────────────────────────────────
+    if (field.type === 'image-upload') {
+      const previewUrl = values[field.name];
+      const isUploading = Boolean(uploadingField[field.name]);
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input
+            id={field.name}
+            type="file"
+            accept={field.accept || 'image/png,image/jpeg,image/svg+xml'}
+            disabled={isUploading}
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (!file || !field.onUpload) return;
+              setUploadingField((prev) => ({ ...prev, [field.name]: true }));
+              try {
+                const uploadedUrl = await field.onUpload(file);
+                setValues((prev) => ({ ...prev, [field.name]: uploadedUrl }));
+              } finally {
+                setUploadingField((prev) => ({ ...prev, [field.name]: false }));
+                event.target.value = '';
+              }
+            }}
+          />
+          {isUploading && <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Uploading…</span>}
+          {previewUrl && (
+            <img
+              src={previewUrl}
+              alt="Custom icon preview"
+              width={40}
+              height={40}
+              style={{ objectFit: 'cover', borderRadius: 8, border: '1px solid var(--color-border)' }}
+            />
           )}
         </div>
       );

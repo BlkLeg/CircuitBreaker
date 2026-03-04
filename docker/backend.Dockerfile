@@ -32,7 +32,7 @@ COPY VERSION /VERSION
 COPY backend/pyproject.toml ./
 COPY backend/app ./app
 RUN pip install --no-cache-dir --no-deps . \
-    && mkdir -p /app/data
+    && mkdir -p /app/data /app/data/uploads/icons /app/data/uploads/branding
 
 ENV PYTHONPATH=/app
 ENV PORT=8000

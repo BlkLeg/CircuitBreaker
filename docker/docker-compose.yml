@@ -8,6 +8,8 @@ services:
       - ../backend/.env
     volumes:
       - backend-data:/app/data
+      - ../data/uploads/icons:/app/data/uploads/icons
+      - ../data/uploads/branding:/app/data/uploads/branding
     environment:
       - DATABASE_URL=sqlite:////app/data/app.db
       - UPLOADS_DIR=/app/data/uploads

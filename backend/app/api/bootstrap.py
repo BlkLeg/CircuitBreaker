@@ -35,4 +35,7 @@ def initialize_bootstrap(
         payload.theme_preset,
         payload.display_name,
         payload.timezone,
+        payload.language,
+        payload.ui_font,
+        payload.ui_font_size,
     )

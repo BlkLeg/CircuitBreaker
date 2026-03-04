@@ -84,10 +84,10 @@ ENV APP_VERSION=${APP_VERSION}
 # Create dedicated non-root user with a fixed UID (1000) for predictable bind-mount ownership.
 # chown /app so the user can read the installed package; /data ownership is fixed at runtime
 # by the entrypoint script (covers pre-existing volumes that were created as root).
-RUN mkdir -p /data \
+RUN mkdir -p /data /data/uploads/icons /data/uploads/branding \
     && groupadd -g 1000 breaker26 \
     && useradd -u 1000 -g 1000 --no-create-home --shell /sbin/nologin breaker26 \
-    && chown -R breaker26:breaker26 /app
+    && chown -R breaker26:breaker26 /app /data
 
 # Copy entrypoint script that fixes /data ownership at startup and drops to breaker26 via gosu.
 COPY docker/entrypoint.sh /entrypoint.sh

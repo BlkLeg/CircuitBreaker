@@ -168,7 +168,11 @@ export default function BrandingSettings() {
       await reloadSettings();
       toast.success('Favicon updated.');
     } catch (err) {
-      toast.error(`Favicon upload failed: ${err.response?.data?.detail ?? err.message}`);
+      const detail = err.response?.data?.detail ?? err.message;
+      const message = err.statusCode === 413
+        ? 'Favicon upload failed: File is too large. Use an icon 512 KB or smaller.'
+        : `Favicon upload failed: ${detail}`;
+      toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, favicon: false }));
       if (faviconRef.current) faviconRef.current.value = '';
@@ -184,7 +188,11 @@ export default function BrandingSettings() {
       await reloadSettings();
       toast.success('Login logo updated.');
     } catch (err) {
-      toast.error(`Logo upload failed: ${err.response?.data?.detail ?? err.message}`);
+      const detail = err.response?.data?.detail ?? err.message;
+      const message = err.statusCode === 413
+        ? 'Logo upload failed: File is too large. Use an image 2 MB or smaller.'
+        : `Logo upload failed: ${detail}`;
+      toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, logo: false }));
       if (logoRef.current) logoRef.current.value = '';
@@ -200,7 +208,11 @@ export default function BrandingSettings() {
       await reloadSettings();
       toast.success('Login background updated.');
     } catch (err) {
-      toast.error(`Background upload failed: ${err.response?.data?.detail ?? err.message}`);
+      const detail = err.response?.data?.detail ?? err.message;
+      const message = err.statusCode === 413
+        ? 'Background upload failed: File is too large. Use an image 5 MB or smaller.'
+        : `Background upload failed: ${detail}`;
+      toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, bg: false }));
       if (bgRef.current) bgRef.current.value = '';

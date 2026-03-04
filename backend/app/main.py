@@ -19,6 +19,7 @@ from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ip_check import router as ip_check_router
 from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
+from app.api.assets import router as assets_router
 from app.api.admin import router as admin_router
 from app.api.security_status import router as security_router
 from app.api.metrics import router as metrics_router
@@ -84,6 +85,22 @@ def _run_migrations(conn) -> None:
             updated_at DATETIME
         )
     """)
+    icon_cols = _get_columns(conn, "user_icons")
+    if "user_id" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN user_id INTEGER")
+    if "filename" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN filename TEXT")
+    if "original_name" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN original_name TEXT")
+    if "mime_type" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN mime_type TEXT")
+    if "size_bytes" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN size_bytes INTEGER")
+    if "hash" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN hash TEXT")
+    if "uploaded_at" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN uploaded_at DATETIME")
+    conn.execute("UPDATE user_icons SET uploaded_at = CURRENT_TIMESTAMP WHERE uploaded_at IS NULL")
 
     # compute_units.icon_slug
     cu_cols = _get_columns(conn, "compute_units")
@@ -108,6 +125,9 @@ def _run_migrations(conn) -> None:
     hw_cols = _get_columns(conn, "hardware")
     if "wan_uplink" not in hw_cols:
         conn.execute("ALTER TABLE hardware ADD COLUMN wan_uplink TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "custom_icon" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN custom_icon TEXT")
     # hardware.cpu_brand / compute_units.cpu_brand
     hw_cols = _get_columns(conn, "hardware")
     if "cpu_brand" not in hw_cols:
@@ -170,6 +190,9 @@ def _run_migrations(conn) -> None:
     svc_cols = _get_columns(conn, "services")
     if "ip_address" not in svc_cols:
         conn.execute("ALTER TABLE services ADD COLUMN ip_address TEXT")
+    svc_cols = _get_columns(conn, "services")
+    if "custom_icon" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN custom_icon TEXT")
     # logs.status_code
     log_cols = _get_columns(conn, "logs")
     if "status_code" not in log_cols:
@@ -246,6 +269,11 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_weather_widget BOOLEAN DEFAULT TRUE")
     if "weather_location" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN weather_location TEXT DEFAULT 'Phoenix, AZ'")
+    if "language" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN language TEXT DEFAULT 'en'")
+    user_cols = _get_columns(conn, "users")
+    if "language" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'en'")
     # hardware_clusters + hardware_cluster_members (new tables — safe to CREATE IF NOT EXISTS)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_clusters (
@@ -685,8 +713,6 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
 
     if settings.database_url.startswith(_SQLITE_SCHEME):
-        import sqlite3
-        db_path_str = settings.database_url[len(_SQLITE_SCHEME):]
         # For in-memory DBs, we can't just use a new connect() because it's a DIFFERENT DB
         # But our engine usually handles connection pooling.
         # However, for migrations we use a raw connection.
@@ -836,6 +862,7 @@ app.include_router(ws_discovery_router,   prefix=f"{_V1}/discovery",         tag
 app.include_router(ip_check_router,       prefix=f"{_V1}",                   tags=["ip-check"])
 app.include_router(settings_router,       prefix=f"{_V1}/settings",          tags=["settings"])
 app.include_router(branding_router,       prefix=f"{_V1}/branding",          tags=["branding"])
+app.include_router(assets_router,         prefix=f"{_V1}/assets",            tags=["assets"])
 app.include_router(admin_router,          prefix=f"{_V1}/admin",             tags=["admin"])
 app.include_router(security_router,       prefix=f"{_V1}/security",          tags=["security"])
 app.include_router(metrics_router,        prefix=f"{_V1}/metrics",           tags=["metrics"])
@@ -865,6 +892,29 @@ def _get_frontend_dir() -> Path | None:
 
 _frontend_dir = _get_frontend_dir()
 
+_uploads_dir = Path(settings.uploads_dir)
+_user_icons_dir = _uploads_dir / "icons"
+_branding_dir_data = _uploads_dir / "branding"
+
+# Ensure directories exist so mounting never fails
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+_user_icons_dir.mkdir(parents=True, exist_ok=True)
+_branding_dir_data.mkdir(parents=True, exist_ok=True)
+
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
+app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_file():
+    favicon = _branding_dir_data / "favicon.ico"
+    if favicon.exists():
+        return FileResponse(str(favicon), media_type="image/x-icon")
+    if _frontend_dir and (_frontend_dir / "favicon.ico").exists():
+        return FileResponse(str(_frontend_dir / "favicon.ico"), media_type="image/x-icon")
+    return Response(status_code=404)
+
 if _frontend_dir:
     _assets = _frontend_dir / "assets"
     if _assets.exists():
@@ -873,19 +923,6 @@ if _frontend_dir:
     _icons = _frontend_dir / "icons"
     if _icons.exists():
         app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
-
-    _uploads_dir = Path(settings.uploads_dir)
-    _user_icons_dir = _uploads_dir / "icons"
-    _branding_dir_data = _uploads_dir / "branding"
-    
-    # Ensure directories exist so mounting never fails
-    _uploads_dir.mkdir(parents=True, exist_ok=True)
-    _user_icons_dir.mkdir(parents=True, exist_ok=True)
-    _branding_dir_data.mkdir(parents=True, exist_ok=True)
-
-    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
-    app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
-    app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str, request: Request):

@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 
 const S = {
   section: {
@@ -30,9 +31,11 @@ const S = {
   }
 };
 
-export default function SettingSection({ title, description, children, action }) {
+export default function SettingSection({ title, description, children, action, className }) {
+  const sectionClassName = className ? `setting-section ${className}` : 'setting-section';
+
   return (
-    <section style={S.section}>
+    <section className={sectionClassName} style={S.section}>
       {title && (
         <div style={S.title}>
           {title}
@@ -46,3 +49,19 @@ export default function SettingSection({ title, description, children, action })
     </section>
   );
 }
+
+SettingSection.propTypes = {
+  title: PropTypes.node,
+  description: PropTypes.node,
+  children: PropTypes.node,
+  action: PropTypes.node,
+  className: PropTypes.string,
+};
+
+SettingSection.defaultProps = {
+  title: null,
+  description: null,
+  children: null,
+  action: null,
+  className: '',
+};
