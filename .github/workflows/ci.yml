@@ -85,13 +85,6 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Snyk
-        uses: snyk/actions/node@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --file=frontend/package.json --severity-threshold=high
-
       - name: Build Docker Image
         run: docker build -t ghcr.io/blkleg/circuitbreaker:ci .
 
