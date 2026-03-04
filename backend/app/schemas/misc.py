@@ -1,14 +1,14 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class MiscItemBase(BaseModel):
     name: str
-    kind: Optional[str] = None
-    icon_slug: Optional[str] = None
-    url: Optional[str] = None
-    description: Optional[str] = None
+    kind: str | None = None
+    icon_slug: str | None = None
+    url: str | None = None
+    description: str | None = None
     tags: list[str] = []
 
 
@@ -17,12 +17,12 @@ class MiscItemCreate(MiscItemBase):
 
 
 class MiscItemUpdate(BaseModel):
-    name: Optional[str] = None
-    kind: Optional[str] = None
-    icon_slug: Optional[str] = None
-    url: Optional[str] = None
-    description: Optional[str] = None
-    tags: Optional[list[str]] = None
+    name: str | None = None
+    kind: str | None = None
+    icon_slug: str | None = None
+    url: str | None = None
+    description: str | None = None
+    tags: list[str] | None = None
 
 
 class MiscItem(MiscItemBase):

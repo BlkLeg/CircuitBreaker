@@ -1,15 +1,15 @@
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class EnvironmentCreate(BaseModel):
     name: str
-    color: Optional[str] = None
+    color: str | None = None
 
 
 class EnvironmentUpdate(BaseModel):
-    name: Optional[str] = None
-    color: Optional[str] = None
+    name: str | None = None
+    color: str | None = None
 
 
 class EnvironmentRead(BaseModel):
@@ -17,6 +17,6 @@ class EnvironmentRead(BaseModel):
 
     id: int
     name: str
-    color: Optional[str]
+    color: str | None
     created_at: str
     usage_count: int

@@ -4,7 +4,7 @@ import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
 import { computeUnitsApi, hardwareApi, environmentsApi } from '../api/client';
 import ComputeDetail from '../components/details/ComputeDetail';
-import IconPickerModal, { IconImg, getIconEntry } from '../components/common/IconPickerModal';
+import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import { OS_OPTIONS, getOsOption } from '../icons/osOptions';
 import { CPU_BRANDS, CPU_BRAND_MAP } from '../config/cpuBrands';
 import FormModal from '../components/common/FormModal';
@@ -161,6 +161,16 @@ function ComputeUnitsPage() {
     { name: 'memory_mb', label: 'Memory (MB)', type: 'number' },
     { name: 'disk_gb', label: 'Disk (GB)', type: 'number' },
     { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
+    {
+      name: 'status_override', label: 'Status Override', type: 'select',
+      options: [
+        { value: '',            label: '— Auto (derived) —' },
+        { value: 'running',     label: 'Running' },
+        { value: 'stopped',     label: 'Stopped' },
+        { value: 'degraded',    label: 'Degraded' },
+        { value: 'maintenance', label: 'Maintenance' },
+      ],
+    },
     { name: 'notes', label: 'Notes', type: 'textarea' },
     { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
   ];

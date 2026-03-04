@@ -2,17 +2,17 @@
 
 ![Circuit Breaker](assets/cb_night-full.png)
 
-The **Circuit Breaker** (formerly Service Layout Mapper) is a self-hosted tool designed to help you easily document, track, and visualize your homelab or small business network topology.
+**Circuit Breaker** is a self-hosted app for mapping your infrastructure in one place.
 
-Unlike automated discovery tools that can be noisy or complex, Circuit Breaker provides a focused, manual documentation approach. You define your hardware, the compute instances running on them, and the services they host—giving you an accurate "at-a-glance" map of how your infrastructure connects. Auto-discovery lovers, your time is coming in v1 of the app so don't worry!
+You can track your hardware, compute, services, storage, and networks, then see how everything connects on a live topology map. You can also attach notes and runbooks to the things you manage so your documentation stays with your inventory.
 
-Curious about what's coming next? Check out our [Product Roadmap](roadmap.md) to see our plans for V1 and beyond.
+Use [Getting Started](getting-started.md) for first setup, then browse feature guides from the left navigation.
 
 ## Why Circuit Breaker?
 
-- **Visualize Your Lab**: See how a single service maps down through a VM, to a physical node, and which storage or network it depends on.
-- **Centralized Runbooks**: Stop losing track of how a service was configured. Attach free-form Markdown notes directly to any application, hardware, or network.
-- **Understand Dependencies**: Easily identify which services will be impacted if you need to take a physical node offline for maintenance.
+- **See the full picture:** Understand where each service runs and what it depends on.
+- **Keep docs where work happens:** Attach notes, links, and runbooks directly to your assets.
+- **Plan changes with confidence:** Use dependencies and audit history to reduce surprises.
 
 ## Core Concepts
 
@@ -22,10 +22,17 @@ In Circuit Breaker, your lab is built upon these fundamental layers:
 2. **Compute**: Virtualized environments that run on your Hardware, such as VMs and LXC containers.
 3. **Services**: The actual applications you host (e.g., Plex, Home Assistant, databases), which run on your Compute units.
 4. **Storage & Networks**: Shared resources that Services and Hardware depend on, such as storage pools, ZFS datasets, and VLANs.
-5. **Topology Map**: The live visual map of how all your documented components connect — including real-time device health status rings when telemetry is configured.
-6. **Audit Log**: An append-only record of every meaningful change: what happened, who did it, and the before/after diff.
+5. **Topology Map**: A live visual map of how your components connect, including health rings when telemetry is enabled.
+6. **Audit Log**: A searchable activity history showing what changed, who changed it, and when.
 
 To see how to begin adding these components, proceed to [Getting Started](getting-started.md).
+
+## Key Features Available Now
+
+- **[Auto-Discovery (Beta)](discovery.md):** Scan selected network ranges, review results, then merge approved items into your inventory.
+- **[Settings](settings.md):** Control language, timezone, appearance, map defaults, and system behavior.
+- **[Backup & Restore](backup-restore.md):** Export your inventory snapshot and restore when needed.
+- **[Deployment & Security](deployment-security.md):** Choose a quick lab setup or a hardened setup.
 
 ## Integrations
 

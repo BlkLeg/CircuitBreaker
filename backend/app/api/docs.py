@@ -1,19 +1,19 @@
 import io
-import zipfile
 import uuid
+import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import require_write_auth
 from app.db.session import get_db
-from app.schemas.docs import Doc, DocCreate, DocUpdate, EntityDocAttach
+from app.schemas.docs import Doc, DocCreate, DocEntityLink, DocUpdate, EntityDocAttach
 from app.services import docs_service
 
-router = APIRouter(prefix="/docs", tags=["docs"])
+router = APIRouter(tags=["docs"])
 
 _DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024    # 5 MB
@@ -149,6 +149,15 @@ async def import_docs(
 def get_doc(doc_id: int, db: Session = Depends(get_db)):
     try:
         return docs_service.get_doc(db, doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/{doc_id}/entities", response_model=list[DocEntityLink])
+def doc_entities(doc_id: int, db: Session = Depends(get_db)):
+    """Return all entity links for a doc (backlinks panel)."""
+    try:
+        return docs_service.entities_by_doc(db, doc_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

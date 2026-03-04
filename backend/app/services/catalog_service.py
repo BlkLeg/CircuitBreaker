@@ -1,7 +1,6 @@
 import json
-from pathlib import Path
 from functools import lru_cache
-from typing import Optional
+from pathlib import Path
 
 CATALOG_PATH = Path(__file__).parent.parent / "data" / "vendor_catalog.json"
 
@@ -31,7 +30,7 @@ def get_vendor_devices(vendor_key: str) -> list[dict]:
     ]
 
 
-def get_device_spec(vendor_key: str, model_key: str) -> Optional[dict]:
+def get_device_spec(vendor_key: str, model_key: str) -> dict | None:
     catalog = load_catalog()
     return catalog.get(vendor_key, {}).get("devices", {}).get(model_key)
 

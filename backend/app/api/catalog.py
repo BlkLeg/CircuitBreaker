@@ -1,12 +1,13 @@
 from fastapi import APIRouter
+
 from app.services.catalog_service import (
-    get_all_vendors,
-    get_vendor_devices,
-    get_device_spec,
     fuzzy_search_catalog,
+    get_all_vendors,
+    get_device_spec,
+    get_vendor_devices,
 )
 
-router = APIRouter(prefix="/catalog", tags=["catalog"])
+router = APIRouter(tags=["catalog"])
 
 
 @router.get("/vendors")

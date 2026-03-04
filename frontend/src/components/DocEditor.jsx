@@ -1,8 +1,35 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import PropTypes from 'prop-types';
 import MDEditor, { commands } from '@uiw/react-md-editor';
 import '@uiw/react-md-editor/markdown-editor.css';
-import data from '@emoji-mart/data';
-import Picker from '@emoji-mart/react';
+import { Undo2, Redo2 } from 'lucide-react';
+
+// Emoji picker loaded on-demand (~680 kB) — only when user clicks the emoji button
+let _emojiModules = null;
+const loadEmojiPicker = async () => {
+  if (!_emojiModules) {
+    const [dataModule, pickerModule] = await Promise.all([
+      import('@emoji-mart/data'),
+      import('@emoji-mart/react'),
+    ]);
+    _emojiModules = { data: dataModule.default, Picker: pickerModule.default };
+  }
+  return _emojiModules;
+};
+
+/* ── Custom undo/redo commands (removed in @uiw/react-md-editor v4) ──── */
+const undoCommand = {
+  name: 'undo',
+  keyCommand: 'undo',
+  icon: React.createElement(Undo2, { size: 14 }),
+  execute: () => { document.execCommand('undo'); },
+};
+const redoCommand = {
+  name: 'redo',
+  keyCommand: 'redo',
+  icon: React.createElement(Redo2, { size: 14 }),
+  execute: () => { document.execCommand('redo'); },
+};
 import { docsApi } from '../api/client';
 import logger from '../utils/logger';
 import './DocEditor.css';
@@ -22,14 +49,17 @@ const BACKEND_DEBOUNCE = 15000; // 15 seconds
  *   onSave      — async function to persist to backend
  *   updatedAt   — ISO timestamp of last backend save
  */
-export default function DocEditor({ docId, value, onChange, onSave, updatedAt }) {
+function DocEditor({ docId, value, onChange, onSave, updatedAt }) {
   const [saveStatus, setSaveStatus] = useState('saved'); // saved | saving | unsaved | error
   const [showEmoji, setShowEmoji] = useState(false);
+  const [emojiReady, setEmojiReady] = useState(false);
+  const emojiRef = useRef(null); // { data, Picker }
   const [draftBanner, setDraftBanner] = useState(null); // { draftBody }
   const [imageError, setImageError] = useState(null);
   const dirtyRef = useRef(false);
   const backendTimerRef = useRef(null);
   const editorRef = useRef(null);
+  const headingLevelRef = useRef(null);
 
   // ── Draft recovery on mount ──────────────────────────────────
   useEffect(() => {
@@ -148,6 +178,29 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
     e.preventDefault();
   }, []);
 
+  // ── ⌘S / Ctrl+S keyboard shortcut ─────────────────────────
+  useEffect(() => {
+    const handleKeyDown = async (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        if (!dirtyRef.current) return;
+        clearTimeout(backendTimerRef.current);
+        setSaveStatus('saving');
+        try {
+          await onSave(value);
+          dirtyRef.current = false;
+          setSaveStatus('saved');
+          if (docId) localStorage.removeItem(`${DRAFT_PREFIX}${docId}`);
+        } catch (err) {
+          logger.error('⌘S save failed:', err);
+          setSaveStatus('error');
+        }
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [value, docId, onSave]);
+
   // ── Custom toolbar commands ─────────────────────────────────
 
   // Emoji picker command
@@ -156,7 +209,45 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
     keyCommand: 'emoji',
     buttonProps: { 'aria-label': 'Insert emoji', title: 'Emoji' },
     icon: <span style={{ fontSize: 16 }}>😀</span>,
-    execute: () => setShowEmoji(prev => !prev),
+    execute: () => {
+      if (!emojiReady) {
+        loadEmojiPicker().then((mods) => {
+          emojiRef.current = mods;
+          setEmojiReady(true);
+          setShowEmoji(true);
+        });
+      } else {
+        setShowEmoji(prev => !prev);
+      }
+    },
+  };
+
+  // Heading dropdown command (replaces separate h1/h2/h3 buttons)
+  const headingCommand = {
+    name: 'heading',
+    keyCommand: 'heading',
+    buttonProps: { 'aria-label': 'Heading level', title: 'Heading level' },
+    icon: (
+      <select
+        style={{ background: 'transparent', border: 'none', color: 'var(--color-text-muted)', fontSize: 12, cursor: 'pointer', outline: 'none', padding: '0 2px' }}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => { headingLevelRef.current = e.target.value; e.target.value = ''; }}
+        defaultValue=""
+      >
+        <option value="" disabled>¶ H▾</option>
+        <option value="p">Paragraph</option>
+        <option value="1">Heading 1</option>
+        <option value="2">Heading 2</option>
+        <option value="3">Heading 3</option>
+      </select>
+    ),
+    execute: (state, api) => {
+      const level = headingLevelRef.current;
+      if (!level || level === 'p') { api.replaceSelection(state.selectedText.replace(/^#{1,6} /, '')); return; }
+      const prefix = '#'.repeat(Number(level)) + ' ';
+      const stripped = state.selectedText.replace(/^#{1,6} /, '');
+      api.replaceSelection(prefix + (stripped || 'heading'));
+    },
   };
 
   // Image upload command
@@ -191,17 +282,28 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
 
   // ── Toolbar config ──────────────────────────────────────────
   const toolbarCommands = [
+    // Undo / redo
+    undoCommand, redoCommand,
+    commands.divider,
+    // Inline formatting
     commands.bold, commands.italic, commands.strikethrough,
     commands.divider,
-    commands.title1, commands.title2, commands.title3,
+    // Heading dropdown (replaces h1/h2/h3 separate buttons)
+    headingCommand,
     commands.divider,
+    // Block elements
     commands.quote, commands.code, commands.codeBlock,
     commands.divider,
+    // Links & images
     commands.link, commands.image, imageUploadCommand,
     commands.divider,
+    // Lists
     commands.unorderedListCommand, commands.orderedListCommand, commands.checkedListCommand,
     commands.divider,
+    // Table
     commands.table,
+    commands.divider,
+    // Emoji — at end, separated by divider
     emojiCommand,
   ];
 
@@ -215,67 +317,83 @@ export default function DocEditor({ docId, value, onChange, onSave, updatedAt })
 
   // ── Render ──────────────────────────────────────────────────
   const statusLabels = {
-    saved: 'Saved',
+    saved: 'Saved  (⌘S)',
     saving: 'Saving…',
-    unsaved: 'Unsaved changes',
+    unsaved: 'Unsaved — ⌘S to save',
     error: 'Save failed — will retry',
   };
+
+  const wordCount = (value || '').trim().split(/\s+/).filter(Boolean).length;
+  const readingMins = Math.ceil(wordCount / 200);
 
   return (
     <div className="doc-editor-wrapper" data-color-mode="dark">
       {/* Draft recovery banner */}
       {draftBanner && (
         <div className="doc-editor-draft-banner">
-          <span>📝 A local draft was found that's newer than the last save.</span>
+          <span>📝 A local draft was found that&apos;s newer than the last save.</span>
           <button className="restore" onClick={restoreDraft}>Restore draft</button>
           <button onClick={discardDraft}>Discard</button>
         </div>
       )}
 
-      {/* Save status */}
+      {/* Save status + word count + reading time */}
       <div className="doc-editor-status">
         <span className={`status-dot ${saveStatus}`} />
         <span>{statusLabels[saveStatus]}</span>
+        <span className="doc-editor-wordcount">
+          {wordCount > 0 && `${wordCount.toLocaleString()} word${wordCount === 1 ? '' : 's'} · ~${readingMins} min read`}
+        </span>
         {imageError && <span style={{ color: '#f44336', marginLeft: 'auto' }}>⚠ {imageError}</span>}
       </div>
 
-      {/* Editor */}
-      <div
-        ref={editorRef}
-        style={{ flex: 1, minHeight: 0, position: 'relative' }}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-      >
-        <MDEditor
-          value={value}
-          onChange={handleChange}
-          commands={toolbarCommands}
-          extraCommands={[commands.codeEdit, commands.codeLive, commands.codePreview]}
-          preview="live"
-          height="100%"
-          visibleDragbar
-          textareaProps={{
-            placeholder: 'Write Markdown here…',
-          }}
-        />
-
-        {/* Emoji picker popover */}
-        {showEmoji && (
-          <>
-            <div className="emoji-picker-backdrop" onClick={() => setShowEmoji(false)} />
-            <div className="emoji-picker-popover">
-              <Picker
-                data={data}
-                onEmojiSelect={handleEmojiSelect}
-                theme="dark"
-                previewPosition="none"
-                skinTonePosition="none"
-                maxFrequentRows={2}
-              />
-            </div>
-          </>
-        )}
-      </div>
+        {/* Editor */}
+        <div
+          ref={editorRef}
+          style={{ flex: 1, minHeight: 0, position: 'relative' }}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+        >
+          <MDEditor
+            value={value}
+            onChange={handleChange}
+            commands={toolbarCommands}
+            extraCommands={[commands.divider, commands.codeEdit, commands.codeLive, commands.codePreview]}
+            preview="live"
+            height="100%"
+            visibleDragbar
+            textareaProps={{
+              placeholder: 'Start writing…',
+            }}
+          />
+  
+          {/* Emoji picker popover */}
+          {showEmoji && emojiRef.current && (
+            <>
+              <div className="emoji-picker-backdrop" onClick={() => setShowEmoji(false)} />
+              <div className="emoji-picker-popover">
+                <emojiRef.current.Picker
+                  data={emojiRef.current.data}
+                  onEmojiSelect={handleEmojiSelect}
+                  theme="dark"
+                  previewPosition="none"
+                  skinTonePosition="none"
+                  maxFrequentRows={2}
+                />
+              </div>
+            </>
+          )}
+        </div>
     </div>
   );
 }
+
+DocEditor.propTypes = {
+  docId: PropTypes.number,
+  value: PropTypes.string.isRequired,
+  onChange: PropTypes.func.isRequired,
+  onSave: PropTypes.func.isRequired,
+  updatedAt: PropTypes.string,
+};
+
+export default DocEditor;

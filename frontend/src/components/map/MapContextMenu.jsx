@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Link2, ImageIcon, ChevronRight, Search, Loader, Unlink } from 'lucide-react';
+import PropTypes from 'prop-types';
+import { Link2, ImageIcon, ChevronRight, Search, Loader, Unlink, CircleDot, Check } from 'lucide-react';
 import {
   hardwareApi,
   computeUnitsApi,
@@ -12,18 +13,10 @@ import {
 } from '../../api/client';
 import { useToast } from '../common/Toast';
 import IconPickerModal from '../common/IconPickerModal';
+import { STATUS_COLORS } from '../../config/mapTheme';
+import { buildPseudoNode, createLinkByNodes, LINK_ITEMS, unlinkByEdge } from './linkMutations';
 
 // ── Menu config ──────────────────────────────────────────────────────────────
-
-const LINK_ITEMS = {
-  service:  ['hardware', 'compute', 'storage', 'misc', 'network', 'external'],
-  compute:  ['hardware', 'service', 'network'],
-  hardware: ['compute', 'storage', 'cluster'],
-  network:  ['hardware', 'compute', 'service', 'external'],
-  storage:  ['hardware', 'service'],
-  misc:     ['service'],
-  external: ['network'],
-};
 
 const LINK_LABEL = {
   hardware: 'Link to Hardware',
@@ -51,6 +44,7 @@ const LIST_API = {
 
 // hardware uses vendor_icon_slug; storage/network/misc have no icon column yet
 const UPDATE_ICON_API = {
+  cluster:  (id, slug) => clustersApi.update(id, { icon_slug: slug }),
   hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
   compute:  (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
   service:  (id, slug) => servicesApi.update(id, { icon_slug: slug }),
@@ -60,9 +54,42 @@ const UPDATE_ICON_API = {
   external: (id, slug) => externalNodesApi.update(id, { icon_slug: slug }),
 };
 
-const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service', 'storage', 'network', 'misc', 'external']);
+const ICON_SUPPORTED_TYPES = new Set(['cluster', 'hardware', 'compute', 'service', 'storage', 'network', 'misc', 'external']);
 
-function getLabel(entity, type) {
+// ── Status update helpers ────────────────────────────────────────────────────
+
+const UPDATE_STATUS_API = {
+  hardware: (id, val) => hardwareApi.update(id, { status_override: val || null }),
+  compute:  (id, val) => computeUnitsApi.update(id, { status_override: val || null }),
+  service:  (id, val) => servicesApi.update(id, { status: val }),
+};
+
+const STATUS_OPTIONS_BY_TYPE = {
+  hardware: [
+    { value: '',            label: 'Auto (derived)' },
+    { value: 'online',      label: 'Online' },
+    { value: 'offline',     label: 'Offline' },
+    { value: 'degraded',    label: 'Degraded' },
+    { value: 'maintenance', label: 'Maintenance' },
+  ],
+  compute: [
+    { value: '',            label: 'Auto (derived)' },
+    { value: 'running',     label: 'Running' },
+    { value: 'stopped',     label: 'Stopped' },
+    { value: 'degraded',    label: 'Degraded' },
+    { value: 'maintenance', label: 'Maintenance' },
+  ],
+  service: [
+    { value: 'running',     label: 'Running' },
+    { value: 'stopped',     label: 'Stopped' },
+    { value: 'degraded',    label: 'Degraded' },
+    { value: 'maintenance', label: 'Maintenance' },
+  ],
+};
+
+const STATUS_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service']);
+
+function getLabel(entity) {
   return entity.name || entity.hostname || entity.slug || entity.cidr || `#${entity.id}`;
 }
 
@@ -73,140 +100,9 @@ function getSublabel(entity, type) {
   if (type === 'storage')  return entity.kind || (entity.capacity_gb ? `${entity.capacity_gb} GB` : null);
   if (type === 'network')  return entity.cidr || null;
   if (type === 'misc')     return entity.kind || null;
-  if (type === 'cluster')  return entity.environment || (entity.member_count != null ? `${entity.member_count} members` : null);
+  if (type === 'cluster')  return entity.environment || (entity.member_count > -1 ? `${entity.member_count} members` : null);
   if (type === 'external') return entity.provider || entity.ip_address || null;
   return null;
-}
-
-async function performLink(srcNode, targetType, targetEntity) {
-  const srcId  = srcNode._refId;
-  const tgtId  = targetEntity.id;
-  const srcType = srcNode.originalType;
-
-  if (srcType === 'service') {
-    if (targetType === 'hardware') return servicesApi.update(srcId, { hardware_id: tgtId });
-    if (targetType === 'compute')  return servicesApi.update(srcId, { compute_id: tgtId });
-    if (targetType === 'storage')  return servicesApi.addStorage(srcId, { storage_id: tgtId });
-    if (targetType === 'misc')     return servicesApi.addMisc(srcId, { misc_id: tgtId });
-    if (targetType === 'network') {
-      if (srcNode._computeId) return networksApi.addMember(tgtId, { compute_id: srcNode._computeId });
-      if (srcNode._hwId)      return networksApi.addHardwareMember(tgtId, { hardware_id: srcNode._hwId });
-      throw new Error('Service has no hosting compute or hardware — cannot join network');
-    }
-  }
-  if (srcType === 'compute') {
-    if (targetType === 'hardware') return computeUnitsApi.update(srcId, { hardware_id: tgtId });
-    if (targetType === 'service')  return servicesApi.update(tgtId, { compute_id: srcId });
-    if (targetType === 'network')  return networksApi.addMember(tgtId, { compute_id: srcId });
-  }
-  if (srcType === 'hardware') {
-    if (targetType === 'compute')  return computeUnitsApi.update(tgtId, { hardware_id: srcId });
-    if (targetType === 'storage')  return storageApi.update(tgtId, { hardware_id: srcId });
-    if (targetType === 'cluster')  return clustersApi.addMember(tgtId, { hardware_id: srcId });
-  }
-  if (srcType === 'network') {
-    if (targetType === 'hardware') return networksApi.addHardwareMember(srcId, { hardware_id: tgtId });
-    if (targetType === 'compute')  return networksApi.addMember(srcId, { compute_id: tgtId });
-    if (targetType === 'service') {
-      // Resolve the service's hosting compute or hardware, then join that to the network
-      const svcRes = await servicesApi.get(tgtId);
-      const svc = svcRes.data;
-      if (svc.compute_id)  return networksApi.addMember(srcId, { compute_id: svc.compute_id });
-      if (svc.hardware_id) return networksApi.addHardwareMember(srcId, { hardware_id: svc.hardware_id });
-      throw new Error('Service has no hosting compute or hardware — cannot join network');
-    }
-  }
-  if (srcType === 'storage') {
-    if (targetType === 'service')  return servicesApi.addStorage(tgtId, { storage_id: srcId });
-    if (targetType === 'hardware') return storageApi.update(srcId, { hardware_id: tgtId });
-  }
-  if (srcType === 'misc') {
-    if (targetType === 'service')  return servicesApi.addMisc(tgtId, { misc_id: srcId });
-  }
-  if (srcType === 'service') {
-    if (targetType === 'external') return servicesApi.addExternalDep(srcId, { external_node_id: tgtId });
-  }
-  if (srcType === 'network') {
-    if (targetType === 'external') return externalNodesApi.addNetwork(tgtId, { network_id: srcId });
-  }
-  if (srcType === 'external') {
-    if (targetType === 'network') return externalNodesApi.addNetwork(srcId, { network_id: tgtId });
-  }
-  throw new Error(`No API mapping for ${srcType} → ${targetType}`);
-}
-
-// ── Unlink helpers ────────────────────────────────────────────────────────────
-
-function parseNodeId(nodeId) {
-  const m = nodeId.match(/^([a-z]+)-(\d+)$/);
-  return m ? { prefix: m[1], id: parseInt(m[2], 10) } : null;
-}
-
-async function performUnlink(edge) {
-  const src = parseNodeId(edge.source);
-  const tgt = parseNodeId(edge.target);
-  const rel  = edge._relation;
-  if (!src || !tgt) throw new Error('Cannot parse node IDs for unlink');
-
-  // service_storage junction
-  if (rel === 'uses' && src.prefix === 'svc' && tgt.prefix === 'st')
-    return servicesApi.removeStorage(src.id, tgt.id);
-  // service_misc junction
-  if (rel === 'integrates_with' && src.prefix === 'svc' && tgt.prefix === 'misc')
-    return servicesApi.removeMisc(src.id, tgt.id);
-  // service.compute_id nullable FK
-  if (rel === 'runs' && tgt.prefix === 'svc' && src.prefix === 'cu')
-    return servicesApi.update(tgt.id, { compute_id: null });
-  // service.hardware_id nullable FK
-  if (rel === 'runs' && tgt.prefix === 'svc' && src.prefix === 'hw')
-    return servicesApi.update(tgt.id, { hardware_id: null });
-  // compute.hardware_id nullable FK
-  if (rel === 'hosts' && src.prefix === 'hw' && tgt.prefix === 'cu')
-    return computeUnitsApi.update(tgt.id, { hardware_id: null });
-  // storage.hardware_id nullable FK
-  if (rel === 'has_storage' && src.prefix === 'hw' && tgt.prefix === 'st')
-    return storageApi.update(tgt.id, { hardware_id: null });
-  // network hardware member
-  if (rel === 'on_network' && src.prefix === 'hw' && tgt.prefix === 'net')
-    return networksApi.removeHardwareMember(tgt.id, src.id);
-  // network compute member
-  if (rel === 'on_network' && src.prefix === 'cu' && tgt.prefix === 'net')
-    return networksApi.removeMember(tgt.id, src.id);
-  // cluster membership
-  if (rel === 'cluster_member') {
-    const clusterId = src.prefix === 'cluster' ? src.id : (tgt.prefix === 'cluster' ? tgt.id : null);
-    const hardwareId = src.prefix === 'hw' ? src.id : (tgt.prefix === 'hw' ? tgt.id : null);
-    if (!clusterId || !hardwareId) {
-      throw new Error('Cannot resolve cluster membership unlink target');
-    }
-    const membersRes = await clustersApi.getMembers(clusterId);
-    const members = membersRes.data || [];
-    const membership = members.find(m => m.hardware_id === hardwareId);
-    if (!membership) {
-      throw new Error('Cluster membership not found');
-    }
-    return clustersApi.removeMember(clusterId, membership.id);
-  }
-  // service dependency
-  if (rel === 'depends_on' && src.prefix === 'svc' && tgt.prefix === 'svc')
-    return servicesApi.removeDependency(src.id, tgt.id);
-  // external node ↔ network
-  if (rel === 'connects_to' && src.prefix === 'ext' && tgt.prefix === 'net') {
-    // Find the relation ID by listing external node networks
-    const res = await externalNodesApi.getNetworks(src.id);
-    const link = (res.data || []).find(l => l.network_id === tgt.id);
-    if (link) return externalNodesApi.removeNetwork(link.id);
-    throw new Error('External node ↔ network link not found');
-  }
-  // service → external node
-  if (rel === 'depends_on' && src.prefix === 'svc' && tgt.prefix === 'ext') {
-    const res = await servicesApi.getExternalDeps(src.id);
-    const link = (res.data || []).find(l => l.external_node_id === tgt.id);
-    if (link) return servicesApi.removeExternalDep(src.id, link.id);
-    throw new Error('Service → external node link not found');
-  }
-
-  throw new Error(`No unlink mapping for ${rel} (${src.prefix} → ${tgt.prefix})`);
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -223,6 +119,8 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
   const [linking, setLinking]             = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [unlinkingEdgeId, setUnlinkingEdgeId] = useState(null);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [settingStatus, setSettingStatus] = useState(false);
 
   // Constrain menu to viewport
   const menuW = 240;
@@ -260,7 +158,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
   async function handleSelect(targetEntity) {
     setLinking(true);
     try {
-      await performLink(node, activeSubmenu, targetEntity);
+      await createLinkByNodes(node, buildPseudoNode(activeSubmenu, targetEntity.id), true);
       toast.success(`Linked "${node.data.label}" → "${getLabel(targetEntity, activeSubmenu)}"`);
       onLinkSuccess();
     } catch (err) {
@@ -284,12 +182,26 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
   async function handleUnlink(edge) {
     setUnlinkingEdgeId(edge.id);
     try {
-      await performUnlink(edge);
+      await unlinkByEdge(edge);
       toast.success('Unlinked.');
       onLinkSuccess();
     } catch (err) {
       toast.error(err.message || 'Failed to unlink.');
       setUnlinkingEdgeId(null);
+    }
+  }
+
+  async function handleSetStatus(value) {
+    const api = UPDATE_STATUS_API[node.originalType];
+    if (!api) return;
+    setSettingStatus(true);
+    try {
+      await api(node._refId, value);
+      toast.success(value ? `Status set to "${value}"` : 'Status reset to auto');
+      onLinkSuccess();
+    } catch (err) {
+      toast.error(err.message || 'Failed to update status');
+      setSettingStatus(false);
     }
   }
 
@@ -299,7 +211,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
   const linkedItems = connectedEdges.map(edge => {
     const otherId   = edge.source === node.id ? edge.target : edge.source;
     const otherNode = (nodes ?? []).find(n => n.id === otherId);
-    return { edge, label: otherNode?.data?.label ?? otherId };
+    return { edge, label: getLabel(otherNode?.data) ?? otherId };
   });
 
   const linkItems  = LINK_ITEMS[node.originalType] || [];
@@ -321,7 +233,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
           zIndex: 1000,
           background: 'var(--color-surface)',
           border: '1px solid var(--color-border)',
-          borderRadius: 8,
+          borderRadius: 12,
           minWidth: menuW,
           maxWidth: menuW,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
@@ -334,7 +246,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {node.data.label}
           </div>
-          <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'capitalize', marginTop: 1 }}>
+          <div style={{ fontSize: 10, color: 'var(--color-text)', textTransform: 'capitalize', marginTop: 1 }}>
             {node.originalType}
           </div>
         </div>
@@ -347,9 +259,9 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
               disabled={linking}
               style={{
                 width: '100%',
-                background: activeSubmenu === targetType ? 'rgba(0,212,255,0.08)' : 'transparent',
+                background: activeSubmenu === targetType ? 'var(--color-secondary)' : 'var(--color-surface)',
                 border: 'none',
-                color: '#cdd6f4',
+                color: 'var(--color-text)',
                 padding: '9px 14px',
                 display: 'flex',
                 alignItems: 'center',
@@ -359,15 +271,15 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                 textAlign: 'left',
                 transition: 'background 0.1s',
               }}
-              onMouseEnter={e => { if (activeSubmenu !== targetType) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
-              onMouseLeave={e => { if (activeSubmenu !== targetType) e.currentTarget.style.background = 'transparent'; }}
+              onMouseEnter={e => { if (activeSubmenu !== targetType) e.currentTarget.style.background = 'var(--color-secondary)'; }}
+              onMouseLeave={e => { if (activeSubmenu !== targetType) e.currentTarget.style.background = 'var(--color-surface)'; }}
             >
-              <Link2 size={13} style={{ color: 'rgba(255,255,255,0.4)', flexShrink: 0 }} />
+              <Link2 size={13} style={{ color: 'var(--color-text)', flexShrink: 0 }} />
               <span style={{ flex: 1 }}>{LINK_LABEL[targetType]}</span>
               <ChevronRight
                 size={12}
                 style={{
-                  color: 'rgba(255,255,255,0.3)',
+                  color: 'var(--color-text)',
                   transform: activeSubmenu === targetType ? 'rotate(90deg)' : 'none',
                   transition: 'transform 0.15s',
                   flexShrink: 0,
@@ -377,10 +289,10 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
 
             {/* Inline submenu */}
             {activeSubmenu === targetType && (
-              <div style={{ background: 'var(--color-bg)', borderTop: '1px solid var(--color-border)' }}>
+              <div style={{ background: 'var(--color-surface)', borderTop: '1px solid var(--color-border)' }}>
                 {/* Search */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--color-border)' }}>
-                  <Search size={11} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-secondary)' }}>
+                  <Search size={11} style={{ color: 'var(--color-text)', flexShrink: 0 }} />
                   <input
                     autoFocus
                     value={search}
@@ -405,12 +317,12 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                     <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--color-danger)' }}>{optionsError}</div>
                   )}
                   {!optionsLoading && !optionsError && filteredOptions.length === 0 && (
-                    <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                    <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--color-text)' }}>
                       {search ? 'No matches' : 'Nothing available'}
                     </div>
                   )}
                   {filteredOptions.map(entity => {
-                    const label    = getLabel(entity, activeSubmenu);
+                    const label    = getLabel(entity);
                     const sublabel = getSublabel(entity, activeSubmenu);
                     return (
                       <button
@@ -419,7 +331,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                         disabled={linking}
                         style={{
                           width: '100%',
-                          background: 'transparent',
+                          background: 'var(--color-surface)',
                           border: 'none',
                           color: 'var(--color-text)',
                           padding: '7px 14px',
@@ -431,11 +343,11 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                           fontSize: 11,
                           textAlign: 'left',
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-glow)'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-secondary)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'var(--color-surface)'; }}
                       >
                         <span style={{ fontWeight: 500 }}>{label}</span>
-                        {sublabel && <span style={{ color: 'var(--color-text-muted)', fontSize: 10 }}>{sublabel}</span>}
+                        {sublabel && <span style={{ color: 'var(--color-text)', fontSize: 10 }}>{sublabel}</span>}
                       </button>
                     );
                   })}
@@ -449,7 +361,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
         {linkedItems.length > 0 && (
           <>
             <div style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }} />
-            <div style={{ padding: '4px 14px 2px', fontSize: 10, color: 'var(--color-text-muted)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+            <div style={{ padding: '4px 14px 2px', fontSize: 10, color: 'var(--color-text)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
               Unlink
             </div>
             {linkedItems.map(({ edge, label }) => (
@@ -459,7 +371,7 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                 disabled={!!unlinkingEdgeId}
                 style={{
                   width: '100%',
-                  background: 'transparent',
+                  background: 'var(--color-surface)',
                   border: 'none',
                   color: 'var(--color-text)',
                   padding: '7px 14px',
@@ -471,10 +383,10 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
                   textAlign: 'left',
                   opacity: unlinkingEdgeId === edge.id ? 0.5 : 1,
                 }}
-                onMouseEnter={e => { if (!unlinkingEdgeId) e.currentTarget.style.background = 'var(--color-glow)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                onMouseEnter={e => { if (!unlinkingEdgeId) e.currentTarget.style.background = 'var(--color-secondary)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'var(--color-surface)'; }}
               >
-                <Unlink size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+                <Unlink size={13} style={{ color: 'var(--color-text)', flexShrink: 0 }} />
                 {unlinkingEdgeId === edge.id ? 'Unlinking…' : label}
               </button>
             ))}
@@ -486,13 +398,97 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
           <div style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }} />
         )}
 
+        {/* Set Status — for hardware, compute, and service nodes */}
+        {STATUS_SUPPORTED_TYPES.has(node.originalType) && (() => {
+          const currentStatus = node.data?.status_override || node.data?.status || null;
+          const statusOpts = STATUS_OPTIONS_BY_TYPE[node.originalType] || [];
+          return (
+            <>
+              {(linkItems.length > 0 || linkedItems.length > 0) && !ICON_SUPPORTED_TYPES.has(node.originalType) && (
+                <div style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }} />
+              )}
+              <button
+                onClick={() => { setActiveSubmenu(null); setStatusOpen(prev => !prev); }}
+                disabled={settingStatus}
+                style={{
+                  width: '100%',
+                  background: statusOpen ? 'var(--color-secondary)' : 'var(--color-surface)',
+                  border: 'none',
+                  color: 'var(--color-text)',
+                  padding: '9px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  textAlign: 'left',
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={e => { if (!statusOpen) e.currentTarget.style.background = 'var(--color-secondary)'; }}
+                onMouseLeave={e => { if (!statusOpen) e.currentTarget.style.background = 'var(--color-surface)'; }}
+              >
+                <CircleDot size={13} style={{ color: 'var(--color-text)', flexShrink: 0 }} />
+                <span style={{ flex: 1 }}>Set Status</span>
+                <ChevronRight
+                  size={12}
+                  style={{
+                    color: 'var(--color-text)',
+                    transform: statusOpen ? 'rotate(90deg)' : 'none',
+                    transition: 'transform 0.15s',
+                    flexShrink: 0,
+                  }}
+                />
+              </button>
+              {statusOpen && (
+                <div style={{ background: 'var(--color-surface)', borderTop: '1px solid var(--color-border)' }}>
+                  {statusOpts.map(opt => {
+                    const isActive = opt.value
+                      ? (currentStatus === opt.value)
+                      : (!node.data?.status_override);
+                    const dotColor = opt.value ? STATUS_COLORS[opt.value]?.border : 'var(--color-text-muted)';
+                    return (
+                      <button
+                        key={opt.value}
+                        onClick={() => handleSetStatus(opt.value)}
+                        disabled={settingStatus}
+                        style={{
+                          width: '100%',
+                          background: 'var(--color-surface)',
+                          border: 'none',
+                          color: 'var(--color-text)',
+                          padding: '7px 14px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          cursor: settingStatus ? 'not-allowed' : 'pointer',
+                          fontSize: 11,
+                          textAlign: 'left',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-secondary)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'var(--color-surface)'; }}
+                      >
+                        <span style={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: dotColor, flexShrink: 0,
+                        }} />
+                        <span style={{ flex: 1, fontWeight: isActive ? 600 : 400 }}>{opt.label}</span>
+                        {isActive && <Check size={12} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
+
         {/* Edit Icon — only for types that have an icon column in the backend */}
         {ICON_SUPPORTED_TYPES.has(node.originalType) && (
           <button
             onClick={() => { setActiveSubmenu(null); setShowIconPicker(true); }}
             style={{
               width: '100%',
-              background: 'transparent',
+              background: 'var(--color-surface)',
               border: 'none',
               color: 'var(--color-text)',
               padding: '9px 14px',
@@ -503,10 +499,10 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
               fontSize: 12,
               textAlign: 'left',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-glow)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'var(--color-secondary)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'var(--color-surface)'; }}
           >
-            <ImageIcon size={13} style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+            <ImageIcon size={13} style={{ color: 'var(--color-text)', flexShrink: 0 }} />
             Edit Icon
           </button>
         )}
@@ -524,3 +520,12 @@ export default function MapContextMenu({ node, position, onClose, onLinkSuccess,
     </>
   );
 }
+
+MapContextMenu.propTypes = {
+  node: PropTypes.object.isRequired,
+  position: PropTypes.object.isRequired,
+  onClose: PropTypes.func.isRequired,
+  onLinkSuccess: PropTypes.func.isRequired,
+  edges: PropTypes.array,
+  nodes: PropTypes.array,
+};

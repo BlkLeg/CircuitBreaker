@@ -1,15 +1,15 @@
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class CategoryCreate(BaseModel):
     name: str
-    color: Optional[str] = None
+    color: str | None = None
 
 
 class CategoryUpdate(BaseModel):
-    name: Optional[str] = None
-    color: Optional[str] = None
+    name: str | None = None
+    color: str | None = None
 
 
 class CategoryRead(BaseModel):
@@ -17,6 +17,6 @@ class CategoryRead(BaseModel):
 
     id: int
     name: str
-    color: Optional[str]
+    color: str | None
     created_at: str
     service_count: int

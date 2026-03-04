@@ -1,25 +1,20 @@
 import pytest
-import sentry_sdk
-from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi/sentry_sdk import
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.session import Base, get_db
+from app.core import (
+    compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
+)
 from app.core.rate_limit import limiter
+from app.db.session import Base, get_db
+
 limiter.enabled = False  # Disable rate-limiting during tests
-from app.db import models  # noqa: F401 — register models with metadata
-from app.main import app
+from app.db import models  # noqa: F401 E402 — register models with metadata
+from app.main import app  # noqa: E402
 
 TEST_DB_URL = "sqlite:///:memory:"
-
-
-@pytest.fixture(scope="session", autouse=True)
-def disable_sentry():
-    """Close the Sentry transport immediately so no events are queued or flushed
-    during test runs, regardless of what DSN is set in backend/.env."""
-    sentry_sdk.get_client().close(timeout=0)
 
 
 @pytest.fixture(scope="function")
@@ -57,14 +52,27 @@ def client(db_engine, db):
     # Patch SessionLocal at its source so that write_log (which imports it locally
     # on each call) and the logging middleware (module-level import) both use the
     # test DB instead of the production SQLite file.
+    import app.core.config as _config
     import app.db.session as _db_session
+    import app.main as _main
     import app.middleware.logging_middleware as _log_mw
 
     orig_session_local = _db_session.SessionLocal
     orig_mw_session_local = _log_mw.SessionLocal
+    orig_main_session_local = getattr(_main, "SessionLocal", None)
+    orig_main_engine = getattr(_main, "engine", None)
+    orig_db_session_engine = getattr(_db_session, "engine", None)
+    orig_db_url = getattr(_config.settings, "database_url", None)
 
     _db_session.SessionLocal = test_session
     _log_mw.SessionLocal = test_session
+    if orig_main_session_local is not None:
+        _main.SessionLocal = test_session
+    if orig_main_engine is not None:
+        _main.engine = db_engine
+    if orig_db_session_engine is not None:
+        _db_session.engine = db_engine
+    _config.settings.database_url = TEST_DB_URL
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
@@ -73,6 +81,14 @@ def client(db_engine, db):
 
     _db_session.SessionLocal = orig_session_local
     _log_mw.SessionLocal = orig_mw_session_local
+    if orig_main_session_local is not None:
+        _main.SessionLocal = orig_main_session_local
+    if orig_main_engine is not None:
+        _main.engine = orig_main_engine
+    if orig_db_session_engine is not None:
+        _db_session.engine = orig_db_session_engine
+    if orig_db_url is not None:
+        _config.settings.database_url = orig_db_url
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
+from app.integrations.apc_ups import APCUPSClient
 from app.integrations.idrac import IDRACClient
 from app.integrations.ilo import ILOClient
-from app.integrations.apc_ups import APCUPSClient
 from app.integrations.snmp_generic import SNMPGenericClient
 from app.services.credential_vault import CredentialVault
 

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="author" content="Shawn Ji" /><link rel="canonical" href="https://blkleg.github.io/CircuitBreaker/updates/v0-1-2_patch/" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>v0.1.2 Patch Notes - Circuit Breaker Docs</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "v0.1.2 Patch Notes";
+        var mkdocs_page_input_path = "updates/v0-1-2_patch.md";
+        var mkdocs_page_url = "/CircuitBreaker/updates/v0-1-2_patch/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> Circuit Breaker Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Welcome</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../roadmap/">Roadmap</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../getting-started/">Getting Started</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Features</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../hardware/">Hardware</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../compute/">Compute</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../storage/">Storage</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../networks/">Networks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../services/">Services</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../discovery/">Auto-Discovery (Beta)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../settings/">Settings</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../topology-map/">Topology Map</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../audit-log/">Audit Log</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../notes/">Notes & Runbooks</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Operations</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../deployment-security/">Deployment & Security</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../backup-restore/">Backup & Restore</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../overview/">Architecture Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../metrics/">Metrics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../cross-browser-audit/">Cross-Browser Audit</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Updates</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../v0-1-4_release/">v0.1.4 Release Notes</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">v0.1.2 Patch Notes</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#whats-new">What's New</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#know-your-hardware-instantly">Know Your Hardware Instantly</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#device-catalog-with-smart-search">Device Catalog with Smart Search</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#rack-position-tracking">Rack Position Tracking</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#new-hardware-roles">New Hardware Roles</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#live-device-health-on-the-map">Live Device Health on the Map</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#telemetry-integration">Telemetry Integration</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#status-rings-on-the-map">Status Rings on the Map</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#credential-security">Credential Security</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#more-icons">More Icons</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#new-vendor-icons">New Vendor Icons</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#expanded-icon-picker">Expanded Icon Picker</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#categories-environments">Categories &amp; Environments</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#inline-creatable-categories">Inline-Creatable Categories</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#inline-creatable-environments">Inline-Creatable Environments</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#ip-port-conflict-detection">IP &amp; Port Conflict Detection</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#real-timestamps-timezone-support">Real Timestamps &amp; Timezone Support</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#accurate-log-times">Accurate Log Times</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#your-timezone-your-time">Your Timezone, Your Time</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#audit-log">Audit Log</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#bug-fixes">Bug Fixes</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#upgrading">Upgrading</a>
+    </li>
+    </ul>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">Circuit Breaker Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Updates</li>
+      <li class="breadcrumb-item active">v0.1.2 Patch Notes</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="circuit-breaker-v012-beta-release-notes">Circuit Breaker v0.1.2-beta — Release Notes<a class="headerlink" href="#circuit-breaker-v012-beta-release-notes" title="Permanent link">&para;</a></h1>
+<p><strong>Released:</strong> March 2, 2026
+<strong>Previous version:</strong> v0.1.0-beta</p>
+<hr />
+<h2 id="whats-new">What's New<a class="headerlink" href="#whats-new" title="Permanent link">&para;</a></h2>
+<p>v0.1.2 is the biggest update since the initial beta launch. It expands hardware support significantly, brings live device health into the topology map, and delivers a round of quality-of-life improvements that make the app faster and more reliable to use day-to-day.</p>
+<hr />
+<h2 id="know-your-hardware-instantly">Know Your Hardware Instantly<a class="headerlink" href="#know-your-hardware-instantly" title="Permanent link">&para;</a></h2>
+<h3 id="device-catalog-with-smart-search">Device Catalog with Smart Search<a class="headerlink" href="#device-catalog-with-smart-search" title="Permanent link">&para;</a></h3>
+<p>Start typing a device name in the hardware form — <code>R740</code>, <code>USW Pro</code>, <code>Pi 5</code> — and Circuit Breaker now suggests matching devices from a built-in catalog covering Dell, HPE, Ubiquiti, MikroTik, Synology, TrueNAS, APC, CyberPower, Raspberry Pi, Proxmox, pfSense, OPNsense, Cisco, Juniper, and more. Selecting a match automatically fills in the vendor, model, rack height, and device role. Your custom devices are always welcome too — a freeform option is always available at the bottom of every search result.</p>
+<h3 id="rack-position-tracking">Rack Position Tracking<a class="headerlink" href="#rack-position-tracking" title="Permanent link">&para;</a></h3>
+<p>Hardware nodes now have <strong>Rack Height (U)</strong> and <strong>Rack Position (U)</strong> fields. Set them on any device to start building out your rack layout data ahead of the upcoming rack simulator.</p>
+<h3 id="new-hardware-roles">New Hardware Roles<a class="headerlink" href="#new-hardware-roles" title="Permanent link">&para;</a></h3>
+<p>Four new device roles join the existing set, giving your topology map more precision:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>What it represents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UPS</td>
+<td>Uninterruptible power supplies</td>
+</tr>
+<tr>
+<td>PDU</td>
+<td>Power distribution units</td>
+</tr>
+<tr>
+<td>Access Point</td>
+<td>Wireless access points</td>
+</tr>
+<tr>
+<td>SBC</td>
+<td>Single-board computers (Raspberry Pi, etc.)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="live-device-health-on-the-map">Live Device Health on the Map<a class="headerlink" href="#live-device-health-on-the-map" title="Permanent link">&para;</a></h2>
+<h3 id="telemetry-integration">Telemetry Integration<a class="headerlink" href="#telemetry-integration" title="Permanent link">&para;</a></h3>
+<p>Connect Circuit Breaker directly to your hardware's management interface and see live health data on the topology map. Supported integrations:</p>
+<ul>
+<li><strong>Dell iDRAC</strong> (6/7/8/9) — CPU temp, fan speeds, PSU status, system power draw</li>
+<li><strong>HPE iLO</strong> (4/5/6) — CPU temp, fan speeds, PSU watts, overall health</li>
+<li><strong>APC &amp; CyberPower UPS</strong> — battery level, estimated runtime, load %, input/output voltage, temperature</li>
+<li><strong>Generic SNMP</strong> — bring your own OIDs for any SNMP-capable device</li>
+</ul>
+<p>Configure a device by opening its detail panel and expanding the new <strong>Telemetry</strong> section. Set the connection details, hit <strong>Test Connection</strong> to verify it works, and Circuit Breaker handles the rest — polling automatically every 60 seconds in the background.</p>
+<h3 id="status-rings-on-the-map">Status Rings on the Map<a class="headerlink" href="#status-rings-on-the-map" title="Permanent link">&para;</a></h3>
+<p>Once telemetry is configured, every hardware node on the topology map shows a live status ring:</p>
+<ul>
+<li>🟢 <strong>Pulsing green</strong> — all systems healthy</li>
+<li>🟡 <strong>Amber</strong> — something needs attention</li>
+<li>🔴 <strong>Glowing red</strong> — critical condition</li>
+<li>No ring — telemetry not configured</li>
+</ul>
+<p>Key metrics like CPU temperature and power draw appear as a small badge directly on the node so you can see what matters at a glance.</p>
+<h3 id="credential-security">Credential Security<a class="headerlink" href="#credential-security" title="Permanent link">&para;</a></h3>
+<p>Management interface passwords are encrypted at rest. Set the <code>CB_VAULT_KEY</code> environment variable to keep credentials secure and persistent across container restarts.</p>
+<hr />
+<h2 id="more-icons">More Icons<a class="headerlink" href="#more-icons" title="Permanent link">&para;</a></h2>
+<h3 id="new-vendor-icons">New Vendor Icons<a class="headerlink" href="#new-vendor-icons" title="Permanent link">&para;</a></h3>
+<p>APC, CyberPower, Raspberry Pi, Forgejo, and Cloudflare Workers icons have been added to the vendor library.</p>
+<h3 id="expanded-icon-picker">Expanded Icon Picker<a class="headerlink" href="#expanded-icon-picker" title="Permanent link">&para;</a></h3>
+<p>Over <strong>130 new icons</strong> are available in the icon picker across six new groups:</p>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Icons added</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hardware</td>
+<td>26</td>
+</tr>
+<tr>
+<td>Network</td>
+<td>73</td>
+</tr>
+<tr>
+<td>Security</td>
+<td>21</td>
+</tr>
+<tr>
+<td>Cameras</td>
+<td>6</td>
+</tr>
+<tr>
+<td>Power / UPS</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Other</td>
+<td>3</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="categories-environments">Categories &amp; Environments<a class="headerlink" href="#categories-environments" title="Permanent link">&para;</a></h2>
+<h3 id="inline-creatable-categories">Inline-Creatable Categories<a class="headerlink" href="#inline-creatable-categories" title="Permanent link">&para;</a></h3>
+<p>The category field on services is now a smart typeahead. Start typing to see your existing categories, or type a new name and select <strong>Create "media"</strong> to add it on the spot — no trip to Settings required. All categories are still manageable from the <strong>Settings → Categories</strong> page where you can rename, recolor, and delete them.</p>
+<h3 id="inline-creatable-environments">Inline-Creatable Environments<a class="headerlink" href="#inline-creatable-environments" title="Permanent link">&para;</a></h3>
+<p>The same treatment applies to environments across services, hardware, and compute units. Type <code>staging</code> and it's created immediately if it doesn't exist yet. Manage the full list from <strong>Settings → Environments</strong>. Existing environment values you've already entered are automatically migrated into the new system on first launch.</p>
+<hr />
+<h2 id="ip-port-conflict-detection">IP &amp; Port Conflict Detection<a class="headerlink" href="#ip-port-conflict-detection" title="Permanent link">&para;</a></h2>
+<p>Assigning an IP address or port that's already in use now triggers an immediate warning. If you try to save a service or device with a conflicting address, Circuit Breaker tells you exactly what already has it — and gives you a direct link to open that entity. Conflicts are caught as you type, before you even hit Save.</p>
+<hr />
+<h2 id="real-timestamps-timezone-support">Real Timestamps &amp; Timezone Support<a class="headerlink" href="#real-timestamps-timezone-support" title="Permanent link">&para;</a></h2>
+<h3 id="accurate-log-times">Accurate Log Times<a class="headerlink" href="#accurate-log-times" title="Permanent link">&para;</a></h3>
+<p>Every action in the audit log now shows a real timestamp. Entries under an hour old display as relative time (<code>"4 minutes ago"</code>), while older entries show the full date and time. Hover any timestamp to see the exact moment it occurred.</p>
+<h3 id="your-timezone-your-time">Your Timezone, Your Time<a class="headerlink" href="#your-timezone-your-time" title="Permanent link">&para;</a></h3>
+<p>Circuit Breaker now asks for your timezone during first-time setup. All timestamps across the app — logs, telemetry readings, entity records — display in your local time. Change your timezone anytime from <strong>Settings → General</strong>.</p>
+<hr />
+<h2 id="audit-log">Audit Log<a class="headerlink" href="#audit-log" title="Permanent link">&para;</a></h2>
+<p>The logs panel has been rebuilt into a proper audit trail. Every meaningful action — creating a device, changing a service, saving the topology layout, a failed login attempt — now produces a structured log entry showing what changed, who did it, and where the request came from. Entries include a collapsible before/after view so you can see exactly what was modified. Filter by entity type, action, or severity, and search by name.</p>
+<p>Log entries are permanent and append-only. Nothing in the audit trail can be edited or deleted.</p>
+<hr />
+<h2 id="bug-fixes">Bug Fixes<a class="headerlink" href="#bug-fixes" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Fixed an issue where selecting a custom icon for a network node would not persist after refreshing the topology map</li>
+<li>Fixed the icon picker appearing behind the right-click context menu on the topology map</li>
+<li>Fixed the context menu closing too early when selecting an icon, causing the icon change to silently fail</li>
+<li>Fixed custom icons not saving when creating a new network node</li>
+<li>Fixed the icon picker not highlighting the currently assigned icon when reopened</li>
+</ul>
+<hr />
+<h2 id="upgrading">Upgrading<a class="headerlink" href="#upgrading" title="Permanent link">&para;</a></h2>
+<p>No action required beyond pulling the latest image. All database changes apply automatically on startup and are fully backwards-compatible — your existing data is untouched.</p>
+<pre><code class="language-bash"># Prebuilt image
+docker compose pull &amp;&amp; docker compose up -d
+</code></pre>
+<p>If you plan to use telemetry integrations, set <code>CB_VAULT_KEY</code> in your environment before restarting to ensure credentials are encrypted and persist across future updates.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../v0-1-4_docs_sot/" class="btn btn-neutral float-left" title="v0.1.4 Docs SOT"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../v0-1-4_docs_sot/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

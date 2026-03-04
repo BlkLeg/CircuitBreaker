@@ -1,23 +1,28 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
-import { sentryVitePlugin } from '@sentry/vite-plugin'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+// Read the canonical VERSION file from the repo root at build time.
+// This value is baked into the JS bundle as import.meta.env.VITE_APP_VERSION.
+const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url))
+const APP_VERSION = readFileSync(resolve(ROOT_DIR, 'VERSION'), 'utf8').trim()
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '')
+  const env = loadEnv(mode, ROOT_DIR, '')
   const apiTarget = env.API_TARGET || 'http://localhost:8000'
 
   return {
+    define: {
+      // Expose as import.meta.env.VITE_APP_VERSION throughout the app.
+      // VITE_APP_VERSION env var (e.g. from CI) overrides the VERSION file.
+      'import.meta.env.VITE_APP_VERSION': JSON.stringify(
+        env.VITE_APP_VERSION || APP_VERSION
+      ),
+    },
     plugins: [
       react(),
-      // Uploads source maps to Sentry and strips them from the public bundle.
-      // SENTRY_AUTH_TOKEN must be set in the build environment; if absent the
-      // plugin is a no-op so local dev builds still work without a token.
-      sentryVitePlugin({
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        silent: !process.env.SENTRY_AUTH_TOKEN,
-      }),
     ],
     optimizeDeps: {
       include: ['react-markdown', 'style-to-js'],
@@ -28,7 +33,10 @@ export default defineConfig(({ mode }) => {
       target: ['chrome111', 'firefox113', 'safari16.4', 'edge111'],
       sourcemap: 'hidden',
       assetsInlineLimit: 4096,      // inline assets < 4 KB as base64 (reduces requests)
-      chunkSizeWarningLimit: 1000,  // 1 MB threshold (map chunk legitimately exceeds 500 KB)
+      // elk.bundled (~1.4 MB, indivisible Java→JS) and DocEditor deps (~1.6 MB,
+      // tightly coupled @uiw + react-markdown + react-syntax-highlighter) are both
+      // lazy-loaded and cannot be split further without library-level changes.
+      chunkSizeWarningLimit: 1700,
       commonjsOptions: {
         // elkjs/lib/elk.bundled.js is a browserify bundle that references 'web-worker'
         // as an internal module. Vite's CJS transform tries to resolve it as an external
@@ -38,15 +46,25 @@ export default defineConfig(({ mode }) => {
       },
       rollupOptions: {
         output: {
-          manualChunks: {
-            // Core React runtime — downloaded once, browser-cached across all pages
-            vendor: ['react', 'react-dom', 'react-router-dom', 'axios'],
-            // Heavy graph/topology libs — only fetched when /map is visited
-            map: ['reactflow', 'elkjs', '@dagrejs/dagre', '@reactflow/node-resizer'],
-            // Markdown editor + syntax highlighting — only needed on /docs
-            editor: ['@uiw/react-md-editor', 'react-syntax-highlighter'],
-            // Emoji picker — infrequently used; keep isolated
-            emoji: ['@emoji-mart/react', '@emoji-mart/data'],
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              // Emoji picker (infrequently used, large ~510 kB) — lazy-loaded on click
+              if (id.includes('@emoji-mart')) {
+                return 'emoji';
+              }
+              // Core React runtime
+              // framer-motion MUST be here: its UMD bundle references React as a bare global.
+              if (
+                id.match(/\/node_modules\/(react|react-dom|react-router|react-router-dom|axios|framer-motion|style-to-js)\//)
+              ) {
+                return 'vendor';
+              }
+              // All other vendor deps (editor, markdown, syntax-hl) are left for Vite
+              // to bundle into lazy async chunks naturally via React.lazy / dynamic import.
+              // Splitting @uiw, react-markdown, and react-syntax-highlighter into separate
+              // manual chunks causes circular dependency warnings because they import
+              // each other internally.
+            }
           },
         },
       },

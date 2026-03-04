@@ -1,18 +1,18 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class StorageBase(BaseModel):
     name: str
     kind: str  # 'disk', 'pool', 'dataset', 'share'
-    icon_slug: Optional[str] = None
-    hardware_id: Optional[int] = None
-    capacity_gb: Optional[int] = None
-    used_gb: Optional[int] = None
-    path: Optional[str] = None
-    protocol: Optional[str] = None
-    notes: Optional[str] = None
+    icon_slug: str | None = None
+    hardware_id: int | None = None
+    capacity_gb: int | None = None
+    used_gb: int | None = None
+    path: str | None = None
+    protocol: str | None = None
+    notes: str | None = None
     tags: list[str] = []
 
 
@@ -21,16 +21,16 @@ class StorageCreate(StorageBase):
 
 
 class StorageUpdate(BaseModel):
-    name: Optional[str] = None
-    kind: Optional[str] = None
-    icon_slug: Optional[str] = None
-    hardware_id: Optional[int] = None
-    capacity_gb: Optional[int] = None
-    used_gb: Optional[int] = None
-    path: Optional[str] = None
-    protocol: Optional[str] = None
-    notes: Optional[str] = None
-    tags: Optional[list[str]] = None
+    name: str | None = None
+    kind: str | None = None
+    icon_slug: str | None = None
+    hardware_id: int | None = None
+    capacity_gb: int | None = None
+    used_gb: int | None = None
+    path: str | None = None
+    protocol: str | None = None
+    notes: str | None = None
+    tags: list[str] | None = None
 
 
 class Storage(StorageBase):

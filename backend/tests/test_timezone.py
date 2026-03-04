@@ -3,7 +3,6 @@
 Settings PUT is protected by require_write_auth, but on a fresh DB auth is disabled,
 so calls succeed without a token.
 """
-import pytest
 
 
 # ── Timezones endpoint ────────────────────────────────────────────────────────
@@ -57,7 +56,7 @@ def test_timezone_log_on_change(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "settings" and l.get("action") == "update_settings"),
+        (log for log in logs if log.get("entity_type") == "settings" and log.get("action") == "update_settings"),
         None,
     )
     assert entry is not None, "Expected 'update_settings' settings log after timezone change"

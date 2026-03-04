@@ -1,23 +1,47 @@
 # Storage
 
-Storage items in Circuit Breaker document the disks, pools, volumes, and network shares used by your lab. This could be a physical hard drive in a server, a ZFS pool, or an NFS share hosted on a separate NAS.
+Storage entries track where your data lives and who depends on it.
+
+Use this section for pools, volumes, disks, and shared storage.
+
+---
 
 ## Adding Storage
 
-To add a new storage resource:
+1. Open **Storage**.
+2. Select **Add Storage**.
+3. Enter storage details.
+4. Save.
 
-1. Navigate to **Storage** using the sidebar.
-2. Click **Add Storage**.
-3. Fill in the required details:
-   - **Name**: A descriptive name (e.g., `ZFS-Tank`, `NFS-Media-Share`).
-   - **Type**: The kind of storage (e.g., `ZFS Pool`, `EXT4 Drive`, `NFS Share`).
-   - **Capacity**: Total size or current usage (e.g., `12TB`).
+Common fields:
+
+- **Name**
+- **Type**
+- **Capacity**
+
+---
 
 ## Linking Storage
 
-Storage items can be connected in two ways:
+Connect storage in two ways:
 
-1. **Physical Location**: Link a storage item to the **Hardware** it physically resides on (e.g., `ZFS-Tank` on `pve-node-01`).
-2. **Usage**: Link a storage item to the **Services** that utilize it (e.g., the `Plex` service uses the `NFS-Media-Share`).
+1. **Physical location:** Link storage to the hardware that hosts it.
+2. **Service usage:** Link storage to services that read or write to it.
 
-These connections are crucial for understanding which applications might fail if a specific array goes down or a volume becomes full.
+This makes it easier to answer impact questions during maintenance and outages.
+
+---
+
+## Why It Matters
+
+- See which services depend on each storage resource.
+- Plan migrations and maintenance with less risk.
+- Spot high-impact storage points in the topology map.
+
+---
+
+## Related Guides
+
+- [Hardware](hardware.md)
+- [Services](services.md)
+- [Topology Map](topology-map.md)

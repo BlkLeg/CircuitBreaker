@@ -70,15 +70,12 @@ function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose,
         onClick={handleBackdropClick}
         onKeyDown={handleBackdropKeyDown}
         tabIndex={-1}
-        role="presentation" // Presentation role for purely visual/click-capture backdrops
+        aria-hidden="true"
       >
-        <div
+        <dialog
           className="modal"
-          onClick={(e) => e.stopPropagation()}
-          role="dialog"
-          aria-modal="true"
+          open
           aria-labelledby="modal-title"
-          tabIndex={-1} // Make modal focusable for a11y focus management
         >
           <h3 id="modal-title">{title}</h3>
           <EntityForm
@@ -93,7 +90,7 @@ function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose,
             entityId={entityId}
             onOpenEntity={onOpenEntity}
           />
-        </div>
+        </dialog>
       </div>
 
       {/* Unsaved-changes confirmation */}
@@ -104,7 +101,6 @@ function FormModal({ open, title, fields, initialValues = {}, onSubmit, onClose,
             background: 'rgba(0,0,0,0.55)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
-          role="presentation"
         >
           <div
             style={{

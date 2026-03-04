@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import PropTypes from 'prop-types';
 import { catalogApi } from '../api/client';
 
 /**
@@ -15,7 +16,7 @@ import { catalogApi } from '../api/client';
  *   placeholder  {string}
  *   disabled     {bool}
  */
-export default function CatalogSearch({ value = '', onChange, onSelect, placeholder = 'Search devices or type a name…', disabled = false }) {
+function CatalogSearch({ value = '', onChange, onSelect, placeholder = 'Search devices or type a name…', disabled = false }) {
   const [query, setQuery] = useState(value);
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -187,3 +188,13 @@ export default function CatalogSearch({ value = '', onChange, onSelect, placehol
     </div>
   );
 }
+
+CatalogSearch.propTypes = {
+  value: PropTypes.string,
+  onChange: PropTypes.func,
+  onSelect: PropTypes.func,
+  placeholder: PropTypes.string,
+  disabled: PropTypes.bool,
+};
+
+export default CatalogSearch;

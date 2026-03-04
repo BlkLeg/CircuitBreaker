@@ -1,14 +1,71 @@
 # Notes & Runbooks
 
-Circuit Breaker provides an integrated Markdown editor allowing you to attach free-form notes, runbooks, or configuration snippets to almost any entity in your lab.
+Use Notes & Runbooks to keep operational knowledge next to your infrastructure.
 
-## Adding Notes
+You can write Markdown docs, organize them, and link them directly to assets.
 
-To add a note to a specific item:
+---
 
-1. Navigate to the detail page for the Hardware, Compute, Service, Storage, or Network item.
-2. Locate the **Attached Notes** section.
-3. Use the integrated editor to write your markdown.
+## Create a Document
+
+1. Open **Notes & Runbooks**.
+2. Select **New Doc**.
+3. Add a title and content.
+4. Save.
+
+You can also open an entity and attach documents from that entity view.
+
+---
+
+## Organize Documents
+
+You can:
+
+- Pin important docs to the top
+- Group docs by category
+- Search docs quickly
+- Duplicate docs for templates
+
+---
+
+## Link Docs to Infrastructure
+
+Each document can be linked to one or more entities.
+
+This helps with:
+
+- Service runbooks
+- Hardware maintenance procedures
+- Network change plans
+- Recovery instructions
+
+Linked entities are visible in the document side panel.
+
+---
+
+## Import and Export
+
+### Export options
+
+- Export a single doc as Markdown (`.md`)
+- Export all docs as a ZIP archive
+
+### Import options
+
+- Import one Markdown file
+- Import a ZIP of docs
+
+---
+
+## Reading Experience
+
+While viewing a doc, you get:
+
+- Markdown rendering
+- Heading outline for quick jump navigation
+- Linked-entity context
+
+---
 
 ## Use Cases for Notes
 
@@ -27,3 +84,11 @@ _Example Note:_
 ```
 
 By keeping these notes tied directly to the entity, you ensure that "future you" always knows exactly how to manage a system during an outage.
+
+---
+
+## Related Guides
+
+- [Services](services.md)
+- [Hardware](hardware.md)
+- [Topology Map](topology-map.md)

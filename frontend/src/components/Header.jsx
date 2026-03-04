@@ -1,18 +1,35 @@
-import React from 'react';
+import React, { useState } from 'react';
+import PropTypes from 'prop-types';
 import { Link } from 'react-router-dom';
-import { Search } from 'lucide-react';
+import { Search, Moon, Sun } from 'lucide-react';
 import UserAvatar from './auth/UserAvatar.jsx';
 import RecentChanges from './common/RecentChanges.jsx';
+import ThemePalette from './ThemePalette';
+import HeaderWidgets from './HeaderWidgets.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
+import { settingsApi } from '../api/client';
 
 function Header({ onOpenPalette }) {
   const { openAuthModal, openProfileModal } = useAuth();
-  const { settings } = useSettings();
+  const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
+  const [themeSaving, setThemeSaving] = useState(false);
+  const isLightTheme = settings?.theme === 'light';
+
+  const handleToggleTheme = async () => {
+    if (themeSaving) return;
+    const nextTheme = isLightTheme ? 'dark' : 'light';
+    setThemeSaving(true);
+    try {
+      await settingsApi.update({ theme: nextTheme });
+      await reloadSettings();
+    } finally {
+      setThemeSaving(false);
+    }
+  };
 
   return (
-    <>
       <header
         className="global-header"
         role="banner"
@@ -50,11 +67,51 @@ function Header({ onOpenPalette }) {
         <img
           src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
           alt={branding?.app_name ?? 'Circuit Breaker'}
-          style={{ width: 80, height: 'auto' }}
+          className="header-logo"
+          style={{ height: 40, width: 'auto', maxWidth: 120 }}
         />
       </Link>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, pointerEvents: 'auto' }}>
+      <div
+        style={{
+          position: 'absolute',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          top: '50%',
+          marginTop: '-1px',
+          pointerEvents: 'auto',
+          zIndex: 1,
+        }}
+      >
+        <HeaderWidgets settings={settings} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, pointerEvents: 'auto' }}>
       <RecentChanges />
+      <ThemePalette placement="header" />
+      <button
+        title={isLightTheme ? 'Switch to dark mode' : 'Switch to light mode'}
+        aria-label={isLightTheme ? 'Switch to dark mode' : 'Switch to light mode'}
+        onClick={handleToggleTheme}
+        disabled={themeSaving}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 36,
+          height: 36,
+          background: 'transparent',
+          border: '1px solid var(--color-border)',
+          borderRadius: 8,
+          cursor: themeSaving ? 'not-allowed' : 'pointer',
+          color: 'var(--color-text-muted)',
+          transition: 'all 0.15s',
+          flexShrink: 0,
+          opacity: themeSaving ? 0.6 : 1,
+        }}
+        onMouseEnter={(e) => { if (!themeSaving) e.currentTarget.style.borderColor = 'var(--color-primary)'; }}
+        onMouseLeave={(e) => { if (!themeSaving) e.currentTarget.style.borderColor = 'var(--color-border)'; }}
+      >
+        {isLightTheme ? <Moon size={16} /> : <Sun size={16} />}
+      </button>
       <UserAvatar onOpenAuth={openAuthModal} onOpenProfile={openProfileModal} />
       <button
         className="search-trigger"
@@ -100,8 +157,11 @@ function Header({ onOpenPalette }) {
       </button>
       </div>
       </header>
-    </>
   );
 }
+
+Header.propTypes = {
+  onOpenPalette: PropTypes.func.isRequired,
+};
 
 export default Header;

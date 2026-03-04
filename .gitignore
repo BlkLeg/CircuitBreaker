@@ -47,6 +47,12 @@ backend/data/uploads/**
 backend/data/user-icons/**
 !backend/data/user-icons/**/
 !backend/data/user-icons/**/.gitkeep
+data/uploads/icons/**
+!data/uploads/icons/**/
+!data/uploads/icons/**/.gitkeep
+data/user-icons/**
+!data/user-icons/**/
+!data/user-icons/**/.gitkeep
 
 # Root runtime uploads (bind-mounted/injected at runtime)
 data/uploads/**
@@ -64,6 +70,7 @@ Thumbs.db
 
 # Tool / editor caches
 .cache/
+.tools/snyk
 
 # Internal / auto-generated
 .INTERNAL/

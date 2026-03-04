@@ -1,24 +1,30 @@
 """Auth business logic: register, login, profile management."""
+import json
 import logging
 import re
 import secrets as _secrets
-import json
 from pathlib import Path
-from typing import Optional
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import AppSettings, Log, User
-from app.schemas.auth import AuthResponse, BootstrapInitializeResponse, BootstrapStatusResponse, UserProfile, BootstrapThemeResponse
+from app.schemas.auth import (
+    AuthResponse,
+    BootstrapInitializeResponse,
+    BootstrapStatusResponse,
+    BootstrapThemeResponse,
+    UserProfile,
+)
 
 _logger = logging.getLogger(__name__)
 
 from app.core.config import settings as _settings  # noqa: E402
+
 _PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_TYPES = {"image/jpeg", "image/png"}
@@ -33,6 +39,7 @@ def _to_profile(user: User) -> UserProfile:
         display_name=user.display_name,
         gravatar_hash=user.gravatar_hash,
         is_admin=user.is_admin,
+        language=user.language or "en",
         profile_photo_url=photo_url,
     )
 
@@ -66,7 +73,7 @@ def register(
     email: str,
     password: str,
     cfg: AppSettings,
-    display_name: Optional[str] = None,
+    display_name: str | None = None,
 ) -> AuthResponse:
     if db.query(User).count() == 0:
         raise HTTPException(
@@ -87,6 +94,7 @@ def register(
         password_hash=hash_password(password),
         gravatar_hash=gravatar_hash(email),
         display_name=display_name.strip() if display_name and display_name.strip() else email.split("@")[0],
+        language=cfg.language or "en",
         is_admin=is_admin,
         created_at=now,
     )
@@ -117,7 +125,7 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
     return BootstrapStatusResponse(needs_bootstrap=needs_bootstrap, user_count=user_count)
 
 
-def _derive_display_name(email: str, display_name: Optional[str]) -> str:
+def _derive_display_name(email: str, display_name: str | None) -> str:
     if display_name and display_name.strip():
         return display_name.strip()
     local = email.strip().lower().split("@")[0]
@@ -133,8 +141,11 @@ def bootstrap_initialize(
     email: str,
     password: str,
     theme_preset: str,
-    display_name: Optional[str] = None,
-    timezone: Optional[str] = None,
+    display_name: str | None = None,
+    timezone: str | None = None,
+    language: str | None = None,
+    ui_font: str | None = None,
+    ui_font_size: str | None = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if not _EMAIL_RE.match(email_norm):
@@ -168,6 +179,7 @@ def bootstrap_initialize(
         password_hash=hash_password(password),
         gravatar_hash=gravatar_hash(email_norm),
         display_name=_derive_display_name(email_norm, display_name),
+        language=language or "en",
         is_admin=True,
         created_at=now,
     )
@@ -175,8 +187,14 @@ def bootstrap_initialize(
 
     cfg.auth_enabled = True
     cfg.theme_preset = theme_preset
+    if ui_font:
+        cfg.ui_font = ui_font
+    if ui_font_size:
+        cfg.ui_font_size = ui_font_size
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets.token_hex(32)
+    if language in {"en", "es", "fr", "de", "zh", "ja"}:
+        cfg.language = language
     if timezone:
         from zoneinfo import available_timezones
         if timezone == "UTC" or timezone in available_timezones():
@@ -204,7 +222,15 @@ def bootstrap_initialize(
         actor="system",
         actor_gravatar_hash=gravatar_hash(email_norm),
         entity_type="user",
-        details=json.dumps({"email": email_norm, "theme_preset": theme_preset}),
+        details=json.dumps(
+            {
+                "email": email_norm,
+                "theme_preset": theme_preset,
+                "language": cfg.language,
+                "ui_font": cfg.ui_font,
+                "ui_font_size": cfg.ui_font_size,
+            }
+        ),
         status_code=200,
     )
     db.add(audit_log)
@@ -273,8 +299,8 @@ def get_me(db: Session, user_id: int) -> UserProfile:
 async def update_profile(
     db: Session,
     user_id: int,
-    display_name: Optional[str],
-    profile_photo: Optional[UploadFile],
+    display_name: str | None,
+    profile_photo: UploadFile | None,
 ) -> UserProfile:
     user = db.get(User, user_id)
     if not user:
@@ -293,8 +319,9 @@ async def update_profile(
 
         # Optional: resize with Pillow
         try:
-            from PIL import Image
             import io
+
+            from PIL import Image
             img = Image.open(io.BytesIO(data))
             img.thumbnail((256, 256))
             buf = io.BytesIO()

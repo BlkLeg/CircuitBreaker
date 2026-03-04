@@ -1,10 +1,10 @@
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
 
-from app.db.models import Network, ComputeNetwork, HardwareNetwork, EntityTag, Tag
-from app.schemas.networks import NetworkCreate, NetworkUpdate
 from app.core.time import utcnow
+from app.db.models import ComputeNetwork, EntityTag, HardwareNetwork, Network, Tag
+from app.schemas.networks import NetworkCreate, NetworkUpdate
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:

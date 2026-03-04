@@ -1,16 +1,17 @@
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.core.time import utcnow
 from app.db.models import Hardware, HardwareCluster, HardwareClusterMember
 from app.schemas.clusters import HardwareClusterCreate, HardwareClusterUpdate
-from app.core.time import utcnow
 
 
 def _to_dict(cluster: HardwareCluster) -> dict:
     return {
         "id": cluster.id,
         "name": cluster.name,
+        "icon_slug": cluster.icon_slug,
         "description": cluster.description,
         "environment": cluster.environment,
         "location": cluster.location,
@@ -48,6 +49,7 @@ def get_cluster(db: Session, cluster_id: int) -> dict:
 def create_cluster(db: Session, payload: HardwareClusterCreate) -> dict:
     cluster = HardwareCluster(
         name=payload.name,
+        icon_slug=payload.icon_slug,
         description=payload.description,
         environment=payload.environment,
         location=payload.location,
@@ -144,6 +146,7 @@ def list_for_hardware(db: Session, hardware_id: int) -> list[dict]:
             "cluster": {
                 "id": cluster.id,
                 "name": cluster.name,
+                "icon_slug": cluster.icon_slug,
                 "environment": cluster.environment,
                 "location": cluster.location,
                 "description": cluster.description,

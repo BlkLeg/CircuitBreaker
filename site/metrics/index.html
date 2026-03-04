@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="author" content="Shawn Ji" /><link rel="canonical" href="https://blkleg.github.io/CircuitBreaker/metrics/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Metrics - Circuit Breaker Docs</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Metrics";
+        var mkdocs_page_input_path = "metrics.md";
+        var mkdocs_page_url = "/CircuitBreaker/metrics/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> Circuit Breaker Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../roadmap/">Roadmap</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../getting-started/">Getting Started</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Features</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../hardware/">Hardware</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../compute/">Compute</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../storage/">Storage</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../networks/">Networks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../services/">Services</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Auto-Discovery (Beta)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../settings/">Settings</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../topology-map/">Topology Map</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../audit-log/">Audit Log</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notes/">Notes & Runbooks</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Operations</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../deployment-security/">Deployment & Security</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../backup-restore/">Backup & Restore</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../overview/">Architecture Overview</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Metrics</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#endpoint">Endpoint</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#authentication">Authentication</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#generating-a-token-for-prometheus">Generating a token for Prometheus</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#prometheus-scrape-configuration">Prometheus Scrape Configuration</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#without-authentication-auth-disabled">Without authentication (auth disabled)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#with-authentication-cb_api_token-or-jwt">With authentication (CB_API_TOKEN or JWT)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#docker-compose-setting-cb_api_token">Docker Compose — setting CB_API_TOKEN</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#full-metrics-reference">Full Metrics Reference</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#app-metadata">App Metadata</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#inventory-counts">Inventory Counts</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#per-resource-state">Per-Resource State</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#example-promql-queries">Example PromQL Queries</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#grafana-panel-suggestions">Grafana Panel Suggestions</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#implementation-notes">Implementation Notes</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cross-browser-audit/">Cross-Browser Audit</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Updates</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-2_patch/">v0.1.2 Patch Notes</a>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">Circuit Breaker Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Reference</li>
+      <li class="breadcrumb-item active">Metrics</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="prometheus-metrics">Prometheus Metrics<a class="headerlink" href="#prometheus-metrics" title="Permanent link">&para;</a></h1>
+<p>Circuit Breaker exposes an inventory metrics endpoint in the <a href="https://prometheus.io/docs/instrumenting/exposition_formats/">Prometheus text exposition format</a>.
+You can scrape it directly from Prometheus, Grafana Alloy, the OpenTelemetry Collector, or any compatible agent.</p>
+<h2 id="endpoint">Endpoint<a class="headerlink" href="#endpoint" title="Permanent link">&para;</a></h2>
+<pre><code>GET /api/v1/metrics
+</code></pre>
+<p>Returns <code>text/plain; version=0.0.4; charset=utf-8</code> — the standard Prometheus scrape format.</p>
+<blockquote>
+<p><strong>Note:</strong> The endpoint is intentionally placed under <code>/api/v1/</code> (not at the root <code>/metrics</code>) to avoid conflicts with Circuit Breaker's frontend catch-all route.</p>
+</blockquote>
+<hr />
+<h2 id="authentication">Authentication<a class="headerlink" href="#authentication" title="Permanent link">&para;</a></h2>
+<p>The metrics endpoint follows the same authentication model as the rest of the API:</p>
+<table>
+<thead>
+<tr>
+<th>Circuit Breaker auth setting</th>
+<th>Endpoint access</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Auth disabled (<code>auth_enabled = false</code>) and no <code>CB_API_TOKEN</code> set</td>
+<td>Public — no token required</td>
+</tr>
+<tr>
+<td>Auth enabled <strong>or</strong> <code>CB_API_TOKEN</code> env var set</td>
+<td>Requires a valid <code>Authorization: Bearer &lt;token&gt;</code> header</td>
+</tr>
+</tbody>
+</table>
+<p>When auth is required and no token is provided, the endpoint returns HTTP <code>401</code>.</p>
+<h3 id="generating-a-token-for-prometheus">Generating a token for Prometheus<a class="headerlink" href="#generating-a-token-for-prometheus" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Log in to Circuit Breaker and copy a JWT from the browser's local storage (<code>cb:token</code>), <strong>or</strong></li>
+<li>Set the <code>CB_API_TOKEN</code> environment variable on the backend to a static secret and use that value as the bearer token in Prometheus.</li>
+</ol>
+<p>Using <code>CB_API_TOKEN</code> is recommended for scraping — it never expires and does not require an interactive login.</p>
+<hr />
+<h2 id="prometheus-scrape-configuration">Prometheus Scrape Configuration<a class="headerlink" href="#prometheus-scrape-configuration" title="Permanent link">&para;</a></h2>
+<h3 id="without-authentication-auth-disabled">Without authentication (auth disabled)<a class="headerlink" href="#without-authentication-auth-disabled" title="Permanent link">&para;</a></h3>
+<pre><code class="language-yaml">scrape_configs:
+  - job_name: 'circuit-breaker'
+    static_configs:
+      - targets: ['your-server:8080']
+    metrics_path: '/api/v1/metrics'
+</code></pre>
+<h3 id="with-authentication-cb_api_token-or-jwt">With authentication (<code>CB_API_TOKEN</code> or JWT)<a class="headerlink" href="#with-authentication-cb_api_token-or-jwt" title="Permanent link">&para;</a></h3>
+<pre><code class="language-yaml">scrape_configs:
+  - job_name: 'circuit-breaker'
+    static_configs:
+      - targets: ['your-server:8080']
+    metrics_path: '/api/v1/metrics'
+    authorization:
+      credentials: '&lt;your-cb-api-token-or-jwt&gt;'
+</code></pre>
+<h3 id="docker-compose-setting-cb_api_token">Docker Compose — setting <code>CB_API_TOKEN</code><a class="headerlink" href="#docker-compose-setting-cb_api_token" title="Permanent link">&para;</a></h3>
+<pre><code class="language-yaml">services:
+  backend:
+    environment:
+      - CB_API_TOKEN=your-static-secret-here
+</code></pre>
+<p>Then use <code>your-static-secret-here</code> as the bearer token in the Prometheus scrape config above.</p>
+<hr />
+<h2 id="full-metrics-reference">Full Metrics Reference<a class="headerlink" href="#full-metrics-reference" title="Permanent link">&para;</a></h2>
+<h3 id="app-metadata">App Metadata<a class="headerlink" href="#app-metadata" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>circuitbreaker_info</code></td>
+<td>Info</td>
+<td><code>version</code></td>
+<td>Circuit Breaker application version</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inventory-counts">Inventory Counts<a class="headerlink" href="#inventory-counts" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>circuitbreaker_hardware_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total hardware nodes in inventory</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_compute_units_total</code></td>
+<td>Gauge</td>
+<td><code>kind</code></td>
+<td>Compute units grouped by kind (<code>vm</code>, <code>container</code>)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_services_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total services in inventory</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_services_by_status_total</code></td>
+<td>Gauge</td>
+<td><code>status</code></td>
+<td>Services grouped by operational status</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_storage_items_total</code></td>
+<td>Gauge</td>
+<td><code>kind</code></td>
+<td>Storage items grouped by kind (<code>disk</code>, <code>pool</code>, <code>dataset</code>, <code>share</code>)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_storage_capacity_gb_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Sum of all configured storage capacity in GB</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_storage_used_gb_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Sum of all reported storage usage in GB</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_networks_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total network segments</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_hardware_clusters_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total hardware clusters defined</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_external_nodes_total</code></td>
+<td>Gauge</td>
+<td><code>provider</code>, <code>kind</code></td>
+<td>External nodes grouped by provider and kind</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_misc_items_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total miscellaneous items</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_docs_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total documentation entries</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_users_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total registered users</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_tags_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total unique tags</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_service_dependencies_total</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Total service-to-service dependency edges</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_audit_log_entries_total</code></td>
+<td>Gauge</td>
+<td><code>level</code>, <code>category</code></td>
+<td>Audit log entries grouped by level and category</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-resource-state">Per-Resource State<a class="headerlink" href="#per-resource-state" title="Permanent link">&para;</a></h3>
+<p>These follow the <a href="https://github.com/kubernetes/kube-state-metrics">kube-state-metrics</a> enum state pattern: one series is emitted per <code>{resource × possible_state}</code> combination. The active state receives value <code>1</code>, all inactive states receive <code>0</code>. This makes alerting on specific states straightforward.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>circuitbreaker_service_status</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>slug</code>, <code>environment</code>, <code>status</code></td>
+<td>Current status of each service. Value is <code>1</code> for the active status, <code>0</code> for all others</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_hardware_memory_configured_gb</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>role</code></td>
+<td>Configured memory per hardware node in GB (omitted if not set)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_compute_unit_memory_configured_mb</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>kind</code></td>
+<td>Configured memory per compute unit in MB (omitted if not set)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_compute_unit_cpu_cores_configured</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>kind</code></td>
+<td>Configured CPU cores per compute unit (omitted if not set)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_storage_capacity_gb</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>kind</code></td>
+<td>Configured capacity per storage item in GB (omitted if not set)</td>
+</tr>
+<tr>
+<td><code>circuitbreaker_storage_used_gb</code></td>
+<td>Gauge</td>
+<td><code>name</code>, <code>kind</code></td>
+<td>Reported used space per storage item in GB (omitted if not set)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="example-promql-queries">Example PromQL Queries<a class="headerlink" href="#example-promql-queries" title="Permanent link">&para;</a></h2>
+<pre><code class="language-promql"># Services currently stopped or degraded
+circuitbreaker_service_status{status=~&quot;stopped|degraded&quot;} == 1
+
+# Count of running services
+sum(circuitbreaker_service_status{status=&quot;running&quot;} == 1)
+
+# Service count by environment
+sum by (environment) (circuitbreaker_service_status{status=&quot;running&quot;} == 1)
+
+# Storage utilization ratio per item (requires both capacity and usage to be set)
+circuitbreaker_storage_used_gb / circuitbreaker_storage_capacity_gb
+
+# Overall storage fill percentage
+sum(circuitbreaker_storage_used_gb_total) / sum(circuitbreaker_storage_capacity_gb_total) * 100
+
+# Total configured RAM across all hardware nodes (GB)
+sum(circuitbreaker_hardware_memory_configured_gb)
+
+# Total configured RAM across all compute units (GB, converted from MB)
+sum(circuitbreaker_compute_unit_memory_configured_mb) / 1024
+
+# Compute units per kind
+circuitbreaker_compute_units_total
+
+# Services without a &quot;running&quot; status (potentially unhealthy)
+circuitbreaker_services_total - sum(circuitbreaker_service_status{status=&quot;running&quot;} == 1)
+</code></pre>
+<hr />
+<h2 id="grafana-panel-suggestions">Grafana Panel Suggestions<a class="headerlink" href="#grafana-panel-suggestions" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Panel</th>
+<th>PromQL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Service status overview</strong> (stat panel)</td>
+<td><code>sum by (status) (circuitbreaker_service_status == 1)</code></td>
+</tr>
+<tr>
+<td><strong>Degraded/stopped services</strong> (alert panel)</td>
+<td><code>sum(circuitbreaker_service_status{status=~"stopped\|degraded"} == 1)</code></td>
+</tr>
+<tr>
+<td><strong>Storage utilization</strong> (gauge panel)</td>
+<td><code>sum(circuitbreaker_storage_used_gb_total) / sum(circuitbreaker_storage_capacity_gb_total) * 100</code></td>
+</tr>
+<tr>
+<td><strong>Inventory totals</strong> (stat panels)</td>
+<td><code>circuitbreaker_hardware_total</code>, <code>circuitbreaker_services_total</code>, <code>circuitbreaker_compute_units_total</code></td>
+</tr>
+<tr>
+<td><strong>RAM by host</strong> (bar chart)</td>
+<td><code>circuitbreaker_hardware_memory_configured_gb</code></td>
+</tr>
+<tr>
+<td><strong>Storage by item</strong> (bar chart)</td>
+<td><code>circuitbreaker_storage_capacity_gb</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="implementation-notes">Implementation Notes<a class="headerlink" href="#implementation-notes" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>No global state:</strong> A fresh <code>CollectorRegistry</code> is created per scrape request. There are no background threads or process-level metric accumulators. Every scrape reflects the current database state.</li>
+<li><strong>DB-backed, not push-based:</strong> Metrics are queried on demand from the Circuit Breaker SQLite database. They represent point-in-time inventory values, not counters that accumulate over time.</li>
+<li><strong>Null safety:</strong> Per-resource metrics (memory, CPU, capacity, usage) are only emitted for resources where the value is explicitly configured. Resources with null values are silently omitted to avoid misleading zero values.</li>
+<li><strong>OpenAPI schema:</strong> The endpoint is excluded from the Circuit Breaker OpenAPI/Swagger UI (<code>include_in_schema=False</code>) because it returns plain text, not JSON.</li>
+</ul>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../overview/" class="btn btn-neutral float-left" title="Architecture Overview"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../cross-browser-audit/" class="btn btn-neutral float-right" title="Cross-Browser Audit">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../overview/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../cross-browser-audit/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

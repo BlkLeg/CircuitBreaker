@@ -1,0 +1,20 @@
+{
+  "header": {
+    "hardware": "Hardware",
+    "compute": "Compute",
+    "services": "Dienste",
+    "network": "Netzwerk",
+    "external": "Extern",
+    "storage": "Speicher",
+    "map": "Karte",
+    "discovery": "Erkennung",
+    "docs": "Dokumente",
+    "logs": "Protokolle",
+    "settings": "Einstellungen"
+  },
+  "map": {
+    "ethernet": "Ethernet",
+    "wireless": "Drahtlos",
+    "linkToNetwork": "Mit Netzwerk verbinden"
+  }
+}

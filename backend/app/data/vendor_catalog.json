@@ -149,6 +149,33 @@
         "label": "UAP-AC-Pro",
         "role": "access_point",
         "u_height": 0
+      },
+      "udr": {
+        "label": "UniFi Dream Router",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "u6-mesh": {
+        "label": "U6 Mesh AP",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["5GHz"]
+      },
+      "u7-pro": {
+        "label": "U7 Pro AP",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11be"],
+        "wifi_bands": ["2.4GHz", "5GHz", "6GHz"]
+      },
+      "usw-flex-mini": {
+        "label": "UniFi Switch Flex Mini",
+        "role": "switch",
+        "u_height": 0,
+        "port_count": 5
       }
     }
   },
@@ -168,7 +195,26 @@
         "role": "switch",
         "u_height": 1
       },
-      "hex-s": { "label": "hEX S", "role": "router", "u_height": 0 }
+      "hex-s": { "label": "hEX S", "role": "router", "u_height": 0 },
+      "hap-ax3": {
+        "label": "hAP ax³",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "crs326": {
+        "label": "CRS326-24G-2S+",
+        "role": "switch",
+        "u_height": 1,
+        "port_count": 26
+      },
+      "css610": {
+        "label": "CSS610-8G-2S+",
+        "role": "switch",
+        "u_height": 0,
+        "port_count": 10
+      }
     }
   },
   "pfsense": {
@@ -198,6 +244,112 @@
     "devices": {
       "dec740": { "label": "DEC740", "role": "firewall", "u_height": 1 },
       "dec3840": { "label": "DEC3840", "role": "firewall", "u_height": 1 }
+    }
+  },
+  "netgear": {
+    "label": "Netgear",
+    "icon": "netgear.svg",
+    "devices": {
+      "rax120": {
+        "label": "Nighthawk RAX120",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "ax6600": {
+        "label": "Nighthawk AX6600",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "wax630": {
+        "label": "WAX630",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "gs308": {
+        "label": "GS308 Gigabit Switch",
+        "role": "switch",
+        "u_height": 0,
+        "port_count": 8
+      },
+      "gs724tpv2": {
+        "label": "GS724TPv2 Smart Managed Pro PoE+ Switch",
+        "role": "switch",
+        "u_height": 1,
+        "port_count": 24
+      }
+    }
+  },
+  "asus": {
+    "label": "ASUS",
+    "icon": "asus.svg",
+    "devices": {
+      "rt-ax88u": {
+        "label": "RT-AX88U",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "gt-axe16000": {
+        "label": "ROG Rapture GT-AXE16000",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11axe"],
+        "wifi_bands": ["2.4GHz", "5GHz", "6GHz"]
+      },
+      "zenwifi-pro-et12": {
+        "label": "ZenWiFi Pro ET12",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11axe"],
+        "wifi_bands": ["2.4GHz", "5GHz", "6GHz"]
+      }
+    }
+  },
+  "gl_inet": {
+    "label": "GL.iNet",
+    "icon": "gl-inet.png",
+    "devices": {
+      "mt6000": {
+        "label": "GL-MT6000 (Flint 2)",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"],
+        "software_platform": "OpenWrt"
+      },
+      "axt1800": {
+        "label": "GL-AXT1800 (Slate AX)",
+        "role": "router",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"],
+        "software_platform": "OpenWrt"
+      }
+    }
+  },
+  "firewalla": {
+    "label": "Firewalla",
+    "icon": "firewalla.svg",
+    "devices": {
+      "gold-plus": {
+        "label": "Firewalla Gold Plus",
+        "role": "firewall",
+        "u_height": 1,
+        "port_count": 4
+      },
+      "purple": {
+        "label": "Firewalla Purple",
+        "role": "firewall",
+        "u_height": 0,
+        "port_count": 2
+      }
     }
   },
   "apc": {
@@ -239,6 +391,32 @@
         "telemetry_profile": "apc_ups"
       },
       "ap7920": { "label": "AP7920 PDU", "role": "pdu", "u_height": 1 }
+    }
+  },
+  "tp_link": {
+    "label": "TP-Link (Omada)",
+    "icon": "tplink.svg",
+    "devices": {
+      "eap670": {
+        "label": "Omada EAP670",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11ax"],
+        "wifi_bands": ["2.4GHz", "5GHz"]
+      },
+      "eap773": {
+        "label": "Omada EAP773",
+        "role": "access_point",
+        "u_height": 0,
+        "wifi_standards": ["802.11be"],
+        "wifi_bands": ["2.4GHz", "5GHz", "6GHz"]
+      },
+      "tl-sg2428p": {
+        "label": "TL-SG2428P Omada PoE+ Switch",
+        "role": "switch",
+        "u_height": 1,
+        "port_count": 28
+      }
     }
   },
   "cyberpower": {
@@ -318,6 +496,24 @@
         "label": "Proxmox VE Node",
         "role": "hypervisor",
         "u_height": 0
+      }
+    }
+  },
+  "protectli": {
+    "label": "Protectli",
+    "icon": "protectli.svg",
+    "devices": {
+      "vp2420": {
+        "label": "Vault Pro VP2420",
+        "role": "firewall",
+        "u_height": 1,
+        "software_platform": "pfSense/OPNsense"
+      },
+      "vp4650": {
+        "label": "Vault Pro VP4650",
+        "role": "firewall",
+        "u_height": 1,
+        "software_platform": "pfSense/OPNsense"
       }
     }
   }

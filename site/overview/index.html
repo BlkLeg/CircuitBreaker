@@ -1,1162 +1,244 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="author" content="Shawn Ji" /><link rel="canonical" href="https://blkleg.github.io/CircuitBreaker/overview/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Architecture Overview - Circuit Breaker Docs</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Architecture Overview";
+        var mkdocs_page_input_path = "overview.md";
+        var mkdocs_page_url = "/CircuitBreaker/overview/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
 
-<!doctype html>
-<html lang="en" class="no-js">
-  <head>
-    
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      
-        <meta name="description" content="Documentation for Circuit Breaker, the homelab topology mapper.">
-      
-      
-        <meta name="author" content="Shawn Ji">
-      
-      
-      
-        <link rel="prev" href="../notes/">
-      
-      
-      
-        
-      
-      
-      <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.24">
-    
-    
-      
-        <title>Service Layout Mapper – OVERVIEW.md - Circuit Breaker Docs</title>
-      
-    
-    
-      
-        
-      
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.28978c9b.min.css">
-      
-        
-          
-        
-        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.dfe2e883.min.css">
-      
-      
+<body class="wy-body-for-nav" role="document">
 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> Circuit Breaker Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
 
-    
-    
-      
-    
-    
-      
-        
-        
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
-        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
-      
-    
-    
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,a=__md_scope)=>JSON.parse(t.getItem(a.pathname+"."+e)),__md_set=(e,t,a=localStorage,_=__md_scope)=>{try{a.setItem(_.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
-    
-      
-
-    
-    
-  </head>
-  
-  
-    
-    
-      
-    
-    
-    
-    
-    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
-  
-    
-    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
-    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
-    <label class="md-overlay" for="__drawer"></label>
-    <div data-md-component="skip">
-      
-        
-        <a href="#service-layout-mapper-overviewmd" class="md-skip">
-          Skip to content
-        </a>
-      
-    </div>
-    <div data-md-component="announce">
-      
-    </div>
-    
-    
-      
-
-<header class="md-header" data-md-component="header">
-  <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="./.." title="Circuit Breaker Docs" class="md-header__button md-logo" aria-label="Circuit Breaker Docs" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
-
-    </a>
-    <label class="md-header__button md-icon" for="__drawer">
-      
-      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
-    </label>
-    <div class="md-header__title" data-md-component="header-title">
-      <div class="md-header__ellipsis">
-        <div class="md-header__topic">
-          <span class="md-ellipsis">
-            Circuit Breaker Docs
-          </span>
-        </div>
-        <div class="md-header__topic" data-md-component="header-topic">
-          <span class="md-ellipsis">
-            
-              Service Layout Mapper – OVERVIEW.md
-            
-          </span>
-        </div>
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../roadmap/">Roadmap</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../getting-started/">Getting Started</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Features</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../hardware/">Hardware</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../compute/">Compute</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../storage/">Storage</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../networks/">Networks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../services/">Services</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Auto-Discovery (Beta)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../settings/">Settings</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../topology-map/">Topology Map</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../audit-log/">Audit Log</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notes/">Notes & Runbooks</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Operations</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../deployment-security/">Deployment & Security</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../backup-restore/">Backup & Restore</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Architecture Overview</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#what-you-can-manage">What You Can Manage</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#how-the-app-helps-day-to-day">How the App Helps Day-to-Day</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#keep-relationships-clear">Keep relationships clear</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#move-faster-during-maintenance">Move faster during maintenance</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#keep-your-team-aligned">Keep your team aligned</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#review-recent-changes">Review recent changes</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#visual-topology-map">Visual Topology Map</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#discovery-beta">Discovery (Beta)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#configuration-and-operations">Configuration and Operations</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../metrics/">Metrics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cross-browser-audit/">Cross-Browser Audit</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Updates</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-2_patch/">v0.1.2 Patch Notes</a>
+                  </li>
+              </ul>
       </div>
     </div>
-    
-      
-        <form class="md-header__option" data-md-component="palette">
-  
-    
-    
-    
-    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
-    
-      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
-      </label>
-    
-  
-    
-    
-    
-    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
-    
-      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
-      </label>
-    
-  
-</form>
-      
-    
-    
-      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
-    
-    
-    
-      
-      
-        <label class="md-header__button md-icon" for="__search">
-          
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
-        </label>
-        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
-  <button type="button" class="md-search__button">
-    Search
-  </button>
-</div>
-      
-    
-    <div class="md-header__source">
-      
-    </div>
-  </nav>
-  
-</header>
-    
-    <div class="md-container" data-md-component="container">
-      
-      
-        
-          
-            
-<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
-  <div class="md-grid">
-    <ul class="md-tabs__list">
-      
-        
-  
-  
-  
-  
-    <li class="md-tabs__item">
-      <a href="./.." class="md-tabs__link">
-        
-  
-  Welcome
+    </nav>
 
-      </a>
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">Circuit Breaker Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Reference</li>
+      <li class="breadcrumb-item active">Architecture Overview</li>
+    <li class="wy-breadcrumbs-aside">
     </li>
-  
-
-      
-        
-  
-  
-  
-  
-    <li class="md-tabs__item">
-      <a href="../getting-started/" class="md-tabs__link">
-        
-  
-  Getting Started
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-  
-    
-    
-      <li class="md-tabs__item">
-        <a href="../hardware/" class="md-tabs__link">
-          
-  
-  Features
-
-        </a>
-      </li>
-    
-  
-
-      
-        
-  
-  
-  
-    
-  
-  
-    
-    
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="././" class="md-tabs__link">
-          
-  
-  Reference
-
-        </a>
-      </li>
-    
-  
-
-      
-    </ul>
-  </div>
-</nav>
-          
-        
-      
-      <main class="md-main" data-md-component="main">
-        <div class="md-main__inner md-grid">
-          
-            
-              
-              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-
-  
-
-
-<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
-  <label class="md-nav__title" for="__drawer">
-    <a href="./.." title="Circuit Breaker Docs" class="md-nav__button md-logo" aria-label="Circuit Breaker Docs" data-md-component="logo">
-      
-  
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 7v14M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
-
-    </a>
-    Circuit Breaker Docs
-  </label>
-  
-  <ul class="md-nav__list" data-md-scrollfix>
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="./.." class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Welcome
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../getting-started/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Getting Started
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Features
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_3">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Features
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hardware/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hardware
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../compute/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Compute
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../storage/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Storage
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../networks/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Networks
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../services/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Services
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../topology-map/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Topology Map
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../notes/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Notes & Runbooks
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-    
-  
-  
-  
-    
-    
-      
-        
-      
-    
-    
-    
-      
-        
-        
-      
-      
-    
-    
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
-        
-          
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Reference
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Reference
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture Overview
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="././" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture Overview
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
-        
-
-
-<nav class="md-nav md-nav--secondary" aria-label="On this page">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-goal-and-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Goal and Scope
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-core-concepts-and-data-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Core Concepts and Data Model
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-high-level-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. High-Level Architecture
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-map-layout-view" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Map Layout View
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-ux-and-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. UX and Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-security-and-deployment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        6. Security and Deployment
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-roadmap-high-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        7. Roadmap (High-Level)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
   </ul>
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-            
-              
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
-                <div class="md-sidebar__scrollwrap">
-                  <div class="md-sidebar__inner">
-                    
-
-
-<nav class="md-nav md-nav--secondary" aria-label="On this page">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-goal-and-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Goal and Scope
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-core-concepts-and-data-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Core Concepts and Data Model
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-high-level-architecture" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. High-Level Architecture
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-map-layout-view" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Map Layout View
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-ux-and-workflows" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. UX and Workflows
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-security-and-deployment" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        6. Security and Deployment
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-roadmap-high-level" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        7. Roadmap (High-Level)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-                  </div>
-                </div>
-              </div>
-            
-          
-          
-            <div class="md-content" data-md-component="content">
-              
-              <article class="md-content__inner md-typeset">
-                
-                  
-
-<h1 id="service-layout-mapper-overviewmd">Service Layout Mapper – OVERVIEW.md</h1>
-<p>This document defines the goals, scope, and high-level design for a lightweight <strong>Service Layout Mapper</strong> that documents a homelab/infra stack and visualizes relationships between components.</p>
-<h2 id="1-goal-and-scope">1. Goal and Scope</h2>
-<p>The app’s purpose is to centralize documentation of:</p>
-<ul>
-<li>Hardware (nodes, switches, firewalls, etc.).</li>
-<li>Virtualization (VMs, LXCs, containers).</li>
-<li>Services/Apps (self-hosted software, databases, supporting daemons).</li>
-<li>Storage (pools, datasets, disks, shares).</li>
-<li>Misc infrastructure (DNS, VPNs, networks, external SaaS dependencies).</li>
-<li>A visual map layout showing how all of the above connect.</li>
-<li>Attached free-form documentation for each object.</li>
-</ul>
-<p>Non-goals (for v1):</p>
-<ul>
-<li>Automated discovery, scanning, or config import.</li>
-<li>Real-time monitoring/metrics.</li>
-<li>Multi-tenant or RBAC-heavy features.</li>
-</ul>
-<p>The v1 target is a single-user, self-hosted documentation tool that you can run on a homelab node and iterate on quickly.</p>
-<h2 id="2-core-concepts-and-data-model">2. Core Concepts and Data Model</h2>
-<p>Top-level entities:</p>
-<ul>
-<li>Hardware: Physical hosts, switches, firewalls, UPS, NAS, etc. Each has name, role, specs, tags.</li>
-<li>Compute Units:  </li>
-<li>VMs: Guest name, host, resources, purpose.  </li>
-<li>LXCs/Containers: Name, host, image/base, purpose.</li>
-<li>Services/Apps: Logical services (e.g., “Plex”, “IPAM”, “Home Assistant”), with URLs, ports, owning VM/LXC, and category.</li>
-<li>Storage: Disks, pools, volumes, and shares, each with capacity, type, and where they are attached.</li>
-<li>Networks: VLANs, subnets, gateways, key firewall rules at a descriptive level.</li>
-<li>Misc: Anything that does not fit cleanly above (external APIs, SaaS services, etc.).</li>
-<li>Docs: Markdown notes linked to any entity (or globally), for procedures, runbooks, or rationales.</li>
-</ul>
-<p>Relationships:</p>
-<ul>
-<li>Hardware hosts Compute Units.</li>
-<li>Compute Units run Services/Apps.</li>
-<li>Services/Apps depend on other Services, Storage, and Networks.</li>
-<li>Hardware and Storage are linked (e.g., “ZFS pool on Node A”).</li>
-</ul>
-<p>All entities should support:</p>
-<ul>
-<li>Stable IDs.</li>
-<li>Tags for flexible grouping (e.g., “prod”, “lab”, “media”).</li>
-<li>Links to external docs (wiki, git repo, runbook).</li>
-</ul>
-<h2 id="3-high-level-architecture">3. High-Level Architecture</h2>
-<p>Stack:</p>
-<ul>
-<li>Backend: Python (FastAPI or Flask) providing a JSON REST API for CRUD on all entities and relationships.</li>
-<li>Frontend: JavaScript SPA (React or minimal vanilla + a graph library) consuming the API and rendering lists, detail pages, and a topology/map view.</li>
-<li>Storage:  </li>
-<li>v1: SQLite for simplicity.  </li>
-<li>Future: Optional Postgres migration.</li>
-</ul>
-<p>Backend responsibilities:</p>
-<ul>
-<li>CRUD endpoints for Hardware, Compute Units, Services, Storage, Networks, Misc, and Docs.</li>
-<li>Relationship management (e.g., assign service to VM, VM to node).</li>
-<li>Simple search/filter by name, tag, type.</li>
-<li>JSON export/import for easy backups and migration.</li>
-</ul>
-<p>Frontend responsibilities:</p>
-<ul>
-<li>Entity lists with filters and quick search.</li>
-<li>Entity detail views with fields, relationships, and attached docs.</li>
-<li>Map view:  </li>
-<li>Nodes representing entities (hardware, VMs/LXCs, services).  </li>
-<li>Edges for “runs on”, “depends on”, “connected to” relationships.</li>
-<li>Inline Markdown rendering for docs.</li>
-</ul>
-<h2 id="4-map-layout-view">4. Map Layout View</h2>
-<p>The map is the main “at-a-glance” visualization:</p>
-<ul>
-<li>Layout:  </li>
-<li>Hardware as the outer layer (e.g., grouped per physical node or rack).  </li>
-<li>Compute Units inside or attached to their hardware.  </li>
-<li>Services/Apps as a higher layer attached to their compute unit.  </li>
-<li>Storage and Networks shown as shared resources that multiple services connect to.</li>
-<li>Interaction:  </li>
-<li>Pan/zoom, basic node highlighting.  </li>
-<li>Click node → open side panel or detail page.  </li>
-<li>Filter by tag, type, or environment (e.g., show only “prod” and “media”).</li>
-</ul>
-<p>v1 layout engine can be:</p>
-<ul>
-<li>Client-side only, using a graph library (e.g., simple force-directed layout), with precomputed groupings from the API.</li>
-</ul>
-<h2 id="5-ux-and-workflows">5. UX and Workflows</h2>
-<p>Primary workflows:</p>
-<ul>
-<li>“Document my lab”: manually create hardware, add VMs/LXCs, then add services to each.</li>
-<li>“Understand where a service lives”: search a service, see its hosting VM/LXC and backing hardware, plus storage and network dependencies.</li>
-<li>“Add notes for future me”: attach docs to any entity and link out to external tooling (NetBox, BookStack, Obsidian, etc.).</li>
-</ul>
-<p>Navigation:</p>
-<ul>
-<li>Sidebar: Sections for Hardware, Compute Units, Services, Storage, Networks, Misc, Map, Docs.</li>
-<li>Global search bar.</li>
-<li>Persistent “Map” entry as the default landing page after setup.</li>
-</ul>
-<h2 id="6-security-and-deployment">6. Security and Deployment</h2>
-<p>Security (v1):</p>
-<ul>
-<li>Single-user or small trusted group in a homelab context.</li>
-<li>HTTP behind reverse proxy (nginx/Traefik/Caddy) with TLS termination.</li>
-<li>Optional basic auth or simple token auth on the API.</li>
-</ul>
-<p>Deployment:</p>
-<ul>
-<li>Simple Python app packaged as:  </li>
-<li>Docker container.  </li>
-<li>Or venv + systemd service.</li>
-<li>Single configuration file (YAML/TOML) for database path, listen address, and basic auth/token settings.</li>
-</ul>
-<h2 id="7-roadmap-high-level">7. Roadmap (High-Level)</h2>
-<p>Phase 0 – Skeleton:</p>
-<ul>
-<li>Define data models and migrations (SQLite).</li>
-<li>Implement basic CRUD API for all entities.</li>
-<li>Set up minimal JS frontend with list/detail views for one entity type.</li>
-</ul>
-<p>Phase 1 – Full CRUD + Docs:</p>
-<ul>
-<li>CRUD for all entity types via UI.</li>
-<li>Markdown docs support and linking.</li>
-<li>Tagging and basic search.</li>
-</ul>
-<p>Phase 2 – Map View:</p>
-<ul>
-<li>Graph API endpoints for relationships.</li>
-<li>Initial interactive map with hardware → compute → services layering.</li>
-</ul>
-<p>Phase 3 – Quality of Life:</p>
-<ul>
-<li>JSON export/import.</li>
-<li>Simple auth.</li>
-<li>Basic “recent changes” view.</li>
-</ul>
-<p>Phase 4 – Optional Enhancements (future ideas):</p>
-<ul>
-<li>Basic integration hooks (e.g., ingest a static JSON from Proxmox API, NetBox, or other tools without full sync).</li>
-<li>Snapshot/versioned docs.</li>
-<li>Multi-user with roles.</li>
-</ul>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                
-              </article>
-            </div>
-          
-          
-<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
-        </div>
-        
-          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
-  
-  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
-  Back to top
-</button>
-        
-      </main>
-      
-        <footer class="md-footer">
-  
-  <div class="md-footer-meta md-typeset">
-    <div class="md-footer-meta__inner md-grid">
-      <div class="md-copyright">
-  
-  
-    Made with
-    <a href="https://zensical.org/" target="_blank" rel="noopener">
-      Zensical
-    </a>
-  
+  <hr/>
 </div>
-      
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="circuit-breaker-overview">Circuit Breaker Overview<a class="headerlink" href="#circuit-breaker-overview" title="Permanent link">&para;</a></h1>
+<p>Circuit Breaker helps you keep your infrastructure understandable, searchable, and change-ready.</p>
+<p>Use it to document what you run, where it runs, and what depends on what—then view everything in one live map.</p>
+<hr />
+<h2 id="what-you-can-manage">What You Can Manage<a class="headerlink" href="#what-you-can-manage" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Hardware:</strong> Physical devices like servers, switches, firewalls, NAS, and UPS.</li>
+<li><strong>Compute:</strong> VMs and containers that run on your hardware.</li>
+<li><strong>Services:</strong> Apps and workloads, including URLs, ports, and ownership.</li>
+<li><strong>Storage:</strong> Shared and local storage resources.</li>
+<li><strong>Networks:</strong> VLANs, subnets, and connectivity context.</li>
+<li><strong>Notes &amp; Runbooks:</strong> Markdown notes attached to real assets.</li>
+</ul>
+<hr />
+<h2 id="how-the-app-helps-day-to-day">How the App Helps Day-to-Day<a class="headerlink" href="#how-the-app-helps-day-to-day" title="Permanent link">&para;</a></h2>
+<h3 id="keep-relationships-clear">Keep relationships clear<a class="headerlink" href="#keep-relationships-clear" title="Permanent link">&para;</a></h3>
+<p>Follow service dependencies from app → compute → hardware → storage/network.</p>
+<h3 id="move-faster-during-maintenance">Move faster during maintenance<a class="headerlink" href="#move-faster-during-maintenance" title="Permanent link">&para;</a></h3>
+<p>Before touching a host, quickly see what services and dependencies are affected.</p>
+<h3 id="keep-your-team-aligned">Keep your team aligned<a class="headerlink" href="#keep-your-team-aligned" title="Permanent link">&para;</a></h3>
+<p>Store runbooks and operational notes right on the assets they belong to.</p>
+<h3 id="review-recent-changes">Review recent changes<a class="headerlink" href="#review-recent-changes" title="Permanent link">&para;</a></h3>
+<p>Use audit history and recent activity to understand what changed and when.</p>
+<hr />
+<h2 id="visual-topology-map">Visual Topology Map<a class="headerlink" href="#visual-topology-map" title="Permanent link">&para;</a></h2>
+<p>The topology map gives you an at-a-glance view of your environment.</p>
+<ul>
+<li>Pan and zoom through your infrastructure.</li>
+<li>Open entities directly from the map.</li>
+<li>Track live health indicators on supported hardware when telemetry is configured.</li>
+</ul>
+<hr />
+<h2 id="discovery-beta">Discovery (Beta)<a class="headerlink" href="#discovery-beta" title="Permanent link">&para;</a></h2>
+<p>Circuit Breaker includes <strong>Auto-Discovery (Beta)</strong> to help you find devices and services faster.</p>
+<ul>
+<li>Create scan profiles for recurring scans.</li>
+<li>Run one-time ad-hoc scans.</li>
+<li>Review findings before they are merged.</li>
+<li>Keep control: nothing is added automatically without approval.</li>
+</ul>
+<p>See <a href="../discovery/">Auto-Discovery (Beta)</a>.</p>
+<hr />
+<h2 id="configuration-and-operations">Configuration and Operations<a class="headerlink" href="#configuration-and-operations" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Settings:</strong> Language, timezone, visuals, map defaults, and system behavior.</li>
+<li><strong>Backup &amp; Restore:</strong> Export and restore inventory snapshots.</li>
+<li><strong>Deployment &amp; Security:</strong> Start quickly for lab use, then harden as needed.</li>
+</ul>
+<p>See <a href="../settings/">Settings</a>, <a href="../backup-restore/">Backup &amp; Restore</a>, and <a href="../deployment-security/">Deployment &amp; Security</a>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../backup-restore/" class="btn btn-neutral float-left" title="Backup & Restore"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../metrics/" class="btn btn-neutral float-right" title="Metrics">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
   </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
 </footer>
-      
-    </div>
-    <div class="md-dialog" data-md-component="dialog">
-      <div class="md-dialog__inner md-typeset"></div>
-    </div>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-    
-      
-      
-      
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["navigation.tabs","navigation.indexes","navigation.top","search.suggest","search.highlight","search.share"],"search":"../assets/javascripts/workers/search.e2d2d235.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":null}</script>
+      <span><a href="../backup-restore/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <script src="../assets/javascripts/bundle.16f8adc2.min.js"></script>
-      
+      <span><a href="../metrics/" style="color: #fcfcfc">Next &raquo;</a></span>
     
-  </body>
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
 </html>

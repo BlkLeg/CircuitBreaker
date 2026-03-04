@@ -3,8 +3,6 @@
 Category endpoints are not auth-protected; all tests use the plain `client` fixture.
 """
 import json
-import pytest
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +128,7 @@ def test_category_log_entry_on_create(client):
     _create_category(client, name="media")
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "category" and l.get("action") == "create_category"),
+        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "create_category"),
         None,
     )
     assert entry is not None, "Expected a 'create_category' log entry for category"
@@ -143,7 +141,7 @@ def test_category_log_entry_on_rename(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "category" and l.get("action") == "update_category"),
+        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "update_category"),
         None,
     )
     assert entry is not None, "Expected a 'update_category' log entry for category"
@@ -161,7 +159,7 @@ def test_category_log_entry_on_delete(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (l for l in logs if l.get("entity_type") == "category" and l.get("action") == "delete_category"),
+        (log for log in logs if log.get("entity_type") == "category" and log.get("action") == "delete_category"),
         None,
     )
     assert entry is not None, "Expected a 'delete_category' log entry for category"

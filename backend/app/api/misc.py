@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.schemas.misc import MiscItem, MiscItemCreate, MiscItemUpdate
 from app.services import misc_service
 
-router = APIRouter(prefix="/misc", tags=["misc"])
+router = APIRouter(tags=["misc"])
 
 
 @router.get("", response_model=list[MiscItem])

@@ -5,17 +5,16 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.external_nodes import (
-    ExternalNodeRead,
     ExternalNodeCreate,
-    ExternalNodeUpdate,
     ExternalNodeNetworkLink,
     ExternalNodeNetworkRead,
-    ServiceExternalNodeLink,
+    ExternalNodeRead,
+    ExternalNodeUpdate,
     ServiceExternalNodeRead,
 )
 from app.services import external_nodes_service as svc
 
-router = APIRouter(prefix="/external-nodes", tags=["external-nodes"])
+router = APIRouter(tags=["external-nodes"])
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────

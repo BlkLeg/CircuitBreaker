@@ -1,8 +1,8 @@
-from sqlalchemy import func, distinct
+from sqlalchemy import distinct, func
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
-from app.db.models import Environment, Hardware, ComputeUnit, Service
+from app.db.models import ComputeUnit, Environment, Hardware, Service
 
 
 class EnvironmentInUseError(Exception):

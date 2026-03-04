@@ -1,19 +1,21 @@
-import re
-from datetime import datetime
-from typing import Any, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import json
 import logging
+import re
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _logger = logging.getLogger(__name__)
 
-_HEX_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 class BrandingConfig(BaseModel):
     app_name: str = "Circuit Breaker"
-    favicon_path: Optional[str] = None
-    login_logo_path: Optional[str] = None
+    favicon_path: str | None = None
+    login_logo_path: str | None = None
+    login_bg_path: str | None = None
     primary_color: str = "#00d4ff"
     accent_colors: list[str] = ["#ff6b6b", "#4ecdc4"]
 
@@ -48,6 +50,8 @@ class BrandingConfig(BaseModel):
 VALID_PRESETS = {
     "cyberpunk-neon", "dark-matter", "solarized-dark", "nord",
     "dracula", "gruvbox-dark", "monokai", "one-dark", "custom",
+    # theme.park vendored palettes
+    "tp-maroon", "tp-hotline", "tp-aquamarine", "tp-space-gray", "tp-hotpink", "tp-overseer",
 }
 
 
@@ -58,17 +62,17 @@ class ThemeColors(BaseModel):
     ``AppSettingsRead`` accept/return a raw ``dict`` to support the structured
     ``{dark: {...}, light: {...}}`` format sent by the frontend."""
 
-    primary: Optional[str] = None
-    secondary: Optional[str] = None
-    accent1: Optional[str] = None
-    accent2: Optional[str] = None
-    background: Optional[str] = None
-    surface: Optional[str] = None
-    surfaceAlt: Optional[str] = None
-    border: Optional[str] = None
-    text: Optional[str] = None
-    textMuted: Optional[str] = None
-    gridLine: Optional[str] = None  # may be rgba(…), not necessarily hex
+    primary: str | None = None
+    secondary: str | None = None
+    accent1: str | None = None
+    accent2: str | None = None
+    background: str | None = None
+    surface: str | None = None
+    surfaceAlt: str | None = None
+    border: str | None = None
+    text: str | None = None
+    textMuted: str | None = None
+    gridLine: str | None = None  # may be rgba(…), not necessarily hex
 
 
 class AppSettingsRead(BaseModel):
@@ -76,38 +80,57 @@ class AppSettingsRead(BaseModel):
 
     id: int
     theme: str
-    default_environment: Optional[str] = None
+    default_environment: str | None = None
     show_experimental_features: bool
-    api_base_url: Optional[str] = None
-    map_default_filters: Optional[str] = None  # JSON string
+    api_base_url: str | None = None
+    map_default_filters: str | None = None  # JSON string
     vendor_icon_mode: str
     environments: list[str] = ["prod", "staging", "dev"]
     categories: list[str] = []
     locations: list[str] = []
-    dock_order: Optional[list[str]] = None
-    dock_hidden_items: Optional[list[str]] = None
+    dock_order: list[str] | None = None
+    dock_hidden_items: list[str] | None = None
     show_page_hints: bool = True
+    show_header_widgets: bool = True
+    show_time_widget: bool = True
+    show_weather_widget: bool = True
+    weather_location: str = "Phoenix, AZ"
     auth_enabled: bool = False
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
     timezone: str = "UTC"
+    language: str = "en"
+    # Auto-Discovery
+    discovery_enabled: bool = False
+    discovery_auto_merge: bool = False
+    discovery_default_cidr: str = ""
+    discovery_nmap_args: str = "-sV -O --open -T4"
+    discovery_snmp_community: str = Field(default="", exclude=True)
+    discovery_schedule_cron: str = ""
+    discovery_http_probe: bool = True
+    discovery_retention_days: int = 30
+    scan_ack_accepted: bool = False
+    # Font preferences
+    ui_font: str = "inter"
+    ui_font_size: str = "medium"
     # Advanced Theming
     theme_preset: str = "cyberpunk-neon"
-    custom_colors: Optional[str] = Field(default=None, exclude=True)  # raw JSON from ORM
-    theme_colors: Optional[Any] = None  # parsed in model_validator below — flat or {dark,light} dict
+    custom_colors: str | None = Field(default=None, exclude=True)  # raw JSON from ORM
+    theme_colors: Any | None = None  # parsed in model_validator below — flat or {dark,light} dict
     # Flat branding columns — read from ORM but excluded from JSON output (nested via `branding`)
     app_name: str = Field(default="Circuit Breaker", exclude=True)
-    favicon_path: Optional[str] = Field(default=None, exclude=True)
-    login_logo_path: Optional[str] = Field(default=None, exclude=True)
+    favicon_path: str | None = Field(default=None, exclude=True)
+    login_logo_path: str | None = Field(default=None, exclude=True)
+    login_bg_path: str | None = Field(default=None, exclude=True)
     primary_color: str = Field(default="#00d4ff", exclude=True)
-    accent_colors: Optional[str] = Field(default='["#ff6b6b","#4ecdc4"]', exclude=True)
+    accent_colors: str | None = Field(default='["#ff6b6b","#4ecdc4"]', exclude=True)
     # Nested branding object (computed in model_validator)
     branding: BrandingConfig = BrandingConfig()
     created_at: datetime
     updated_at: datetime
 
-    @model_validator(mode='after')
-    def build_branding(self) -> 'AppSettingsRead':
+    @model_validator(mode="after")
+    def build_branding(self) -> "AppSettingsRead":
         raw_accents = self.accent_colors
         if isinstance(raw_accents, str):
             try:
@@ -119,16 +142,17 @@ class AppSettingsRead(BaseModel):
         else:
             accent_colors = raw_accents
         self.branding = BrandingConfig(
-            app_name=self.app_name or 'Circuit Breaker',
+            app_name=self.app_name or "Circuit Breaker",
             favicon_path=self.favicon_path,
             login_logo_path=self.login_logo_path,
-            primary_color=self.primary_color or '#00d4ff',
+            login_bg_path=self.login_bg_path,
+            primary_color=self.primary_color or "#00d4ff",
             accent_colors=accent_colors,
         )
         return self
 
-    @model_validator(mode='after')
-    def build_theme_colors(self) -> 'AppSettingsRead':
+    @model_validator(mode="after")
+    def build_theme_colors(self) -> "AppSettingsRead":
         raw = self.custom_colors
         if raw:
             try:
@@ -138,7 +162,7 @@ class AppSettingsRead(BaseModel):
                 pass
         return self
 
-    @field_validator('environments', mode='before')
+    @field_validator("environments", mode="before")
     @classmethod
     def parse_environments(cls, v):
         if isinstance(v, str):
@@ -151,7 +175,7 @@ class AppSettingsRead(BaseModel):
             return ["prod", "staging", "dev"]
         return v
 
-    @field_validator('categories', mode='before')
+    @field_validator("categories", mode="before")
     @classmethod
     def parse_categories(cls, v):
         if isinstance(v, str):
@@ -164,7 +188,7 @@ class AppSettingsRead(BaseModel):
             return []
         return v
 
-    @field_validator('locations', mode='before')
+    @field_validator("locations", mode="before")
     @classmethod
     def parse_locations(cls, v):
         if isinstance(v, str):
@@ -177,7 +201,7 @@ class AppSettingsRead(BaseModel):
             return []
         return v
 
-    @field_validator('dock_order', mode='before')
+    @field_validator("dock_order", mode="before")
     @classmethod
     def parse_dock_order(cls, v):
         if isinstance(v, str):
@@ -188,7 +212,7 @@ class AppSettingsRead(BaseModel):
                 return None
         return v
 
-    @field_validator('dock_hidden_items', mode='before')
+    @field_validator("dock_hidden_items", mode="before")
     @classmethod
     def parse_dock_hidden_items(cls, v):
         if isinstance(v, str):
@@ -201,30 +225,48 @@ class AppSettingsRead(BaseModel):
 
 
 class AppSettingsUpdate(BaseModel):
-    theme: Optional[Literal["auto", "dark", "light"]] = None
-    default_environment: Optional[str] = None
-    show_experimental_features: Optional[bool] = None
-    api_base_url: Optional[str] = None
-    map_default_filters: Optional[Any] = None  # accepts dict or None; serialized to JSON string
-    vendor_icon_mode: Optional[Literal["none", "built_in", "custom_files"]] = None
-    environments: Optional[list[str]] = None
-    categories: Optional[list[str]] = None
-    locations: Optional[list[str]] = None
-    dock_order: Optional[list[str]] = None
-    dock_hidden_items: Optional[list[str]] = None
-    show_page_hints: Optional[bool] = None
-    auth_enabled: Optional[bool] = None
-    session_timeout_hours: Optional[int] = None
-    branding: Optional[BrandingConfig] = None
-    theme_preset: Optional[str] = None
-    show_external_nodes_on_map: Optional[bool] = None
-    timezone: Optional[str] = None
+    theme: Literal["auto", "dark", "light"] | None = None
+    default_environment: str | None = None
+    show_experimental_features: bool | None = None
+    api_base_url: str | None = None
+    map_default_filters: Any | None = None  # accepts dict or None; serialized to JSON string
+    vendor_icon_mode: Literal["none", "built_in", "custom_files"] | None = None
+    environments: list[str] | None = None
+    categories: list[str] | None = None
+    locations: list[str] | None = None
+    dock_order: list[str] | None = None
+    dock_hidden_items: list[str] | None = None
+    show_page_hints: bool | None = None
+    show_header_widgets: bool | None = None
+    show_time_widget: bool | None = None
+    show_weather_widget: bool | None = None
+    weather_location: str | None = None
+    auth_enabled: bool | None = None
+    session_timeout_hours: int | None = None
+    branding: BrandingConfig | None = None
+    theme_preset: str | None = None
+    show_external_nodes_on_map: bool | None = None
+    timezone: str | None = None
+    language: Literal["en", "es", "fr", "de", "zh", "ja"] | None = None
+    # Auto-Discovery
+    discovery_enabled: bool | None = None
+    discovery_auto_merge: bool | None = None
+    discovery_default_cidr: str | None = None
+    discovery_nmap_args: str | None = None
+    discovery_snmp_community: str | None = None
+    discovery_schedule_cron: str | None = None
+    discovery_http_probe: bool | None = None
+    discovery_retention_days: int | None = None
+    scan_ack_accepted: bool | None = None
+    # Font preferences
+    ui_font: str | None = None
+    ui_font_size: str | None = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
-    theme_colors: Optional[dict[str, Any]] = None
+    theme_colors: dict[str, Any] | None = None
 
     @field_validator("theme_preset")
     @classmethod
-    def validate_preset(cls, v: Optional[str]) -> Optional[str]:
+    def validate_preset(cls, v: str | None) -> str | None:
         if v is not None and v not in VALID_PRESETS:
             raise ValueError(f"theme_preset must be one of {sorted(VALID_PRESETS)}")
         return v

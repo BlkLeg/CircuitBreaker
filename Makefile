@@ -7,9 +7,18 @@ BACKEND_PORT  ?= 8000
 FRONTEND_PORT ?= 5173
 BACKEND_DIR   ?= backend
 FRONTEND_DIR  ?= frontend
-VERSION       ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0-dev")
+# VERSION: raw semver read from the canonical repo-root VERSION file.
+# Edit /VERSION to cut a release — everything else derives from it.
+VERSION       ?= $(shell cat VERSION 2>/dev/null | tr -d '[:space:]' || git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0-dev")
+# RELEASE_TAG: appends -beta for any 0.x.y version; bare version once v1+ is reached.
+#   0.1.4  → 0.1.4-beta
+#   1.0.0  → 1.0.0
+MAJOR         := $(shell echo "$(VERSION)" | cut -d. -f1)
+RELEASE_TAG   := $(shell [ "$(MAJOR)" -lt 1 ] 2>/dev/null && echo "$(VERSION)-beta" || echo "$(VERSION)")
 OS_ARCH       := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
 DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.git$$//' | sed 's/^/ghcr.io\//' | tr '[:upper:]' '[:lower:]')
+SNYK_BIN      ?= $(CURDIR)/.tools/snyk
+SNYK_PATH     ?= $(CURDIR)
 
 # ==============================================================================
 # CORE TARGETS
@@ -44,11 +53,25 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 # ==============================================================================
 # BUILD & TEST
 # ==============================================================================
-.PHONY: test test-backend test-frontend test-all test-coverage docs docs-build frontend-build
+.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build snyk-version snyk-auth snyk-test snyk-monitor
+
+lint: ## Run backend and frontend linters
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check app --select F
+	@cd $(FRONTEND_DIR) && npm run lint
+
+format: ## Format backend and frontend code
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff format .
+	@cd $(FRONTEND_DIR) && npm run format
+
+ci: lint test ## Run linting and tests
+
+release: ## Build and push v0.1.4 multi-arch image
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.1.4 --push .
 
 test: ## Run backend tests
 	@echo "Running backend tests..."
 	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest -q
+	@cd $(FRONTEND_DIR) && npm run test
 
 test-backend: ## Run backend tests with verbose output
 	@echo "Running backend tests..."
@@ -76,18 +99,35 @@ frontend-build: ## Build frontend production bundle
 	@echo "Building frontend..."
 	@cd $(FRONTEND_DIR) && npm ci && npm run build
 
+snyk-version: ## Show project-local Snyk CLI version
+	@$(SNYK_BIN) --version
+
+snyk-auth: ## Authenticate Snyk using the local CLI binary
+	@$(SNYK_BIN) auth
+
+snyk-test: ## Run Snyk open-source scan for this repository
+	@$(SNYK_BIN) test --all-projects --path=$(SNYK_PATH)
+
+snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alerts
+	@$(SNYK_BIN) monitor --all-projects --path=$(SNYK_PATH)
+
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: docker-build compose-up compose-down preflight
+.PHONY: lock docker-build compose-up compose-down preflight
+
+lock: ## Regenerate backend/requirements.txt from poetry.lock
+	@echo "Regenerating backend/requirements.txt from poetry.lock..."
+	@python3 scripts/gen_requirements.py
+	@echo "✅ requirements.txt updated — commit the file alongside poetry.lock."
 
 docker-build: ## Build primary beta image with tag 'circuit-breaker:beta'
 	@echo "Building circuit-breaker:beta image..."
-	docker build -t circuit-breaker:beta .
+	DOCKER_BUILDKIT=1 docker build -t circuit-breaker:beta .
 
 compose-up: ## Rebuild and start docker compose stack (port 8080)
 	@echo "Starting docker-compose stack..."
-	docker compose -f docker/docker-compose.yml up --build -d
+	DOCKER_BUILDKIT=1 docker compose -f docker/docker-compose.yml up --build -d
 
 compose-down: ## Stop and remove docker compose stack
 	@echo "Stopping docker-compose stack..."
@@ -113,21 +153,23 @@ build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 	@echo "✅ Native binary created in dist/"
 
 docker-publish: ## Build and push a multi-arch Docker image to DOCKER_REPO
-	@echo "Building and publishing multi-arch image to $(DOCKER_REPO)..."
+	@echo "Building and publishing multi-arch image to $(DOCKER_REPO) as $(RELEASE_TAG)..."
 	docker buildx build --platform linux/amd64,linux/arm64 \
 		--no-cache \
-		-t "$(DOCKER_REPO):$(VERSION)" \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t "$(DOCKER_REPO):$(RELEASE_TAG)" \
 		-t "$(DOCKER_REPO):latest" \
 		--push .
 
 docker-multiarch: ## Build and push a multi-arch Docker image (requires login)
-	@echo "Building multi-arch image for $(VERSION)..."
+	@echo "Building multi-arch image for $(RELEASE_TAG)..."
 	docker buildx build --platform linux/amd64,linux/arm64 \
-		-t $(DOCKER_REPO):$(VERSION) --push .
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(DOCKER_REPO):$(RELEASE_TAG) --push .
 
 test-pi-local: ## Test the ARM64 Docker image locally using emulation
-	@echo "Testing ARM64 image..."
-	docker run --rm -d --name cb-pi-test -p 8080:8080 --platform linux/arm64 $(DOCKER_REPO):$(VERSION)
+	@echo "Testing ARM64 image $(RELEASE_TAG)..."
+	docker run --rm -d --name cb-pi-test -p 8080:8080 --platform linux/arm64 $(DOCKER_REPO):$(RELEASE_TAG)
 	@echo "Giving container 10s to start..."
 	@sleep 10
 	@curl -f http://localhost:8080/health

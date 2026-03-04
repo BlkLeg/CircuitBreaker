@@ -6,13 +6,13 @@ from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.clusters import (
     HardwareClusterCreate,
-    HardwareClusterUpdate,
     HardwareClusterMemberLink,
     HardwareClusterMemberUpdate,
+    HardwareClusterUpdate,
 )
 from app.services import clusters_service
 
-router = APIRouter(prefix="/hardware-clusters", tags=["hardware-clusters"])
+router = APIRouter(tags=["hardware-clusters"])
 
 
 # ── Cluster CRUD ─────────────────────────────────────────────────────────────

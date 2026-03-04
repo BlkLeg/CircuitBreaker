@@ -1,16 +1,23 @@
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
 
 from app.core.time import utcnow
-from app.db.models import ExternalNode, ExternalNodeNetwork, ServiceExternalNode, Network, Service, EntityTag, Tag
+from app.db.models import (
+    EntityTag,
+    ExternalNode,
+    ExternalNodeNetwork,
+    Network,
+    Service,
+    ServiceExternalNode,
+    Tag,
+)
 from app.schemas.external_nodes import (
     ExternalNodeCreate,
-    ExternalNodeUpdate,
     ExternalNodeNetworkLink,
+    ExternalNodeUpdate,
     ServiceExternalNodeLink,
 )
-
 
 # ── Tag helpers (reuse the entity-tag system) ────────────────────────────────
 

@@ -1,17 +1,16 @@
 """Auth endpoints: register, login, me, update profile, logout, delete account."""
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, Request, Response, UploadFile, File
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from sqlalchemy.orm import Session
 
-from app.core.security import get_optional_user, require_write_auth
-from app.db.session import get_db
 from app.core.rate_limit import limiter
+from app.core.security import get_optional_user
+from app.db.session import get_db
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, UserProfile
 from app.services import auth_service
 from app.services.settings_service import get_or_create_settings
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(tags=["auth"])
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -31,7 +30,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 
 @router.get("/me", response_model=UserProfile)
 def get_me(
-    user_id: Optional[int] = Depends(get_optional_user),
+    user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     if user_id is None:
@@ -42,9 +41,9 @@ def get_me(
 
 @router.put("/me", response_model=UserProfile)
 async def update_me(
-    display_name: Optional[str] = Form(None),
-    profile_photo: Optional[UploadFile] = File(None),
-    user_id: Optional[int] = Depends(get_optional_user),
+    display_name: str | None = Form(None),
+    profile_photo: UploadFile | None = File(None),
+    user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     if user_id is None:
@@ -55,7 +54,7 @@ async def update_me(
 
 @router.delete("/me", status_code=204)
 def delete_me(
-    user_id: Optional[int] = Depends(get_optional_user),
+    user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     if user_id is None:

@@ -1,0 +1,20 @@
+{
+  "header": {
+    "hardware": "Hardware",
+    "compute": "Compute",
+    "services": "Services",
+    "network": "Network",
+    "external": "External",
+    "storage": "Storage",
+    "map": "Map",
+    "discovery": "Discovery",
+    "docs": "Docs",
+    "logs": "Logs",
+    "settings": "Settings"
+  },
+  "map": {
+    "ethernet": "Ethernet",
+    "wireless": "Wireless",
+    "linkToNetwork": "Link to Network"
+  }
+}

@@ -43,13 +43,18 @@ in between — through an interactive topology map and rack simulator.
 
 ![Login Screen](screenshots/01-Login.png)
 
-### Cluster-Centric Topology View
+### Speed-centric connections (w/ live animations)
 
-![Cluster-Centric Topology View](screenshots/01-cluster.png)
+![Speed-centric Connections](screenshots/speed-connection.png)
+The lowest node speed dictates the overall speed of the animation to mimic real-world effects.
+
+1. Various connection types with their own animations/colors.
+2. Bandwidth slider dictates animation speed.
+3. State management
 
 ### Custom Layout Example
 
-![Custom Layout Example](screenshots/01-custom-layout.png)
+![Custom Layout Example](screenshots/New%20Map.png)
 
 ### Hardware Inventory Page
 
@@ -59,6 +64,9 @@ in between — through an interactive topology map and rack simulator.
 
 ![Top-Down Topology Layout](screenshots/01-top-down.png)
 
+### Mobile Friendly Layout
+
+![Mobile Layout](screenshots/new_mobile_layout.jpg)
 ---
 
 ## Quick Start
@@ -226,8 +234,8 @@ with a full week of planning in Notion — mapping out features, workflows, and 
 before a single line of code was written. From there, each feature was built and tested
 in isolated phases; nothing significant was shipped in a single unreviewed pass.
 
-Code quality is actively monitored using **Dependabot**, **SonarQube**, **Snyk**, and
-**Sentry**. All critical and high-severity vulnerabilities were resolved before the beta
+Code quality is actively monitored using **Dependabot**, **SonarQube**, and **Snyk**.
+All critical and high-severity vulnerabilities were resolved before the beta
 release. As the project approaches v1, the focus will increasingly shift to stability,
 maintainability, and low cognitive complexity throughout the codebase.
 
