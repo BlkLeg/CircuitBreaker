@@ -106,12 +106,31 @@ def _decrypt_community(encrypted: Optional[str]) -> str:
     vault = CredentialVault()
     return vault.decrypt(encrypted) or ""
 
-async def _update_job_progress(db: Session, job: ScanJob, phase: str, message: str = "") -> None:
+async def _update_job_progress(
+    db: Session,
+    job: ScanJob,
+    phase: str,
+    message: str = "",
+    percent: Optional[int] = None,
+    processed: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
     """Persist progress phase in DB and push a job_progress WebSocket event."""
     job.progress_phase = phase
     job.progress_message = message
     db.commit()
-    await _emit_ws_event("job_progress", {"job_id": job.id, "phase": phase, "message": message})
+    payload = {
+        "job_id": job.id,
+        "phase": phase,
+        "message": message,
+    }
+    if percent is not None:
+        payload["percent"] = max(0, min(100, int(percent)))
+    if processed is not None:
+        payload["processed"] = processed
+    if total is not None:
+        payload["total"] = total
+    await _emit_ws_event("job_progress", payload)
 
 
 _NMAP_OVERRIDE_PREFIX = "__nmap_override__:"
@@ -153,7 +172,7 @@ async def _run_arp_scan(cidr: str) -> list[dict]:
     try:
         from scapy.layers.l2 import ARP, Ether
         from scapy.sendrecv import srp
-        ans, unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=cidr), timeout=2, verbose=False)
+        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=cidr), timeout=2, verbose=False)
         results = []
         for snd, rcv in ans:
             results.append({
@@ -322,13 +341,13 @@ async def run_scan_job(job_id: int):
         
         async def _arp_phase():
             if "arp" in scan_types and _arp_available():
-                await _update_job_progress(db, job, "arp", "Running ARP (12%)")
+                await _update_job_progress(db, job, "arp", "Running ARP discovery...", percent=12)
                 return await _run_arp_scan(job.target_cidr)
             return []
 
         async def _nmap_phase():
             if "nmap" in scan_types:
-                await _update_job_progress(db, job, "nmap", "Running nmap (67%)")
+                await _update_job_progress(db, job, "nmap", "Running nmap host discovery...", percent=42)
                 return await _run_nmap_scan(job.target_cidr, nmap_args)
             return {}
 
@@ -342,9 +361,25 @@ async def run_scan_job(job_id: int):
         # 4. Phase 3 & 4: Deep Probes per IP
         n_active = len(active_ips)
         if n_active > 0 and "snmp" in scan_types and snmp_community_plain:
-            await _update_job_progress(db, job, "snmp", f"SNMP walking {n_active} host{'s' if n_active != 1 else ''}...")
+            await _update_job_progress(
+                db,
+                job,
+                "snmp",
+                f"Preparing deep probes for {n_active} host{'s' if n_active != 1 else ''}...",
+                percent=58,
+                processed=0,
+                total=n_active,
+            )
         elif n_active > 0 and http_probe and "http" in scan_types:
-            await _update_job_progress(db, job, "http", "HTTP probing open ports...")
+            await _update_job_progress(
+                db,
+                job,
+                "http",
+                f"Preparing HTTP probes for {n_active} host{'s' if n_active != 1 else ''}...",
+                percent=58,
+                processed=0,
+                total=n_active,
+            )
 
         # B6: use Python-only counters; assign to job once at the end
         hosts_found   = 0
@@ -353,8 +388,15 @@ async def run_scan_job(job_id: int):
         hosts_conflict = 0
 
         results_list = []
-        for ip in active_ips:
-            await _emit_ws_event("job_progress", {"job_id": job.id, "message": f"Probing host {ip}..."})
+        for index, ip in enumerate(active_ips, start=1):
+            await _emit_ws_event("job_progress", {
+                "job_id": job.id,
+                "phase": job.progress_phase,
+                "message": f"Probing host {index}/{n_active}: {ip}",
+                "processed": index - 1,
+                "total": n_active,
+                "percent": 58 + int(((index - 1) / max(n_active, 1)) * 35),
+            })
 
             # Get nmap base data
             n_data = nmap_results.get(ip, {})
@@ -374,7 +416,7 @@ async def run_scan_job(job_id: int):
                 has_web = any(p["port"] in (80, 443) for p in open_ports)
                 if has_web:
                     try:
-                        async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+                        async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
                             await client.get(f"http://{ip}")
                     except Exception:
                         pass
@@ -436,17 +478,39 @@ async def run_scan_job(job_id: int):
             else:
                 hosts_new += 1
 
+            hosts_found += 1
+            job.hosts_found = hosts_found
+            job.hosts_new = hosts_new
+            job.hosts_updated = hosts_updated
+            job.hosts_conflict = hosts_conflict
+
             db.commit()
             db.refresh(res)
 
             await _emit_ws_event("result_added", {"job_id": job.id, "result": ScanResultOut.model_validate(res).model_dump()})
             results_list.append(res)
-            hosts_found += 1
+
+            await _emit_ws_event("job_progress", {
+                "job_id": job.id,
+                "phase": job.progress_phase,
+                "message": f"Processed host {index}/{n_active}",
+                "processed": index,
+                "total": n_active,
+                "percent": 58 + int((index / max(n_active, 1)) * 35),
+            })
 
         # B3: run auto-merge BEFORE marking job completed so any exception
         # doesn't overwrite a completed job with "failed"
         if auto_merge and results_list:
-            await _update_job_progress(db, job, "reconcile", f"Matching {hosts_found} host{'s' if hosts_found != 1 else ''} to existing entities...")
+            await _update_job_progress(
+                db,
+                job,
+                "reconcile",
+                f"Reconciling {hosts_found} host{'s' if hosts_found != 1 else ''}...",
+                percent=95,
+                processed=hosts_found,
+                total=hosts_found,
+            )
             for r in results_list:
                 _auto_merge_result(db, r)
 
@@ -473,7 +537,15 @@ async def run_scan_job(job_id: int):
             }),
         )
 
-        await _update_job_progress(db, job, "done", f"Scan complete. Found {hosts_found} host{'s' if hosts_found != 1 else ''}.")
+        await _update_job_progress(
+            db,
+            job,
+            "done",
+            f"Scan complete. Found {hosts_found} host{'s' if hosts_found != 1 else ''}.",
+            percent=100,
+            processed=hosts_found,
+            total=max(hosts_found, n_active),
+        )
         await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
 
     except Exception as e:
@@ -494,8 +566,8 @@ async def run_scan_job(job_id: int):
                 severity="error",
                 details=json.dumps({"error": str(e), "cidr": job.target_cidr}),
             )
-            asyncio.create_task(_emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()}))
-            asyncio.create_task(_emit_ws_event("job_progress", {"job_id": job.id, "phase": "failed", "message": str(e)}))
+            task1 = asyncio.create_task(_emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()}))
+            task2 = asyncio.create_task(_emit_ws_event("job_progress", {"job_id": job.id, "phase": "failed", "message": str(e), "percent": 100}))
     finally:
         db.close()
 

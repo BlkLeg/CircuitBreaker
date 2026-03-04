@@ -308,6 +308,7 @@ def build_topology_graph(
                 "type": "cluster",
                 "ref_id": cluster.id,
                 "label": cluster.name,
+                "icon_slug": cluster.icon_slug,
                 "environment": cluster.environment,
                 "member_count": len(cluster.members),
             })

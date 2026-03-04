@@ -410,6 +410,7 @@ class HardwareCluster(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String)

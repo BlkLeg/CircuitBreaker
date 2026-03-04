@@ -22,6 +22,7 @@ const HeaderWidgets = ({ settings }) => {
       timeZone: timezone,
       hour: 'numeric',
       minute: '2-digit',
+      second: '2-digit',
       hour12: true,
     }).format(now),
     [now, timezone]

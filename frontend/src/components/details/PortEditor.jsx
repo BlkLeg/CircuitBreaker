@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Plus, X, Link, Save, Loader2, Ethernet } from 'lucide-react';
+import { Plus, X, Link, Save, Loader2, Cable } from 'lucide-react';
 import { hardwareApi, computeUnitsApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 import FormModal from '../common/FormModal';
@@ -8,7 +8,7 @@ import Select from 'react-select';
 import { debounce } from 'lodash';
 
 const PORT_TYPES = [
-  { value: 'ethernet', label: 'Ethernet', icon: <Ethernet size={14} /> },
+  { value: 'ethernet', label: 'Ethernet', icon: <Cable size={14} /> },
   { value: 'sfp', label: 'SFP' },
   { value: 'sfp+', label: 'SFP+' },
   { value: 'usb', label: 'USB' },
@@ -254,7 +254,7 @@ function PortEditor({ hardware, onSave, onCancel }) {
               </div>
               <div className="port-body">
                 <div className="port-icon">
-                  {PORT_TYPES.find(pt => pt.value === p.type)?.icon || <Ethernet size={20} />}
+                  {PORT_TYPES.find(pt => pt.value === p.type)?.icon || <Cable size={20} />}
                 </div>
                 <div className="port-info">
                   {p.speed_mbps && <span className="port-speed">{formatSpeed(p.speed_mbps)}</span>}

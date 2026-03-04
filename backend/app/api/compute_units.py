@@ -153,8 +153,7 @@ def delete_icon(slug: str, db: Session = Depends(get_db), _=Depends(require_writ
     dest = (ICON_UPLOAD_DIR / slug).resolve()
     if not dest.is_relative_to(icon_root):
         raise HTTPException(status_code=400, detail="Invalid icon slug.")
-    if dest.exists():
-        dest.unlink()
+    dest.unlink(missing_ok=True)
     
     db_icon = db.query(UserIcon).filter((UserIcon.slug == slug) | (UserIcon.filename == slug)).first()
     if db_icon:

@@ -232,22 +232,50 @@ export const LIBRARY_ICONS = [
   { slug: 'pwr-ups',           label: 'UPS',             path: '/icons/power/icons8-ups-50.png',                    group: 'Power' },
   { slug: 'pwr-ups-alt',       label: 'UPS (alt)',       path: '/icons/power/icons8-ups-50-2.png',                  group: 'Power' },
   { slug: 'pwr-ups-alt2',      label: 'UPS (alt 2)',     path: '/icons/power/icons8-ups-50-3.png',                  group: 'Power' },
+  { slug: 'cb-brand-az-sun',   label: 'CB Brand AZ Sun',   path: '/icons/vendors/CB_AZ_SUN.png',                    group: 'Other' },
+  { slug: 'cb-brand-city-day', label: 'CB Brand City Day', path: '/icons/vendors/CB_CITY_DAY.png',                  group: 'Other' },
+  { slug: 'cb-brand-night-full', label: 'CB Brand Night Full', path: '/icons/vendors/CB_NIGHT_FULL.png',            group: 'Other' },
+  { slug: 'cb-brand-night-half', label: 'CB Brand Night Half', path: '/icons/vendors/CB_NIGHT_HALF.png',            group: 'Other' },
   { slug: 'generic',           label: 'Generic',         path: '/icons/vendors/generic.svg',           group: 'Other' },
 ];
 
 const GROUPS = ['OS', 'Vendor', 'Hardware', 'Network', 'Storage', 'Security', 'Devices', 'Power', 'Cloud', 'Apps', 'Other', 'Uploaded'];
+const USER_UPLOADED_ICON_SCALE = 2.5;
+const USER_ICON_SIZED_SLUGS = new Set([
+  'cb-brand-az-sun',
+  'cb-brand-city-day',
+  'cb-brand-night-full',
+  'cb-brand-night-half',
+  'cb-az-sun',
+  'cb-city-day',
+  'cb-night-full',
+  'cb-night-half',
+]);
+
+const ICON_SLUG_ALIASES = {
+  'cb-az-sun': 'cb-brand-az-sun',
+  'cb-city-day': 'cb-brand-city-day',
+  'cb-night-full': 'cb-brand-night-full',
+  'cb-night-half': 'cb-brand-night-half',
+};
+
+function isUserUploadedIconSlug(slug) {
+  return typeof slug === 'string' && (slug.startsWith('user-') || USER_ICON_SIZED_SLUGS.has(slug));
+}
 
 export function getIconEntry(slug) {
   if (!slug) return null;
-  const lib = LIBRARY_ICONS.find((i) => i.slug === slug);
+  const normalizedSlug = ICON_SLUG_ALIASES[slug] || slug;
+  const lib = LIBRARY_ICONS.find((i) => i.slug === normalizedSlug);
   if (lib) return lib;
   // Uploaded icons are served from /user-icons/ and their slugs start with 'user-'
-  const path = slug.startsWith('user-') ? `/user-icons/${slug}` : `/icons/vendors/${slug}.svg`;
-  return { slug, label: slug.replace(/\.[^.]+$/, ''), path, group: 'Uploaded' };
+  const path = normalizedSlug.startsWith('user-') ? `/user-icons/${normalizedSlug}` : `/icons/vendors/${normalizedSlug}.svg`;
+  return { slug: normalizedSlug, label: normalizedSlug.replace(/\.[^.]+$/, ''), path, group: 'Uploaded' };
 }
 
 export function IconImg({ slug, size = 20, style = {} }) {
   const entry = getIconEntry(slug);
+  const isUploadedIcon = isUserUploadedIconSlug(slug);
   if (!entry) return <span style={{ width: size, height: size, display: 'inline-block' }} />;
   return (
     <img
@@ -255,7 +283,17 @@ export function IconImg({ slug, size = 20, style = {} }) {
       alt={entry.label}
       width={size}
       height={size}
-      style={{ objectFit: 'contain', ...style }}
+      style={{
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        display: 'block',
+        objectFit: 'contain',
+        transform: isUploadedIcon ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+        transformOrigin: 'center',
+        ...style,
+      }}
       onError={(e) => { e.target.style.display = 'none'; }}
     />
   );
@@ -354,6 +392,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
         <div className="icon-picker-grid" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8, alignContent: 'start' }}>
           {filtered.map((icon) => {
             const isSelected = preview === icon.slug;
+            const isUploadedIcon = isUserUploadedIconSlug(icon.slug);
             return (
               <button
                 key={icon.slug}
@@ -381,7 +420,11 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
                 )}
                 <img
                   src={icon.path} alt={icon.label} width={32} height={32}
-                  style={{ objectFit: 'contain' }}
+                  style={{
+                    objectFit: 'contain',
+                    transform: isUploadedIcon ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+                    transformOrigin: 'center',
+                  }}
                   onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
                 />
                 <span style={{ fontSize: 10, color: 'var(--color-text-muted)', textAlign: 'center', lineHeight: 1.2, maxWidth: 68, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -418,7 +461,17 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {preview && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-muted)' }}>
-                <img src={getIconEntry(preview)?.path ?? '/icons/vendors/generic.svg'} alt="" width={22} height={22} style={{ objectFit: 'contain' }} />
+                <img
+                  src={getIconEntry(preview)?.path ?? '/icons/vendors/generic.svg'}
+                  alt=""
+                  width={22}
+                  height={22}
+                  style={{
+                    objectFit: 'contain',
+                    transform: isUserUploadedIconSlug(preview) ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+                    transformOrigin: 'center',
+                  }}
+                />
                 <span>{getIconEntry(preview)?.label ?? preview}</span>
               </div>
             )}

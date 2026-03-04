@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class HardwareClusterBase(BaseModel):
     name: str
+    icon_slug: Optional[str] = None
     description: Optional[str] = None
     environment: Optional[str] = None
     location: Optional[str] = None
@@ -16,6 +17,7 @@ class HardwareClusterCreate(HardwareClusterBase):
 
 class HardwareClusterUpdate(BaseModel):
     name: Optional[str] = None
+    icon_slug: Optional[str] = None
     description: Optional[str] = None
     environment: Optional[str] = None
     location: Optional[str] = None

@@ -187,13 +187,14 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                           key={role.id}
                           type="button"
                           onClick={() => setSelectedRole(role)}
+                          aria-pressed={selectedRole.id === role.id}
                           className={`tw-flex tw-items-center tw-gap-3 tw-px-4 tw-py-3 tw-rounded-lg tw-text-left tw-transition-all ${
                             selectedRole.id === role.id
-                              ? 'tw-bg-cb-secondary tw-border tw-border-cb-primary tw-text-cb-text'
-                              : 'tw-bg-cb-surface tw-hover:bg-cb-secondary tw-border tw-border-cb-border tw-text-cb-text'
+                              ? 'tw-bg-cb-secondary tw-border tw-border-cb-primary tw-text-cb-text tw-shadow-sm'
+                              : 'tw-bg-cb-surface tw-border tw-border-cb-border tw-text-cb-text tw-hover:tw-bg-cb-secondary tw-hover:tw-border-cb-primary/60 tw-hover:tw-shadow-sm'
                           }`}
                         >
-                          <role.icon className={`tw-w-4 tw-h-4 ${selectedRole.id === role.id ? 'tw-text-cb-primary' : 'tw-text-cb-text'}`} />
+                          <role.icon className={`tw-w-4 tw-h-4 ${selectedRole.id === role.id ? 'tw-text-cb-primary' : 'tw-text-cb-text-muted'}`} />
                           <span className="tw-text-sm tw-font-medium">{role.label}</span>
                         </button>
                       ))}
@@ -203,14 +204,15 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
               </div>
             </motion.div>
 
-            {showIconPicker && (
-              <IconPickerModal
-                currentSlug={selectedIconSlug}
-                onSelect={(slug) => setSelectedIconSlug(slug || null)}
-                onClose={() => setShowIconPicker(false)}
-              />
-            )}
           </motion.div>
+
+          {showIconPicker && (
+            <IconPickerModal
+              currentSlug={selectedIconSlug}
+              onSelect={(slug) => setSelectedIconSlug(slug || null)}
+              onClose={() => setShowIconPicker(false)}
+            />
+          )}
         </>
       )}
     </AnimatePresence>

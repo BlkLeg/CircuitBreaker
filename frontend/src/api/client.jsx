@@ -103,15 +103,17 @@ export const computeUnitsApi = {
   uploadIcon: (file) => {
     const form = new FormData();
     form.append('file', file);
-    return client.post('/assets/user-icon', form, {
+    form.append('name', file.name.replace(/\.[^.]+$/, ''));
+    form.append('category', 'UPLOADED');
+    return client.post('/compute-units/icons/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     }).then((res) => ({
       ...res,
       data: {
         ...res.data,
-        slug: res.data.filename,
-        path: res.data.url,
-        label: file.name.replace(/\.[^.]+$/, ''),
+        slug: res.data.slug || res.data.filename,
+        path: res.data.path || res.data.url,
+        label: res.data.label || file.name.replace(/\.[^.]+$/, ''),
       },
     }));
   },

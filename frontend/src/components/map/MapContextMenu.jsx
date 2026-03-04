@@ -44,6 +44,7 @@ const LIST_API = {
 
 // hardware uses vendor_icon_slug; storage/network/misc have no icon column yet
 const UPDATE_ICON_API = {
+  cluster:  (id, slug) => clustersApi.update(id, { icon_slug: slug }),
   hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
   compute:  (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
   service:  (id, slug) => servicesApi.update(id, { icon_slug: slug }),
@@ -53,7 +54,7 @@ const UPDATE_ICON_API = {
   external: (id, slug) => externalNodesApi.update(id, { icon_slug: slug }),
 };
 
-const ICON_SUPPORTED_TYPES = new Set(['hardware', 'compute', 'service', 'storage', 'network', 'misc', 'external']);
+const ICON_SUPPORTED_TYPES = new Set(['cluster', 'hardware', 'compute', 'service', 'storage', 'network', 'misc', 'external']);
 
 // ── Status update helpers ────────────────────────────────────────────────────
 

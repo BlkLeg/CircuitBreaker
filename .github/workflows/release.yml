@@ -56,6 +56,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve safe tag
+        id: vars
+        shell: bash
+        env:
+          RAW_TAG: ${{ github.ref_name }}
+        run: |
+          SAFE_TAG=$(printf '%s' "$RAW_TAG" | tr -cd '[:alnum:]_.-')
+          if [ -z "$SAFE_TAG" ]; then
+            echo "Resolved tag is empty after sanitization" >&2
+            exit 1
+          fi
+          printf 'tag=%s\n' "$SAFE_TAG" >> "$GITHUB_OUTPUT"
+
       - name: Docker Build & Push
         uses: docker/build-push-action@v5
         with:
@@ -64,7 +77,7 @@ jobs:
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
-            ghcr.io/blkleg/circuitbreaker:${{ github.ref_name }}
+            ghcr.io/blkleg/circuitbreaker:${{ steps.vars.outputs.tag }}
             ghcr.io/blkleg/circuitbreaker:latest
             ghcr.io/blkleg/circuitbreaker:v0.1.4
 

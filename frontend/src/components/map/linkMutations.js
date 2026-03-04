@@ -231,8 +231,22 @@ export async function unlinkByEdge(edge) {
   if (rel === 'hosts' && src.prefix === 'hw' && tgt.prefix === 'cu') {
     return computeUnitsApi.update(tgt.id, { hardware_id: null });
   }
+  if (rel === 'hosts' && src.prefix === 'hw' && tgt.prefix === 'svc') {
+    return servicesApi.update(tgt.id, { hardware_id: null });
+  }
   if (rel === 'has_storage' && src.prefix === 'hw' && tgt.prefix === 'st') {
     return storageApi.update(tgt.id, { hardware_id: null });
+  }
+  if (rel === 'on_network' && src.prefix === 'svc' && tgt.prefix === 'net') {
+    const serviceRes = await servicesApi.get(src.id);
+    const service = serviceRes?.data || {};
+    if (service.compute_id) {
+      return networksApi.removeMember(tgt.id, service.compute_id);
+    }
+    if (service.hardware_id) {
+      return networksApi.removeHardwareMember(tgt.id, service.hardware_id);
+    }
+    throw new Error('Service has no hosting compute or hardware and cannot be removed from a network.');
   }
   if (rel === 'on_network' && src.prefix === 'hw' && tgt.prefix === 'net') {
     return networksApi.removeHardwareMember(tgt.id, src.id);

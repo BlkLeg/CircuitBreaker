@@ -28,6 +28,9 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
 
   const isEdit = Boolean(profile?.id);
   const showArpWarning = scanTypes.includes('arp');
+  let submitLabel = 'Create Profile';
+  if (saving) submitLabel = 'Saving…';
+  else if (isEdit) submitLabel = 'Save Changes';
 
   const toggleScanType = (t) =>
     setScanTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
@@ -75,31 +78,21 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
   };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 900,
-      background: 'rgba(0,0,0,0.6)',
-      display: 'flex', justifyContent: 'flex-end',
-    }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
+      className="cb-scan-modal-overlay"
     >
-      <div style={{
-        width: 480, maxWidth: '100vw',
-        background: 'var(--color-surface)',
-        borderLeft: '1px solid var(--color-border)',
-        height: '100%', overflowY: 'auto',
-        display: 'flex', flexDirection: 'column',
-      }}>
-        {/* Header */}
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-            {isEdit ? 'Edit Profile' : 'New Scan Profile'}
+      <dialog open className="cb-scan-modal" aria-labelledby="scan-profile-title">
+        <div className="cb-scan-modal-header">
+          <h2 id="scan-profile-title" className="cb-scan-modal-title">
+            {isEdit ? 'Edit Scan Profile' : 'Create Scan Profile'}
           </h2>
-          <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: 4 }}>
+          <button type="button" onClick={onClose} className="cb-scan-modal-close" aria-label="Close scan profile modal">
             <X size={18} />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} style={{ padding: '20px 24px', flex: 1, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <form onSubmit={handleSubmit} className="cb-scan-modal-form">
+          <div className="cb-scan-modal-body">
           <Field label="Profile Name" error={errors.name}>
             <input className="cb-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Home LAN" />
           </Field>
@@ -108,19 +101,19 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
             <input className="cb-input" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="192.168.1.0/24" />
           </Field>
 
-          <div>
-            <label className="cb-label">Scan Types</label>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div className="cb-field">
+            <span className="cb-label">Scan Types</span>
+            <div className="cb-scan-type-row">
               {SCAN_TYPES.map((t) => (
-                <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: 13 }}>
+                <label key={t} className="cb-scan-type-option">
                   <input type="checkbox" checked={scanTypes.includes(t)} onChange={() => toggleScanType(t)} />
                   {t}
                 </label>
               ))}
             </div>
             {showArpWarning && (
-              <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6 }}>
-                <div style={{ display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 12, color: '#fbbf24' }}>
+              <div className="cb-arp-warning">
+                <div className="cb-arp-warning-content">
                   <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
                   <span>
                     ARP scanning requires elevated Docker capabilities (<code>NET_RAW</code>, <code>NET_ADMIN</code>).
@@ -161,17 +154,19 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-            Enabled
+            <span>Enabled</span>
           </label>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 8, marginTop: 'auto' }}>
+          </div>
+
+          <div className="cb-scan-modal-footer">
             <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
             <button type="submit" className="btn btn-primary" disabled={saving}>
-              {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Profile'}
+              {submitLabel}
             </button>
           </div>
         </form>
-      </div>
+      </dialog>
     </div>
   );
 }
@@ -210,10 +205,11 @@ function PasswordField({ label, value, onChange, hint }) {
 }
 
 function Field({ label, hint, error, children }) {
+  const fieldId = `field-${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-')}`;
   return (
     <div className="cb-field">
-      <label className="cb-label">{label}</label>
-      {children}
+      <label className="cb-label" htmlFor={fieldId}>{label}</label>
+      {React.isValidElement(children) ? React.cloneElement(children, { id: fieldId }) : children}
       {hint && !error && <p className="cb-hint"><Info size={10} /> {hint}</p>}
       {error && <span style={{ display: 'block', fontSize: 11, color: '#f87171', marginTop: 4 }}>{error}</span>}
     </div>

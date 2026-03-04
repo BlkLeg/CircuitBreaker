@@ -45,8 +45,8 @@ const CAP_RETRY_DELAY    = 60000;  // 60 seconds — wait longer when the cap is
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
 function getWsUrl() {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host  = window.location.host;
+  const proto = globalThis.location.protocol === 'https:' ? 'wss' : 'ws';
+  const host  = globalThis.location.host;
   return `${proto}://${host}/api/v1/discovery/stream`;
 }
 
@@ -148,7 +148,14 @@ export function useDiscoveryStream() {
           discoveryEmitter.emit('job:update', msg.job);
           break;
         case 'job_progress':
-          discoveryEmitter.emit('job:progress', { job_id: msg.job_id, phase: msg.phase, message: msg.message });
+          discoveryEmitter.emit('job:progress', {
+            job_id: msg.job_id,
+            phase: msg.phase,
+            message: msg.message,
+            percent: msg.percent,
+            processed: msg.processed,
+            total: msg.total,
+          });
           break;
         case 'result_added':
           discoveryEmitter.emit('result:added', msg.result);

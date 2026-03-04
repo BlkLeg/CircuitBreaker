@@ -106,8 +106,8 @@ body {
   white-space: nowrap;
   border-radius: 12px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--color-border) 78%, var(--color-primary) 22%);
-  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
@@ -120,7 +120,7 @@ body {
   min-height: 44px;
   padding: 6px 12px;
   color: var(--color-text);
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-primary) 18%);
+  border-right: 1px solid var(--color-border);
 }
 
 .header-widget:last-child {
@@ -174,7 +174,7 @@ body {
   height: 28px;
   border-radius: 7px;
   background: color-mix(in srgb, var(--color-surface-alt) 70%, var(--color-border) 30%);
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, var(--color-primary) 20%);
+  border: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -220,21 +220,20 @@ body {
   /* show ~5 pills; 6th peeks to hint scrollability */
   max-width: calc(5 * 80px + 4 * 8px + 32px);
   overflow-x: auto;
-  scrollbar-width: none;
   -ms-overflow-style: none;
   background: transparent;
   border: none;
   box-shadow: none;
   z-index: 100;
   /* Fade edges so scrolled-off pills dissolve instead of hard-clipping */
-  mask-image: linear-gradient(
+  -webkit-mask-image: linear-gradient(
     to right,
     transparent 0%,
     black 48px,
     black calc(100% - 48px),
     transparent 100%
   );
-  -webkit-mask-image: linear-gradient(
+  mask-image: linear-gradient(
     to right,
     transparent 0%,
     black 48px,
@@ -469,10 +468,9 @@ body {
   /* Individual pill glass */
   background: rgba(13, 17, 23, 0.75);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
-  backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
   border: 1px solid rgba(0, 212, 255, 0.10);                                  /* fallback: no color-mix */
-  border: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.03);                                  /* fallback: no color-mix */
@@ -492,7 +490,6 @@ body {
   background: rgba(13, 17, 23, 0.88);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 88%, transparent);
   border-color: rgba(0, 212, 255, 0.22);                                      /* fallback: no color-mix */
-  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
   transform: translateY(-4px);
   box-shadow:
     0 8px 28px rgba(0, 0, 0, 0.55),
@@ -513,7 +510,6 @@ body {
   background: rgba(0, 212, 255, 0.08);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
   border-color: rgba(0, 212, 255, 0.38);                                      /* fallback: no color-mix */
-  border-color: color-mix(in srgb, var(--color-primary) 38%, transparent);
   box-shadow:
     0 0 14px rgba(0, 212, 255, 0.25),
     0 4px 20px rgba(0, 0, 0, 0.5),
@@ -539,7 +535,6 @@ body {
   background: rgba(13, 17, 23, 0.75);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
   border-color: rgba(0, 212, 255, 0.10);                                      /* fallback: no color-mix */
-  border-color: color-mix(in srgb, var(--color-primary) 10%, transparent);
   box-shadow:
     0 4px 20px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.03);                                  /* fallback: no color-mix */
@@ -598,22 +593,24 @@ body {
   position: fixed;
   inset: 0;
   z-index: 200;
-  pointer-events: none; /* page stays fully interactive behind the palette */
+  pointer-events: all;
+  background: transparent;
 }
 
 .command-palette {
   position: fixed;
-  top: calc(var(--header-height) + 8px);
-  right: 24px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   width: 440px;
   max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
   pointer-events: all;
   background: rgba(13, 17, 23, 0.97);                                         /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-surface) 97%, transparent);
-  backdrop-filter: blur(32px);
   -webkit-backdrop-filter: blur(32px);
+  backdrop-filter: blur(32px);
   border: 1px solid rgba(0, 212, 255, 0.18);                                  /* fallback: no color-mix */
-  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   border-radius: 14px;
   box-shadow:
     0 8px 40px rgba(0, 0, 0, 0.5),
@@ -630,7 +627,6 @@ body {
   gap: 10px;
   padding: 14px 16px;
   border-bottom: 1px solid rgba(0, 212, 255, 0.10);                           /* fallback: no color-mix */
-  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .palette-input {
@@ -651,7 +647,6 @@ body {
   background: rgba(0, 212, 255, 0.08);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
   border: 1px solid rgba(0, 212, 255, 0.20);                                  /* fallback: no color-mix */
-  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
   border-radius: 6px;
   color: var(--color-primary);
   font-size: 11px;
@@ -663,9 +658,28 @@ body {
 }
 
 .palette-results {
-  max-height: 380px;
+  max-height: min(52vh, 380px);
   overflow-y: auto;
   padding: 6px;
+}
+
+.palette-results::-webkit-scrollbar {
+  width: 10px;
+}
+
+.palette-results::-webkit-scrollbar-track {
+  background: var(--color-surface);
+  border-radius: 999px;
+}
+
+.palette-results::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+.palette-results::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
 }
 
 .palette-empty {
@@ -703,7 +717,6 @@ body {
   background: rgba(0, 212, 255, 0.11);                                        /* fallback: no color-mix */
   background: color-mix(in srgb, var(--color-primary) 11%, transparent);
   outline: 1px solid rgba(0, 212, 255, 0.18);                                 /* fallback: no color-mix */
-  outline: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   outline-offset: -1px;
 }
 
@@ -1217,7 +1230,6 @@ body {
 .docs-search-wrap {
   padding: 10px 10px 8px;
   border-bottom: 1px solid rgba(30, 42, 58, 0.82);                             /* fallback: no color-mix */
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-primary) 18%);
   flex-shrink: 0;
 }
 
@@ -1357,7 +1369,7 @@ body {
   white-space: nowrap;
 }
 .doc-row-menu button:hover { background: rgba(0, 212, 255, 0.08); }
-.doc-row-menu button.danger { color: #f44336; }
+.doc-row-menu button.danger { color: var(--color-text); }
 .doc-row-menu button.danger:hover { background: rgba(244, 67, 54, 0.1); }
 
 /* ── Main editor/viewer pane ── */
@@ -1614,17 +1626,10 @@ body {
   overflow-x: auto;
   flex-shrink: 0;
   padding: 0 4px;
-  scrollbar-width: none;
 }
 .doc-link-tabs::-webkit-scrollbar { display: none; }
 
 /* Icon picker scrollbars (shared component, all instances) */
-.icon-picker-groups,
-.icon-picker-grid {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
-}
-
 .icon-picker-groups::-webkit-scrollbar {
   height: 10px;
 }
@@ -1635,13 +1640,13 @@ body {
 
 .icon-picker-groups::-webkit-scrollbar-track,
 .icon-picker-grid::-webkit-scrollbar-track {
-  background: color-mix(in srgb, var(--color-bg) 80%, transparent);
+  background: transparent;
   border-radius: 999px;
 }
 
 .icon-picker-groups::-webkit-scrollbar-thumb,
 .icon-picker-grid::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-border) 88%, var(--color-primary) 12%);
+  background: var(--color-border);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 999px;
@@ -1649,7 +1654,7 @@ body {
 
 .icon-picker-groups::-webkit-scrollbar-thumb:hover,
 .icon-picker-grid::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-border) 55%, var(--color-primary) 45%);
+  background: var(--color-primary);
   background-clip: content-box;
 }
 
@@ -1787,7 +1792,7 @@ body {
 .doc-link-item-btn.unlink {
   background: rgba(244, 67, 54, 0.08);
   border-color: rgba(244, 67, 54, 0.25);
-  color: #f44336;
+  color: var(--color-text);
 }
 .doc-link-item-btn.unlink:hover {
   background: rgba(244, 67, 54, 0.15);
@@ -1838,6 +1843,196 @@ body {
 }
 .map-page .react-flow__node-iconNode {
   overflow: visible;
+}
+
+.topology-map-label {
+  position: absolute;
+  min-width: 140px;
+  min-height: 72px;
+  max-width: min(70vw, 640px);
+  max-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  pointer-events: all;
+  resize: both;
+  overflow: hidden;
+  border-radius: 2px 2px 10px 2px;
+  border: 1px solid #c9b25f;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 247, 191, 0.92),
+      rgba(243, 220, 127, 0.86)
+    );
+  -webkit-backdrop-filter: blur(5px) saturate(1.05);
+  backdrop-filter: blur(5px) saturate(1.05);
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.topology-map-label--yellow {
+  border-color: #c9b25f;
+  background: linear-gradient(180deg, rgba(255, 247, 191, 0.92), rgba(243, 220, 127, 0.86));
+}
+
+.topology-map-label--blue {
+  border-color: #7db8ff;
+  background: linear-gradient(180deg, rgba(217, 236, 255, 0.92), rgba(184, 220, 255, 0.86));
+}
+
+.topology-map-label--green {
+  border-color: #86d6a5;
+  background: linear-gradient(180deg, rgba(220, 247, 229, 0.92), rgba(191, 238, 205, 0.86));
+}
+
+.topology-map-label--pink {
+  border-color: #e8a4ca;
+  background: linear-gradient(180deg, rgba(255, 226, 242, 0.92), rgba(245, 197, 222, 0.86));
+}
+
+.topology-map-label--gray {
+  border-color: #b7bec9;
+  background: linear-gradient(180deg, rgba(238, 241, 246, 0.92), rgba(217, 222, 232, 0.86));
+}
+
+.topology-map-label__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 3px;
+  cursor: move;
+  color: #5a4a12;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border-bottom: 1px dashed rgba(106, 90, 36, 0.35);
+  background: rgba(255, 244, 179, 0.62);
+  position: relative;
+}
+
+.topology-map-label__drag-hint {
+  -webkit-user-select: none;
+  user-select: none;
+  opacity: 0.7;
+}
+
+.topology-map-label__delete {
+  border: 1px solid rgba(106, 90, 36, 0.25);
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  line-height: 14px;
+  text-align: center;
+  color: #4d420f;
+  background: rgba(255, 246, 200, 0.7);
+  cursor: pointer;
+}
+
+.topology-map-label__menu-btn {
+  border: 1px solid rgba(106, 90, 36, 0.25);
+  border-radius: 999px;
+  width: 18px;
+  height: 18px;
+  line-height: 14px;
+  text-align: center;
+  color: #4d420f;
+  background: rgba(255, 246, 200, 0.7);
+  cursor: pointer;
+}
+
+.topology-map-label__menu {
+  position: absolute;
+  min-width: 120px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  z-index: 5;
+  pointer-events: all;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.topology-map-label__menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 11px;
+  padding: 5px 7px;
+  cursor: pointer;
+}
+
+.topology-map-label__menu-item:hover,
+.topology-map-label__menu-item.active {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.topology-map-label__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  flex-shrink: 0;
+}
+
+.topology-map-label__swatch--yellow { background: #f3dc7f; }
+.topology-map-label__swatch--blue { background: #b8dcff; }
+.topology-map-label__swatch--green { background: #bfeecd; }
+.topology-map-label__swatch--pink { background: #f5c5de; }
+.topology-map-label__swatch--gray { background: #d9dee8; }
+
+.topology-map-label__delete:hover {
+  color: #2a2206;
+  border-color: rgba(106, 90, 36, 0.48);
+}
+
+.topology-map-label__text {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: #3a2f06;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.topology-map-label__text::placeholder {
+  color: var(--color-text-muted);
+}
+
+.topology-map-label__text::-webkit-scrollbar {
+  width: 10px;
+}
+
+.topology-map-label__text::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.topology-map-label__text::-webkit-scrollbar-thumb {
+  background: rgba(106, 90, 36, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+.topology-map-label__text::-webkit-scrollbar-thumb:hover {
+  background: rgba(106, 90, 36, 0.4);
 }
 
 .map-container {
@@ -1993,7 +2188,7 @@ body {
   width: 100%;
   box-sizing: border-box;
   background: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
-  border: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--color-primary) 18%);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   color: var(--color-text);
   padding: 8px 10px;
@@ -2389,6 +2584,7 @@ body {
   color: var(--color-text-muted);
   margin-bottom: 20px;
   cursor: pointer;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -2415,7 +2611,7 @@ body {
   font-size: 13px;
   background: rgba(34, 197, 94, 0.12);
   border: 1px solid rgba(34, 197, 94, 0.3);
-  color: #86efac;
+  color: var(--color-text);
 }
 
 .login-btn-submit {
@@ -2486,7 +2682,7 @@ body {
   font-size: 12px;
   border-radius: 8px;
   color: var(--color-text-muted);
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, var(--color-primary));
+  border: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-surface) 84%, var(--color-primary) 16%);
 }
 
@@ -2733,8 +2929,8 @@ body {
     padding: 8px 12px;
     background: rgba(13, 17, 23, 0.95);                                       /* fallback: no color-mix */
     background: color-mix(in srgb, var(--color-surface) 95%, transparent);
-    backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
+    backdrop-filter: blur(24px);
     border-top: 1px solid var(--color-border);
     justify-content: space-around;
     border-radius: 0;
@@ -2812,7 +3008,7 @@ body {
 /* Switch node pulse animation */
 @keyframes switch-pulse {
   0%, 100% { border-color: var(--color-border); }
-  50%       { border-color: color-mix(in srgb, var(--color-accent) 40%, transparent); }
+  50%       { border-color: var(--color-accent); }
 }
 
 .node-switch.react-flow__node.animated {
@@ -2852,6 +3048,20 @@ body {
 .react-flow__edge:hover .smart-edge-bend-handle,
 .react-flow__edge.selected .smart-edge-bend-handle {
   opacity: 0.85;
+}
+
+.smart-edge-endpoint-handle {
+  fill: var(--color-primary);
+  stroke: rgba(5, 8, 18, 0.9);
+  stroke-width: 1.5;
+  opacity: 0.95;
+  pointer-events: all;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.smart-edge-endpoint-handle:hover {
+  transform: scale(1.08);
+  opacity: 1;
 }
 
 /* ── CustomEdge — dash flow animation ────────────────────────────────────────

@@ -93,7 +93,7 @@ export default function ThemePalette({ placement = 'floating' }) {
         aria-haspopup="true"
         onClick={() => setOpen((o) => !o)}
       >
-        <Palette size={15} color="#fff" />
+        <Palette size={15} />
       </button>
     </div>
   );
@@ -119,6 +119,7 @@ const S = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+    color: '#fff',
     cursor: 'pointer',
     boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
     transition: 'transform 0.15s',
@@ -146,7 +147,7 @@ const S = {
     borderRadius: 10,
     padding: '12px 12px 8px',
     boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-    width: 220,
+    width: 256,
   },
   inlinePopover: {
     position: 'fixed',
@@ -158,7 +159,7 @@ const S = {
     borderRadius: 10,
     padding: '12px 12px 8px',
     boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-    width: 220,
+    width: 256,
   },
   popoverTitle: {
     fontSize: 11,
@@ -195,6 +196,7 @@ const S = {
     border: active ? `2px solid ${primary ?? 'var(--color-primary)'}` : '2px solid transparent',
     borderRadius: 7,
     padding: '6px 8px',
+    minHeight: 46,
     cursor: 'pointer',
     textAlign: 'left',
     transition: 'border-color 0.15s',
@@ -212,11 +214,10 @@ const S = {
     display: 'inline-block',
   }),
   label: {
-    fontSize: 10,
+    fontSize: 12,
     color: 'var(--color-text-muted)',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
+    lineHeight: 1.2,
+    whiteSpace: 'normal',
   },
 };
 

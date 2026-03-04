@@ -18,15 +18,22 @@ import { STATUS_COLORS } from '../../config/mapTheme';
  * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
  */
 
-// Keep handles visually hidden but enlarge hit area for easier drag-to-connect.
+// Keep handles visually hidden but anchored to visible connector dots.
 const INVISIBLE_HANDLE = {
   opacity: 0,
-  width: 4,
-  height: 4,
-  minWidth: 4,
-  minHeight: 4,
+  width: 8,
+  height: 8,
+  minWidth: 8,
+  minHeight: 8,
   background: 'transparent',
   border: 'none',
+};
+
+const HANDLE_POS_STYLE = {
+  top: { top: -7 },
+  right: { right: -7 },
+  bottom: { bottom: -7 },
+  left: { left: -7 },
 };
 
 const TELEMETRY_RING = {
@@ -34,6 +41,8 @@ const TELEMETRY_RING = {
   degraded: { shadow: '0 0 0 2.5px #eab308', animation: 'none' },
   critical: { shadow: '0 0 0 3px #ef4444, 0 0 12px 4px #ef444466', animation: 'none' },
 };
+
+const USER_ICON_SIZED_ICON_SOURCES = ['/icons/vendors/CB_AZ_SUN.png', '/icons/vendors/CB_CITY_DAY.png', '/icons/vendors/CB_NIGHT_FULL.png', '/icons/vendors/CB_NIGHT_HALF.png'];
 
 function getStorageBarColor(pct) {
   if (pct >= 85) return 'var(--color-danger)';
@@ -115,6 +124,8 @@ function CustomNode({ data, selected }) {
   const tRing = (tStatus && tStatus !== 'unknown') ? TELEMETRY_RING[tStatus] : null;
   const tData = data.telemetry_data || {};
   const hasIpConflict = !!data.ip_conflict;
+  const isUploadedIcon = typeof data.iconSrc === 'string'
+    && (data.iconSrc.includes('/user-icons/') || USER_ICON_SIZED_ICON_SOURCES.some((iconPath) => data.iconSrc.includes(iconPath)));
 
   const baseShadow = glowAlpha
     ? `0 0 20px ${glowAlpha}`
@@ -137,14 +148,20 @@ function CustomNode({ data, selected }) {
       className="map-node-shell"
       style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, userSelect: 'none', cursor: 'pointer', position: 'relative' }}
     >
-      {/* 4 target handles — one per side */}
-      <Handle type="target" id="t-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
-      <Handle type="target" id="t-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
-      <Handle type="target" id="t-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-      <Handle type="target" id="t-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
-
       {/* Glow ring + icon */}
       <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
+        {/* 4 target handles — one per side, aligned to visible port dots */}
+        <Handle type="target" id="t-top"    position={Position.Top}    style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }} />
+        <Handle type="target" id="t-right"  position={Position.Right}  style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }} />
+        <Handle type="target" id="t-bottom" position={Position.Bottom} style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }} />
+        <Handle type="target" id="t-left"   position={Position.Left}   style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }} />
+
+        {/* 4 source handles — one per side, aligned to visible port dots */}
+        <Handle type="source" id="s-top"    position={Position.Top}    style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }} />
+        <Handle type="source" id="s-right"  position={Position.Right}  style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }} />
+        <Handle type="source" id="s-bottom" position={Position.Bottom} style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }} />
+        <Handle type="source" id="s-left"   position={Position.Left}   style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }} />
+
         {data.isClusterMember && (
           <div
             style={{
@@ -209,7 +226,12 @@ function CustomNode({ data, selected }) {
               alt=""
               width={38}
               height={38}
-              style={{ objectFit: 'contain', filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))' }}
+              style={{
+                objectFit: 'contain',
+                transform: isUploadedIcon ? 'scale(2.5)' : 'none',
+                transformOrigin: 'center',
+                filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))',
+              }}
               onError={(e) => {
                 if (!e.target.dataset.fallbackApplied) {
                   e.target.dataset.fallbackApplied = '1';
@@ -314,12 +336,6 @@ function CustomNode({ data, selected }) {
           )}
         </div>
       )}
-
-      {/* 4 source handles — one per side */}
-      <Handle type="source" id="s-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
-      <Handle type="source" id="s-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
-      <Handle type="source" id="s-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-      <Handle type="source" id="s-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
     </div>
   );
 }

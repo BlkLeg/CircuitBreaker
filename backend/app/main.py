@@ -35,6 +35,50 @@ _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)
 
 
+def _seed_default_docs(db) -> None:
+    """Seed the single shipped default doc on fresh installs.
+
+    Creates one doc from repository root DocsPage.md only when the docs table is empty.
+    """
+    from app.core.markdown_render import render_markdown
+    from app.db.models import Doc, User
+
+    has_users = db.query(User.id).limit(1).first()
+    if has_users:
+        return
+
+    has_docs = db.query(Doc.id).limit(1).first()
+    if has_docs:
+        return
+
+    docs_page_path = Path(__file__).resolve().parents[2] / "DocsPage.md"
+    if not docs_page_path.exists():
+        _logger.warning("Default docs seed file not found at %s", docs_page_path)
+        return
+
+    body_md = docs_page_path.read_text(encoding="utf-8").strip()
+    if not body_md:
+        _logger.warning("Default docs seed file is empty: %s", docs_page_path)
+        return
+
+    title = "Welcome to Circuit Breaker"
+    first_line = body_md.splitlines()[0].strip()
+    if first_line.startswith("#"):
+        parsed_title = first_line.lstrip("#").strip()
+        if parsed_title:
+            title = parsed_title
+
+    db.add(Doc(
+        title=title,
+        body_md=body_md,
+        body_html=render_markdown(body_md),
+        category="Getting Started",
+        pinned=True,
+        icon="book-open",
+    ))
+    db.commit()
+
+
 def _get_columns(conn, table: str) -> list[str]:
     """Return the column names for a SQLite table."""
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]  # noqa: S608
@@ -286,6 +330,9 @@ def _run_migrations(conn) -> None:
             updated_at TEXT NOT NULL
         )
     """)
+    cluster_cols = _get_columns(conn, "hardware_clusters")
+    if "icon_slug" not in cluster_cols:
+        conn.execute("ALTER TABLE hardware_clusters ADD COLUMN icon_slug TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_cluster_members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -728,6 +775,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         _backfill_log_timestamps(db)
+        _seed_default_docs(db)
     finally:
         db.close()
 

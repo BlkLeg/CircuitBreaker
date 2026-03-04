@@ -18,14 +18,14 @@ function renderForm(profile = undefined) {
 describe('ScanProfileForm', () => {
   it('renders empty form for create mode', () => {
     renderForm();
-    expect(screen.getByText('New Scan Profile')).toBeInTheDocument();
+    expect(screen.getByText('Create Scan Profile')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Home LAN')).toHaveValue('');
   });
 
   it('renders pre-filled form for edit mode', () => {
     renderForm({ id: 1, name: 'My Profile', cidr: '10.0.0.0/24', scan_types: ['nmap'],
       nmap_arguments: '-sV', snmp_version: '2c', snmp_port: 161, enabled: true });
-    expect(screen.getByText('Edit Profile')).toBeInTheDocument();
+    expect(screen.getByText('Edit Scan Profile')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Home LAN')).toHaveValue('My Profile');
     expect(screen.getByPlaceholderText('192.168.1.0/24')).toHaveValue('10.0.0.0/24');
   });

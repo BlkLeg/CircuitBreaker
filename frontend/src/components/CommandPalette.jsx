@@ -81,22 +81,22 @@ function CommandPalette({ isOpen, onClose }) {
     return () => globalThis.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Close on click outside the panel
-  useEffect(() => {
-    if (!isOpen) return;
-    const handler = (e) => {
-      if (panelRef.current && !panelRef.current.contains(e.target)) {
-        onClose();
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [isOpen, onClose]);
-
   // Clean up any pending debounce on unmount
   useEffect(() => {
     return () => clearTimeout(debounceRef.current);
   }, []);
+
+  // Close on pointer-down outside the panel (capture phase for reliability)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (event) => {
+      if (panelRef.current && !panelRef.current.contains(event.target)) {
+        onClose();
+      }
+    };
+    document.addEventListener('pointerdown', handler, true);
+    return () => document.removeEventListener('pointerdown', handler, true);
+  }, [isOpen, onClose]);
 
   const doSearch = useCallback(async (q) => {
     if (!q.trim()) { setResults([]); setLoading(false); return; }
@@ -157,6 +157,8 @@ function CommandPalette({ isOpen, onClose }) {
         ref={panelRef}
         className="command-palette"
         aria-label="Command palette"
+        open
+        onClose={onClose}
       >
         <div className="palette-search-row">
           <input

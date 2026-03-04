@@ -4,7 +4,7 @@ import { EdgeLabelRenderer, getBezierPath, useReactFlow } from 'reactflow';
 import { MapEdgeCallbacksContext } from '../../pages/MapPage';
 import { CONNECTION_STYLES } from '../../config/mapTheme';
 import { graphApi } from '../../api/client';
-import { unlinkByEdge } from './linkMutations';
+import { isUpdatableEdgeId, unlinkByEdge } from './linkMutations';
 import {
   computeParticleDuration,
   formatBandwidth,
@@ -129,6 +129,9 @@ export default function CustomEdge({
         const msg = unlinkErr?.message || '';
         const canFallback = msg.includes('No unlink mapping') || msg.includes('Cannot parse node IDs for unlink');
         if (!canFallback) throw unlinkErr;
+        if (!isUpdatableEdgeId(id)) {
+          throw new Error(`Edge '${id}' is structural or implicit and cannot be deleted here.`);
+        }
         await graphApi.deleteEdge(id);
       }
       setEdges((prev) => prev.filter((edge) => edge.id !== id));
@@ -154,6 +157,21 @@ export default function CustomEdge({
     dragCleanupRef.current = cleanup;
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', cleanup);
+  }
+
+  function handleEndpointPointerDown(which, nodeId, event) {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const callbacks = callbacksRef?.current;
+    const onPointerUp = (ev) => {
+      callbacks?.onEdgeEndpointDrop?.(id, which, nodeId, { x: ev.clientX, y: ev.clientY });
+    };
+    const cleanup = () => {
+      document.removeEventListener('pointerup', onPointerUp);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current = cleanup;
+    document.addEventListener('pointerup', onPointerUp);
   }
 
   return (
@@ -205,6 +223,27 @@ export default function CustomEdge({
         onPointerDown={handleBendPointerDown}
         style={{ cursor: 'grab' }}
       />
+
+      {selected && (
+        <>
+          <circle
+            cx={sourceX}
+            cy={sourceY}
+            r={7}
+            className="smart-edge-endpoint-handle"
+            style={{ cursor: 'grab' }}
+            onPointerDown={(event) => handleEndpointPointerDown('source', source, event)}
+          />
+          <circle
+            cx={targetX}
+            cy={targetY}
+            r={7}
+            className="smart-edge-endpoint-handle"
+            style={{ cursor: 'grab' }}
+            onPointerDown={(event) => handleEndpointPointerDown('target', target, event)}
+          />
+        </>
+      )}
 
       <EdgeLabelRenderer>
         {relation && (

@@ -145,11 +145,20 @@ function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
   if (icon_slug && (icon_slug.startsWith('/') || icon_slug.startsWith('http://') || icon_slug.startsWith('https://'))) {
     return icon_slug;
   }
-  if (icon_slug)                              return getIconEntry(icon_slug)?.path ?? null;
-  if (type === 'hardware' && ROLE_ICON[role]) return getIconEntry(ROLE_ICON[role])?.path ?? null;
+  if (icon_slug && typeof icon_slug === 'string' && (/^[a-zA-Z0-9_.-]+$/.test(icon_slug) || icon_slug.startsWith('user-'))) {
+    const iconEntry = getIconEntry(icon_slug);
+    return iconEntry?.path ?? null;
+  }
+  if (type === 'hardware' && ROLE_ICON[role]) {
+    const safeRole = ROLE_ICON[role];
+    return getIconEntry(safeRole)?.path ?? null;
+  }
   if (type === 'hardware' && vendor)          return getVendorIcon(vendor)?.path ?? null;
   if (type === 'network')                     return getIconEntry('network')?.path ?? null;
-  if (kind && KIND_ICON[kind])                return getIconEntry(KIND_ICON[kind])?.path ?? null;
+  if (kind && KIND_ICON[kind]) {
+    const safeKind = KIND_ICON[kind];
+    return getIconEntry(safeKind)?.path ?? null;
+  }
   if (type === 'external')                    return getIconEntry('internet')?.path ?? null;
   return null;
 }
@@ -393,6 +402,7 @@ const ENTITY_FIELDS = {
 };
 
 const ENTITY_API_UPDATE_ICON = {
+  cluster:  (id, slug) => clustersApi.update(id, { icon_slug: slug }),
   hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
   compute:  (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
   service:  (id, slug) => servicesApi.update(id, { icon_slug: slug }),
@@ -774,15 +784,40 @@ function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = null) {
 function parseLayoutData(raw) {
   const parsed = JSON.parse(raw);
   if (parsed && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)) {
-    return { nodes: parsed.nodes || {}, edges: parsed.edges || {}, boundaries: parsed.boundaries || [] };
+    return {
+      nodes: parsed.nodes || {},
+      edges: parsed.edges || {},
+      boundaries: parsed.boundaries || [],
+      labels: parsed.labels || [],
+    };
   }
-  return { nodes: parsed || {}, edges: {}, boundaries: [] };
+  return { nodes: parsed || {}, edges: {}, boundaries: [], labels: [] };
 }
 
 function normalizeBoundaryName(name, index) {
   const trimmed = String(name || '').trim();
   return trimmed || `Boundary ${index + 1}`;
 }
+
+function normalizeMapLabel(label, index) {
+  return {
+    id: String(label?.id || `map-label-${Date.now()}-${index}`),
+    text: String(label?.text || '').trim() || 'Label',
+    x: Number.isFinite(label?.x) ? Number(label.x) : 160,
+    y: Number.isFinite(label?.y) ? Number(label.y) : 160,
+    width: Math.max(140, Number(label?.width) || 220),
+    height: Math.max(72, Number(label?.height) || 96),
+    color: String(label?.color || 'yellow'),
+  };
+}
+
+const MAP_LABEL_COLORS = [
+  { key: 'yellow', label: 'Yellow' },
+  { key: 'blue', label: 'Blue' },
+  { key: 'green', label: 'Green' },
+  { key: 'pink', label: 'Pink' },
+  { key: 'gray', label: 'Gray' },
+];
 
 function boundaryFlowRect(startFlow, endFlow) {
   return {
@@ -802,8 +837,22 @@ function nodeCenterInFlow(node) {
   return { x, y };
 }
 
-function pointInRect(point, rect) {
-  return point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY;
+function nodeBoundsInFlow(node) {
+  const width = Number(node?.width || 140);
+  const height = Number(node?.height || 140);
+  const basePos = node?.positionAbsolute || node?.position || { x: 0, y: 0 };
+  const x = Number(basePos.x || 0);
+  const y = Number(basePos.y || 0);
+  return {
+    minX: x,
+    maxX: x + width,
+    minY: y,
+    maxY: y + height,
+  };
+}
+
+function rectIntersectsRect(a, b) {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
 }
 
 function cross(o, a, b) {
@@ -850,8 +899,25 @@ function expandPolygon(points, padding = 46) {
 }
 
 function computeBoundaryPolygon(boundary, nodesArr) {
-  const members = nodesArr.filter((node) => boundary.memberIds?.includes(node.id));
-  if (members.length < 1) return [];
+  const memberIds = Array.isArray(boundary.memberIds)
+    ? new Set(boundary.memberIds.map(String))
+    : null;
+  const members = memberIds
+    ? nodesArr.filter((node) => memberIds.has(String(node.id)))
+    : [];
+
+  if (members.length < 1) {
+    const rect = boundary?.flowRect;
+    if (!rect || !Number.isFinite(rect.minX) || !Number.isFinite(rect.maxX) || !Number.isFinite(rect.minY) || !Number.isFinite(rect.maxY)) {
+      return [];
+    }
+    return [
+      { x: rect.minX, y: rect.minY },
+      { x: rect.maxX, y: rect.minY },
+      { x: rect.maxX, y: rect.maxY },
+      { x: rect.minX, y: rect.maxY },
+    ];
+  }
 
   const cloud = [];
   members.forEach((node) => {
@@ -931,7 +997,7 @@ function resolveNonOverlappingPosition(candidate, nodesArr, movingNodeId) {
 
 function MapInternal() {
   const isMobile = useIsMobile();
-  const { fitView, project } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const viewport = useViewport();
   const { settings } = useSettings();
   const toast = useToast();
@@ -957,13 +1023,23 @@ function MapInternal() {
     return !isMobile;
   });
 
+  const [mapLabelDefaultColor, setMapLabelDefaultColor] = useState(() => {
+    const saved = localStorage.getItem('cb-map-label-default-color');
+    return saved || 'yellow';
+  });
   useEffect(() => {
     localStorage.setItem('cb-legend-open', legendOpen);
   }, [legendOpen]);
 
+  useEffect(() => {
+    localStorage.setItem('cb-map-label-default-color', mapLabelDefaultColor);
+  }, [mapLabelDefaultColor]);
+
   // Edge override state — { edgeId: { source_side, target_side, control_point? } }
   const [edgeOverrides, setEdgeOverrides] = useState({});
   const [boundaries, setBoundaries] = useState([]);
+  const [mapLabels, setMapLabels] = useState([]);
+  const [mapLabelMenuOpenId, setMapLabelMenuOpenId] = useState(null);
   const [boundaryDrawMode, setBoundaryDrawMode] = useState(false);
   const [boundaryDraft, setBoundaryDraft] = useState(null);
   const [editingBoundaryId, setEditingBoundaryId] = useState(null);
@@ -982,11 +1058,16 @@ function MapInternal() {
   const boundaryPointerMoveRef = useRef(null);
   const boundaryPointerUpRef = useRef(null);
   const finishBoundaryDrawRef = useRef(() => {});
+  const mapLabelsRef = useRef([]);
+  const labelPointerMoveRef = useRef(null);
+  const labelPointerUpRef = useRef(null);
+  const labelMenuRef = useRef(null);
 
   // Keep refs in sync with state
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { edgeOverridesRef.current = edgeOverrides; }, [edgeOverrides]);
   useEffect(() => { boundaryDraftRef.current = boundaryDraft; }, [boundaryDraft]);
+  useEffect(() => { mapLabelsRef.current = mapLabels; }, [mapLabels]);
 
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
@@ -1053,12 +1134,23 @@ function MapInternal() {
 
   const clearBoundaryPointerListeners = useCallback(() => {
     if (boundaryPointerMoveRef.current) {
-      window.removeEventListener('pointermove', boundaryPointerMoveRef.current);
+      globalThis.removeEventListener('pointermove', boundaryPointerMoveRef.current);
       boundaryPointerMoveRef.current = null;
     }
     if (boundaryPointerUpRef.current) {
-      window.removeEventListener('pointerup', boundaryPointerUpRef.current);
+      globalThis.removeEventListener('pointerup', boundaryPointerUpRef.current);
       boundaryPointerUpRef.current = null;
+    }
+  }, []);
+
+  const clearLabelPointerListeners = useCallback(() => {
+    if (labelPointerMoveRef.current) {
+      globalThis.removeEventListener('pointermove', labelPointerMoveRef.current);
+      labelPointerMoveRef.current = null;
+    }
+    if (labelPointerUpRef.current) {
+      globalThis.removeEventListener('pointerup', labelPointerUpRef.current);
+      labelPointerUpRef.current = null;
     }
   }, []);
 
@@ -1067,11 +1159,13 @@ function MapInternal() {
     function handleKeyDown(e) {
       if (e.key === 'Escape') {
         clearBoundaryPointerListeners();
+        clearLabelPointerListeners();
         setContextMenu(null);
         setEdgeMenu(null);
         setPendingConnection(null);
         setBoundaryDrawMode(false);
         setBoundaryDraft(null);
+        setMapLabelMenuOpenId(null);
         setEditingBoundaryId(null);
         setEditingBoundaryName('');
         setCreateNodeModal({ isOpen: false, position: null });
@@ -1087,13 +1181,25 @@ function MapInternal() {
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [clearBoundaryPointerListeners]);
+  }, [clearBoundaryPointerListeners, clearLabelPointerListeners]);
 
   useEffect(() => {
     return () => {
       clearBoundaryPointerListeners();
+      clearLabelPointerListeners();
     };
-  }, [clearBoundaryPointerListeners]);
+  }, [clearBoundaryPointerListeners, clearLabelPointerListeners]);
+
+  useEffect(() => {
+    if (!mapLabelMenuOpenId) return;
+    const onPointerDown = (event) => {
+      if (labelMenuRef.current && !labelMenuRef.current.contains(event.target)) {
+        setMapLabelMenuOpenId(null);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [mapLabelMenuOpenId]);
 
   // Selected node side panel
   const [selectedNode, setSelectedNode] = useState(null);
@@ -1298,6 +1404,7 @@ function MapInternal() {
       let savedNodePositions = null;
       let savedEdgeOverrides = {};
       let savedBoundaries = [];
+      let savedLabels = [];
       try {
         const scopedLayoutName = getLayoutName();
         const layoutNames = scopedLayoutName === 'default'
@@ -1311,6 +1418,7 @@ function MapInternal() {
           savedNodePositions = parsed.nodes;
           savedEdgeOverrides = parsed.edges || {};
           savedBoundaries = Array.isArray(parsed.boundaries) ? parsed.boundaries : [];
+          savedLabels = Array.isArray(parsed.labels) ? parsed.labels : [];
           setLastSaved(layoutRes.data.updated_at);
           break;
         }
@@ -1323,8 +1431,10 @@ function MapInternal() {
             id: boundary.id || `boundary-${Date.now()}-${index}`,
             name: normalizeBoundaryName(boundary.name, index),
             memberIds: boundary.memberIds,
+            flowRect: boundary.flowRect,
           })),
       );
+      setMapLabels(savedLabels.map((label, index) => normalizeMapLabel(label, index)));
 
       if (savedNodePositions) {
         const mergedNodes = rawNodesWithClusterHints.map(n => {
@@ -1446,22 +1556,28 @@ function MapInternal() {
     }
   }, [nodes, autoPlaceNew]);
 
-  const saveLayout = async () => {
+  const saveLayoutSnapshot = useCallback(async ({ labelsOverride } = {}) => {
     const nodePositions = {};
-    nodes.forEach(n => { nodePositions[n.id] = n.position; });
+    nodesRef.current.forEach(n => { nodePositions[n.id] = n.position; });
     const payload = {
       nodes: nodePositions,
-      edges: edgeOverrides,
+      edges: edgeOverridesRef.current,
       boundaries: boundaries.map((boundary, index) => ({
         id: boundary.id,
         name: normalizeBoundaryName(boundary.name, index),
         memberIds: boundary.memberIds,
+        flowRect: boundary.flowRect,
       })),
+      labels: (labelsOverride ?? mapLabelsRef.current).map((label, index) => normalizeMapLabel(label, index)),
     };
+    await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
+    setLastSaved(new Date().toISOString());
+    dirtyRef.current = false;
+  }, [boundaries, getLayoutName]);
+
+  const saveLayout = async () => {
     try {
-      await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
-      setLastSaved(new Date().toISOString());
-      dirtyRef.current = false;
+      await saveLayoutSnapshot();
     } catch (err) {
       setError('Failed to save layout: ' + err.message);
     }
@@ -1482,12 +1598,12 @@ function MapInternal() {
     setContextMenu(null);
     setCreateNodeModal({
       isOpen: true,
-      position: project({
+      position: screenToFlowPosition({
         x: event.clientX,
         y: event.clientY - 50
       })
     });
-  }, [project]);
+  }, [screenToFlowPosition]);
 
   const handleCreateNode = useCallback(async (nodeData) => {
     try {
@@ -1992,6 +2108,25 @@ function MapInternal() {
       .filter(Boolean)
   ), [boundaries, nodes, viewport]);
 
+  const openMapLabelMenuPosition = useMemo(() => {
+    if (!mapLabelMenuOpenId) return null;
+    const label = mapLabels.find((entry) => entry.id === mapLabelMenuOpenId);
+    if (!label) return null;
+
+    const rect = flowContainerRef.current?.getBoundingClientRect();
+    const menuWidth = 144;
+    const menuHeight = 196;
+    let left = label.x + label.width - 12;
+    let top = label.y + 24;
+
+    if (rect) {
+      left = Math.max(8, Math.min(left, rect.width - menuWidth - 8));
+      top = Math.max(8, Math.min(top, rect.height - menuHeight - 8));
+    }
+
+    return { left, top };
+  }, [mapLabelMenuOpenId, mapLabels]);
+
   const handlePanePointerDown = useCallback((event) => {
     if (!boundaryDrawMode || event.button !== 0) return;
     event.preventDefault();
@@ -2023,8 +2158,8 @@ function MapInternal() {
 
     boundaryPointerMoveRef.current = onPointerMove;
     boundaryPointerUpRef.current = onPointerUp;
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
+    globalThis.addEventListener('pointermove', onPointerMove);
+    globalThis.addEventListener('pointerup', onPointerUp);
     setSelectedNode(null);
   }, [boundaryDrawMode, clearBoundaryPointerListeners]);
 
@@ -2045,23 +2180,23 @@ function MapInternal() {
       return;
     }
 
-    const startFlow = project({
-      x: draft.startClient.x - containerRect.left,
-      y: draft.startClient.y - containerRect.top,
+    const startFlow = screenToFlowPosition({
+      x: draft.startClient.x,
+      y: draft.startClient.y,
     });
-    const endFlow = project({
-      x: draft.endClient.x - containerRect.left,
-      y: draft.endClient.y - containerRect.top,
+    const endFlow = screenToFlowPosition({
+      x: draft.endClient.x,
+      y: draft.endClient.y,
     });
     const rect = boundaryFlowRect(startFlow, endFlow);
 
     const memberIds = nodesRef.current
       .filter((node) => {
         if (!node || node.hidden) return false;
-        const center = nodeCenterInFlow(node);
-        return pointInRect(center, rect);
+        const bounds = nodeBoundsInFlow(node);
+        return rectIntersectsRect(bounds, rect);
       })
-      .map((node) => node.id);
+      .map((node) => String(node.id));
 
     if (memberIds.length < 1) {
       toast.info('Boundary requires at least one node inside the draw area.');
@@ -2076,13 +2211,14 @@ function MapInternal() {
         id: boundaryId,
         name: `Boundary ${prev.length + 1}`,
         memberIds,
+        flowRect: rect,
       },
     ]));
     dirtyRef.current = true;
     setBoundaryDrawMode(false);
     setBoundaryDraft(null);
     toast.success('Boundary created.');
-  }, [project, toast]);
+  }, [screenToFlowPosition, toast]);
 
   useEffect(() => {
     finishBoundaryDrawRef.current = finishBoundaryDraw;
@@ -2118,6 +2254,89 @@ function MapInternal() {
     setEditingBoundaryName('');
   }, [editingBoundaryId, editingBoundaryName]);
 
+  const addMapLabel = useCallback(() => {
+    const rect = flowContainerRef.current?.getBoundingClientRect();
+    const width = 220;
+    const height = 96;
+    const x = rect ? Math.max(12, (rect.width / 2) - (width / 2)) : 180;
+    const y = rect ? Math.max(12, (rect.height / 2) - (height / 2)) : 180;
+
+    setMapLabels((prev) => ([
+      ...prev,
+      {
+        id: `map-label-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        text: 'Label',
+        x,
+        y,
+        width,
+        height,
+        color: mapLabelDefaultColor,
+      },
+    ]));
+    dirtyRef.current = true;
+  }, [mapLabelDefaultColor]);
+
+  const updateMapLabel = useCallback((labelId, patch) => {
+    setMapLabels((prev) => prev.map((label) => (
+      label.id === labelId ? { ...label, ...patch } : label
+    )));
+    dirtyRef.current = true;
+  }, []);
+
+  const removeMapLabel = useCallback((labelId) => {
+    const nextLabels = mapLabelsRef.current.filter((label) => label.id !== labelId);
+    mapLabelsRef.current = nextLabels;
+    setMapLabels(nextLabels);
+    setMapLabelMenuOpenId((prev) => (prev === labelId ? null : prev));
+    dirtyRef.current = true;
+    saveLayoutSnapshot({ labelsOverride: nextLabels }).catch((err) => {
+      setError('Failed to persist label deletion: ' + err.message);
+    });
+  }, [saveLayoutSnapshot]);
+
+  const startMapLabelDrag = useCallback((event, labelId) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = flowContainerRef.current?.getBoundingClientRect();
+    const label = mapLabelsRef.current.find((entry) => entry.id === labelId);
+    if (!rect || !label) return;
+
+    clearLabelPointerListeners();
+
+    const startClient = { x: event.clientX, y: event.clientY };
+    const startPos = { x: label.x, y: label.y };
+
+    const onPointerMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startClient.x;
+      const dy = moveEvent.clientY - startClient.y;
+
+      const maxX = Math.max(0, rect.width - label.width);
+      const maxY = Math.max(0, rect.height - label.height);
+      updateMapLabel(labelId, {
+        x: Math.max(0, Math.min(maxX, startPos.x + dx)),
+        y: Math.max(0, Math.min(maxY, startPos.y + dy)),
+      });
+    };
+
+    const onPointerUp = () => {
+      clearLabelPointerListeners();
+    };
+
+    labelPointerMoveRef.current = onPointerMove;
+    labelPointerUpRef.current = onPointerUp;
+    globalThis.addEventListener('pointermove', onPointerMove);
+    globalThis.addEventListener('pointerup', onPointerUp);
+  }, [clearLabelPointerListeners, updateMapLabel]);
+
+  const commitMapLabelSize = useCallback((labelId, element) => {
+    if (!element) return;
+    const nextWidth = Math.max(140, Math.round(element.offsetWidth));
+    const nextHeight = Math.max(72, Math.round(element.offsetHeight));
+    updateMapLabel(labelId, { width: nextWidth, height: nextHeight });
+  }, [updateMapLabel]);
+
   // ── Edge interaction handlers ───────────────────────────────────────────────
 
   const handleEdgeContextMenu = useCallback((event, _edge) => {
@@ -2126,8 +2345,7 @@ function MapInternal() {
   }, []);
 
   const handleControlPointChange = useCallback((edgeId, clientPos) => {
-    const containerRect = flowContainerRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 };
-    const flowPos = project({ x: clientPos.x - containerRect.left, y: clientPos.y - containerRect.top });
+    const flowPos = screenToFlowPosition({ x: clientPos.x, y: clientPos.y });
     const updated = {
       ...edgeOverridesRef.current,
       [edgeId]: { ...edgeOverridesRef.current[edgeId], control_point: flowPos },
@@ -2138,7 +2356,7 @@ function MapInternal() {
       e.id === edgeId ? { ...e, data: { ...e.data, controlPoint: flowPos } } : e
     ));
     dirtyRef.current = true;
-  }, [project, setEdges]);
+  }, [screenToFlowPosition, setEdges]);
 
   const handleEdgeAnchorChange = useCallback((edgeId, which, side) => {
     const key = which === 'source' ? 'source_side' : 'target_side';
@@ -2164,6 +2382,36 @@ function MapInternal() {
     dirtyRef.current = true;
     setEdgeMenu(null);
   }, [setEdges]);
+
+  const sideFromClientForNode = useCallback((nodeId, clientPos) => {
+    const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
+    if (!node || !clientPos) return null;
+    const flowPos = screenToFlowPosition({
+      x: clientPos.x,
+      y: clientPos.y,
+    });
+    const center = nodeCenterInFlow(node);
+    const dx = flowPos.x - center.x;
+    const dy = flowPos.y - center.y;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      return dx > 0 ? 'right' : 'left';
+    }
+    return dy > 0 ? 'bottom' : 'top';
+  }, [screenToFlowPosition]);
+
+  const handleEdgeEndpointDrop = useCallback((edgeId, which, nodeId, clientPos) => {
+    const side = sideFromClientForNode(nodeId, clientPos);
+    if (!side) return;
+    const key = which === 'source' ? 'source_side' : 'target_side';
+    const updated = {
+      ...edgeOverridesRef.current,
+      [edgeId]: { ...edgeOverridesRef.current[edgeId], [key]: side },
+    };
+    edgeOverridesRef.current = updated;
+    setEdgeOverrides(updated);
+    setEdges((prev) => applyEdgeSides(nodesRef.current, prev, updated));
+    dirtyRef.current = true;
+  }, [setEdges, sideFromClientForNode]);
 
   const handleClearBend = useCallback((edgeId) => {
     const existing = { ...edgeOverridesRef.current[edgeId] };
@@ -2307,7 +2555,10 @@ function MapInternal() {
 
   // Keep edgeCallbacksRef.current up-to-date so SmartEdge always calls the
   // latest version of handleControlPointChange without needing to re-render.
-  edgeCallbacksRef.current = { onControlPointChange: handleControlPointChange };
+  edgeCallbacksRef.current = {
+    onControlPointChange: handleControlPointChange,
+    onEdgeEndpointDrop: handleEdgeEndpointDrop,
+  };
 
   return (
     <MapEdgeCallbacksContext.Provider value={edgeCallbacksRef}>
@@ -2440,6 +2691,24 @@ function MapInternal() {
           >
             {boundaryDrawMode ? 'Cancel Boundary Draw' : 'Draw Boundary'}
           </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={addMapLabel}
+            style={{ fontSize: 12, padding: '5px 12px' }}
+          >
+            Add Label
+          </button>
+          <select
+            value={mapLabelDefaultColor}
+            onChange={(event) => setMapLabelDefaultColor(event.target.value)}
+            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
+            title="Default color for new labels"
+          >
+            {MAP_LABEL_COLORS.map((color) => (
+              <option key={color.key} value={color.key}>{`Default Label: ${color.label}`}</option>
+            ))}
+          </select>
           {pendingDiscoveries > 0 && (
             <button
               type="button"
@@ -2543,6 +2812,84 @@ function MapInternal() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {mapLabels.length > 0 && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 14, pointerEvents: 'none' }}>
+            {mapLabels.map((label) => (
+              <div
+                key={label.id}
+                className={`topology-map-label topology-map-label--${label.color || 'yellow'}`}
+                style={{
+                  left: label.x,
+                  top: label.y,
+                  width: label.width,
+                  height: label.height,
+                }}
+              >
+                <div
+                  className="topology-map-label__bar"
+                  onPointerDown={(event) => startMapLabelDrag(event, label.id)}
+                >
+                  <span className="topology-map-label__drag-hint">⋮⋮</span>
+                  <button
+                    type="button"
+                    className="topology-map-label__menu-btn"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setMapLabelMenuOpenId((prev) => (prev === label.id ? null : label.id));
+                    }}
+                    aria-label="Label color options"
+                  >
+                    ☰
+                  </button>
+                  <button
+                    type="button"
+                    className="topology-map-label__delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeMapLabel(label.id);
+                    }}
+                    aria-label="Delete label"
+                  >
+                    ×
+                  </button>
+                </div>
+                <textarea
+                  className="topology-map-label__text"
+                  value={label.text}
+                  onChange={(event) => updateMapLabel(label.id, { text: event.target.value })}
+                  onPointerUp={(event) => commitMapLabelSize(label.id, event.currentTarget.closest('.topology-map-label'))}
+                  placeholder="Label text"
+                />
+              </div>
+            ))}
+
+            {mapLabelMenuOpenId && openMapLabelMenuPosition && (
+              <div
+                className="topology-map-label__menu"
+                ref={labelMenuRef}
+                style={{ left: openMapLabelMenuPosition.left, top: openMapLabelMenuPosition.top }}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                {MAP_LABEL_COLORS.map((color) => (
+                  <button
+                    key={color.key}
+                    type="button"
+                    className={`topology-map-label__menu-item${mapLabels.find((entry) => entry.id === mapLabelMenuOpenId)?.color === color.key ? ' active' : ''}`}
+                    onClick={() => {
+                      updateMapLabel(mapLabelMenuOpenId, { color: color.key });
+                      setMapLabelMenuOpenId(null);
+                    }}
+                  >
+                    <span className={`topology-map-label__swatch topology-map-label__swatch--${color.key}`} />
+                    {color.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

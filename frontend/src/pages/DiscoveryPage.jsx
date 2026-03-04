@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Play, Trash2, ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import { Plus, Play, Trash2, ChevronDown, ChevronRight, Layers, Copy, ClipboardList, CheckCircle2 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import '../styles/discovery.css';
 import NmapArgsField from '../components/discovery/NmapArgsField.jsx';
 import {
   getProfiles, deleteProfile, runProfile,
-  startAdHocScan, cancelJob, getJobs, getJobResults,
+  startAdHocScan, cancelJob, getJobs, getJob, getJobResults,
   getPendingResults, bulkMerge, mergeResult,
 } from '../api/discovery.js';
 import { useSettings } from '../context/SettingsContext';
@@ -22,9 +22,11 @@ import JobStatusBadge from '../components/discovery/JobStatusBadge.jsx';
 import TimestampCell from '../components/TimestampCell.jsx';
 import ConfirmDialog from '../components/common/ConfirmDialog.jsx';
 import logger from '../utils/logger.js';
+import { hardwareApi } from '../api/client';
 
 const TABS = ['profiles', 'adhoc', 'review', 'history'];
 const TAB_LABELS = { profiles: 'Scan Profiles', adhoc: 'Ad-hoc Scan', review: 'Review Queue', history: 'Scan History' };
+const ADHOC_ACTIVE_JOB_KEY = 'cb.discovery.activeAdhocJobId';
 
 const PHASE_LABELS = {
   queued:    { label: 'Queued…',                       icon: '\u23F3' },
@@ -71,10 +73,43 @@ function getReviewTabLabel(pendingCount) {
   return TAB_LABELS.review;
 }
 
-function getProgressFillClass(status) {
-  if (status === 'running') return 'progress-fill indeterminate';
-  if (status === 'completed' || status === 'done') return 'progress-fill full';
-  return 'progress-fill';
+function getProgressPercentFromEvent(percent, processed, total) {
+  if (typeof percent === 'number') {
+    return Math.max(0, Math.min(100, Math.round(percent)));
+  }
+  if (typeof processed === 'number' && typeof total === 'number' && total > 0) {
+    return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
+  }
+  return null;
+}
+
+function getReviewStateLabel(state) {
+  if (state === 'conflict') return 'CHANGED';
+  if (state === 'new') return 'NEW';
+  if (state === 'matched') return 'MATCHED';
+  return (state || 'UNKNOWN').toUpperCase();
+}
+
+async function fetchLabNamesById(ids) {
+  const found = {};
+  for (const id of ids) {
+    try {
+      const res = await hardwareApi.get(id);
+      const name = res.data?.name || `Hardware ${id}`;
+      found[id] = name;
+    } catch {
+      // no-op: leave unresolved IDs untouched
+    }
+  }
+  return found;
+}
+
+function composeNmapArgs(baseArgs, timingTemplate, ports) {
+  const base = (baseArgs || '-sV -O --open -T4').trim();
+  const withoutTiming = base.replaceAll(/\s-T[0-5]\b/g, '').replaceAll(/\s+/g, ' ').trim();
+  const timingPart = `-T${timingTemplate}`;
+  const portsPart = ports.trim() ? ` -p ${ports.trim()}` : '';
+  return `${withoutTiming} ${timingPart}${portsPart}`.trim();
 }
 
 export default function DiscoveryPage() {
@@ -199,59 +234,48 @@ function ProfilesTab({ requireAck, onJobStart }) {
   if (loading) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading profiles…</p>;
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Scan Profiles</h2>
-        <button type="button" className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => { setEditing(null); setFormOpen(true); }}>
+    <div className="profiles-wrap">
+      <div className="profiles-toolbar">
+        <h2 className="profiles-title">Scan Profiles</h2>
+        <button type="button" className="btn btn-primary profiles-add-btn" onClick={() => { setEditing(null); setFormOpen(true); }}>
           <Plus size={14} /> Add Profile
         </button>
       </div>
 
       {profiles.length === 0 ? (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+        <p className="profiles-empty">
           No scan profiles yet. Add one to start discovering your network automatically.
         </p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr>
-              {['Name', 'CIDR', 'Scan Types', 'Schedule', 'Last Run', ''].map((h) => (
-                <th key={h} style={thStyle}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {profiles.map((p) => (
-              <tr key={p.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                <td style={tdStyle}>
-                  <span style={{ marginRight: 6, fontSize: 10 }}>{p.enabled ? '●' : '○'}</span>
-                  {p.name}
-                </td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 12 }}>{p.cidr}</td>
-                <td style={tdStyle}>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    {p.scan_types.map((t) => <TypePill key={t} type={t} />)}
-                  </div>
-                </td>
-                <td style={{ ...tdStyle, color: 'var(--color-text-muted)', fontSize: 12, fontFamily: 'monospace' }}>
-                  {p.schedule_cron || '—'}
-                </td>
-                <td style={tdStyle}>
-                  {p.last_run ? <TimestampCell isoString={p.last_run} /> : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
-                </td>
-                <td style={{ ...tdStyle, textAlign: 'right' }}>
-                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    <button type="button" className="btn btn-secondary" style={{ padding: '3px 10px', fontSize: 11 }} onClick={() => handleRunNow(p)}>
-                      <Play size={11} /> Run
-                    </button>
-                    <button type="button" className="btn btn-secondary" style={{ padding: '3px 10px', fontSize: 11 }} onClick={() => { setEditing(p); setFormOpen(true); }}>Edit</button>
-                    <button type="button" className="btn btn-danger" style={{ padding: '3px 8px', fontSize: 11 }} onClick={() => setDeleteConfirm(p)}><Trash2 size={11} /></button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="profiles-grid">
+          {profiles.map((p) => (
+            <article
+              key={p.id}
+              className="profile-card"
+            >
+              <div className="profile-card-head">
+                <h3 className="profile-card-name">{p.name}</h3>
+                <span className={`profile-card-dot ${p.enabled ? 'enabled' : ''}`} />
+              </div>
+
+              <p className="profile-card-cidr">{p.cidr}</p>
+
+              <div className="profile-card-types">
+                {p.scan_types.map((t) => <TypePill key={t} type={t} />)}
+              </div>
+
+              <p className="profile-card-cron">◉ {p.schedule_cron || 'manual only'}</p>
+
+              <div className="profile-card-actions">
+                <button type="button" className="btn btn-secondary profile-action-btn" onClick={() => handleRunNow(p)}>
+                  <Play size={11} /> Run
+                </button>
+                <button type="button" className="btn btn-secondary profile-action-btn" onClick={() => { setEditing(p); setFormOpen(true); }}>Edit</button>
+                <button type="button" className="btn btn-danger profile-action-btn profile-delete-btn" onClick={() => setDeleteConfirm(p)}><Trash2 size={11} /></button>
+              </div>
+            </article>
+          ))}
+        </div>
       )}
 
       <ConfirmDialog
@@ -288,17 +312,197 @@ function AdHocTab({ requireAck, onViewResults }) {
   const [scanTypes,   setScanTypes]   = useState(['nmap', 'snmp', 'http']);
   const [nmapArgs,    setNmapArgs]    = useState(settings?.discovery_nmap_args || '-sV -O --open -T4');
   const [snmpCom,     setSnmpCom]     = useState('');
-  const [advanced,    setAdvanced]    = useState(false);
+  const [advanced,    setAdvanced]    = useState(true);
+  const [timingTemplate, setTimingTemplate] = useState('3');
+  const [ports,       setPorts]       = useState('');
   const [activeJob,   setActiveJob]   = useState(null);
+  const [liveResults, setLiveResults] = useState([]);
   const [logLines,    setLogLines]    = useState([]);
   const [jobDone,     setJobDone]     = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [launching,   setLaunching]   = useState(false);
+  const [launchPulse, setLaunchPulse] = useState(false);
+  const [launchError, setLaunchError] = useState('');
+  const [livePercent, setLivePercent] = useState(null);
   const logIdRef = useRef(0);
+  const liveResultsRef = useRef([]);
+  const pulseTimerRef = useRef(null);
+
+  useEffect(() => {
+    liveResultsRef.current = liveResults;
+  }, [liveResults]);
+
+  const parseJobs = useCallback((payload) => (Array.isArray(payload) ? payload : (payload?.jobs ?? [])), []);
+
+  const getElapsedSeconds = useCallback((job) => {
+    const sourceTime = job?.started_at || job?.created_at;
+    if (!sourceTime) return 0;
+    const startMs = new Date(sourceTime).getTime();
+    if (Number.isNaN(startMs)) return 0;
+    return Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+  }, []);
+
+  const formatElapsed = useCallback((seconds) => {
+    const total = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hrs > 0) return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }, []);
+
+  const getPhasePercent = useCallback((job) => {
+    if (!job) return 0;
+    if (job.status === 'completed' || job.status === 'done') return 100;
+    if (job.status === 'failed' || job.status === 'cancelled') return 100;
+    const phaseMap = {
+      queued: 5,
+      arp: 18,
+      nmap: 45,
+      snmp: 70,
+      http: 78,
+      reconcile: 90,
+    };
+    return phaseMap[job.progress_phase] ?? 10;
+  }, []);
+
+  useEffect(() => () => {
+    if (pulseTimerRef.current) {
+      globalThis.clearTimeout(pulseTimerRef.current);
+      pulseTimerRef.current = null;
+    }
+  }, []);
+
+  // Restore active ad-hoc scan after navigation/reload.
+  useEffect(() => {
+    let mounted = true;
+
+    async function bootstrapActiveJob() {
+      try {
+        const res = await getJobs({ limit: 50 });
+        const jobs = parseJobs(res.data);
+        const persistedId = Number(localStorage.getItem(ADHOC_ACTIVE_JOB_KEY));
+
+        let restored = null;
+        if (Number.isFinite(persistedId)) {
+          restored = jobs.find((j) => j.id === persistedId) ?? null;
+        }
+        if (!restored) {
+          restored = jobs.find((j) => j.profile_id == null && (j.status === 'running' || j.status === 'queued')) ?? null;
+        }
+        if (!mounted || !restored) return;
+
+        setActiveJob(restored);
+        setLiveResults([]);
+        setJobDone(restored.status === 'completed' || restored.status === 'done');
+        setElapsedSeconds(getElapsedSeconds(restored));
+
+        if (restored.status === 'running' || restored.status === 'queued') {
+          localStorage.setItem(ADHOC_ACTIVE_JOB_KEY, String(restored.id));
+        }
+      } catch (error) {
+        logApiWarning('Failed to restore active ad-hoc job', error);
+      }
+    }
+
+    bootstrapActiveJob();
+    return () => { mounted = false; };
+  }, [getElapsedSeconds, parseJobs]);
+
+  // Hydrate latest scan results for the active job (supports page navigation + refresh).
+  useEffect(() => {
+    if (!activeJob?.id) return;
+    let cancelled = false;
+    getJobResults(activeJob.id, { limit: 24 })
+      .then((res) => {
+        if (cancelled) return;
+        const data = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
+        setLiveResults(data);
+      })
+      .catch((error) => logApiWarning(`Failed to load live results for job ${activeJob.id}`, error));
+    return () => { cancelled = true; };
+  }, [activeJob?.id]);
+
+  // Poll live results while scan is running so new hosts appear immediately even if WS delivery is delayed.
+  useEffect(() => {
+    if (!activeJob?.id) return;
+    if (activeJob.status !== 'running' && activeJob.status !== 'queued') return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await getJobResults(activeJob.id, { limit: 24 });
+        if (cancelled) return;
+        const data = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
+        liveResultsRef.current = data;
+        setLiveResults(data);
+      } catch (error) {
+        logApiWarning(`Failed to poll live results for job ${activeJob.id}`, error);
+      }
+    };
+
+    const id = globalThis.setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(id);
+    };
+  }, [activeJob?.id, activeJob?.status]);
+
+  // Tick elapsed timer while scan is active.
+  useEffect(() => {
+    if (!activeJob) return;
+    setElapsedSeconds(getElapsedSeconds(activeJob));
+    if (activeJob.status !== 'running' && activeJob.status !== 'queued') return;
+    const id = globalThis.setInterval(() => {
+      setElapsedSeconds(getElapsedSeconds(activeJob));
+    }, 1000);
+    return () => globalThis.clearInterval(id);
+  }, [activeJob, getElapsedSeconds]);
+
+  // Append host cards in real time as results arrive.
+  useEffect(() => {
+    if (!activeJob?.id) return;
+
+    const onResultAdded = (result) => {
+      if (Number(result.scan_job_id) !== Number(activeJob.id)) return;
+      if (liveResultsRef.current.some((entry) => entry.id === result.id)) return;
+      const next = [result, ...liveResultsRef.current].slice(0, 24);
+      liveResultsRef.current = next;
+      setLiveResults(next);
+    };
+
+    discoveryEmitter.on('result:added', onResultAdded);
+    return () => discoveryEmitter.off('result:added', onResultAdded);
+  }, [activeJob?.id]);
+
+  // Poll fallback so UI still updates if websocket stream is unavailable.
+  useEffect(() => {
+    if (!activeJob) return;
+    if (activeJob.status !== 'running' && activeJob.status !== 'queued') return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await getJob(activeJob.id);
+        if (cancelled) return;
+        setActiveJob(res.data);
+      } catch (error) {
+        logApiWarning(`Failed to poll job ${activeJob.id}`, error);
+      }
+    };
+
+    const id = globalThis.setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      globalThis.clearInterval(id);
+    };
+  }, [activeJob]);
 
   // Subscribe to WebSocket job events
   useEffect(() => {
     if (!activeJob) return;
 
-    const onProgress = ({ job_id, phase, message }) => {
+    const onProgress = ({ job_id, phase, message, percent, processed, total }) => {
       if (job_id !== activeJob.id) return;
       if (message) {
         setLogLines((prev) => [
@@ -306,6 +510,8 @@ function AdHocTab({ requireAck, onViewResults }) {
           { id: `${activeJob.id}-${logIdRef.current++}`, text: message },
         ]);
       }
+      const nextPercent = getProgressPercentFromEvent(percent, processed, total);
+      if (nextPercent !== null) setLivePercent(nextPercent);
       if (phase) setActiveJob((j) => j ? { ...j, progress_phase: phase, progress_message: message } : j);
     };
 
@@ -313,13 +519,21 @@ function AdHocTab({ requireAck, onViewResults }) {
       if (job.id !== activeJob.id) return;
       setActiveJob(job);
       if (job.status === 'completed' || job.status === 'done') {
+        setLivePercent(100);
         setJobDone(true);
+        localStorage.removeItem(ADHOC_ACTIVE_JOB_KEY);
         toast.success(`Scan complete — ${job.hosts_found} hosts found`);
         discoveryEmitter.emit('badge:refresh');
       } else if (job.status === 'failed') {
+        setLivePercent(100);
+        localStorage.removeItem(ADHOC_ACTIVE_JOB_KEY);
         toast.error(`Scan failed: ${job.error_text || 'unknown error'}`);
       } else if (job.status === 'cancelled') {
+        setLivePercent(100);
+        localStorage.removeItem(ADHOC_ACTIVE_JOB_KEY);
         toast.info('Scan cancelled');
+      } else if (job.status === 'running' || job.status === 'queued') {
+        localStorage.setItem(ADHOC_ACTIVE_JOB_KEY, String(job.id));
       }
     };
 
@@ -337,18 +551,35 @@ function AdHocTab({ requireAck, onViewResults }) {
   const handleLaunch = () => {
     requireAck(async () => {
       setLogLines([]);
+      setLiveResults([]);
       setJobDone(false);
+      setLivePercent(0);
+      setLaunchError('');
+      setLaunching(true);
+      setLaunchPulse(true);
+      if (pulseTimerRef.current) {
+        globalThis.clearTimeout(pulseTimerRef.current);
+      }
+      pulseTimerRef.current = globalThis.setTimeout(() => {
+        setLaunchPulse(false);
+        pulseTimerRef.current = null;
+      }, 1400);
       try {
         const res = await startAdHocScan({
           cidr, scan_types: scanTypes,
-          nmap_arguments: nmapArgs || undefined,
+          nmap_arguments: composeNmapArgs(nmapArgs, timingTemplate, ports) || undefined,
           snmp_community: snmpCom || undefined,
         });
         setActiveJob(res.data);
+        setElapsedSeconds(getElapsedSeconds(res.data));
+        localStorage.setItem(ADHOC_ACTIVE_JOB_KEY, String(res.data.id));
         toast.success(`Scan started for ${cidr}`);
       } catch (err) {
+        setLaunchError(err?.message || 'Failed to launch scan');
         if (err?.response?.status === 429) toast.warn('Please wait before starting another scan');
         else toast.error(err?.message || 'Failed to launch scan');
+      } finally {
+        setLaunching(false);
       }
     });
   };
@@ -359,27 +590,36 @@ function AdHocTab({ requireAck, onViewResults }) {
       await cancelJob(activeJob.id);
       toast.info('Scan cancelled');
       setActiveJob((j) => ({ ...j, status: 'cancelled' }));
+      localStorage.removeItem(ADHOC_ACTIVE_JOB_KEY);
     } catch (err) { toast.error(err?.message || 'Failed to cancel'); }
   };
 
   const isRunning = activeJob?.status === 'running';
+  const isActive = activeJob?.status === 'running' || activeJob?.status === 'queued';
+  const progressPercent = typeof livePercent === 'number' ? livePercent : getPhasePercent(activeJob);
 
   return (
     <div>
-      <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 16 }}>Ad-hoc Scan</h2>
-
-      {/* Form */}
-      <div style={{ maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div className="cb-field">
-          <label className="cb-label" htmlFor="adhoc-target-network">Target Network</label>
-          <input id="adhoc-target-network" className="cb-input" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="192.168.1.0/24" />
+      <div className="adhoc-scan-card">
+        <div className="adhoc-card-head">
+          <h2 className="adhoc-scan-title"><span className="adhoc-title-dot" /> Ad-hoc Scan</h2>
+          {(isActive || launching) && <span className="adhoc-running-chip">Scanning in progress...</span>}
         </div>
 
-        <div>
-          <span style={labelStyle}>Scan Types</span>
-          <div style={{ display: 'flex', gap: 12 }}>
+        <div className="adhoc-grid-two">
+          <div className="cb-field">
+            <label className="cb-label" htmlFor="adhoc-target-network">Target Network</label>
+            <input id="adhoc-target-network" className="cb-input" value={cidr} onChange={(e) => setCidr(e.target.value)} placeholder="192.168.1.0/24" />
+          </div>
+
+          <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />
+        </div>
+
+        <div className="cb-field">
+          <span className="cb-label">Additional Probes</span>
+          <div className="adhoc-probe-row">
             {['nmap', 'snmp', 'arp', 'http'].map((t) => (
-              <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: 13 }}>
+              <label key={t} className={`adhoc-probe-chip ${scanTypes.includes(t) ? 'active' : ''}`}>
                 <input type="checkbox" checked={scanTypes.includes(t)} onChange={() => toggleScanType(t)} />
                 {t}
               </label>
@@ -387,13 +627,31 @@ function AdHocTab({ requireAck, onViewResults }) {
           </div>
         </div>
 
-        {/* Advanced */}
-        <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4, padding: 0 }} onClick={() => setAdvanced((v) => !v)}>
+        <button type="button" className="adhoc-advanced-toggle" onClick={() => setAdvanced((v) => !v)}>
           {advanced ? <ChevronDown size={13} /> : <ChevronRight size={13} />} Advanced Options
         </button>
         {advanced && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingLeft: 16, borderLeft: '2px solid var(--color-border)' }}>
-            <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />
+          <div className="adhoc-advanced-body">
+            <div className="cb-field">
+              <label className="cb-label" htmlFor="adhoc-timing-template">Timing Template</label>
+              <select id="adhoc-timing-template" className="cb-input" value={timingTemplate} onChange={(e) => setTimingTemplate(e.target.value)}>
+                <option value="2">T2 (Polite)</option>
+                <option value="3">T3 (Normal)</option>
+                <option value="4">T4 (Aggressive)</option>
+              </select>
+            </div>
+
+            <div className="cb-field">
+              <label className="cb-label" htmlFor="adhoc-ports">Ports</label>
+              <input
+                id="adhoc-ports"
+                className="cb-input"
+                value={ports}
+                onChange={(e) => setPorts(e.target.value)}
+                placeholder="e.g. 80,443,22 or 1-1000"
+              />
+            </div>
+
             <div className="cb-field">
               <label className="cb-label" htmlFor="adhoc-snmp-community">SNMP Community</label>
               <input id="adhoc-snmp-community" className="cb-input" type="password" value={snmpCom} onChange={(e) => setSnmpCom(e.target.value)} placeholder="public" autoComplete="off" />
@@ -401,75 +659,85 @@ function AdHocTab({ requireAck, onViewResults }) {
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" className="btn btn-primary" disabled={!cidr || isRunning} onClick={handleLaunch}>
-            Launch Scan →
+        <div className="adhoc-launch-row">
+          <button type="button" className={`btn btn-primary adhoc-launch-btn ${launchPulse ? 'pulse' : ''}`} disabled={!cidr || isRunning || launching} onClick={handleLaunch}>
+            <Play size={14} /> {launching ? 'Launching…' : 'Launch Scan'}
           </button>
         </div>
+
+        {launchError && (
+          <p className="adhoc-launch-error">{launchError}</p>
+        )}
       </div>
 
       {/* Active job panel */}
-      {activeJob && (
-        <div style={{ marginTop: 28, padding: '20px 20px', borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-surface)', maxWidth: 620 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <JobStatusBadge status={activeJob.status} />
-              <span style={{ fontSize: 13 }}>
-                {isRunning ? `Scanning ${activeJob.target_cidr}…` : `${activeJob.target_cidr}`}
-              </span>
+      {(activeJob || launching) && (
+        <div className="adhoc-runtime-wrap">
+          <div className="adhoc-metrics-grid">
+            <div className="adhoc-metric-card adhoc-metric-progress">
+              <div className="adhoc-metric-head">
+                <span className="adhoc-metric-label">Progress</span>
+                {activeJob ? <JobStatusBadge status={activeJob.status} /> : <JobStatusBadge status="queued" />}
+              </div>
+              <div className="adhoc-metric-main">{activeJob ? progressPercent : 0}%</div>
+              <div className="adhoc-metric-sub">{activeJob ? (PHASE_LABELS[activeJob.progress_phase] ?? PHASE_LABELS.queued).label : 'Starting scan…'}</div>
+              <div className="adhoc-progress-track">
+                <div className={`adhoc-progress-fill ${isActive || launching ? 'active' : ''}`} style={{ width: `${activeJob ? progressPercent : 0}%` }} />
+              </div>
             </div>
-            {isRunning && (
-              <button type="button" className="btn btn-secondary" style={{ fontSize: 11 }} onClick={handleCancel}>Cancel</button>
-            )}
+
+            <div className="adhoc-metric-card">
+              <div className="adhoc-metric-label">Elapsed Time</div>
+              <div className="adhoc-metric-main adhoc-elapsed">{formatElapsed(elapsedSeconds)}</div>
+              <div className="adhoc-metric-sub">
+                {isActive || launching ? 'Running in background' : 'Scan finished'}
+              </div>
+            </div>
+
+            <div className="adhoc-metric-card">
+              <div className="adhoc-metric-label">Hosts Found</div>
+              <div className="adhoc-metric-main">{activeJob?.hosts_found ?? 0}</div>
+              <div className="adhoc-metric-sub">
+                {activeJob?.started_at ? `Started ${new Date(activeJob.started_at).toLocaleTimeString()}` : 'Waiting for start'}
+              </div>
+            </div>
           </div>
 
-          {/* Scan progress banner */}
-          <div className="scan-progress-banner">
-            {isRunning && (
-              <div className="phase-row">
-                <span className="phase-icon">
-                  {(PHASE_LABELS[activeJob.progress_phase] ?? PHASE_LABELS.queued).icon}
-                </span>
-                <span className="phase-label">
-                  {(PHASE_LABELS[activeJob.progress_phase] ?? PHASE_LABELS.queued).label}
-                </span>
-                <span className="spinner" aria-label="scanning" />
+          <div className="adhoc-live-section">
+            <div className="adhoc-live-header">
+              <span>Live Results</span>
+              <span className="adhoc-live-pill">● Real-time updates</span>
+            </div>
+
+            {activeJob?.progress_message && (
+              <p className="adhoc-live-message">{activeJob.progress_message}</p>
+            )}
+
+            {liveResults.length > 0 ? (
+              <div className="adhoc-live-grid">
+                {liveResults.map((result) => (
+                  <LiveResultCard key={result.id} result={result} />
+                ))}
+              </div>
+            ) : (
+              <div className="adhoc-live-log">
+                {logLines.length > 0
+                  ? logLines.map((line) => <div key={line.id}>✓ {line.text}</div>)
+                  : <div>Scanning network for devices…</div>}
               </div>
             )}
-            {activeJob.progress_message && (
-              <div className="progress-message">{activeJob.progress_message}</div>
-            )}
-            <div className="progress-stats">
-              <span>{activeJob.hosts_found} {pluralize(activeJob.hosts_found, 'host')} found</span>
-              {activeJob.hosts_new > 0 && <span>{activeJob.hosts_new} new</span>}
-              {activeJob.hosts_conflict > 0 && <span>{activeJob.hosts_conflict} conflicts</span>}
-            </div>
-            <div className="progress-track">
-              <div className={getProgressFillClass(activeJob.status)} />
+
+            <div className="adhoc-runtime-actions">
+              {isRunning && (
+                <button type="button" className="btn btn-secondary" style={{ fontSize: 11 }} onClick={handleCancel}>Cancel</button>
+              )}
+              {jobDone && (
+                <button type="button" className="btn btn-primary" style={{ fontSize: 11 }} onClick={onViewResults}>
+                  Review Results →
+                </button>
+              )}
             </div>
           </div>
-
-          {/* Live log */}
-          {logLines.length > 0 && (
-            <div style={{ maxHeight: 160, overflowY: 'auto', background: 'var(--color-bg)', borderRadius: 4, padding: '8px 10px', fontFamily: 'monospace', fontSize: 11, color: 'var(--color-text-muted)' }}>
-              {logLines.map((line) => <div key={line.id}>✓ {line.text}</div>)}
-            </div>
-          )}
-
-          {/* Done summary */}
-          {jobDone && (
-            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12 }}>
-                Scan complete. {activeJob.hosts_found} hosts found:{' '}
-                <strong>{activeJob.hosts_new}</strong> new,{' '}
-                <strong>{activeJob.hosts_conflict}</strong> conflict,{' '}
-                <strong>{activeJob.hosts_updated}</strong> matched.
-              </span>
-              <button type="button" className="btn btn-primary" style={{ fontSize: 11 }} onClick={onViewResults}>
-                Review Results →
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -487,6 +755,7 @@ AdHocTab.propTypes = {
 function ReviewTab({ setPendingCount }) {
   const toast = useToast();
   const [results,   setResults]   = useState([]);
+  const [labNamesById, setLabNamesById] = useState({});
   const [loading,   setLoading]   = useState(true);
   const [selected,  setSelected]  = useState(new Set());
   const [reviewing, setReviewing] = useState(null);
@@ -519,6 +788,27 @@ function ReviewTab({ setPendingCount }) {
     discoveryEmitter.on('result:added', onAdded);
     return () => discoveryEmitter.off('result:added', onAdded);
   }, [setPendingCount]);
+
+  useEffect(() => {
+    const matchedIds = [...new Set(
+      results
+        .filter((r) => r.state === 'matched' && r.matched_entity_type === 'hardware' && r.matched_entity_id)
+        .map((r) => r.matched_entity_id),
+    )];
+    const missingIds = matchedIds.filter((id) => !labNamesById[id]);
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    async function hydrateMatchedNames() {
+      const found = await fetchLabNamesById(missingIds);
+      if (cancelled || Object.keys(found).length === 0) return;
+      setLabNamesById((prev) => ({ ...prev, ...found }));
+    }
+
+    hydrateMatchedNames();
+
+    return () => { cancelled = true; };
+  }, [results, labNamesById]);
 
   const filtered = filterState === 'all' ? results
     : results.filter((r) => r.state === filterState);
@@ -592,10 +882,9 @@ function ReviewTab({ setPendingCount }) {
 
   return (
     <div>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600, flex: 1 }}>Review Queue</h2>
-        <select className="form-input" style={{ width: 140, fontSize: 12 }} value={filterState} onChange={(e) => setFilterState(e.target.value)}>
+      <div className="review-queue-toolbar">
+        <h2 className="review-queue-title">Review Queue ({filtered.length})</h2>
+        <select className="cb-input review-queue-filter" value={filterState} onChange={(e) => setFilterState(e.target.value)}>
           <option value="all">All States</option>
           <option value="new">New</option>
           <option value="conflict">Conflict</option>
@@ -603,65 +892,87 @@ function ReviewTab({ setPendingCount }) {
         </select>
         {selected.size > 0 && (
           <>
-            <button type="button" className="btn btn-primary" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => setBulkDrawerOpen(true)}>
+            <button type="button" className="btn btn-primary review-queue-btn" style={{ display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => setBulkDrawerOpen(true)}>
               <Layers size={13} /> Bulk Actions ({selected.size})
             </button>
-            <button type="button" className="btn btn-secondary" style={{ fontSize: 12 }} onClick={handleBulkAccept}>Quick Accept</button>
-            <button type="button" className="btn btn-danger" style={{ fontSize: 12 }} onClick={handleBulkReject}>Reject Selected</button>
+            <button type="button" className="btn btn-secondary review-queue-btn" onClick={handleBulkAccept}>Quick Accept</button>
+            <button type="button" className="btn btn-danger review-queue-btn" onClick={handleBulkReject}>Reject Selected</button>
           </>
         )}
       </div>
 
       {filtered.length === 0 ? (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+        <p className="review-queue-empty">
           No pending results. Run a scan to discover devices on your network.
         </p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr>
-              <th style={thStyle}>
-                <input type="checkbox" checked={allNewSelected} onChange={toggleAll} />
-              </th>
-              {['IP', 'Hostname', 'OS', 'Open Ports', 'State', ''].map((h) => <th key={h} style={thStyle}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((r) => {
-              const ports = parsePorts(r.open_ports_json);
-              const muted = r.state === 'matched' || r.merge_status !== 'pending';
-              return (
-                <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)', opacity: muted ? 0.5 : 1 }}>
-                  <td style={tdStyle}>
+        <div className="review-queue-table-wrap">
+          <table className="review-queue-table">
+            <thead>
+              <tr>
+                <th className="review-col-checkbox">
+                  <input type="checkbox" checked={allNewSelected} onChange={toggleAll} />
+                </th>
+                {['IP', 'Hostname', 'OS', 'Open Ports', 'State', 'Actions'].map((h) => <th key={h}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => {
+                const ports = parsePorts(r.open_ports_json);
+                const muted = r.state === 'matched' || r.merge_status !== 'pending';
+                const isInLab = r.state === 'matched' && r.matched_entity_type === 'hardware' && r.matched_entity_id;
+                const hostnameLabel = isInLab
+                  ? `${labNamesById[r.matched_entity_id] || r.hostname || 'Lab Device'} (${r.ip_address})`
+                  : (r.hostname || '—');
+                return (
+                  <tr key={r.id} className={muted ? 'review-row-muted' : ''}>
+                    <td>
                     {r.state === 'new' && r.merge_status === 'pending' && (
                       <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id, r.state)} />
                     )}
-                  </td>
-                  <td style={{ ...tdStyle, fontFamily: 'monospace' }}>{r.ip_address}</td>
-                  <td style={tdStyle}>{r.hostname || '—'}</td>
-                  <td style={tdStyle}>{r.os_family || '—'}</td>
-                  <td style={tdStyle}><PortPills ports={ports} /></td>
-                  <td style={tdStyle}><StateBadge state={r.state} /></td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>
+                    </td>
+                    <td className="review-cell-ip">{r.ip_address}</td>
+                    <td>{hostnameLabel}</td>
+                    <td>{r.os_family || '—'}</td>
+                    <td>
+                      <div className="review-port-pills">
+                        {ports.slice(0, 4).map((p) => (
+                          <span key={`${r.id}-${p.port}-${p.protocol ?? 'tcp'}`} className="review-port-pill">{p.port}</span>
+                        ))}
+                      </div>
+                    </td>
+                    <td>
+                      {isInLab ? (
+                        <span className="review-state-inlab">
+                          <CheckCircle2 size={12} /> In Lab
+                        </span>
+                      ) : (
+                        <span className={`review-state-pill state-${r.state || 'unknown'}`}>
+                          {getReviewStateLabel(r.state)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="review-cell-actions">
                     {r.merge_status === 'pending' && (
-                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                        <button type="button" className="btn btn-primary" style={{ fontSize: 11, padding: '3px 10px' }} onClick={() => setReviewing(r)}>Accept</button>
+                      <div className="review-action-group">
+                        <button type="button" className="btn btn-primary review-action-btn" onClick={() => setReviewing(r)}>Accept</button>
                         {rejectConfirm === r.id ? (
                           <>
-                            <button type="button" className="btn btn-danger" style={{ fontSize: 11, padding: '3px 8px' }} onClick={() => handleInlineReject(r)}>Yes, reject</button>
-                            <button type="button" className="btn btn-secondary" style={{ fontSize: 11, padding: '3px 8px' }} onClick={() => setRejectConfirm(null)}>No</button>
+                            <button type="button" className="btn btn-danger review-action-btn" onClick={() => handleInlineReject(r)}>Yes, reject</button>
+                            <button type="button" className="btn btn-secondary review-action-btn" onClick={() => setRejectConfirm(null)}>No</button>
                           </>
                         ) : (
-                          <button type="button" className="btn btn-secondary" style={{ fontSize: 11, padding: '3px 10px' }} onClick={() => setRejectConfirm(r.id)}>Reject</button>
+                          <button type="button" className="btn btn-secondary review-action-btn" onClick={() => setRejectConfirm(r.id)}>Reject</button>
                         )}
                       </div>
                     )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {reviewing && (
@@ -712,15 +1023,51 @@ function HistoryTab() {
   const [loading,   setLoading]   = useState(true);
   const [expanded,  setExpanded]  = useState(new Set());
   const [expandedResults, setExpandedResults] = useState({});
+  const [labNamesById, setLabNamesById] = useState({});
   const [filterStatus,   setFilterStatus]   = useState('all');
 
-  useEffect(() => {
+  const loadJobs = useCallback(() => {
     setLoading(true);
     getJobs({ limit: 50 })
       .then((r) => setJobs(Array.isArray(r.data) ? r.data : (r.data?.jobs ?? [])))
       .catch((error) => logApiWarning('Failed to load job history', error))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadJobs(); }, [loadJobs]);
+
+  useEffect(() => {
+    const hasLiveJob = jobs.some((j) => j.status === 'running' || j.status === 'queued');
+    if (!hasLiveJob) return;
+
+    const id = globalThis.setInterval(() => {
+      getJobs({ limit: 50 })
+        .then((r) => setJobs(Array.isArray(r.data) ? r.data : (r.data?.jobs ?? [])))
+        .catch((error) => logApiWarning('Failed to refresh job history', error));
+    }, 2500);
+
+    return () => globalThis.clearInterval(id);
+  }, [jobs]);
+
+  useEffect(() => {
+    const allResults = Object.values(expandedResults).flat();
+    const matchedIds = [...new Set(
+      allResults
+        .filter((r) => r.state === 'matched' && r.matched_entity_type === 'hardware' && r.matched_entity_id)
+        .map((r) => r.matched_entity_id),
+    )];
+
+    const missingIds = matchedIds.filter((id) => !labNamesById[id]);
+    if (missingIds.length === 0) return;
+
+    let cancelled = false;
+    fetchLabNamesById(missingIds).then((found) => {
+      if (cancelled || Object.keys(found).length === 0) return;
+      setLabNamesById((prev) => ({ ...prev, ...found }));
+    });
+
+    return () => { cancelled = true; };
+  }, [expandedResults, labNamesById]);
 
   const toggleExpand = async (job) => {
     const next = new Set(expanded);
@@ -742,26 +1089,42 @@ function HistoryTab() {
   const renderExpandedResults = (jobId) => {
     const jobResults = expandedResults[jobId];
     if (!jobResults) {
-      return <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>Loading…</p>;
+      return <p className="history-details-empty">Loading…</p>;
     }
     if (jobResults.length === 0) {
-      return <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 4 }}>No results for this job.</p>;
+      return <p className="history-details-empty">No details available for this scan.</p>;
     }
     return (
-      <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+      <table className="history-details-table">
         <thead>
-          <tr>{['IP', 'Hostname', 'OS', 'State', 'Status'].map((h) => <th key={h} style={{ ...thStyle, fontSize: 10 }}>{h}</th>)}</tr>
+          <tr>{['IP', 'Hostname', 'OS', 'State', 'Status'].map((h) => <th key={h}>{h}</th>)}</tr>
         </thead>
         <tbody>
-          {jobResults.map((r) => (
-            <tr key={r.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-              <td style={tdStyle}>{r.ip_address}</td>
-              <td style={tdStyle}>{r.hostname || '—'}</td>
-              <td style={tdStyle}>{r.os_family || '—'}</td>
-              <td style={tdStyle}><StateBadge state={r.state} /></td>
-              <td style={tdStyle}>{r.merge_status}</td>
-            </tr>
-          ))}
+          {jobResults.map((r) => {
+            const isInLab = r.state === 'matched' && r.matched_entity_type === 'hardware' && r.matched_entity_id;
+            const hostnameLabel = isInLab
+              ? `${labNamesById[r.matched_entity_id] || r.hostname || 'Lab Device'} (${r.ip_address})`
+              : (r.hostname || '-');
+            return (
+              <tr key={r.id}>
+                <td>{r.ip_address}</td>
+                <td>{hostnameLabel}</td>
+                <td>{r.os_family || '-'}</td>
+                <td>
+                  {isInLab ? (
+                    <span className="history-state-inlab">
+                      <CheckCircle2 size={12} /> In Lab
+                    </span>
+                  ) : (
+                    <span className={`history-state-pill state-${r.state || 'new'}`}>
+                      {getReviewStateLabel(r.state)}
+                    </span>
+                  )}
+                </td>
+                <td>{String(r.merge_status || '-').toUpperCase()}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     );
@@ -770,61 +1133,97 @@ function HistoryTab() {
   if (loading) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading history…</p>;
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <h2 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Scan History</h2>
-        <select className="form-input" style={{ width: 150, fontSize: 12 }} value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+    <div className="history-wrap">
+      <div className="history-toolbar">
+        <h2 className="history-title">Scan History</h2>
+        <div className="history-controls">
+          <button type="button" className="history-icon-btn" onClick={loadJobs} aria-label="Refresh history">
+            <ClipboardList size={14} />
+          </button>
+          <button
+            type="button"
+            className="history-icon-btn"
+            onClick={() => navigator.clipboard?.writeText(JSON.stringify(filtered, null, 2))}
+            aria-label="Copy history as JSON"
+          >
+            <Copy size={14} />
+          </button>
+          <select className="cb-input history-filter" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
           <option value="all">All Statuses</option>
           <option value="done">Done</option>
           <option value="failed">Failed</option>
           <option value="cancelled">Cancelled</option>
           <option value="running">Running</option>
-        </select>
+          </select>
+        </div>
       </div>
 
       {filtered.length === 0 ? (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>No scans have been run yet.</p>
+        <p className="history-empty">No scans have been run yet.</p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr>
-              {['Started', 'Target', 'Types', 'Status', 'Found', 'New', 'Conflicts'].map((h) => <th key={h} style={thStyle}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((j) => {
-              const types = parseJsonArray(j.scan_types_json);
-              const isExpanded = expanded.has(j.id);
-              return (
-                <React.Fragment key={j.id}>
-                  <tr
-                    style={{ borderBottom: '1px solid var(--color-border)', cursor: 'pointer' }}
-                    onClick={() => toggleExpand(j)}
-                  >
-                    <td style={tdStyle}><TimestampCell isoString={j.created_at} /></td>
-                    <td style={{ ...tdStyle, fontFamily: 'monospace' }}>{j.target_cidr}</td>
-                    <td style={tdStyle}><div style={{ display: 'flex', gap: 4 }}>{types.map((t) => <TypePill key={t} type={t} />)}</div></td>
-                    <td style={tdStyle}><JobStatusBadge status={j.status} /></td>
-                    <td style={tdStyle}>{j.hosts_found ?? '—'}</td>
-                    <td style={tdStyle}>{j.hosts_new ?? '—'}</td>
-                    <td style={tdStyle}>{j.hosts_conflict ?? '—'}</td>
-                  </tr>
-                  {isExpanded && (
-                    <tr>
-                      <td colSpan={7} style={{ padding: '8px 16px', background: 'var(--color-bg)' }}>
-                        {renderExpandedResults(j.id)}
+        <div className="history-table-wrap">
+          <table className="history-table">
+            <thead>
+              <tr>
+                <th className="history-col-expand" />
+                {['Started', 'Target', 'Types', 'Status', 'Found', 'New', 'Conflicts'].map((h) => <th key={h}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((j) => {
+                const types = parseJsonArray(j.scan_types_json);
+                const isExpanded = expanded.has(j.id);
+                return (
+                  <React.Fragment key={j.id}>
+                    <tr className="history-row" onClick={() => toggleExpand(j)}>
+                      <td className="history-expand-cell">
+                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                       </td>
+                      <td><TimestampCell isoString={j.created_at} /></td>
+                      <td className="history-target">{j.target_cidr}</td>
+                      <td>
+                        <div className="history-type-row">
+                          {types.map((t) => <TypePill key={t} type={t} />)}
+                        </div>
+                      </td>
+                      <td><HistoryStatusPill status={j.status} /></td>
+                      <td>{j.hosts_found ?? 0}</td>
+                      <td>{j.hosts_new ?? 0}</td>
+                      <td>{j.hosts_conflict ?? 0}</td>
                     </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+                    {isExpanded && (
+                      <tr className="history-expanded-row">
+                        <td colSpan={8}>
+                          <div className="history-expanded-shell">
+                            {renderExpandedResults(j.id)}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
+
+function HistoryStatusPill({ status }) {
+  const normalized = status === 'completed' ? 'done' : status;
+  const label = normalized === 'done' ? 'Done' : normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  return (
+    <span className={`history-status-pill status-${normalized}`}>
+      {label}
+    </span>
+  );
+}
+
+HistoryStatusPill.propTypes = {
+  status: PropTypes.string.isRequired,
+};
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -858,10 +1257,53 @@ function PortPills({ ports }) {
   );
 }
 
+function LiveResultCard({ result }) {
+  const ports = parsePorts(result.open_ports_json);
+  const shownPorts = ports.slice(0, 3);
+  const osLabel = [result.os_family, result.os_vendor].filter(Boolean).join(' ') || 'Unknown';
+
+  return (
+    <article className="adhoc-result-card">
+      <div className="adhoc-result-top">
+        <div>
+          <div className="adhoc-result-ip">{result.ip_address}</div>
+          <div className="adhoc-result-mac">{result.mac_address || '—'}</div>
+        </div>
+        <span className="adhoc-result-state">{result.state || 'new'}</span>
+      </div>
+
+      <div className="adhoc-result-os">OS Detection</div>
+      <div className="adhoc-result-os-value">{osLabel}</div>
+
+      {shownPorts.length > 0 && (
+        <div className="adhoc-result-ports">
+          {shownPorts.map((p) => (
+            <span key={`${result.id}-${p.port}-${p.protocol ?? 'tcp'}`} className="adhoc-result-port-pill">
+              {p.port}/{p.protocol ?? 'tcp'}
+            </span>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
 PortPills.propTypes = {
   ports: PropTypes.arrayOf(PropTypes.shape({
     port: PropTypes.number.isRequired,
   })).isRequired,
+};
+
+LiveResultCard.propTypes = {
+  result: PropTypes.shape({
+    id: PropTypes.number.isRequired,
+    ip_address: PropTypes.string.isRequired,
+    mac_address: PropTypes.string,
+    open_ports_json: PropTypes.string,
+    os_family: PropTypes.string,
+    os_vendor: PropTypes.string,
+    state: PropTypes.string,
+  }).isRequired,
 };
 
 function parsePorts(json) {
@@ -879,6 +1321,3 @@ function parseJsonArray(json) {
   }
 }
 
-const thStyle = { textAlign: 'left', padding: '8px 10px', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--color-text-muted)', borderBottom: '1px solid var(--color-border)' };
-const tdStyle = { padding: '9px 10px', verticalAlign: 'middle' };
-const labelStyle = { display: 'block', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-text-muted)', marginBottom: 5 };

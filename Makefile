@@ -17,6 +17,8 @@ MAJOR         := $(shell echo "$(VERSION)" | cut -d. -f1)
 RELEASE_TAG   := $(shell [ "$(MAJOR)" -lt 1 ] 2>/dev/null && echo "$(VERSION)-beta" || echo "$(VERSION)")
 OS_ARCH       := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
 DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.git$$//' | sed 's/^/ghcr.io\//' | tr '[:upper:]' '[:lower:]')
+SNYK_BIN      ?= $(CURDIR)/.tools/snyk
+SNYK_PATH     ?= $(CURDIR)
 
 # ==============================================================================
 # CORE TARGETS
@@ -51,7 +53,7 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 # ==============================================================================
 # BUILD & TEST
 # ==============================================================================
-.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build
+.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build snyk-version snyk-auth snyk-test snyk-monitor
 
 lint: ## Run backend and frontend linters
 	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check app --select F
@@ -96,6 +98,18 @@ docs-build: ## Build docs with Zensical
 frontend-build: ## Build frontend production bundle
 	@echo "Building frontend..."
 	@cd $(FRONTEND_DIR) && npm ci && npm run build
+
+snyk-version: ## Show project-local Snyk CLI version
+	@$(SNYK_BIN) --version
+
+snyk-auth: ## Authenticate Snyk using the local CLI binary
+	@$(SNYK_BIN) auth
+
+snyk-test: ## Run Snyk open-source scan for this repository
+	@$(SNYK_BIN) test --all-projects --path=$(SNYK_PATH)
+
+snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alerts
+	@$(SNYK_BIN) monitor --all-projects --path=$(SNYK_PATH)
 
 # ==============================================================================
 # DOCKER & COMPOSE

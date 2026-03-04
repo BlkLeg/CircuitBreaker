@@ -5,11 +5,14 @@ import {
   Monitor, Activity, ChevronRight, Network, Trash2,
 } from 'lucide-react';
 
-function SubMenu({ title, items, type, nodeId, onAction, onClose }) {
+function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
   const submenuRowClass = 'tw-group tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-bg-cb-surface tw-flex tw-items-center tw-gap-2 tw-transition-all tw-duration-150 tw-ease-out tw-hover:bg-cb-secondary tw-hover:tw-translate-x-0.5 tw-focus-visible:tw-outline-none tw-focus-visible:tw-ring-1 tw-focus-visible:tw-ring-cb-primary';
+  const submenuSideClass = direction === 'left'
+    ? 'tw-absolute tw-right-full tw-top-0 tw-mr-1'
+    : 'tw-absolute tw-left-full tw-top-0 tw-ml-1';
 
   return (
-    <div className="tw-absolute tw-left-full tw-top-0 tw-ml-1 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100">
+    <div className={`${submenuSideClass} tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}>
       <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
         Select {title}
       </div>
@@ -40,6 +43,52 @@ function SubMenu({ title, items, type, nodeId, onAction, onClose }) {
 function ContextMenu({ position, node, nodes = [], onClose, onAction }) {
   const menuRef = useRef(null);
   const [activeSubmenu, setActiveSubmenu] = useState(null);
+  const [menuPosition, setMenuPosition] = useState(position);
+  const [submenuDirection, setSubmenuDirection] = useState('right');
+
+  useEffect(() => {
+    setMenuPosition(position);
+  }, [position]);
+
+  useEffect(() => {
+    if (!node) return;
+
+    const MENU_PADDING = 8;
+    const SUBMENU_WIDTH = 192;
+
+    const clampToViewport = () => {
+      if (!menuRef.current) return;
+      const rect = menuRef.current.getBoundingClientRect();
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const maxX = Math.max(MENU_PADDING, viewportW - rect.width - MENU_PADDING);
+      const maxY = Math.max(MENU_PADDING, viewportH - rect.height - MENU_PADDING);
+      const clampedX = Math.min(Math.max(position.x, MENU_PADDING), maxX);
+      const clampedY = Math.min(Math.max(position.y, MENU_PADDING), maxY);
+
+      setMenuPosition((prev) => (
+        prev.x === clampedX && prev.y === clampedY
+          ? prev
+          : { x: clampedX, y: clampedY }
+      ));
+
+      const rightRoom = viewportW - (clampedX + rect.width) - MENU_PADDING;
+      const leftRoom = clampedX - MENU_PADDING;
+      if (rightRoom < SUBMENU_WIDTH && leftRoom > rightRoom) {
+        setSubmenuDirection('left');
+      } else {
+        setSubmenuDirection('right');
+      }
+    };
+
+    clampToViewport();
+    window.addEventListener('resize', clampToViewport);
+    window.addEventListener('scroll', clampToViewport, true);
+    return () => {
+      window.removeEventListener('resize', clampToViewport);
+      window.removeEventListener('scroll', clampToViewport, true);
+    };
+  }, [node, position.x, position.y]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -74,7 +123,7 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction }) {
   return (
     <div
       ref={menuRef}
-      style={{ top: position.y, left: position.x }}
+      style={{ top: menuPosition.y, left: menuPosition.x }}
       className="tw-absolute tw-z-50 tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
     >
       <div className="tw-px-4 tw-py-3 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
@@ -173,6 +222,7 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction }) {
               nodeId={node.id}
               onAction={onAction}
               onClose={onClose}
+              direction={submenuDirection}
             />
           )}
         </div>
@@ -199,6 +249,7 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction }) {
               nodeId={node.id}
               onAction={onAction}
               onClose={onClose}
+              direction={submenuDirection}
             />
           )}
         </div>
@@ -225,6 +276,7 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction }) {
               nodeId={node.id}
               onAction={onAction}
               onClose={onClose}
+              direction={submenuDirection}
             />
           )}
         </div>
@@ -266,6 +318,7 @@ SubMenu.propTypes = {
   nodeId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
   onAction: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
+  direction: PropTypes.oneOf(['left', 'right']),
 };
 
 ContextMenu.propTypes = {
