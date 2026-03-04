@@ -1,3 +1,0 @@
-display_name: "CB DevOps"
-short_description: "Build, Docker, and release workflows for Circuit Breaker"
-default_prompt: "Help me build, deploy, or release Circuit Breaker"
