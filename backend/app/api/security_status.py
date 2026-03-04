@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.db import models
 from app.services.settings_service import get_or_create_settings
 
-router = APIRouter(prefix="/security", tags=["security"])
+router = APIRouter(tags=["security"])
 
 
 class SecurityStatus(BaseModel):

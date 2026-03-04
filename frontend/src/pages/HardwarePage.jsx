@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { hardwareApi, clustersApi } from '../api/client';
+import { hardwareApi, clustersApi, computeUnitsApi } from '../api/client';
 import HardwareDetail from '../components/details/HardwareDetail';
 import ClusterDetail from '../components/details/ClusterDetail';
 import { VENDORS } from '../config/vendors';
@@ -137,6 +137,16 @@ function HardwarePage() {
         setIconPickerOpen(true);
       },
     },
+    {
+      name: 'custom_icon',
+      label: 'Custom Icon',
+      type: 'image-upload',
+      hint: 'Upload PNG/JPEG/SVG (max 2MB). Stored at /user-icons/... and rendered on the map.',
+      onUpload: async (file) => {
+        const res = await computeUnitsApi.uploadIcon(file);
+        return res.data.path;
+      },
+    },
     { name: 'model',      label: 'Model' },
     { name: 'u_height',   label: 'Rack Height (U)', type: 'number', hint: 'Rack units occupied (e.g. 1, 2, 4)' },
     { name: 'rack_unit',  label: 'Rack Position (U)', type: 'number', hint: 'Starting rack unit where device is mounted' },
@@ -149,6 +159,16 @@ function HardwarePage() {
       ? { name: 'location', label: 'Location', type: 'select', options: locations.map((l) => ({ value: l, label: l })) }
       : { name: 'location', label: 'Location' },
     { name: 'environment_id', label: 'Environment', type: 'environment-combobox' },
+    {
+      name: 'status_override', label: 'Status Override', type: 'select',
+      options: [
+        { value: '',            label: '— Auto (derived) —' },
+        { value: 'online',      label: 'Online' },
+        { value: 'offline',     label: 'Offline' },
+        { value: 'degraded',    label: 'Degraded' },
+        { value: 'maintenance', label: 'Maintenance' },
+      ],
+    },
     { name: 'notes',      label: 'Notes', type: 'textarea' },
     { name: 'tags',       label: 'Tags (comma-separated)', type: 'tags' },
   ];

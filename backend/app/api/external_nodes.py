@@ -10,12 +10,11 @@ from app.schemas.external_nodes import (
     ExternalNodeUpdate,
     ExternalNodeNetworkLink,
     ExternalNodeNetworkRead,
-    ServiceExternalNodeLink,
     ServiceExternalNodeRead,
 )
 from app.services import external_nodes_service as svc
 
-router = APIRouter(prefix="/external-nodes", tags=["external-nodes"])
+router = APIRouter(tags=["external-nodes"])
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────

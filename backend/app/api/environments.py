@@ -13,7 +13,7 @@ from app.services.environments_service import (
     EnvironmentInUseError,
 )
 
-router = APIRouter(prefix="/environments", tags=["environments"])
+router = APIRouter(tags=["environments"])
 
 _NOT_FOUND = "Environment not found"
 

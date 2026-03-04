@@ -58,7 +58,7 @@ function IconGrid({ icons, onDelete }) {
           }}>
             {icon.label}
           </span>
-          {onDelete && (
+          {icon.isCustom && onDelete && (
             <button
               type="button"
               onClick={() => onDelete(icon.slug)}
@@ -111,11 +111,14 @@ function IconLibraryManager() {
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
 
+  const [uploadPrompt, setUploadPrompt] = useState(null);
+
   const fetchUploaded = async () => {
     setLoading(true);
     try {
       const res = await client.get('/compute-units/icons');
-      setUploadedIcons(res.data);
+      // Set isCustom on fetched icons so they can be deleted
+      setUploadedIcons(res.data.map(i => ({ ...i, isCustom: true })));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -125,14 +128,28 @@ function IconLibraryManager() {
 
   useEffect(() => { fetchUploaded(); }, []);
 
-  const handleUpload = async (e) => {
+  const handleUploadChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     if (file.size > 1024 * 1024) { toast.error('Icon must be under 1 MB'); return; }
+    
+    // Default name is file name without extension
+    const defaultName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+    setUploadPrompt({ file, name: defaultName, category: 'Other' });
+    
+    e.target.value = ''; // Reset input
+  };
+
+  const confirmUpload = async () => {
+    if (!uploadPrompt) return;
+    const { file, name, category } = uploadPrompt;
+    setUploadPrompt(null);
     setUploading(true);
     try {
       const form = new FormData();
       form.append('file', file);
+      form.append('name', name);
+      form.append('category', category);
       await client.post('/compute-units/icons/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -141,7 +158,6 @@ function IconLibraryManager() {
       setError(err.message);
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
   };
 
@@ -165,16 +181,39 @@ function IconLibraryManager() {
 
   const totalCount = LIBRARY_ICONS.length + uploadedIcons.length;
 
+  const categories = {};
+  GROUP_ORDER.forEach(g => { categories[g] = []; });
+
+  // Merge static icons
+  GROUP_ORDER.forEach(group => {
+    if (STATIC_GROUPS[group]) {
+      categories[group].push(...STATIC_GROUPS[group].map(i => ({ ...i, isCustom: false })));
+    }
+  });
+
+  // Merge custom icons
+  uploadedIcons.forEach(icon => {
+    const cat = GROUP_ORDER.includes(icon.category) ? icon.category : 'UPLOADED';
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push({ ...icon, isCustom: true });
+  });
+  
+  // Sort so UPLOADED group if exists appears first or appropriately
+  const displayGroups = [...GROUP_ORDER];
+  if (categories['UPLOADED'] && categories['UPLOADED'].length > 0) {
+    displayGroups.unshift('UPLOADED');
+  }
+
   return (
     <div>
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
           {totalCount} icon{totalCount !== 1 ? 's' : ''} total
-          {uploadedIcons.length > 0 && ` · ${uploadedIcons.length} uploaded`}
+          {uploadedIcons.length > 0 && ` · ${uploadedIcons.length} custom`}
         </span>
         <div>
-          <input ref={fileRef} type="file" accept=".svg,.png,.jpg,.webp" style={{ display: 'none' }} onChange={handleUpload} />
+          <input ref={fileRef} type="file" accept=".png,.jpg,.jpeg,.webp" style={{ display: 'none' }} onChange={handleUploadChange} />
           <button
             className="btn btn-sm"
             onClick={() => fileRef.current?.click()}
@@ -194,33 +233,69 @@ function IconLibraryManager() {
       {/* Scrollable grid area */}
       <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
 
-        {/* Uploaded section */}
-        {!loading && (
-          <div style={{ marginBottom: 20 }}>
-            <SectionLabel count={uploadedIcons.length}>Uploaded</SectionLabel>
-            {uploadedIcons.length === 0 ? (
-              <p style={{ fontSize: 12, color: 'rgba(156,163,175,0.5)', margin: 0 }}>
-                No custom icons uploaded yet. Use the button above to add one.
-              </p>
-            ) : (
-              <IconGrid icons={uploadedIcons} onDelete={handleDelete} />
-            )}
-          </div>
-        )}
         {loading && <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Loading…</p>}
 
-        {/* Static library groups */}
-        {GROUP_ORDER.map((group) => {
-          const icons = STATIC_GROUPS[group];
+        {!loading && displayGroups.map((group) => {
+          const icons = categories[group];
           if (!icons?.length) return null;
           return (
             <div key={group} style={{ marginBottom: 20 }}>
-              <SectionLabel count={icons.length}>{group}</SectionLabel>
-              <IconGrid icons={icons} onDelete={null} />
+              <SectionLabel count={icons.length}>{group === 'UPLOADED' ? 'Uncategorized Custom' : group}</SectionLabel>
+              <IconGrid icons={icons} onDelete={handleDelete} />
             </div>
           );
         })}
       </div>
+      
+      {uploadPrompt && (
+        <div
+          role="dialog"
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(0, 0, 0, 0.55)',
+          }}
+          onClick={() => setUploadPrompt(null)}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border, rgba(255,255,255,0.12))',
+              borderRadius: 10, padding: 24, width: 320,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>Upload Icon</h3>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Name</label>
+              <input
+                className="input"
+                autoFocus
+                value={uploadPrompt.name}
+                onChange={(e) => setUploadPrompt({ ...uploadPrompt, name: e.target.value })}
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Category</label>
+              <select
+                className="input"
+                value={uploadPrompt.category}
+                onChange={(e) => setUploadPrompt({ ...uploadPrompt, category: e.target.value })}
+                style={{ width: '100%', boxSizing: 'border-box' }}
+              >
+                {GROUP_ORDER.map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-sm" onClick={() => setUploadPrompt(null)}>Cancel</button>
+              <button className="btn btn-sm btn-primary" onClick={confirmUpload}>Upload</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}

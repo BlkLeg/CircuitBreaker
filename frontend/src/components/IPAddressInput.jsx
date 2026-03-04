@@ -1,21 +1,44 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { CheckCircle, AlertTriangle, Loader } from 'lucide-react';
-import { ipCheckApi } from '../api/client';
+import { ipCheckApi, servicesApi } from '../api/client';
 import IPConflictBanner from './IPConflictBanner';
+import IpStatusBadge from './IpStatusBadge';
 
 const DEBOUNCE_MS = 600;
 
 /**
+ * Decode "cu_1" → { computeId: 1, hardwareId: null }
+ * Decode "hw_2" → { computeId: null, hardwareId: 2 }
+ */
+function decodeRunsOn(runsOnValue) {
+  if (!runsOnValue) return { computeId: null, hardwareId: null };
+  if (String(runsOnValue).startsWith('cu_')) return { computeId: parseInt(runsOnValue.slice(3), 10), hardwareId: null };
+  if (String(runsOnValue).startsWith('hw_')) return { computeId: null, hardwareId: parseInt(runsOnValue.slice(3), 10) };
+  return { computeId: null, hardwareId: null };
+}
+
+/**
  * Controlled IP address input with built-in real-time conflict detection.
+ *
+ * For services (entityType === 'service'), uses /services/check-ip which is
+ * host-chain-aware and distinguishes inherited IPs from real conflicts.
  *
  * Exposes `hasConflicts()` via ref so the parent form can block submission.
  */
 const IPAddressInput = forwardRef(function IPAddressInput(
-  { value, onChange, entityType, entityId, ports, disabled, onOpenEntity, name, placeholder, id },
+  { value, onChange, entityType, entityId, ports, disabled, onOpenEntity, name, placeholder, id, runsOnValue },
   ref
 ) {
+  const isServiceCheck = entityType === 'service';
+
+  // State for non-service checks (original)
   const [conflicts, setConflicts] = useState([]);
+  // State for service checks (new)
+  const [ipMode, setIpMode] = useState('explicit');
+  const [conflictWith, setConflictWith] = useState([]);
+  const [isConflict, setIsConflict] = useState(false);
+
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState(false);
   const [flashBanner, setFlashBanner] = useState(false);
@@ -23,9 +46,10 @@ const IPAddressInput = forwardRef(function IPAddressInput(
   const lastCheckedRef = useRef(null);
 
   useImperativeHandle(ref, () => ({
-    hasConflicts: () => conflicts.length > 0,
+    hasConflicts: () => isServiceCheck ? isConflict : conflicts.length > 0,
     flashConflicts: () => {
-      if (conflicts.length > 0) {
+      const hasAny = isServiceCheck ? isConflict : conflicts.length > 0;
+      if (hasAny) {
         setFlashBanner(true);
         setTimeout(() => setFlashBanner(false), 900);
       }
@@ -38,29 +62,48 @@ const IPAddressInput = forwardRef(function IPAddressInput(
     const trimmed = (value || '').trim();
     if (!trimmed) {
       setConflicts([]);
+      setIpMode('explicit');
+      setConflictWith([]);
+      setIsConflict(false);
       setChecked(false);
       setChecking(false);
       return;
     }
 
     timerRef.current = setTimeout(async () => {
-      const cacheKey = `${trimmed}|${JSON.stringify(ports || [])}|${entityType}|${entityId}`;
+      const cacheKey = `${trimmed}|${JSON.stringify(ports || [])}|${entityType}|${entityId}|${runsOnValue ?? ''}`;
       if (cacheKey === lastCheckedRef.current) return;
       lastCheckedRef.current = cacheKey;
 
       setChecking(true);
       try {
-        const res = await ipCheckApi.check({
-          ip: trimmed,
-          ports: ports || undefined,
-          exclude_entity_type: entityType || undefined,
-          exclude_entity_id: entityId || undefined,
-        });
-        setConflicts(res.data.conflicts || []);
+        if (isServiceCheck) {
+          const { computeId, hardwareId } = decodeRunsOn(runsOnValue);
+          const res = await servicesApi.checkIp({
+            ip_address: trimmed,
+            compute_id: computeId,
+            hardware_id: hardwareId,
+            exclude_service_id: entityId || null,
+          });
+          setIpMode(res.data.ip_mode || 'explicit');
+          setConflictWith(res.data.conflict_with || []);
+          setIsConflict(res.data.is_conflict || false);
+        } else {
+          const res = await ipCheckApi.check({
+            ip: trimmed,
+            ports: ports || undefined,
+            exclude_entity_type: entityType || undefined,
+            exclude_entity_id: entityId || undefined,
+          });
+          setConflicts(res.data.conflicts || []);
+        }
         setChecked(true);
       } catch {
-        // silently ignore check failures — the API backstop will catch real conflicts on submit
+        // silently ignore check failures — the API backstop catches real conflicts on submit
         setConflicts([]);
+        setIpMode('explicit');
+        setConflictWith([]);
+        setIsConflict(false);
         setChecked(false);
       } finally {
         setChecking(false);
@@ -68,12 +111,14 @@ const IPAddressInput = forwardRef(function IPAddressInput(
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timerRef.current);
-  }, [value, ports, entityType, entityId]);
+  }, [value, ports, entityType, entityId, runsOnValue, isServiceCheck]);
+
+  const hasAnyConflict = isServiceCheck ? isConflict : conflicts.length > 0;
 
   const statusIcon = (() => {
     if (checking) return <Loader size={14} style={{ color: 'var(--color-text-muted, #9ca3af)', animation: 'spin 1s linear infinite' }} />;
     if (!checked || !(value || '').trim()) return null;
-    if (conflicts.length > 0) return <AlertTriangle size={14} style={{ color: '#f59e0b' }} />;
+    if (hasAnyConflict) return <AlertTriangle size={14} style={{ color: '#f59e0b' }} />;
     return <CheckCircle size={14} style={{ color: '#22c55e' }} />;
   })();
 
@@ -102,11 +147,10 @@ const IPAddressInput = forwardRef(function IPAddressInput(
           </span>
         )}
       </div>
-      <IPConflictBanner
-        conflicts={conflicts}
-        onOpenEntity={onOpenEntity}
-        flash={flashBanner}
-      />
+      {isServiceCheck
+        ? <IpStatusBadge ipMode={ipMode} conflictWith={conflictWith} flash={flashBanner} onOpenEntity={onOpenEntity} />
+        : <IPConflictBanner conflicts={conflicts} onOpenEntity={onOpenEntity} flash={flashBanner} />
+      }
     </div>
   );
 });
@@ -122,6 +166,7 @@ IPAddressInput.propTypes = {
   name: PropTypes.string,
   placeholder: PropTypes.string,
   id: PropTypes.string,
+  runsOnValue: PropTypes.string,
 };
 
 export default IPAddressInput;

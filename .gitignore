@@ -48,6 +48,12 @@ backend/data/uploads/**
 backend/data/user-icons/**
 !backend/data/user-icons/**/
 !backend/data/user-icons/**/.gitkeep
+data/uploads/icons/**
+!data/uploads/icons/**/
+!data/uploads/icons/**/.gitkeep
+data/user-icons/**
+!data/user-icons/**/
+!data/user-icons/**/.gitkeep
 
 # OS
 .DS_Store
@@ -61,6 +67,7 @@ Thumbs.db
 
 # Tool / editor caches
 .cache/
+.tools/snyk
 
 # Internal / auto-generated
 .INTERNAL/

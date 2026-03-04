@@ -12,6 +12,7 @@ def _now() -> datetime:
 
 _FK_HARDWARE_ID = "hardware.id"
 _FK_SERVICES_ID = "services.id"
+_FK_RACKS_ID = "racks.id"
 
 
 # ── Common ─────────────────────────────────────────────────────────────────
@@ -31,6 +32,10 @@ class Doc(Base):
     title: Mapped[str] = mapped_column(String, nullable=False)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.1.2: sidebar organisation & per-doc identity
+    category: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    icon: Mapped[str] = mapped_column(String, nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -59,6 +64,23 @@ class EntityDoc(Base):
     doc: Mapped["Doc"] = relationship("Doc")
 
 
+# ── Racks ──────────────────────────────────────────────────────────────────
+
+
+class Rack(Base):
+    __tablename__ = "racks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    height_u: Mapped[int] = mapped_column(Integer, nullable=False, default=42)
+    location: Mapped[str | None] = mapped_column(String, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    hardware: Mapped[list["Hardware"]] = relationship("Hardware", back_populates="rack")
+
+
 # ── Hardware ────────────────────────────────────────────────────────────────
 
 
@@ -70,6 +92,7 @@ class Hardware(Base):
     role: Mapped[str | None] = mapped_column(String)
     vendor: Mapped[str | None] = mapped_column(String)
     vendor_icon_slug: Mapped[str | None] = mapped_column(String)
+    custom_icon: Mapped[str | None] = mapped_column(String)
     model: Mapped[str | None] = mapped_column(String)
     cpu: Mapped[str | None] = mapped_column(String)
     memory_gb: Mapped[int | None] = mapped_column(Integer)
@@ -91,9 +114,30 @@ class Hardware(Base):
     telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
+    # v0.1.4-cortex: rack assignment + discovery lineage
+    rack_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_RACKS_ID), nullable=True)
+    source_scan_result_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("scan_results.id"), nullable=True)
+    # v0.1.4: auto-discovery
+    mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
+    status_override: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    last_seen: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
+    os_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    wifi_standards: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+    wifi_bands: Mapped[str | None] = mapped_column(Text, nullable=True)      # JSON array
+    max_tx_power_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    port_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    port_map_json: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON array
+    software_platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    download_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    upload_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
+    rack: Mapped["Rack | None"] = relationship("Rack", back_populates="hardware", foreign_keys=[rack_id])
     compute_units: Mapped[list["ComputeUnit"]] = relationship("ComputeUnit", back_populates="hardware")
     environment_rel: Mapped["Environment | None"] = relationship("Environment", back_populates="hardware", foreign_keys=[environment_id])
     storage_items: Mapped[list["Storage"]] = relationship("Storage", back_populates="hardware")
@@ -102,6 +146,12 @@ class Hardware(Base):
     )
     cluster_memberships: Mapped[list["HardwareClusterMember"]] = relationship(
         "HardwareClusterMember", back_populates="hardware"
+    )
+    outgoing_connections: Mapped[list["HardwareConnection"]] = relationship(
+        "HardwareConnection", foreign_keys="HardwareConnection.source_hardware_id", back_populates="source_hardware"
+    )
+    incoming_connections: Mapped[list["HardwareConnection"]] = relationship(
+        "HardwareConnection", foreign_keys="HardwareConnection.target_hardware_id", back_populates="target_hardware"
     )
 
 
@@ -122,9 +172,14 @@ class ComputeUnit(Base):
     memory_mb: Mapped[int | None] = mapped_column(Integer)
     disk_gb: Mapped[int | None] = mapped_column(Integer)
     ip_address: Mapped[str | None] = mapped_column(String)
+    download_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    upload_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     environment: Mapped[str | None] = mapped_column(String)
     # v0.1.4: environment registry
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
+    # v0.1.4-cortex: derived status from child services
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
+    status_override: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -179,6 +234,7 @@ class Service(Base):
     compute_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True)
     icon_slug: Mapped[str | None] = mapped_column(String)
+    custom_icon: Mapped[str | None] = mapped_column(String)
     category: Mapped[str | None] = mapped_column(String)
     category_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("categories.id"), nullable=True)
     url: Mapped[str | None] = mapped_column(String)
@@ -190,6 +246,10 @@ class Service(Base):
     environment_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("environments.id"), nullable=True)
     status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
     ip_address: Mapped[str | None] = mapped_column(String)
+    # IP conflict classification (host-chain-aware)
+    ip_mode: Mapped[str] = mapped_column(Text, default="explicit", server_default="explicit")
+    ip_conflict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    ip_conflict_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
@@ -218,6 +278,8 @@ class ServiceDependency(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     depends_on_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship(
         "Service", foreign_keys=[service_id], back_populates="dependencies"
@@ -258,6 +320,8 @@ class ServiceStorage(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     storage_id: Mapped[int] = mapped_column(Integer, ForeignKey("storage.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service", back_populates="storage_links")
     storage: Mapped["Storage"] = relationship("Storage", back_populates="service_links")
@@ -299,6 +363,8 @@ class HardwareNetwork(Base):
     hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="network_memberships")
     network: Mapped["Network"] = relationship("Network", back_populates="hardware_memberships")
@@ -312,9 +378,28 @@ class ComputeNetwork(Base):
     compute_id: Mapped[int] = mapped_column(Integer, ForeignKey("compute_units.id"), nullable=False)
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     compute_unit: Mapped["ComputeUnit"] = relationship("ComputeUnit", back_populates="network_memberships")
     network: Mapped["Network"] = relationship("Network", back_populates="compute_memberships")
+
+
+class HardwareConnection(Base):
+    """Direct hardware-to-hardware physical connection (e.g. switch uplink, crossover cable)."""
+    __tablename__ = "hardware_connections"
+    __table_args__ = (UniqueConstraint("source_hardware_id", "target_hardware_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
+    target_hardware_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    source_hardware: Mapped["Hardware"] = relationship("Hardware", foreign_keys=[source_hardware_id], back_populates="outgoing_connections")
+    target_hardware: Mapped["Hardware"] = relationship("Hardware", foreign_keys=[target_hardware_id], back_populates="incoming_connections")
 
 
 # ── Hardware Clusters ────────────────────────────────────────────────────────
@@ -325,6 +410,7 @@ class HardwareCluster(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    icon_slug: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String)
@@ -375,6 +461,8 @@ class ServiceMisc(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_SERVICES_ID), nullable=False)
     misc_id: Mapped[int] = mapped_column(Integer, ForeignKey("misc_items.id"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service", back_populates="misc_links")
     misc_item: Mapped["MiscItem"] = relationship("MiscItem", back_populates="service_links")
@@ -415,6 +503,8 @@ class ExternalNodeNetwork(Base):
     network_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id", ondelete="CASCADE"), nullable=False)
     link_type: Mapped[str | None] = mapped_column(String)    # 'vpn', 'wan', 'wireguard', 'reverse_proxy', etc.
     notes: Mapped[str | None] = mapped_column(Text)
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="network_links")
     network: Mapped["Network"] = relationship("Network")
@@ -428,6 +518,8 @@ class ServiceExternalNode(Base):
     service_id: Mapped[int] = mapped_column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
     external_node_id: Mapped[int] = mapped_column(Integer, ForeignKey("external_nodes.id", ondelete="CASCADE"), nullable=False)
     purpose: Mapped[str | None] = mapped_column(String)      # 'db', 'auth', 'cache', 'upstream_api', etc.
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
 
     service: Mapped["Service"] = relationship("Service")
     external_node: Mapped["ExternalNode"] = relationship("ExternalNode", back_populates="service_links")
@@ -467,6 +559,10 @@ class AppSettings(Base):
     dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
     dock_hidden_items: Mapped[str | None] = mapped_column(Text)  # JSON array of hidden path strings
     show_page_hints: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_header_widgets: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_time_widget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_weather_widget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    weather_location: Mapped[str] = mapped_column(String, nullable=False, default="Phoenix, AZ")
     auth_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     jwt_secret: Mapped[str | None] = mapped_column(Text)
     session_timeout_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
@@ -474,6 +570,7 @@ class AppSettings(Base):
     app_name: Mapped[str] = mapped_column(String, nullable=False, default="Circuit Breaker")
     favicon_path: Mapped[str | None] = mapped_column(Text)
     login_logo_path: Mapped[str | None] = mapped_column(Text)
+    login_bg_path: Mapped[str | None] = mapped_column(Text)
     primary_color: Mapped[str] = mapped_column(String, nullable=False, default="#00d4ff")
     accent_colors: Mapped[str | None] = mapped_column(Text, default='["#ff6b6b","#4ecdc4"]')  # JSON array
     # Advanced Theming
@@ -483,8 +580,98 @@ class AppSettings(Base):
     show_external_nodes_on_map: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Timezone preference (IANA name, e.g. "America/Denver")
     timezone: Mapped[str] = mapped_column(String, nullable=False, default="UTC")
+    language: Mapped[str] = mapped_column(String, nullable=False, default="en")
+    # Auto-Discovery settings
+    discovery_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discovery_auto_merge: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discovery_default_cidr: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_nmap_args: Mapped[str] = mapped_column(String, nullable=False, default="-sV -O --open -T4")
+    discovery_snmp_community: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_schedule_cron: Mapped[str] = mapped_column(String, nullable=False, default="")
+    discovery_http_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    discovery_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    scan_ack_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Font preferences
+    ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
+    ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Auto Discovery ────────────────────────────────────────────────────────────
+
+
+class DiscoveryProfile(Base):
+    __tablename__ = "discovery_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    cidr: Mapped[str] = mapped_column(String, nullable=False)
+    scan_types: Mapped[str] = mapped_column(String, default='["nmap"]')
+    nmap_arguments: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_community_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_version: Mapped[str] = mapped_column(String, default="2c")
+    snmp_port: Mapped[int] = mapped_column(Integer, default=161)
+    schedule_cron: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled: Mapped[int] = mapped_column(Integer, default=1)
+    last_run: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    jobs: Mapped[list["ScanJob"]] = relationship("ScanJob", back_populates="profile")
+
+
+class ScanJob(Base):
+    __tablename__ = "scan_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    profile_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("discovery_profiles.id"), nullable=True)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_cidr: Mapped[str] = mapped_column(String, nullable=False)
+    scan_types_json: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    hosts_found: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_new: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_updated: Mapped[int] = mapped_column(Integer, default=0)
+    hosts_conflict: Mapped[int] = mapped_column(Integer, default=0)
+    error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    triggered_by: Mapped[str] = mapped_column(String, default="api")
+    progress_phase: Mapped[str] = mapped_column(String, default="queued")
+    progress_message: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    profile: Mapped["DiscoveryProfile | None"] = relationship("DiscoveryProfile", back_populates="jobs")
+    results: Mapped[list["ScanResult"]] = relationship("ScanResult", back_populates="job")
+
+
+class ScanResult(Base):
+    __tablename__ = "scan_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    scan_job_id: Mapped[int] = mapped_column(Integer, ForeignKey("scan_jobs.id"), nullable=False)
+    ip_address: Mapped[str] = mapped_column(String, nullable=False)
+    mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    hostname: Mapped[str | None] = mapped_column(String, nullable=True)
+    open_ports_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_family: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_vendor: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_sys_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_sys_descr: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_interfaces_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_storage_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_nmap_xml: Mapped[str | None] = mapped_column(String, nullable=True)
+    state: Mapped[str] = mapped_column(String, default="new")
+    conflicts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    matched_entity_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    matched_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    merge_status: Mapped[str] = mapped_column(String, default="pending")
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    reviewed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="results")
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -499,6 +686,7 @@ class User(Base):
     gravatar_hash: Mapped[str | None] = mapped_column(Text)
     profile_photo: Mapped[str | None] = mapped_column(Text)  # relative path to uploaded file
     display_name: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str] = mapped_column(Text, nullable=False, default="en")
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     last_login: Mapped[str | None] = mapped_column(Text)
@@ -532,3 +720,37 @@ class Log(Base):
     entity_name: Mapped[str | None]   = mapped_column(String)    # denormalised name at write time
     diff:        Mapped[str | None]   = mapped_column(Text)       # JSON: {"before": {...}, "after": {...}}
     severity:    Mapped[str | None]   = mapped_column(String, default="info")  # info | warn | error
+
+
+class UserIcon(Base):
+    __tablename__ = "user_icons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String)
+    category: Mapped[str | None] = mapped_column(String)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String)
+    original_name: Mapped[str | None] = mapped_column(String)
+    mime_type: Mapped[str | None] = mapped_column(String)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    hash: Mapped[str | None] = mapped_column(String, unique=True)
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# ── Live Metrics ────────────────────────────────────────────────────────────
+
+
+class LiveMetric(Base):
+    __tablename__ = "live_metrics"
+
+    ip: Mapped[str] = mapped_column(String, primary_key=True)
+    node_id: Mapped[str | None] = mapped_column(String)  # e.g., hw-123
+    node_type: Mapped[str | None] = mapped_column(String)  # hardware/service
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str | None] = mapped_column(String)  # up/down/offline
+    assigned_to: Mapped[str | None] = mapped_column(String)  # service slug or null
+    subnet: Mapped[str | None] = mapped_column(String)  # 10.10.10.0/24
+

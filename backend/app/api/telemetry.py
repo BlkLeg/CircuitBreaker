@@ -9,9 +9,9 @@ from app.db.models import Hardware
 from app.integrations.dispatcher import poll_hardware
 from app.services.credential_vault import get_vault, CredentialVault
 from app.schemas.hardware import TelemetryConfig
-from app.core.time import utcnow, utcnow_iso
+from app.core.time import utcnow
 
-router = APIRouter(prefix="/hardware", tags=["telemetry"])
+router = APIRouter(tags=["telemetry"])
 
 
 @router.get("/{hardware_id}/telemetry")
@@ -86,6 +86,12 @@ def poll_now(
     hw.telemetry_data = json.dumps(result.get("data", {}))
     hw.telemetry_status = result.get("status", "unknown")
     hw.telemetry_last_polled = utcnow()
+    # CB-STATE-005: touch last_seen on successful poll
+    hw.last_seen = utcnow().isoformat()
+    db.flush()
+    # CB-STATE-001: recalculate derived hardware status from telemetry + children
+    from app.services.status_service import recalculate_hardware_status
+    recalculate_hardware_status(db, hardware_id)
     db.commit()
 
     return {

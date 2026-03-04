@@ -30,24 +30,38 @@ const COLUMNS = [
   {
     key: 'effective_ip',
     label: 'IP Address',
-    render: (v, row) => v
-      ? (
+    render: (v, row) => {
+      if (!v) return '—';
+      const isInherited = row.ip_mode && row.ip_mode !== 'explicit' && row.ip_mode !== 'none';
+      const hasConflict = row.ip_conflict && !isInherited;
+      return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <span style={{ color: row.ip_conflict ? '#f59e0b' : undefined, fontFamily: 'monospace', fontSize: 12 }}>{v}</span>
-          {row.ip_conflict && (
+          <span style={{ color: hasConflict ? '#f59e0b' : undefined, fontFamily: 'monospace', fontSize: 12 }}>{v}</span>
+          {isInherited && (
             <span
-              title="IP/port conflict: this address is already assigned to another entity"
+              title={`Inherited (${(row.ip_mode || '').replace(/_/g, ' ')})`}
               style={{
                 width: 14, height: 14, borderRadius: '50%',
-                background: '#f59e0b', color: '#111',
+                background: 'rgba(156,163,175,0.15)', color: '#9ca3af',
+                fontSize: 9, fontWeight: 700, flexShrink: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >↑</span>
+          )}
+          {hasConflict && (
+            <span
+              title="IP conflict — click row to view details"
+              style={{
+                width: 14, height: 14, borderRadius: '50%',
+                background: 'rgba(245,158,11,0.2)', color: '#f59e0b',
                 fontSize: 9, fontWeight: 800, flexShrink: 0,
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               }}
-            >!</span>
+            >⚠</span>
           )}
         </span>
-      )
-      : '—',
+      );
+    },
   },
   { key: 'port', label: 'Port', render: (v, r) => Array.isArray(r.ports) && r.ports[0]?.port ? `${r.ports[0].port}/${r.ports[0].protocol || 'tcp'}` : '-' },
   { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
@@ -72,6 +86,7 @@ function ServicesPage() {
   const [iconPickerCallback, setIconPickerCallback] = useState(null);
   const [categoryFilter, setCategoryFilter] = useState('');
   const [envFilter, setEnvFilter] = useState('');
+  const [filterConflicts, setFilterConflicts] = useState(false);
   const [formApiErrors, setFormApiErrors] = useState({});
 
   const fetchData = useCallback(async () => {
@@ -156,7 +171,7 @@ function ServicesPage() {
         { value: 'maintenance', label: 'Maintenance' },
       ],
     },
-    { name: 'ip_address', label: 'IP Address (optional)', type: 'ip-address-input', placeholder: '10.0.1.4', portsFieldName: 'ports' },
+    { name: 'ip_address', label: 'IP Address (optional)', type: 'ip-address-input', placeholder: '10.0.1.4', portsFieldName: 'ports', runsOnField: 'runs_on' },
     { name: 'description', label: 'Description', type: 'textarea' },
     { name: 'icon_slug', label: 'Icon', type: 'icon-picker',
       currentSlug: currentIconSlug,
@@ -252,6 +267,14 @@ function ServicesPage() {
             <option value="">All environments</option>
             {environmentsList.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
+          {items.some((s) => s.ip_conflict) && (
+            <button
+              className={`filter-pill${filterConflicts ? ' active' : ''}`}
+              onClick={() => setFilterConflicts((f) => !f)}
+            >
+              ⚠ IP Conflicts ({items.filter((s) => s.ip_conflict).length})
+            </button>
+          )}
       </div>
 
       {!loading && items.length === 0 && settings?.show_page_hints && (
@@ -262,7 +285,7 @@ function ServicesPage() {
 
       <EntityTable
           columns={COLUMNS}
-          data={items}
+          data={filterConflicts ? items.filter((s) => s.ip_conflict) : items}
           onEdit={(row) => { setEditTarget(row); setShowForm(true); }}
           onDelete={handleDelete}
           onRowClick={(row) => setDetailTarget(row)}

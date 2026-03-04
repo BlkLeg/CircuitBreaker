@@ -15,7 +15,9 @@ _CSP = (
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://www.gravatar.com; "
-    "connect-src 'self'; "
+    # wss: is required so WebSocket connections work when the app is served
+    # over HTTPS (a browser will block wss:// otherwise under strict CSP).
+    "connect-src 'self' ws: wss:; "
     "frame-ancestors 'none';"
 )
 
@@ -32,6 +34,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next):
+        # WebSocket handshakes don't support these headers in the same way 
+        # and BaseHTTPMiddleware can interfere with the handshake.
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+            
         response = await call_next(request)
         for header, value in _SECURITY_HEADERS.items():
             response.headers[header] = value

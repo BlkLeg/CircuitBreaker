@@ -1,0 +1,3 @@
+/* Tailwind utilities — scoped to discovery bulk-actions only.
+   Preflight is disabled to avoid global reset conflicts. */
+@tailwind utilities;

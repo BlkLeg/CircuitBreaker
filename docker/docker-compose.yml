@@ -8,6 +8,8 @@ services:
       - ../backend/.env
     volumes:
       - backend-data:/app/data
+      - ../data/uploads/icons:/app/data/uploads/icons
+      - ../data/uploads/branding:/app/data/uploads/branding
     environment:
       - DATABASE_URL=sqlite:////app/data/app.db
       - UPLOADS_DIR=/app/data/uploads
@@ -23,20 +25,50 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    # ──────────────────────────────────────────────────────────────────
+    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (OPTIONAL)
+    #
+    # The ARP scan phase requires elevated Linux capabilities to send
+    # raw network packets. This enables MAC address resolution and
+    # more reliable local subnet host detection.
+    #
+    # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
+    # container the ability to craft and send arbitrary raw packets.
+    # Only enable this on trusted, isolated homelab networks.
+    #
+    # If left commented out, Circuit Breaker will automatically skip
+    # the ARP phase and fall back to nmap TCP/ICMP host detection.
+    # All other scan phases (nmap, SNMP, HTTP) work without these caps.
+    #
+    # To enable ARP scanning, uncomment the section below:
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: "host"
+    # NOTE: sysctls for net.ipv6.* are not allowed in host network mode
+    # because the container shares the host's network namespace.
+    # To disable IPv6, set it on the host directly:
+    #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+    #
+    # For full documentation see:
+    # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
+    # ──────────────────────────────────────────────────────────────────
 
   frontend:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
-      args:
-        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
-        VITE_SENTRY_ENVIRONMENT: ${VITE_SENTRY_ENVIRONMENT:-production}
     ports:
       - "8080:8080"
     container_name: cb-frontend
     depends_on:
       backend:
         condition: service_healthy
+    # Because the backend uses network_mode: "host", it is NOT on the
+    # default Docker bridge network.  Nginx proxies to "http://backend:8000"
+    # so we map that hostname to the Docker host gateway IP.
+    extra_hosts:
+      - "backend:host-gateway"
     restart: unless-stopped
 
 volumes:

@@ -1,10 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React from 'react';
 import PropTypes from 'prop-types';
 import { Trash2, Plus } from 'lucide-react';
-import { ipCheckApi } from '../api/client';
-import IPConflictBanner from './IPConflictBanner';
 
-const DEBOUNCE_MS = 600;
 const PROTOCOL_OPTIONS = ['tcp', 'udp', 'sctp'];
 
 function emptyRow() {
@@ -18,73 +15,25 @@ function emptyRow() {
  * -----
  * value       – array of { ip, port, protocol, label }
  * onChange    – called with the updated array
- * entityType  – "service" (for exclude in ip-check)
- * entityId    – numeric id of the entity being edited (undefined on create)
- * serviceIp   – the service's own ip_address (used as effective IP for blank port-level IPs)
- * onOpenEntity – called when the user clicks "Open →" on a conflict item
+ * entityType  – unused (kept for API compatibility)
+ * entityId    – unused (kept for API compatibility)
+ * serviceIp   – unused (conflict detection moved to IPAddressInput)
+ * onOpenEntity – unused (kept for API compatibility)
  */
-function PortsEditor({ value, onChange, entityType, entityId, serviceIp, onOpenEntity }) {
-  const [conflicts, setConflicts] = useState([]);
-  const timerRef = useRef(null);
-
+function PortsEditor({ value, onChange }) {
   const rows = value && value.length > 0 ? value : [];
-
-  const triggerCheck = (updatedRows, serviceIpOverride) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    const effectiveIp = serviceIpOverride !== undefined ? serviceIpOverride : serviceIp;
-    if (!effectiveIp) {
-      setConflicts([]);
-      return;
-    }
-    timerRef.current = setTimeout(async () => {
-      const validPorts = updatedRows
-        .filter((r) => r.port !== '' && r.port !== null && r.port !== undefined)
-        .map((r) => ({
-          ip: r.ip || null,
-          port: Number(r.port),
-          protocol: r.protocol || 'tcp',
-          label: r.label || null,
-        }));
-      if (validPorts.length === 0) {
-        setConflicts([]);
-        return;
-      }
-      try {
-        const res = await ipCheckApi.check({
-          ip: effectiveIp,
-          ports: validPorts,
-          exclude_entity_type: entityType || undefined,
-          exclude_entity_id: entityId || undefined,
-        });
-        setConflicts(res.data.conflicts || []);
-      } catch {
-        setConflicts([]);
-      }
-    }, DEBOUNCE_MS);
-  };
-
-  // Re-check when serviceIp changes externally
-  useEffect(() => {
-    triggerCheck(rows, serviceIp);
-    return () => clearTimeout(timerRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serviceIp]);
 
   const updateRow = (index, field, val) => {
     const updated = rows.map((r, i) => (i === index ? { ...r, [field]: val } : r));
     onChange(updated);
-    triggerCheck(updated);
   };
 
   const addRow = () => {
-    const updated = [...rows, emptyRow()];
-    onChange(updated);
+    onChange([...rows, emptyRow()]);
   };
 
   const removeRow = (index) => {
-    const updated = rows.filter((_, i) => i !== index);
-    onChange(updated);
-    triggerCheck(updated);
+    onChange(rows.filter((_, i) => i !== index));
   };
 
   return (
@@ -187,8 +136,6 @@ function PortsEditor({ value, onChange, entityType, entityId, serviceIp, onOpenE
       >
         <Plus size={12} /> Add port
       </button>
-
-      <IPConflictBanner conflicts={conflicts} onOpenEntity={onOpenEntity} />
     </div>
   );
 }

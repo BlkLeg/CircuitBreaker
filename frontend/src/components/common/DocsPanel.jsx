@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { docsApi } from '../../api/client';
-import { FileText, Link as LinkIcon, Trash2, Plus, ExternalLink } from 'lucide-react';
+import { FileText, Trash2, Plus } from 'lucide-react';
 import MarkdownViewer from '../MarkdownViewer';
 import ConfirmDialog from './ConfirmDialog';
 import { useToast } from './Toast';

@@ -118,3 +118,14 @@ def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: 
     if auth_required and user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user_id
+
+
+def require_auth_always(request: Request, user_id: Optional[int] = Depends(get_optional_user)) -> int:
+    """
+    Validates JWT regardless of app_settings.auth_enabled.
+    Used exclusively for scan-trigger endpoints.
+    Raises HTTP 401 if token is missing or invalid.
+    """
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user_id

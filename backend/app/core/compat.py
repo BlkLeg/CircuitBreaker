@@ -8,15 +8,13 @@ Patches applied
 ---------------
 asyncio.iscoroutinefunction → inspect.iscoroutinefunction
     Deprecated in Python 3.12, actively warns in Python 3.14+, and scheduled
-    for removal in Python 3.16.  Both ``slowapi`` (≤ 0.1.9) and ``sentry-sdk``
-    (≤ 2.53.0) perform the call via dynamic attribute lookup on the ``asyncio``
-    module object at call-time, so replacing the attribute on the module causes
-    those libraries to transparently use the correct implementation without any
-    monkey-patching of the third-party packages themselves.
+    ``slowapi`` (≤ 0.1.9) performs the call via dynamic attribute lookup on the
+    ``asyncio`` module object at call-time, so replacing the attribute on the module
+    causes it to transparently use the correct implementation without any
+    monkey-patching of the third-party package itself.
 
-Remove this file when **both** of the following are satisfied:
-    • slowapi ships a release that uses ``inspect.iscoroutinefunction``
-    • sentry-sdk ships a release that uses ``inspect.iscoroutinefunction``
+Remove this file when ``slowapi`` ships a release that uses
+``inspect.iscoroutinefunction``.
 """
 
 import asyncio

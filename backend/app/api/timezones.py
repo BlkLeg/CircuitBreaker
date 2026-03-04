@@ -3,7 +3,7 @@ from zoneinfo import available_timezones
 
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/timezones", tags=["timezones"])
+router = APIRouter(tags=["timezones"])
 
 
 @functools.lru_cache(maxsize=1)

@@ -49,7 +49,6 @@ export default function TelemetryPanel({ hardwareId }) {
   const [enabled, setEnabled] = useState(false);
 
   const isILO = profile.startsWith('ilo');
-  const isIDRAC = profile.startsWith('idrac');
   const needsAuth = isILO;
   const needsSNMP = !isILO;
 

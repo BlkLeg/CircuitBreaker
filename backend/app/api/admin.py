@@ -1,5 +1,6 @@
 """Admin endpoints: full backup export, restore import, and recent-changes feed."""
 import logging
+from datetime import datetime
 
 from typing import Any, Optional
 
@@ -10,11 +11,11 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.db import models
-from app.core.time import utcnow, utcnow_iso
+from app.core.time import utcnow_iso
 
 _logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(tags=["admin"])
 
 
 # ── Serialisation helpers ─────────────────────────────────────────────────

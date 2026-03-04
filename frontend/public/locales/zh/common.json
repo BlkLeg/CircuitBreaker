@@ -1,0 +1,20 @@
+{
+  "header": {
+    "hardware": "硬件",
+    "compute": "计算",
+    "services": "服务",
+    "network": "网络",
+    "external": "外部",
+    "storage": "存储",
+    "map": "拓扑图",
+    "discovery": "发现",
+    "docs": "文档",
+    "logs": "日志",
+    "settings": "设置"
+  },
+  "map": {
+    "ethernet": "以太网",
+    "wireless": "无线",
+    "linkToNetwork": "连接到网络"
+  }
+}

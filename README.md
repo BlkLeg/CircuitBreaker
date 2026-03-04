@@ -226,8 +226,8 @@ with a full week of planning in Notion — mapping out features, workflows, and 
 before a single line of code was written. From there, each feature was built and tested
 in isolated phases; nothing significant was shipped in a single unreviewed pass.
 
-Code quality is actively monitored using **Dependabot**, **SonarQube**, **Snyk**, and
-**Sentry**. All critical and high-severity vulnerabilities were resolved before the beta
+Code quality is actively monitored using **Dependabot**, **SonarQube**, and **Snyk**.
+All critical and high-severity vulnerabilities were resolved before the beta
 release. As the project approaches v1, the focus will increasingly shift to stability,
 maintainability, and low cognitive complexity throughout the codebase.
 

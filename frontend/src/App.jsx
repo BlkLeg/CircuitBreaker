@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { SettingsProvider } from './context/SettingsContext';
+import { I18nextProvider } from 'react-i18next';
+import i18n from './i18n';
+import { SettingsProvider, useSettings } from './context/SettingsContext';
 import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ToastProvider } from './components/common/Toast';
@@ -9,7 +11,6 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Dock from './components/Dock';
 import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
-import ThemePalette from './components/ThemePalette';
 import AuthModal from './components/auth/AuthModal.jsx';
 import ProfileModal from './components/auth/ProfileModal.jsx';
 import SecurityBanner from './components/common/SecurityBanner.jsx';
@@ -24,15 +25,21 @@ import SettingsPage from './pages/SettingsPage';
 import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
+import DiscoveryPage from './pages/DiscoveryPage';
+import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
 
 // Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor) are only
 // downloaded when the user first navigates to those routes.
 const DocsPage = React.lazy(() => import('./pages/DocsPage'));
-const MapPage = React.lazy(() => import('./pages/MapPage'));
+const MapPage  = React.lazy(() => import('./pages/MapPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
+  const { pendingCount } = useDiscoveryStream();
+
+  const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
+  const handleOpenPalette  = useCallback(() => setPaletteOpen(true),  []);
 
   useEffect(() => {
     const handler = (e) => {
@@ -47,8 +54,8 @@ function AppInner() {
 
   return (
     <div className="app-shell">
-      <CommandPalette isOpen={paletteOpen} onClose={() => setPaletteOpen(false)} />
-      <Header onOpenPalette={() => setPaletteOpen(true)} />
+      <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
+      <Header onOpenPalette={handleOpenPalette} />
       <SecurityBanner />
       <div className="page-content">
         <ErrorBoundary>
@@ -66,12 +73,12 @@ function AppInner() {
             <Route path="/map" element={<MapPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/discovery" element={<DiscoveryPage />} />
           </Routes>
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock />
-      <ThemePalette />
+      <Dock pendingCount={pendingCount} />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />
     </div>
@@ -80,16 +87,28 @@ function AppInner() {
 
 function AppRoutes() {
   const { isAuthenticated, authEnabled, authReady } = useAuth();
+  const { settings } = useSettings();
+  const branding = settings?.branding;
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
   const [bootstrapError, setBootstrapError] = useState('');
+  const [retryCountdown, setRetryCountdown] = useState(3);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const checkInFlightRef = useRef(false);
 
-  const fetchBootstrapStatus = useCallback(() => {
-    setBootstrapLoading(true);
-    setBootstrapError('');
+  const fetchBootstrapStatus = useCallback((options = {}) => {
+    const { background = false } = options;
+    if (checkInFlightRef.current) return;
+
+    checkInFlightRef.current = true;
+    if (!background) setBootstrapLoading(true);
+    if (background) setIsRetrying(true);
+
     authApi.bootstrapStatus()
       .then((res) => {
         setNeedsBootstrap(Boolean(res.data?.needs_bootstrap));
+        setBootstrapError('');
+        setRetryCountdown(3);
       })
       .catch((err) => {
         const message = err?.message || 'Failed to determine setup state.';
@@ -97,13 +116,34 @@ function AppRoutes() {
         setBootstrapError(message);
       })
       .finally(() => {
-        setBootstrapLoading(false);
+        checkInFlightRef.current = false;
+        if (!background) setBootstrapLoading(false);
+        if (background) setIsRetrying(false);
       });
   }, []);
 
   useEffect(() => {
     fetchBootstrapStatus();
   }, [fetchBootstrapStatus]);
+
+  useEffect(() => {
+    if (!bootstrapError) {
+      setRetryCountdown(3);
+      return;
+    }
+
+    const intervalId = globalThis.setInterval(() => {
+      setRetryCountdown((prev) => {
+        if (prev <= 1) {
+          fetchBootstrapStatus({ background: true });
+          return 3;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => globalThis.clearInterval(intervalId);
+  }, [bootstrapError, fetchBootstrapStatus]);
 
   if (bootstrapLoading || !authReady) {
     return <div className="login-root" />;
@@ -112,8 +152,13 @@ function AppRoutes() {
   if (bootstrapError) {
     return (
       <div className="login-root">
-        <div className="login-split" style={{ justifyContent: 'center' }}>
-          <div className="login-card" role="alert" aria-live="polite">
+        <div className="setup-check-shell" role="alert" aria-live="polite">
+          <img
+            src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
+            alt={branding?.app_name ?? 'Circuit Breaker'}
+            className="setup-check-logo"
+          />
+          <div className="login-card setup-check-card">
             <h2 className="login-card-title">Setup check failed</h2>
             <p className="login-card-subtitle">
               Circuit Breaker could not determine whether first-run setup is required.
@@ -121,8 +166,16 @@ function AppRoutes() {
             <div className="login-error-banner" style={{ marginBottom: 16 }}>
               {bootstrapError}
             </div>
-            <button type="button" className="btn btn-primary login-btn-submit" onClick={fetchBootstrapStatus}>
-              Retry setup check
+            <div className="setup-check-status" aria-live="polite">
+              {isRetrying ? 'Retrying setup check…' : `Auto-retry in ${retryCountdown}s`}
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary login-btn-submit"
+              onClick={() => fetchBootstrapStatus()}
+              disabled={isRetrying}
+            >
+              {isRetrying ? 'Retrying…' : 'Retry setup check now'}
             </button>
           </div>
         </div>
@@ -157,17 +210,19 @@ function AppRoutes() {
 
 function App() {
   return (
-    <BrowserRouter>
-    <SettingsProvider>
-    <TimezoneProvider>
-    <AuthProvider>
-    <ToastProvider>
-      <AppRoutes />
-    </ToastProvider>
-    </AuthProvider>
-    </TimezoneProvider>
-    </SettingsProvider>
-    </BrowserRouter>
+    <I18nextProvider i18n={i18n}>
+      <BrowserRouter>
+      <SettingsProvider>
+      <TimezoneProvider>
+      <AuthProvider>
+      <ToastProvider>
+        <AppRoutes />
+      </ToastProvider>
+      </AuthProvider>
+      </TimezoneProvider>
+      </SettingsProvider>
+      </BrowserRouter>
+    </I18nextProvider>
   );
 }
 

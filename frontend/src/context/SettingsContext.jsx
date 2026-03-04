@@ -4,6 +4,8 @@ import { settingsApi } from '../api/client';
 import logger from '../utils/logger';
 import { applyTheme } from '../theme/applyTheme';
 import { THEME_PRESETS, DEFAULT_PRESET } from '../theme/presets';
+import { useAppFont } from '../hooks/useAppFont';
+import i18n from '../i18n';
 
 // Pre-apply cached theme synchronously on module import to eliminate flash on reload.
 // Runs before React renders; data-theme is not yet set so applyTheme runs in dark-mode
@@ -25,7 +27,12 @@ const DEFAULTS = {
   categories: [],
   locations: [],
   dock_order: null,
+  show_header_widgets: true,
+  show_time_widget: true,
+  show_weather_widget: true,
+  weather_location: 'Phoenix, AZ',
   timezone: 'UTC',
+  language: 'en',
 };
 
 const SettingsContext = createContext({
@@ -58,10 +65,10 @@ export function SettingsProvider({ children }) {
     const root = document.documentElement;
     const theme = settings.theme ?? 'dark';
     if (theme === 'auto') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+      const prefersDark = globalThis.matchMedia('(prefers-color-scheme: dark)').matches;
+      root.dataset.theme = prefersDark ? 'dark' : 'light';
     } else {
-      root.setAttribute('data-theme', theme);
+      root.dataset.theme = theme;
     }
   }, [settings.theme]);
 
@@ -92,7 +99,10 @@ export function SettingsProvider({ children }) {
     applyTheme(colors, preset ?? DEFAULT_PRESET);
   }, [settings.theme_preset, settings.theme_colors, settings.branding, settings.theme]);
 
-  // Apply favicon and document title whenever branding changes
+  // Apply font family and font size preferences instantly via CSS variables.
+  useAppFont(settings?.ui_font ?? 'inter', settings?.ui_font_size ?? 'medium');
+
+  // Apply favicon, document title, and PWA manifest whenever branding changes
   useEffect(() => {
     const b = settings.branding;
     if (!b) return;
@@ -103,12 +113,24 @@ export function SettingsProvider({ children }) {
         link.rel = 'icon';
         document.head.appendChild(link);
       }
-      link.href = `${b.favicon_path}?t=${Date.now()}`;
+      link.href = `/favicon.ico?t=${Date.now()}`;
     }
     if (b.app_name) {
       document.title = b.app_name;
     }
+    // Update PWA manifest to reflect current branding
+    let manifest = document.querySelector("link[rel='manifest']");
+    if (manifest) {
+      manifest.href = `/api/v1/branding/manifest.json?t=${Date.now()}`;
+    }
   }, [settings.branding]);
+
+  useEffect(() => {
+    const lang = settings.language || 'en';
+    if (i18n.language !== lang) {
+      i18n.changeLanguage(lang);
+    }
+  }, [settings.language]);
 
   const contextValue = useMemo(
     () => ({ settings, reloadSettings, loading }),

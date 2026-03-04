@@ -1,5 +1,4 @@
 import axios from 'axios';
-import * as Sentry from '@sentry/react';
 import logger from '../utils/logger';
 
 const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
@@ -43,10 +42,6 @@ client.interceptors.response.use(
     if (status >= 500) {
       message = 'A server error occurred. Please try again or contact support.';
       logger.error(`API ${status}:`, data);
-      Sentry.captureException(error, {
-        tags: { api_status: status },
-        extra: { url: error.config?.url, responseData: data },
-      });
     } else {
       // 4xx — surface the API's error detail
       const detail = data?.detail;
@@ -94,6 +89,8 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
+  addConnection: (sourceId, targetId) => client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
+  removeConnection: (connectionId) => client.delete(`/hardware-connections/${connectionId}`),
 };
 
 export const computeUnitsApi = {
@@ -106,9 +103,19 @@ export const computeUnitsApi = {
   uploadIcon: (file) => {
     const form = new FormData();
     form.append('file', file);
+    form.append('name', file.name.replace(/\.[^.]+$/, ''));
+    form.append('category', 'UPLOADED');
     return client.post('/compute-units/icons/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    }).then((res) => ({
+      ...res,
+      data: {
+        ...res.data,
+        slug: res.data.slug || res.data.filename,
+        path: res.data.path || res.data.url,
+        label: res.data.label || file.name.replace(/\.[^.]+$/, ''),
+      },
+    }));
   },
   listIcons: () => client.get('/compute-units/icons'),
 };
@@ -119,6 +126,7 @@ export const servicesApi = {
   create: (data) => client.post('/services', data),
   update: (id, data) => client.patch(`/services/${id}`, data),
   delete: (id) => client.delete(`/services/${id}`),
+  checkIp: (payload) => client.post('/services/check-ip', payload),
   getDependencies: (id) => client.get(`/services/${id}/dependencies`),
   addDependency: (id, data) => client.post(`/services/${id}/dependencies`, data),
   removeDependency: (id, depId) => client.delete(`/services/${id}/dependencies/${depId}`),
@@ -173,6 +181,7 @@ export const docsApi = {
   detach: (data) => client.delete('/docs/attach', { data }),
   byEntity: (entity_type, entity_id) =>
     client.get('/docs/by-entity', { params: { entity_type, entity_id } }),
+  getDocEntities: (docId) => client.get(`/docs/${docId}/entities`),
   uploadImage: (docId, file) => {
     const form = new FormData();
     form.append('file', file);
@@ -195,6 +204,9 @@ export const graphApi = {
   topology: (params) => client.get('/graph/topology', { params }),
   getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
   saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
+  placeNode: (node_id, environment = 'default') => client.post('/graph/place-node', { node_id, environment }),
+  deleteEdge: (edge_id) => client.delete(`/graph/edges/${edge_id}`),
+  updateEdgeType: (edge_id, connection_type) => client.patch(`/graph/edges/${edge_id}`, { connection_type }),
 };
 
 export const searchApi = {

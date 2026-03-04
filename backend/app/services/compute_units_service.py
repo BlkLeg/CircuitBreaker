@@ -1,3 +1,4 @@
+import json
 import logging
 
 from sqlalchemy.orm import Session
@@ -7,8 +8,8 @@ from fastapi import HTTPException
 from app.db.models import ComputeUnit, ComputeNetwork, Service, EntityTag, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map
-from app.core.time import utcnow, utcnow_iso
+from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
+from app.core.time import utcnow
 
 _logger = logging.getLogger(__name__)
 
@@ -149,6 +150,8 @@ def create_compute_unit(db: Session, payload: ComputeUnitCreate) -> dict:
         memory_mb=payload.memory_mb,
         disk_gb=payload.disk_gb,
         ip_address=payload.ip_address,
+        download_speed_mbps=payload.download_speed_mbps,
+        upload_speed_mbps=payload.upload_speed_mbps,
         cpu_brand=payload.cpu_brand,
         environment=payload.environment,
         environment_id=resolved_env_id,
@@ -195,11 +198,33 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
             data["environment"] = env_str
     for field, value in data.items():
         setattr(cu, field, value)
+    old_hardware_id = cu.hardware_id
     cu.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "compute", cu.id, payload.tags)
     db.commit()
     db.refresh(cu)
+    # Re-evaluate IP conflict state for all services on this compute unit
+    affected = db.execute(select(Service).where(Service.compute_id == cu_id)).scalars().all()
+    for svc in affected:
+        result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
+        svc.ip_mode = result["ip_mode"]
+        svc.ip_conflict = result["is_conflict"]
+        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+    # CB-REL-002: cascade hardware_id change to services on this compute unit
+    new_hardware_id = cu.hardware_id
+    if new_hardware_id != old_hardware_id:
+        for svc in affected:
+            svc.hardware_id = new_hardware_id
+    if affected:
+        db.commit()
+    # CB-STATE-002: recalculate own compute status (respects status_override)
+    from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
+    recalculate_compute_status(db, cu_id)
+    # CB-STATE-001: recalculate hardware status for parent hardware
+    if cu.hardware_id:
+        recalculate_hardware_status(db, cu.hardware_id)
+    db.commit()
     return _to_dict(db, cu)
 
 

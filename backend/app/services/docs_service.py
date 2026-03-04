@@ -26,6 +26,8 @@ def list_docs(db: Session, *, q: str | None = None) -> list[dict]:
     stmt = select(Doc)
     if q:
         stmt = stmt.where(Doc.title.ilike(f"%{q}%"))
+    # Pinned docs always float to the top; within each group sort by recency
+    stmt = stmt.order_by(Doc.pinned.desc(), Doc.updated_at.desc())
     rows = db.execute(stmt).scalars().all()
     return [_to_dict(r) for r in rows]
 
@@ -131,3 +133,16 @@ def import_docs(db: Session, entries: list[tuple[str, str]]) -> list[dict]:
         doc = create_doc(db, DocCreate(title=title, body_md=body_md))
         created.append(doc)
     return created
+
+
+def entities_by_doc(db: Session, doc_id: int) -> list[dict]:
+    """Return all entity links for a given doc (reverse lookup for backlinks panel)."""
+    if db.get(Doc, doc_id) is None:
+        raise ValueError(f"Doc {doc_id} not found")
+    links = db.execute(
+        select(EntityDoc).where(EntityDoc.doc_id == doc_id)
+    ).scalars().all()
+    return [
+        {"entity_type": link.entity_type, "entity_id": link.entity_id}
+        for link in links
+    ]

@@ -13,17 +13,6 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-const BG_VARS = [
-  '--color-bg',
-  '--color-surface',
-  '--color-surface-alt',
-  '--color-secondary',
-  '--color-border',
-  '--color-text',
-  '--color-text-muted',
-  '--color-grid-line',
-];
-
 export function applyTheme(presetOrColors, presetKey) {
   const root = document.documentElement;
   const isLight = root.getAttribute('data-theme') === 'light';

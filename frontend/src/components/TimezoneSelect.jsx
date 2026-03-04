@@ -169,7 +169,7 @@ export default function TimezoneSelect({ value, onChange, disabled = false }) {
         >
           {filtered.length === 0 ? (
             <div style={{ padding: '10px 14px', color: 'var(--color-text-muted)', fontSize: 13 }}>
-              No timezones match "{query}"
+              No timezones match &quot;{query}&quot;
             </div>
           ) : (
             filtered.map((tz) => {

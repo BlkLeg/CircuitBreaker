@@ -14,6 +14,7 @@ class BrandingConfig(BaseModel):
     app_name: str = "Circuit Breaker"
     favicon_path: Optional[str] = None
     login_logo_path: Optional[str] = None
+    login_bg_path: Optional[str] = None
     primary_color: str = "#00d4ff"
     accent_colors: list[str] = ["#ff6b6b", "#4ecdc4"]
 
@@ -48,6 +49,8 @@ class BrandingConfig(BaseModel):
 VALID_PRESETS = {
     "cyberpunk-neon", "dark-matter", "solarized-dark", "nord",
     "dracula", "gruvbox-dark", "monokai", "one-dark", "custom",
+    # theme.park vendored palettes
+    "tp-maroon", "tp-hotline", "tp-aquamarine", "tp-space-gray", "tp-hotpink", "tp-overseer",
 }
 
 
@@ -87,10 +90,28 @@ class AppSettingsRead(BaseModel):
     dock_order: Optional[list[str]] = None
     dock_hidden_items: Optional[list[str]] = None
     show_page_hints: bool = True
+    show_header_widgets: bool = True
+    show_time_widget: bool = True
+    show_weather_widget: bool = True
+    weather_location: str = "Phoenix, AZ"
     auth_enabled: bool = False
     session_timeout_hours: int = 24
     show_external_nodes_on_map: bool = True
     timezone: str = "UTC"
+    language: str = "en"
+    # Auto-Discovery
+    discovery_enabled: bool = False
+    discovery_auto_merge: bool = False
+    discovery_default_cidr: str = ""
+    discovery_nmap_args: str = "-sV -O --open -T4"
+    discovery_snmp_community: str = Field(default="", exclude=True)
+    discovery_schedule_cron: str = ""
+    discovery_http_probe: bool = True
+    discovery_retention_days: int = 30
+    scan_ack_accepted: bool = False
+    # Font preferences
+    ui_font: str = "inter"
+    ui_font_size: str = "medium"
     # Advanced Theming
     theme_preset: str = "cyberpunk-neon"
     custom_colors: Optional[str] = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -99,6 +120,7 @@ class AppSettingsRead(BaseModel):
     app_name: str = Field(default="Circuit Breaker", exclude=True)
     favicon_path: Optional[str] = Field(default=None, exclude=True)
     login_logo_path: Optional[str] = Field(default=None, exclude=True)
+    login_bg_path: Optional[str] = Field(default=None, exclude=True)
     primary_color: str = Field(default="#00d4ff", exclude=True)
     accent_colors: Optional[str] = Field(default='["#ff6b6b","#4ecdc4"]', exclude=True)
     # Nested branding object (computed in model_validator)
@@ -122,6 +144,7 @@ class AppSettingsRead(BaseModel):
             app_name=self.app_name or 'Circuit Breaker',
             favicon_path=self.favicon_path,
             login_logo_path=self.login_logo_path,
+            login_bg_path=self.login_bg_path,
             primary_color=self.primary_color or '#00d4ff',
             accent_colors=accent_colors,
         )
@@ -213,12 +236,30 @@ class AppSettingsUpdate(BaseModel):
     dock_order: Optional[list[str]] = None
     dock_hidden_items: Optional[list[str]] = None
     show_page_hints: Optional[bool] = None
+    show_header_widgets: Optional[bool] = None
+    show_time_widget: Optional[bool] = None
+    show_weather_widget: Optional[bool] = None
+    weather_location: Optional[str] = None
     auth_enabled: Optional[bool] = None
     session_timeout_hours: Optional[int] = None
     branding: Optional[BrandingConfig] = None
     theme_preset: Optional[str] = None
     show_external_nodes_on_map: Optional[bool] = None
     timezone: Optional[str] = None
+    language: Optional[Literal["en", "es", "fr", "de", "zh", "ja"]] = None
+    # Auto-Discovery
+    discovery_enabled: Optional[bool] = None
+    discovery_auto_merge: Optional[bool] = None
+    discovery_default_cidr: Optional[str] = None
+    discovery_nmap_args: Optional[str] = None
+    discovery_snmp_community: Optional[str] = None
+    discovery_schedule_cron: Optional[str] = None
+    discovery_http_probe: Optional[bool] = None
+    discovery_retention_days: Optional[int] = None
+    scan_ack_accepted: Optional[bool] = None
+    # Font preferences
+    ui_font: Optional[str] = None
+    ui_font_size: Optional[str] = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: Optional[dict[str, Any]] = None
 

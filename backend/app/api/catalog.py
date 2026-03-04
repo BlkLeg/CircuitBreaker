@@ -6,7 +6,7 @@ from app.services.catalog_service import (
     fuzzy_search_catalog,
 )
 
-router = APIRouter(prefix="/catalog", tags=["catalog"])
+router = APIRouter(tags=["catalog"])
 
 
 @router.get("/vendors")

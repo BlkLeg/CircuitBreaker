@@ -5,7 +5,7 @@ import ConfirmDialog from '../common/ConfirmDialog';
 import { useToast } from '../common/Toast';
 import logger from '../../utils/logger';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
-import { Layers, Database, Box, Plus, Trash2, ArrowRight } from 'lucide-react';
+import { Database, Box, Trash2, ArrowRight } from 'lucide-react';
 
 function ServiceDetail({ service, isOpen, onClose }) {
   const toast = useToast();

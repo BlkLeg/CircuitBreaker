@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.db.models import ComputeUnit, Hardware, MiscItem, Network, Service, Storage, ExternalNode
 from app.db.session import get_db
 
-router = APIRouter(prefix="/search", tags=["search"])
+router = APIRouter(tags=["search"])
 
 
 class SearchResult(BaseModel):

@@ -19,7 +19,7 @@ from app.db.session import get_db, SessionLocal
 from app.db.models import Log
 from app.schemas.logs import LogEntry, LogsResponse
 
-router = APIRouter(prefix="/logs", tags=["logs"])
+router = APIRouter(tags=["logs"])
 
 
 @router.get("", response_model=LogsResponse)

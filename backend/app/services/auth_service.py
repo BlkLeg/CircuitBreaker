@@ -33,6 +33,7 @@ def _to_profile(user: User) -> UserProfile:
         display_name=user.display_name,
         gravatar_hash=user.gravatar_hash,
         is_admin=user.is_admin,
+        language=user.language or "en",
         profile_photo_url=photo_url,
     )
 
@@ -87,6 +88,7 @@ def register(
         password_hash=hash_password(password),
         gravatar_hash=gravatar_hash(email),
         display_name=display_name.strip() if display_name and display_name.strip() else email.split("@")[0],
+        language=cfg.language or "en",
         is_admin=is_admin,
         created_at=now,
     )
@@ -135,6 +137,9 @@ def bootstrap_initialize(
     theme_preset: str,
     display_name: Optional[str] = None,
     timezone: Optional[str] = None,
+    language: Optional[str] = None,
+    ui_font: Optional[str] = None,
+    ui_font_size: Optional[str] = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if not _EMAIL_RE.match(email_norm):
@@ -168,6 +173,7 @@ def bootstrap_initialize(
         password_hash=hash_password(password),
         gravatar_hash=gravatar_hash(email_norm),
         display_name=_derive_display_name(email_norm, display_name),
+        language=language or "en",
         is_admin=True,
         created_at=now,
     )
@@ -175,8 +181,14 @@ def bootstrap_initialize(
 
     cfg.auth_enabled = True
     cfg.theme_preset = theme_preset
+    if ui_font:
+        cfg.ui_font = ui_font
+    if ui_font_size:
+        cfg.ui_font_size = ui_font_size
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets.token_hex(32)
+    if language in {"en", "es", "fr", "de", "zh", "ja"}:
+        cfg.language = language
     if timezone:
         from zoneinfo import available_timezones
         if timezone == "UTC" or timezone in available_timezones():
@@ -204,7 +216,15 @@ def bootstrap_initialize(
         actor="system",
         actor_gravatar_hash=gravatar_hash(email_norm),
         entity_type="user",
-        details=json.dumps({"email": email_norm, "theme_preset": theme_preset}),
+        details=json.dumps(
+            {
+                "email": email_norm,
+                "theme_preset": theme_preset,
+                "language": cfg.language,
+                "ui_font": cfg.ui_font,
+                "ui_font_size": cfg.ui_font_size,
+            }
+        ),
         status_code=200,
     )
     db.add(audit_log)

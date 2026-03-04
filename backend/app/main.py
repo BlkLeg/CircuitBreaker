@@ -1,4 +1,4 @@
-from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi/sentry_sdk import
+from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
@@ -13,9 +13,13 @@ from app.core.errors import AppError
 from app.db.session import engine, Base, SessionLocal
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap, catalog, telemetry as telemetry_api, categories, environments
+from app.api import rack as rack_api
+from app.api.discovery import router as discovery_router
+from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ip_check import router as ip_check_router
 from app.api.settings import router as settings_router
 from app.api.branding import router as branding_router
+from app.api.assets import router as assets_router
 from app.api.admin import router as admin_router
 from app.api.security_status import router as security_router
 from app.api.metrics import router as metrics_router
@@ -26,20 +30,53 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.rate_limit import limiter
-import sentry_sdk
-
-if settings.sentry_dsn:
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn,
-        send_default_pii=True,
-        enable_logs=True,
-        traces_sample_rate=1.0,
-        profile_session_sample_rate=1.0,
-        profile_lifecycle="trace",
-    )
 
 _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)
+
+
+def _seed_default_docs(db) -> None:
+    """Seed the single shipped default doc on fresh installs.
+
+    Creates one doc from repository root DocsPage.md only when the docs table is empty.
+    """
+    from app.core.markdown_render import render_markdown
+    from app.db.models import Doc, User
+
+    has_users = db.query(User.id).limit(1).first()
+    if has_users:
+        return
+
+    has_docs = db.query(Doc.id).limit(1).first()
+    if has_docs:
+        return
+
+    docs_page_path = Path(__file__).resolve().parents[2] / "DocsPage.md"
+    if not docs_page_path.exists():
+        _logger.warning("Default docs seed file not found at %s", docs_page_path)
+        return
+
+    body_md = docs_page_path.read_text(encoding="utf-8").strip()
+    if not body_md:
+        _logger.warning("Default docs seed file is empty: %s", docs_page_path)
+        return
+
+    title = "Welcome to Circuit Breaker"
+    first_line = body_md.splitlines()[0].strip()
+    if first_line.startswith("#"):
+        parsed_title = first_line.lstrip("#").strip()
+        if parsed_title:
+            title = parsed_title
+
+    db.add(Doc(
+        title=title,
+        body_md=body_md,
+        body_html=render_markdown(body_md),
+        category="Getting Started",
+        pinned=True,
+        icon="book-open",
+    ))
+    db.commit()
 
 
 def _get_columns(conn, table: str) -> list[str]:
@@ -81,6 +118,34 @@ def _backfill_log_timestamps(db) -> None:
 
 def _run_migrations(conn) -> None:
     """Apply lightweight schema migrations to an existing SQLite database."""
+    # user_icons (new table)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_icons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT,
+            category TEXT,
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+    """)
+    icon_cols = _get_columns(conn, "user_icons")
+    if "user_id" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN user_id INTEGER")
+    if "filename" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN filename TEXT")
+    if "original_name" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN original_name TEXT")
+    if "mime_type" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN mime_type TEXT")
+    if "size_bytes" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN size_bytes INTEGER")
+    if "hash" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN hash TEXT")
+    if "uploaded_at" not in icon_cols:
+        conn.execute("ALTER TABLE user_icons ADD COLUMN uploaded_at DATETIME")
+    conn.execute("UPDATE user_icons SET uploaded_at = CURRENT_TIMESTAMP WHERE uploaded_at IS NULL")
+
     # compute_units.icon_slug
     cu_cols = _get_columns(conn, "compute_units")
     if "icon_slug" not in cu_cols:
@@ -104,6 +169,9 @@ def _run_migrations(conn) -> None:
     hw_cols = _get_columns(conn, "hardware")
     if "wan_uplink" not in hw_cols:
         conn.execute("ALTER TABLE hardware ADD COLUMN wan_uplink TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "custom_icon" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN custom_icon TEXT")
     # hardware.cpu_brand / compute_units.cpu_brand
     hw_cols = _get_columns(conn, "hardware")
     if "cpu_brand" not in hw_cols:
@@ -166,6 +234,9 @@ def _run_migrations(conn) -> None:
     svc_cols = _get_columns(conn, "services")
     if "ip_address" not in svc_cols:
         conn.execute("ALTER TABLE services ADD COLUMN ip_address TEXT")
+    svc_cols = _get_columns(conn, "services")
+    if "custom_icon" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN custom_icon TEXT")
     # logs.status_code
     log_cols = _get_columns(conn, "logs")
     if "status_code" not in log_cols:
@@ -184,10 +255,16 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN jwt_secret TEXT")
     if "session_timeout_hours" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN session_timeout_hours INTEGER DEFAULT 24")
-    # docs.body_html
+    # docs.body_html + v0.1.2 sidebar columns
     doc_cols = _get_columns(conn, "docs")
     if "body_html" not in doc_cols:
         conn.execute("ALTER TABLE docs ADD COLUMN body_html TEXT")
+    if "category" not in doc_cols:
+        conn.execute("ALTER TABLE docs ADD COLUMN category TEXT DEFAULT ''")
+    if "pinned" not in doc_cols:
+        conn.execute("ALTER TABLE docs ADD COLUMN pinned INTEGER DEFAULT 0")
+    if "icon" not in doc_cols:
+        conn.execute("ALTER TABLE docs ADD COLUMN icon TEXT DEFAULT ''")
     # app_settings: branding fields
     settings_cols = _get_columns(conn, "app_settings")
     if "app_name" not in settings_cols:
@@ -200,6 +277,8 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN primary_color TEXT DEFAULT '#00d4ff'")
     if "accent_colors" not in settings_cols:
         conn.execute('ALTER TABLE app_settings ADD COLUMN accent_colors TEXT DEFAULT \'["#ff6b6b","#4ecdc4"]\'')
+    if "login_bg_path" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN login_bg_path TEXT")
     # app_settings: advanced theming
     settings_cols = _get_columns(conn, "app_settings")
     if "theme_preset" not in settings_cols:
@@ -224,6 +303,21 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE app_settings ADD COLUMN dock_hidden_items TEXT")
     if "show_page_hints" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_page_hints BOOLEAN DEFAULT TRUE")
+    # app_settings: header widgets
+    settings_cols = _get_columns(conn, "app_settings")
+    if "show_header_widgets" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_header_widgets BOOLEAN DEFAULT TRUE")
+    if "show_time_widget" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_time_widget BOOLEAN DEFAULT TRUE")
+    if "show_weather_widget" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN show_weather_widget BOOLEAN DEFAULT TRUE")
+    if "weather_location" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN weather_location TEXT DEFAULT 'Phoenix, AZ'")
+    if "language" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN language TEXT DEFAULT 'en'")
+    user_cols = _get_columns(conn, "users")
+    if "language" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'en'")
     # hardware_clusters + hardware_cluster_members (new tables — safe to CREATE IF NOT EXISTS)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_clusters (
@@ -236,6 +330,9 @@ def _run_migrations(conn) -> None:
             updated_at TEXT NOT NULL
         )
     """)
+    cluster_cols = _get_columns(conn, "hardware_clusters")
+    if "icon_slug" not in cluster_cols:
+        conn.execute("ALTER TABLE hardware_clusters ADD COLUMN icon_slug TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_cluster_members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -401,6 +498,29 @@ def _run_migrations(conn) -> None:
         )
     _logger.info("ports_json backfill: %d service rows processed", len(rows))
 
+    # v0.1.4-discovery: services.slug backfill — discovery-created services may have
+    # NULL slugs because the auto-merge path wrote ORM rows directly without setting
+    # the slug column (which has a NOT NULL UNIQUE constraint).
+    # Derive a slug from the service name + id suffix to guarantee uniqueness.
+    slug_rows = conn.execute(
+        "SELECT id, name FROM services WHERE slug IS NULL OR slug = ''"
+    ).fetchall()
+    for svc_id, svc_name in slug_rows:
+        if not svc_name:
+            svc_name = f"service-{svc_id}"
+        base = _re.sub(r'[^a-z0-9]+', '-', svc_name.lower()).strip('-')
+        candidate = base
+        # Ensure uniqueness against already-committed slugs
+        counter = 1
+        while conn.execute(
+            "SELECT 1 FROM services WHERE slug = ? AND id != ?", (candidate, svc_id)
+        ).fetchone():
+            candidate = f"{base}-{counter}"
+            counter += 1
+        conn.execute("UPDATE services SET slug = ? WHERE id = ?", (candidate, svc_id))
+    if slug_rows:
+        _logger.info("Slug backfill: %d service rows updated", len(slug_rows))
+
     # v0.1.6: logs.created_at_utc — reliable UTC ISO 8601 string for frontend display
     from datetime import datetime, timezone as _tz
     log_cols = _get_columns(conn, "logs")
@@ -421,223 +541,449 @@ def _run_migrations(conn) -> None:
         conn.execute("UPDATE logs SET created_at_utc = ? WHERE id = ?", (val, log_id))
     _logger.info("Log timestamp backfill: %d rows updated", len(log_rows))
 
-    # v0.1.6: app_settings.timezone — IANA timezone preference
+    # v0.1.4-discovery: hardware discovery columns
+    hw_cols = _get_columns(conn, "hardware")
+    if "mac_address" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN mac_address TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "status" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN status TEXT DEFAULT 'unknown'")
+    hw_cols = _get_columns(conn, "hardware")
+    if "last_seen" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN last_seen TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "discovered_at" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN discovered_at TEXT")
+    hw_cols = _get_columns(conn, "hardware")
+    if "source" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN source TEXT DEFAULT 'manual'")
+    hw_cols = _get_columns(conn, "hardware")
+    if "os_version" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN os_version TEXT")
+
+    # v0.1.4-discovery: scan_jobs + scan_results tables
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER REFERENCES discovery_profiles(id) ON DELETE SET NULL,
+            label TEXT,
+            target_cidr TEXT NOT NULL,
+            scan_types_json TEXT NOT NULL DEFAULT '["nmap"]',
+            status TEXT NOT NULL DEFAULT 'queued',
+            triggered_by TEXT DEFAULT 'api',
+            hosts_found INTEGER DEFAULT 0,
+            hosts_new INTEGER DEFAULT 0,
+            hosts_updated INTEGER DEFAULT 0,
+            hosts_conflict INTEGER DEFAULT 0,
+            error_text TEXT,
+            progress_phase TEXT,
+            progress_message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_job_id INTEGER NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+            ip_address TEXT NOT NULL,
+            mac_address TEXT,
+            hostname TEXT,
+            open_ports_json TEXT,
+            os_family TEXT,
+            os_vendor TEXT,
+            snmp_sys_name TEXT,
+            snmp_sys_descr TEXT,
+            raw_nmap_xml TEXT,
+            state TEXT NOT NULL DEFAULT 'new',
+            merge_status TEXT NOT NULL DEFAULT 'pending',
+            matched_entity_type TEXT,
+            matched_entity_id INTEGER,
+            conflicts_json TEXT,
+            reviewed_by TEXT,
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discovery_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            cidr TEXT NOT NULL,
+            scan_types TEXT NOT NULL DEFAULT '["nmap"]',
+            nmap_arguments TEXT,
+            snmp_community_encrypted TEXT,
+            snmp_version TEXT DEFAULT '2c',
+            snmp_port INTEGER DEFAULT 161,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            schedule TEXT,
+            last_run TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    # v0.1.4-cortex: racks table + hardware.rack_id, hardware.source_scan_result_id, compute_units.status
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS racks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            height_u INTEGER NOT NULL DEFAULT 42,
+            location TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','utc'))
+        )
+    """)
+    hw_cols = _get_columns(conn, "hardware")
+    if "rack_id" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN rack_id INTEGER REFERENCES racks(id)")
+    hw_cols = _get_columns(conn, "hardware")
+    if "source_scan_result_id" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN source_scan_result_id INTEGER REFERENCES scan_results(id)")
+    cu_cols = _get_columns(conn, "compute_units")
+    if "status" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN status TEXT DEFAULT 'unknown'")
+    if "download_speed_mbps" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL")
+    if "upload_speed_mbps" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
+    # MAC unique index (partial — only non-NULL values)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hardware_mac ON hardware(mac_address) WHERE mac_address IS NOT NULL AND mac_address != ''")
+
+    # v0.1.4-discovery: app_settings discovery columns
     settings_cols = _get_columns(conn, "app_settings")
-    if "timezone" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
+    if "discovery_auto_merge" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_auto_merge BOOLEAN DEFAULT FALSE")
+    if "discovery_nmap_args" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_nmap_args TEXT DEFAULT '-sV -O --osscan-limit -T4'")
+    if "discovery_snmp_community" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_snmp_community TEXT")
+    if "discovery_http_probe" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_http_probe BOOLEAN DEFAULT TRUE")
 
-    # Feature 6: audit log structured columns
-    log_cols = _get_columns(conn, "logs")
-    if "actor_id" not in log_cols:
-        conn.execute("ALTER TABLE logs ADD COLUMN actor_id INTEGER")
-    log_cols = _get_columns(conn, "logs")
-    if "actor_name" not in log_cols:
-        conn.execute("ALTER TABLE logs ADD COLUMN actor_name TEXT NOT NULL DEFAULT 'admin'")
-    log_cols = _get_columns(conn, "logs")
-    if "entity_name" not in log_cols:
-        conn.execute("ALTER TABLE logs ADD COLUMN entity_name TEXT")
-    log_cols = _get_columns(conn, "logs")
-    if "diff" not in log_cols:
-        conn.execute("ALTER TABLE logs ADD COLUMN diff TEXT")
-    log_cols = _get_columns(conn, "logs")
-    if "severity" not in log_cols:
-        conn.execute("ALTER TABLE logs ADD COLUMN severity TEXT NOT NULL DEFAULT 'info'")
-    _logger.info("Audit log schema: structured columns present")
+    # v0.1.7: Networking (Router/AP) hardware extensions
+    hw_cols = _get_columns(conn, "hardware")
+    if "wifi_standards" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN wifi_standards TEXT DEFAULT NULL")
+    if "wifi_bands" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN wifi_bands TEXT DEFAULT NULL")
+    if "max_tx_power_dbm" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN max_tx_power_dbm INTEGER DEFAULT NULL")
+    if "port_count" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN port_count INTEGER DEFAULT NULL")
+    if "port_map_json" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN port_map_json TEXT DEFAULT NULL")
+    if "software_platform" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN software_platform TEXT DEFAULT NULL")
+    if "download_speed_mbps" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL")
+    if "upload_speed_mbps" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
+    if "discovery_retention_days" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_retention_days INTEGER DEFAULT 30")
 
+    # live_metrics table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS live_metrics (
+            ip TEXT PRIMARY KEY,
+            node_id TEXT,
+            node_type TEXT,
+            last_seen DATETIME,
+            status TEXT,
+            assigned_to TEXT,
+            subnet TEXT
+        )
+    """)
+
+    # ── v2 Map: status_override columns ─────────────────────────────────
+    hw_cols = _get_columns(conn, "hardware")
+    if "status_override" not in hw_cols:
+        conn.execute("ALTER TABLE hardware ADD COLUMN status_override TEXT")
+    cu_cols = _get_columns(conn, "compute_units")
+    if "status_override" not in cu_cols:
+        conn.execute("ALTER TABLE compute_units ADD COLUMN status_override TEXT")
+
+    # ── v2 Map: connection_type / bandwidth_mbps on join tables ──────────
+    _JOIN_TABLES_V2 = [
+        "hardware_networks",
+        "compute_networks",
+        "service_dependencies",
+        "service_storage",
+        "service_misc",
+        "external_node_networks",
+        "service_external_nodes",
+    ]
+    for _tbl in _JOIN_TABLES_V2:
+        _cols = _get_columns(conn, _tbl)
+        if "connection_type" not in _cols:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN connection_type TEXT DEFAULT 'ethernet'")
+        if "bandwidth_mbps" not in _cols:
+            conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN bandwidth_mbps INTEGER")
+
+    # ── hardware_connections: direct hardware-to-hardware physical links ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hardware_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_hardware_id INTEGER NOT NULL REFERENCES hardware(id) ON DELETE CASCADE,
+            target_hardware_id INTEGER NOT NULL REFERENCES hardware(id) ON DELETE CASCADE,
+            connection_type TEXT DEFAULT 'ethernet',
+            bandwidth_mbps INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','utc')),
+            UNIQUE (source_hardware_id, target_hardware_id)
+        )
+    """)
+
+
+# ── App startup / lifespan ──────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure the data directory exists before SQLite tries to create the db file
-    db_url = settings.database_url
-    if db_url.startswith(_SQLITE_SCHEME):
-        db_path = db_url.replace(_SQLITE_SCHEME, "")
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    # Create all tables on startup (v1 — no alembic migrations yet)
+    """Run startup and shutdown tasks."""
+    import asyncio
+    from app.services import discovery_service
+
+    # ── DB init & migrations ──────────────────────────────────────────────
+    if settings.database_url.startswith(_SQLITE_SCHEME):
+        db_path = Path(settings.database_url[len(_SQLITE_SCHEME):])
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure writable for WAL mode and migrations
+        if db_path.exists():
+            try:
+                db_path.chmod(0o666)
+            except Exception:
+                pass
+
+    # CRITICAL: Create all tables first
     Base.metadata.create_all(bind=engine)
-    # Lightweight migrations: add new columns to existing SQLite DBs
-    if db_url.startswith(_SQLITE_SCHEME):
-        import sqlite3
-        db_path = db_url.replace(_SQLITE_SCHEME, "")
-        if Path(db_path).exists():
-            with sqlite3.connect(db_path) as conn:
-                _run_migrations(conn)
+
+    if settings.database_url.startswith(_SQLITE_SCHEME):
+        # For in-memory DBs, we can't just use a new connect() because it's a DIFFERENT DB
+        # But our engine usually handles connection pooling.
+        # However, for migrations we use a raw connection.
+        with engine.connect() as conn:
+            # We must use the connection from the engine to see the tables in memory
+            # sqlalchemy's engine.connect() returns a Connection object.
+            # We need the underlying DBAPI connection for raw SQL if using it.
+            raw_conn = conn.connection
+            _run_migrations(raw_conn)
+            raw_conn.commit()
+
+    # Backfill log timestamps via ORM session
+    db = SessionLocal()
     try:
-        from app.services.settings_service import get_or_create_settings
+        _backfill_log_timestamps(db)
+        _seed_default_docs(db)
+    finally:
+        db.close()
 
-        with SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            user_count = db.query(models.User).count()
-            _logger.info(
-                "Bootstrap status: needs_bootstrap=%s user_count=%s auth_enabled=%s",
-                user_count == 0,
-                user_count,
-                bool(cfg.auth_enabled),
-            )
-    except Exception as exc:
-        _logger.warning("Bootstrap status logging failed: %s", exc)
-    # Ensure all upload subdirectories exist on the persistent volume
-    _base = Path(settings.uploads_dir)
-    (_base / "icons").mkdir(parents=True, exist_ok=True)
-    (_base / "profiles").mkdir(parents=True, exist_ok=True)
-    (_base / "branding").mkdir(parents=True, exist_ok=True)
-    (_base / "docs").mkdir(parents=True, exist_ok=True)
-    yield
+    # ── Register main event loop for APScheduler WS broadcasts ───────────
+    loop = asyncio.get_running_loop()
+    discovery_service.set_main_loop(loop)
+
+    # ── APScheduler — scheduled discovery jobs ────────────────────────────
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+
+    scheduler = AsyncIOScheduler()
+
+    # Daily purge of old scan results
+    scheduler.add_job(
+        discovery_service.purge_old_scan_results,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="purge_old_scan_results",
+        replace_existing=True,
+    )
+
+    # IP Pool refresh every hour
+    scheduler.add_job(
+        discovery_service.refresh_ip_pool,
+        trigger=CronTrigger(minute=0),
+        id="refresh_ip_pool",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Load enabled discovery profiles and schedule them
+    sched_db = SessionLocal()
+    try:
+        from app.db.models import DiscoveryProfile
+        profiles = sched_db.query(DiscoveryProfile).filter(
+            DiscoveryProfile.enabled == True,  # noqa: E712
+            DiscoveryProfile.schedule_cron.isnot(None),
+            DiscoveryProfile.schedule_cron != "",
+        ).all()
+        for profile in profiles:
+            try:
+                if not profile.schedule_cron:
+                    continue
+                trigger = CronTrigger.from_crontab(profile.schedule_cron)
+                scheduler.add_job(
+                    discovery_service.run_scan_job_by_profile,
+                    trigger=trigger,
+                    args=[profile.id],
+                    id=f"discovery_profile_{profile.id}",
+                    replace_existing=True,
+                )
+                _logger.info("Scheduled discovery profile %d (%s)", profile.id, profile.name)
+            except Exception as exc:
+                _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
+    finally:
+        sched_db.close()
+
+    scheduler.start()
+    _logger.info("APScheduler started.")
+
+    yield  # ── app is running ──
+
+    scheduler.shutdown(wait=False)
+    _logger.info("APScheduler stopped.")
 
 
+# ── FastAPI app ────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    openapi_url=f"{settings.api_prefix}/openapi.json",
-    docs_url="/swagger",
-    redoc_url="/redoc",
+    title="Circuit Breaker",
+    version="0.1.0",
     lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
-# Attach rate-limiter to app state so slowapi can use it
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-
-# ---------------------------------------------------------------------------
-# Global exception handlers
-# ---------------------------------------------------------------------------
-
-def _error_json(error_code: str, detail: object, status_code: int) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": error_code, "detail": detail})
-
-
-@app.exception_handler(AppError)
-async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
-    """Convert domain-level AppError subclasses to structured JSON responses."""
-    _logger.info("AppError [%s %s]: %s", request.method, request.url.path, exc.message)
-    return _error_json(exc.error_code, exc.message, exc.status_code)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """Convert Pydantic validation errors to a consistent schema."""
-    errors = [
-        {"field": ".".join(str(loc) for loc in e["loc"]), "msg": e["msg"]}
-        for e in exc.errors()
-    ]
-    return _error_json("validation_error", errors, 422)
-
-
-@app.exception_handler(Exception)
-async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all: log the full traceback server-side, return a safe 500 body."""
-    _logger.exception(
-        "Unhandled exception [%s %s]", request.method, request.url.path, exc_info=exc
-    )
-    sentry_sdk.capture_exception(exc)
-    return _error_json("internal_error", "An unexpected error occurred.", 500)
-
+# ── CORS ───────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
-app.include_router(hardware.router, prefix=settings.api_prefix)
-app.include_router(compute_units.router, prefix=settings.api_prefix)
-app.include_router(services.router, prefix=settings.api_prefix)
-app.include_router(storage.router, prefix=settings.api_prefix)
-app.include_router(networks.router, prefix=settings.api_prefix)
-app.include_router(misc.router, prefix=settings.api_prefix)
-app.include_router(docs.router, prefix=settings.api_prefix)
-app.include_router(graph.router, prefix=settings.api_prefix)
-app.include_router(search.router, prefix=settings.api_prefix)
-app.include_router(settings_router, prefix=settings.api_prefix)
-app.include_router(logs.router, prefix=settings.api_prefix)
-app.include_router(auth.router, prefix=settings.api_prefix)
-app.include_router(bootstrap.router, prefix=settings.api_prefix)
-app.include_router(branding_router, prefix=settings.api_prefix)
-app.include_router(admin_router, prefix=settings.api_prefix)
-app.include_router(security_router, prefix=settings.api_prefix)
-app.include_router(clusters.router, prefix=settings.api_prefix)
-app.include_router(external_nodes.router, prefix=settings.api_prefix)
-app.include_router(external_nodes._rel_router, prefix=settings.api_prefix)
-app.include_router(metrics_router, prefix=settings.api_prefix)
-app.include_router(catalog.router, prefix=settings.api_prefix)
-app.include_router(telemetry_api.router, prefix=settings.api_prefix)
-app.include_router(categories.router, prefix=settings.api_prefix)
-app.include_router(environments.router, prefix=settings.api_prefix)
-app.include_router(ip_check_router, prefix=settings.api_prefix)
-app.include_router(timezones_router, prefix=settings.api_prefix)
+# ── Global error handlers ──────────────────────────────────────────────────
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
-# Serve all user-uploaded content. Directories are derived from settings.uploads_dir
-# so that UPLOADS_DIR=/data/uploads in Docker lands everything on the persistent volume.
-_uploads_base = Path(settings.uploads_dir)
-
-_user_icons_path = _uploads_base / "icons"
-_user_icons_path.mkdir(parents=True, exist_ok=True)
-app.mount("/user-icons", StaticFiles(directory=_user_icons_path), name="user-icons")
-
-_profile_photos_path = _uploads_base / "profiles"
-_profile_photos_path.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads/profiles", StaticFiles(directory=_profile_photos_path), name="profile-photos")
-
-_doc_uploads_path = _uploads_base / "docs"
-_doc_uploads_path.mkdir(parents=True, exist_ok=True)
-app.mount("/uploads/docs", StaticFiles(directory=_doc_uploads_path), name="doc-uploads")
-
-_branding_path = _uploads_base / "branding"
-_branding_path.mkdir(parents=True, exist_ok=True)
-app.mount("/branding", StaticFiles(directory=_branding_path), name="branding")
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(exc.body)[:500] if exc.body else None},
+    )
 
 
-@app.get("/sentry-debug")
-async def trigger_error():
-    division_by_zero = 1 / 0
+# ── API routers ────────────────────────────────────────────────────────────
+
+_V1 = "/api/v1"
+
+app.include_router(hardware.router,       prefix=f"{_V1}/hardware",          tags=["hardware"])
+app.include_router(hardware.hw_conn_router, prefix=f"{_V1}",                 tags=["hardware"])
+app.include_router(compute_units.router,  prefix=f"{_V1}/compute-units",     tags=["compute-units"])
+app.include_router(services.router,       prefix=f"{_V1}/services",          tags=["services"])
+app.include_router(storage.router,        prefix=f"{_V1}/storage",           tags=["storage"])
+app.include_router(networks.router,       prefix=f"{_V1}/networks",          tags=["networks"])
+app.include_router(misc.router,           prefix=f"{_V1}/misc",              tags=["misc"])
+app.include_router(docs.router,           prefix=f"{_V1}/docs",              tags=["docs"])
+app.include_router(graph.router,          prefix=f"{_V1}/graph",             tags=["graph"])
+app.include_router(search.router,         prefix=f"{_V1}/search",            tags=["search"])
+app.include_router(logs.router,           prefix=f"{_V1}/logs",              tags=["logs"])
+app.include_router(auth.router,           prefix=f"{_V1}/auth",              tags=["auth"])
+app.include_router(clusters.router,       prefix=f"{_V1}/hardware-clusters", tags=["clusters"])
+app.include_router(external_nodes.router, prefix=f"{_V1}/external-nodes",    tags=["external-nodes"])
+app.include_router(bootstrap.router,      prefix=f"{_V1}/bootstrap",         tags=["bootstrap"])
+app.include_router(catalog.router,        prefix=f"{_V1}/catalog",           tags=["catalog"])
+app.include_router(telemetry_api.router,  prefix=f"{_V1}/hardware",          tags=["telemetry"])
+app.include_router(categories.router,     prefix=f"{_V1}/categories",        tags=["categories"])
+app.include_router(environments.router,   prefix=f"{_V1}/environments",      tags=["environments"])
+app.include_router(discovery_router,      prefix=f"{_V1}/discovery",         tags=["discovery"])
+app.include_router(ws_discovery_router,   prefix=f"{_V1}/discovery",         tags=["discovery-ws"])
+app.include_router(ip_check_router,       prefix=f"{_V1}",                   tags=["ip-check"])
+app.include_router(settings_router,       prefix=f"{_V1}/settings",          tags=["settings"])
+app.include_router(branding_router,       prefix=f"{_V1}/branding",          tags=["branding"])
+app.include_router(assets_router,         prefix=f"{_V1}/assets",            tags=["assets"])
+app.include_router(admin_router,          prefix=f"{_V1}/admin",             tags=["admin"])
+app.include_router(security_router,       prefix=f"{_V1}/security",          tags=["security"])
+app.include_router(metrics_router,        prefix=f"{_V1}/metrics",           tags=["metrics"])
+app.include_router(timezones_router,      prefix=f"{_V1}/timezones",         tags=["timezones"])
+app.include_router(rack_api.router,       prefix=f"{_V1}/racks",             tags=["racks"])
 
 
-@app.api_route(f"{settings.api_prefix}/health", methods=["GET", "HEAD"])
-def health(request: Request):
-    # HEAD is used by wget --spider (Docker HEALTHCHECK) and Cloudflare health probes.
-    # FastAPI/Starlette do not auto-register HEAD for @app.get routes, so it must be
-    # declared explicitly here to prevent the SPA catch-all from swallowing it as a 404.
-    if request.method == "HEAD":
-        return Response(status_code=200)
-    return {"status": "ok", "version": settings.app_version}
+# ── Health check ───────────────────────────────────────────────────────────
 
-# Serve React Frontend (Static Files)
-# We check if the static directory exists (it should in Docker)
-static_path = Path(settings.static_dir)
-if static_path.exists():
-    # Mount assets, etc.
-    app.mount("/assets", StaticFiles(directory=static_path / "assets"), name="assets")
+@app.get(f"{_V1}/health")
+async def health():
+    return {"status": "ok"}
 
-    # You might check contents of dist to see if there are other top-level folders/files to serve specifically,
-    # or just serve everything. Mounting "/" as StaticFiles can interfere with API routes if not careful.
-    # A common pattern for SPAs:
-    
-    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
-    async def serve_spa(full_path: str, request: Request):
-        # API routes should have been matched earlier; return a proper 404 if somehow reached here
+
+# ── Static files & SPA fallback ────────────────────────────────────────────
+
+_STATIC_DIR = Path(__file__).parent.parent / "static"
+_FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+
+def _get_frontend_dir() -> Path | None:
+    if _FRONTEND_DIST.exists():
+        return _FRONTEND_DIST
+    if _STATIC_DIR.exists():
+        return _STATIC_DIR
+    return None
+
+
+_frontend_dir = _get_frontend_dir()
+
+_uploads_dir = Path(settings.uploads_dir)
+_user_icons_dir = _uploads_dir / "icons"
+_branding_dir_data = _uploads_dir / "branding"
+
+# Ensure directories exist so mounting never fails
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+_user_icons_dir.mkdir(parents=True, exist_ok=True)
+_branding_dir_data.mkdir(parents=True, exist_ok=True)
+
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
+app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_file():
+    favicon = _branding_dir_data / "favicon.ico"
+    if favicon.exists():
+        return FileResponse(str(favicon), media_type="image/x-icon")
+    if _frontend_dir and (_frontend_dir / "favicon.ico").exists():
+        return FileResponse(str(_frontend_dir / "favicon.ico"), media_type="image/x-icon")
+    return Response(status_code=404)
+
+if _frontend_dir:
+    _assets = _frontend_dir / "assets"
+    if _assets.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+
+    _icons = _frontend_dir / "icons"
+    if _icons.exists():
+        app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str, request: Request):
+        # API routes must never fall through to the SPA
         if full_path.startswith("api/"):
-            raise HTTPException(status_code=404, detail="Not Found")
-
-        # Prevent path traversal: resolve canonical paths and verify the result
-        # stays within the static root before serving any file.
-        static_root = static_path.resolve()
-        resolved = (static_path / full_path).resolve()
-        if not resolved.is_relative_to(static_root):
-            raise HTTPException(status_code=404, detail="Not Found")
-
-        # HEAD requests (Cloudflare health probes, curl -I) — return headers only
-        if request.method == "HEAD":
-            return Response(status_code=200, media_type="text/html")
-
-        if resolved.is_file():
-            return FileResponse(resolved)
-
-        # Fallback to index.html for client-side routing
-        return HTMLResponse((static_path / "index.html").read_text(encoding="utf-8"))
+            raise HTTPException(status_code=404, detail="Not found")
+        index = _frontend_dir / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return Response(status_code=404)
 else:
-    _logger.debug("Static directory %s not found — frontend not served (normal in dev)", static_path)
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return HTMLResponse("<h1>Circuit Breaker API</h1><p>Frontend not built.</p>")
+
+

@@ -3,6 +3,7 @@ import secrets
 import zoneinfo
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow, utcnow_iso
@@ -23,13 +24,28 @@ _DEFAULTS = dict(
     dock_order=None,
     dock_hidden_items=None,
     show_page_hints=True,
+    show_header_widgets=True,
+    show_time_widget=True,
+    show_weather_widget=True,
+    weather_location="Phoenix, AZ",
+    language="en",
     app_name="Circuit Breaker",
     favicon_path=None,
     login_logo_path=None,
+    login_bg_path=None,
     primary_color="#00d4ff",
     accent_colors='["#ff6b6b","#4ecdc4"]',
     theme_preset="cyberpunk-neon",
     custom_colors=None,
+    discovery_enabled=False,
+    discovery_auto_merge=False,
+    discovery_default_cidr="",
+    discovery_nmap_args="-sV -O --open -T4",
+    discovery_snmp_community="",
+    discovery_schedule_cron="",
+    discovery_http_probe=True,
+    discovery_retention_days=30,
+    scan_ack_accepted=False,
 )
 
 
@@ -108,3 +124,19 @@ def reset_settings(db: Session) -> AppSettings:
     db.commit()
     db.refresh(row)
     return row
+
+
+def update_user_language(db: Session, user_id: int, language: str) -> None:
+    db.execute(
+        text("UPDATE users SET language = :lang WHERE id = :id"),
+        {"lang": language, "id": user_id},
+    )
+    db.commit()
+
+
+def get_user_language(db: Session, user_id: int) -> str:
+    result = db.scalar(
+        text("SELECT language FROM users WHERE id = :id"),
+        {"id": user_id},
+    )
+    return result or "en"

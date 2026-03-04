@@ -2,6 +2,7 @@
 import json
 import re
 import logging
+from datetime import datetime
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -34,6 +35,11 @@ _ROUTE_RULES: list[tuple[str, re.Pattern, str, str]] = [
     ("DELETE", re.compile(r"^/api/v1/networks/\d+/members/\d+$"),         "remove_network_member",    "relationships"),
     ("POST",   re.compile(r"^/api/v1/docs/attach$"),                      "attach_doc",               "docs"),
     ("DELETE", re.compile(r"^/api/v1/docs/attach$"),                      "detach_doc",               "docs"),
+    # Graph / topology map actions
+    ("POST",   re.compile(r"^/api/v1/graph/layout$"),                     "save_graph_layout",        "graph"),
+    ("POST",   re.compile(r"^/api/v1/graph/place-node$"),                 "place_graph_node",         "graph"),
+    ("PATCH",  re.compile(r"^/api/v1/graph/edges/.+$"),                   "update_graph_edge",        "graph"),
+    ("DELETE", re.compile(r"^/api/v1/graph/edges/.+$"),                   "delete_graph_edge",        "graph"),
     # Settings
     ("PUT",    re.compile(r"^/api/v1/settings$"),                         "update_settings",          "settings"),
     ("POST",   re.compile(r"^/api/v1/settings/reset$"),                   "reset_settings",           "settings"),
@@ -48,9 +54,14 @@ _ROUTE_RULES: list[tuple[str, re.Pattern, str, str]] = [
 _ENTITY_ALIASES = {
     "compute-units": "compute",
     "hardware":      "hardware",
+    "hardware-connections": "hardware_connection",
+    "hardware-clusters": "cluster",
     "services":      "service",
+    "service-external-nodes": "service_external_dependency",
     "storage":       "storage",
     "networks":      "network",
+    "external-node-networks": "external_network_link",
+    "external-nodes": "external_node",
     "misc":          "misc",
     "docs":          "doc",
     "settings":      "settings",
@@ -58,6 +69,40 @@ _ENTITY_ALIASES = {
     "categories":    "category",
     "environments":  "environment",
 }
+
+
+def _singularize(value: str) -> str:
+    """Best-effort singularization for action labels."""
+    if value.endswith("ies") and len(value) > 3:
+        return value[:-3] + "y"
+    if value.endswith("s") and len(value) > 1:
+        return value[:-1]
+    return value
+
+
+def _normalize_segment(segment: str) -> str:
+    """Normalize a path segment to canonical snake-case style for action names."""
+    aliased = _ENTITY_ALIASES.get(segment, segment)
+    return aliased.replace("-", "_")
+
+
+def _derive_nested_relationship_action(method: str, path: str) -> tuple[str | None, str | None]:
+    """Fallback action derivation for nested routes like /api/v1/networks/1/hardware-members."""
+    m = re.match(r"^/api/v1/(?P<entity>[^/]+)/\d+/(?P<child>[^/]+)(?:/[^/]+)?$", path)
+    if not m:
+        return None, None
+
+    child = _normalize_segment(m.group("child"))
+    child = _singularize(child)
+
+    if method == "POST":
+        return f"add_{child}", "relationships"
+    if method == "DELETE":
+        return f"remove_{child}", "relationships"
+    if method in {"PATCH", "PUT"}:
+        return f"update_{child}", "relationships"
+
+    return None, None
 
 
 def _entity_type_from_path(path: str) -> tuple[str | None, int | None]:
@@ -85,6 +130,11 @@ def _match_rule(method: str, path: str):
             except IndexError:
                 action = action_tpl
             return action, category
+
+    fallback_action, fallback_category = _derive_nested_relationship_action(method, path)
+    if fallback_action:
+        return fallback_action, fallback_category
+
     return None, None
 
 
