@@ -2,18 +2,18 @@
 
 Tests cover the app.core.time module (unit) and timestamp behaviour in log responses (integration).
 """
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, timedelta
+
 from sqlalchemy import text
 
-from app.core.time import utcnow, utcnow_iso, elapsed_seconds
-
+from app.core.time import elapsed_seconds, utcnow, utcnow_iso
 
 # ── Unit tests for app.core.time ──────────────────────────────────────────────
 
 def test_utcnow_is_timezone_aware():
     dt = utcnow()
     assert dt.tzinfo is not None
-    assert dt.tzinfo == timezone.utc
+    assert dt.tzinfo == datetime.UTC
 
 
 def test_utcnow_iso_format():

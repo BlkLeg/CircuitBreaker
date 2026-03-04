@@ -1,9 +1,8 @@
 """Feature 3 — IP/Port reservation tests."""
 import json
 
-from app.db.models import Service
 from app.core.time import utcnow
-
+from app.db.models import Service
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

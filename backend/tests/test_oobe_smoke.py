@@ -17,13 +17,23 @@ CB_API_TOKEN tests require the env var to be set:
     CB_API_TOKEN=MY_API_TOKEN_123 pytest tests/test_oobe_smoke.py::TestCBApiToken -v
 """
 import os
+
 import pytest
 
 API = "/api/v1"
 
 # Compliant test credentials (matches frontend + backend complexity rules)
 _EMAIL = "oobe@example.com"
-_PASS  = "Oobe1234!"
+_PASS = "Oobe1234!"
+_WRONG_PASS = "WrongPass99!"
+
+# Password validation variants for negative tests
+_PASS_SHORT = "Ab1!"
+_PASS_NO_UPPER = "oobe1234!"
+_PASS_NO_LOWER = "OOBE1234!"
+_PASS_NO_DIGIT = "OobeOobe!"
+_PASS_NO_SPECIAL = "Oobe1234"
+_PASS_WEAK = "weak"
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +249,7 @@ class TestFirstUserAndAuthFlow:
     def test_wrong_password_returns_generic_error(self, client):
         """Failed login must return 401 with a generic message (no 'password' hint)."""
         _register(client)
-        resp = _login(client, password="WrongPass99!")
+        resp = _login(client, password=_WRONG_PASS)
         assert resp.status_code == 401
         detail = resp.json().get("detail", "")
         assert "password" not in detail.lower() or "invalid" in detail.lower(), \
@@ -282,27 +292,27 @@ class TestFirstUserAndAuthFlow:
 
 class TestPasswordValidation:
     def test_rejects_short_password(self, client):
-        resp = _register(client, password="Ab1!")
+        resp = _register(client, password=_PASS_SHORT)
         assert resp.status_code == 400
 
     def test_rejects_no_uppercase(self, client):
-        resp = _register(client, password="oobe1234!")
+        resp = _register(client, password=_PASS_NO_UPPER)
         assert resp.status_code == 400
 
     def test_rejects_no_lowercase(self, client):
-        resp = _register(client, password="OOBE1234!")
+        resp = _register(client, password=_PASS_NO_LOWER)
         assert resp.status_code == 400
 
     def test_rejects_no_digit(self, client):
-        resp = _register(client, password="OobeOobe!")
+        resp = _register(client, password=_PASS_NO_DIGIT)
         assert resp.status_code == 400
 
     def test_rejects_no_special_char(self, client):
-        resp = _register(client, password="Oobe1234")
+        resp = _register(client, password=_PASS_NO_SPECIAL)
         assert resp.status_code == 400
 
     def test_accepts_fully_compliant_password(self, client):
-        resp = _register(client, password="Oobe1234!")
+        resp = _register(client, password=_PASS)
         assert resp.status_code == 200
 
     def test_rejects_invalid_email(self, client):
@@ -316,7 +326,7 @@ class TestPasswordValidation:
 
     def test_error_response_is_json_not_html(self, client):
         """Validation errors must be JSON, never an HTML error page."""
-        resp = _register(client, password="weak")
+        resp = _register(client, password=_PASS_WEAK)
         assert resp.status_code == 400
         content_type = resp.headers.get("content-type", "")
         assert "application/json" in content_type, \

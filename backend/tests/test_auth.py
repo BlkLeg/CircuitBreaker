@@ -4,6 +4,12 @@ Auth system tests — covers gaps F3-1 through F3-7.
 Uses the existing ``client`` / ``db`` fixtures from conftest.py (in-memory SQLite).
 """
 
+DEFAULT_TEST_EMAIL = "test@example.com"
+DEFAULT_TEST_PASSWORD = "Secure1234!"
+BOOTSTRAP_TEST_PASSWORD = DEFAULT_TEST_PASSWORD
+INVALID_SHORT_PASSWORD = "short"
+INVALID_WRONG_PASSWORD = "wrongpassword"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -15,7 +21,7 @@ def _enable_auth(client):
     return resp.json()
 
 
-def _register(client, email="test@example.com", password="Secure1234!", display_name=None):
+def _register(client, email=DEFAULT_TEST_EMAIL, password=DEFAULT_TEST_PASSWORD, display_name=None):
     status = client.get("/api/v1/bootstrap/status")
     if status.status_code == 200 and status.json().get("needs_bootstrap"):
         body = {
@@ -33,7 +39,7 @@ def _register(client, email="test@example.com", password="Secure1234!", display_
     return client.post("/api/v1/auth/register", json=body)
 
 
-def _login(client, email="test@example.com", password="Secure1234!"):
+def _login(client, email=DEFAULT_TEST_EMAIL, password=DEFAULT_TEST_PASSWORD):
     return client.post("/api/v1/auth/login", json={"email": email, "password": password})
 
 
@@ -53,7 +59,7 @@ def test_bootstrap_initialize_creates_admin_and_enables_auth(client):
         "/api/v1/bootstrap/initialize",
         json={
             "email": "bootstrap@example.com",
-            "password": "Secure1234!",
+            "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
             "display_name": "Bootstrap Admin",
         },
@@ -74,7 +80,7 @@ def test_bootstrap_initialize_conflicts_after_first_user(client):
         "/api/v1/bootstrap/initialize",
         json={
             "email": "first@example.com",
-            "password": "Secure1234!",
+            "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "one-dark",
         },
     )
@@ -84,7 +90,7 @@ def test_bootstrap_initialize_conflicts_after_first_user(client):
         "/api/v1/bootstrap/initialize",
         json={
             "email": "second@example.com",
-            "password": "Secure1234!",
+            "password": BOOTSTRAP_TEST_PASSWORD,
             "theme_preset": "dark-matter",
         },
     )
@@ -165,7 +171,7 @@ class TestRegister:
         assert resp.status_code == 200
         data = resp.json()
         assert "token" in data
-        assert data["user"]["email"] == "test@example.com"
+        assert data["user"]["email"] == DEFAULT_TEST_EMAIL
 
     def test_register_duplicate_email(self, client):
         _register(client)
@@ -177,7 +183,7 @@ class TestRegister:
         assert resp.status_code == 400
 
     def test_register_short_password(self, client):
-        resp = _register(client, password="short")
+        resp = _register(client, password=INVALID_SHORT_PASSWORD)
         assert resp.status_code == 400
 
 
@@ -190,7 +196,7 @@ class TestLogin:
 
     def test_login_wrong_password(self, client):
         _register(client)
-        resp = _login(client, password="wrongpassword")
+        resp = _login(client, password=INVALID_WRONG_PASSWORD)
         assert resp.status_code == 401
 
 
@@ -206,7 +212,7 @@ class TestProfile:
         )
         resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
         assert resp.status_code == 200
-        assert resp.json()["email"] == "test@example.com"
+        assert resp.json()["email"] == DEFAULT_TEST_EMAIL
 
     def test_get_me_no_token(self, client):
         reg = _register(client)
@@ -260,7 +266,7 @@ def test_delete_me_unauthenticated(client):
 
 def test_bootstrap_logs_scrub_sensitive_data(client):
     """Audit logs must not expose the bootstrap password or JWT token in plaintext."""
-    password = "Secure1234!"
+    password = BOOTSTRAP_TEST_PASSWORD
     resp = client.post(
         "/api/v1/bootstrap/initialize",
         json={
