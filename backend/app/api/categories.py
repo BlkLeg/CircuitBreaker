@@ -3,13 +3,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.categories import CategoryCreate, CategoryUpdate, CategoryRead
+from app.schemas.categories import CategoryCreate, CategoryRead, CategoryUpdate
 from app.services.categories_service import (
-    list_categories,
-    create_category,
-    update_category,
-    delete_category,
     CategoryInUseError,
+    create_category,
+    delete_category,
+    list_categories,
+    update_category,
 )
 
 router = APIRouter(tags=["categories"])

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
-from app.services import hardware_service, clusters_service
+from app.services import clusters_service, hardware_service
 
 router = APIRouter(tags=["hardware"])
 
@@ -135,7 +135,7 @@ def update_hardware_ports(
             except ValueError:
                 raise HTTPException(status_code=422, detail=f"Connected hardware {p.connected_hardware_id} not found.")
         if p.connected_compute_id:
-            from app.services.compute_units_service import get_compute_unit # avoid circular import
+            from app.services.compute_units_service import get_compute_unit  # avoid circular import
             try:
                 get_compute_unit(db, p.connected_compute_id)
             except ValueError:
@@ -157,6 +157,7 @@ def update_hardware_ports(
 # ── Hardware-to-Hardware connections ─────────────────────────────────────────
 
 from pydantic import BaseModel as _BaseModel
+
 
 class HardwareConnectionCreate(_BaseModel):
     target_hardware_id: int

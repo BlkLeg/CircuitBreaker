@@ -1,8 +1,9 @@
 # backend/app/core/scheduler.py
 
+import logging
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import logging
 
 logger = logging.getLogger(__name__)
 _scheduler = AsyncIOScheduler()
@@ -28,7 +29,7 @@ def reload_discovery_jobs(db):
     Job IDs follow the pattern: "discovery_profile_{profile_id}"
     """
     from app.db.models import DiscoveryProfile
-    from app.services.discovery_service import run_scan_job_by_profile, purge_old_scan_results
+    from app.services.discovery_service import purge_old_scan_results, run_scan_job_by_profile
 
     # Remove all existing discovery jobs
     for job in _scheduler.get_jobs():

@@ -4,7 +4,6 @@ Category endpoints are not auth-protected; all tests use the plain `client` fixt
 """
 import json
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _create_category(client, name="media", color="#6366f1"):

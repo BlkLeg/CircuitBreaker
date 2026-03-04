@@ -2,22 +2,19 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
-from app.services.log_service import write_log
 from app.core.ws_manager import ws_manager
-from app.db.models import (
-    ScanJob, ScanResult, Hardware, Service
-)
-from app.services.settings_service import get_or_create_settings
-from app.services.credential_vault import CredentialVault
-from app.schemas.discovery import ScanJobOut, ScanResultOut
+from app.db.models import Hardware, ScanJob, ScanResult, Service
 from app.db.session import SessionLocal
+from app.schemas.discovery import ScanJobOut, ScanResultOut
+from app.services.credential_vault import CredentialVault
+from app.services.log_service import write_log
+from app.services.settings_service import get_or_create_settings
 
 try:
     import nmap
@@ -25,28 +22,28 @@ except ImportError:
     nmap = None
 
 try:
-    from pysnmp.hlapi.v3arch.asyncio.cmdgen import get_cmd
+    from pysnmp.entity.engine import SnmpEngine
     from pysnmp.hlapi.v3arch.asyncio.auth import CommunityData
+    from pysnmp.hlapi.v3arch.asyncio.cmdgen import get_cmd
     from pysnmp.hlapi.v3arch.asyncio.context import ContextData
     from pysnmp.hlapi.v3arch.asyncio.transport import UdpTransportTarget
-    from pysnmp.entity.engine import SnmpEngine
-    from pysnmp.smi.rfc1902 import ObjectType, ObjectIdentity
+    from pysnmp.smi.rfc1902 import ObjectIdentity, ObjectType
     _SNMP_AVAILABLE = True
 except ImportError:
     _SNMP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-_ARP_CAPABLE: Optional[bool] = None
+_ARP_CAPABLE: bool | None = None
 
 def _norm_mac(mac: str | None) -> str | None:
     """Normalize MAC to uppercase colon-separated format."""
     if not mac:
         return None
-    cleaned = re.sub(r'[^0-9a-fA-F]', '', mac)
+    cleaned = re.sub(r"[^0-9a-fA-F]", "", mac)
     if len(cleaned) != 12:
         return mac.strip().upper()
-    return ':'.join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
+    return ":".join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
 
 
 PORT_SERVICE_MAP = {
@@ -71,8 +68,9 @@ def _arp_available() -> bool:
     if _ARP_CAPABLE is not None:
         return _ARP_CAPABLE
     try:
-        import scapy.all  # noqa: F401
         import socket
+
+        import scapy.all  # noqa: F401
         s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
         s.close()
         _ARP_CAPABLE = True
@@ -100,7 +98,7 @@ def _validate_cidr(cidr: str) -> str:
             f"'{cidr}' is not a valid CIDR range. Example: '192.168.1.0/24'"
         ) from exc
 
-def _decrypt_community(encrypted: Optional[str]) -> str:
+def _decrypt_community(encrypted: str | None) -> str:
     if not encrypted:
         return ""
     vault = CredentialVault()
@@ -111,9 +109,9 @@ async def _update_job_progress(
     job: ScanJob,
     phase: str,
     message: str = "",
-    percent: Optional[int] = None,
-    processed: Optional[int] = None,
-    total: Optional[int] = None,
+    percent: int | None = None,
+    processed: int | None = None,
+    total: int | None = None,
 ) -> None:
     """Persist progress phase in DB and push a job_progress WebSocket event."""
     job.progress_phase = phase
@@ -136,8 +134,8 @@ async def _update_job_progress(
 _NMAP_OVERRIDE_PREFIX = "__nmap_override__:"
 
 def create_scan_job(db: Session, target_cidr: str, scan_types: list[str],
-                    profile_id: Optional[int] = None, label: Optional[str] = None,
-                    nmap_arguments: Optional[str] = None,
+                    profile_id: int | None = None, label: str | None = None,
+                    nmap_arguments: str | None = None,
                     triggered_by: str = "api") -> ScanJob:
     # Raises ValueError on invalid CIDR — caller (router) converts to HTTP 422
     normalised_cidr = _validate_cidr(target_cidr)
@@ -213,8 +211,8 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
             os_family = None
             os_vendor = None
             if "osmatch" in host_data and len(host_data["osmatch"]) > 0:
-                os_family = host_data["osmatch"][0].get('osclass', [{}])[0].get('osfamily', None)
-                os_vendor = host_data["osmatch"][0].get('osclass', [{}])[0].get('vendor', None)
+                os_family = host_data["osmatch"][0].get("osclass", [{}])[0].get("osfamily", None)
+                os_vendor = host_data["osmatch"][0].get("osclass", [{}])[0].get("vendor", None)
                 
             open_ports = []
             if "tcp" in host_data:
@@ -550,7 +548,7 @@ async def run_scan_job(job_id: int):
 
     except Exception as e:
         logger.error(f"Scan job {job_id} failed: {e}")
-        if 'job' in locals() and job:
+        if "job" in locals() and job:
             job.status = "failed"
             job.error_text = str(e)
             job.completed_at = utcnow_iso()
@@ -665,7 +663,7 @@ def _auto_merge_result(db: Session, result: ScanResult):
 # APScheduler jobs run in a thread pool; they must dispatch coroutines onto
 # this loop with run_coroutine_threadsafe — NOT asyncio.run() — so that
 # ws_manager.broadcast() reaches the live WebSocket connections.
-_main_loop: Optional[asyncio.AbstractEventLoop] = None
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Call once from main.py lifespan startup to register the running loop."""
@@ -714,8 +712,8 @@ def purge_old_scan_results():
             
         logger.info(f"Purging discovery results older than {retention_days} days.")
         # We compute the cutoff in python, then execute standard SQL deletion.
-        from datetime import timedelta, timezone as _tz
-        cutoff_date = datetime.now(_tz.utc) - timedelta(days=retention_days)
+        from datetime import timedelta
+        cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat() + "Z"
         
         # Delete old results
@@ -731,7 +729,7 @@ def purge_old_scan_results():
         db.close()
 
 
-def _build_ports_list(open_ports_json: Optional[str]) -> list:
+def _build_ports_list(open_ports_json: str | None) -> list:
     """Build the ports suggestion list returned to the frontend after accepting a new host."""
     if not open_ports_json:
         return []
@@ -765,7 +763,7 @@ def merge_scan_result(
     db: Session,
     result_id: int,
     action: str,
-    entity_type: Optional[str] = None,
+    entity_type: str | None = None,
     overrides: dict = {},
     actor: str = "api",
 ) -> dict:
@@ -942,8 +940,12 @@ def enhanced_bulk_merge(db: Session, payload, actor: str = "api") -> dict:
     Returns summary dict with created entity counts and hardware IDs.
     """
     from app.db.models import (
-        HardwareCluster, HardwareClusterMember, Network as NetworkModel,
+        HardwareCluster,
+        HardwareClusterMember,
         HardwareNetwork,
+    )
+    from app.db.models import (
+        Network as NetworkModel,
     )
     from app.services.bulk_suggest import EXTENDED_PORT_SERVICE_MAP, _parse_ports
 
@@ -1127,10 +1129,11 @@ def _make_service_slug(db: Session, name: str, hardware_id: int) -> str:
     to avoid collisions when the same port name appears on multiple hosts.
     Falls back to appending an incrementing counter if the slug still collides.
     """
-    base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     candidate = f"{base}-hw{hardware_id}"
     # Guard against UNIQUE constraint violation
     from sqlalchemy import select as _select
+
     from app.db.models import Service as _Service
     counter = 1
     while db.execute(_select(_Service).where(_Service.slug == candidate)).scalar_one_or_none():
@@ -1145,13 +1148,14 @@ def refresh_ip_pool():
     """
     db = SessionLocal()
     try:
+        from datetime import datetime, timedelta
+
         from app.db.models import LiveMetric
-        from datetime import datetime, timezone, timedelta
         
         # This is a stub for the full implementation of refresh_ip_pool
         # that handles Ping/ARP to verify host status
         metrics = db.query(LiveMetric).all()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         
         for metric in metrics:
             if metric.last_seen and (now - metric.last_seen) > timedelta(days=1):

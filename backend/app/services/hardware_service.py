@@ -2,16 +2,26 @@ import json
 import logging
 import re
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, or_, func
 from fastapi import HTTPException
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
 
-from app.db.models import Hardware, HardwareConnection, HardwareNetwork, Network, ComputeUnit, Storage, Service, EntityTag, Tag  # noqa: F401 (Service used for reactive cascade)
+from app.core.time import utcnow
+from app.db.models import (  # noqa: F401 (Service used for reactive cascade)
+    ComputeUnit,
+    EntityTag,
+    Hardware,
+    HardwareConnection,
+    HardwareNetwork,
+    Network,
+    Service,
+    Storage,
+    Tag,
+)
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
+from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
 from app.services.log_service import write_log
-from app.core.time import utcnow
 
 _logger = logging.getLogger(__name__)
 
@@ -21,10 +31,10 @@ def _norm_mac(mac: str | None) -> str | None:
     Returns None if input is None or empty."""
     if not mac:
         return None
-    cleaned = re.sub(r'[^0-9a-fA-F]', '', mac)
+    cleaned = re.sub(r"[^0-9a-fA-F]", "", mac)
     if len(cleaned) != 12:
         return mac.strip().upper()  # Can't normalize — return uppercased original
-    return ':'.join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
+    return ":".join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
@@ -156,7 +166,7 @@ def _sync_port_edges(db: Session, hardware_id: int, port_map: list) -> None:
     from app.services.graph_service import create_edge
     
     for p in port_map:
-        data = p.model_dump() if hasattr(p, 'model_dump') else p
+        data = p.model_dump() if hasattr(p, "model_dump") else p
         target_hw_id = data.get("connected_hardware_id")
         target_cu_id = data.get("connected_compute_id")
         
@@ -221,7 +231,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
             )
 
     # CB-PATTERN-001: MAC normalization + soft-alert on duplicate
-    mac = _norm_mac(getattr(payload, 'mac_address', None))
+    mac = _norm_mac(getattr(payload, "mac_address", None))
     if mac:
         existing = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
         if existing:
@@ -260,7 +270,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         wifi_bands=json.dumps(payload.wifi_bands) if payload.wifi_bands else None,
         max_tx_power_dbm=payload.max_tx_power_dbm,
         port_count=payload.port_count,
-        port_map_json=json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in payload.port_map]) if payload.port_map else None,
+        port_map_json=json.dumps([p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]) if payload.port_map else None,
         software_platform=payload.software_platform,
         download_speed_mbps=payload.download_speed_mbps,
         upload_speed_mbps=payload.upload_speed_mbps,
@@ -314,7 +324,7 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
     
     if "port_map" in payload.model_fields_set:
         if payload.port_map is not None:
-            update_data["port_map_json"] = json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in payload.port_map])
+            update_data["port_map_json"] = json.dumps([p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map])
             _sync_port_edges(db, hardware_id, payload.port_map)
         else:
             update_data["port_map_json"] = None

@@ -1,28 +1,103 @@
 # Topology Map
 
-The Topology Map is the core "at-a-glance" visualizer for Circuit Breaker. Once you have entered your Hardware, Compute, Services, Storage, and Networks, the Map automatically renders their relationships.
+The Topology Map is your live visual workspace for understanding infrastructure relationships.
 
-## How to Read the Map
-
-The map generates a visual layout based on the connections you defined:
-
-- **Hardware Nodes**: Usually form the base or outer layer of the map. They indicate the physical constraints of your lab.
-- **Compute Instances**: Appear connected directly to the hardware hosting them.
-- **Services**: Float above or attach directly to their respective compute endpoints.
-- **Shared Resources**: Storage and Networks are depicted as interconnected nodes that multiple services or hardware items link into.
-
-## Interacting with the Map
-
-- **Pan & Zoom**: Click and drag empty space to pan. Use your mouse wheel or trackpad to zoom in and out.
-- **Node Details**: Clicking on any node in the map will open a side panel (or detail page) showing its configuration, assigned IP addresses, current capacity (for storage), and attached notes.
-- **Right-click context menu**: Right-click any node to link or unlink relationships, or select **Edit Icon** to open the icon picker and reassign the node's icon.
-- **Filtering**: Use the search and filter tools to declutter the map. For example, search for the `prod` tag to hide development services, or filter specifically for `Storage` nodes.
+It combines inventory, dependencies, status, and editing tools in one place.
 
 ---
 
-## Live Device Health
+## What You See
 
-Hardware nodes with [telemetry configured](hardware.md#telemetry) display a **live status ring** directly on the map:
+- **Nodes** for hardware, compute, services, storage, networks, misc, clusters, and external/cloud systems.
+- **Edges** for how things are connected.
+- **Live status indicators** for monitored hardware.
+- **Side panel details** for whichever node you select.
+
+---
+
+## Core Controls
+
+### Filters and visibility
+
+- Filter by **environment**.
+- Filter by **tag**.
+- Toggle which **node types** are shown.
+- Filter hardware by role (for example UPS, PDU, AP, SBC).
+
+### Layout and view
+
+- Switch between **Dagre**, **Force**, **Tree**, and **Manual/Saved** layouts.
+- Use **Cloud View** to simplify large mixed maps.
+- Save current placement with **Save Positions**.
+- Use **Refresh** to reload current data.
+
+### Legend and navigation
+
+- Open the **Legend** for connection, node, and status meaning.
+- Use built-in map controls for zoom and centering.
+
+---
+
+## Editing Directly on the Map
+
+### Node actions (right-click)
+
+Depending on node type, you can:
+
+- Link nodes
+- Edit icon
+- Update alias
+- Update status
+- Set hardware role
+- Delete node
+- Quick-create related items (service, compute, storage)
+
+### Create from canvas
+
+Right-click empty map space to create a new node at that position.
+
+### Edge actions
+
+- Drag to create a connection between nodes.
+- Reconnect an existing edge to a different target.
+- Choose connection type when connecting.
+- Right-click an edge to adjust anchor sides or clear bend points.
+
+---
+
+## Boundaries and Labels
+
+### Boundaries
+
+- Use **Draw Boundary** and drag over map regions.
+- Boundaries can be renamed.
+- Boundaries are saved with your layout.
+
+### Labels
+
+- Add free labels with **Add Label**.
+- Drag labels to reposition.
+- Resize labels by editing.
+- Change label color.
+- Remove labels when no longer needed.
+
+---
+
+## Side Panel Details
+
+Selecting a node opens details such as:
+
+- Related nodes and relationship direction
+- Key system details for that entity
+- Effective status and source status signals
+- Uplink speed controls where supported
+- Quick jump to full entity page
+
+---
+
+## Live Health and Status
+
+Hardware with telemetry can show live status rings and updates directly on map nodes.
 
 | Ring state | Meaning |
 | --- | --- |
@@ -31,6 +106,22 @@ Hardware nodes with [telemetry configured](hardware.md#telemetry) display a **li
 | 🔴 Glowing red | Critical condition |
 | *(no ring)* | Telemetry not configured for this device |
 
-Key metrics such as CPU temperature and power draw appear as a small badge on the node so you can assess device health without opening the detail panel.
+You can also override or reset statuses where supported.
 
-See [Hardware → Telemetry](hardware.md#telemetry) to configure integrations.
+---
+
+## Discovery Tie-In
+
+If there are pending discovery findings, the map shows a shortcut badge to the Discovery review queue.
+
+---
+
+## Best Practice Workflow
+
+1. Filter to a single environment.
+2. Toggle only relevant node types.
+3. Confirm relationships and statuses.
+4. Save positions after adjustments.
+5. Use boundaries and labels for clearer communication.
+
+See [Hardware](hardware.md), [Auto-Discovery (Beta)](discovery.md), and [Settings](settings.md) for related setup.

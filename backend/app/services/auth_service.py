@@ -1,24 +1,30 @@
 """Auth business logic: register, login, profile management."""
+import json
 import logging
 import re
 import secrets as _secrets
-import json
 from pathlib import Path
-from typing import Optional
 
 from fastapi import HTTPException, UploadFile
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import AppSettings, Log, User
-from app.schemas.auth import AuthResponse, BootstrapInitializeResponse, BootstrapStatusResponse, UserProfile, BootstrapThemeResponse
+from app.schemas.auth import (
+    AuthResponse,
+    BootstrapInitializeResponse,
+    BootstrapStatusResponse,
+    BootstrapThemeResponse,
+    UserProfile,
+)
 
 _logger = logging.getLogger(__name__)
 
 from app.core.config import settings as _settings  # noqa: E402
+
 _PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_TYPES = {"image/jpeg", "image/png"}
@@ -67,7 +73,7 @@ def register(
     email: str,
     password: str,
     cfg: AppSettings,
-    display_name: Optional[str] = None,
+    display_name: str | None = None,
 ) -> AuthResponse:
     if db.query(User).count() == 0:
         raise HTTPException(
@@ -119,7 +125,7 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
     return BootstrapStatusResponse(needs_bootstrap=needs_bootstrap, user_count=user_count)
 
 
-def _derive_display_name(email: str, display_name: Optional[str]) -> str:
+def _derive_display_name(email: str, display_name: str | None) -> str:
     if display_name and display_name.strip():
         return display_name.strip()
     local = email.strip().lower().split("@")[0]
@@ -135,11 +141,11 @@ def bootstrap_initialize(
     email: str,
     password: str,
     theme_preset: str,
-    display_name: Optional[str] = None,
-    timezone: Optional[str] = None,
-    language: Optional[str] = None,
-    ui_font: Optional[str] = None,
-    ui_font_size: Optional[str] = None,
+    display_name: str | None = None,
+    timezone: str | None = None,
+    language: str | None = None,
+    ui_font: str | None = None,
+    ui_font_size: str | None = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if not _EMAIL_RE.match(email_norm):
@@ -293,8 +299,8 @@ def get_me(db: Session, user_id: int) -> UserProfile:
 async def update_profile(
     db: Session,
     user_id: int,
-    display_name: Optional[str],
-    profile_photo: Optional[UploadFile],
+    display_name: str | None,
+    profile_photo: UploadFile | None,
 ) -> UserProfile:
     user = db.get(User, user_id)
     if not user:
@@ -313,8 +319,9 @@ async def update_profile(
 
         # Optional: resize with Pillow
         try:
-            from PIL import Image
             import io
+
+            from PIL import Image
             img = Image.open(io.BytesIO(data))
             img.thumbnail((256, 256))
             buf = io.BytesIO()

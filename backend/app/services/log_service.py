@@ -77,8 +77,8 @@ def write_log(
       substring is replaced with ``"***REDACTED***"`` regardless of nesting depth.
     """
     try:
-        from app.db.session import SessionLocal
         from app.db.models import Log
+        from app.db.session import SessionLocal
 
         # Sanitise diff before persisting
         sanitised_diff = sanitise_diff(diff)

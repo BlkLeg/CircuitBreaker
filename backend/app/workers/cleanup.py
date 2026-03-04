@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import text
@@ -13,7 +13,7 @@ def cleanup_old_icons(db: Session) -> int:
     This is a lightweight placeholder worker function intended for APScheduler wiring.
     Returns the number of files removed.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = datetime.now(UTC) - timedelta(days=30)
     rows = db.execute(
         text(
             """

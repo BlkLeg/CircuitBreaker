@@ -1,18 +1,19 @@
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import require_write_auth
-from app.db.session import get_db
 from app.db.models import ComputeNetwork, UserIcon
+from app.db.session import get_db
 from app.schemas.compute_units import ComputeUnit, ComputeUnitCreate, ComputeUnitUpdate
 from app.schemas.networks import ComputeNetworkRead
 from app.services import compute_units_service
-from app.core.config import settings
 
 router = APIRouter(tags=["compute-units"])
 

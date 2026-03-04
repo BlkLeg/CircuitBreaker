@@ -43,13 +43,18 @@ in between — through an interactive topology map and rack simulator.
 
 ![Login Screen](screenshots/01-Login.png)
 
-### Cluster-Centric Topology View
+### Speed-centric connections (w/ live animations)
 
-![Cluster-Centric Topology View](screenshots/01-cluster.png)
+![Speed-centric Connections](screenshots/speed-connection.png)
+The lowest node speed dictates the overall speed of the animation to mimic real-world effects.
+
+1. Various connection types with their own animations/colors.
+2. Bandwidth slider dictates animation speed.
+3. State management
 
 ### Custom Layout Example
 
-![Custom Layout Example](screenshots/01-custom-layout.png)
+![Custom Layout Example](screenshots/New%20Map.png)
 
 ### Hardware Inventory Page
 
@@ -59,6 +64,9 @@ in between — through an interactive topology map and rack simulator.
 
 ![Top-Down Topology Layout](screenshots/01-top-down.png)
 
+### Mobile Friendly Layout
+
+![Mobile Layout](screenshots/new_mobile_layout.jpg)
 ---
 
 ## Quick Start

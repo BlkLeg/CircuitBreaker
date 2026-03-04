@@ -1,23 +1,25 @@
 """
 Auto-Discovery backend tests — spec: 01_PROMPT_A-AD.md § Tests
 """
-import json
 import datetime
+import json
 from unittest.mock import patch
 
 import pytest
 
+from app.core.time import utcnow_iso
 from app.db.models import Hardware, ScanJob, ScanResult
 from app.services.discovery_service import (
+    _arp_available,
     _validate_cidr,
+    bulk_merge_results,
     create_scan_job,
     merge_scan_result,
-    bulk_merge_results,
     purge_old_scan_results,
-    _arp_available,
 )
 from app.services.settings_service import get_or_create_settings
-from app.core.time import utcnow_iso
+
+
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
@@ -48,8 +50,8 @@ def _make_hardware(db, *, ip=None, mac=None, name="TestHost") -> Hardware:
         role="server",
         ip_address=ip,
         mac_address=mac,
-        created_at=datetime.datetime.now(datetime.timezone.utc),
-        updated_at=datetime.datetime.now(datetime.timezone.utc),
+        created_at=datetime.datetime.now(datetime.UTC),
+        updated_at=datetime.datetime.now(datetime.UTC),
     )
     db.add(hw)
     db.commit()

@@ -1,26 +1,29 @@
 # Hardware
 
-Hardware represents the physical foundation of your lab — servers, switches, firewalls, NAS devices, UPS units, access points, and anything else you can physically touch.
+Hardware is the physical layer of your environment: servers, switches, firewalls, storage appliances, UPS units, and more.
 
 ---
 
 ## Adding Hardware
 
-To add a new hardware component:
+1. Open **Hardware**.
+2. Select **Add Hardware**.
+3. Enter device details and save.
 
-1. Navigate to **Hardware** using the sidebar.
-2. Click **Add Hardware**.
-3. Start typing a device name in the **search field** at the top of the form.
+---
 
 ### Device Catalog Smart Search
 
-Circuit Breaker includes a built-in device catalog. As you type — `R740`, `USW Pro`, `Pi 5` — matching devices are suggested automatically, covering vendors including:
+As you type a model name, Circuit Breaker suggests matching hardware from the built-in catalog.
 
-> Dell · HPE · Ubiquiti · MikroTik · Synology · TrueNAS · APC · CyberPower · Raspberry Pi · Proxmox · pfSense · OPNsense · Cisco · Juniper · and more
+When you pick a match, key fields are filled automatically:
 
-Selecting a match automatically fills in the **vendor**, **model**, **rack height**, and **device role**. You can edit any pre-filled value after selecting.
+- Vendor
+- Model
+- Rack height
+- Device role
 
-If your device isn't in the catalog, a **freeform option** is always available at the bottom of every search result — just continue filling in fields manually.
+If your device is not listed, use manual entry.
 
 ---
 
@@ -45,26 +48,26 @@ Each hardware node has a **Role** that describes its primary function. Choose th
 
 ## Categories & Environments
 
-The **Category** and **Environment** fields on hardware nodes are smart typeaheads. Start typing to see your existing values, or type a new name and select **Create "…"** to add it on the spot without leaving the form.
+Category and Environment fields support quick type-ahead entry.
 
-Manage the full list — rename, recolor, delete — from **Settings → Categories** and **Settings → Environments**.
+You can choose existing values or create new ones directly while editing hardware.
 
 ---
 
 ## Rack Position
 
-Two fields let you record where a device lives in your rack:
+Use these fields to record physical placement:
 
 - **Rack Height (U)** — how many rack units the device occupies
 - **Rack Position (U)** — which rack unit it starts at (counting from the top)
 
-Fill these in now to build out your rack layout data ahead of the upcoming visual rack simulator.
+This helps with planning and maintenance work.
 
 ---
 
 ## Telemetry
 
-Circuit Breaker can connect directly to your hardware's management interface and display live health data on the topology map.
+You can connect supported hardware telemetry to show live health indicators on the topology map.
 
 ### Supported Integrations
 
@@ -82,26 +85,22 @@ Circuit Breaker can connect directly to your hardware's management interface and
 3. Select the integration type and enter the connection details.
 4. Click **Test Connection** to verify the credentials work.
 
-Circuit Breaker polls the device automatically every **60 seconds** in the background. No further configuration is required.
+After setup, Circuit Breaker checks telemetry automatically.
 
 ### Credential Security
 
-Management interface passwords are **encrypted at rest** using AES-256. Set the `CB_VAULT_KEY` environment variable before restarting to ensure credentials are encrypted and persist across container updates.
+Use a vault key in your deployment to protect stored management credentials.
 
-```yaml
-# docker-compose.yml
-services:
-  backend:
-    environment:
-      - CB_VAULT_KEY=your-secret-key-here
-```
-
-> See [Getting Started](getting-started.md) for full environment variable setup.
+See [Deployment & Security](deployment-security.md) for setup guidance.
 
 ---
 
 ## Connecting Hardware
 
-Hardware serves as the physical host for [Compute](compute.md) instances. You can also link [Storage](storage.md) directly to a hardware node to record where that storage physically resides.
+Hardware is usually linked to:
 
-_Pro-tip: Use tags like `cluster:proxmox` to group related nodes for filtering on the topology map._
+- [Compute](compute.md) that runs on it
+- [Storage](storage.md) attached to it
+- [Services](services.md) that depend on it indirectly
+
+These links make impact analysis easier on the topology map.

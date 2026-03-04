@@ -1,15 +1,16 @@
 import json
 import logging
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, or_, inspect as sa_inspect
 from fastapi import HTTPException
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
-from app.db.models import ComputeUnit, ComputeNetwork, Service, EntityTag, Tag
+from app.core.time import utcnow
+from app.db.models import ComputeNetwork, ComputeUnit, EntityTag, Service, Tag
 from app.schemas.compute_units import ComputeUnitCreate, ComputeUnitUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import check_ip_conflict, bulk_conflict_map, resolve_ip_conflict
-from app.core.time import utcnow
+from app.services.ip_reservation import bulk_conflict_map, check_ip_conflict, resolve_ip_conflict
 
 _logger = logging.getLogger(__name__)
 

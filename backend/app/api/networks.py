@@ -5,9 +5,13 @@ from sqlalchemy.orm import Session
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.networks import (
-    Network, NetworkCreate, NetworkUpdate,
-    ComputeNetworkLink, ComputeNetworkRead,
-    HardwareNetworkLink, HardwareNetworkRead,
+    ComputeNetworkLink,
+    ComputeNetworkRead,
+    HardwareNetworkLink,
+    HardwareNetworkRead,
+    Network,
+    NetworkCreate,
+    NetworkUpdate,
 )
 from app.services import networks_service
 

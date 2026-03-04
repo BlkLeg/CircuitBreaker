@@ -3,10 +3,7 @@
 Tests cover Phases 1–3: Rack Foundation, Correctness Fixes, and Derived State.
 Uses existing conftest.py fixtures (client, db, db_engine).
 """
-import json
-import logging
 
-import pytest
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -115,7 +112,7 @@ def test_ip_conflict_cascade(client):
 def test_port_conflict(client):
     """Documenting existing behavior: services with same IP trigger conflict detection."""
     hw = _create_hardware(client, name="PortHost", ip_address="10.0.0.70")
-    svc1 = _create_service(client, name="svc-port1", hardware_id=hw["id"], ip_address="10.0.0.71")
+    _create_service(client, name="svc-port1", hardware_id=hw["id"], ip_address="10.0.0.71")
     # Second service with same IP should be blocked
     resp = client.post("/api/v1/services", json={
         "name": "svc-port2", "hardware_id": hw["id"], "ip_address": "10.0.0.71",
@@ -128,8 +125,8 @@ def test_port_conflict(client):
 
 def test_merge_atomicity(client, db):
     """Savepoint rollback on merge failure doesn't corrupt data."""
-    from app.db.models import ScanJob, ScanResult
     from app.core.time import utcnow_iso
+    from app.db.models import ScanJob, ScanResult
 
     now = utcnow_iso()
     job = ScanJob(
@@ -256,7 +253,6 @@ def test_hardware_groups(client):
     resp = client.get("/api/v1/hardware/groups")
     assert resp.status_code == 200
     groups = resp.json()
-    dell_group = next((g for g in groups if g["vendor"] == "other" and g["model"] == "R740"), None)
     # vendor is coerced to "other" for non-VendorSlug values by schema validator
     # Let's just check we get groups back
     assert len(groups) >= 1
@@ -286,8 +282,8 @@ def test_catalog_autofill(client):
 
 def test_source_scan_result_id(client, db):
     """source_scan_result_id is set on hardware when a scan result is accepted."""
-    from app.db.models import ScanJob, ScanResult, Hardware
     from app.core.time import utcnow_iso
+    from app.db.models import Hardware, ScanJob, ScanResult
 
     now = utcnow_iso()
     job = ScanJob(

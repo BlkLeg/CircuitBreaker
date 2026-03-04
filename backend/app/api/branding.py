@@ -2,7 +2,6 @@
 asset deletion, dynamic manifest, Theme Park export/import."""
 import json
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -42,7 +41,7 @@ def _build_branding(row) -> BrandingConfig:
         app_name=row.app_name or "Circuit Breaker",
         favicon_path=row.favicon_path,
         login_logo_path=row.login_logo_path,
-        login_bg_path=getattr(row, 'login_bg_path', None),
+        login_bg_path=getattr(row, "login_bg_path", None),
         primary_color=row.primary_color or "#00d4ff",
         accent_colors=accent_colors,
     )
@@ -125,8 +124,9 @@ async def upload_login_bg(
 
     # Resize large images to max 1920×1080 with Pillow
     try:
-        from PIL import Image
         import io
+
+        from PIL import Image
         img = Image.open(io.BytesIO(data))
         img.thumbnail((1920, 1080), Image.LANCZOS)
         if img.mode in ("RGBA", "P"):
@@ -223,9 +223,9 @@ class ThemeParkExport(BaseModel):
 
 
 class ThemeParkImport(BaseModel):
-    app_name: Optional[str] = None
-    primary_color: Optional[str] = None
-    accent_colors: Optional[list[str]] = None
+    app_name: str | None = None
+    primary_color: str | None = None
+    accent_colors: list[str] | None = None
 
 
 @router.get("/export", response_model=ThemeParkExport)

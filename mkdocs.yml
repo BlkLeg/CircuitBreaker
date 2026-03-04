@@ -4,27 +4,7 @@ site_author: Shawn Ji
 site_url: https://blkleg.github.io/CircuitBreaker/
 
 theme:
-  name: material
-  features:
-    - navigation.tabs
-    - navigation.indexes
-    - navigation.top
-    - search.suggest
-    - search.highlight
-    - search.share
-  palette:
-    # Palette toggle for light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    # Palette toggle for dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+  name: readthedocs
 
 nav:
   - Welcome: index.md
@@ -36,22 +16,25 @@ nav:
       - Storage: storage.md
       - Networks: networks.md
       - Services: services.md
+      - Auto-Discovery (Beta): discovery.md
+      - Settings: settings.md
       - Topology Map: topology-map.md
       - Audit Log: audit-log.md
       - Notes & Runbooks: notes.md
+  - Operations:
+      - Deployment & Security: deployment-security.md
+      - Backup & Restore: backup-restore.md
   - Reference:
       - Architecture Overview: overview.md
       - Metrics: metrics.md
+      - Cross-Browser Audit: cross-browser-audit.md
+  - Updates:
+      - v0.1.4 Release Notes: updates/v0-1-4_release.md
+      - v0.1.4 Docs SOT: updates/v0-1-4_docs_sot.md
+      - v0.1.2 Patch Notes: updates/v0-1-2_patch.md
 
 markdown_extensions:
   - admonition
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-      line_spans: __span
-      pygments_lang_class: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.tasklist:
-      custom_checkbox: true
+  - tables
+  - toc:
+      permalink: true

@@ -1,10 +1,10 @@
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.core.time import utcnow
 from app.db.models import Hardware, HardwareCluster, HardwareClusterMember
 from app.schemas.clusters import HardwareClusterCreate, HardwareClusterUpdate
-from app.core.time import utcnow
 
 
 def _to_dict(cluster: HardwareCluster) -> dict:

@@ -1,11 +1,10 @@
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import ComputeUnit, Hardware, MiscItem, Network, Service, Storage, ExternalNode
+from app.db.models import ComputeUnit, ExternalNode, Hardware, MiscItem, Network, Service, Storage
 from app.db.session import get_db
 
 router = APIRouter(tags=["search"])
@@ -15,7 +14,7 @@ class SearchResult(BaseModel):
     id: str
     type: str
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     action_url: str
 
 

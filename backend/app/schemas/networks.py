@@ -1,16 +1,16 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class NetworkBase(BaseModel):
     name: str
-    icon_slug: Optional[str] = None
-    cidr: Optional[str] = None
-    vlan_id: Optional[int] = None
-    gateway: Optional[str] = None
-    description: Optional[str] = None
-    gateway_hardware_id: Optional[int] = None
+    icon_slug: str | None = None
+    cidr: str | None = None
+    vlan_id: int | None = None
+    gateway: str | None = None
+    description: str | None = None
+    gateway_hardware_id: int | None = None
 
 
 class NetworkCreate(NetworkBase):
@@ -18,14 +18,14 @@ class NetworkCreate(NetworkBase):
 
 
 class NetworkUpdate(BaseModel):
-    name: Optional[str] = None
-    icon_slug: Optional[str] = None
-    cidr: Optional[str] = None
-    vlan_id: Optional[int] = None
-    gateway: Optional[str] = None
-    description: Optional[str] = None
-    gateway_hardware_id: Optional[int] = None
-    tags: Optional[list[str]] = None
+    name: str | None = None
+    icon_slug: str | None = None
+    cidr: str | None = None
+    vlan_id: int | None = None
+    gateway: str | None = None
+    description: str | None = None
+    gateway_hardware_id: int | None = None
+    tags: list[str] | None = None
 
 
 class Network(NetworkBase):
@@ -39,7 +39,7 @@ class Network(NetworkBase):
 
 class ComputeNetworkLink(BaseModel):
     compute_id: int
-    ip_address: Optional[str] = None
+    ip_address: str | None = None
 
 
 class ComputeNetworkRead(BaseModel):
@@ -48,12 +48,12 @@ class ComputeNetworkRead(BaseModel):
     id: int
     compute_id: int
     network_id: int
-    ip_address: Optional[str] = None
+    ip_address: str | None = None
 
 
 class HardwareNetworkLink(BaseModel):
     hardware_id: int
-    ip_address: Optional[str] = None
+    ip_address: str | None = None
 
 
 class HardwareNetworkRead(BaseModel):
@@ -62,4 +62,4 @@ class HardwareNetworkRead(BaseModel):
     id: int
     hardware_id: int
     network_id: int
-    ip_address: Optional[str] = None
+    ip_address: str | None = None

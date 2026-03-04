@@ -1,4 +1,3 @@
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -7,30 +6,29 @@ from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.db.session import get_db
+from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
 from app.schemas.services import (
     Service,
     ServiceCreate,
-    ServiceUpdate,
     ServiceDependency,
     ServiceDependencyCreate,
-    ServiceStorageLink,
-    ServiceStorageRead,
     ServiceMiscLink,
     ServiceMiscRead,
+    ServiceStorageLink,
+    ServiceStorageRead,
+    ServiceUpdate,
 )
-from app.services import services_service
+from app.services import external_nodes_service, services_service
 from app.services.ip_reservation import resolve_ip_conflict
-from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
-from app.services import external_nodes_service
 
 router = APIRouter(tags=["services"])
 
 
 class ServiceIpCheckRequest(BaseModel):
     ip_address: str
-    compute_id: Optional[int] = None
-    hardware_id: Optional[int] = None
-    exclude_service_id: Optional[int] = None
+    compute_id: int | None = None
+    hardware_id: int | None = None
+    exclude_service_id: int | None = None
 
 
 @router.post("/check-ip")
@@ -178,7 +176,8 @@ def remove_misc_link(service_id: int, misc_id: int, db: Session = Depends(get_db
 
 @router.get("/{service_id}/external-dependencies", response_model=list[ServiceExternalNodeRead])
 def get_external_deps(service_id: int, db: Session = Depends(get_db)):
-    from app.db.models import ExternalNode, ServiceExternalNode, Service as ServiceModel
+    from app.db.models import ExternalNode, ServiceExternalNode
+    from app.db.models import Service as ServiceModel
     svc = db.get(ServiceModel, service_id)
     if svc is None:
         raise HTTPException(status_code=404, detail=f"Service {service_id} not found")

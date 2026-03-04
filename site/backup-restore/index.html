@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="author" content="Shawn Ji" /><link rel="canonical" href="https://blkleg.github.io/CircuitBreaker/backup-restore/" />
+      <link rel="shortcut icon" href="../img/favicon.ico" />
+    <title>Backup & Restore - Circuit Breaker Docs</title>
+    <link rel="stylesheet" href="../css/theme.css" />
+    <link rel="stylesheet" href="../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Backup \u0026 Restore";
+        var mkdocs_page_input_path = "backup-restore.md";
+        var mkdocs_page_url = "/CircuitBreaker/backup-restore/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href=".." class="icon icon-home"> Circuit Breaker Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="..">Welcome</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../roadmap/">Roadmap</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../getting-started/">Getting Started</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Features</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../hardware/">Hardware</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../compute/">Compute</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../storage/">Storage</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../networks/">Networks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../services/">Services</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Auto-Discovery (Beta)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../settings/">Settings</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../topology-map/">Topology Map</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../audit-log/">Audit Log</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../notes/">Notes & Runbooks</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Operations</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../deployment-security/">Deployment & Security</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Backup & Restore</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#what-backup-includes">What Backup Includes</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#export-a-backup">Export a Backup</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#import-a-backup">Import a Backup</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#clear-lab-data">Clear Lab Data</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#recovery-checklist">Recovery Checklist</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#related-guides">Related Guides</a>
+    </li>
+    </ul>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../overview/">Architecture Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../metrics/">Metrics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cross-browser-audit/">Cross-Browser Audit</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Updates</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-2_patch/">v0.1.2 Patch Notes</a>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="..">Circuit Breaker Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href=".." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Operations</li>
+      <li class="breadcrumb-item active">Backup & Restore</li>
+    <li class="wy-breadcrumbs-aside">
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="backup-restore">Backup &amp; Restore<a class="headerlink" href="#backup-restore" title="Permanent link">&para;</a></h1>
+<p>Use backup and restore to protect your inventory data and recover quickly when needed.</p>
+<hr />
+<h2 id="what-backup-includes">What Backup Includes<a class="headerlink" href="#what-backup-includes" title="Permanent link">&para;</a></h2>
+<p>A backup captures your inventory snapshot, including your documented infrastructure data and relationships.</p>
+<hr />
+<h2 id="export-a-backup">Export a Backup<a class="headerlink" href="#export-a-backup" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Open <strong>Settings</strong>.</li>
+<li>Go to the system/admin actions area.</li>
+<li>Choose <strong>Export Backup</strong>.</li>
+<li>Save the downloaded backup file in a safe location.</li>
+</ol>
+<p>Tip: keep date-stamped backups so you can roll back to a known point in time.</p>
+<hr />
+<h2 id="import-a-backup">Import a Backup<a class="headerlink" href="#import-a-backup" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Open <strong>Settings</strong>.</li>
+<li>Choose <strong>Import Backup</strong>.</li>
+<li>Select your backup file.</li>
+<li>Confirm restore options.</li>
+</ol>
+<p>Use wipe/replace options only when you intentionally want to remove current data before restore.</p>
+<hr />
+<h2 id="clear-lab-data">Clear Lab Data<a class="headerlink" href="#clear-lab-data" title="Permanent link">&para;</a></h2>
+<p>Clear Lab is a destructive action used to remove current inventory records.</p>
+<p>Use this only when you are intentionally resetting your environment.</p>
+<p>Best practice:</p>
+<ul>
+<li>Export a fresh backup first.</li>
+<li>Confirm the backup file opens and is valid.</li>
+</ul>
+<hr />
+<h2 id="recovery-checklist">Recovery Checklist<a class="headerlink" href="#recovery-checklist" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Keep multiple backups (recent + weekly baseline).</li>
+<li>Store backups off-host when possible.</li>
+<li>Test restore occasionally in a safe environment.</li>
+</ul>
+<hr />
+<h2 id="related-guides">Related Guides<a class="headerlink" href="#related-guides" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../settings/">Settings</a></li>
+<li><a href="../deployment-security/">Deployment &amp; Security</a></li>
+</ul>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../deployment-security/" class="btn btn-neutral float-left" title="Deployment & Security"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../overview/" class="btn btn-neutral float-right" title="Architecture Overview">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+    
+      <span><a href="../deployment-security/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../overview/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "..";</script>
+    <script src="../js/theme_extra.js"></script>
+    <script src="../js/theme.js"></script>
+      <script src="../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

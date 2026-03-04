@@ -1,16 +1,16 @@
 import io
-import zipfile
 import uuid
+import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import require_write_auth
 from app.db.session import get_db
-from app.schemas.docs import Doc, DocCreate, DocUpdate, EntityDocAttach, DocEntityLink
+from app.schemas.docs import Doc, DocCreate, DocEntityLink, DocUpdate, EntityDocAttach
 from app.services import docs_service
 
 router = APIRouter(tags=["docs"])

@@ -1,20 +1,38 @@
 # Networks
 
-Networks document the logical segmentation of your lab environment. This is primarily for recording VLANs, specific subnets, or dedicated gateway devices.
+Networks help you document segmentation and connectivity in your environment.
+
+Use them to track VLANs, subnets, and gateway context.
+
+---
 
 ## Documenting Networks
 
-To add a new network:
+1. Open **Networks**.
+2. Select **Add Network**.
+3. Enter network details and save.
 
-1. Navigate to **Networks** using the sidebar.
-2. Click **Add Network**.
-3. Fill in the details:
-   - **Name**: A friendly name (e.g., `IoT VLAN`, `Trusted LAN`, `DMZ`).
-   - **Subnet/VLAN ID**: Enter the specific IP range or VLAN ID (e.g., `192.168.10.0/24 (VLAN 10)`).
-   - **Gateway/Role**: Briefly describe the gateway IP or primary routing role.
+Common fields:
+
+- **Name** (for example: Trusted LAN, IoT VLAN, DMZ)
+- **Subnet or VLAN ID**
+- **Gateway or role notes**
+
+---
 
 ## Linking Networks
 
-Networks serve as a shared resource that Services rely on. If a Service (like a smart home controller) must exist on the `IoT VLAN` to communicate with smart devices, you should link that Service to the `IoT VLAN` network entry.
+Link networks to services and other entities that rely on them.
 
-This explicitly maps which services are exposed to which parts of your network infrastructure.
+This gives you a quick answer to:
+
+- Which services are on which segment?
+- What could be affected by network changes?
+- Where should security boundaries be reviewed?
+
+---
+
+## Related Guides
+
+- [Services](services.md)
+- [Topology Map](topology-map.md)

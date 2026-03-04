@@ -10,7 +10,6 @@ is required (same model as the rest of the protected API). When auth is off
 the endpoint is public, consistent with the unauthenticated read API.
 """
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -53,7 +52,7 @@ _SERVICE_STATUSES = ("running", "stopped", "degraded", "maintenance")
 
 
 def _check_metrics_auth(
-    user_id: Optional[int] = Depends(get_optional_user),
+    user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ) -> None:
     """Require auth when auth_enabled=True or CB_API_TOKEN is configured."""

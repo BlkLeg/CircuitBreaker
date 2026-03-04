@@ -1,32 +1,32 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class PortEntry(BaseModel):
-    ip: Optional[str] = None          # per-port IP override; inherits service ip_address if None
-    port: Optional[int] = None
-    protocol: Optional[str] = "tcp"   # "tcp" | "udp" | "sctp"
-    label: Optional[str] = None
+    ip: str | None = None          # per-port IP override; inherits service ip_address if None
+    port: int | None = None
+    protocol: str | None = "tcp"   # "tcp" | "udp" | "sctp"
+    label: str | None = None
 
 
 class ServiceBase(BaseModel):
     name: str
-    slug: Optional[str] = None   # auto-derived from name if not provided
-    compute_id: Optional[int] = None
-    hardware_id: Optional[int] = None
-    icon_slug: Optional[str] = None
-    custom_icon: Optional[str] = None
-    category: Optional[str] = None
-    category_id: Optional[int] = None
-    url: Optional[str] = None
-    ports: Optional[list[PortEntry]] = None   # structured port bindings (replaces freeform string)
-    description: Optional[str] = None
-    environment: Optional[str] = None
+    slug: str | None = None   # auto-derived from name if not provided
+    compute_id: int | None = None
+    hardware_id: int | None = None
+    icon_slug: str | None = None
+    custom_icon: str | None = None
+    category: str | None = None
+    category_id: int | None = None
+    url: str | None = None
+    ports: list[PortEntry] | None = None   # structured port bindings (replaces freeform string)
+    description: str | None = None
+    environment: str | None = None
     # v0.1.4: environment registry
-    environment_id: Optional[int] = None
-    status: Optional[str] = None  # running | stopped | degraded | maintenance
-    ip_address: Optional[str] = None
+    environment_id: int | None = None
+    status: str | None = None  # running | stopped | degraded | maintenance
+    ip_address: str | None = None
     tags: list[str] = []
 
 
@@ -35,32 +35,32 @@ class ServiceCreate(ServiceBase):
 
 
 class ServiceUpdate(BaseModel):
-    name: Optional[str] = None
-    slug: Optional[str] = None
-    compute_id: Optional[int] = None
-    hardware_id: Optional[int] = None
-    icon_slug: Optional[str] = None
-    custom_icon: Optional[str] = None
-    category: Optional[str] = None
-    category_id: Optional[int] = None
-    url: Optional[str] = None
-    ports: Optional[list[PortEntry]] = None   # structured port bindings
-    description: Optional[str] = None
-    environment: Optional[str] = None
+    name: str | None = None
+    slug: str | None = None
+    compute_id: int | None = None
+    hardware_id: int | None = None
+    icon_slug: str | None = None
+    custom_icon: str | None = None
+    category: str | None = None
+    category_id: int | None = None
+    url: str | None = None
+    ports: list[PortEntry] | None = None   # structured port bindings
+    description: str | None = None
+    environment: str | None = None
     # v0.1.4: environment registry
-    environment_id: Optional[int] = None
-    status: Optional[str] = None  # running | stopped | degraded | maintenance
-    ip_address: Optional[str] = None
-    tags: Optional[list[str]] = None
+    environment_id: int | None = None
+    status: str | None = None  # running | stopped | degraded | maintenance
+    ip_address: str | None = None
+    tags: list[str] | None = None
 
 
 class Service(ServiceBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    category_name: Optional[str] = None
+    category_name: str | None = None
     # v0.1.4: environment registry
-    environment_name: Optional[str] = None
+    environment_name: str | None = None
     created_at: datetime
     updated_at: datetime
     # IP conflict classification
@@ -83,7 +83,7 @@ class ServiceDependency(BaseModel):
 
 class ServiceStorageLink(BaseModel):
     storage_id: int
-    purpose: Optional[str] = None
+    purpose: str | None = None
 
 
 class ServiceStorageRead(BaseModel):
@@ -92,12 +92,12 @@ class ServiceStorageRead(BaseModel):
     id: int
     service_id: int
     storage_id: int
-    purpose: Optional[str] = None
+    purpose: str | None = None
 
 
 class ServiceMiscLink(BaseModel):
     misc_id: int
-    purpose: Optional[str] = None
+    purpose: str | None = None
 
 
 class ServiceMiscRead(BaseModel):
@@ -106,4 +106,4 @@ class ServiceMiscRead(BaseModel):
     id: int
     service_id: int
     misc_id: int
-    purpose: Optional[str] = None
+    purpose: str | None = None

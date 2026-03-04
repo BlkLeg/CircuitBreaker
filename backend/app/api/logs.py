@@ -5,18 +5,16 @@ Audit logs are append-only. No update or delete endpoints exist by design.
 import asyncio
 import json
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import distinct, func, or_, select
+from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.core.time import elapsed_seconds as _elapsed_seconds
-from sqlalchemy.orm import Session
-from sqlalchemy import select, func, or_, distinct
-
-from app.db.session import get_db, SessionLocal
 from app.db.models import Log
+from app.db.session import SessionLocal, get_db
 from app.schemas.logs import LogEntry, LogsResponse
 
 router = APIRouter(tags=["logs"])
@@ -26,16 +24,16 @@ router = APIRouter(tags=["logs"])
 def list_logs(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    category: Optional[str] = None,
-    action: Optional[str] = None,
-    entity_type: Optional[str] = None,
-    entity_id: Optional[int] = None,
-    level: Optional[str] = None,
-    severity: Optional[str] = None,
-    search: Optional[str] = None,
-    sort: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
+    start_time: str | None = None,
+    end_time: str | None = None,
+    category: str | None = None,
+    action: str | None = None,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    level: str | None = None,
+    severity: str | None = None,
+    search: str | None = None,
+    sort: str | None = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
 ):
     _order = Log.timestamp.asc() if sort == "asc" else Log.timestamp.desc()
@@ -130,10 +128,10 @@ def clear_logs(db: Session = Depends(get_db), _=Depends(require_write_auth)):
 
 
 @router.get("/stream")
-async def stream_logs(since: Optional[str] = None):
+async def stream_logs(since: str | None = None):
     """Server-Sent Events endpoint — streams new log entries since a given timestamp."""
 
-    since_dt: Optional[datetime] = None
+    since_dt: datetime | None = None
     if since:
         try:
             since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))

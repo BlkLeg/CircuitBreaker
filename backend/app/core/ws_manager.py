@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import Optional
+
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 # Hard cap on simultaneous WebSocket connections (DoS guard).
 # Raise via CB_WS_MAX_CONNECTIONS env var if needed.
 import os
+
 _MAX_CONNECTIONS: int = int(os.getenv("CB_WS_MAX_CONNECTIONS", "50"))
 # Max connections allowed from a single IP address.
 _MAX_PER_IP: int = int(os.getenv("CB_WS_MAX_PER_IP", "5"))
@@ -27,7 +28,7 @@ class ConnectionManager:
         self,
         ws: WebSocket,
         *,
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         client_ip: str = "unknown",
     ) -> bool:
         """Register an already-accepted WebSocket.

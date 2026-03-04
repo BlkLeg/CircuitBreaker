@@ -8,7 +8,6 @@ The auth_headers fixture is only used in tests that explicitly need auth.
 from app.db.models import Environment
 from app.services.environments_service import resolve_environment_id
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _create_env(client, name="prod", color=None):

@@ -1,11 +1,11 @@
 import logging
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.models import Rack, Hardware
-from app.schemas.rack import RackCreate, RackUpdate
 from app.core.time import utcnow
+from app.db.models import Hardware, Rack
+from app.schemas.rack import RackCreate, RackUpdate
 
 _logger = logging.getLogger(__name__)
 

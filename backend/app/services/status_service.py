@@ -5,10 +5,10 @@ CB-STATE-002: recalculate_compute_status() — worst-case of child service statu
 """
 import logging
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.models import Hardware, ComputeUnit, Service
+from app.db.models import ComputeUnit, Hardware, Service
 
 _logger = logging.getLogger(__name__)
 

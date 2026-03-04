@@ -14,7 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
-    Hardware, Network, Rack, ScanResult,
+    Hardware,
+    Network,
+    Rack,
+    ScanResult,
 )
 
 logger = logging.getLogger(__name__)

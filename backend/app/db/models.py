@@ -1,6 +1,7 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.time import utcnow
 from app.db.session import Base
@@ -554,8 +555,8 @@ class AppSettings(Base):
     map_default_filters: Mapped[str | None] = mapped_column(Text)  # JSON string
     vendor_icon_mode: Mapped[str] = mapped_column(String, nullable=False, default="custom_files")
     environments: Mapped[str | None] = mapped_column(Text, default='["prod","staging","dev"]')  # JSON array
-    categories: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
-    locations: Mapped[str | None] = mapped_column(Text, default='[]')  # JSON array
+    categories: Mapped[str | None] = mapped_column(Text, default="[]")  # JSON array
+    locations: Mapped[str | None] = mapped_column(Text, default="[]")  # JSON array
     dock_order: Mapped[str | None] = mapped_column(Text)  # JSON array of path strings
     dock_hidden_items: Mapped[str | None] = mapped_column(Text)  # JSON array of hidden path strings
     show_page_hints: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

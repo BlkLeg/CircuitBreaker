@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.db.session import get_db
-from app.schemas.rack import RackCreate, RackUpdate, RackOut
+from app.schemas.rack import RackCreate, RackOut, RackUpdate
 from app.services import rack_service
 
 router = APIRouter(tags=["racks"])

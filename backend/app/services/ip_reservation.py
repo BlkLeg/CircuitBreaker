@@ -4,12 +4,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.db.models import Hardware, ComputeUnit, Service
+from app.db.models import ComputeUnit, Hardware, Service
 
 _logger = logging.getLogger(__name__)
 
@@ -20,8 +19,8 @@ class ConflictResult:
     entity_id: int
     entity_name: str
     conflicting_ip: str
-    conflicting_port: Optional[int]
-    protocol: Optional[str]
+    conflicting_port: int | None
+    protocol: str | None
 
     def to_dict(self) -> dict:
         return {
@@ -313,7 +312,7 @@ def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:
     cu_id_to_ip: dict[int, str | None] = {cu.id: _norm(cu.ip_address) for cu in cu_objs}
     cu_id_to_hw_id: dict[int, int | None] = {cu.id: cu.hardware_id for cu in cu_objs}
 
-    def _svc_effective_ip(svc: "Service") -> str | None:
+    def _svc_effective_ip(svc: Service) -> str | None:
         """Resolve IP for a service: own ip_address → compute unit IP → hardware IP."""
         own = _norm(svc.ip_address)
         if own:

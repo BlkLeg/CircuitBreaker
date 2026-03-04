@@ -3,7 +3,6 @@ import hashlib
 import logging
 import os
 from datetime import timedelta
-from typing import Optional
 
 import bcrypt
 import jwt
@@ -16,7 +15,7 @@ from app.db.session import get_db
 _logger = logging.getLogger(__name__)
 
 
-def _get_api_token() -> Optional[str]:
+def _get_api_token() -> str | None:
     """Return the static CB_API_TOKEN from environment, or None if unset."""
     return os.getenv("CB_API_TOKEN") or None
 
@@ -54,7 +53,7 @@ def create_token(user_id: int, secret: str, timeout_hours: int) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def decode_token(token: str, secret: str) -> Optional[int]:
+def decode_token(token: str, secret: str) -> int | None:
     """Decode JWT and return user_id, or None if invalid/expired."""
     try:
         payload = jwt.decode(token, secret, algorithms=["HS256"])
@@ -67,21 +66,23 @@ def decode_token(token: str, secret: str) -> Optional[int]:
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
 
-def _extract_bearer(request: Request) -> Optional[str]:
+def _extract_bearer(request: Request) -> str | None:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[len("Bearer "):]
     return None
 
 
-def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Optional[int]:
+def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | None:
     """Return the authenticated user_id from JWT, or None if absent/invalid.
 
     Returns 0 (service-account sentinel) when the request presents a valid
     CB_API_TOKEN bearer token.  Never raises — callers decide whether auth is
     required.
     """
-    from app.services.settings_service import get_or_create_settings  # local import to avoid circular
+    from app.services.settings_service import (
+        get_or_create_settings,  # local import to avoid circular
+    )
 
     raw_token = _extract_bearer(request)
 
@@ -103,7 +104,7 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Option
     return decode_token(raw_token, cfg.jwt_secret)
 
 
-def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: Session = Depends(get_db)) -> Optional[int]:
+def require_write_auth(user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)) -> int | None:
     """Raise 401 when write access is not authorised.
 
     Write access is required when either ``auth_enabled`` is true *or*
@@ -111,7 +112,9 @@ def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: 
     into token-gated writes).  A ``user_id`` of 0 indicates API-token auth
     and is treated as authenticated.
     """
-    from app.services.settings_service import get_or_create_settings  # local import to avoid circular
+    from app.services.settings_service import (
+        get_or_create_settings,  # local import to avoid circular
+    )
 
     cfg = get_or_create_settings(db)
     auth_required = cfg.auth_enabled or bool(_get_api_token())
@@ -120,7 +123,7 @@ def require_write_auth(user_id: Optional[int] = Depends(get_optional_user), db: 
     return user_id
 
 
-def require_auth_always(request: Request, user_id: Optional[int] = Depends(get_optional_user)) -> int:
+def require_auth_always(request: Request, user_id: int | None = Depends(get_optional_user)) -> int:
     """
     Validates JWT regardless of app_settings.auth_enabled.
     Used exclusively for scan-trigger endpoints.

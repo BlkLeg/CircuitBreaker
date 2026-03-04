@@ -2,16 +2,24 @@ import json
 import logging
 import re
 
-from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
 from fastapi import HTTPException
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
-from app.db.models import Service, ServiceDependency, ServiceStorage, ServiceMisc, EntityTag, Tag, Category
+from app.core.time import utcnow, utcnow_iso
+from app.db.models import (
+    Category,
+    EntityTag,
+    Service,
+    ServiceDependency,
+    ServiceMisc,
+    ServiceStorage,
+    Tag,
+)
 from app.schemas.services import ServiceCreate, ServiceUpdate
 from app.services.environments_service import resolve_environment_id
-from app.services.ip_reservation import resolve_ip_conflict, _parse_ports_json
+from app.services.ip_reservation import _parse_ports_json, resolve_ip_conflict
 from app.services.log_service import write_log
-from app.core.time import utcnow, utcnow_iso
 
 _logger = logging.getLogger(__name__)
 
@@ -70,6 +78,7 @@ def _backfill_ports_json(db: Session) -> None:
     ports_json is already set are skipped.
     """
     import re as _re
+
     from sqlalchemy import text
 
     rows = db.execute(
@@ -209,7 +218,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     resolved_cat_id = _resolve_category(db, payload.category_id, payload.category)
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     ports_json = _ports_to_json(payload.ports)
-    slug = payload.slug or re.sub(r'[^a-z0-9]+', '-', payload.name.lower()).strip('-')
+    slug = payload.slug or re.sub(r"[^a-z0-9]+", "-", payload.name.lower()).strip("-")
     # CB-REL-002: auto-populate hardware_id from compute_unit when compute-bound
     effective_hardware_id = payload.hardware_id
     if payload.compute_id and not effective_hardware_id:
@@ -307,8 +316,8 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
     db.commit()
     db.refresh(svc)
     # CB-STATE-002: recalculate compute status for old and new compute parents
-    from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
     from app.db.models import ComputeUnit
+    from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
     affected_cu_ids = set()
     if old_compute_id:
         affected_cu_ids.add(old_compute_id)
@@ -357,8 +366,11 @@ def delete_service(db: Session, service_id: int) -> None:
     db.commit()
     # CB-STATE-002: recalculate compute → hardware status after service deletion
     if compute_id_to_recalc:
-        from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
         from app.db.models import ComputeUnit
+        from app.services.status_service import (
+            recalculate_compute_status,
+            recalculate_hardware_status,
+        )
         recalculate_compute_status(db, compute_id_to_recalc)
         cu_obj = db.get(ComputeUnit, compute_id_to_recalc)
         if cu_obj and cu_obj.hardware_id:

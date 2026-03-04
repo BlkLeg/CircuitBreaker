@@ -40,11 +40,11 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from app.core.security import decode_token, _get_api_token
-from app.core.ws_manager import ws_manager
 import app.db.session as _db_session
-from app.services.settings_service import get_or_create_settings
+from app.core.security import _get_api_token, decode_token
 from app.core.time import utcnow_iso
+from app.core.ws_manager import ws_manager
+from app.services.settings_service import get_or_create_settings
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ async def discovery_stream(websocket: WebSocket) -> None:
         # ── Auth phase ──────────────────────────────────────────────────────
         try:
             raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("WS auth timeout (ip=%s)", client_ip)
             try:
                 await websocket.send_text(json.dumps({"error": "auth_timeout"}))

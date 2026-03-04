@@ -1,10 +1,10 @@
 
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_
 
-from app.db.models import MiscItem, EntityTag, Tag
-from app.schemas.misc import MiscItemCreate, MiscItemUpdate
 from app.core.time import utcnow
+from app.db.models import EntityTag, MiscItem, Tag
+from app.schemas.misc import MiscItemCreate, MiscItemUpdate
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:

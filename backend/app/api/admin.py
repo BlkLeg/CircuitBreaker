@@ -1,17 +1,16 @@
 """Admin endpoints: full backup export, restore import, and recent-changes feed."""
 import logging
 from datetime import datetime
-
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
-from app.db.session import get_db
-from app.db import models
 from app.core.time import utcnow_iso
+from app.db import models
+from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ router = APIRouter(tags=["admin"])
 
 # ── Serialisation helpers ─────────────────────────────────────────────────
 
-def _dt(v: Any) -> Optional[str]:
+def _dt(v: Any) -> str | None:
     """Convert datetime to ISO string; pass through strings or None."""
     if isinstance(v, datetime):
         return v.isoformat()

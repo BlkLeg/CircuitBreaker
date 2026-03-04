@@ -1,14 +1,14 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class HardwareClusterBase(BaseModel):
     name: str
-    icon_slug: Optional[str] = None
-    description: Optional[str] = None
-    environment: Optional[str] = None
-    location: Optional[str] = None
+    icon_slug: str | None = None
+    description: str | None = None
+    environment: str | None = None
+    location: str | None = None
 
 
 class HardwareClusterCreate(HardwareClusterBase):
@@ -16,11 +16,11 @@ class HardwareClusterCreate(HardwareClusterBase):
 
 
 class HardwareClusterUpdate(BaseModel):
-    name: Optional[str] = None
-    icon_slug: Optional[str] = None
-    description: Optional[str] = None
-    environment: Optional[str] = None
-    location: Optional[str] = None
+    name: str | None = None
+    icon_slug: str | None = None
+    description: str | None = None
+    environment: str | None = None
+    location: str | None = None
 
 
 class HardwareClusterRead(HardwareClusterBase):
@@ -38,14 +38,14 @@ class HardwareClusterMemberRead(BaseModel):
     id: int
     cluster_id: int
     hardware_id: int
-    role: Optional[str] = None
-    hardware_name: Optional[str] = None
+    role: str | None = None
+    hardware_name: str | None = None
 
 
 class HardwareClusterMemberLink(BaseModel):
     hardware_id: int
-    role: Optional[str] = None
+    role: str | None = None
 
 
 class HardwareClusterMemberUpdate(BaseModel):
-    role: Optional[str] = None
+    role: str | None = None

@@ -1,15 +1,14 @@
 import json
 
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
-from app.db.models import Hardware
-from app.integrations.dispatcher import poll_hardware
-from app.services.credential_vault import get_vault, CredentialVault
-from app.schemas.hardware import TelemetryConfig
 from app.core.time import utcnow
+from app.db.models import Hardware
+from app.db.session import get_db
+from app.integrations.dispatcher import poll_hardware
+from app.schemas.hardware import TelemetryConfig
+from app.services.credential_vault import CredentialVault, get_vault
 
 router = APIRouter(tags=["telemetry"])
 

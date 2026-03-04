@@ -1,12 +1,15 @@
 import pytest
-from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.session import Base, get_db
+from app.core import (
+    compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
+)
 from app.core.rate_limit import limiter
+from app.db.session import Base, get_db
+
 limiter.enabled = False  # Disable rate-limiting during tests
 from app.db import models  # noqa: F401 E402 — register models with metadata
 from app.main import app  # noqa: E402
@@ -49,10 +52,10 @@ def client(db_engine, db):
     # Patch SessionLocal at its source so that write_log (which imports it locally
     # on each call) and the logging middleware (module-level import) both use the
     # test DB instead of the production SQLite file.
-    import app.db.session as _db_session
-    import app.middleware.logging_middleware as _log_mw
-    import app.main as _main
     import app.core.config as _config
+    import app.db.session as _db_session
+    import app.main as _main
+    import app.middleware.logging_middleware as _log_mw
 
     orig_session_local = _db_session.SessionLocal
     orig_mw_session_local = _log_mw.SessionLocal

@@ -1,35 +1,57 @@
-from app.core import compat as _compat  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
+from datetime import UTC
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.core.config import settings
-from app.core.errors import AppError
-from app.db.session import engine, Base, SessionLocal
-from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.api import hardware, compute_units, services, storage, networks, misc, docs, graph, search, logs, auth, clusters, external_nodes, bootstrap, catalog, telemetry as telemetry_api, categories, environments
-from app.api import rack as rack_api
-from app.api.discovery import router as discovery_router
-from app.api.ws_discovery import router as ws_discovery_router
-from app.api.ip_check import router as ip_check_router
-from app.api.settings import router as settings_router
-from app.api.branding import router as branding_router
-from app.api.assets import router as assets_router
-from app.api.admin import router as admin_router
-from app.api.security_status import router as security_router
-from app.api.metrics import router as metrics_router
-from app.api.timezones import router as timezones_router
-from app.middleware.logging_middleware import LoggingMiddleware
-from app.middleware.security_headers import SecurityHeadersMiddleware
-
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+
+from app.api import (
+    auth,
+    bootstrap,
+    catalog,
+    categories,
+    clusters,
+    compute_units,
+    docs,
+    environments,
+    external_nodes,
+    graph,
+    hardware,
+    logs,
+    misc,
+    networks,
+    search,
+    services,
+    storage,
+)
+from app.api import rack as rack_api
+from app.api import telemetry as telemetry_api
+from app.api.admin import router as admin_router
+from app.api.assets import router as assets_router
+from app.api.branding import router as branding_router
+from app.api.discovery import router as discovery_router
+from app.api.ip_check import router as ip_check_router
+from app.api.metrics import router as metrics_router
+from app.api.security_status import router as security_router
+from app.api.settings import router as settings_router
+from app.api.timezones import router as timezones_router
+from app.api.ws_discovery import router as ws_discovery_router
+from app.core import (
+    compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
+)
+from app.core.config import settings
+from app.core.errors import AppError
 from app.core.rate_limit import limiter
+from app.db import models  # noqa: F401 — import to register all model metadata with Base
+from app.db.session import Base, SessionLocal, engine
+from app.middleware.logging_middleware import LoggingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)
@@ -94,7 +116,8 @@ def _backfill_log_timestamps(db) -> None:
     Accepts either an ORM Session (test fixtures) or a raw SQLite connection
     (migration path).
     """
-    from datetime import datetime, timezone as _tz
+    from datetime import datetime
+
     from sqlalchemy import text
 
     _EPOCH = "1970-01-01T00:00:00+00:00"
@@ -106,7 +129,7 @@ def _backfill_log_timestamps(db) -> None:
         if ts:
             try:
                 dt = datetime.fromisoformat(str(ts))
-                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=_tz.utc).isoformat()
+                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=UTC).isoformat()
             except (ValueError, TypeError):
                 pass
         db.execute(
@@ -473,8 +496,8 @@ def _run_migrations(conn) -> None:
                 backfill_count += 1
     _logger.info("Environments backfill: %d rows updated", backfill_count)
     # v0.1.5: services.ports_json — structured port bindings replacing freeform string
-    import re as _re
     import json as _json
+    import re as _re
     svc_cols = _get_columns(conn, "services")
     if "ports_json" not in svc_cols:
         conn.execute("ALTER TABLE services ADD COLUMN ports_json TEXT")
@@ -508,7 +531,7 @@ def _run_migrations(conn) -> None:
     for svc_id, svc_name in slug_rows:
         if not svc_name:
             svc_name = f"service-{svc_id}"
-        base = _re.sub(r'[^a-z0-9]+', '-', svc_name.lower()).strip('-')
+        base = _re.sub(r"[^a-z0-9]+", "-", svc_name.lower()).strip("-")
         candidate = base
         # Ensure uniqueness against already-committed slugs
         counter = 1
@@ -522,7 +545,7 @@ def _run_migrations(conn) -> None:
         _logger.info("Slug backfill: %d service rows updated", len(slug_rows))
 
     # v0.1.6: logs.created_at_utc — reliable UTC ISO 8601 string for frontend display
-    from datetime import datetime, timezone as _tz
+    from datetime import datetime
     log_cols = _get_columns(conn, "logs")
     if "created_at_utc" not in log_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN created_at_utc TEXT")
@@ -535,7 +558,7 @@ def _run_migrations(conn) -> None:
         if ts:
             try:
                 dt = datetime.fromisoformat(str(ts))
-                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=_tz.utc).isoformat()
+                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=UTC).isoformat()
             except (ValueError, TypeError):
                 pass
         conn.execute("UPDATE logs SET created_at_utc = ? WHERE id = ?", (val, log_id))
@@ -743,6 +766,7 @@ def _run_migrations(conn) -> None:
 async def lifespan(app: FastAPI):
     """Run startup and shutdown tasks."""
     import asyncio
+
     from app.services import discovery_service
 
     # ── DB init & migrations ──────────────────────────────────────────────

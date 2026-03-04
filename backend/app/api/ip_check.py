@@ -1,5 +1,5 @@
 """Read-only IP conflict check endpoint — powers real-time inline validation."""
-from typing import Optional
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -11,17 +11,17 @@ router = APIRouter(tags=["ip-check"])
 
 
 class PortEntryIn(BaseModel):
-    ip: Optional[str] = None
-    port: Optional[int] = None
-    protocol: Optional[str] = "tcp"
-    label: Optional[str] = None
+    ip: str | None = None
+    port: int | None = None
+    protocol: str | None = "tcp"
+    label: str | None = None
 
 
 class IpCheckRequest(BaseModel):
     ip: str
-    ports: Optional[list[PortEntryIn]] = None
-    exclude_entity_type: Optional[str] = None
-    exclude_entity_id: Optional[int] = None
+    ports: list[PortEntryIn] | None = None
+    exclude_entity_type: str | None = None
+    exclude_entity_id: int | None = None
 
 
 @router.post("/ip-check")

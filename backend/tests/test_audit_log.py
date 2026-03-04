@@ -8,7 +8,6 @@ import json
 from app.db import models
 from app.services.log_service import sanitise_diff
 
-
 # ── sanitise_diff unit tests ──────────────────────────────────────────────────
 
 def test_sanitise_diff_redacts_password_key():
@@ -271,82 +270,82 @@ def test_oobe_complete_produces_log(client):
 
 
 def test_graph_map_mutations_produce_graph_audit_logs(client, db, auth_headers):
-    hw = models.Hardware(name='graph-host')
+    hw = models.Hardware(name="graph-host")
     db.add(hw)
     db.flush()
 
-    cu = models.ComputeUnit(name='graph-vm', kind='vm', hardware_id=hw.id)
-    net = models.Network(name='graph-net')
+    cu = models.ComputeUnit(name="graph-vm", kind="vm", hardware_id=hw.id)
+    net = models.Network(name="graph-net")
     db.add_all([cu, net])
     db.flush()
 
-    link = models.ComputeNetwork(compute_id=cu.id, network_id=net.id, connection_type='ethernet')
+    link = models.ComputeNetwork(compute_id=cu.id, network_id=net.id, connection_type="ethernet")
     db.add(link)
     db.commit()
 
-    edge_id = f'e-cn-{link.id}'
+    edge_id = f"e-cn-{link.id}"
 
     layout_resp = client.post(
-        '/api/v1/graph/layout',
-        json={'name': 'default', 'layout_data': '{"nodes":{},"edges":{}}'},
+        "/api/v1/graph/layout",
+        json={"name": "default", "layout_data": '{"nodes":{},"edges":{}}'},
         headers=auth_headers,
     )
     assert layout_resp.status_code == 200
 
     patch_resp = client.patch(
-        f'/api/v1/graph/edges/{edge_id}',
-        json={'connection_type': 'wireguard'},
+        f"/api/v1/graph/edges/{edge_id}",
+        json={"connection_type": "wireguard"},
         headers=auth_headers,
     )
     assert patch_resp.status_code == 200
 
-    delete_resp = client.delete(f'/api/v1/graph/edges/{edge_id}', headers=auth_headers)
+    delete_resp = client.delete(f"/api/v1/graph/edges/{edge_id}", headers=auth_headers)
     assert delete_resp.status_code == 204
 
-    logs = client.get('/api/v1/logs', headers=auth_headers).json()['logs']
-    actions = {log.get('action') for log in logs}
-    assert 'save_graph_layout' in actions
-    assert 'update_graph_edge' in actions
-    assert 'delete_graph_edge' in actions
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
+    actions = {log.get("action") for log in logs}
+    assert "save_graph_layout" in actions
+    assert "update_graph_edge" in actions
+    assert "delete_graph_edge" in actions
 
 
 def test_nested_relationship_mutations_are_audited(client, db, auth_headers):
-    hw = models.Hardware(name='rel-host')
-    net = models.Network(name='rel-net')
-    cluster = models.HardwareCluster(name='rel-cluster')
+    hw = models.Hardware(name="rel-host")
+    net = models.Network(name="rel-net")
+    cluster = models.HardwareCluster(name="rel-cluster")
     db.add_all([hw, net, cluster])
     db.commit()
 
     add_member = client.post(
-        f'/api/v1/networks/{net.id}/hardware-members',
-        json={'hardware_id': hw.id},
+        f"/api/v1/networks/{net.id}/hardware-members",
+        json={"hardware_id": hw.id},
         headers=auth_headers,
     )
     assert add_member.status_code == 201
 
     add_cluster_member = client.post(
-        f'/api/v1/hardware-clusters/{cluster.id}/members',
-        json={'hardware_id': hw.id, 'role': 'member'},
+        f"/api/v1/hardware-clusters/{cluster.id}/members",
+        json={"hardware_id": hw.id, "role": "member"},
         headers=auth_headers,
     )
     assert add_cluster_member.status_code == 201
-    member_id = add_cluster_member.json()['id']
+    member_id = add_cluster_member.json()["id"]
 
     remove_member = client.delete(
-        f'/api/v1/networks/{net.id}/hardware-members/{hw.id}',
+        f"/api/v1/networks/{net.id}/hardware-members/{hw.id}",
         headers=auth_headers,
     )
     assert remove_member.status_code == 204
 
     remove_cluster_member = client.delete(
-        f'/api/v1/hardware-clusters/{cluster.id}/members/{member_id}',
+        f"/api/v1/hardware-clusters/{cluster.id}/members/{member_id}",
         headers=auth_headers,
     )
     assert remove_cluster_member.status_code == 204
 
-    logs = client.get('/api/v1/logs', headers=auth_headers).json()['logs']
-    actions = {log.get('action') for log in logs}
-    assert 'add_hardware_member' in actions
-    assert 'remove_hardware_member' in actions
-    assert 'add_member' in actions
-    assert 'remove_member' in actions
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
+    actions = {log.get("action") for log in logs}
+    assert "add_hardware_member" in actions
+    assert "remove_hardware_member" in actions
+    assert "add_member" in actions
+    assert "remove_member" in actions

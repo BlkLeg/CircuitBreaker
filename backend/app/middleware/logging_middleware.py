@@ -1,7 +1,7 @@
 """HTTP middleware that automatically logs all mutating API operations to the audit log."""
 import json
-import re
 import logging
+import re
 from datetime import datetime
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -173,10 +173,11 @@ def _resolve_actor(request: Request) -> tuple[str, str | None]:
             return "anonymous", None
         token = auth_header[len("Bearer "):]
 
-        from app.services.settings_service import get_or_create_settings
+        from sqlalchemy import select
+
         from app.core.security import decode_token
         from app.db.models import User
-        from sqlalchemy import select
+        from app.services.settings_service import get_or_create_settings
 
         with SessionLocal() as db:
             cfg = get_or_create_settings(db)
@@ -325,8 +326,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 def _fetch_entity_json(entity_type: str, entity_id: int) -> str | None:
     """Fetch the current entity state as a JSON string for old_value capture."""
     from sqlalchemy import select
+
     from app.db.models import (
-        Hardware, ComputeUnit, Service, Storage, Network, MiscItem,
+        ComputeUnit,
+        Hardware,
+        MiscItem,
+        Network,
+        Service,
+        Storage,
     )
 
     _MODEL_MAP = {

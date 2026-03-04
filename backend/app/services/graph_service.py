@@ -1,8 +1,10 @@
 import json
 import logging
 import math
-from typing import Any, Optional
+from typing import Any
+
 from sqlalchemy.orm import Session
+
 from app.db.models import GraphLayout
 
 logger = logging.getLogger(__name__)
@@ -61,7 +63,7 @@ def overlaps(test_x: float, test_y: float, nodes: list[dict], threshold: float =
                 return True
     return False
 
-def jitter_if_collides(candidate: dict, nodes: list[dict]) -> Optional[dict]:
+def jitter_if_collides(candidate: dict, nodes: list[dict]) -> dict | None:
     """Find a safe position by trying angles radially outwards."""
     jitter_radius = 60  # 1.5x node size approximation
     for angle_deg in range(0, 360, 15):

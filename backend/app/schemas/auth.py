@@ -1,11 +1,11 @@
-from typing import Optional
+
 from pydantic import BaseModel
 
 
 class RegisterRequest(BaseModel):
     email: str
     password: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
 
 
 class LoginRequest(BaseModel):
@@ -16,11 +16,11 @@ class LoginRequest(BaseModel):
 class UserProfile(BaseModel):
     id: int
     email: str
-    display_name: Optional[str] = None
-    gravatar_hash: Optional[str] = None
+    display_name: str | None = None
+    gravatar_hash: str | None = None
     is_admin: bool
     language: str = "en"
-    profile_photo_url: Optional[str] = None
+    profile_photo_url: str | None = None
 
 
 class AuthResponse(BaseModel):
@@ -36,12 +36,12 @@ class BootstrapStatusResponse(BaseModel):
 class BootstrapInitializeRequest(BaseModel):
     email: str
     password: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     theme_preset: str
-    timezone: Optional[str] = "UTC"
-    language: Optional[str] = "en"
-    ui_font: Optional[str] = "inter"
-    ui_font_size: Optional[str] = "medium"
+    timezone: str | None = "UTC"
+    language: str | None = "en"
+    ui_font: str | None = "inter"
+    ui_font_size: str | None = "medium"
 
 
 class BootstrapThemeResponse(BaseModel):

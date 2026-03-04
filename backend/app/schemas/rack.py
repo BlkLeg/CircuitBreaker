@@ -1,20 +1,20 @@
 from datetime import datetime
-from typing import Optional
+
 from pydantic import BaseModel, ConfigDict
 
 
 class RackCreate(BaseModel):
     name: str
     height_u: int = 42
-    location: Optional[str] = None
-    notes: Optional[str] = None
+    location: str | None = None
+    notes: str | None = None
 
 
 class RackUpdate(BaseModel):
-    name: Optional[str] = None
-    height_u: Optional[int] = None
-    location: Optional[str] = None
-    notes: Optional[str] = None
+    name: str | None = None
+    height_u: int | None = None
+    location: str | None = None
+    notes: str | None = None
 
 
 class RackOut(BaseModel):
@@ -23,8 +23,8 @@ class RackOut(BaseModel):
     id: int
     name: str
     height_u: int
-    location: Optional[str] = None
-    notes: Optional[str] = None
+    location: str | None = None
+    notes: str | None = None
     hardware_count: int = 0
     created_at: datetime
     updated_at: datetime

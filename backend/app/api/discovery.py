@@ -1,22 +1,30 @@
-from typing import List
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import select, func
 
-from app.db.session import get_db
-from app.core.security import require_write_auth, require_auth_always
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
 from app.core.rate_limit import limiter
+from app.core.scheduler import _scheduler
+from app.core.security import require_auth_always, require_write_auth
+from app.db.models import ScanJob, ScanResult
+from app.db.session import get_db
 from app.schemas.discovery import (
-    DiscoveryProfileCreate, DiscoveryProfileUpdate, DiscoveryProfileOut,
-    ScanJobOut, ScanResultOut, AdHocScanRequest, MergeRequest, BulkMergeRequest,
-    EnhancedBulkMergeRequest, BulkSuggestRequest, DiscoveryStatusOut
+    AdHocScanRequest,
+    BulkMergeRequest,
+    BulkSuggestRequest,
+    DiscoveryProfileCreate,
+    DiscoveryProfileOut,
+    DiscoveryProfileUpdate,
+    DiscoveryStatusOut,
+    EnhancedBulkMergeRequest,
+    MergeRequest,
+    ScanJobOut,
+    ScanResultOut,
 )
 from app.services import discovery_profiles_service, discovery_service
+from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
 from app.services.settings_service import get_or_create_settings
-from app.services.bulk_suggest import suggest_bulk_actions, get_vendor_catalog
-from app.db.models import ScanJob, ScanResult
-from app.core.scheduler import _scheduler
 
 router = APIRouter(tags=["discovery"])
 
@@ -52,7 +60,7 @@ def get_discovery_status(db: Session = Depends(get_db)):
 
 # --- Profiles ---
 
-@router.get("/profiles", response_model=List[DiscoveryProfileOut])
+@router.get("/profiles", response_model=list[DiscoveryProfileOut])
 def get_profiles(db: Session = Depends(get_db)):
     return discovery_profiles_service.get_profiles(db)
 
@@ -142,7 +150,7 @@ async def run_adhoc_scan(
 
 # --- Jobs ---
 
-@router.get("/jobs", response_model=List[ScanJobOut])
+@router.get("/jobs", response_model=list[ScanJobOut])
 def list_jobs(db: Session = Depends(get_db)):
     jobs = db.scalars(select(ScanJob).order_by(ScanJob.created_at.desc()).limit(50)).all()
     return jobs
@@ -175,7 +183,7 @@ async def cancel_job(
     ))
     return {"cancelled": True}
 
-@router.get("/jobs/{job_id}/results", response_model=List[ScanResultOut])
+@router.get("/jobs/{job_id}/results", response_model=list[ScanResultOut])
 def get_job_results(job_id: int, limit: int = 100, db: Session = Depends(get_db)):
     job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
     if not job:
@@ -189,7 +197,7 @@ def get_job_results(job_id: int, limit: int = 100, db: Session = Depends(get_db)
 
 # --- Results ---
 
-@router.get("/results", response_model=List[ScanResultOut])
+@router.get("/results", response_model=list[ScanResultOut])
 def list_results(status: str = "pending", job_id: int = None, db: Session = Depends(get_db)):
     q = select(ScanResult)
     if status != "all":

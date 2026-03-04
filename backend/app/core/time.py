@@ -3,12 +3,12 @@
 Every module that needs the current time or timestamp formatting imports
 from here — no bare datetime.now() calls elsewhere.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utcnow() -> datetime:
     """Return the current time as a timezone-aware UTC datetime object."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utcnow_iso() -> str:
@@ -27,7 +27,7 @@ def elapsed_seconds(since_iso: str) -> float | None:
     try:
         dt = datetime.fromisoformat(since_iso)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return (utcnow() - dt).total_seconds()
     except (ValueError, TypeError):
         return None

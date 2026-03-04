@@ -1,37 +1,37 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
-from app.db.session import get_db
-from app.services.ip_reservation import bulk_conflict_map
 from app.db.models import (
+    ComputeNetwork,
+    ComputeUnit,
+    EntityTag,
+    ExternalNode,
+    ExternalNodeNetwork,
+    GraphLayout,
     Hardware,
     HardwareCluster,
     HardwareClusterMember,
     HardwareConnection,
-    ComputeUnit,
-    Service,
-    ServiceDependency,
-    Storage,
-    ServiceStorage,
-    Network,
-    ComputeNetwork,
     HardwareNetwork,
     MiscItem,
-    ServiceMisc,
-    ExternalNode,
-    ExternalNodeNetwork,
-    ServiceExternalNode,
-    GraphLayout,
-    Tag,
-    EntityTag,
+    Network,
     Rack,
+    Service,
+    ServiceDependency,
+    ServiceExternalNode,
+    ServiceMisc,
+    ServiceStorage,
+    Storage,
+    Tag,
 )
+from app.db.session import get_db
+from app.services.ip_reservation import bulk_conflict_map
 
 _logger = logging.getLogger(__name__)
 
@@ -91,14 +91,14 @@ def build_edge_dict(
 # Ordered list of deletable edge prefixes → SQLAlchemy model
 # Multi-word prefixes must precede shorter ones to avoid false matches.
 _DELETABLE_EDGES = [
-    ('e-ext-net-', ExternalNodeNetwork),
-    ('e-svc-ext-', ServiceExternalNode),
-    ('e-dep-',     ServiceDependency),
-    ('e-ss-',      ServiceStorage),
-    ('e-sm-',      ServiceMisc),
-    ('e-cn-',      ComputeNetwork),
-    ('e-hn-',      HardwareNetwork),
-    ('e-hh-',      HardwareConnection),
+    ("e-ext-net-", ExternalNodeNetwork),
+    ("e-svc-ext-", ServiceExternalNode),
+    ("e-dep-",     ServiceDependency),
+    ("e-ss-",      ServiceStorage),
+    ("e-sm-",      ServiceMisc),
+    ("e-cn-",      ComputeNetwork),
+    ("e-hn-",      HardwareNetwork),
+    ("e-hh-",      HardwareConnection),
 ]
 
 
@@ -163,7 +163,7 @@ def update_edge_type(
         normalized = _normalize_connection_type(payload.connection_type)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    if hasattr(row, 'connection_type'):
+    if hasattr(row, "connection_type"):
         row.connection_type = normalized
         db.commit()
     return {"status": "ok", "connection_type": normalized}
@@ -266,8 +266,8 @@ def build_topology_graph(
                     source=f"cu-{cn.compute_id}",
                     target=f"net-{cn.network_id}",
                     relation="connects_to",
-                    connection_type=getattr(cn, 'connection_type', None),
-                    bandwidth_mbps=getattr(cn, 'bandwidth_mbps', None),
+                    connection_type=getattr(cn, "connection_type", None),
+                    bandwidth_mbps=getattr(cn, "bandwidth_mbps", None),
                 ))
 
         # Hardware → Network gateway edges
@@ -289,8 +289,8 @@ def build_topology_graph(
                     source=f"hw-{hn.hardware_id}",
                     target=f"net-{hn.network_id}",
                     relation="on_network",
-                    connection_type=getattr(hn, 'connection_type', None),
-                    bandwidth_mbps=getattr(hn, 'bandwidth_mbps', None),
+                    connection_type=getattr(hn, "connection_type", None),
+                    bandwidth_mbps=getattr(hn, "bandwidth_mbps", None),
                 ))
 
     # 2. Clusters (emitted before hardware so layout engines rank them as roots)
@@ -412,8 +412,8 @@ def build_topology_graph(
                     source=src_node_id,
                     target=tgt_node_id,
                     relation="connects_to",
-                    connection_type=getattr(hconn, 'connection_type', None),
-                    bandwidth_mbps=getattr(hconn, 'bandwidth_mbps', None),
+                    connection_type=getattr(hconn, "connection_type", None),
+                    bandwidth_mbps=getattr(hconn, "bandwidth_mbps", None),
                 ))
 
     # 5. Compute
@@ -546,8 +546,8 @@ def build_topology_graph(
                     source=f"svc-{dep.service_id}",
                     target=f"svc-{dep.depends_on_id}",
                     relation="depends_on",
-                    connection_type=getattr(dep, 'connection_type', None),
-                    bandwidth_mbps=getattr(dep, 'bandwidth_mbps', None),
+                    connection_type=getattr(dep, "connection_type", None),
+                    bandwidth_mbps=getattr(dep, "bandwidth_mbps", None),
                 ))
 
         # Service → Storage
@@ -560,8 +560,8 @@ def build_topology_graph(
                         source=f"svc-{link.service_id}",
                         target=f"st-{link.storage_id}",
                         relation="uses",
-                        connection_type=getattr(link, 'connection_type', None),
-                        bandwidth_mbps=getattr(link, 'bandwidth_mbps', None),
+                        connection_type=getattr(link, "connection_type", None),
+                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
                     ))
 
         # Service → Misc
@@ -574,8 +574,8 @@ def build_topology_graph(
                         source=f"svc-{link.service_id}",
                         target=f"misc-{link.misc_id}",
                         relation="integrates_with",
-                        connection_type=getattr(link, 'connection_type', None),
-                        bandwidth_mbps=getattr(link, 'bandwidth_mbps', None),
+                        connection_type=getattr(link, "connection_type", None),
+                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
                     ))
 
     # 6. Storage
@@ -641,8 +641,8 @@ def build_topology_graph(
                     source=f"ext-{link.external_node_id}",
                     target=f"net-{link.network_id}",
                     relation="connects_to",
-                    connection_type=getattr(link, 'connection_type', None),
-                    bandwidth_mbps=getattr(link, 'bandwidth_mbps', None),
+                    connection_type=getattr(link, "connection_type", None),
+                    bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
                 ))
 
         # Service → External edges
@@ -653,8 +653,8 @@ def build_topology_graph(
                     source=f"svc-{link.service_id}",
                     target=f"ext-{link.external_node_id}",
                     relation="depends_on",
-                    connection_type=getattr(link, 'connection_type', None),
-                    bandwidth_mbps=getattr(link, 'bandwidth_mbps', None),
+                    connection_type=getattr(link, "connection_type", None),
+                    bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
                 ))
 
     return {"nodes": nodes, "edges": edges}
