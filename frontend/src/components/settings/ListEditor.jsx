@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import PropTypes from 'prop-types';
 
 /**
  * ListEditor – manages an ordered list of strings with add/remove.
@@ -7,7 +8,7 @@ import React, { useState } from 'react';
  *   onChange   (string[]) => void  called with new list on any change
  *   placeholder {string}           input placeholder text
  */
-export default function ListEditor({ items = [], onChange, placeholder = 'Add item…' }) {
+function ListEditor({ items = [], onChange, placeholder = 'Add item…' }) {
   const [input, setInput] = useState('');
 
   const add = () => {
@@ -101,3 +102,11 @@ export default function ListEditor({ items = [], onChange, placeholder = 'Add it
     </div>
   );
 }
+
+ListEditor.propTypes = {
+  items: PropTypes.arrayOf(PropTypes.string),
+  onChange: PropTypes.func.isRequired,
+  placeholder: PropTypes.string,
+};
+
+export default ListEditor;

@@ -20,6 +20,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_FILE = REPO_ROOT / "backend" / "poetry.lock"
 OUT_FILE = REPO_ROOT / "backend" / "requirements.txt"
 
+# Packages that have no pre-built wheels for linux/arm/v7 (armv7l) and whose
+# source builds fail under QEMU emulation.  Each entry maps a lowercase package
+# name to the PEP 508 environment marker appended to the pinned line.
+#
+#   uvloop   — optional uvicorn event-loop accelerator; stdlib asyncio is used
+#              as fallback.  libuv's autoconf/automake configure step crashes
+#              under QEMU arm emulation.
+#   greenlet — used by SQLAlchemy async; CB uses synchronous SQLAlchemy only,
+#              so it is safe to omit on armv7l.
+ARMV7L_EXCLUSIONS: dict[str, str] = {
+    "uvloop":   '; platform_machine != "armv7l"',
+    "greenlet": '; platform_machine != "armv7l"',
+}
+
 
 def parse_lock(lock_path: Path) -> list[tuple[str, str]]:
     content = lock_path.read_text()
@@ -42,7 +56,10 @@ def main() -> None:
         sys.exit(1)
 
     packages = parse_lock(LOCK_FILE)
-    lines = [f"{name}=={version}" for name, version in packages]
+    lines = [
+        f"{name}=={version}{ARMV7L_EXCLUSIONS.get(name.lower(), '')}"
+        for name, version in packages
+    ]
 
     OUT_FILE.write_text(
         "# Generated from poetry.lock — do not edit manually.\n"

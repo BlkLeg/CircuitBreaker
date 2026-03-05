@@ -38,10 +38,12 @@ class BootstrapInitializeRequest(BaseModel):
     password: str
     display_name: str | None = None
     theme_preset: str
+    theme: str | None = "dark"
     timezone: str | None = "UTC"
     language: str | None = "en"
     ui_font: str | None = "inter"
     ui_font_size: str | None = "medium"
+    weather_location: str | None = None
 
 
 class BootstrapThemeResponse(BaseModel):

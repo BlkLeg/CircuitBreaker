@@ -28,7 +28,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
     return auth_service.login(db, payload.email, payload.password, cfg, ip_address=client_ip)
 
 
-@router.get("/me", response_model=UserProfile)
+@router.get("/me", response_model=UserProfile, responses={401: {"detail": "Authentication required"}})
 def get_me(
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -39,7 +39,7 @@ def get_me(
     return auth_service.get_me(db, user_id)
 
 
-@router.put("/me", response_model=UserProfile)
+@router.put("/me", response_model=UserProfile, responses={401: {"detail": "Authentication required"}})
 async def update_me(
     display_name: str | None = Form(None),
     profile_photo: UploadFile | None = File(None),
@@ -52,7 +52,7 @@ async def update_me(
     return await auth_service.update_profile(db, user_id, display_name, profile_photo)
 
 
-@router.delete("/me", status_code=204)
+@router.delete("/me", status_code=204, responses={401: {"detail": "Authentication required"}})
 def delete_me(
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),

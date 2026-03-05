@@ -13,7 +13,7 @@ from app.core.time import elapsed_seconds, utcnow, utcnow_iso
 def test_utcnow_is_timezone_aware():
     dt = utcnow()
     assert dt.tzinfo is not None
-    assert dt.tzinfo == datetime.UTC
+    assert dt.tzinfo == timezone.utc
 
 
 def test_utcnow_iso_format():

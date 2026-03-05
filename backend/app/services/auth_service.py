@@ -118,6 +118,19 @@ def register(
         cfg.jwt_secret = _secrets.token_hex(32)
         db.commit()
 
+    from app.services.log_service import write_log
+    write_log(
+        db=None,
+        action="register_user",
+        entity_type="user",
+        entity_id=user.id,
+        entity_name=user.display_name or user.email,
+        severity="info",
+        category="auth",
+        actor_name=user.display_name or user.email,
+        actor_id=user.id,
+    )
+
     token = _make_token(user, cfg)
     return AuthResponse(token=token, user=_to_profile(user))
 
@@ -153,6 +166,8 @@ def bootstrap_initialize(
     language: str | None = None,
     ui_font: str | None = None,
     ui_font_size: str | None = None,
+    theme: str | None = None,
+    weather_location: str | None = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if len(email_norm) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email_norm):
@@ -196,6 +211,10 @@ def bootstrap_initialize(
 
     cfg.auth_enabled = True
     cfg.theme_preset = theme_preset
+    if theme in {"dark", "light", "auto"}:
+        cfg.theme = theme
+    if weather_location and weather_location.strip():
+        cfg.weather_location = weather_location.strip()
     if ui_font:
         cfg.ui_font = ui_font
     if ui_font_size:
@@ -315,8 +334,11 @@ async def update_profile(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    changed_fields: list[str] = []
+
     if display_name is not None:
         user.display_name = display_name
+        changed_fields.append("display_name")
 
     if profile_photo is not None:
         if profile_photo.content_type not in _ALLOWED_TYPES:
@@ -350,9 +372,26 @@ async def update_profile(
         _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
         ((_PROFILES_DIR) / filename).write_bytes(data)
         user.profile_photo = filename
+        changed_fields.append("profile_photo")
 
     db.commit()
     db.refresh(user)
+
+    if changed_fields:
+        from app.services.log_service import write_log
+        write_log(
+            db=None,
+            action="update_profile",
+            entity_type="user",
+            entity_id=user_id,
+            entity_name=user.display_name or user.email,
+            severity="info",
+            category="auth",
+            actor_name=user.display_name or user.email,
+            actor_id=user_id,
+            details=f"Updated fields: {', '.join(changed_fields)}",
+        )
+
     return _to_profile(user)
 
 
@@ -362,6 +401,8 @@ def delete_account(db: Session, user_id: int) -> None:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
+    actor_name = user.display_name or user.email
+
     # Clean up profile photo file
     if user.profile_photo:
         photo_path = _PROFILES_DIR / user.profile_photo
@@ -369,4 +410,17 @@ def delete_account(db: Session, user_id: int) -> None:
 
     db.delete(user)
     db.commit()
+
+    from app.services.log_service import write_log
+    write_log(
+        db=None,
+        action="delete_account",
+        entity_type="user",
+        entity_id=user_id,
+        entity_name=actor_name,
+        severity="info",
+        category="auth",
+        actor_name=actor_name,
+        actor_id=user_id,
+    )
 

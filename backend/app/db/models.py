@@ -717,7 +717,7 @@ class Log(Base):
     created_at_utc: Mapped[str | None] = mapped_column(String)   # ISO 8601 UTC string; canonical timestamp for frontend display
     # Feature 6: structured audit fields
     actor_id:    Mapped[int | None]   = mapped_column(Integer)
-    actor_name:  Mapped[str | None]   = mapped_column(String, default="admin")
+    actor_name:  Mapped[str | None]   = mapped_column(String, default="system")
     entity_name: Mapped[str | None]   = mapped_column(String)    # denormalised name at write time
     diff:        Mapped[str | None]   = mapped_column(Text)       # JSON: {"before": {...}, "after": {...}}
     severity:    Mapped[str | None]   = mapped_column(String, default="info")  # info | warn | error
