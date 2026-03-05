@@ -36,7 +36,7 @@ def _get_actor(db: Session, user_id: int) -> str:
     if user_id == 0:
         return "api-token"
     u = db.query(User).filter(User.id == user_id).first()
-    return u.email if u else "unknown"
+    return (u.display_name or u.email) if u else "unknown"
 
 
 @router.get("/status", response_model=DiscoveryStatusOut)

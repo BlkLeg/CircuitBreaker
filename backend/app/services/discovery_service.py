@@ -299,6 +299,7 @@ async def run_scan_job(job_id: int):
             entity_type="scan_job",
             entity_id=job.id,
             category="discovery",
+            actor=job.triggered_by,
             details=json.dumps({"cidr": job.target_cidr, "scan_types": scan_types, "triggered_by": job.triggered_by}),
         )
 

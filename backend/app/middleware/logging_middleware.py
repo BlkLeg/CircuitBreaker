@@ -165,12 +165,16 @@ async def _read_response_body(response: Response) -> bytes:
     return body
 
 
-def _resolve_actor(request: Request) -> tuple[str, str | None]:
-    """Extract the user's display name and gravatar hash from the JWT, or return ('anonymous', None)."""
+def _resolve_actor(request: Request) -> tuple[str, str | None, int | None]:
+    """Extract the user's display name, gravatar hash, and ID from the JWT.
+
+    Returns ('anonymous', None, None) when no valid token is present or auth is
+    disabled.
+    """
     try:
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
-            return "anonymous", None
+            return "anonymous", None, None
         token = auth_header[len("Bearer "):]
 
         from sqlalchemy import select
@@ -182,16 +186,16 @@ def _resolve_actor(request: Request) -> tuple[str, str | None]:
         with SessionLocal() as db:
             cfg = get_or_create_settings(db)
             if not cfg.auth_enabled or not cfg.jwt_secret:
-                return "anonymous", None
+                return "anonymous", None, None
             user_id = decode_token(token, cfg.jwt_secret)
             if not user_id:
-                return "anonymous", None
+                return "anonymous", None, None
             user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
             if user:
-                return (user.display_name or user.email), user.gravatar_hash
-            return "anonymous", None
+                return (user.display_name or user.email), user.gravatar_hash, user.id
+            return "anonymous", None, None
     except Exception:
-        return "anonymous", None
+        return "anonymous", None, None
 
 
 class LoggingMiddleware(BaseHTTPMiddleware):
@@ -219,7 +223,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         ip_address = request.client.host if request.client else None
 
         # Resolve the actor from JWT if present
-        actor, actor_gravatar_hash = _resolve_actor(request)
+        actor, actor_gravatar_hash, actor_id = _resolve_actor(request)
 
         # Read request body (re-inject for downstream)
         req_body_bytes = await _read_body(request)
@@ -315,6 +319,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 ip_address=ip_address,
                 details=req_body_str if category != "crud" else None,
                 actor=actor,
+                actor_id=actor_id,
                 actor_gravatar_hash=actor_gravatar_hash,
             )
         except Exception as exc:
@@ -393,6 +398,7 @@ def _write_log(
     ip_address: str | None,
     details: str | None,
     actor: str = "anonymous",
+    actor_id: int | None = None,
     actor_gravatar_hash: str | None = None,
 ) -> None:
     """Delegate to log_service.write_log — the single write path for the audit log."""
@@ -410,6 +416,7 @@ def _write_log(
         entity_name=entity_name,
         diff=diff,
         actor_name=actor,
+        actor_id=actor_id,
         ip_address=ip_address,
         severity=level,
         category=category,

@@ -53,7 +53,7 @@ def write_log(
     entity_id: int | None = None,
     entity_name: str = "",
     diff: dict | None = None,
-    actor_name: str = "admin",
+    actor_name: str = "system",
     actor_id: int | None = None,
     ip_address: str | None = None,
     severity: str = "info",
@@ -111,7 +111,7 @@ def write_log(
                 status_code=status_code,
                 # Structured audit fields (Feature 6)
                 actor_id=actor_id,
-                actor_name=actor_name,
+                actor_name=effective_actor,
                 entity_name=entity_name,
                 diff=diff_str,
                 severity=severity,

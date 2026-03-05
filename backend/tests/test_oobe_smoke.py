@@ -95,7 +95,11 @@ class TestFreshDB:
         assert "jwt_secret" not in resp.json()
 
     def test_entity_tables_empty_on_fresh_start(self, client):
-        """All data tables should be empty on a fresh install."""
+        """All data tables should be empty on a fresh install.
+
+        /docs may contain at most one seeded welcome document; all other
+        entity tables must be completely empty.
+        """
         for path in ("/hardware", "/compute-units", "/services",
                      "/storage", "/networks", "/misc", "/docs"):
             resp = client.get(f"{API}{path}")
@@ -103,7 +107,11 @@ class TestFreshDB:
             body = resp.json()
             # Endpoints may return a list or a dict with a results key
             items = body if isinstance(body, list) else body.get("items", body.get("results", []))
-            assert len(items) == 0, f"{path} should be empty on fresh start, got {items}"
+            if path == "/docs":
+                assert len(items) <= 1, \
+                    f"{path} should have at most one default welcome doc on fresh start, got {items}"
+            else:
+                assert len(items) == 0, f"{path} should be empty on fresh start, got {items}"
 
     def test_no_users_on_fresh_start(self, db):
         """Users table should have zero rows after initial migration."""
