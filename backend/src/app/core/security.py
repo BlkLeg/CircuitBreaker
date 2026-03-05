@@ -77,7 +77,7 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     """Return the authenticated user_id from JWT, or None if absent/invalid.
 
     Returns 0 (service-account sentinel) when the request presents a valid
-    CB_API_TOKEN bearer token.  Never raises — callers decide whether auth is
+    CB_API_TOKEN bearer token. Never raises — callers decide whether auth is
     required.
     """
     from app.services.settings_service import (

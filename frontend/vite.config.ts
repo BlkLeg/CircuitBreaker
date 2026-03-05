@@ -1,5 +1,7 @@
+/// <reference types="vite/client" />
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { visualizer } from 'rollup-plugin-visualizer'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -23,7 +25,16 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [
       react(),
-    ],
+      // Bundle analyzer — only active when ANALYZE=true (e.g. `ANALYZE=true npm run build`).
+      // Outputs stats.html in the dist directory for visual bundle inspection.
+      process.env.ANALYZE === 'true' && visualizer({
+        filename: 'dist/stats.html',
+        open: true,
+        gzipSize: true,
+        brotliSize: true,
+        template: 'treemap',
+      }),
+    ].filter(Boolean),
     optimizeDeps: {
       include: ['react-markdown', 'style-to-js'],
     },

@@ -43,13 +43,31 @@
     "test": "vitest run",
     "test:ci": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "bundle-analyze": "ANALYZE=true npm run build",
+    "prepare": "cd .. && (husky 2>/dev/null || true)"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{css,json,md,yaml,yml}": [
+      "prettier --write"
+    ],
+    "../backend/**/*.py": [
+      "ruff check --fix",
+      "ruff format"
+    ]
   },
   "devDependencies": {
     "@eslint/js": "^9.39.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^25.3.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.0.18",
     "autoprefixer": "^10.4.27",
@@ -58,13 +76,17 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.4.0",
+    "husky": "^9.1.7",
     "i18next-json-sync": "^3.1.2",
     "i18next-scanner": "^4.6.0",
     "jsdom": "^28.1.0",
+    "lint-staged": "^16.3.2",
     "msw": "^2.12.10",
     "postcss": "^8.5.8",
     "prettier": "^3.6.2",
+    "rollup-plugin-visualizer": "^6.0.11",
     "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1",
     "vitest": "^4.0.18"

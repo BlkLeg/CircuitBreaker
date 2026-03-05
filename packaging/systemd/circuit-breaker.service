@@ -1,0 +1,50 @@
+[Unit]
+Description=Circuit Breaker — Homelab topology visualization
+Documentation=https://github.com/BlkLeg/circuitbreaker
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# ── Environment ─────────────────────────────────────────────────────────────
+# Override these via /etc/circuit-breaker/env or systemctl edit circuit-breaker
+Environment=CB_CONTAINER=circuit-breaker
+Environment=CB_IMAGE=ghcr.io/blkleg/circuitbreaker:latest
+Environment=CB_PORT=8080
+Environment=CB_VOLUME=circuit-breaker-data
+
+# ── Start ────────────────────────────────────────────────────────────────────
+ExecStartPre=-/usr/bin/docker stop ${CB_CONTAINER}
+ExecStartPre=-/usr/bin/docker rm   ${CB_CONTAINER}
+ExecStart=/usr/bin/docker run \
+    --name              ${CB_CONTAINER} \
+    --detach            \
+    --publish           ${CB_PORT}:8080 \
+    --volume            ${CB_VOLUME}:/data \
+    --restart           no \
+    --security-opt      seccomp=unconfined \
+    ${CB_IMAGE}
+
+# ── Stop ─────────────────────────────────────────────────────────────────────
+ExecStop=/usr/bin/docker stop ${CB_CONTAINER}
+
+# ── Reload (pull new image, restart) ─────────────────────────────────────────
+ExecReload=/usr/bin/docker pull ${CB_IMAGE}
+ExecReload=/usr/bin/docker stop  ${CB_CONTAINER}
+ExecReload=/usr/bin/docker rm    ${CB_CONTAINER}
+ExecReload=/usr/bin/docker run \
+    --name              ${CB_CONTAINER} \
+    --detach            \
+    --publish           ${CB_PORT}:8080 \
+    --volume            ${CB_VOLUME}:/data \
+    --restart           no \
+    --security-opt      seccomp=unconfined \
+    ${CB_IMAGE}
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

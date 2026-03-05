@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # --- App layer (invalidated only when source changes) ---
 COPY VERSION ../VERSION
 COPY backend/pyproject.toml ./
-COPY backend/app ./app
+COPY backend/src ./src
 RUN pip install --no-cache-dir --no-deps .
 
 # Stage 3: Runtime image — build tools stripped; final image only carries what runs.
@@ -60,14 +60,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Pull compiled packages and app code from the builder stage.
 COPY --from=python-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-builder /usr/local/bin /usr/local/bin
-COPY --from=python-builder /app/backend/app ./app
+COPY --from=python-builder /app/backend/src ./src
 
 # Copy built frontend assets from Stage 1
 # Placed in /app/frontend/dist so FastAPI can serve them as static files
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Environment variables
-ENV PYTHONPATH=/app/backend
+ENV PYTHONPATH=/app/backend/src
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
 ENV UPLOADS_DIR=/data/uploads
@@ -108,4 +108,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
 # start.py is used instead of raw uvicorn to retain the AF_UNIX socketpair monkeypatch
 # required for LXC/Proxmox container environments.
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
-CMD ["python", "app/start.py"]
+CMD ["python", "src/app/start.py"]

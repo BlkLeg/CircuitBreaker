@@ -31,7 +31,7 @@ help: ## Show available targets
 
 dev: stop ## Start backend + frontend for local development
 	@echo "Starting backend  → http://localhost:$(BACKEND_PORT)"
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
+	@cd $(BACKEND_DIR)/src && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
 	@echo "Starting frontend → http://localhost:$(FRONTEND_PORT)"
 	@cd $(FRONTEND_DIR) && npm start &
 
@@ -43,7 +43,7 @@ stop: ## Kill any process holding the dev ports
 backend: ## Kill port $(BACKEND_PORT) and restart the backend
 	@lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 2>/dev/null || true
 	@echo "Starting backend → http://localhost:$(BACKEND_PORT)"
-	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
+	cd $(BACKEND_DIR)/src && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
@@ -56,14 +56,23 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 .PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build snyk-version snyk-auth snyk-test snyk-monitor
 
 lint: ## Run backend and frontend linters
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check app --select F
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app --select F
 	@cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff format .
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff format src/
 	@cd $(FRONTEND_DIR) && npm run format
 
-ci: lint test ## Run linting and tests
+typecheck: ## Run backend (mypy) and frontend (tsc --noEmit) type checks
+	@echo "--- Backend type check (mypy, advisory) ---"
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/mypy src/app --ignore-missing-imports || true
+	@echo "--- Frontend type check (tsc --noEmit) ---"
+	@cd $(FRONTEND_DIR) && npx tsc --noEmit
+
+hooks: ## Install git pre-commit hooks (Husky + lint-staged)
+	@cd $(FRONTEND_DIR) && npx husky install ../.husky && echo "✅ Git hooks installed."
+
+ci: lint test typecheck ## Run linting, tests, and type checks
 
 release: ## Build and push v0.1.4 multi-arch image
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.1.4 --push .
@@ -75,7 +84,7 @@ test: ## Run backend tests
 
 test-backend: ## Run backend tests with verbose output
 	@echo "Running backend tests..."
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ -v --asyncio-mode=auto
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ -v --asyncio-mode=auto --cov=src/app
 
 test-frontend: ## Run frontend component tests
 	@echo "Running frontend tests..."
@@ -84,7 +93,7 @@ test-frontend: ## Run frontend component tests
 test-all: test-backend test-frontend ## Run all backend + frontend tests
 
 test-coverage: ## Run all tests with coverage reports
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ --cov=app --cov-report=term-missing --asyncio-mode=auto
+	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ --cov=src/app --cov-report=term-missing --asyncio-mode=auto
 	@cd $(FRONTEND_DIR) && npm run test:coverage
 
 docs: ## Serve docs locally with Zensical
@@ -98,6 +107,10 @@ docs-build: ## Build docs with Zensical
 frontend-build: ## Build frontend production bundle
 	@echo "Building frontend..."
 	@cd $(FRONTEND_DIR) && npm ci && npm run build
+
+bundle-analyze: ## Build frontend with bundle visualizer (opens stats.html)
+	@echo "Building frontend with bundle analysis..."
+	@cd $(FRONTEND_DIR) && npm ci && npm run bundle-analyze
 
 snyk-version: ## Show project-local Snyk CLI version
 	@$(SNYK_BIN) --version
@@ -135,21 +148,21 @@ setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx bu
 
 compose-up: ## Rebuild and start docker compose stack (port 8080)
 	@echo "Starting docker-compose stack..."
-	DOCKER_BUILDKIT=1 docker compose -f docker/docker-compose.yml up --build -d
+	DOCKER_BUILDKIT=1 docker compose up --build -d
 
 compose-down: ## Stop and remove docker compose stack
 	@echo "Stopping docker-compose stack..."
-	docker compose -f docker/docker-compose.yml down
+	docker compose down
 
 compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
 	@echo "Stopping stack and removing all volumes..."
-	docker compose -f docker/docker-compose.yml down -v
+	docker compose down -v
 	@echo "✅ Stack stopped and volumes removed."
 
 compose-fresh: ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."
-	docker compose -f docker/docker-compose.yml down -v
-	DOCKER_BUILDKIT=1 docker compose -f docker/docker-compose.yml up --build -d
+	docker compose down -v
+	DOCKER_BUILDKIT=1 docker compose up --build -d
 	@echo "✅ Fresh stack running — open the app to complete first-run setup."
 
 preflight: test frontend-build docker-build ## Run pre-commit checks (test, build frontend, build docker)
@@ -168,7 +181,7 @@ build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 	@echo "Running PyInstaller..."
 	@.venv/bin/pyinstaller --onefile --noconsole \
 		--name "circuit-breaker-$(VERSION)-$(OS_ARCH)" \
-		$(BACKEND_DIR)/app/main.py
+		$(BACKEND_DIR)/src/app/main.py
 	@echo "✅ Native binary created in dist/"
 
 docker-publish: setup-buildx ## Build and push a multi-arch Docker image to DOCKER_REPO

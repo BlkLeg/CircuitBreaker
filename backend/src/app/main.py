@@ -49,6 +49,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.rate_limit import limiter
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
+from app.db.migrations import run_migrations as _run_sql_migrations
 from app.db.session import Base, SessionLocal, engine
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -789,16 +790,8 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE services ADD COLUMN ip_conflict_json TEXT NOT NULL DEFAULT '[]'")
 
 
-# ── App startup / lifespan ──────────────────────────────────────────────────
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Run startup and shutdown tasks."""
-    import asyncio
-
-    from app.services import discovery_service
-
-    # ── DB init & migrations ──────────────────────────────────────────────
+def init_db():
+    """Synchronously initialize the database, apply migrations, and seed data."""
     if settings.database_url.startswith(_SQLITE_SCHEME):
         db_path = Path(settings.database_url[len(_SQLITE_SCHEME):])
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -824,6 +817,9 @@ async def lifespan(app: FastAPI):
             _run_migrations(raw_conn)
             raw_conn.commit()
 
+    # Run file-based SQL migrations from backend/src/app/db/migrations/*.sql
+    _run_sql_migrations(engine)
+
     # Backfill log timestamps via ORM session
     db = SessionLocal()
     try:
@@ -831,6 +827,24 @@ async def lifespan(app: FastAPI):
         _seed_default_docs(db)
     finally:
         db.close()
+
+
+# ── App startup / lifespan ──────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run startup and shutdown tasks."""
+    import asyncio
+
+    from app.services import discovery_service
+
+    # ── Dev mode: enable verbose logging ──────────────────────────────────
+    if settings.dev_mode:
+        logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
+        _logger.warning(
+            "DEV MODE is enabled — SQL logging is verbose. "
+            "Do NOT use in production."
+        )
 
     # ── Register main event loop for APScheduler WS broadcasts ───────────
     loop = asyncio.get_running_loop()
@@ -933,6 +947,17 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         status_code=422,
         content={"detail": exc.errors(), "body": str(exc.body)[:500] if exc.body else None},
     )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    if settings.dev_mode:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc), "traceback": traceback.format_exc()},
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # ── API routers ────────────────────────────────────────────────────────────
@@ -1044,10 +1069,10 @@ if _frontend_dir:
         # icons) before falling back to the SPA index.html.  Without this check,
         # the browser receives HTML when it requests JSON/binary assets and shows
         # "Manifest: Syntax error" or broken icon errors.
-        candidate = _frontend_dir / full_path
+        candidate = _frontend_dir / full_path  # type: ignore[operator]
         if candidate.exists() and candidate.is_file():
             return FileResponse(str(candidate))
-        index = _frontend_dir / "index.html"
+        index = _frontend_dir / "index.html"  # type: ignore[operator]
         if index.exists():
             return FileResponse(str(index))
         return Response(status_code=404)

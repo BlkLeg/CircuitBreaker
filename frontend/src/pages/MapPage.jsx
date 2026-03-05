@@ -22,6 +22,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import FormModal from '../components/common/FormModal';
 import { getVendorIcon } from '../icons/vendorIcons';
 import ContextMenu from '../components/map/ContextMenu';
+import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
 import BulkQuickCreateModal from '../components/map/BulkQuickCreateModal';
 import CreateNodeModal from '../components/map/CreateNodeModal';
 import CustomNode from '../components/map/CustomNode';
@@ -799,6 +800,29 @@ function normalizeBoundaryName(name, index) {
   return trimmed || `Boundary ${index + 1}`;
 }
 
+const BOUNDARY_PRESETS = [
+  { key: 'blue',   label: 'Blue',   stroke: 'rgba(95, 205, 255, 0.75)',  fill: [70, 170, 220] },
+  { key: 'cyan',   label: 'Cyan',   stroke: 'rgba(0, 210, 200, 0.75)',   fill: [0, 190, 180] },
+  { key: 'green',  label: 'Green',  stroke: 'rgba(80, 200, 100, 0.75)',  fill: [60, 180, 80] },
+  { key: 'yellow', label: 'Yellow', stroke: 'rgba(230, 200, 50, 0.75)',  fill: [210, 180, 40] },
+  { key: 'orange', label: 'Orange', stroke: 'rgba(240, 150, 50, 0.75)',  fill: [220, 130, 40] },
+  { key: 'red',    label: 'Red',    stroke: 'rgba(230, 80, 80, 0.75)',   fill: [210, 60, 60] },
+  { key: 'purple', label: 'Purple', stroke: 'rgba(170, 110, 220, 0.75)', fill: [150, 90, 200] },
+  { key: 'gray',   label: 'Gray',   stroke: 'rgba(160, 170, 180, 0.75)', fill: [140, 150, 160] },
+];
+
+const DEFAULT_BOUNDARY_COLOR = 'blue';
+const DEFAULT_BOUNDARY_FILL_OPACITY = 0.12;
+
+function resolveBoundaryPreset(colorKey) {
+  return BOUNDARY_PRESETS.find((p) => p.key === colorKey) || BOUNDARY_PRESETS[0];
+}
+
+function boundaryFillString(preset, opacity) {
+  const [r, g, b] = preset.fill;
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
 function normalizeMapLabel(label, index) {
   return {
     id: String(label?.id || `map-label-${Date.now()}-${index}`),
@@ -957,6 +981,31 @@ function boundaryPath(points, viewportValue) {
   return screenPoints.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ') + ' Z';
 }
 
+function boundaryRoundedRectPath(bbox, viewportValue, radius) {
+  const tl = flowToScreenPoint({ x: bbox.minX, y: bbox.minY }, viewportValue);
+  const br = flowToScreenPoint({ x: bbox.maxX, y: bbox.maxY }, viewportValue);
+  const w = br.x - tl.x;
+  const h = br.y - tl.y;
+  const r = Math.min(radius * viewportValue.zoom, w / 2, h / 2);
+  return `M ${tl.x + r} ${tl.y} L ${br.x - r} ${tl.y} Q ${br.x} ${tl.y} ${br.x} ${tl.y + r} L ${br.x} ${br.y - r} Q ${br.x} ${br.y} ${br.x - r} ${br.y} L ${tl.x + r} ${br.y} Q ${tl.x} ${br.y} ${tl.x} ${br.y - r} L ${tl.x} ${tl.y + r} Q ${tl.x} ${tl.y} ${tl.x + r} ${tl.y} Z`;
+}
+
+function boundaryEllipsePath(bbox, viewportValue) {
+  const tl = flowToScreenPoint({ x: bbox.minX, y: bbox.minY }, viewportValue);
+  const br = flowToScreenPoint({ x: bbox.maxX, y: bbox.maxY }, viewportValue);
+  const cx = (tl.x + br.x) / 2;
+  const cy = (tl.y + br.y) / 2;
+  const rx = (br.x - tl.x) / 2;
+  const ry = (br.y - tl.y) / 2;
+  return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`;
+}
+
+const BOUNDARY_SHAPES = [
+  { key: 'rectangle', label: 'Rectangle', icon: '▭' },
+  { key: 'rounded',   label: 'Rounded',   icon: '▢' },
+  { key: 'ellipse',   label: 'Ellipse',   icon: '⬭' },
+];
+
 function distanceBetweenPositions(a, b) {
   const dx = (a?.x ?? 0) - (b?.x ?? 0);
   const dy = (a?.y ?? 0) - (b?.y ?? 0);
@@ -1044,6 +1093,9 @@ function MapInternal() {
   const [boundaryDraft, setBoundaryDraft] = useState(null);
   const [editingBoundaryId, setEditingBoundaryId] = useState(null);
   const [editingBoundaryName, setEditingBoundaryName] = useState('');
+  const [boundaryMenu, setBoundaryMenu] = useState(null);
+  const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
+  const resizingBoundaryRef = useRef(null);
   // Edge anchor context menu — { edgeId, x, y } | null
   const [edgeMenu, setEdgeMenu] = useState(null);
   // Pending connection action (new connect or reconnect), resolved by type picker
@@ -1426,12 +1478,15 @@ function MapInternal() {
 
       setBoundaries(
         savedBoundaries
-          .filter((boundary) => Array.isArray(boundary?.memberIds) && boundary.memberIds.length >= 1)
+          .filter((boundary) => (Array.isArray(boundary?.memberIds) && boundary.memberIds.length >= 1) || boundary?.flowRect)
           .map((boundary, index) => ({
             id: boundary.id || `boundary-${Date.now()}-${index}`,
             name: normalizeBoundaryName(boundary.name, index),
             memberIds: boundary.memberIds,
             flowRect: boundary.flowRect,
+            color: boundary.color || null,
+            fillOpacity: boundary.fillOpacity ?? null,
+            shape: boundary.shape || 'rectangle',
           })),
       );
       setMapLabels(savedLabels.map((label, index) => normalizeMapLabel(label, index)));
@@ -1567,6 +1622,9 @@ function MapInternal() {
         name: normalizeBoundaryName(boundary.name, index),
         memberIds: boundary.memberIds,
         flowRect: boundary.flowRect,
+        color: boundary.color || DEFAULT_BOUNDARY_COLOR,
+        fillOpacity: boundary.fillOpacity ?? DEFAULT_BOUNDARY_FILL_OPACITY,
+        shape: boundary.shape || 'rectangle',
       })),
       labels: (labelsOverride ?? mapLabelsRef.current).map((label, index) => normalizeMapLabel(label, index)),
     };
@@ -2025,6 +2083,8 @@ function MapInternal() {
 
   const handlePaneClick = useCallback(() => {
     setContextMenu(null);
+    setBoundaryMenu(null);
+    setSelectedBoundaryId(null);
     if (selectedNode) setSelectedNode(null);
   }, [selectedNode]);
 
@@ -2093,16 +2153,34 @@ function MapInternal() {
   const boundaryRenderData = useMemo(() => (
     boundaries
       .map((boundary, index) => {
+        const shape = boundary.shape || 'rectangle';
         const polygon = computeBoundaryPolygon(boundary, nodes);
         if (polygon.length < 3) return null;
-        const anchorFlow = boundaryLabelFlowAnchor(polygon);
-        if (!anchorFlow) return null;
-        const anchorScreen = flowToScreenPoint(anchorFlow, viewport);
+        const preset = resolveBoundaryPreset(boundary.color);
+        const opacity = boundary.fillOpacity ?? DEFAULT_BOUNDARY_FILL_OPACITY;
+        const bbox = polygon.reduce(
+          (acc, p) => ({
+            minX: Math.min(acc.minX, p.x), maxX: Math.max(acc.maxX, p.x),
+            minY: Math.min(acc.minY, p.y), maxY: Math.max(acc.maxY, p.y),
+          }),
+          { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity },
+        );
+        const labelFlow = { x: bbox.minX + 4, y: bbox.minY - 2 };
+        const labelScreen = flowToScreenPoint(labelFlow, viewport);
+        let svgPath;
+        if (shape === 'ellipse') svgPath = boundaryEllipsePath(bbox, viewport);
+        else if (shape === 'rounded') svgPath = boundaryRoundedRectPath(bbox, viewport, 18);
+        else svgPath = boundaryPath(polygon, viewport);
         return {
           id: boundary.id,
           name: normalizeBoundaryName(boundary.name, index),
-          path: boundaryPath(polygon, viewport),
-          anchorScreen,
+          path: svgPath,
+          labelScreen,
+          stroke: preset.stroke,
+          fill: boundaryFillString(preset, opacity),
+          colorKey: preset.key,
+          flowBBox: bbox,
+          shape,
         };
       })
       .filter(Boolean)
@@ -2212,6 +2290,9 @@ function MapInternal() {
         name: `Boundary ${prev.length + 1}`,
         memberIds,
         flowRect: rect,
+        color: DEFAULT_BOUNDARY_COLOR,
+        fillOpacity: DEFAULT_BOUNDARY_FILL_OPACITY,
+        shape: 'rectangle',
       },
     ]));
     dirtyRef.current = true;
@@ -2224,12 +2305,14 @@ function MapInternal() {
     finishBoundaryDrawRef.current = finishBoundaryDraw;
   }, [finishBoundaryDraw]);
 
-  const handlePanePointerUp = useCallback(() => {
-    if (!boundaryDraft) return;
-    const latestDraft = boundaryDraftRef.current || boundaryDraft;
-    clearBoundaryPointerListeners();
-    finishBoundaryDraw(latestDraft);
-  }, [boundaryDraft, clearBoundaryPointerListeners, finishBoundaryDraw]);
+  useEffect(() => {
+    if (!boundaryDrawMode) return;
+    const paneEl = flowContainerRef.current?.querySelector('.react-flow__pane');
+    if (!paneEl) return;
+    paneEl.addEventListener('pointerdown', handlePanePointerDown);
+    return () => paneEl.removeEventListener('pointerdown', handlePanePointerDown);
+  }, [boundaryDrawMode, handlePanePointerDown]);
+
 
   const beginBoundaryRename = useCallback((boundaryId, currentName) => {
     setEditingBoundaryId(boundaryId);
@@ -2253,6 +2336,132 @@ function MapInternal() {
     setEditingBoundaryId(null);
     setEditingBoundaryName('');
   }, [editingBoundaryId, editingBoundaryName]);
+
+  const deleteBoundary = useCallback((boundaryId) => {
+    setBoundaries((prev) => prev.filter((b) => b.id !== boundaryId));
+    if (selectedBoundaryId === boundaryId) setSelectedBoundaryId(null);
+    dirtyRef.current = true;
+  }, [selectedBoundaryId]);
+
+  const updateBoundaryColor = useCallback((boundaryId, colorKey) => {
+    setBoundaries((prev) => prev.map((b) =>
+      b.id === boundaryId ? { ...b, color: colorKey } : b
+    ));
+    dirtyRef.current = true;
+  }, []);
+
+  const updateBoundaryShape = useCallback((boundaryId, shapeKey) => {
+    setBoundaries((prev) => prev.map((b) =>
+      b.id === boundaryId ? { ...b, shape: shapeKey } : b
+    ));
+    dirtyRef.current = true;
+  }, []);
+
+  const openBoundaryContextMenu = useCallback((event, boundaryId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setBoundaryMenu({ x: event.clientX, y: event.clientY, boundaryId });
+  }, []);
+
+  const screenToFlow = useCallback((sx, sy) => {
+    return { x: (sx - viewport.x) / viewport.zoom, y: (sy - viewport.y) / viewport.zoom };
+  }, [viewport]);
+
+  const handleBoundaryClick = useCallback((event, boundaryId) => {
+    event.stopPropagation();
+    setSelectedBoundaryId((prev) => (prev === boundaryId ? null : boundaryId));
+  }, []);
+
+  const startBoundaryDrag = useCallback((event, boundaryId) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+
+    const renderItem = boundaryRenderData.find((b) => b.id === boundaryId);
+    const bbox = renderItem?.flowBBox;
+    if (!bbox) return;
+
+    const startFlow = screenToFlow(event.clientX, event.clientY);
+    const origRect = { minX: bbox.minX, maxX: bbox.maxX, minY: bbox.minY, maxY: bbox.maxY };
+    let moved = false;
+
+    const onMove = (moveEvt) => {
+      moved = true;
+      const curFlow = screenToFlow(moveEvt.clientX, moveEvt.clientY);
+      const dx = curFlow.x - startFlow.x;
+      const dy = curFlow.y - startFlow.y;
+      setBoundaries((prev) => prev.map((b) => {
+        if (b.id !== boundaryId) return b;
+        return {
+          ...b,
+          flowRect: {
+            minX: origRect.minX + dx,
+            maxX: origRect.maxX + dx,
+            minY: origRect.minY + dy,
+            maxY: origRect.maxY + dy,
+          },
+          memberIds: [],
+        };
+      }));
+    };
+
+    const onUp = (upEvt) => {
+      globalThis.removeEventListener('pointermove', onMove);
+      globalThis.removeEventListener('pointerup', onUp);
+      if (moved) {
+        dirtyRef.current = true;
+      } else {
+        handleBoundaryClick(upEvt, boundaryId);
+      }
+    };
+
+    globalThis.addEventListener('pointermove', onMove);
+    globalThis.addEventListener('pointerup', onUp);
+  }, [boundaryRenderData, screenToFlow, handleBoundaryClick]);
+
+  const startBoundaryResize = useCallback((event, boundaryId, corner) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const boundary = boundaries.find((b) => b.id === boundaryId);
+    if (!boundary) return;
+
+    const renderItem = boundaryRenderData.find((b) => b.id === boundaryId);
+    const bbox = renderItem?.flowBBox;
+    if (!bbox) return;
+    const origRect = { minX: bbox.minX, maxX: bbox.maxX, minY: bbox.minY, maxY: bbox.maxY };
+
+    resizingBoundaryRef.current = { boundaryId, corner, origRect };
+
+    const onMove = (moveEvt) => {
+      const flowPt = screenToFlow(moveEvt.clientX, moveEvt.clientY);
+      setBoundaries((prev) => prev.map((b) => {
+        if (b.id !== boundaryId) return b;
+        const next = { ...origRect };
+        if (corner === 'nw' || corner === 'sw') next.minX = Math.min(flowPt.x, origRect.maxX - 20);
+        if (corner === 'ne' || corner === 'se') next.maxX = Math.max(flowPt.x, origRect.minX + 20);
+        if (corner === 'nw' || corner === 'ne') next.minY = Math.min(flowPt.y, origRect.maxY - 20);
+        if (corner === 'sw' || corner === 'se') next.maxY = Math.max(flowPt.y, origRect.minY + 20);
+        return { ...b, flowRect: next, memberIds: [] };
+      }));
+    };
+
+    const onUp = () => {
+      globalThis.removeEventListener('pointermove', onMove);
+      globalThis.removeEventListener('pointerup', onUp);
+      resizingBoundaryRef.current = null;
+      dirtyRef.current = true;
+    };
+
+    globalThis.addEventListener('pointermove', onMove);
+    globalThis.addEventListener('pointerup', onUp);
+  }, [boundaries, boundaryRenderData, screenToFlow]);
+
+  useEffect(() => {
+    if (!selectedBoundaryId) return;
+    const handleKey = (e) => { if (e.key === 'Escape') setSelectedBoundaryId(null); };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [selectedBoundaryId]);
 
   const addMapLabel = useCallback(() => {
     const rect = flowContainerRef.current?.getBoundingClientRect();
@@ -2741,15 +2950,44 @@ function MapInternal() {
           <div style={{ position: 'absolute', inset: 0, zIndex: 9, pointerEvents: 'none' }}>
             <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
               {boundaryRenderData.map((boundary) => (
-                <path
-                  key={boundary.id}
-                  d={boundary.path}
-                  fill="rgba(70, 170, 220, 0.12)"
-                  stroke="rgba(95, 205, 255, 0.75)"
-                  strokeWidth={2}
-                  strokeDasharray="8 6"
-                  vectorEffect="non-scaling-stroke"
-                />
+                <g key={boundary.id}>
+                  <path
+                    d={boundary.path}
+                    fill={boundary.fill}
+                    stroke={boundary.stroke}
+                    strokeWidth={selectedBoundaryId === boundary.id ? 3 : 2}
+                    strokeDasharray={selectedBoundaryId === boundary.id ? 'none' : '8 6'}
+                    vectorEffect="non-scaling-stroke"
+                    style={{ pointerEvents: 'visiblePainted', cursor: selectedBoundaryId === boundary.id ? 'grab' : 'pointer' }}
+                    onPointerDown={(e) => startBoundaryDrag(e, boundary.id)}
+                    onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
+                  />
+                  {selectedBoundaryId === boundary.id && (() => {
+                    const { flowBBox } = boundary;
+                    const corners = [
+                      { key: 'nw', fx: flowBBox.minX, fy: flowBBox.minY, cursor: 'nwse-resize' },
+                      { key: 'ne', fx: flowBBox.maxX, fy: flowBBox.minY, cursor: 'nesw-resize' },
+                      { key: 'sw', fx: flowBBox.minX, fy: flowBBox.maxY, cursor: 'nesw-resize' },
+                      { key: 'se', fx: flowBBox.maxX, fy: flowBBox.maxY, cursor: 'nwse-resize' },
+                    ];
+                    return corners.map((c) => {
+                      const sp = flowToScreenPoint({ x: c.fx, y: c.fy }, viewport);
+                      return (
+                        <circle
+                          key={c.key}
+                          cx={sp.x}
+                          cy={sp.y}
+                          r={6}
+                          fill={boundary.stroke}
+                          stroke="var(--color-bg)"
+                          strokeWidth={2}
+                          style={{ pointerEvents: 'auto', cursor: c.cursor }}
+                          onPointerDown={(e) => startBoundaryResize(e, boundary.id, c.key)}
+                        />
+                      );
+                    });
+                  })()}
+                </g>
               ))}
             </svg>
           </div>
@@ -2762,9 +3000,9 @@ function MapInternal() {
                 key={`label-${boundary.id}`}
                 style={{
                   position: 'absolute',
-                  left: boundary.anchorScreen.x,
-                  top: boundary.anchorScreen.y,
-                  transform: 'translate(-50%, -50%)',
+                  left: boundary.labelScreen.x,
+                  top: boundary.labelScreen.y,
+                  transform: 'translate(0, -100%)',
                   pointerEvents: 'auto',
                 }}
               >
@@ -2784,7 +3022,7 @@ function MapInternal() {
                     style={{
                       minWidth: 140,
                       borderRadius: 999,
-                      border: '1px solid rgba(95, 205, 255, 0.9)',
+                      border: `1px solid ${boundary.stroke}`,
                       background: 'rgba(7, 18, 33, 0.92)',
                       color: 'var(--color-text)',
                       padding: '3px 10px',
@@ -2795,17 +3033,19 @@ function MapInternal() {
                 ) : (
                   <button
                     type="button"
+                    onClick={(e) => handleBoundaryClick(e, boundary.id)}
                     onDoubleClick={() => beginBoundaryRename(boundary.id, boundary.name)}
+                    onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
                     style={{
                       borderRadius: 999,
-                      border: '1px solid rgba(95, 205, 255, 0.75)',
+                      border: `1px solid ${boundary.stroke}`,
                       background: 'rgba(7, 18, 33, 0.72)',
                       color: 'var(--color-text)',
                       padding: '2px 10px',
                       fontSize: 12,
-                      cursor: 'text',
+                      cursor: 'pointer',
                     }}
-                    title="Double-click to rename boundary"
+                    title="Click to select · Double-click to rename · Right-click for options"
                   >
                     {boundary.name}
                   </button>
@@ -2814,6 +3054,90 @@ function MapInternal() {
             ))}
           </div>
         )}
+
+        {selectedBoundaryId && (() => {
+          const selBoundary = boundaries.find((b) => b.id === selectedBoundaryId);
+          const selRender = boundaryRenderData.find((b) => b.id === selectedBoundaryId);
+          if (!selBoundary || !selRender) return null;
+          return (
+            <div
+              role="toolbar"
+              aria-label="Boundary options"
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                zIndex: 40,
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 10,
+                padding: '10px 14px',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
+                minWidth: 160,
+                userSelect: 'none',
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                Boundary Shape
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {BOUNDARY_SHAPES.map((s) => (
+                  <button
+                    key={s.key}
+                    title={s.label}
+                    onClick={() => updateBoundaryShape(selectedBoundaryId, s.key)}
+                    style={{
+                      width: 40,
+                      height: 34,
+                      borderRadius: 6,
+                      border: (selBoundary.shape || 'rectangle') === s.key
+                        ? `2px solid ${selRender.stroke}`
+                        : '1px solid var(--color-border)',
+                      background: (selBoundary.shape || 'rectangle') === s.key
+                        ? 'var(--color-glow)'
+                        : 'transparent',
+                      color: 'var(--color-text)',
+                      fontSize: 18,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'all 0.1s',
+                    }}
+                  >
+                    {s.icon}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 10, marginBottom: 6 }}>
+                Color
+              </div>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                {BOUNDARY_PRESETS.map((preset) => (
+                  <button
+                    key={preset.key}
+                    title={preset.label}
+                    onClick={() => updateBoundaryColor(selectedBoundaryId, preset.key)}
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: '50%',
+                      border: (selBoundary.color || DEFAULT_BOUNDARY_COLOR) === preset.key
+                        ? '2px solid var(--color-text)'
+                        : '2px solid transparent',
+                      background: preset.stroke,
+                      cursor: 'pointer',
+                      transition: 'transform 0.1s',
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.15)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {mapLabels.length > 0 && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 14, pointerEvents: 'none' }}>
@@ -2941,8 +3265,6 @@ function MapInternal() {
           onNodeClick={handleNodeClick}
           onNodeContextMenu={handleNodeContextMenu}
           onPaneContextMenu={handlePaneContextMenu}
-          onPaneMouseDown={handlePanePointerDown}
-          onPaneMouseUp={handlePanePointerUp}
           onEdgeContextMenu={handleEdgeContextMenu}
           onConnect={handleConnect}
           onEdgeUpdate={handleEdgeUpdate}
@@ -3203,6 +3525,22 @@ function MapInternal() {
             onAction={handleContextAction}
           />
         )}
+
+        {boundaryMenu && (() => {
+          const brd = boundaryRenderData.find((b) => b.id === boundaryMenu.boundaryId);
+          if (!brd) return null;
+          return (
+            <BoundaryContextMenu
+              position={{ x: boundaryMenu.x, y: boundaryMenu.y }}
+              boundary={brd}
+              presets={BOUNDARY_PRESETS}
+              onRename={beginBoundaryRename}
+              onChangeColor={updateBoundaryColor}
+              onDelete={deleteBoundary}
+              onClose={() => setBoundaryMenu(null)}
+            />
+          );
+        })()}
         
         {/* Create Node Modal */}
         <CreateNodeModal

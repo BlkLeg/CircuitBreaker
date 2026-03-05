@@ -25,13 +25,13 @@ import SettingsPage from './pages/SettingsPage';
 import ExternalNodesPage from './pages/ExternalNodesPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
-import DiscoveryPage from './pages/DiscoveryPage';
 import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
 
-// Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor) are only
-// downloaded when the user first navigates to those routes.
-const DocsPage = React.lazy(() => import('./pages/DocsPage'));
-const MapPage  = React.lazy(() => import('./pages/MapPage'));
+// Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor, scan UI)
+// are only downloaded when the user first navigates to those routes.
+const DocsPage      = React.lazy(() => import('./pages/DocsPage'));
+const MapPage       = React.lazy(() => import('./pages/MapPage'));
+const DiscoveryPage = React.lazy(() => import('./pages/DiscoveryPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);

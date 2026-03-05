@@ -5,12 +5,14 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   release:
+    name: Create GitHub Release with Changelog
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,14 +23,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Backend Test
-        run: |
-          python -m pip install --upgrade pip
-          pip install poetry
-          poetry -C backend install
-          pip install -e "./backend[dev]"
-          pytest tests/
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -36,53 +30,36 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Frontend Build
+      # ── Verify tests pass before cutting release ──────────────────────
+      - name: Install backend deps
         run: |
-          cd frontend
-          npm ci
-          npm run build
-          npm run test
+          python -m pip install --upgrade pip
+          pip install -e "./backend[dev]"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Backend tests
+        working-directory: backend
+        run: pytest tests/ -q
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm run test:ci
 
-      - name: Resolve safe tag
-        id: vars
-        shell: bash
-        env:
-          RAW_TAG: ${{ github.ref_name }}
+      # ── Native Linux binary ────────────────────────────────────────────
+      - name: Build native Linux binary
         run: |
-          SAFE_TAG=$(printf '%s' "$RAW_TAG" | tr -cd '[:alnum:]_.-')
-          if [ -z "$SAFE_TAG" ]; then
-            echo "Resolved tag is empty after sanitization" >&2
-            exit 1
-          fi
-          printf 'tag=%s\n' "$SAFE_TAG" >> "$GITHUB_OUTPUT"
+          pip install pyinstaller
+          pyinstaller --onefile --noconsole \
+            --name "circuit-breaker-${{ github.ref_name }}-linux-amd64" \
+            backend/src/app/main.py
 
-      - name: Docker Build & Push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ghcr.io/blkleg/circuitbreaker:${{ steps.vars.outputs.tag }}
-            ghcr.io/blkleg/circuitbreaker:latest
-            ghcr.io/blkleg/circuitbreaker:v0.1.4
-
+      # ── GitHub Release ─────────────────────────────────────────────────
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-
+          files: |
+            dist/circuit-breaker-${{ github.ref_name }}-linux-amd64

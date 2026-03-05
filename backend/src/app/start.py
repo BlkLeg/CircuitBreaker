@@ -10,11 +10,12 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure the backend root is on sys.path so 'import app' resolves correctly
+# Ensure backend/src is on sys.path so 'import app' resolves correctly
 # regardless of WORKDIR or whether the package is installed in site-packages.
-_backend_root = str(Path(__file__).resolve().parent.parent)
-if _backend_root not in sys.path:
-    sys.path.insert(0, _backend_root)
+# __file__ is backend/src/app/start.py → backend/src is 2 levels up.
+_src_root = str(Path(__file__).resolve().parent.parent)
+if _src_root not in sys.path:
+    sys.path.insert(0, _src_root)
 
 import socket  # noqa: E402
 
@@ -46,4 +47,20 @@ socket.socketpair = _safe_socketpair
 
 import uvicorn  # noqa: E402
 
-uvicorn.run("app.main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), loop="asyncio")
+# Production default: 2 workers for modest parallelism without excessive memory use.
+# Dev mode (--reload flag) requires a single worker; workers=1 is enforced there
+# by uvicorn itself.  Override with the UVICORN_WORKERS environment variable.
+_workers = int(os.environ.get("UVICORN_WORKERS", "2"))
+
+if __name__ == "__main__":
+    from app.main import init_db
+    init_db()
+    
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
+        loop="asyncio",
+        workers=_workers,
+    )
+

@@ -11,8 +11,8 @@ def _read_version_file() -> str:
       2. Fall back to 'unknown' if the file is missing (e.g. editable installs
          where the working directory layout differs).
     """
-    # __file__ is backend/app/core/config.py → repo root is 4 levels up
-    candidate = Path(__file__).resolve().parent.parent.parent.parent / "VERSION"
+    # __file__ is backend/src/app/core/config.py → repo root is 5 levels up
+    candidate = Path(__file__).resolve().parent.parent.parent.parent.parent / "VERSION"
     try:
         return candidate.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Falls back to the repo-root VERSION file for local dev.
     app_version: str = _read_version_file()
     debug: bool = False
+    # Developer mode — enables verbose SQL logging, exposes
+    # full stack traces in error responses.  NEVER enable in production.
+    dev_mode: bool = False
     database_url: str = "sqlite:///./data/app.db"
     api_prefix: str = "/api/v1"
     cors_origins: list[str] = ["*"]
@@ -41,5 +44,8 @@ class Settings(BaseSettings):
     # In Docker (single image) set UPLOADS_DIR=/data/uploads so files land on the volume.
     # In Docker Compose set UPLOADS_DIR=/app/data/uploads to match the compose volume.
     uploads_dir: str = "data/uploads"
+    # Optional DuckDB file path for analytics queries.
+    # Leave empty to use SQLite for all queries (default for most deployments).
+    analytics_db_path: str = ""
 
 settings = Settings()

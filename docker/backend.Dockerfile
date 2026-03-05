@@ -30,13 +30,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # VERSION must land at /VERSION so hatchling's path = "../VERSION" resolves.
 COPY VERSION /VERSION
 COPY backend/pyproject.toml ./
-COPY backend/app ./app
+COPY backend/src ./src
 RUN pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/data /app/data/uploads/icons /app/data/uploads/branding
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app/src
 ENV PORT=8000
 
 EXPOSE 8000
 
-CMD ["python", "app/start.py"]
+CMD ["python", "src/app/start.py"]
