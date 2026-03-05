@@ -30,6 +30,11 @@ _MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_TYPES = {"image/jpeg", "image/png"}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Hard limits applied before any regex to prevent polynomial backtracking on
+# arbitrarily large user-supplied strings (ReDoS mitigation).
+_MAX_EMAIL_LEN = 254    # RFC 5321 maximum
+_MAX_PASSWORD_LEN = 1024
+
 
 def _to_profile(user: User) -> UserProfile:
     photo_url = f"/uploads/profiles/{user.profile_photo}" if user.profile_photo else None
@@ -81,8 +86,10 @@ def register(
             detail="Bootstrap required. Use /api/v1/bootstrap/initialize for first account setup.",
         )
 
-    if not _EMAIL_RE.match(email):
+    if len(email) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Invalid email address")
+    if len(password) > _MAX_PASSWORD_LEN:
+        raise HTTPException(status_code=400, detail="Password is too long")
     _validate_password(password)
 
     # First user becomes admin
@@ -148,8 +155,10 @@ def bootstrap_initialize(
     ui_font_size: str | None = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
-    if not _EMAIL_RE.match(email_norm):
+    if len(email_norm) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email_norm):
         raise HTTPException(status_code=400, detail="Invalid email address")
+    if len(password) > _MAX_PASSWORD_LEN:
+        raise HTTPException(status_code=400, detail="Password is too long")
     _validate_password(password)
 
     try:

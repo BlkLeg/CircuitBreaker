@@ -1,12 +1,23 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { vi } from 'vitest';
 import SettingsPage from '../pages/SettingsPage';
 import { AuthProvider } from '../context/AuthContext';
 import { TimezoneProvider } from '../context/TimezoneContext';
+import { ToastProvider } from '../components/common/Toast';
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key) => key,
+    i18n: { changeLanguage: vi.fn(), language: 'en' },
+  }),
+  Trans: ({ children }) => children,
+  initReactI18next: { type: '3rdParty', init: vi.fn() },
+}));
 
 // Mock the context and APIs
-jest.mock('../context/SettingsContext', () => ({
+vi.mock('../context/SettingsContext', () => ({
   useSettings: () => ({
     settings: {
       theme: 'dark',
@@ -16,39 +27,44 @@ jest.mock('../context/SettingsContext', () => ({
       auth_enabled: false,
       timezone: 'UTC'
     },
-    reloadSettings: jest.fn(),
+    reloadSettings: vi.fn(),
     loading: false
   }),
   SettingsProvider: ({ children }) => <div>{children}</div>
 }));
 
-jest.mock('../api/client', () => ({
+vi.mock('../api/client', () => ({
   settingsApi: {
-    get: jest.fn(),
-    update: jest.fn(),
-    reset: jest.fn()
+    get: vi.fn(() => Promise.resolve({ data: { timezone: 'UTC' } })),
+    update: vi.fn(() => Promise.resolve({ data: {} })),
+    reset: vi.fn(() => Promise.resolve({ data: {} })),
   },
   adminApi: {
-    export: jest.fn(),
-    clearLab: jest.fn()
+    export: vi.fn(() => Promise.resolve({ data: {} })),
+    clearLab: vi.fn(() => Promise.resolve({ data: {} })),
+  },
+  timezonesApi: {
+    list: vi.fn(() => Promise.resolve({ data: { timezones: [] } })),
   },
   categoriesApi: {
-    list: jest.fn(() => Promise.resolve({ data: [] }))
+    list: vi.fn(() => Promise.resolve({ data: [] })),
   },
   environmentsApi: {
-    list: jest.fn(() => Promise.resolve({ data: [] }))
-  }
+    list: vi.fn(() => Promise.resolve({ data: [] })),
+  },
 }));
 
 describe('SettingsPage Redesign', () => {
   const renderPage = () => {
     return render(
       <MemoryRouter>
-        <AuthProvider>
-          <TimezoneProvider>
-            <SettingsPage />
-          </TimezoneProvider>
-        </AuthProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <TimezoneProvider>
+              <SettingsPage />
+            </TimezoneProvider>
+          </AuthProvider>
+        </ToastProvider>
       </MemoryRouter>
     );
   };

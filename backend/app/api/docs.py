@@ -205,8 +205,12 @@ async def upload_doc_image(
     ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
     ext = ext_map.get(file.content_type, "png")
 
-    # Save file
-    doc_dir = _DOC_UPLOADS_DIR / str(doc_id)
+    # Resolve the upload directory and verify it stays within the allowed root
+    # before writing (guards against path traversal via a crafted doc_id).
+    doc_root = _DOC_UPLOADS_DIR.resolve()
+    doc_dir = (_DOC_UPLOADS_DIR / str(doc_id)).resolve()
+    if not doc_dir.is_relative_to(doc_root):
+        raise HTTPException(status_code=400, detail="Invalid document ID.")
     doc_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex[:12]}.{ext}"
     (doc_dir / filename).write_bytes(data)

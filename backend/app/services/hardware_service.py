@@ -236,8 +236,8 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         existing = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
         if existing:
             _logger.warning(
-                "Duplicate MAC %s: new hardware %r, existing hardware %r (id=%d). Saving both (freeform-first).",
-                mac, payload.name, existing.name, existing.id,
+                "Duplicate MAC detected for new hardware %r: conflicts with existing hardware id=%d %r. Saving both (freeform-first).",
+                payload.name, existing.id, existing.name,
             )
 
     telemetry_config_json = None

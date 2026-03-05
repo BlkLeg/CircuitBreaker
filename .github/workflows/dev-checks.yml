@@ -7,6 +7,8 @@ on:
       - dev
       - main
 
+permissions: read-all
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest

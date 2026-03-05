@@ -2,6 +2,15 @@
  * Shared entity validation helpers for pre-submit form validation.
  */
 
+/**
+ * Allow only safe URL protocols for image src attributes to prevent javascript: XSS.
+ * Returns an empty string for any URL that does not start with a trusted scheme.
+ */
+export function sanitizeImageSrc(url) {
+  if (!url) return '';
+  return /^(https?:|blob:)/i.test(url) ? url : '';
+}
+
 const IPV4_REGEX = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
 
 // Note: Simple CIDR regex for validation (e.g. 192.168.1.0/24)

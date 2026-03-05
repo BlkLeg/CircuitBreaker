@@ -40,6 +40,8 @@ jobs:
   test-pi:
     runs-on: ubuntu-latest
     needs: docker-multiarch
+    permissions:
+      contents: read
     steps:
       - name: Test Pi ARM64
         uses: uraimo/run-on-arch-action@v2
@@ -60,6 +62,8 @@ jobs:
   browser-smoke:
     runs-on: ${{ matrix.os }}
     needs: docker-multiarch
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
@@ -77,6 +81,8 @@ jobs:
   native-python:
     runs-on: ubuntu-latest
     needs: docker-multiarch
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       

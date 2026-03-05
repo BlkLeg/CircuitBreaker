@@ -1,3 +1,4 @@
+import re
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,9 @@ router = APIRouter(tags=["compute-units"])
 ICON_UPLOAD_DIR = Path(settings.uploads_dir) / "icons"
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 MAX_SIZE = 1 * 1024 * 1024  # 1 MB
+
+# Allowlist for icon slugs: alphanumeric, hyphens, underscores, dots only.
+_SAFE_SLUG_RE = re.compile(r'^[a-zA-Z0-9_\-\.]+$')
 
 
 @router.get("", response_model=list[ComputeUnit])
@@ -148,8 +152,11 @@ def delete_icon(slug: str, db: Session = Depends(get_db), _=Depends(require_writ
     """Delete a previously-uploaded user icon by slug."""
     if not slug.startswith("user-"):
         raise HTTPException(status_code=400, detail="Only user-uploaded icons can be deleted.")
-    # Prevent path traversal: canonicalise and verify the resolved path remains
-    # within ICON_UPLOAD_DIR before touching the filesystem.
+    # Reject slugs that contain characters outside the safe allowlist before any
+    # path construction to satisfy static analysis and prevent path traversal.
+    if not _SAFE_SLUG_RE.match(slug) or '..' in slug:
+        raise HTTPException(status_code=400, detail="Invalid icon slug.")
+    # Canonicalise and verify the resolved path remains within ICON_UPLOAD_DIR.
     icon_root = ICON_UPLOAD_DIR.resolve()
     dest = (ICON_UPLOAD_DIR / slug).resolve()
     if not dest.is_relative_to(icon_root):

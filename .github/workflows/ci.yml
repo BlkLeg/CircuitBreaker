@@ -6,6 +6,8 @@ on:
       - 'docs/**'
       - 'README.md'
 
+permissions: read-all
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -71,6 +73,9 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 

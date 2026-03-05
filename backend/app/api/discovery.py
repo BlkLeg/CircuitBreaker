@@ -1,8 +1,11 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+_logger = logging.getLogger(__name__)
 
 from app.core.rate_limit import limiter
 from app.core.scheduler import _scheduler
@@ -149,7 +152,8 @@ async def run_adhoc_scan(
             triggered_by=_get_actor(db, user_id)
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        _logger.warning("Ad-hoc scan request rejected: %s", exc)
+        raise HTTPException(status_code=422, detail="Invalid scan request parameters.")
     # B2: async def — asyncio.create_task schedules on the running event loop
     asyncio.create_task(discovery_service.run_scan_job(job.id))
     return job

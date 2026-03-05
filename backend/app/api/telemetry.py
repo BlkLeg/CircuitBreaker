@@ -1,7 +1,10 @@
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+_logger = logging.getLogger(__name__)
 
 from app.core.time import utcnow
 from app.db.models import Hardware
@@ -78,9 +81,11 @@ def poll_now(
 
     result = poll_hardware(hw, vault)
     if "error" in result and "status" not in result:
-        raise HTTPException(status_code=502, detail=result["error"])
+        _logger.error("Telemetry poll failed for hardware %d: %s", hardware_id, result["error"])
+        raise HTTPException(status_code=502, detail="Telemetry poll failed.")
     if result.get("status") == "unknown" and "error" in result:
-        raise HTTPException(status_code=502, detail=result["error"])
+        _logger.error("Telemetry poll error for hardware %d: %s", hardware_id, result["error"])
+        raise HTTPException(status_code=502, detail="Telemetry poll returned an error status.")
 
     hw.telemetry_data = json.dumps(result.get("data", {}))
     hw.telemetry_status = result.get("status", "unknown")

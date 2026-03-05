@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { authApi } from '../../api/auth.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { sanitizeImageSrc } from '../../utils/validation.js';
 
 const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -146,7 +147,7 @@ function AuthModal({ isOpen, onClose }) {
                 title="Upload profile photo (optional)"
               >
                 <img
-                  src={photoPreview || 'https://www.gravatar.com/avatar/?s=80&d=mp'}
+                  src={sanitizeImageSrc(photoPreview || 'https://www.gravatar.com/avatar/?s=80&d=mp')}
                   alt="Avatar preview"
                   style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-border)', display: 'block' }}
                 />

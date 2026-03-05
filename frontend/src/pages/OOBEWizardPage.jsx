@@ -8,6 +8,7 @@ import { applyTheme } from '../theme/applyTheme';
 import { DEFAULT_PRESET, PRESET_LABELS, THEME_PRESETS } from '../theme/presets';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
 import { gravatarHash } from '../utils/md5.js';
+import { sanitizeImageSrc } from '../utils/validation.js';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
 import { useTranslation } from 'react-i18next';
 
@@ -238,7 +239,7 @@ function OOBEWizardPage({ onCompleted }) {
                   onClick={() => photoFileRef.current?.click()}
                   title="Upload profile photo (optional)"
                 >
-                  <img src={photoPreview || gravatarPreview} alt="Avatar preview" className="oobe-avatar" />
+                  <img src={sanitizeImageSrc(photoPreview || gravatarPreview)} alt="Avatar preview" className="oobe-avatar" />
                   <span className="oobe-avatar-overlay" aria-hidden="true">📷</span>
                 </button>
                 <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 6 }}>
@@ -431,7 +432,7 @@ function OOBEWizardPage({ onCompleted }) {
               <p className="login-card-subtitle">Review and complete setup.</p>
 
               <div className="oobe-summary">
-                <img src={photoPreview || gravatarPreview} alt="Avatar preview" className="oobe-avatar" />
+                <img src={sanitizeImageSrc(photoPreview || gravatarPreview)} alt="Avatar preview" className="oobe-avatar" />
                 <div>
                   <div><strong>Account</strong></div>
                   <div>Email: {email}</div>

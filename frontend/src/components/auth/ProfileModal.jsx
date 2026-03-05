@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { authApi } from '../../api/auth.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { sanitizeImageSrc } from '../../utils/validation.js';
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
@@ -71,7 +72,7 @@ function ProfileModal({ isOpen, onClose }) {
     }
   };
 
-  const imgSrc = photoPreview || avatarUrl(user);
+  const imgSrc = sanitizeImageSrc(photoPreview || avatarUrl(user));
 
   return (
     <div
