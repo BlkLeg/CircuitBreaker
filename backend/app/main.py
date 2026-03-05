@@ -759,6 +759,32 @@ def _run_migrations(conn) -> None:
         )
     """)
 
+    # ── Missing app_settings columns (omitted from earlier migration blocks) ──
+    settings_cols = _get_columns(conn, "app_settings")
+    if "timezone" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
+    if "discovery_enabled" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+    if "discovery_default_cidr" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_default_cidr TEXT NOT NULL DEFAULT ''")
+    if "discovery_schedule_cron" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_schedule_cron TEXT NOT NULL DEFAULT ''")
+    if "scan_ack_accepted" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN scan_ack_accepted BOOLEAN NOT NULL DEFAULT FALSE")
+    if "ui_font" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN ui_font TEXT NOT NULL DEFAULT 'inter'")
+    if "ui_font_size" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN ui_font_size TEXT NOT NULL DEFAULT 'medium'")
+
+    # ── Missing services columns (IP conflict tracking) ──────────────────────
+    svc_cols = _get_columns(conn, "services")
+    if "ip_conflict" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN ip_conflict BOOLEAN NOT NULL DEFAULT FALSE")
+    if "ip_mode" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN ip_mode TEXT NOT NULL DEFAULT 'explicit'")
+    if "ip_conflict_json" not in svc_cols:
+        conn.execute("ALTER TABLE services ADD COLUMN ip_conflict_json TEXT NOT NULL DEFAULT '[]'")
+
 
 # ── App startup / lifespan ──────────────────────────────────────────────────
 
@@ -944,7 +970,7 @@ app.include_router(rack_api.router,       prefix=f"{_V1}/racks",             tag
 
 # ── Health check ───────────────────────────────────────────────────────────
 
-@app.get(f"{_V1}/health")
+@app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok"}
 
@@ -954,7 +980,17 @@ async def health():
 _STATIC_DIR = Path(__file__).parent.parent / "static"
 _FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
+
 def _get_frontend_dir() -> Path | None:
+    # Prefer settings.static_dir which maps to the STATIC_DIR env var.
+    # The Dockerfile sets STATIC_DIR=/app/frontend/dist; the default "../frontend/dist"
+    # is resolved relative to the backend working directory (/app/backend in Docker).
+    sd = Path(settings.static_dir)
+    if not sd.is_absolute():
+        sd = Path.cwd() / sd
+    if sd.exists():
+        return sd
+    # Legacy fallbacks for local dev layouts
     if _FRONTEND_DIST.exists():
         return _FRONTEND_DIST
     if _STATIC_DIR.exists():
@@ -1001,6 +1037,13 @@ if _frontend_dir:
         # API routes must never fall through to the SPA
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
+        # Serve real files from the dist directory (e.g. site.webmanifest, PWA
+        # icons) before falling back to the SPA index.html.  Without this check,
+        # the browser receives HTML when it requests JSON/binary assets and shows
+        # "Manifest: Syntax error" or broken icon errors.
+        candidate = _frontend_dir / full_path
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
         index = _frontend_dir / "index.html"
         if index.exists():
             return FileResponse(str(index))
