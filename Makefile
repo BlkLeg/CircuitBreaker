@@ -114,7 +114,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build compose-up compose-down compose-clean compose-fresh preflight
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh preflight
 
 lock: ## Regenerate backend/requirements.txt from poetry.lock
 	@echo "Regenerating backend/requirements.txt from poetry.lock..."
@@ -124,6 +124,14 @@ lock: ## Regenerate backend/requirements.txt from poetry.lock
 docker-build: ## Build primary beta image with tag 'circuit-breaker:beta'
 	@echo "Building circuit-breaker:beta image..."
 	DOCKER_BUILDKIT=1 docker build -t circuit-breaker:beta .
+
+setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx builder is active
+	@echo "Registering QEMU binfmt handlers for multi-arch emulation..."
+	docker run --privileged --rm tonistiigi/binfmt --install all
+	@echo "Ensuring multi-arch buildx builder is active..."
+	docker buildx create --name cb-multiarch --driver docker-container --bootstrap --use 2>/dev/null \
+	  || docker buildx use cb-multiarch
+	@echo "✅ QEMU + buildx ready."
 
 compose-up: ## Rebuild and start docker compose stack (port 8080)
 	@echo "Starting docker-compose stack..."
@@ -151,7 +159,7 @@ preflight: test frontend-build docker-build ## Run pre-commit checks (test, buil
 # ==============================================================================
 # RELEASE & NATIVE BUILDS
 # ==============================================================================
-.PHONY: build-native docker-multiarch test-pi-local release-dry-run
+.PHONY: build-native docker-publish docker-multiarch test-pi-local release-dry-run
 
 build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 	@echo "Building native binary for $(OS_ARCH)..."
@@ -163,18 +171,18 @@ build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
 		$(BACKEND_DIR)/app/main.py
 	@echo "✅ Native binary created in dist/"
 
-docker-publish: ## Build and push a multi-arch Docker image to DOCKER_REPO
+docker-publish: setup-buildx ## Build and push a multi-arch Docker image to DOCKER_REPO
 	@echo "Building and publishing multi-arch image to $(DOCKER_REPO) as $(RELEASE_TAG)..."
-	docker buildx build --platform linux/amd64,linux/arm64 \
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
 		--no-cache \
 		--build-arg APP_VERSION=$(VERSION) \
 		-t "$(DOCKER_REPO):$(RELEASE_TAG)" \
 		-t "$(DOCKER_REPO):latest" \
 		--push .
 
-docker-multiarch: ## Build and push a multi-arch Docker image (requires login)
+docker-multiarch: setup-buildx ## Build and push a multi-arch Docker image (requires login)
 	@echo "Building multi-arch image for $(RELEASE_TAG)..."
-	docker buildx build --platform linux/amd64,linux/arm64 \
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
 		--build-arg APP_VERSION=$(VERSION) \
 		-t $(DOCKER_REPO):$(RELEASE_TAG) --push .
 
