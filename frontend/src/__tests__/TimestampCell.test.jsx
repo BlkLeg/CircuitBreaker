@@ -28,13 +28,13 @@ describe('TimestampCell', () => {
   });
 
   it('renders "N hours ago" for timestamps under 24 hours old', () => {
-    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000).toISOString();
     renderCell(twoHoursAgo, 2 * 3600);
     expect(screen.getByText(/hour/i)).toBeInTheDocument();
   });
 
   it('renders date string for timestamps older than 24 hours', () => {
-    const twoDaysAgo = new Date(Date.now() - 2 * 86400_000).toISOString();
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
     renderCell(twoDaysAgo, 2 * 86400);
     // Should show a formatted date, not "ago" phrasing
     const text = screen.getByText(/.+/).textContent;

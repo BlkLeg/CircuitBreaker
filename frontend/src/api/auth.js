@@ -11,8 +11,10 @@ export const authApi = {
   login: (email, password) => client.post('/auth/login', { email, password }),
   me: () => client.get('/auth/me'),
   updateProfile: (formData, tokenOverride) => {
-    const headers = { 'Content-Type': 'multipart/form-data' };
-    if (tokenOverride) headers.Authorization = `Bearer ${tokenOverride}`;
+    // Do NOT set Content-Type manually — the request interceptor in client.jsx
+    // detects FormData and removes the default 'application/json' header so the
+    // browser sets the correct 'multipart/form-data; boundary=...' automatically.
+    const headers = tokenOverride ? { Authorization: `Bearer ${tokenOverride}` } : {};
     return client.put('/auth/me', formData, { headers });
   },
   logout: () => client.post('/auth/logout'),

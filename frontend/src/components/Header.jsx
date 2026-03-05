@@ -11,9 +11,11 @@ import { useSettings } from '../context/SettingsContext';
 import { settingsApi } from '../api/client';
 
 function Header({ onOpenPalette }) {
-  const { openAuthModal, openProfileModal } = useAuth();
+  const { openAuthModal, openProfileModal, isAuthenticated, user } = useAuth();
   const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
+  const appName = branding?.app_name || 'Circuit Breaker';
+  const greetingName = user?.display_name || user?.email?.split('@')[0] || 'there';
   const [themeSaving, setThemeSaving] = useState(false);
   const isLightTheme = settings?.theme === 'light';
 
@@ -51,25 +53,21 @@ function Header({ onOpenPalette }) {
       <Link
         to="/map"
         title="Home"
-        aria-label="Circuit Breaker Home"
-        style={{
-          pointerEvents: 'auto',
-          opacity: 1,
-          transition: 'opacity 0.2s ease',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          flexShrink: 0,
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.75'; }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
+        aria-label={`${appName} — Home`}
+        className="header-brand-link"
       >
         <img
           src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
-          alt={branding?.app_name ?? 'Circuit Breaker'}
+          alt={appName}
           className="header-logo"
           style={{ height: 40, width: 'auto', maxWidth: 120 }}
         />
+        <div className="header-brand-text">
+          <span className="header-brand-name">{appName}</span>
+          {isAuthenticated && user && (
+            <span className="header-greeting">Welcome, {greetingName}</span>
+          )}
+        </div>
       </Link>
       <div
         style={{

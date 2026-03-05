@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { Trash2 } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
@@ -106,6 +107,13 @@ function ColorInput({ label, value, onChange, error }) {
   );
 }
 
+ColorInput.propTypes = {
+  label: PropTypes.string.isRequired,
+  value: PropTypes.string.isRequired,
+  onChange: PropTypes.func.isRequired,
+  error: PropTypes.string,
+};
+
 export default function BrandingSettings() {
   const { settings, reloadSettings } = useSettings();
   const toast = useToast();
@@ -118,6 +126,7 @@ export default function BrandingSettings() {
   );
   const [colorErrors, setColorErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [nameSaving, setNameSaving] = useState(false);
   const [uploading, setUploading] = useState({ favicon: false, logo: false, bg: false });
   const [deleting, setDeleting] = useState({ favicon: false, logo: false, bg: false });
 
@@ -132,6 +141,30 @@ export default function BrandingSettings() {
       if (c && !HEX_RE.test(c)) errs[`accent_${i}`] = 'Invalid hex';
     });
     return errs;
+  };
+
+  const handleSaveAppName = async () => {
+    const trimmed = appName.trim() || 'Circuit Breaker';
+    // Skip if unchanged
+    if (trimmed === (branding.app_name ?? 'Circuit Breaker')) return;
+    setNameSaving(true);
+    try {
+      await settingsApi.update({
+        branding: {
+          app_name: trimmed,
+          primary_color: primaryColor,
+          accent_colors: accentColors.filter((c) => c && HEX_RE.test(c)).length
+            ? accentColors.filter((c) => c && HEX_RE.test(c))
+            : [primaryColor],
+        },
+      });
+      await reloadSettings();
+      toast.success('App name updated.');
+    } catch (err) {
+      toast.error(`Failed to save app name: ${err.message}`);
+    } finally {
+      setNameSaving(false);
+    }
   };
 
   const handleSaveBranding = async () => {
@@ -279,7 +312,14 @@ export default function BrandingSettings() {
       <div style={S.subTitle}>App Identity</div>
 
       <div style={S.row}>
-        <label htmlFor="branding-app-name" style={S.label}>App Name</label>
+        <label htmlFor="branding-app-name" style={S.label}>
+          App Name
+          {nameSaving && (
+            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0, fontSize: 10, color: 'var(--color-primary)', opacity: 0.8 }}>
+              saving…
+            </span>
+          )}
+        </label>
         <div className="form-group" style={{ marginBottom: 0 }}>
           <input
             id="branding-app-name"
@@ -287,10 +327,11 @@ export default function BrandingSettings() {
             value={appName}
             maxLength={100}
             onChange={(e) => setAppName(e.target.value)}
+            onBlur={handleSaveAppName}
             placeholder="Circuit Breaker"
           />
         </div>
-        <span style={S.hint}>Shown in the login page title and browser tab.</span>
+        <span style={S.hint}>Shown in the header, login page, and browser tab. Saves automatically on blur.</span>
       </div>
 
       <div style={S.divider} />
@@ -331,10 +372,10 @@ export default function BrandingSettings() {
         <button type="button" style={S.previewBtn(HEX_RE.test(primaryColor) ? primaryColor : '#00d4ff')}>
           Primary
         </button>
-        {accentColors.filter(Boolean).map((c, i) => (
+        {accentColors.filter(Boolean).map((c) => (
           HEX_RE.test(c) && (
-            <button key={i} type="button" style={S.previewBtn(c)}>
-              Accent {i + 1}
+            <button key={c} type="button" style={S.previewBtn(c)}>
+              Accent {accentColors.indexOf(c) + 1}
             </button>
           )
         ))}
@@ -512,7 +553,7 @@ export default function BrandingSettings() {
           Export JSON
         </button>
         <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
-          Import JSON
+          <span>Import JSON</span>
           <input
             type="file"
             accept=".json"

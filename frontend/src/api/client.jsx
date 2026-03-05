@@ -8,11 +8,17 @@ const client = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Attach JWT from localStorage on every request
+// Attach JWT from localStorage on every request.
+// For FormData payloads, remove the 'Content-Type: application/json' instance
+// default so the browser can set the correct 'multipart/form-data; boundary=...'
+// header automatically. This applies to every multipart upload in the app.
 client.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  if (config.data instanceof FormData) {
+    delete config.headers['Content-Type'];
   }
   return config;
 });

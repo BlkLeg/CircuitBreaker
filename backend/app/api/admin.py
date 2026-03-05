@@ -1,7 +1,7 @@
 """Admin endpoints: full backup export, restore import, and recent-changes feed."""
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -27,138 +27,138 @@ def _dt(v: Any) -> str | None:
 
 
 def _hw_to_dict(r: models.Hardware) -> dict:
-    return dict(
-        id=r.id, name=r.name, role=r.role, vendor=r.vendor,
-        vendor_icon_slug=r.vendor_icon_slug, model=r.model, cpu=r.cpu,
-        memory_gb=r.memory_gb, location=r.location, notes=r.notes,
-        ip_address=r.ip_address, wan_uplink=r.wan_uplink, cpu_brand=r.cpu_brand,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "role": r.role, "vendor": r.vendor,
+        "vendor_icon_slug": r.vendor_icon_slug, "model": r.model, "cpu": r.cpu,
+        "memory_gb": r.memory_gb, "location": r.location, "notes": r.notes,
+        "ip_address": r.ip_address, "wan_uplink": r.wan_uplink, "cpu_brand": r.cpu_brand,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _cu_to_dict(r: models.ComputeUnit) -> dict:
-    return dict(
-        id=r.id, name=r.name, kind=r.kind, hardware_id=r.hardware_id,
-        os=r.os, icon_slug=r.icon_slug, cpu_cores=r.cpu_cores, cpu_brand=r.cpu_brand,
-        memory_mb=r.memory_mb, disk_gb=r.disk_gb, ip_address=r.ip_address,
-        environment=r.environment, notes=r.notes,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "kind": r.kind, "hardware_id": r.hardware_id,
+        "os": r.os, "icon_slug": r.icon_slug, "cpu_cores": r.cpu_cores, "cpu_brand": r.cpu_brand,
+        "memory_mb": r.memory_mb, "disk_gb": r.disk_gb, "ip_address": r.ip_address,
+        "environment": r.environment, "notes": r.notes,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _svc_to_dict(r: models.Service) -> dict:
-    return dict(
-        id=r.id, name=r.name, slug=r.slug, compute_id=r.compute_id,
-        hardware_id=r.hardware_id, icon_slug=r.icon_slug, category=r.category,
-        url=r.url, ports=r.ports, description=r.description,
-        environment=r.environment, status=r.status, ip_address=r.ip_address,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "slug": r.slug, "compute_id": r.compute_id,
+        "hardware_id": r.hardware_id, "icon_slug": r.icon_slug, "category": r.category,
+        "url": r.url, "ports": r.ports, "description": r.description,
+        "environment": r.environment, "status": r.status, "ip_address": r.ip_address,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _st_to_dict(r: models.Storage) -> dict:
-    return dict(
-        id=r.id, name=r.name, kind=r.kind, hardware_id=r.hardware_id,
-        capacity_gb=r.capacity_gb, used_gb=r.used_gb, path=r.path,
-        protocol=r.protocol, notes=r.notes,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "kind": r.kind, "hardware_id": r.hardware_id,
+        "capacity_gb": r.capacity_gb, "used_gb": r.used_gb, "path": r.path,
+        "protocol": r.protocol, "notes": r.notes,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _net_to_dict(r: models.Network) -> dict:
-    return dict(
-        id=r.id, name=r.name, cidr=r.cidr, vlan_id=r.vlan_id,
-        gateway=r.gateway, description=r.description,
-        gateway_hardware_id=r.gateway_hardware_id,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "cidr": r.cidr, "vlan_id": r.vlan_id,
+        "gateway": r.gateway, "description": r.description,
+        "gateway_hardware_id": r.gateway_hardware_id,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _misc_to_dict(r: models.MiscItem) -> dict:
-    return dict(
-        id=r.id, name=r.name, kind=r.kind, url=r.url, description=r.description,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "kind": r.kind, "url": r.url, "description": r.description,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _doc_to_dict(r: models.Doc) -> dict:
-    return dict(
-        id=r.id, title=r.title, body_md=r.body_md, body_html=r.body_html,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "title": r.title, "body_md": r.body_md, "body_html": r.body_html,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _tag_to_dict(r: models.Tag) -> dict:
-    return dict(id=r.id, name=r.name)
+    return {"id": r.id, "name": r.name}
 
 
 def _entity_tag_to_dict(r: models.EntityTag) -> dict:
-    return dict(id=r.id, entity_type=r.entity_type, entity_id=r.entity_id, tag_id=r.tag_id)
+    return {"id": r.id, "entity_type": r.entity_type, "entity_id": r.entity_id, "tag_id": r.tag_id}
 
 
 def _entity_doc_to_dict(r: models.EntityDoc) -> dict:
-    return dict(id=r.id, entity_type=r.entity_type, entity_id=r.entity_id, doc_id=r.doc_id)
+    return {"id": r.id, "entity_type": r.entity_type, "entity_id": r.entity_id, "doc_id": r.doc_id}
 
 
 def _svc_dep_to_dict(r: models.ServiceDependency) -> dict:
-    return dict(id=r.id, service_id=r.service_id, depends_on_id=r.depends_on_id)
+    return {"id": r.id, "service_id": r.service_id, "depends_on_id": r.depends_on_id}
 
 
 def _svc_st_to_dict(r: models.ServiceStorage) -> dict:
-    return dict(id=r.id, service_id=r.service_id, storage_id=r.storage_id, purpose=r.purpose)
+    return {"id": r.id, "service_id": r.service_id, "storage_id": r.storage_id, "purpose": r.purpose}
 
 
 def _svc_misc_to_dict(r: models.ServiceMisc) -> dict:
-    return dict(id=r.id, service_id=r.service_id, misc_id=r.misc_id, purpose=r.purpose)
+    return {"id": r.id, "service_id": r.service_id, "misc_id": r.misc_id, "purpose": r.purpose}
 
 
 def _hw_net_to_dict(r: models.HardwareNetwork) -> dict:
-    return dict(id=r.id, hardware_id=r.hardware_id, network_id=r.network_id, ip_address=r.ip_address)
+    return {"id": r.id, "hardware_id": r.hardware_id, "network_id": r.network_id, "ip_address": r.ip_address}
 
 
 def _cu_net_to_dict(r: models.ComputeNetwork) -> dict:
-    return dict(id=r.id, compute_id=r.compute_id, network_id=r.network_id, ip_address=r.ip_address)
+    return {"id": r.id, "compute_id": r.compute_id, "network_id": r.network_id, "ip_address": r.ip_address}
 
 
 def _cluster_to_dict(r: models.HardwareCluster) -> dict:
-    return dict(
-        id=r.id, name=r.name, description=r.description,
-        environment=r.environment, location=r.location,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "description": r.description,
+        "environment": r.environment, "location": r.location,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _cluster_member_to_dict(r: models.HardwareClusterMember) -> dict:
-    return dict(id=r.id, cluster_id=r.cluster_id, hardware_id=r.hardware_id, role=r.role)
+    return {"id": r.id, "cluster_id": r.cluster_id, "hardware_id": r.hardware_id, "role": r.role}
 
 
 def _ext_to_dict(r: models.ExternalNode) -> dict:
-    return dict(
-        id=r.id, name=r.name, provider=r.provider, kind=r.kind,
-        region=r.region, ip_address=r.ip_address, icon_slug=r.icon_slug,
-        notes=r.notes, environment=r.environment,
-        created_at=_dt(r.created_at), updated_at=_dt(r.updated_at),
-    )
+    return {
+        "id": r.id, "name": r.name, "provider": r.provider, "kind": r.kind,
+        "region": r.region, "ip_address": r.ip_address, "icon_slug": r.icon_slug,
+        "notes": r.notes, "environment": r.environment,
+        "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at),
+    }
 
 
 def _ext_net_to_dict(r: models.ExternalNodeNetwork) -> dict:
-    return dict(
-        id=r.id, external_node_id=r.external_node_id,
-        network_id=r.network_id, link_type=r.link_type, notes=r.notes,
-    )
+    return {
+        "id": r.id, "external_node_id": r.external_node_id,
+        "network_id": r.network_id, "link_type": r.link_type, "notes": r.notes,
+    }
 
 
 def _svc_ext_to_dict(r: models.ServiceExternalNode) -> dict:
-    return dict(
-        id=r.id, service_id=r.service_id,
-        external_node_id=r.external_node_id, purpose=r.purpose,
-    )
+    return {
+        "id": r.id, "service_id": r.service_id,
+        "external_node_id": r.external_node_id, "purpose": r.purpose,
+    }
 
 
 # ── Export ────────────────────────────────────────────────────────────────
 
 @router.get("/export")
-def export_backup(db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def export_backup(db: Annotated[Session, Depends(get_db)], _: Annotated[None, Depends(require_write_auth)] = None):
     """Export a full JSON snapshot of all entities, tags, docs, and relationships.
 
     Does NOT export: users, app_settings, audit logs, or graph layouts — these are
@@ -254,11 +254,11 @@ def _restore_entities(db: Session, data: dict) -> None:
     _insert_rows(db, models.ServiceExternalNode,     data.get("service_external_nodes", []))
 
 
-@router.post("/import", status_code=201)
+@router.post("/import", status_code=201, responses={422: {"description": "Import failed"}})
 def import_backup(
     payload: ImportPayload,
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Restore a backup snapshot.
 
@@ -309,8 +309,8 @@ def _wipe_entities_keep_docs(db: Session) -> None:
         db.query(model_cls).delete()
 
 
-@router.post("/clear-lab", status_code=200)
-def clear_lab(db: Session = Depends(get_db), _=Depends(require_write_auth)):
+@router.post("/clear-lab", status_code=200, responses={500: {"description": "Clear lab operation failed"}})
+def clear_lab(db: Annotated[Session, Depends(get_db)], _: Annotated[None, Depends(require_write_auth)] = None):
     """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
     clusters, external nodes, tags, and their relationships) while preserving all
     documents and their content.
@@ -337,30 +337,35 @@ _ENTITY_SOURCES = [
     ("external", models.ExternalNode, "name"),
 ]
 
+_RECENT_CHANGE_ENTITY_TYPES = tuple(entity_type for entity_type, _, _ in _ENTITY_SOURCES)
+
 
 @router.get("/recent-changes")
 def recent_changes(
-    limit: int = Query(default=10, ge=1, le=50),
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ):
-    """Return the *limit* most-recently modified entities across all entity types."""
-    entries: list[dict] = []
-
-    for entity_type, model_cls, name_attr in _ENTITY_SOURCES:
-        rows = (
-            db.query(model_cls)
-            .order_by(model_cls.updated_at.desc())
-            .limit(limit)
-            .all()
+    """Return the *limit* most-recent actions across supported entity types."""
+    rows = (
+        db.query(models.Log)
+        .filter(
+            models.Log.entity_type.in_(_RECENT_CHANGE_ENTITY_TYPES),
+            models.Log.entity_id.isnot(None),
         )
-        for row in rows:
-            entries.append({
-                "entity_type": entity_type,
-                "entity_id":   row.id,
-                "name":        getattr(row, name_attr),
-                "updated_at":  _dt(row.updated_at),
-            })
+        .order_by(models.Log.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
 
-    # Sort all gathered rows by updated_at desc, return top N
-    entries.sort(key=lambda x: x["updated_at"] or "", reverse=True)
-    return entries[:limit]
+    entries: list[dict] = []
+    for row in rows:
+        action_timestamp = row.created_at_utc or _dt(row.timestamp)
+        entries.append({
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "name": row.entity_name or row.action,
+            "action_at": action_timestamp,
+            "updated_at": action_timestamp,
+        })
+
+    return entries

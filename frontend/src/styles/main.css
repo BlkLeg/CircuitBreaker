@@ -23,7 +23,7 @@
   --color-online: #00ff88;
   --color-glow: rgba(0, 212, 255, 0.35);
   --font: system-ui, -apple-system, sans-serif;
-  --font-size-base: 15px;
+  --font-size-base: 16px;
   --radius: 6px;
   --color-grid-line: rgba(30, 42, 58, 0.2);
 }
@@ -76,6 +76,52 @@ body {
     );
 }
 
+
+/* ── Global Header Brand ──────────────────────────────────────────────── */
+.header-brand-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+  opacity: 1;
+  transition: opacity 0.2s ease;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.header-brand-link:hover {
+  opacity: 0.78;
+}
+
+.header-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.header-brand-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+.header-greeting {
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
 
 /* ── Page Content ──────────────────────────────────────────────────────── */
 .page-content {
@@ -2410,7 +2456,7 @@ body {
 }
 
 .login-brand-name {
-  font-size: 26px;
+  font-size: 1.625rem;
   font-weight: 700;
   color: var(--color-primary);
   letter-spacing: -0.5px;
@@ -2419,7 +2465,7 @@ body {
 }
 
 .login-brand-tagline {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--color-text-muted);
   margin: 0 0 26px;
   line-height: 1.5;
@@ -2438,7 +2484,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--color-text);
 }
 
@@ -2452,7 +2498,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
 }
 
@@ -2515,14 +2561,14 @@ body {
 }
 
 .login-card-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--color-text);
   margin: 0 0 4px;
 }
 
 .login-card-subtitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
   margin: 0 0 24px;
 }
@@ -2533,7 +2579,7 @@ body {
 
 .login-label {
   display: block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--color-text-muted);
   margin-bottom: 5px;
@@ -2549,7 +2595,7 @@ body {
   border-radius: var(--radius);
   padding: 9px 12px;
   color: var(--color-text);
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: var(--font);
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
@@ -2572,7 +2618,7 @@ body {
 }
 
 .login-input-error {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-danger, #f38ba8);
   margin-top: 5px;
 }
@@ -2581,7 +2627,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
   margin-bottom: 20px;
   cursor: pointer;
@@ -2599,7 +2645,7 @@ body {
   padding: 9px 12px;
   border-radius: var(--radius);
   margin-bottom: 16px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   background: rgba(220, 38, 38, 0.1);
   border: 1px solid rgba(220, 38, 38, 0.3);
   color: var(--color-danger, #f38ba8);
@@ -2609,7 +2655,7 @@ body {
   padding: 9px 12px;
   border-radius: var(--radius);
   margin-bottom: 18px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   background: rgba(34, 197, 94, 0.12);
   border: 1px solid rgba(34, 197, 94, 0.3);
   color: var(--color-text);
@@ -2618,7 +2664,7 @@ body {
 .login-btn-submit {
   width: 100%;
   padding: 10px 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-family: var(--font);
   display: flex;
   align-items: center;
@@ -2638,7 +2684,7 @@ body {
 
 .login-footer {
   margin-top: 18px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
   text-align: center;
 }
@@ -2680,7 +2726,7 @@ body {
 .setup-check-status {
   margin: -2px 0 12px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   border-radius: 8px;
   color: var(--color-text-muted);
   border: 1px solid var(--color-border);
@@ -2715,7 +2761,7 @@ body {
 }
 
 .oobe-brand-name {
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 700;
   color: var(--color-primary);
   letter-spacing: -0.5px;
@@ -2756,7 +2802,7 @@ body {
 }
 
 .oobe-progress {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--color-text-muted);
   margin-bottom: 12px;
   text-transform: uppercase;
@@ -2801,7 +2847,7 @@ body {
 
 .oobe-theme-name {
   display: block;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text);
   margin-bottom: 8px;
 }
@@ -2828,7 +2874,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
 }
 
@@ -2872,20 +2918,410 @@ body {
 }
 
 .oobe-avatar {
-  width: 64px;
-  height: 64px;
+  width: 192px;
+  height: 192px;
   border-radius: 50%;
   border: 1px solid var(--color-border);
 }
 
+.oobe-avatar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.oobe-avatar-status-text {
+  font-size: 0.6875rem;
+  color: var(--color-online);
+  font-weight: 500;
+}
+
+.oobe-avatar-status-text--muted {
+  color: var(--color-text-muted);
+  font-weight: 400;
+  margin-top: 8px;
+  display: block;
+}
+
+.oobe-avatar-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent);
+  border-radius: 999px;
+  color: var(--color-danger);
+  font-size: 0.6rem;
+  font-family: var(--font);
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.oobe-avatar-clear:hover {
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  border-color: var(--color-danger);
+}
+
 .oobe-summary {
   display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 10px;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px;
   border: 1px solid var(--color-border);
   border-radius: 10px;
   background: var(--color-bg);
+  min-width: 0;
+}
+
+/* Scale down the avatar to a sensible size in the summary context */
+.oobe-summary .oobe-avatar {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+}
+
+/* Text column must be constrained so nothing escapes the card */
+.oobe-summary-details {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.8125rem;
+}
+
+.oobe-summary-details div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Email row — monospace-ish and clearly distinguishable */
+.oobe-summary-email {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--color-primary);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  margin-bottom: 2px;
+}
+
+/* ── Step 3 wide layout (theme step) ──────────────────────────────────────── */
+
+/* Expand the oobe-layout max-width for step 3 */
+.oobe-layout--theme-step {
+  max-width: 900px;
+}
+
+/* Row wrapper for card + desktop hint */
+.oobe-step3-row {
+  width: 100%;
+  display: contents; /* pass-through by default — no extra layout layer */
+}
+
+.oobe-step3-row--active {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 20px;
+  width: 100%;
+}
+
+.oobe-step3-row--active .login-card {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Mobile hint — shown above the card on small screens */
+.oobe-hint-mobile-wrap {
+  width: 100%;
+  display: block;
+}
+
+/* Desktop hint column — hidden on mobile */
+.oobe-hint-desktop-wrap {
+  display: none;
+}
+
+@media (min-width: 760px) {
+  .oobe-hint-mobile-wrap {
+    display: none;
+  }
+
+  .oobe-hint-desktop-wrap {
+    display: flex;
+    flex-direction: column;
+    width: 240px;
+    flex-shrink: 0;
+    align-self: stretch;
+  }
+}
+
+/* ── Glass-morphism hint card ─────────────────────────────────────────────── */
+
+.oobe-hint-card {
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: 16px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle gradient shimmer layer */
+.oobe-hint-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-primary) 8%, transparent) 0%,
+    transparent 60%
+  );
+  pointer-events: none;
+}
+
+.oobe-hint-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.oobe-hint-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.oobe-hint-body {
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.oobe-hint-combos {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.oobe-hint-combos li {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.4;
+}
+
+.oobe-hint-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 5px currentColor;
+}
+
+.oobe-hint-tip {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* ── Dark / Light mode toggle (OOBE step 3) ──────────────────────────────── */
+
+.oobe-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.oobe-mode-toggle {
+  display: flex;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.oobe-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-family: var(--font);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s;
+  white-space: nowrap;
+}
+
+.oobe-mode-btn:hover {
+  color: var(--color-text);
+}
+
+.oobe-mode-btn.active {
+  background: var(--color-primary);
+  color: var(--color-bg);
+  font-weight: 600;
+}
+
+/* ── Location search (OOBE step 4) ───────────────────────────────────────── */
+
+.oobe-location-field {
+  margin-bottom: 4px;
+}
+
+.oobe-location-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.oobe-location-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  z-index: 1;
+}
+
+.oobe-location-input {
+  padding-left: 30px !important;
+  padding-right: 32px !important;
+}
+
+.oobe-location-clear {
+  position: absolute;
+  right: 9px;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+  transition: color 0.12s;
+}
+
+.oobe-location-clear:hover {
+  color: var(--color-text);
+}
+
+.oobe-location-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  list-style: none;
+  padding: 4px;
+  margin: 0;
+  z-index: 200;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.oobe-location-result {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+  font-family: var(--font);
+  color: var(--color-text);
+}
+
+.oobe-location-result:hover {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.oobe-location-result-icon {
+  color: var(--color-primary);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.oobe-location-result-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.oobe-location-result-meta {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oobe-location-result-tz {
+  font-size: 0.65rem;
+  color: var(--color-primary);
+  opacity: 0.7;
+  flex-shrink: 0;
+  font-family: monospace;
+}
+
+.oobe-location-active {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  margin: 6px 0 0;
+}
+
+.oobe-location-active strong {
+  color: var(--color-text);
+}
+
+@keyframes oobe-spin {
+  to { transform: rotate(360deg); }
+}
+
+.oobe-location-spin {
+  animation: oobe-spin 0.7s linear infinite;
 }
 
 /* Responsive: single column */
@@ -2911,6 +3347,11 @@ body {
   .header-logo {
     height: 32px !important;
     max-width: 80px !important;
+  }
+
+  /* Hide the brand text on small screens — logo alone is sufficient */
+  .header-brand-text {
+    display: none;
   }
 
   .oobe-theme-grid {

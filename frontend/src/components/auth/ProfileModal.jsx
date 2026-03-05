@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { authApi } from '../../api/auth.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { sanitizeImageSrc } from '../../utils/validation.js';
@@ -34,8 +35,8 @@ function ProfileModal({ isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    globalThis.addEventListener('keydown', handler);
+    return () => globalThis.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
   if (!isOpen || !user) return null;
@@ -61,9 +62,11 @@ function ProfileModal({ isOpen, onClose }) {
       const fd = new FormData();
       if (displayName !== (user.display_name || '')) fd.append('display_name', displayName);
       if (photoFile) fd.append('profile_photo', photoFile);
-      const res = await authApi.updateProfile(fd);
-      // Update the auth context user via a fresh /me call
-      login(token, res.data);
+      await authApi.updateProfile(fd);
+      // Fetch the authoritative user record from the server so the context
+      // always reflects what is actually persisted (including the new photo URL).
+      const meRes = await authApi.me();
+      login(token, meRes.data);
       onClose();
     } catch (err) {
       setError(err.message || 'Failed to save profile.');
@@ -79,10 +82,11 @@ function ProfileModal({ isOpen, onClose }) {
       className="modal-overlay"
       role="dialog"
       aria-modal="true"
+      aria-labelledby="profile-modal-title"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="modal" style={{ width: 360 }}>
-        <h3 style={{ marginBottom: 20, textAlign: 'center' }}>Profile</h3>
+        <h3 id="profile-modal-title" style={{ marginBottom: 20, textAlign: 'center' }}>Profile</h3>
 
         {/* Avatar */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
@@ -106,10 +110,11 @@ function ProfileModal({ isOpen, onClose }) {
 
         <form onSubmit={handleSave} noValidate>
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+            <label htmlFor="email-input" style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
               Email (read-only)
             </label>
             <input
+              id="email-input"
               type="email"
               value={user.email}
               disabled
@@ -123,10 +128,11 @@ function ProfileModal({ isOpen, onClose }) {
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+            <label htmlFor="display-name-input" style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 4 }}>
               Display Name
             </label>
             <input
+              id="display-name-input"
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
@@ -140,7 +146,7 @@ function ProfileModal({ isOpen, onClose }) {
           </div>
 
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>
+            <label htmlFor="profile-photo-input" style={{ display: 'block', fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 6 }}>
               Profile Photo
             </label>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -165,6 +171,7 @@ function ProfileModal({ isOpen, onClose }) {
               )}
             </div>
             <input
+              id="profile-photo-input"
               ref={fileRef}
               type="file"
               accept="image/jpeg,image/png"
@@ -213,5 +220,10 @@ function ProfileModal({ isOpen, onClose }) {
     </div>
   );
 }
+
+ProfileModal.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
 
 export default ProfileModal;

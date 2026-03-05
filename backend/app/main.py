@@ -341,6 +341,9 @@ def _run_migrations(conn) -> None:
     user_cols = _get_columns(conn, "users")
     if "language" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'en'")
+    user_cols = _get_columns(conn, "users")
+    if "profile_photo" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN profile_photo TEXT")
     # hardware_clusters + hardware_cluster_members (new tables — safe to CREATE IF NOT EXISTS)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS hardware_clusters (

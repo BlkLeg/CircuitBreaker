@@ -208,7 +208,7 @@ export default function RecentChanges() {
                     color: 'var(--color-text-muted)',
                     flexShrink: 0,
                   }}>
-                    <TimestampCell isoString={item.updated_at} />
+                    <TimestampCell isoString={item.action_at ?? item.updated_at} />
                   </span>
                 </button>
               );

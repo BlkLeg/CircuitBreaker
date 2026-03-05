@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { Trash2, Upload } from 'lucide-react';
 import { LIBRARY_ICONS } from '../common/IconPickerModal';
 import ConfirmDialog from '../common/ConfirmDialog';
@@ -7,7 +8,10 @@ import client from '../../api/client';
 
 // Group the static library icons by their 'group' field
 const STATIC_GROUPS = LIBRARY_ICONS.reduce((acc, icon) => {
-  (acc[icon.group] = acc[icon.group] || []).push(icon);
+  if (!acc[icon.group]) {
+    acc[icon.group] = [];
+  }
+  acc[icon.group].push(icon);
   return acc;
 }, {});
 
@@ -85,6 +89,15 @@ function IconGrid({ icons, onDelete }) {
   );
 }
 
+IconGrid.propTypes = {
+  icons: PropTypes.arrayOf(PropTypes.object).isRequired,
+  onDelete: PropTypes.func,
+};
+
+IconGrid.defaultProps = {
+  onDelete: null,
+};
+
 function SectionLabel({ children, count }) {
   return (
     <div style={{
@@ -104,6 +117,11 @@ function SectionLabel({ children, count }) {
     </div>
   );
 }
+
+SectionLabel.propTypes = {
+  children: PropTypes.node.isRequired,
+  count: PropTypes.number.isRequired,
+};
 
 function IconLibraryManager() {
   const toast = useToast();
@@ -130,16 +148,28 @@ function IconLibraryManager() {
 
   useEffect(() => { fetchUploaded(); }, []);
 
+  const getDefaultIconName = (filename) => {
+    return filename.substring(0, filename.lastIndexOf('.')) || filename;
+  };
+
   const handleUploadChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     if (file.size > 1024 * 1024) { toast.error('Icon must be under 1 MB'); return; }
     
     // Default name is file name without extension
-    const defaultName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+    const defaultName = getDefaultIconName(file.name);
     setUploadPrompt({ file, name: defaultName, category: 'Other' });
     
     e.target.value = ''; // Reset input
+  };
+
+  const uploadIconForm = (file, name, category) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('name', name);
+    form.append('category', category);
+    return form;
   };
 
   const confirmUpload = async () => {
@@ -148,10 +178,7 @@ function IconLibraryManager() {
     setUploadPrompt(null);
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('name', name);
-      form.append('category', category);
+      const form = uploadIconForm(file, name, category);
       await client.post('/compute-units/icons/upload', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
@@ -165,19 +192,23 @@ function IconLibraryManager() {
 
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
 
+  const filterUploadedIcons = (slug) => (prev) => prev.filter((i) => i.slug !== slug);
+
+  const handleDeleteConfirm = async (slug) => {
+    setConfirmState((s) => ({ ...s, open: false }));
+    try {
+      await client.delete(`/compute-units/icons/${encodeURIComponent(slug)}`);
+      setUploadedIcons(filterUploadedIcons(slug));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const handleDelete = (slug) => {
     setConfirmState({
       open: true,
       message: `Delete icon "${slug}"?`,
-      onConfirm: async () => {
-        setConfirmState((s) => ({ ...s, open: false }));
-        try {
-          await client.delete(`/compute-units/icons/${encodeURIComponent(slug)}`);
-          setUploadedIcons((prev) => prev.filter((i) => i.slug !== slug));
-        } catch (err) {
-          setError(err.message);
-        }
-      },
+      onConfirm: () => handleDeleteConfirm(slug),
     });
   };
 
@@ -211,7 +242,7 @@ function IconLibraryManager() {
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-          {totalCount} icon{totalCount !== 1 ? 's' : ''} total
+          {totalCount} icon{totalCount === 1 ? '' : 's'} total
           {uploadedIcons.length > 0 && ` · ${uploadedIcons.length} custom`}
         </span>
         <div>
@@ -250,14 +281,17 @@ function IconLibraryManager() {
       </div>
       
       {uploadPrompt && (
-        <div
-          role="dialog"
+        <dialog
+          open
           style={{
             position: 'fixed', inset: 0, zIndex: 9999,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
+            border: 'none',
+            padding: 0,
+            margin: 'auto',
             background: 'rgba(0, 0, 0, 0.55)',
           }}
-          onClick={() => setUploadPrompt(null)}
+          onCancel={() => setUploadPrompt(null)}
         >
           <div
             style={{
@@ -266,12 +300,12 @@ function IconLibraryManager() {
               borderRadius: 10, padding: 24, width: 320,
               boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
             }}
-            onClick={(e) => e.stopPropagation()}
           >
             <h3 style={{ margin: '0 0 16px', fontSize: 16 }}>Upload Icon</h3>
             <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Name</label>
+              <label htmlFor="icon-name" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Name</label>
               <input
+                id="icon-name"
                 className="input"
                 autoFocus
                 value={uploadPrompt.name}
@@ -280,8 +314,9 @@ function IconLibraryManager() {
               />
             </div>
             <div style={{ marginBottom: 20 }}>
-              <label style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Category</label>
+              <label htmlFor="icon-category" style={{ display: 'block', marginBottom: 4, fontSize: 12, color: 'var(--color-text-muted)' }}>Category</label>
               <select
+                id="icon-category"
                 className="input"
                 value={uploadPrompt.category}
                 onChange={(e) => setUploadPrompt({ ...uploadPrompt, category: e.target.value })}
@@ -295,7 +330,7 @@ function IconLibraryManager() {
               <button className="btn btn-sm btn-primary" onClick={confirmUpload}>Upload</button>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
 
       <ConfirmDialog

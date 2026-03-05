@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { authApi } from '../../api/auth.js';
 import { gravatarHash } from '../../utils/md5.js';
 
@@ -6,11 +7,27 @@ const RULES = [
   { label: 'At least 8 characters', test: (p) => p.length >= 8 },
   { label: 'One uppercase letter (A–Z)', test: (p) => /[A-Z]/.test(p) },
   { label: 'One lowercase letter (a–z)', test: (p) => /[a-z]/.test(p) },
-  { label: 'One digit (0–9)', test: (p) => /[0-9]/.test(p) },
+  { label: 'One digit (0–9)', test: (p) => /\d/.test(p) },
   { label: 'One special character (!@#$%^&*…)', test: (p) => /[^A-Za-z0-9]/.test(p) },
 ];
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+function timingSafeStringEqual(a, b) {
+  const aStr = String(a);
+  const bStr = String(b);
+
+  const maxLen = Math.max(aStr.length, bStr.length);
+  let diff = aStr.length ^ bStr.length;
+
+  for (let i = 0; i < maxLen; i += 1) {
+    const aCode = i < aStr.length ? aStr.codePointAt(i) : 0;
+    const bCode = i < bStr.length ? bStr.codePointAt(i) : 0;
+    diff |= (aCode ^ bCode);
+  }
+
+  return diff === 0;
+}
 
 function FirstUserDialog({ isOpen, onClose, onRegistered }) {
   const [displayName, setDisplayName] = useState('');
@@ -37,8 +54,8 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
   useEffect(() => {
     if (!isOpen) return;
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    globalThis.addEventListener('keydown', handler);
+    return () => globalThis.removeEventListener('keydown', handler);
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
@@ -49,7 +66,7 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
     : null;
 
   const rulesPassed = RULES.every((r) => r.test(password));
-  const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
+  const passwordsMatch = confirmPassword.length > 0 && timingSafeStringEqual(password, confirmPassword);
   const canSubmit = rulesPassed && passwordsMatch && email.length > 0 && !loading;
 
   const handleEmailBlur = () => {
@@ -96,12 +113,12 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
   };
 
   return (
-    <div
+    <dialog
       className="modal-overlay"
-      role="dialog"
-      aria-modal="true"
       aria-labelledby="first-user-title"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      open={isOpen}
+      onCancel={onClose}
+      style={{ position: 'fixed', inset: 0, border: 'none', padding: 0, backgroundColor: 'rgba(0, 0, 0, 0.5)' }}
     >
       <div className="modal" style={{ width: 400 }}>
         <h3 id="first-user-title" style={{ marginBottom: 6, textAlign: 'center' }}>
@@ -114,10 +131,11 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
         <form onSubmit={handleSubmit} noValidate>
           {/* Display Name */}
           <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>
+            <label htmlFor="display-name" style={labelStyle}>
               Display Name <span style={{ color: 'var(--color-text-muted)', fontWeight: 400 }}>(optional)</span>
             </label>
             <input
+              id="display-name"
               ref={firstInputRef}
               type="text"
               value={displayName}
@@ -132,7 +150,7 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
           {/* Email */}
           <div style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-              <label style={{ ...labelStyle, marginBottom: 0 }}>Email</label>
+              <label htmlFor="email" style={{ ...labelStyle, marginBottom: 0 }}>Email</label>
               {gravatarPreviewUrl && (
                 <img
                   src={gravatarPreviewUrl}
@@ -142,6 +160,7 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
               )}
             </div>
             <input
+              id="email"
               type="email"
               value={email}
               onChange={(e) => { setEmail(e.target.value); setEmailError(''); }}
@@ -162,8 +181,9 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
 
           {/* Password */}
           <div style={{ marginBottom: 8 }}>
-            <label style={labelStyle}>Password</label>
+            <label htmlFor="password" style={labelStyle}>Password</label>
             <input
+              id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -192,8 +212,9 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
 
           {/* Confirm Password */}
           <div style={{ marginBottom: 20 }}>
-            <label style={labelStyle}>Confirm Password</label>
+            <label htmlFor="confirm-password" style={labelStyle}>Confirm Password</label>
             <input
+              id="confirm-password"
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
@@ -237,8 +258,14 @@ function FirstUserDialog({ isOpen, onClose, onRegistered }) {
           </div>
         </form>
       </div>
-    </div>
+    </dialog>
   );
 }
+
+FirstUserDialog.propTypes = {
+  isOpen: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  onRegistered: PropTypes.func.isRequired,
+};
 
 export default FirstUserDialog;

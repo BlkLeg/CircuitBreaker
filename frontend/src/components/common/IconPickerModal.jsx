@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import PropTypes from 'prop-types';
 import { X, Search, Upload, Check } from 'lucide-react';
 import { useToast } from './Toast';
 import { computeUnitsApi } from '../../api/client';
@@ -267,6 +268,15 @@ function getIconScale(slug) {
   return 1;
 }
 
+function isValidIconPath(path) {
+  if (typeof path !== 'string') return false;
+  // Only allow relative paths starting with / or data URIs for SVGs
+  if (!path.startsWith('/') && !path.startsWith('data:image/')) return false;
+  // Prevent protocol-based XSS
+  if (path.includes('javascript:') || path.includes('data:text/html')) return false;
+  return true;
+}
+
 export function getIconEntry(slug) {
   if (!slug) return null;
   const normalizedSlug = ICON_SLUG_ALIASES[slug] || slug;
@@ -281,9 +291,10 @@ export function IconImg({ slug, size = 20, style = {} }) {
   const entry = getIconEntry(slug);
   const iconScale = getIconScale(slug);
   if (!entry) return <span style={{ width: size, height: size, display: 'inline-block' }} />;
+  const validPath = isValidIconPath(entry.path) ? entry.path : '/icons/vendors/generic.svg';
   return (
     <img
-      src={entry.path}
+      src={validPath}
       alt={entry.label}
       width={size}
       height={size}
@@ -294,7 +305,7 @@ export function IconImg({ slug, size = 20, style = {} }) {
         minHeight: size,
         display: 'block',
         objectFit: 'contain',
-        transform: iconScale !== 1 ? `scale(${iconScale})` : 'none',
+        transform: iconScale === 1 ? 'none' : `scale(${iconScale})`,
         transformOrigin: 'center',
         ...style,
       }}
@@ -302,6 +313,12 @@ export function IconImg({ slug, size = 20, style = {} }) {
     />
   );
 }
+
+IconImg.propTypes = {
+  slug: PropTypes.string,
+  size: PropTypes.number,
+  style: PropTypes.object,
+};
 
 function IconPickerModal({ currentSlug, onSelect, onClose }) {
   const toast = useToast();
@@ -339,6 +356,8 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
     try {
       const res = await computeUnitsApi.uploadIcon(file);
       const { slug, path } = res.data;
+      if (!isValidIconPath(path)) { toast.error('Invalid icon path'); return; }
+      if (typeof slug !== 'string' || !/^[a-z0-9-]+$/.exec(slug)) { toast.error('Invalid icon slug'); return; }
       const newEntry = { slug, label: file.name.replace(/\.[^.]+$/, ''), path, group: 'Uploaded' };
       setUploadedIcons((prev) => [...prev, newEntry]);
       setPreview(slug);
@@ -426,7 +445,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
                   src={icon.path} alt={icon.label} width={32} height={32}
                   style={{
                     objectFit: 'contain',
-                    transform: iconScale !== 1 ? `scale(${iconScale})` : 'none',
+                    transform: iconScale === 1 ? 'none' : `scale(${iconScale})`,
                     transformOrigin: 'center',
                   }}
                   onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
@@ -463,22 +482,26 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
             </button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {preview && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-muted)' }}>
-                <img
-                  src={getIconEntry(preview)?.path ?? '/icons/vendors/generic.svg'}
-                  alt=""
-                  width={22}
-                  height={22}
-                  style={{
-                    objectFit: 'contain',
-                    transform: getIconScale(preview) !== 1 ? `scale(${getIconScale(preview)})` : 'none',
-                    transformOrigin: 'center',
-                  }}
-                />
-                <span>{getIconEntry(preview)?.label ?? preview}</span>
-              </div>
-            )}
+            {preview && (() => {
+              const iconEntry = getIconEntry(preview);
+              return iconEntry ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-muted)' }}>
+                  <img
+                    src={isValidIconPath(iconEntry.path) ? iconEntry.path : '/icons/vendors/generic.svg'}
+                    alt=""
+                    width={22}
+                    height={22}
+                    style={{
+                      objectFit: 'contain',
+                      transform: getIconScale(preview) === 1 ? 'none' : `scale(${getIconScale(preview)})`,
+                      transformOrigin: 'center',
+                    }}
+                    onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
+                  />
+                  <span>{iconEntry.label}</span>
+                </div>
+              ) : null;
+            })()}
             <button className="btn" onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" onClick={() => { onSelect(preview); onClose(); }} disabled={!preview}>
               Select
@@ -489,5 +512,11 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
     </div>
   );
 }
+
+IconPickerModal.propTypes = {
+  currentSlug: PropTypes.string,
+  onSelect: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
 
 export default IconPickerModal;

@@ -1,4 +1,4 @@
-import React from 'react';
+import PropTypes from 'prop-types';
 
 const S = {
   container: {
@@ -30,6 +30,13 @@ const S = {
   content: {
     marginTop: 2,
   },
+};
+
+SettingField.propTypes = {
+  label: PropTypes.string.isRequired,
+  hint: PropTypes.string,
+  children: PropTypes.node.isRequired,
+  action: PropTypes.node,
 };
 
 export default function SettingField({ label, hint, children, action }) {

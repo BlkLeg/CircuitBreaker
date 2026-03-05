@@ -1,5 +1,6 @@
 import hashlib
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import text
@@ -12,7 +13,8 @@ from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["assets"])
 
-_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/svg+xml", "image/x-icon"}
+_ICON_TYPE = "image/x-icon"
+_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/svg+xml", _ICON_TYPE}
 _MAX_ICON_BYTES = 2 * 1024 * 1024
 
 _UPLOADS_DIR = Path(settings.uploads_dir)
@@ -33,18 +35,18 @@ def _suffix_for(content_type: str, filename: str) -> str:
         return ".jpg"
     if content_type == "image/svg+xml":
         return ".svg"
-    if content_type == "image/x-icon":
+    if content_type == _ICON_TYPE:
         return ".ico"
     return ".bin"
 
 
-@router.post("/user-icon")
+@router.post("/user-icon", responses={400: {"description": "Invalid image format or file too large"}})
 async def upload_user_icon(
-    file: UploadFile = File(...),
-    user_id: int | None = Depends(require_write_auth),
-    db: Session = Depends(get_db),
+    file: Annotated[UploadFile, File()],
+    user_id: Annotated[int | None, Depends(require_write_auth)],
+    db: Annotated[Session, Depends(get_db)],
 ):
-    if file.content_type not in _ALLOWED_TYPES - {"image/x-icon"}:
+    if file.content_type not in _ALLOWED_TYPES - {_ICON_TYPE}:
         raise HTTPException(status_code=400, detail="Invalid image format")
 
     content = await file.read()
@@ -92,11 +94,11 @@ async def upload_user_icon(
     return {"filename": filename, "url": f"/user-icons/{filename}", "icon_id": icon_id}
 
 
-@router.post("/branding/favicon")
+@router.post("/branding/favicon", responses={400: {"description": "Invalid image format or file too large"}})
 async def upload_favicon(
-    file: UploadFile = File(...),
-    _: int | None = Depends(require_write_auth),
-    db: Session = Depends(get_db),
+    file: Annotated[UploadFile, File()],
+    _: Annotated[int | None, Depends(require_write_auth)],
+    db: Annotated[Session, Depends(get_db)],
 ):
     if file.content_type not in _ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Invalid image format")
