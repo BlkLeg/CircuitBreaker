@@ -9,7 +9,8 @@ from starlette.types import ASGIApp
 # - style-src 'self' 'unsafe-inline' + fonts.googleapis.com: inline styles and
 #   dynamic Google Fonts <link> injected by the font-picker feature.
 # - font-src 'self' + fonts.gstatic.com: actual .woff2 files served by Google.
-# - img-src 'self' data: https://www.gravatar.com: local assets + Gravatar avatars.
+# - img-src 'self' data: blob: https://www.gravatar.com: local assets, Gravatar avatars,
+#   and blob: URLs created by URL.createObjectURL() for file-picker previews.
 # - connect-src 'self' + open-meteo: weather widget geocoding and forecast APIs.
 #   wss: is required so WebSocket connections work when served over HTTPS.
 # - frame-ancestors 'none': equivalent to X-Frame-Options: DENY.
@@ -18,7 +19,7 @@ _CSP = (
     "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com; "
-    "img-src 'self' data: https://www.gravatar.com; "
+    "img-src 'self' data: blob: https://www.gravatar.com; "
     "connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; "
     "frame-ancestors 'none';"
 )
