@@ -8,6 +8,10 @@ import json
 from app.db import models
 from app.services.log_service import sanitise_diff
 
+# ── Test constants ────────────────────────────────────────────────────────────
+IP_INTERNAL_HOST = "10.0.0.1"      # host field value in sanitise_diff nested test
+CIDR_AUDIT_LAN   = "192.168.1.0/24"  # network CIDR for audit-log create test
+
 # ── sanitise_diff unit tests ──────────────────────────────────────────────────
 
 def test_sanitise_diff_redacts_password_key():
@@ -17,9 +21,9 @@ def test_sanitise_diff_redacts_password_key():
 
 
 def test_sanitise_diff_redacts_nested_keys():
-    result = sanitise_diff({"config": {"token": "abc", "host": "10.0.0.1"}})
+    result = sanitise_diff({"config": {"token": "abc", "host": IP_INTERNAL_HOST}})
     assert result["config"]["token"] == "***REDACTED***"
-    assert result["config"]["host"] == "10.0.0.1"
+    assert result["config"]["host"] == IP_INTERNAL_HOST
 
 
 def test_sanitise_diff_redacts_list_of_dicts():
@@ -100,7 +104,7 @@ def test_service_create_update_delete_logs(client):
 # ── Network CRUD log entries ──────────────────────────────────────────────────
 
 def test_network_create_update_delete_logs(client):
-    net = client.post("/api/v1/networks", json={"name": "LAN", "cidr": "192.168.1.0/24"}).json()
+    net = client.post("/api/v1/networks", json={"name": "LAN", "cidr": CIDR_AUDIT_LAN}).json()
     client.patch(f"/api/v1/networks/{net['id']}", json={"name": "LAN-Updated"})
     client.delete(f"/api/v1/networks/{net['id']}")
 

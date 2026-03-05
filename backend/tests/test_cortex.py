@@ -4,7 +4,18 @@ Tests cover Phases 1–3: Rack Foundation, Correctness Fixes, and Derived State.
 Uses existing conftest.py fixtures (client, db, db_engine).
 """
 
-
+# ── Test constants ────────────────────────────────────────────────────────────
+IP_CONFLICT_A    = "10.0.0.50"   # duplicate IP for conflict-cascade test
+IP_PORT_HOST     = "10.0.0.70"   # hardware host in port-conflict test
+IP_PORT_SVC      = "10.0.0.71"   # service IP for port-conflict test
+IP_MAC_HW1       = "10.0.1.1"    # first hardware in MAC-duplicate test
+IP_MAC_HW2       = "10.0.1.2"    # second hardware in MAC-duplicate test
+IP_GROUP_DELL_1  = "10.0.2.1"    # Dell R740 #1 in hardware-groups test
+IP_GROUP_DELL_2  = "10.0.2.2"    # Dell R740 #2 in hardware-groups test
+IP_GROUP_HP_1    = "10.0.2.3"    # HP DL380 in hardware-groups test
+CIDR_MERGE       = "10.0.0.0/24" # target CIDR for scan-job fixtures
+IP_MERGE_RESULT  = "10.0.0.99"   # IP in merge-atomicity scan result
+IP_SOURCE_RESULT = "10.0.0.200"  # IP in source_scan_result_id test
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -99,9 +110,9 @@ def test_service_hardware_id_denorm(client):
 
 def test_ip_conflict_cascade(client):
     """Documenting existing behavior: IP conflict blocks duplicate save."""
-    _create_hardware(client, name="HW-ip1", ip_address="10.0.0.50")
+    _create_hardware(client, name="HW-ip1", ip_address=IP_CONFLICT_A)
     resp = client.post("/api/v1/hardware", json={
-        "name": "HW-ip2", "role": "server", "ip_address": "10.0.0.50",
+        "name": "HW-ip2", "role": "server", "ip_address": IP_CONFLICT_A,
     })
     assert resp.status_code == 409
 
@@ -111,11 +122,11 @@ def test_ip_conflict_cascade(client):
 
 def test_port_conflict(client):
     """Documenting existing behavior: services with same IP trigger conflict detection."""
-    hw = _create_hardware(client, name="PortHost", ip_address="10.0.0.70")
-    _create_service(client, name="svc-port1", hardware_id=hw["id"], ip_address="10.0.0.71")
+    hw = _create_hardware(client, name="PortHost", ip_address=IP_PORT_HOST)
+    _create_service(client, name="svc-port1", hardware_id=hw["id"], ip_address=IP_PORT_SVC)
     # Second service with same IP should be blocked
     resp = client.post("/api/v1/services", json={
-        "name": "svc-port2", "hardware_id": hw["id"], "ip_address": "10.0.0.71",
+        "name": "svc-port2", "hardware_id": hw["id"], "ip_address": IP_PORT_SVC,
     })
     assert resp.status_code == 409
 
@@ -130,7 +141,7 @@ def test_merge_atomicity(client, db):
 
     now = utcnow_iso()
     job = ScanJob(
-        target_cidr="10.0.0.0/24",
+        target_cidr=CIDR_MERGE,
         scan_types_json='["nmap"]',
         status="completed",
         created_at=now,
@@ -141,7 +152,7 @@ def test_merge_atomicity(client, db):
 
     result = ScanResult(
         scan_job_id=job.id,
-        ip_address="10.0.0.99",
+        ip_address=IP_MERGE_RESULT,
         hostname="new-host",
         state="new",
         merge_status="pending",
@@ -165,14 +176,14 @@ def test_merge_atomicity(client, db):
 
 def test_mac_duplicate_soft_alert(client, caplog):
     """Both hardware records save; a warning is logged for the duplicate MAC."""
-    hw1 = _create_hardware(client, name="MAC-hw1", ip_address="10.0.1.1")
+    hw1 = _create_hardware(client, name="MAC-hw1", ip_address=IP_MAC_HW1)
     # Manually set MAC via PATCH
     client.patch(f"/api/v1/hardware/{hw1['id']}", json={"mac_address": "AA:BB:CC:DD:EE:FF"})
 
     # Second hardware with same MAC should still save (freeform-first)
     # but log a warning. The MAC is on the schema but not in HardwareBase,
     # so we set it after creation.
-    hw2 = _create_hardware(client, name="MAC-hw2", ip_address="10.0.1.2")
+    hw2 = _create_hardware(client, name="MAC-hw2", ip_address=IP_MAC_HW2)
     # Both exist
     resp1 = client.get(f"/api/v1/hardware/{hw1['id']}")
     resp2 = client.get(f"/api/v1/hardware/{hw2['id']}")
@@ -247,9 +258,9 @@ def test_find_orphans(client):
 
 def test_hardware_groups(client):
     """Vendor+model grouping returns counts."""
-    _create_hardware(client, name="Dell-1", vendor="dell", model="R740", ip_address="10.0.2.1")
-    _create_hardware(client, name="Dell-2", vendor="dell", model="R740", ip_address="10.0.2.2")
-    _create_hardware(client, name="HP-1", vendor="hp", model="DL380", ip_address="10.0.2.3")
+    _create_hardware(client, name="Dell-1", vendor="dell", model="R740", ip_address=IP_GROUP_DELL_1)
+    _create_hardware(client, name="Dell-2", vendor="dell", model="R740", ip_address=IP_GROUP_DELL_2)
+    _create_hardware(client, name="HP-1", vendor="hp", model="DL380", ip_address=IP_GROUP_HP_1)
     resp = client.get("/api/v1/hardware/groups")
     assert resp.status_code == 200
     groups = resp.json()
@@ -287,7 +298,7 @@ def test_source_scan_result_id(client, db):
 
     now = utcnow_iso()
     job = ScanJob(
-        target_cidr="10.0.0.0/24",
+        target_cidr=CIDR_MERGE,
         scan_types_json='["nmap"]',
         status="completed",
         created_at=now,
@@ -298,7 +309,7 @@ def test_source_scan_result_id(client, db):
 
     result = ScanResult(
         scan_job_id=job.id,
-        ip_address="10.0.0.200",
+        ip_address=IP_SOURCE_RESULT,
         hostname="traced-host",
         state="new",
         merge_status="pending",

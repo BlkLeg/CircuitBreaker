@@ -10,6 +10,9 @@ Covers:
 
 API = "/api/v1"
 
+# ── Test constants ────────────────────────────────────────────────────────────
+IP_SERVICE_A   = "10.0.0.50"    # service IP for field-persistence regression test
+CIDR_NETWORK_A = "10.0.0.0/24"  # network CIDR for create/read assertions
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -174,19 +177,19 @@ class TestServicesCRUD:
             name="Nginx",
             slug="nginx",
             status="running",
-            ip_address="10.0.0.50",
+            ip_address=IP_SERVICE_A,
         )
         assert resp.status_code == 201
         data = resp.json()
         assert data["status"] == "running"
-        assert data["ip_address"] == "10.0.0.50"
+        assert data["ip_address"] == IP_SERVICE_A
 
         # Verify via GET
         svc_id = data["id"]
         resp = client.get(f"{API}/services/{svc_id}")
         assert resp.status_code == 200
         assert resp.json()["status"] == "running"
-        assert resp.json()["ip_address"] == "10.0.0.50"
+        assert resp.json()["ip_address"] == IP_SERVICE_A
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -235,10 +238,10 @@ class TestStorageCRUD:
 
 class TestNetworksCRUD:
     def test_create(self, client):
-        resp = _create_network(client, cidr="10.0.0.0/24")
+        resp = _create_network(client, cidr=CIDR_NETWORK_A)
         assert resp.status_code == 201
         assert resp.json()["name"] == "TestLAN"
-        assert resp.json()["cidr"] == "10.0.0.0/24"
+        assert resp.json()["cidr"] == CIDR_NETWORK_A
 
     def test_read(self, client):
         net_id = _create_network(client).json()["id"]

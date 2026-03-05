@@ -4,20 +4,26 @@ import json
 from app.core.time import utcnow
 from app.db.models import Service
 
+# ── Test constants ────────────────────────────────────────────────────────────
+HW_IP_A    = "10.0.0.1"   # primary hardware test IP
+HW_IP_B    = "10.0.0.2"   # compute unit test IP
+SVC_IP_A   = "10.0.0.5"   # service test IP (shared-IP conflict scenarios)
+HW_IP_FREE = "10.0.0.99"  # unassigned IP for clean ip-check assertion
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _hw(client, name="pve-01", ip="10.0.0.1"):
+def _hw(client, name="pve-01", ip=HW_IP_A):
     return client.post("/api/v1/hardware", json={"name": name, "ip_address": ip})
 
 
-def _cu(client, name="vm-01", ip="10.0.0.2"):
+def _cu(client, name="vm-01", ip=HW_IP_B):
     hw = client.post("/api/v1/hardware", json={"name": f"host-for-{name}"}).json()
     return client.post("/api/v1/compute-units", json={
         "name": name, "kind": "vm", "hardware_id": hw["id"], "ip_address": ip,
     })
 
 
-def _svc(client, name="Plex", ip="10.0.0.5", ports=None):
+def _svc(client, name="Plex", ip=SVC_IP_A, ports=None):
     payload = {"name": name, "slug": name.lower().replace(" ", "-"), "ip_address": ip}
     if ports:
         payload["ports"] = ports
@@ -38,30 +44,30 @@ def _ip_check(client, ip, ports=None, exclude_type=None, exclude_id=None):
 # ── Basic IP conflict ─────────────────────────────────────────────────────────
 
 def test_no_conflict_on_unique_ip(client):
-    resp = _hw(client, name="pve-01", ip="10.0.0.1")
+    resp = _hw(client, name="pve-01", ip=HW_IP_A)
     assert resp.status_code == 201
 
 
 def test_hardware_ip_conflict_with_hardware(client):
-    _hw(client, name="pve-01", ip="10.0.0.1")
-    resp = _hw(client, name="pve-02", ip="10.0.0.1")
+    _hw(client, name="pve-01", ip=HW_IP_A)
+    resp = _hw(client, name="pve-02", ip=HW_IP_A)
     assert resp.status_code == 409
     conflicts = resp.json().get("detail", {}).get("conflicts", [])
     assert any(c["entity_type"] == "hardware" for c in conflicts)
 
 
 def test_hardware_ip_conflict_with_compute_unit(client):
-    _cu(client, name="vm-01", ip="10.0.0.2")
-    resp = _hw(client, name="pve-01", ip="10.0.0.2")
+    _cu(client, name="vm-01", ip=HW_IP_B)
+    resp = _hw(client, name="pve-01", ip=HW_IP_B)
     assert resp.status_code == 409
 
 
 # ── Service port conflict ─────────────────────────────────────────────────────
 
 def test_service_port_conflict(client):
-    _svc(client, name="ServiceA", ip="10.0.0.5",
+    _svc(client, name="ServiceA", ip=SVC_IP_A,
          ports=[{"port": 8080, "protocol": "tcp"}])
-    resp = _svc(client, name="ServiceB", ip="10.0.0.5",
+    resp = _svc(client, name="ServiceB", ip=SVC_IP_A,
                 ports=[{"port": 8080, "protocol": "tcp"}])
     assert resp.status_code == 409
     conflicts = resp.json().get("detail", {}).get("conflicts", [])
@@ -69,17 +75,17 @@ def test_service_port_conflict(client):
 
 
 def test_service_different_port_no_conflict(client):
-    _svc(client, name="ServiceA", ip="10.0.0.5",
+    _svc(client, name="ServiceA", ip=SVC_IP_A,
          ports=[{"port": 8080, "protocol": "tcp"}])
-    resp = _svc(client, name="ServiceB", ip="10.0.0.5",
+    resp = _svc(client, name="ServiceB", ip=SVC_IP_A,
                 ports=[{"port": 9090, "protocol": "tcp"}])
     assert resp.status_code == 201
 
 
 def test_service_different_protocol_no_conflict(client):
-    _svc(client, name="ServiceA", ip="10.0.0.5",
+    _svc(client, name="ServiceA", ip=SVC_IP_A,
          ports=[{"port": 53, "protocol": "tcp"}])
-    resp = _svc(client, name="ServiceB", ip="10.0.0.5",
+    resp = _svc(client, name="ServiceB", ip=SVC_IP_A,
                 ports=[{"port": 53, "protocol": "udp"}])
     assert resp.status_code == 201
 
@@ -87,20 +93,20 @@ def test_service_different_protocol_no_conflict(client):
 # ── Self-edit ─────────────────────────────────────────────────────────────────
 
 def test_edit_own_ip_no_self_conflict(client):
-    hw = _hw(client, name="pve-01", ip="10.0.0.1").json()
-    resp = client.patch(f"/api/v1/hardware/{hw['id']}", json={"ip_address": "10.0.0.1"})
+    hw = _hw(client, name="pve-01", ip=HW_IP_A).json()
+    resp = client.patch(f"/api/v1/hardware/{hw['id']}", json={"ip_address": HW_IP_A})
     assert resp.status_code == 200
 
 
 # ── Multiple conflicts ────────────────────────────────────────────────────────
 
 def test_multiple_conflicts_returned(client):
-    _hw(client, name="pve-01", ip="10.0.0.5")
-    _svc(client, name="ServiceA", ip="10.0.0.5",
+    _hw(client, name="pve-01", ip=SVC_IP_A)
+    _svc(client, name="ServiceA", ip=SVC_IP_A,
          ports=[{"port": 8080, "protocol": "tcp"}])
 
     # New service with same IP and same port — should conflict with both hw and ServiceA
-    resp = _svc(client, name="ServiceB", ip="10.0.0.5",
+    resp = _svc(client, name="ServiceB", ip=SVC_IP_A,
                 ports=[{"port": 8080, "protocol": "tcp"}])
     assert resp.status_code == 409
     conflicts = resp.json().get("detail", {}).get("conflicts", [])
@@ -110,18 +116,18 @@ def test_multiple_conflicts_returned(client):
 # ── /ip-check endpoint ────────────────────────────────────────────────────────
 
 def test_ip_check_endpoint_clean(client):
-    resp = _ip_check(client, ip="10.0.0.99")
+    resp = _ip_check(client, ip=HW_IP_FREE)
     assert resp.status_code == 200
     assert resp.json()["conflicts"] == []
 
 
 def test_ip_check_endpoint_conflict(client):
-    _hw(client, name="pve-01", ip="10.0.0.1")
-    resp = _ip_check(client, ip="10.0.0.1")
+    _hw(client, name="pve-01", ip=HW_IP_A)
+    resp = _ip_check(client, ip=HW_IP_A)
     assert resp.status_code == 200
     conflicts = resp.json()["conflicts"]
     assert len(conflicts) > 0
-    assert conflicts[0]["conflicting_ip"] == "10.0.0.1"
+    assert conflicts[0]["conflicting_ip"] == HW_IP_A
 
 
 # ── Ports backfill ────────────────────────────────────────────────────────────
@@ -174,8 +180,8 @@ def test_ports_backfill_unrecognised_format(db):
 # ── Conflict log entry ────────────────────────────────────────────────────────
 
 def test_conflict_log_entry(client):
-    _hw(client, name="pve-01", ip="10.0.0.1")
-    _hw(client, name="pve-02", ip="10.0.0.1")  # triggers 409
+    _hw(client, name="pve-01", ip=HW_IP_A)
+    _hw(client, name="pve-02", ip=HW_IP_A)  # triggers 409
 
     logs = client.get("/api/v1/logs").json()["logs"]
     conflict_entry = next(
@@ -184,7 +190,7 @@ def test_conflict_log_entry(client):
     )
     # Either a specific conflict action or a warn-severity entry referencing the IP
     warn_entry = next(
-        (log for log in logs if log.get("severity") == "warn" and "10.0.0.1" in (log.get("details") or ""
+        (log for log in logs if log.get("severity") == "warn" and HW_IP_A in (log.get("details") or ""
          or log.get("entity_name") or "")),
         None,
     )

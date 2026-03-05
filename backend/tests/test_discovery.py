@@ -19,13 +19,46 @@ from app.services.discovery_service import (
 )
 from app.services.settings_service import get_or_create_settings
 
+# ── Test constants ────────────────────────────────────────────────────────────
+CIDR_DEFAULT       = "10.0.0.0/24"   # default job target range
+CIDR_LAN           = "192.168.1.0/24"
+CIDR_HOST_BITS     = "10.0.0.5/24"   # host bits set — normalised, not rejected
+
+IP_RESULT_DEFAULT  = "192.168.1.10"  # default in _make_result helper
+IP_RESULT_NEW      = "192.168.99.99" # test_upsert_result_new_host
+IP_MATCHED         = "10.0.0.5"      # test_upsert_result_matched_host
+IP_CONFLICT_HW     = "10.0.0.6"      # test_upsert_result_conflict
+
+IP_AUTO_MERGE_OFF  = "192.168.200.1" # test_auto_merge_disabled_by_default
+IP_AUTO_MERGE_ON   = "192.168.200.2" # test_auto_merge_creates_hardware
+
+IP_ACCEPT_NEW      = "10.1.1.1"      # test_merge_accept_new_creates_hardware
+IP_ACCEPT_PORTS    = "10.1.1.2"      # test_merge_accept_returns_ports
+IP_ACCEPT_MISC     = "10.1.1.3"      # test_merge_accept_unknown_port_is_misc
+IP_REJECT          = "10.2.2.2"      # test_merge_reject
+IP_DOUBLE_ACCEPT   = "10.3.3.3"      # test_merge_already_accepted_returns_409
+IP_OVERRIDE_HW     = "10.4.4.4"      # test_merge_conflict_with_overrides
+
+IP_BULK_BASE       = "10.5.5.5"      # existing hardware in bulk-merge skip test
+IP_BULK_R1         = "10.5.5.1"
+IP_BULK_R2         = "10.5.5.2"
+IP_BULK_REJECT_1   = "10.6.6.1"
+IP_BULK_REJECT_2   = "10.6.6.2"
+
+IP_PURGE_OLD       = "10.0.0.1"      # scan result kept in purge-retention test
+
+MAC_EXISTING       = "AA:BB:CC:DD:EE:FF"
+MAC_CONFLICT       = "00:11:22:33:44:55"
+MAC_BULK_HW        = "AA:BB:CC:00:00:01"
+MAC_BULK_CONFLICT  = "00:00:00:00:00:01"
 
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
-def _make_job(db, cidr="10.0.0.0/24", scan_types=None) -> ScanJob:
+def _make_job(db, cidr=CIDR_DEFAULT, scan_types=None) -> ScanJob:
     return create_scan_job(db, cidr, scan_types or ["nmap"])
-def _make_result(db, job, *, ip="192.168.1.10", mac=None,
+
+def _make_result(db, job, *, ip=IP_RESULT_DEFAULT, mac=None,
                  state="new", merge_status="pending",
                  open_ports_json=None, matched_entity_id=None,
                  matched_entity_type=None) -> ScanResult:
@@ -44,6 +77,7 @@ def _make_result(db, job, *, ip="192.168.1.10", mac=None,
     db.commit()
     db.refresh(r)
     return r
+
 def _make_hardware(db, *, ip=None, mac=None, name="TestHost") -> Hardware:
     hw = Hardware(
         name=name,
@@ -57,59 +91,69 @@ def _make_hardware(db, *, ip=None, mac=None, name="TestHost") -> Hardware:
     db.commit()
     db.refresh(hw)
     return hw
+
 # ─────────────────────────────────────────────────────────────────
 # 1. CIDR validation
 # ─────────────────────────────────────────────────────────────────
 def test_validate_cidr_valid():
-    assert _validate_cidr("192.168.1.0/24") == "192.168.1.0/24"
+    assert _validate_cidr(CIDR_LAN) == CIDR_LAN
+
 def test_validate_cidr_normalises():
-    # Host bits set — normalised, not rejected
-    assert _validate_cidr("192.168.1.5/24") == "192.168.1.0/24"
+    assert _validate_cidr(CIDR_HOST_BITS) == CIDR_DEFAULT
+
 def test_validate_cidr_invalid():
     with pytest.raises(ValueError, match="not a valid CIDR"):
         _validate_cidr("not-a-cidr")
+
 def test_validate_cidr_slash_zero_rejected():
     with pytest.raises(ValueError):
         _validate_cidr("0.0.0.0/0")
+
 # ─────────────────────────────────────────────────────────────────
 # 2. create_scan_job
 # ─────────────────────────────────────────────────────────────────
 def test_create_scan_job_valid(db):
-    job = _make_job(db, "192.168.1.0/24")
+    job = _make_job(db, CIDR_LAN)
     assert job.id is not None
     assert job.status == "queued"
-    assert job.target_cidr == "192.168.1.0/24"
+    assert job.target_cidr == CIDR_LAN
+
 def test_create_scan_job_stores_normalised_cidr(db):
-    job = create_scan_job(db, "10.0.0.5/24", ["nmap"])
-    assert job.target_cidr == "10.0.0.0/24"
+    job = create_scan_job(db, CIDR_HOST_BITS, ["nmap"])
+    assert job.target_cidr == CIDR_DEFAULT
+
 def test_create_scan_job_invalid_cidr_raises(db):
     before = db.query(ScanJob).count()
     with pytest.raises(ValueError):
         create_scan_job(db, "bad-input", ["nmap"])
     assert db.query(ScanJob).count() == before
+
 # ─────────────────────────────────────────────────────────────────
 # 3. Result state classification
 # ─────────────────────────────────────────────────────────────────
 def test_upsert_result_new_host(db):
     job = _make_job(db)
-    r = _make_result(db, job, ip="192.168.99.99")
+    r = _make_result(db, job, ip=IP_RESULT_NEW)
     assert r.state == "new"
     assert r.merge_status == "pending"
+
 def test_upsert_result_matched_host(db):
-    hw = _make_hardware(db, ip="10.0.0.5")
+    hw = _make_hardware(db, ip=IP_MATCHED)
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.0.0.5", state="matched",
+    r = _make_result(db, job, ip=IP_MATCHED, state="matched",
                      matched_entity_id=hw.id, matched_entity_type="hardware")
     assert r.state == "matched"
     assert r.matched_entity_id == hw.id
+
 def test_upsert_result_conflict(db):
-    hw = _make_hardware(db, ip="10.0.0.6", mac="AA:BB:CC:DD:EE:FF")
+    hw = _make_hardware(db, ip=IP_CONFLICT_HW, mac=MAC_EXISTING)
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.0.0.6", mac="00:11:22:33:44:55",
+    r = _make_result(db, job, ip=IP_CONFLICT_HW, mac=MAC_CONFLICT,
                      state="conflict", matched_entity_id=hw.id,
                      matched_entity_type="hardware")
     assert r.state == "conflict"
     assert r.matched_entity_id == hw.id
+
 # ─────────────────────────────────────────────────────────────────
 # 4. Auto-merge toggle
 # ─────────────────────────────────────────────────────────────────
@@ -117,44 +161,47 @@ def test_auto_merge_disabled_by_default(db):
     settings = get_or_create_settings(db)
     assert not settings.discovery_auto_merge
     job = _make_job(db)
-    r = _make_result(db, job, ip="192.168.200.1")
+    r = _make_result(db, job, ip=IP_AUTO_MERGE_OFF)
     assert r.state == "new"
     assert r.merge_status == "pending"
-    assert db.query(Hardware).filter(Hardware.ip_address == "192.168.200.1").first() is None
+    assert db.query(Hardware).filter(Hardware.ip_address == IP_AUTO_MERGE_OFF).first() is None
+
 def test_auto_merge_creates_hardware(db):
     from app.services.discovery_service import _auto_merge_result
     settings = get_or_create_settings(db)
     settings.discovery_auto_merge = True
     db.commit()
     job = _make_job(db)
-    r = _make_result(db, job, ip="192.168.200.2")
+    r = _make_result(db, job, ip=IP_AUTO_MERGE_ON)
     _auto_merge_result(db, r)
-    hw = db.query(Hardware).filter(Hardware.ip_address == "192.168.200.2").first()
+    hw = db.query(Hardware).filter(Hardware.ip_address == IP_AUTO_MERGE_ON).first()
     assert hw is not None
     assert hw.source in ("discovery", "nmap")
     db.refresh(r)
     assert r.merge_status == "merged"
+
 # ─────────────────────────────────────────────────────────────────
 # 5. merge_scan_result — accept / reject
 # ─────────────────────────────────────────────────────────────────
 def test_merge_accept_new_creates_hardware(db):
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.1.1.1")
+    r = _make_result(db, job, ip=IP_ACCEPT_NEW)
     result = merge_scan_result(db, r.id, "accept", entity_type="hardware")
     assert result["entity_type"] == "hardware"
     assert result["entity_id"] is not None
     hw = db.query(Hardware).filter(Hardware.id == result["entity_id"]).first()
     assert hw is not None
-    assert hw.ip_address == "10.1.1.1"
+    assert hw.ip_address == IP_ACCEPT_NEW
     db.refresh(r)
     assert r.merge_status == "accepted"
+
 def test_merge_accept_returns_ports(db):
     ports = json.dumps([
         {"port": 22, "protocol": "tcp", "name": "ssh"},
         {"port": 443, "protocol": "tcp", "name": "https"},
     ])
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.1.1.2", open_ports_json=ports)
+    r = _make_result(db, job, ip=IP_ACCEPT_PORTS, open_ports_json=ports)
     result = merge_scan_result(db, r.id, "accept", entity_type="hardware")
     port_nums = [p["port"] for p in result["ports"]]
     names = [p["suggested_name"] for p in result["ports"]]
@@ -162,33 +209,37 @@ def test_merge_accept_returns_ports(db):
     assert 443 in port_nums
     assert "SSH" in names
     assert "HTTPS" in names
+
 def test_merge_accept_unknown_port_is_misc(db):
     ports = json.dumps([{"port": 12345, "protocol": "tcp", "name": "custom"}])
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.1.1.3", open_ports_json=ports)
+    r = _make_result(db, job, ip=IP_ACCEPT_MISC, open_ports_json=ports)
     result = merge_scan_result(db, r.id, "accept", entity_type="hardware")
     misc = [p for p in result["ports"] if p["port"] == 12345]
     assert misc[0]["suggested_category"] == "misc"
+
 def test_merge_reject(db):
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.2.2.2")
+    r = _make_result(db, job, ip=IP_REJECT)
     result = merge_scan_result(db, r.id, "reject")
     assert result == {"rejected": True}
     db.refresh(r)
     assert r.merge_status == "rejected"
-    assert db.query(Hardware).filter(Hardware.ip_address == "10.2.2.2").first() is None
+    assert db.query(Hardware).filter(Hardware.ip_address == IP_REJECT).first() is None
+
 def test_merge_already_accepted_returns_409(db):
     from fastapi import HTTPException
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.3.3.3")
+    r = _make_result(db, job, ip=IP_DOUBLE_ACCEPT)
     merge_scan_result(db, r.id, "accept", entity_type="hardware")
     with pytest.raises(HTTPException) as exc_info:
         merge_scan_result(db, r.id, "accept", entity_type="hardware")
     assert exc_info.value.status_code == 409
+
 def test_merge_conflict_with_overrides(db):
-    hw = _make_hardware(db, ip="10.4.4.4", mac="AA:BB:CC:DD:EE:FF", name="OldName")
+    hw = _make_hardware(db, ip=IP_OVERRIDE_HW, mac=MAC_EXISTING, name="OldName")
     job = _make_job(db)
-    r = _make_result(db, job, ip="10.4.4.4", mac="00:11:22:33:44:55",
+    r = _make_result(db, job, ip=IP_OVERRIDE_HW, mac=MAC_CONFLICT,
                      state="conflict", matched_entity_id=hw.id,
                      matched_entity_type="hardware")
     result = merge_scan_result(db, r.id, "accept", overrides={"name": "my-switch"})
@@ -196,58 +247,64 @@ def test_merge_conflict_with_overrides(db):
     db.refresh(hw)
     assert hw.name == "my-switch"
     # mac not in overrides — must not be overwritten
-    assert hw.mac_address == "AA:BB:CC:DD:EE:FF"
+    assert hw.mac_address == MAC_EXISTING
+
 # ─────────────────────────────────────────────────────────────────
 # 6. bulk_merge_results
 # ─────────────────────────────────────────────────────────────────
 def test_bulk_merge_skips_conflicts(db):
     job = _make_job(db)
-    hw = _make_hardware(db, ip="10.5.5.5", mac="AA:BB:CC:00:00:01")
-    r1 = _make_result(db, job, ip="10.5.5.1")
-    r2 = _make_result(db, job, ip="10.5.5.2")
-    r_conflict = _make_result(db, job, ip="10.5.5.5", mac="00:00:00:00:00:01",
+    hw = _make_hardware(db, ip=IP_BULK_BASE, mac=MAC_BULK_HW)
+    r1 = _make_result(db, job, ip=IP_BULK_R1)
+    r2 = _make_result(db, job, ip=IP_BULK_R2)
+    r_conflict = _make_result(db, job, ip=IP_BULK_BASE, mac=MAC_BULK_CONFLICT,
                               state="conflict", matched_entity_id=hw.id,
                               matched_entity_type="hardware")
     counts = bulk_merge_results(db, [r1.id, r2.id, r_conflict.id], "accept")
     assert counts["accepted"] == 2
     assert counts["skipped"] == 1
     assert counts["rejected"] == 0
+
 def test_bulk_merge_reject_all(db):
     job = _make_job(db)
-    r1 = _make_result(db, job, ip="10.6.6.1")
-    r2 = _make_result(db, job, ip="10.6.6.2")
+    r1 = _make_result(db, job, ip=IP_BULK_REJECT_1)
+    r2 = _make_result(db, job, ip=IP_BULK_REJECT_2)
     counts = bulk_merge_results(db, [r1.id, r2.id], "reject")
     assert counts["rejected"] == 2
     assert counts["accepted"] == 0
     assert counts["skipped"] == 0
+
 # ─────────────────────────────────────────────────────────────────
 # 7. REST API auth enforcement
 # ─────────────────────────────────────────────────────────────────
 def test_scan_endpoint_requires_auth_without_token(client):
     resp = client.post("/api/v1/discovery/scan", json={
-        "cidr": "192.168.1.0/24",
+        "cidr": CIDR_LAN,
         "scan_types": ["nmap"],
     })
     assert resp.status_code == 401
+
 def test_scan_endpoint_accepts_valid_token(client, auth_headers):
     resp = client.post("/api/v1/discovery/scan", json={
-        "cidr": "192.168.1.0/24",
+        "cidr": CIDR_LAN,
         "scan_types": ["nmap"],
     }, headers=auth_headers)
     assert resp.status_code != 401
+
 def test_scan_endpoint_invalid_cidr_returns_422(client, auth_headers):
     resp = client.post("/api/v1/discovery/scan", json={
         "cidr": "not-a-cidr",
         "scan_types": ["nmap"],
     }, headers=auth_headers)
     assert resp.status_code == 422
+
 # ─────────────────────────────────────────────────────────────────
 # 8. Profile SNMP field exclusion
 # ─────────────────────────────────────────────────────────────────
 def test_profile_snmp_community_not_in_response(client, auth_headers):
     resp = client.post("/api/v1/discovery/profiles", json={
         "name": "Test Profile",
-        "cidr": "10.0.0.0/24",
+        "cidr": CIDR_DEFAULT,
         "scan_types": ["nmap", "snmp"],
         "snmp_community": "public",
     }, headers=auth_headers)
@@ -260,6 +317,7 @@ def test_profile_snmp_community_not_in_response(client, auth_headers):
     get_body = get_resp.json()
     assert "snmp_community_encrypted" not in get_body
     assert "snmp_community" not in get_body
+
 # ─────────────────────────────────────────────────────────────────
 # 9. Rate limiting
 # ─────────────────────────────────────────────────────────────────
@@ -269,22 +327,23 @@ def test_rate_limit_scan_endpoint(client, auth_headers):
     limiter.enabled = True
     try:
         resp1 = client.post("/api/v1/discovery/scan", json={
-            "cidr": "192.168.1.0/24", "scan_types": ["nmap"],
+            "cidr": CIDR_LAN, "scan_types": ["nmap"],
         }, headers=auth_headers)
         resp2 = client.post("/api/v1/discovery/scan", json={
-            "cidr": "192.168.1.0/24", "scan_types": ["nmap"],
+            "cidr": CIDR_LAN, "scan_types": ["nmap"],
         }, headers=auth_headers)
         statuses = {resp1.status_code, resp2.status_code}
         assert 429 in statuses
     finally:
         limiter.enabled = False
+
 # ─────────────────────────────────────────────────────────────────
 # 11. Purge respects retention_days
 # ─────────────────────────────────────────────────────────────────
 def test_purge_respects_retention_days(db):
     old_ts = "2020-01-01T00:00:00Z"
     old_job = ScanJob(
-        target_cidr="10.0.0.0/24",
+        target_cidr=CIDR_DEFAULT,
         scan_types_json='["nmap"]',
         status="completed",
         created_at=old_ts,
@@ -296,7 +355,7 @@ def test_purge_respects_retention_days(db):
 
     old_result = ScanResult(
         scan_job_id=old_job_id,
-        ip_address="10.0.0.1",
+        ip_address=IP_PURGE_OLD,
         state="new",
         merge_status="pending",
         created_at=old_ts,
@@ -314,6 +373,7 @@ def test_purge_respects_retention_days(db):
 
     assert db.query(ScanJob).filter(ScanJob.id == old_job_id).first() is None
     assert db.query(ScanResult).filter(ScanResult.scan_job_id == old_job_id).first() is None
+
 # ─────────────────────────────────────────────────────────────────
 # 12. _arp_available mocking
 # ─────────────────────────────────────────────────────────────────
