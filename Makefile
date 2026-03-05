@@ -114,7 +114,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build compose-up compose-down preflight
+.PHONY: lock docker-build compose-up compose-down compose-clean compose-fresh preflight
 
 lock: ## Regenerate backend/requirements.txt from poetry.lock
 	@echo "Regenerating backend/requirements.txt from poetry.lock..."
@@ -132,6 +132,17 @@ compose-up: ## Rebuild and start docker compose stack (port 8080)
 compose-down: ## Stop and remove docker compose stack
 	@echo "Stopping docker-compose stack..."
 	docker compose -f docker/docker-compose.yml down
+
+compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
+	@echo "Stopping stack and removing all volumes..."
+	docker compose -f docker/docker-compose.yml down -v
+	@echo "✅ Stack stopped and volumes removed."
+
+compose-fresh: ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
+	@echo "Wiping volumes and starting fresh stack..."
+	docker compose -f docker/docker-compose.yml down -v
+	DOCKER_BUILDKIT=1 docker compose -f docker/docker-compose.yml up --build -d
+	@echo "✅ Fresh stack running — open the app to complete first-run setup."
 
 preflight: test frontend-build docker-build ## Run pre-commit checks (test, build frontend, build docker)
 	@echo "\n✅ Preflight checks completed."
