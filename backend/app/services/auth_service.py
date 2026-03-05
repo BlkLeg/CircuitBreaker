@@ -166,6 +166,8 @@ def bootstrap_initialize(
     language: str | None = None,
     ui_font: str | None = None,
     ui_font_size: str | None = None,
+    theme: str | None = None,
+    weather_location: str | None = None,
 ) -> BootstrapInitializeResponse:
     email_norm = email.strip().lower()
     if len(email_norm) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email_norm):
@@ -209,6 +211,10 @@ def bootstrap_initialize(
 
     cfg.auth_enabled = True
     cfg.theme_preset = theme_preset
+    if theme in {"dark", "light", "auto"}:
+        cfg.theme = theme
+    if weather_location and weather_location.strip():
+        cfg.weather_location = weather_location.strip()
     if ui_font:
         cfg.ui_font = ui_font
     if ui_font_size:

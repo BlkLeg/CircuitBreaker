@@ -8,7 +8,10 @@
  */
 export function sanitizeImageSrc(url) {
   if (!url) return '';
-  return /^(https?:|blob:)/i.test(url) ? url : '';
+  // Allow absolute URLs with safe schemes and same-origin relative paths.
+  // Relative paths (starting with /) cannot carry a dangerous scheme like
+  // javascript: so they are safe to pass through as-is.
+  return /^(https?:|blob:)/i.test(url) || url.startsWith('/') ? url : '';
 }
 
 const IPV4_REGEX = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;

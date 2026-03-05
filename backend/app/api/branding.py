@@ -3,6 +3,8 @@ asset deletion, dynamic manifest, Theme Park export/import."""
 import json
 from pathlib import Path
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -24,6 +26,7 @@ _MAX_BG_BYTES = 5 * 1024 * 1024    # 5 MB
 _FAVICON_ALLOWED = {".ico", ".png"}
 _LOGO_ALLOWED = {".png", ".jpg", ".jpeg", ".svg"}
 _BG_ALLOWED = {".jpg", ".jpeg", ".png"}
+_MIME_PNG = "image/png"
 
 
 def _build_branding(row) -> BrandingConfig:
@@ -47,11 +50,11 @@ def _build_branding(row) -> BrandingConfig:
     )
 
 
-@router.post("/upload-favicon", response_model=BrandingConfig)
+@router.post("/upload-favicon", response_model=BrandingConfig, responses={400: {"description": "Invalid favicon format or size"}})
 async def upload_favicon(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Upload a custom favicon (.ico or .png, max 512 KB)."""
     suffix = Path(file.filename or "").suffix.lower()
@@ -74,11 +77,11 @@ async def upload_favicon(
     return _build_branding(row)
 
 
-@router.post("/upload-login-logo", response_model=BrandingConfig)
+@router.post("/upload-login-logo", response_model=BrandingConfig, responses={400: {"description": "Invalid logo format or size"}})
 async def upload_login_logo(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Upload a custom login logo (.png/.jpg/.svg, max 2 MB)."""
     suffix = Path(file.filename or "").suffix.lower()
@@ -101,11 +104,11 @@ async def upload_login_logo(
     return _build_branding(row)
 
 
-@router.post("/upload-login-bg", response_model=BrandingConfig)
+@router.post("/upload-login-bg", response_model=BrandingConfig, responses={400: {"description": "Invalid background format or size"}})
 async def upload_login_bg(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    file: Annotated[UploadFile, File()],
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Upload a custom login background (.jpg/.png, max 5 MB).
 
@@ -158,11 +161,11 @@ _ASSET_MAP = {
 }
 
 
-@router.delete("/{asset_type}", response_model=BrandingConfig)
+@router.delete("/{asset_type}", response_model=BrandingConfig, responses={400: {"description": "Unknown asset type"}})
 def delete_branding_asset(
     asset_type: str,
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Remove a branding asset (favicon, login-logo, or login-bg).
 
@@ -191,7 +194,7 @@ def delete_branding_asset(
 # ── Dynamic PWA Manifest ──────────────────────────────────────────────────────
 
 @router.get("/manifest.json")
-def dynamic_manifest(db: Session = Depends(get_db)):
+def dynamic_manifest(db: Annotated[Session, Depends(get_db)]):
     """Generate a PWA manifest.json reflecting current branding settings."""
     row = get_or_create_settings(db)
     app_name = row.app_name or "Circuit Breaker"
@@ -202,8 +205,8 @@ def dynamic_manifest(db: Session = Depends(get_db)):
         "short_name": app_name[:12] if len(app_name) > 12 else app_name,
         "icons": [
             {"src": favicon_url, "sizes": "any", "type": "image/x-icon"},
-            {"src": "/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png"},
-            {"src": "/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/android-chrome-192x192.png", "sizes": "192x192", "type": _MIME_PNG},
+            {"src": "/android-chrome-512x512.png", "sizes": "512x512", "type": _MIME_PNG},
         ],
         "theme_color": row.primary_color or "#00d4ff",
         "background_color": "#080c14",
@@ -211,7 +214,7 @@ def dynamic_manifest(db: Session = Depends(get_db)):
     }
     # If a custom favicon was uploaded, insert it as the first 192/512 entry too
     if row.favicon_path:
-        manifest["icons"].insert(0, {"src": row.favicon_path, "sizes": "192x192", "type": "image/png"})
+        manifest["icons"].insert(0, {"src": row.favicon_path, "sizes": "192x192", "type": _MIME_PNG})
 
     return JSONResponse(content=manifest, media_type="application/manifest+json")
 
@@ -229,7 +232,7 @@ class ThemeParkImport(BaseModel):
 
 
 @router.get("/export", response_model=ThemeParkExport)
-def export_theme(db: Session = Depends(get_db)):
+def export_theme(db: Annotated[Session, Depends(get_db)]):
     """Export branding as a Theme Park-compatible JSON blob."""
     row = get_or_create_settings(db)
     branding = _build_branding(row)
@@ -243,8 +246,8 @@ def export_theme(db: Session = Depends(get_db)):
 @router.post("/import", response_model=BrandingConfig)
 def import_theme(
     payload: ThemeParkImport,
-    db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[None, Depends(require_write_auth)] = None,
 ):
     """Import a Theme Park JSON blob. Updates name/colors only; does NOT change file paths."""
     row = get_or_create_settings(db)

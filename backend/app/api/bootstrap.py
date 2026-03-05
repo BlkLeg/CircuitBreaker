@@ -1,3 +1,4 @@
+from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,7 @@ router = APIRouter(tags=["bootstrap"])
 
 
 @router.get("/status", response_model=BootstrapStatusResponse)
-def get_bootstrap_status(db: Session = Depends(get_db)):
+def get_bootstrap_status(db: Annotated[Session, Depends(get_db)]):
     return auth_service.bootstrap_status(db)
 
 
@@ -24,7 +25,7 @@ def get_bootstrap_status(db: Session = Depends(get_db)):
 def initialize_bootstrap(
     request: Request,
     payload: BootstrapInitializeRequest,
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
 ):
     cfg = get_or_create_settings(db)
     return auth_service.bootstrap_initialize(
@@ -38,4 +39,6 @@ def initialize_bootstrap(
         payload.language,
         payload.ui_font,
         payload.ui_font_size,
+        payload.theme,
+        payload.weather_location,
     )

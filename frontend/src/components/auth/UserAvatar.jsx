@@ -1,22 +1,28 @@
 import React, { useEffect, useRef, useState } from 'react';
+import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
-import { User } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 
-function avatarSrc(user) {
-  if (!user) return null;
-  if (user.profile_photo_url) return user.profile_photo_url;
-  if (user.gravatar_hash) {
-    return `https://www.gravatar.com/avatar/${user.gravatar_hash}?s=72&d=mp`;
-  }
-  return null;
+function getInitials(user) {
+  if (!user) return '?';
+  const name = user.display_name || user.email?.split('@')[0] || '';
+  const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  if (parts[0]) return parts[0].slice(0, 2).toUpperCase();
+  return '?';
 }
 
 function UserAvatar({ onOpenAuth, onOpenProfile }) {
   const { isAuthenticated, user, logout, authEnabled } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [photoBroken, setPhotoBroken] = useState(false);
+  const [gravatarBroken, setGravatarBroken] = useState(false);
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
+
+  // Reset broken-image flags when user's photo or gravatar changes
+  useEffect(() => { setPhotoBroken(false); }, [user?.profile_photo_url]);
+  useEffect(() => { setGravatarBroken(false); }, [user?.gravatar_hash]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -28,8 +34,15 @@ function UserAvatar({ onOpenAuth, onOpenProfile }) {
     return () => document.removeEventListener('mousedown', handler);
   }, [dropdownOpen]);
 
-  const src = avatarSrc(user);
   const size = 36;
+
+  // Priority: uploaded photo → gravatar → initials
+  const showPhoto = !photoBroken && !!user?.profile_photo_url;
+  const showGravatar = !showPhoto && !gravatarBroken && !!user?.gravatar_hash;
+
+  let src = null;
+  if (showPhoto) src = user.profile_photo_url;
+  else if (showGravatar) src = `https://www.gravatar.com/avatar/${user.gravatar_hash}?s=72&d=404`;
 
   const handleClick = () => {
     if (isAuthenticated) {
@@ -39,11 +52,50 @@ function UserAvatar({ onOpenAuth, onOpenProfile }) {
     }
   };
 
+  const defaultButtonTitle = authEnabled ? 'Login' : 'Guest';
+  const buttonTitle = isAuthenticated 
+    ? user?.display_name || user?.email 
+    : defaultButtonTitle;
+
+  const renderAvatar = () => {
+    if (src) {
+      return (
+        <img
+          src={src}
+          alt="avatar"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onError={() => {
+            if (showPhoto) setPhotoBroken(true);
+            else if (showGravatar) setGravatarBroken(true);
+          }}
+        />
+      );
+    }
+    if (isAuthenticated && user) {
+      return (
+        <span style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--color-primary)',
+          userSelect: 'none',
+          letterSpacing: '0.02em',
+        }}>
+          {getInitials(user)}
+        </span>
+      );
+    }
+    return (
+      <span style={{ fontSize: 13, color: 'var(--color-text-muted)', userSelect: 'none' }}>
+        ?
+      </span>
+    );
+  };
+
   return (
     <div ref={dropdownRef} style={{ position: 'relative', pointerEvents: 'auto' }}>
       <button
         onClick={handleClick}
-        title={isAuthenticated ? user?.display_name || user?.email : authEnabled ? 'Login' : 'Guest'}
+        title={buttonTitle}
         style={{
           width: size,
           height: size,
@@ -65,11 +117,7 @@ function UserAvatar({ onOpenAuth, onOpenProfile }) {
           e.currentTarget.style.borderColor = 'var(--color-border)';
         }}
       >
-        {src ? (
-          <img src={src} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        ) : (
-          <User size={18} color="var(--color-text-muted)" />
-        )}
+        {renderAvatar()}
       </button>
 
       {dropdownOpen && isAuthenticated && (
@@ -128,5 +176,16 @@ function DropdownItem({ label, onClick, danger }) {
     </button>
   );
 }
+
+DropdownItem.propTypes = {
+  label: PropTypes.string.isRequired,
+  onClick: PropTypes.func.isRequired,
+  danger: PropTypes.bool,
+};
+
+UserAvatar.propTypes = {
+  onOpenAuth: PropTypes.func,
+  onOpenProfile: PropTypes.func,
+};
 
 export default UserAvatar;
