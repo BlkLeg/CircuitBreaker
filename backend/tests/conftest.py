@@ -57,6 +57,8 @@ def client(db_engine, db):
     import app.db.session as _db_session
     import app.main as _main
     import app.middleware.logging_middleware as _log_mw
+    import app.main as _main
+    import app.core.config as _config
 
     orig_session_local = _db_session.SessionLocal
     orig_mw_session_local = _log_mw.SessionLocal

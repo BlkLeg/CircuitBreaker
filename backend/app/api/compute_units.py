@@ -18,6 +18,8 @@ from app.services import compute_units_service
 
 router = APIRouter(tags=["compute-units"])
 
+router = APIRouter(tags=["compute-units"])
+
 ICON_UPLOAD_DIR = Path(settings.uploads_dir) / "icons"
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 MAX_SIZE = 1 * 1024 * 1024  # 1 MB
