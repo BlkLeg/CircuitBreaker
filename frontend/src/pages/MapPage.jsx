@@ -23,6 +23,8 @@ import FormModal from '../components/common/FormModal';
 import { getVendorIcon } from '../icons/vendorIcons';
 import ContextMenu from '../components/map/ContextMenu';
 import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
+import VisualLineContextMenu from '../components/map/VisualLineContextMenu';
+import DrawToolsDropdown from '../components/map/DrawToolsDropdown';
 import BulkQuickCreateModal from '../components/map/BulkQuickCreateModal';
 import CreateNodeModal from '../components/map/CreateNodeModal';
 import CustomNode from '../components/map/CustomNode';
@@ -34,6 +36,7 @@ import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/Map/Sidebar';
 import { useToast } from '../components/common/Toast';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
+import { CONNECTION_STYLES } from '../config/mapTheme';
 import { HARDWARE_ROLES } from '../config/hardwareRoles';
 import { validateIpAddress } from '../utils/validation';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
@@ -823,25 +826,28 @@ function boundaryFillString(preset, opacity) {
   return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 }
 
+const LEGACY_LABEL_COLOR_MAP = {
+  yellow: 'yellow',
+  blue: 'blue',
+  green: 'green',
+  pink: 'red',
+  gray: 'gray',
+};
+
 function normalizeMapLabel(label, index) {
+  const rawColor = String(label?.color || 'blue');
+  const color = LEGACY_LABEL_COLOR_MAP[rawColor] || rawColor;
+  const validKeys = BOUNDARY_PRESETS.map((p) => p.key);
   return {
     id: String(label?.id || `map-label-${Date.now()}-${index}`),
     text: String(label?.text || '').trim() || 'Label',
     x: Number.isFinite(label?.x) ? Number(label.x) : 160,
     y: Number.isFinite(label?.y) ? Number(label.y) : 160,
     width: Math.max(140, Number(label?.width) || 220),
-    height: Math.max(72, Number(label?.height) || 96),
-    color: String(label?.color || 'yellow'),
+    height: Math.max(48, Number(label?.height) || 48),
+    color: validKeys.includes(color) ? color : 'blue',
   };
 }
-
-const MAP_LABEL_COLORS = [
-  { key: 'yellow', label: 'Yellow' },
-  { key: 'blue', label: 'Blue' },
-  { key: 'green', label: 'Green' },
-  { key: 'pink', label: 'Pink' },
-  { key: 'gray', label: 'Gray' },
-];
 
 function boundaryFlowRect(startFlow, endFlow) {
   return {
@@ -1072,17 +1078,14 @@ function MapInternal() {
     return !isMobile;
   });
 
-  const [mapLabelDefaultColor, setMapLabelDefaultColor] = useState(() => {
+  const [mapLabelDefaultColor] = useState(() => {
     const saved = localStorage.getItem('cb-map-label-default-color');
-    return saved || 'yellow';
+    return saved || 'blue';
   });
   useEffect(() => {
     localStorage.setItem('cb-legend-open', legendOpen);
   }, [legendOpen]);
 
-  useEffect(() => {
-    localStorage.setItem('cb-map-label-default-color', mapLabelDefaultColor);
-  }, [mapLabelDefaultColor]);
 
   // Edge override state — { edgeId: { source_side, target_side, control_point? } }
   const [edgeOverrides, setEdgeOverrides] = useState({});
@@ -1096,6 +1099,11 @@ function MapInternal() {
   const [boundaryMenu, setBoundaryMenu] = useState(null);
   const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
   const resizingBoundaryRef = useRef(null);
+  const [visualLines, setVisualLines] = useState([]);
+  const [lineDrawMode, setLineDrawMode] = useState(null);
+  const [lineDrawDraft, setLineDrawDraft] = useState(null);
+  const [selectedVisualLineId, setSelectedVisualLineId] = useState(null);
+  const [visualLineMenu, setVisualLineMenu] = useState(null);
   // Edge anchor context menu — { edgeId, x, y } | null
   const [edgeMenu, setEdgeMenu] = useState(null);
   // Pending connection action (new connect or reconnect), resolved by type picker
@@ -1111,6 +1119,10 @@ function MapInternal() {
   const boundaryPointerUpRef = useRef(null);
   const finishBoundaryDrawRef = useRef(() => {});
   const mapLabelsRef = useRef([]);
+  const visualLinesRef = useRef([]);
+  const lineDrawDraftRef = useRef(null);
+  const linePointerMoveRef = useRef(null);
+  const linePointerUpRef = useRef(null);
   const labelPointerMoveRef = useRef(null);
   const labelPointerUpRef = useRef(null);
   const labelMenuRef = useRef(null);
@@ -1120,6 +1132,8 @@ function MapInternal() {
   useEffect(() => { edgeOverridesRef.current = edgeOverrides; }, [edgeOverrides]);
   useEffect(() => { boundaryDraftRef.current = boundaryDraft; }, [boundaryDraft]);
   useEffect(() => { mapLabelsRef.current = mapLabels; }, [mapLabels]);
+  useEffect(() => { visualLinesRef.current = visualLines; }, [visualLines]);
+  useEffect(() => { lineDrawDraftRef.current = lineDrawDraft; }, [lineDrawDraft]);
 
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
@@ -1217,6 +1231,9 @@ function MapInternal() {
         setPendingConnection(null);
         setBoundaryDrawMode(false);
         setBoundaryDraft(null);
+        setLineDrawMode(null);
+        setLineDrawDraft(null);
+        setVisualLineMenu(null);
         setMapLabelMenuOpenId(null);
         setEditingBoundaryId(null);
         setEditingBoundaryName('');
@@ -1457,6 +1474,7 @@ function MapInternal() {
       let savedEdgeOverrides = {};
       let savedBoundaries = [];
       let savedLabels = [];
+      let savedVisualLines = [];
       try {
         const scopedLayoutName = getLayoutName();
         const layoutNames = scopedLayoutName === 'default'
@@ -1471,6 +1489,7 @@ function MapInternal() {
           savedEdgeOverrides = parsed.edges || {};
           savedBoundaries = Array.isArray(parsed.boundaries) ? parsed.boundaries : [];
           savedLabels = Array.isArray(parsed.labels) ? parsed.labels : [];
+          savedVisualLines = Array.isArray(parsed.visualLines) ? parsed.visualLines : [];
           setLastSaved(layoutRes.data.updated_at);
           break;
         }
@@ -1490,6 +1509,16 @@ function MapInternal() {
           })),
       );
       setMapLabels(savedLabels.map((label, index) => normalizeMapLabel(label, index)));
+      setVisualLines(
+        savedVisualLines
+          .filter((vl) => vl?.startFlow && vl?.endFlow && vl?.lineType)
+          .map((vl, index) => ({
+            id: vl.id || `vline-${Date.now()}-${index}`,
+            startFlow: { x: Number(vl.startFlow.x) || 0, y: Number(vl.startFlow.y) || 0 },
+            endFlow: { x: Number(vl.endFlow.x) || 0, y: Number(vl.endFlow.y) || 0 },
+            lineType: vl.lineType,
+          })),
+      );
 
       if (savedNodePositions) {
         const mergedNodes = rawNodesWithClusterHints.map(n => {
@@ -1627,6 +1656,12 @@ function MapInternal() {
         shape: boundary.shape || 'rectangle',
       })),
       labels: (labelsOverride ?? mapLabelsRef.current).map((label, index) => normalizeMapLabel(label, index)),
+      visualLines: visualLinesRef.current.map((vl) => ({
+        id: vl.id,
+        startFlow: vl.startFlow,
+        endFlow: vl.endFlow,
+        lineType: vl.lineType,
+      })),
     };
     await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
     setLastSaved(new Date().toISOString());
@@ -2085,6 +2120,8 @@ function MapInternal() {
     setContextMenu(null);
     setBoundaryMenu(null);
     setSelectedBoundaryId(null);
+    setSelectedVisualLineId(null);
+    setVisualLineMenu(null);
     if (selectedNode) setSelectedNode(null);
   }, [selectedNode]);
 
@@ -2463,7 +2500,135 @@ function MapInternal() {
     return () => document.removeEventListener('keydown', handleKey);
   }, [selectedBoundaryId]);
 
-  const addMapLabel = useCallback(() => {
+  // ── Visual Line draw mode ─────────────────────────────────────────────────
+  const clearLinePointerListeners = useCallback(() => {
+    if (linePointerMoveRef.current) {
+      globalThis.removeEventListener('pointermove', linePointerMoveRef.current);
+      linePointerMoveRef.current = null;
+    }
+    if (linePointerUpRef.current) {
+      globalThis.removeEventListener('pointerup', linePointerUpRef.current);
+      linePointerUpRef.current = null;
+    }
+  }, []);
+
+  const handleLinePointerDown = useCallback((event) => {
+    if (!lineDrawMode || event.button !== 0) return;
+    event.preventDefault();
+    clearLinePointerListeners();
+
+    const startClient = { x: event.clientX, y: event.clientY };
+    const startFlow = screenToFlow(event.clientX, event.clientY);
+    const draft = { startClient, endClient: startClient, startFlow, endFlow: startFlow };
+    setLineDrawDraft(draft);
+    lineDrawDraftRef.current = draft;
+
+    const onMove = (moveEvt) => {
+      const endFlow = screenToFlow(moveEvt.clientX, moveEvt.clientY);
+      setLineDrawDraft((prev) => {
+        if (!prev) return prev;
+        const updated = { ...prev, endClient: { x: moveEvt.clientX, y: moveEvt.clientY }, endFlow };
+        lineDrawDraftRef.current = updated;
+        return updated;
+      });
+    };
+
+    const onUp = () => {
+      clearLinePointerListeners();
+      const latest = lineDrawDraftRef.current;
+      if (!latest) return;
+      const dx = Math.abs(latest.endClient.x - latest.startClient.x);
+      const dy = Math.abs(latest.endClient.y - latest.startClient.y);
+      if (dx < 8 && dy < 8) {
+        setLineDrawDraft(null);
+        return;
+      }
+      setVisualLines((prev) => [
+        ...prev,
+        {
+          id: `vline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          startFlow: latest.startFlow,
+          endFlow: latest.endFlow,
+          lineType: lineDrawMode,
+        },
+      ]);
+      dirtyRef.current = true;
+      setLineDrawDraft(null);
+      setLineDrawMode(null);
+    };
+
+    linePointerMoveRef.current = onMove;
+    linePointerUpRef.current = onUp;
+    globalThis.addEventListener('pointermove', onMove);
+    globalThis.addEventListener('pointerup', onUp);
+  }, [lineDrawMode, clearLinePointerListeners, screenToFlow]);
+
+  useEffect(() => {
+    if (!lineDrawMode) return;
+    const paneEl = flowContainerRef.current?.querySelector('.react-flow__pane');
+    if (!paneEl) return;
+    paneEl.addEventListener('pointerdown', handleLinePointerDown);
+    return () => paneEl.removeEventListener('pointerdown', handleLinePointerDown);
+  }, [lineDrawMode, handleLinePointerDown]);
+
+  const deleteVisualLine = useCallback((lineId) => {
+    setVisualLines((prev) => prev.filter((vl) => vl.id !== lineId));
+    if (selectedVisualLineId === lineId) setSelectedVisualLineId(null);
+    dirtyRef.current = true;
+  }, [selectedVisualLineId]);
+
+  const updateVisualLineType = useCallback((lineId, newType) => {
+    setVisualLines((prev) => prev.map((vl) =>
+      vl.id === lineId ? { ...vl, lineType: newType } : vl
+    ));
+    dirtyRef.current = true;
+  }, []);
+
+  const openVisualLineContextMenu = useCallback((event, lineId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setVisualLineMenu({ x: event.clientX, y: event.clientY, lineId });
+  }, []);
+
+  const startVisualLineDrag = useCallback((event, lineId, endpoint) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    event.preventDefault();
+
+    const vl = visualLinesRef.current.find((v) => v.id === lineId);
+    if (!vl) return;
+
+    const onMove = (moveEvt) => {
+      const flowPt = screenToFlow(moveEvt.clientX, moveEvt.clientY);
+      setVisualLines((prev) => prev.map((v) => {
+        if (v.id !== lineId) return v;
+        return endpoint === 'start'
+          ? { ...v, startFlow: flowPt }
+          : { ...v, endFlow: flowPt };
+      }));
+    };
+
+    const onUp = () => {
+      globalThis.removeEventListener('pointermove', onMove);
+      globalThis.removeEventListener('pointerup', onUp);
+      dirtyRef.current = true;
+    };
+
+    globalThis.addEventListener('pointermove', onMove);
+    globalThis.addEventListener('pointerup', onUp);
+  }, [screenToFlow]);
+
+  useEffect(() => {
+    if (!selectedVisualLineId) return;
+    const handleKey = (e) => {
+      if (e.key === 'Escape') setSelectedVisualLineId(null);
+      if (e.key === 'Delete' || e.key === 'Backspace') deleteVisualLine(selectedVisualLineId);
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [selectedVisualLineId, deleteVisualLine]);
+
+  const addMapLabel = useCallback((colorOverride) => {
     const rect = flowContainerRef.current?.getBoundingClientRect();
     const width = 220;
     const height = 96;
@@ -2479,7 +2644,7 @@ function MapInternal() {
         y,
         width,
         height,
-        color: mapLabelDefaultColor,
+        color: colorOverride || mapLabelDefaultColor,
       },
     ]));
     dirtyRef.current = true;
@@ -2539,12 +2704,6 @@ function MapInternal() {
     globalThis.addEventListener('pointerup', onPointerUp);
   }, [clearLabelPointerListeners, updateMapLabel]);
 
-  const commitMapLabelSize = useCallback((labelId, element) => {
-    if (!element) return;
-    const nextWidth = Math.max(140, Math.round(element.offsetWidth));
-    const nextHeight = Math.max(72, Math.round(element.offsetHeight));
-    updateMapLabel(labelId, { width: nextWidth, height: nextHeight });
-  }, [updateMapLabel]);
 
   // ── Edge interaction handlers ───────────────────────────────────────────────
 
@@ -2884,40 +3043,33 @@ function MapInternal() {
           <button className="btn" onClick={fetchData} disabled={loading} style={{ fontSize: 12, padding: '5px 12px' }}>
             Refresh
           </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              setBoundaryDrawMode((prev) => !prev);
+          <DrawToolsDropdown
+            activeMode={(() => {
+              if (boundaryDrawMode) return 'Boundary';
+              if (lineDrawMode) return `${lineDrawMode} line`;
+              return null;
+            })()}
+            boundaryPresets={BOUNDARY_PRESETS}
+            onStartBoundaryDraw={() => {
+              setLineDrawMode(null);
+              setLineDrawDraft(null);
+              setBoundaryDrawMode(true);
               setBoundaryDraft(null);
             }}
-            style={{
-              fontSize: 12,
-              padding: '5px 12px',
-              borderColor: boundaryDrawMode ? 'var(--color-primary)' : undefined,
-              color: boundaryDrawMode ? 'var(--color-primary)' : undefined,
+            onStartLineDraw={(type) => {
+              setBoundaryDrawMode(false);
+              setBoundaryDraft(null);
+              setLineDrawMode(type);
+              setLineDrawDraft(null);
             }}
-          >
-            {boundaryDrawMode ? 'Cancel Boundary Draw' : 'Draw Boundary'}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={addMapLabel}
-            style={{ fontSize: 12, padding: '5px 12px' }}
-          >
-            Add Label
-          </button>
-          <select
-            value={mapLabelDefaultColor}
-            onChange={(event) => setMapLabelDefaultColor(event.target.value)}
-            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', fontSize: 12 }}
-            title="Default color for new labels"
-          >
-            {MAP_LABEL_COLORS.map((color) => (
-              <option key={color.key} value={color.key}>{`Default Label: ${color.label}`}</option>
-            ))}
-          </select>
+            onAddLabel={(colorKey) => addMapLabel(colorKey)}
+            onCancel={() => {
+              setBoundaryDrawMode(false);
+              setBoundaryDraft(null);
+              setLineDrawMode(null);
+              setLineDrawDraft(null);
+            }}
+          />
           {pendingDiscoveries > 0 && (
             <button
               type="button"
@@ -2989,6 +3141,56 @@ function MapInternal() {
                   })()}
                 </g>
               ))}
+            </svg>
+          </div>
+        )}
+
+        {visualLines.length > 0 && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }}>
+            <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
+              {visualLines.map((vl) => {
+                const cs = CONNECTION_STYLES[vl.lineType] || CONNECTION_STYLES.ethernet;
+                const s = flowToScreenPoint(vl.startFlow, viewport);
+                const e = flowToScreenPoint(vl.endFlow, viewport);
+                const isSelected = selectedVisualLineId === vl.id;
+                return (
+                  <g key={vl.id}>
+                    <line
+                      x1={s.x} y1={s.y} x2={e.x} y2={e.y}
+                      stroke="transparent"
+                      strokeWidth={12}
+                      style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                      onClick={(ev) => { ev.stopPropagation(); setSelectedVisualLineId((prev) => prev === vl.id ? null : vl.id); }}
+                      onContextMenu={(ev) => openVisualLineContextMenu(ev, vl.id)}
+                    />
+                    <line
+                      x1={s.x} y1={s.y} x2={e.x} y2={e.y}
+                      stroke={cs.stroke}
+                      strokeWidth={isSelected ? cs.strokeWidth * 2 : cs.strokeWidth}
+                      strokeDasharray={cs.strokeDasharray || 'none'}
+                      strokeLinecap="round"
+                      filter={cs.filter || 'none'}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                    {isSelected && (
+                      <>
+                        <circle
+                          cx={s.x} cy={s.y} r={6}
+                          fill={cs.stroke} stroke="var(--color-bg)" strokeWidth={2}
+                          style={{ pointerEvents: 'auto', cursor: 'move' }}
+                          onPointerDown={(ev) => startVisualLineDrag(ev, vl.id, 'start')}
+                        />
+                        <circle
+                          cx={e.x} cy={e.y} r={6}
+                          fill={cs.stroke} stroke="var(--color-bg)" strokeWidth={2}
+                          style={{ pointerEvents: 'auto', cursor: 'move' }}
+                          onPointerDown={(ev) => startVisualLineDrag(ev, vl.id, 'end')}
+                        />
+                      </>
+                    )}
+                  </g>
+                );
+              })}
             </svg>
           </div>
         )}
@@ -3141,77 +3343,122 @@ function MapInternal() {
 
         {mapLabels.length > 0 && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 14, pointerEvents: 'none' }}>
-            {mapLabels.map((label) => (
-              <div
-                key={label.id}
-                className={`topology-map-label topology-map-label--${label.color || 'yellow'}`}
-                style={{
-                  left: label.x,
-                  top: label.y,
-                  width: label.width,
-                  height: label.height,
-                }}
-              >
+            {mapLabels.map((label) => {
+              const preset = resolveBoundaryPreset(label.color);
+              const fillBg = boundaryFillString(preset, 0.15);
+              return (
                 <div
-                  className="topology-map-label__bar"
+                  key={label.id}
+                  className="map-pill-label"
+                  style={{
+                    position: 'absolute',
+                    left: label.x,
+                    top: label.y,
+                    pointerEvents: 'auto',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '4px 10px',
+                    borderRadius: 999,
+                    border: `1.5px solid ${preset.stroke}`,
+                    background: fillBg,
+                    cursor: 'grab',
+                    userSelect: 'none',
+                  }}
                   onPointerDown={(event) => startMapLabelDrag(event, label.id)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMapLabelMenuOpenId((prev) => (prev === label.id ? null : label.id));
+                  }}
                 >
-                  <span className="topology-map-label__drag-hint">⋮⋮</span>
-                  <button
-                    type="button"
-                    className="topology-map-label__menu-btn"
+                  <input
+                    type="text"
+                    value={label.text}
+                    onChange={(event) => updateMapLabel(label.id, { text: event.target.value })}
                     onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setMapLabelMenuOpenId((prev) => (prev === label.id ? null : label.id));
+                    placeholder="Label"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      outline: 'none',
+                      color: 'var(--color-text)',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      width: Math.max(40, label.text.length * 7 + 12),
+                      minWidth: 40,
+                      padding: 0,
                     }}
-                    aria-label="Label color options"
-                  >
-                    ☰
-                  </button>
+                  />
                   <button
                     type="button"
-                    className="topology-map-label__delete"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      removeMapLabel(label.id);
+                    onClick={(event) => { event.stopPropagation(); removeMapLabel(label.id); }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: preset.stroke,
+                      cursor: 'pointer',
+                      padding: '0 2px',
+                      fontSize: 14,
+                      lineHeight: 1,
+                      fontWeight: 700,
+                      opacity: 0.7,
                     }}
                     aria-label="Delete label"
                   >
-                    ×
+                    &times;
                   </button>
                 </div>
-                <textarea
-                  className="topology-map-label__text"
-                  value={label.text}
-                  onChange={(event) => updateMapLabel(label.id, { text: event.target.value })}
-                  onPointerUp={(event) => commitMapLabelSize(label.id, event.currentTarget.closest('.topology-map-label'))}
-                  placeholder="Label text"
-                />
-              </div>
-            ))}
+              );
+            })}
 
             {mapLabelMenuOpenId && openMapLabelMenuPosition && (
               <div
-                className="topology-map-label__menu"
                 ref={labelMenuRef}
-                style={{ left: openMapLabelMenuPosition.left, top: openMapLabelMenuPosition.top }}
+                style={{
+                  position: 'absolute',
+                  left: openMapLabelMenuPosition.left,
+                  top: openMapLabelMenuPosition.top,
+                  pointerEvents: 'auto',
+                  background: 'var(--color-surface)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 8,
+                  padding: 8,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+                  zIndex: 50,
+                }}
                 onPointerDown={(event) => event.stopPropagation()}
               >
-                {MAP_LABEL_COLORS.map((color) => (
-                  <button
-                    key={color.key}
-                    type="button"
-                    className={`topology-map-label__menu-item${mapLabels.find((entry) => entry.id === mapLabelMenuOpenId)?.color === color.key ? ' active' : ''}`}
-                    onClick={() => {
-                      updateMapLabel(mapLabelMenuOpenId, { color: color.key });
-                      setMapLabelMenuOpenId(null);
-                    }}
-                  >
-                    <span className={`topology-map-label__swatch topology-map-label__swatch--${color.key}`} />
-                    {color.label}
-                  </button>
-                ))}
+                <div style={{ fontSize: 9, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                  Label Color
+                </div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {BOUNDARY_PRESETS.map((preset) => {
+                    const active = mapLabels.find((entry) => entry.id === mapLabelMenuOpenId)?.color === preset.key;
+                    return (
+                      <button
+                        key={preset.key}
+                        title={preset.label}
+                        onClick={() => {
+                          updateMapLabel(mapLabelMenuOpenId, { color: preset.key });
+                          setMapLabelMenuOpenId(null);
+                        }}
+                        style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: '50%',
+                          border: active ? '2px solid var(--color-text)' : '2px solid transparent',
+                          background: preset.stroke,
+                          cursor: 'pointer',
+                          transition: 'transform 0.1s',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.15)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+                      />
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -3247,9 +3494,42 @@ function MapInternal() {
           );
         })()}
 
+        {lineDrawMode && !lineDrawDraft && (
+          <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 20, pointerEvents: 'none' }}>
+            <div style={{
+              padding: '5px 10px', borderRadius: 999,
+              border: `1px solid ${CONNECTION_STYLES[lineDrawMode]?.stroke || 'var(--color-primary)'}`,
+              background: 'rgba(0,0,0,0.45)', color: 'var(--color-text)', fontSize: 12,
+            }}>
+              Drag on the canvas to draw a {lineDrawMode} line
+            </div>
+          </div>
+        )}
+
+        {lineDrawDraft && (() => {
+          const cs = CONNECTION_STYLES[lineDrawMode] || CONNECTION_STYLES.ethernet;
+          return (
+            <svg
+              style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh', zIndex: 25, pointerEvents: 'none' }}
+            >
+              <line
+                x1={lineDrawDraft.startClient.x}
+                y1={lineDrawDraft.startClient.y}
+                x2={lineDrawDraft.endClient.x}
+                y2={lineDrawDraft.endClient.y}
+                stroke={cs.stroke}
+                strokeWidth={cs.strokeWidth + 1}
+                strokeDasharray={cs.strokeDasharray || 'none'}
+                strokeLinecap="round"
+                opacity={0.85}
+              />
+            </svg>
+          );
+        })()}
+
         <ReactFlow
-          className={boundaryDrawMode ? 'map-draw-mode' : ''}
-          style={{ zIndex: 5, cursor: boundaryDrawMode ? 'crosshair' : 'default' }}
+          className={(boundaryDrawMode || lineDrawMode) ? 'map-draw-mode' : ''}
+          style={{ zIndex: 5, cursor: (boundaryDrawMode || lineDrawMode) ? 'crosshair' : 'default' }}
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
           nodes={nodes}
@@ -3275,11 +3555,11 @@ function MapInternal() {
           onPaneClick={() => { setEdgeMenu(null); setPendingConnection(null); handlePaneClick(); }}
           fitView
           minZoom={0.1}
-          panOnDrag={!boundaryDrawMode}
-          panOnScroll={!boundaryDrawMode}
-          zoomOnScroll={!boundaryDrawMode}
-          zoomOnPinch={!boundaryDrawMode}
-          zoomOnDoubleClick={!boundaryDrawMode}
+          panOnDrag={!boundaryDrawMode && !lineDrawMode}
+          panOnScroll={!boundaryDrawMode && !lineDrawMode}
+          zoomOnScroll={!boundaryDrawMode && !lineDrawMode}
+          zoomOnPinch={!boundaryDrawMode && !lineDrawMode}
+          zoomOnDoubleClick={!boundaryDrawMode && !lineDrawMode}
           preventScrolling  /* keep page from scrolling when pointer is over map */
         >
           {/* Loading overlay */}
@@ -3538,6 +3818,20 @@ function MapInternal() {
               onChangeColor={updateBoundaryColor}
               onDelete={deleteBoundary}
               onClose={() => setBoundaryMenu(null)}
+            />
+          );
+        })()}
+
+        {visualLineMenu && (() => {
+          const vl = visualLines.find((v) => v.id === visualLineMenu.lineId);
+          if (!vl) return null;
+          return (
+            <VisualLineContextMenu
+              position={{ x: visualLineMenu.x, y: visualLineMenu.y }}
+              lineType={vl.lineType}
+              onChangeType={(newType) => updateVisualLineType(vl.id, newType)}
+              onDelete={() => deleteVisualLine(vl.id)}
+              onClose={() => setVisualLineMenu(null)}
             />
           );
         })()}
