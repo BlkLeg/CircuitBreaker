@@ -510,7 +510,7 @@ async def run_scan_job(job_id: int):
                 total=hosts_found,
             )
             for r in results_list:
-                _auto_merge_result(db, r)
+                _auto_merge_result(db, r, actor=job.triggered_by)
 
         # B6: assign all counters at once, then commit once
         job.hosts_found    = hosts_found
@@ -527,6 +527,7 @@ async def run_scan_job(job_id: int):
             entity_type="scan_job",
             entity_id=job.id,
             category="discovery",
+            actor=job.triggered_by,
             details=json.dumps({
                 "hosts_found": hosts_found,
                 "hosts_new": hosts_new,
@@ -562,6 +563,7 @@ async def run_scan_job(job_id: int):
                 entity_id=job.id,
                 category="discovery",
                 severity="error",
+                actor=job.triggered_by,
                 details=json.dumps({"error": str(e), "cidr": job.target_cidr}),
             )
             task1 = asyncio.create_task(_emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()}))
@@ -570,7 +572,7 @@ async def run_scan_job(job_id: int):
         db.close()
 
 
-def _auto_merge_result(db: Session, result: ScanResult):
+def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
     """
     Attempt to automatically merge a scan result into the system without manual intervention.
     Called when discovery_auto_merge is true, or via API bulk action.
@@ -656,6 +658,7 @@ def _auto_merge_result(db: Session, result: ScanResult):
             entity_type="hardware",
             entity_id=hw.id,
             category="discovery",
+            actor=actor,
             details=json.dumps({"ip": result.ip_address, "source": "nmap", "scan_result_id": result.id}),
         )
 
@@ -802,6 +805,7 @@ def merge_scan_result(
             entity_type="scan_result",
             entity_id=result.id,
             category="discovery",
+            actor=actor,
             details=json.dumps({"ip": result.ip_address, "hostname": result.hostname}),
         )
         return {"rejected": True}
@@ -843,6 +847,7 @@ def merge_scan_result(
                     entity_type=result.matched_entity_type or "hardware",
                     entity_id=result.matched_entity_id,
                     category="discovery",
+                    actor=actor,
                     details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
                 )
                 return {"updated": True}
@@ -888,6 +893,7 @@ def merge_scan_result(
                     entity_type="hardware",
                     entity_id=hw.id,
                     category="discovery",
+                    actor=actor,
                     details=json.dumps({"scan_result_id": result.id, "ip": result.ip_address, "hostname": result.hostname, "overrides": overrides}),
                 )
                 return {

@@ -1,6 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
-import { CalendarDays, Clock, Sun } from 'lucide-react';
+import { CalendarDays, Clock, Sun, Cloud, CloudRain, Snowflake, CloudLightning } from 'lucide-react';
+
+const WMO_CODES = {
+  0: 'Clear',
+  1: 'Mostly Clear',
+  2: 'Partly Cloudy',
+  3: 'Overcast',
+  45: 'Fog',
+  48: 'Fog',
+  51: 'Drizzle',
+  53: 'Drizzle',
+  55: 'Drizzle',
+  56: 'Freezing Drizzle',
+  57: 'Freezing Drizzle',
+  61: 'Rain',
+  63: 'Rain',
+  65: 'Heavy Rain',
+  66: 'Freezing Rain',
+  67: 'Freezing Rain',
+  71: 'Snow',
+  73: 'Snow',
+  75: 'Heavy Snow',
+  77: 'Snow Grains',
+  80: 'Rain Showers',
+  81: 'Rain Showers',
+  82: 'Heavy Rain Showers',
+  85: 'Snow Showers',
+  86: 'Snow Showers',
+  95: 'Thunderstorm',
+  96: 'Thunderstorm',
+  99: 'Thunderstorm',
+};
 
 const HeaderWidgets = ({ settings }) => {
   const showHeaderWidgets = settings?.showHeaderWidgets ?? settings?.show_header_widgets ?? true;
@@ -10,12 +41,54 @@ const HeaderWidgets = ({ settings }) => {
   const timezone = settings?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
   const [now, setNow] = useState(new Date());
-  const weather = { temp: '72°F', condition: 'Sunny' };
+  const [weatherData, setWeatherData] = useState({ temp: '--', condition: 'Loading...' });
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!showWeatherWidget || !weatherLocation) return;
+
+    let isMounted = true;
+
+    const fetchWeather = async () => {
+      try {
+        const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(weatherLocation)}&count=1&language=en&format=json`);
+        const geoData = await geoRes.json();
+        if (!geoData.results || geoData.results.length === 0) {
+          if (isMounted) setWeatherData({ temp: '--', condition: 'Not Found' });
+          return;
+        }
+
+        const { latitude, longitude } = geoData.results[0];
+
+        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&temperature_unit=fahrenheit`);
+        const weatherJson = await weatherRes.json();
+
+        if (isMounted && weatherJson.current_weather) {
+          const cw = weatherJson.current_weather;
+          setWeatherData({
+            temp: `${Math.round(cw.temperature)}°F`,
+            condition: WMO_CODES[cw.weathercode] || 'Unknown',
+            code: cw.weathercode,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch weather', err);
+        if (isMounted) setWeatherData({ temp: '--', condition: 'Error' });
+      }
+    };
+
+    fetchWeather();
+    const weatherInterval = setInterval(fetchWeather, 15 * 60 * 1000); // refresh every 15 mins
+
+    return () => {
+      isMounted = false;
+      clearInterval(weatherInterval);
+    };
+  }, [showWeatherWidget, weatherLocation]);
 
   const timeText = useMemo(
     () => new Intl.DateTimeFormat('en-US', {
@@ -62,16 +135,27 @@ const HeaderWidgets = ({ settings }) => {
     [now, timezone]
   );
 
+  const WeatherIcon = useMemo(() => {
+    if (weatherData.code === undefined) return Sun;
+    const c = weatherData.code;
+    if (c <= 1) return Sun;
+    if (c <= 3 || c === 45 || c === 48) return Cloud;
+    if ((c >= 51 && c <= 67) || (c >= 80 && c <= 82)) return CloudRain;
+    if ((c >= 71 && c <= 77) || c === 85 || c === 86) return Snowflake;
+    if (c >= 95) return CloudLightning;
+    return Sun;
+  }, [weatherData.code]);
+
   if (!showHeaderWidgets || (!showTimeWidget && !showWeatherWidget)) return null;
 
   return (
     <div className="header-widgets" aria-label="Header status widgets">
       {showWeatherWidget && (
         <section className="header-widget header-widget--weather" aria-label="Weather widget">
-          <Sun size={16} className="header-widget-icon header-widget-icon--sun" />
+          <WeatherIcon size={16} className="header-widget-icon header-widget-icon--sun" />
           <div className="header-widget-copy">
             <div className="header-widget-kicker">{weatherLocation.toUpperCase()}</div>
-            <div className="header-widget-main">{weather.temp} | {weather.condition}</div>
+            <div className="header-widget-main">{weatherData.temp} | {weatherData.condition}</div>
           </div>
         </section>
       )}

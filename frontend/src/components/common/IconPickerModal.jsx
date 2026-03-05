@@ -232,15 +232,16 @@ export const LIBRARY_ICONS = [
   { slug: 'pwr-ups',           label: 'UPS',             path: '/icons/power/icons8-ups-50.png',                    group: 'Power' },
   { slug: 'pwr-ups-alt',       label: 'UPS (alt)',       path: '/icons/power/icons8-ups-50-2.png',                  group: 'Power' },
   { slug: 'pwr-ups-alt2',      label: 'UPS (alt 2)',     path: '/icons/power/icons8-ups-50-3.png',                  group: 'Power' },
-  { slug: 'cb-brand-az-sun',   label: 'CB Brand AZ Sun',   path: '/icons/vendors/CB_AZ_SUN.png',                    group: 'Other' },
-  { slug: 'cb-brand-city-day', label: 'CB Brand City Day', path: '/icons/vendors/CB_CITY_DAY.png',                  group: 'Other' },
-  { slug: 'cb-brand-night-full', label: 'CB Brand Night Full', path: '/icons/vendors/CB_NIGHT_FULL.png',            group: 'Other' },
-  { slug: 'cb-brand-night-half', label: 'CB Brand Night Half', path: '/icons/vendors/CB_NIGHT_HALF.png',            group: 'Other' },
+  { slug: 'cb-brand-az-sun',   label: 'CB Brand AZ Sun',   path: '/icons/vendors/CB_AZ_SUN.png',                    group: 'Circuit Breaker' },
+  { slug: 'cb-brand-city-day', label: 'CB Brand City Day', path: '/icons/vendors/CB_CITY_DAY.png',                  group: 'Circuit Breaker' },
+  { slug: 'cb-brand-night-full', label: 'CB Brand Night Full', path: '/icons/vendors/CB_NIGHT_FULL.png',            group: 'Circuit Breaker' },
+  { slug: 'cb-brand-night-half', label: 'CB Brand Night Half', path: '/icons/vendors/CB_NIGHT_HALF.png',            group: 'Circuit Breaker' },
   { slug: 'generic',           label: 'Generic',         path: '/icons/vendors/generic.svg',           group: 'Other' },
 ];
 
-const GROUPS = ['OS', 'Vendor', 'Hardware', 'Network', 'Storage', 'Security', 'Devices', 'Power', 'Cloud', 'Apps', 'Other', 'Uploaded'];
+const GROUPS = ['OS', 'Vendor', 'Hardware', 'Network', 'Storage', 'Security', 'Devices', 'Power', 'Cloud', 'Apps', 'Circuit Breaker', 'Other', 'Uploaded'];
 const USER_UPLOADED_ICON_SCALE = 2.5;
+const CB_BRAND_ICON_SCALE = 2.5;
 const USER_ICON_SIZED_SLUGS = new Set([
   'cb-brand-az-sun',
   'cb-brand-city-day',
@@ -259,8 +260,11 @@ const ICON_SLUG_ALIASES = {
   'cb-night-half': 'cb-brand-night-half',
 };
 
-function isUserUploadedIconSlug(slug) {
-  return typeof slug === 'string' && (slug.startsWith('user-') || USER_ICON_SIZED_SLUGS.has(slug));
+function getIconScale(slug) {
+  if (typeof slug !== 'string') return 1;
+  if (USER_ICON_SIZED_SLUGS.has(slug)) return CB_BRAND_ICON_SCALE;
+  if (slug.startsWith('user-')) return USER_UPLOADED_ICON_SCALE;
+  return 1;
 }
 
 export function getIconEntry(slug) {
@@ -275,7 +279,7 @@ export function getIconEntry(slug) {
 
 export function IconImg({ slug, size = 20, style = {} }) {
   const entry = getIconEntry(slug);
-  const isUploadedIcon = isUserUploadedIconSlug(slug);
+  const iconScale = getIconScale(slug);
   if (!entry) return <span style={{ width: size, height: size, display: 'inline-block' }} />;
   return (
     <img
@@ -290,7 +294,7 @@ export function IconImg({ slug, size = 20, style = {} }) {
         minHeight: size,
         display: 'block',
         objectFit: 'contain',
-        transform: isUploadedIcon ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+        transform: iconScale !== 1 ? `scale(${iconScale})` : 'none',
         transformOrigin: 'center',
         ...style,
       }}
@@ -389,10 +393,10 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
         </div>
 
         {/* Icon grid */}
-        <div className="icon-picker-grid" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))', gap: 8, alignContent: 'start' }}>
+        <div className="icon-picker-grid" style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: 12, alignContent: 'start' }}>
           {filtered.map((icon) => {
             const isSelected = preview === icon.slug;
-            const isUploadedIcon = isUserUploadedIconSlug(icon.slug);
+            const iconScale = getIconScale(icon.slug);
             return (
               <button
                 key={icon.slug}
@@ -422,7 +426,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
                   src={icon.path} alt={icon.label} width={32} height={32}
                   style={{
                     objectFit: 'contain',
-                    transform: isUploadedIcon ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+                    transform: iconScale !== 1 ? `scale(${iconScale})` : 'none',
                     transformOrigin: 'center',
                   }}
                   onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
@@ -468,7 +472,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
                   height={22}
                   style={{
                     objectFit: 'contain',
-                    transform: isUserUploadedIconSlug(preview) ? `scale(${USER_UPLOADED_ICON_SCALE})` : 'none',
+                    transform: getIconScale(preview) !== 1 ? `scale(${getIconScale(preview)})` : 'none',
                     transformOrigin: 'center',
                   }}
                 />

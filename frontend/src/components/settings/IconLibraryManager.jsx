@@ -11,14 +11,14 @@ const STATIC_GROUPS = LIBRARY_ICONS.reduce((acc, icon) => {
   return acc;
 }, {});
 
-const GROUP_ORDER = ['OS', 'Vendor', 'Network', 'Storage', 'Cloud', 'Apps', 'Other'];
+const GROUP_ORDER = ['OS', 'Vendor', 'Hardware', 'Network', 'Storage', 'Security', 'Devices', 'Power', 'Cloud', 'Apps', 'Circuit Breaker', 'Other'];
 
 function IconGrid({ icons, onDelete }) {
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-      gap: 8,
+      gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
+      gap: 12,
     }}>
       {icons.map((icon) => (
         <div
@@ -42,6 +42,8 @@ function IconGrid({ icons, onDelete }) {
               objectFit: 'contain',
               maxWidth: '100%',
               maxHeight: '100%',
+              transform: (icon.group === 'Circuit Breaker' || icon.isCustom) ? 'scale(2.5)' : 'none',
+              transformOrigin: 'center',
             }}
             onError={(e) => { e.target.src = '/icons/vendors/generic.svg'; }}
           />

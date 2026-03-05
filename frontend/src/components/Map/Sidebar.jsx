@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { X, ExternalLink, Link2, Activity, Info } from 'lucide-react';
+import { X, ExternalLink, Link2, Activity, Info, FileText } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
 function formatSpeedLabel(mbps) {
@@ -318,6 +318,20 @@ export default function Sidebar({ node, anchor, relationships, sysinfo, status, 
               </div>
             )}
 
+            {node.data?.docs?.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <SectionTitle icon={FileText} title="Docs" />
+                <div style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '4px 10px' }}>
+                  {node.data.docs.map((doc, index) => (
+                    <div key={doc.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 0', borderBottom: index < node.data.docs.length - 1 ? '1px solid var(--color-border)' : 'none', gap: 8 }}>
+                      <span style={{ fontSize: 13 }}>📄</span>
+                      <span style={{ fontSize: 12, color: 'var(--color-text)' }}>{doc.title}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <button
               type="button"
               onClick={() => onOpenInHud?.(node)}
@@ -351,7 +365,12 @@ Sidebar.propTypes = {
   node: PropTypes.shape({
     id: PropTypes.string,
     originalType: PropTypes.string,
-    data: PropTypes.object,
+    data: PropTypes.shape({
+      docs: PropTypes.arrayOf(PropTypes.shape({
+        id: PropTypes.number,
+        title: PropTypes.string,
+      })),
+    }),
   }),
   anchor: PropTypes.shape({
     x: PropTypes.number,

@@ -434,13 +434,13 @@ export default function SettingsPage() {
                       {form.show_weather_widget && (
                         <SettingField
                           label="Weather Location"
-                          hint="City and region format, e.g. Phoenix, AZ."
+                          hint="City/region or ZIP code, e.g. 'Phoenix, AZ' or '85001'."
                         >
                           <input
                             className="form-control"
                             type="text"
                             value={form.weather_location}
-                            placeholder="Phoenix, AZ"
+                            placeholder="Phoenix, AZ or 85001"
                             onChange={(e) => set('weather_location', e.target.value)}
                           />
                         </SettingField>

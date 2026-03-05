@@ -10,6 +10,8 @@ from app.core.security import require_write_auth
 from app.db.models import (
     ComputeNetwork,
     ComputeUnit,
+    Doc,
+    EntityDoc,
     EntityTag,
     ExternalNode,
     ExternalNodeNetwork,
@@ -218,6 +220,19 @@ def build_topology_graph(
     def get_tags(etype, eid):
         return entity_tags_map.get((etype, eid), [])
 
+    entity_docs_map = {}
+    doc_rows = db.execute(select(EntityDoc.entity_type, EntityDoc.entity_id, Doc.title, Doc.id)
+                           .join(Doc, EntityDoc.doc_id == Doc.id)).all()
+    
+    for etype, eid, dtitle, did in doc_rows:
+        key = (etype, eid)
+        if key not in entity_docs_map:
+            entity_docs_map[key] = []
+        entity_docs_map[key].append({"id": did, "title": dtitle})
+
+    def get_docs(etype, eid):
+        return entity_docs_map.get((etype, eid), [])
+
     # Pre-build compute_id → [storage_pool_names] via service→storage relationships
     cu_storage_pools: dict[int, list[str]] = {}
     svc_storage_rows = db.execute(
@@ -367,6 +382,7 @@ def build_topology_graph(
                 "ip_address": hw.ip_address,
                 "storage_summary": storage_summary,
                 "tags": get_tags("hardware", hw.id),
+                "docs": get_docs("hardware", hw.id),
                 "status": hw.status or "unknown",
                 "status_override": hw.status_override or None,
                 "telemetry_status": hw.telemetry_status or "unknown",
@@ -445,6 +461,7 @@ def build_topology_graph(
                 "download_speed_mbps": cu.download_speed_mbps,
                 "upload_speed_mbps": cu.upload_speed_mbps,
                 "tags": get_tags("compute", cu.id),
+                "docs": get_docs("compute_unit", cu.id),
                 "ip_conflict": conflict_map.get(("compute_unit", cu.id), False),
             })
             # Link to Hardware
@@ -493,6 +510,7 @@ def build_topology_graph(
                 "status": svc.status or "unknown",
                 "status_override": None,
                 "tags": get_tags("services", svc.id),
+                "docs": get_docs("service", svc.id),
                 "ip_conflict": bool(svc.ip_conflict),
             })
             # Link to Compute

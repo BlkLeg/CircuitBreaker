@@ -26,33 +26,45 @@ services:
       retries: 3
       start_period: 10s
     # ──────────────────────────────────────────────────────────────────
-    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (OPTIONAL)
+    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (NATIVE LINUX DOCKER ONLY)
     #
-    # The ARP scan phase requires elevated Linux capabilities to send
-    # raw network packets. This enables MAC address resolution and
-    # more reliable local subnet host detection.
+    # ⚠️  DOCKER DESKTOP INCOMPATIBILITY (macOS / Docker Desktop for Linux)
+    #
+    # The ARP scan phase requires two things to work correctly:
+    #   1. NET_RAW / NET_ADMIN Linux capabilities (to send raw packets)
+    #   2. network_mode: "host" so the container can reach your LAN
+    #
+    # However, network_mode: "host" is NOT compatible with Docker Desktop
+    # (macOS or the Docker Desktop for Linux app), because Docker Desktop
+    # runs all containers inside a lightweight VM. In that environment,
+    # "host" mode grants access to the VM's network, not your actual LAN,
+    # and it breaks the nginx → backend proxy used by the frontend.
+    #
+    # CURRENT STATUS: ARP scanning is disabled by default so that the
+    # default `make compose-up` works on both Docker Desktop and native
+    # Linux Docker. nmap TCP/ICMP host detection is used as a fallback
+    # and works without any special capabilities or network mode.
+    #
+    # TO ENABLE ARP SCANNING (native Linux Docker only — not Docker Desktop):
+    #   1. Uncomment the `cap_add` and `network_mode` blocks below.
+    #   2. Also uncomment the `extra_hosts` block in the `frontend` service.
+    #   3. Run: make compose-up
     #
     # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
     # container the ability to craft and send arbitrary raw packets.
     # Only enable this on trusted, isolated homelab networks.
     #
-    # If left commented out, Circuit Breaker will automatically skip
-    # the ARP phase and fall back to nmap TCP/ICMP host detection.
-    # All other scan phases (nmap, SNMP, HTTP) work without these caps.
-    #
-    # To enable ARP scanning, uncomment the section below:
-    cap_add:
-      - NET_RAW
-      - NET_ADMIN
-    network_mode: "host"
-    # NOTE: sysctls for net.ipv6.* are not allowed in host network mode
-    # because the container shares the host's network namespace.
-    # To disable IPv6, set it on the host directly:
-    #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
-    #
     # For full documentation see:
     # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
     # ──────────────────────────────────────────────────────────────────
+    # cap_add:
+    #   - NET_RAW
+    #   - NET_ADMIN
+    # network_mode: "host"
+    # NOTE: when network_mode: "host" is enabled, sysctls for net.ipv6.*
+    # are not allowed because the container shares the host's network
+    # namespace. To disable IPv6, set it on the host directly:
+    #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
 
   frontend:
     build:
@@ -64,11 +76,19 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    # Because the backend uses network_mode: "host", it is NOT on the
-    # default Docker bridge network.  Nginx proxies to "http://backend:8000"
-    # so we map that hostname to the Docker host gateway IP.
-    extra_hosts:
-      - "backend:host-gateway"
+    # ──────────────────────────────────────────────────────────────────
+    # NOTE: The extra_hosts block below is only needed when the backend
+    # is running with network_mode: "host" (native Linux Docker + ARP
+    # scanning enabled). In that configuration the backend is NOT on the
+    # Docker bridge network, so nginx must resolve "backend" to the host
+    # gateway IP instead.
+    #
+    # Leave this commented out for the default (Docker Desktop compatible)
+    # setup. Only uncomment it alongside the cap_add / network_mode blocks
+    # in the backend service above.
+    # ──────────────────────────────────────────────────────────────────
+    # extra_hosts:
+    #   - "backend:host-gateway"
     restart: unless-stopped
 
 volumes:

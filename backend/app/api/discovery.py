@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.rate_limit import limiter
 from app.core.scheduler import _scheduler
 from app.core.security import require_auth_always, require_write_auth
-from app.db.models import ScanJob, ScanResult
+from app.db.models import ScanJob, ScanResult, User
 from app.db.session import get_db
 from app.schemas.discovery import (
     AdHocScanRequest,
@@ -27,6 +27,13 @@ from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["discovery"])
+
+
+def _get_actor(db: Session, user_id: int) -> str:
+    if user_id == 0:
+        return "api-token"
+    u = db.query(User).filter(User.id == user_id).first()
+    return u.email if u else "unknown"
 
 
 @router.get("/status", response_model=DiscoveryStatusOut)
@@ -71,7 +78,7 @@ def create_profile(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db)
 ):
-    actor = "api" # Replace with actor resolution if needed
+    actor = _get_actor(db, user_id)
     return discovery_profiles_service.create_profile(db, payload, actor)
 
 @router.patch("/profiles/{profile_id}", response_model=DiscoveryProfileOut)
@@ -81,7 +88,7 @@ def update_profile(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db)
 ):
-    actor = "api"
+    actor = _get_actor(db, user_id)
     return discovery_profiles_service.update_profile(db, profile_id, payload, actor)
 
 @router.delete("/profiles/{profile_id}", status_code=204)
@@ -90,7 +97,7 @@ def delete_profile(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db)
 ):
-    actor = "api"
+    actor = _get_actor(db, user_id)
     discovery_profiles_service.delete_profile(db, profile_id, actor)
     return None
 
@@ -113,7 +120,7 @@ async def run_profile_scan(
         target_cidr=profile.cidr,
         scan_types=json.loads(profile.scan_types),
         profile_id=profile.id,
-        triggered_by="api"
+        triggered_by=_get_actor(db, user_id)
     )
 
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
@@ -139,7 +146,7 @@ async def run_adhoc_scan(
             scan_types=payload.scan_types,
             nmap_arguments=payload.nmap_arguments,  # B12: thread through
             label=payload.label,
-            triggered_by="api"
+            triggered_by=_get_actor(db, user_id)
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -216,7 +223,7 @@ def merge_result(
     db: Session = Depends(get_db)
 ):
     return discovery_service.merge_scan_result(
-        db, result_id, payload.action, payload.entity_type, payload.overrides, actor="api"
+        db, result_id, payload.action, payload.entity_type, payload.overrides, actor=_get_actor(db, user_id)
     )
 
 @router.post("/results/bulk-merge")
@@ -225,7 +232,7 @@ def bulk_merge(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db)
 ):
-    return discovery_service.bulk_merge_results(db, payload.result_ids, payload.action, actor="api")
+    return discovery_service.bulk_merge_results(db, payload.result_ids, payload.action, actor=_get_actor(db, user_id))
 
 
 @router.post("/results/enhanced-bulk-merge")
@@ -234,7 +241,7 @@ def enhanced_bulk_merge(
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db)
 ):
-    return discovery_service.enhanced_bulk_merge(db, payload, actor="api")
+    return discovery_service.enhanced_bulk_merge(db, payload, actor=_get_actor(db, user_id))
 
 
 @router.post("/results/suggest")
