@@ -57,8 +57,6 @@ def client(db_engine, db):
     import app.db.session as _db_session
     import app.main as _main
     import app.middleware.logging_middleware as _log_mw
-    import app.main as _main
-    import app.core.config as _config
 
     orig_session_local = _db_session.SessionLocal
     orig_mw_session_local = _log_mw.SessionLocal
@@ -101,14 +99,20 @@ def auth_headers(client):
     Only use this fixture in tests that explicitly test authenticated behaviour.
     Most tests run on a fresh DB where auth_enabled=False and do not need it.
     """
-    client.post("/api/v1/bootstrap/initialize", json={
-        "email": "test@example.com",
-        "password": "Secure1234!",
-        "theme_preset": "one-dark",
-    })
-    resp = client.post("/api/v1/auth/login", json={
-        "email": "test@example.com",
-        "password": "Secure1234!",
-    })
-    token = resp.json()["token"]
+    client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "test@example.com",
+            "password": "Secure1234!",
+            "theme_preset": "one-dark",
+        },
+    )
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "test@example.com",
+            "password": "Secure1234!",
+        },
+    )
+    token = login_resp.json()["token"]
     return {"Authorization": f"Bearer {token}"}

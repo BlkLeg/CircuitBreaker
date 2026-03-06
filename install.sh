@@ -14,6 +14,8 @@
 #   CB_VOLUME=circuit-breaker-data       Docker volume name or host path
 #   CB_IMAGE=ghcr.io/blkleg/...          Override the Docker image
 #   CB_CONTAINER=circuit-breaker         Container name
+#   CB_TLS=1                             Enable HTTPS via Caddy reverse proxy
+#   CB_HOSTNAME=circuitbreaker.local     Hostname for TLS certificate
 #
 
 set -e
@@ -30,6 +32,17 @@ CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
 MINIMUM_DOCKER_VERSION=20
 REGION=""
 ARCH=""
+
+# ─── TLS / Caddy defaults ────────────────────────────────────────────────────
+CB_TLS="${CB_TLS:-}"
+CB_HOSTNAME="${CB_HOSTNAME:-circuitbreaker.local}"
+CB_CADDY_CONTAINER="cb-caddy"
+CB_CADDY_DATA_VOLUME="cb-caddy-data"
+CB_CADDY_CONFIG_VOLUME="cb-caddy-config"
+CB_NETWORK="cb-network"
+CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
+CB_CA_SYSTEM_NAME="circuit-breaker-caddy-ca"
+CB_CA_NSS_NAME="CircuitBreaker-Caddy-CA"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 COLOUR_RESET='\e[0m'
@@ -82,10 +95,12 @@ Usage: install.sh [OPTIONS]
   --volume NAME     Docker volume name or host path  (default: circuit-breaker-data)
   --image IMAGE     Override the Docker image        (default: ghcr.io/blkleg/circuitbreaker:latest)
   --container NAME  Container name                   (default: circuit-breaker)
+  --tls             Enable HTTPS via Caddy reverse proxy
+  --hostname NAME   Hostname for TLS certificate     (default: circuitbreaker.local)
   --help            Show this help message and exit
 
 Environment variables (compatible with 'curl | bash' piping):
-  CB_PORT, CB_VOLUME, CB_IMAGE, CB_CONTAINER
+  CB_PORT, CB_VOLUME, CB_IMAGE, CB_CONTAINER, CB_TLS, CB_HOSTNAME
 
 Examples:
   # Default install
@@ -94,8 +109,11 @@ Examples:
   # Custom port
   CB_PORT=9090 curl -fsSL .../install.sh | bash
 
+  # Install with HTTPS enabled
+  CB_TLS=1 curl -fsSL .../install.sh | bash
+
   # Local run with flags
-  bash install.sh --port 9090 --volume /opt/cb-data
+  bash install.sh --port 9090 --tls --hostname mylab.local
 EOF
   exit 0
 }
@@ -107,6 +125,8 @@ while [[ $# -gt 0 ]]; do
     --volume)    CB_VOLUME="$2";    shift 2 ;;
     --image)     CB_IMAGE="$2";     shift 2 ;;
     --container) CB_CONTAINER="$2"; shift 2 ;;
+    --tls)       CB_TLS="1";        shift 1 ;;
+    --hostname)  CB_HOSTNAME="$2";  shift 2 ;;
     --help|-h)   usage ;;
     *) echo "Unknown option: $1"; usage ;;
   esac
@@ -263,6 +283,308 @@ Check_Docker() {
 }
 
 ###############################################################################
+# TLS (CADDY REVERSE PROXY)
+###############################################################################
+
+Prompt_TLS() {
+  # Skip prompt if already set via CLI flag or env var
+  if [[ -n "$CB_TLS" ]]; then
+    Show 0 "HTTPS enabled via flag/environment (hostname: $CB_HOSTNAME)."
+    return
+  fi
+
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}HTTPS / TLS Configuration${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  Circuit Breaker can be served over ${aCOLOUR[0]}HTTPS${COLOUR_RESET} using a local Caddy"
+  echo -e "  reverse proxy with an automatically generated TLS certificate."
+  echo ""
+  echo -e "  ${aCOLOUR[2]}What this does:${COLOUR_RESET}"
+  echo -e "   $GREEN_BULLET Runs a lightweight Caddy container alongside Circuit Breaker"
+  echo -e "   $GREEN_BULLET Generates a local Certificate Authority for HTTPS"
+  echo -e "   $GREEN_BULLET Installs the CA into your system and browser trust stores"
+  echo -e "   $GREEN_BULLET Maps ${aCOLOUR[1]}${CB_HOSTNAME}${COLOUR_RESET} → 127.0.0.1 in /etc/hosts"
+  echo ""
+  echo -e "  ${aCOLOUR[4]}Requires:${COLOUR_RESET} root (sudo) access for CA trust and /etc/hosts"
+  echo ""
+  printf "  Enable HTTPS? [y/N] "
+  read -r reply < /dev/tty
+  echo ""
+
+  case "$reply" in
+    [yY][eE][sS]|[yY])
+      CB_TLS="1"
+      Show 0 "HTTPS will be enabled via Caddy."
+      ;;
+    *)
+      CB_TLS=""
+      Show 2 "Skipping HTTPS. Circuit Breaker will be HTTP-only."
+      ;;
+  esac
+}
+
+Check_TLS_Ports() {
+  local conflict=0
+  if ss -tlnp 2>/dev/null | grep -q ":80 "; then
+    Show 3 "Port 80 is already in use."
+    conflict=1
+  fi
+  if ss -tlnp 2>/dev/null | grep -q ":443 "; then
+    Show 3 "Port 443 is already in use."
+    conflict=1
+  fi
+
+  if [[ "$conflict" == "1" ]]; then
+    echo ""
+    echo -e "  Caddy needs ports 80 (HTTP→HTTPS redirect) and 443 (HTTPS)."
+    printf "  Continue anyway? [y/N] "
+    read -r reply < /dev/tty
+    case "$reply" in
+      [yY][eE][sS]|[yY]) Show 3 "Port conflict acknowledged." ;;
+      *)
+        Show 2 "Disabling HTTPS due to port conflict."
+        CB_TLS=""
+        ;;
+    esac
+  else
+    Show 0 "Ports 80 and 443 are available."
+  fi
+}
+
+Setup_TLS() {
+  Show 2 "Preparing TLS configuration..."
+
+  mkdir -p "$CB_CONFIG_DIR"
+
+  # Generate Caddyfile
+  cat > "$CB_CONFIG_DIR/Caddyfile" <<CADDYEOF
+{
+	local_certs
+}
+
+${CB_HOSTNAME} {
+	reverse_proxy ${CB_CONTAINER}:8080 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+CADDYEOF
+  Show 0 "Caddyfile written to $CB_CONFIG_DIR/Caddyfile"
+
+  # Persist TLS settings so the uninstaller can reference them
+  cat > "$CB_CONFIG_DIR/tls.conf" <<TLSEOF
+CB_HOSTNAME=${CB_HOSTNAME}
+CB_CADDY_CONTAINER=${CB_CADDY_CONTAINER}
+CB_CADDY_DATA_VOLUME=${CB_CADDY_DATA_VOLUME}
+CB_CADDY_CONFIG_VOLUME=${CB_CADDY_CONFIG_VOLUME}
+CB_NETWORK=${CB_NETWORK}
+CB_CA_SYSTEM_NAME=${CB_CA_SYSTEM_NAME}
+CB_CA_NSS_NAME=${CB_CA_NSS_NAME}
+TLSEOF
+
+  # Create Docker network (idempotent)
+  docker network create "$CB_NETWORK" 2>/dev/null || true
+  Show 0 "Docker network '$CB_NETWORK' ready."
+
+  # Pull Caddy image
+  Show 2 "Pulling Caddy image: caddy:2-alpine"
+  docker pull caddy:2-alpine || Show 1 "Failed to pull Caddy image."
+  Show 0 "Caddy image ready."
+}
+
+Start_Caddy() {
+  # Idempotent: remove any previous Caddy container
+  if docker ps -a --format '{{.Names}}' | grep -q "^${CB_CADDY_CONTAINER}$"; then
+    Show 2 "Removing existing Caddy container..."
+    docker rm -f "$CB_CADDY_CONTAINER" >/dev/null
+  fi
+
+  Show 2 "Starting Caddy reverse proxy..."
+  docker run -d \
+    --name "$CB_CADDY_CONTAINER" \
+    --network "$CB_NETWORK" \
+    -p "80:80" \
+    -p "443:443" \
+    -v "$CB_CONFIG_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    -v "${CB_CADDY_DATA_VOLUME}:/data" \
+    -v "${CB_CADDY_CONFIG_VOLUME}:/config" \
+    --restart unless-stopped \
+    caddy:2-alpine \
+    || Show 1 "Failed to start Caddy. Check: docker logs $CB_CADDY_CONTAINER"
+  Show 0 "Caddy is running."
+}
+
+Wait_For_Caddy_CA() {
+  Show 2 "Waiting for Caddy to generate CA certificate..."
+  local tries=0
+  until docker exec "$CB_CADDY_CONTAINER" test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; do
+    tries=$((tries + 1))
+    if [[ $tries -ge 15 ]]; then
+      Show 1 "Timed out waiting for Caddy CA (30s). Check: docker logs $CB_CADDY_CONTAINER"
+    fi
+    sleep 2
+  done
+
+  docker cp "${CB_CADDY_CONTAINER}:/data/caddy/pki/authorities/local/root.crt" \
+    "$CB_CONFIG_DIR/caddy-root-ca.crt"
+  Show 0 "CA certificate extracted to $CB_CONFIG_DIR/caddy-root-ca.crt"
+}
+
+Trust_CA() {
+  local cert_file="$CB_CONFIG_DIR/caddy-root-ca.crt"
+
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Root Certificate Trust${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  Caddy generated a local Certificate Authority for HTTPS."
+  echo -e "  To access ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET} without browser warnings,"
+  echo -e "  the CA needs to be trusted by your system and browser."
+  echo ""
+  echo -e "  ${aCOLOUR[4]}The following operations require root (sudo) access:${COLOUR_RESET}"
+  echo -e "   $GREEN_BULLET Install CA certificate into system trust store"
+  echo -e "   $GREEN_BULLET Add '${CB_HOSTNAME}' → 127.0.0.1 to /etc/hosts"
+  echo ""
+  printf "  Proceed? [Y/n] "
+  read -r reply < /dev/tty
+  echo ""
+
+  case "$reply" in
+    [nN][oO]|[nN])
+      Show 3 "CA trust skipped. Browsers will show security warnings."
+      _Print_Manual_CA_Instructions "$cert_file"
+      return
+      ;;
+  esac
+
+  echo -e "  ${aCOLOUR[4]}You may be prompted for your password.${COLOUR_RESET}"
+  echo ""
+
+  # Validate sudo access once upfront so the user only types their password once
+  if ! sudo -v 2>/dev/null; then
+    Show 3 "Could not obtain sudo access."
+    _Print_Manual_CA_Instructions "$cert_file"
+    return
+  fi
+
+  # ── System trust store ──────────────────────────────────────────────────
+  local sys_ok=0
+  if [ -d /etc/pki/ca-trust/source/anchors ]; then
+    sudo cp "$cert_file" "/etc/pki/ca-trust/source/anchors/${CB_CA_SYSTEM_NAME}.crt"
+    sudo update-ca-trust
+    sys_ok=1
+    Show 0 "CA trusted by system (Fedora/RHEL)."
+  elif [ -d /usr/local/share/ca-certificates ]; then
+    sudo cp "$cert_file" "/usr/local/share/ca-certificates/${CB_CA_SYSTEM_NAME}.crt"
+    sudo update-ca-certificates
+    sys_ok=1
+    Show 0 "CA trusted by system (Debian/Ubuntu)."
+  elif [ -d /etc/ca-certificates/trust-source/anchors ]; then
+    sudo cp "$cert_file" "/etc/ca-certificates/trust-source/anchors/${CB_CA_SYSTEM_NAME}.crt"
+    sudo trust extract-compat
+    sys_ok=1
+    Show 0 "CA trusted by system (Arch)."
+  fi
+
+  if [[ "$sys_ok" == "0" ]]; then
+    Show 3 "Could not detect system CA trust store — manual install needed."
+  fi
+
+  # ── Browser trust store (NSS — Chrome / Brave / Chromium) ──────────────
+  if command -v certutil >/dev/null 2>&1; then
+    local nssdb="$HOME/.pki/nssdb"
+    if [ ! -d "$nssdb" ]; then
+      mkdir -p "$nssdb"
+      certutil -d sql:"$nssdb" -N --empty-password 2>/dev/null
+    fi
+    certutil -d sql:"$nssdb" -D -n "$CB_CA_NSS_NAME" 2>/dev/null || true
+    certutil -d sql:"$nssdb" -A -t "C,," -n "$CB_CA_NSS_NAME" -i "$cert_file"
+    Show 0 "CA trusted by Chrome / Brave / Chromium (NSS)."
+  else
+    Show 3 "certutil not found — Chromium-based browsers may show warnings."
+    echo -e "  Install ${aCOLOUR[1]}nss-tools${COLOUR_RESET} (Fedora) or ${aCOLOUR[1]}libnss3-tools${COLOUR_RESET} (Debian/Ubuntu), then run:"
+    echo -e "  certutil -d sql:\$HOME/.pki/nssdb -A -t 'C,,' -n '${CB_CA_NSS_NAME}' -i $cert_file"
+  fi
+
+  # ── /etc/hosts ─────────────────────────────────────────────────────────
+  if grep -q "$CB_HOSTNAME" /etc/hosts 2>/dev/null; then
+    Show 0 "'$CB_HOSTNAME' already present in /etc/hosts."
+  else
+    echo "127.0.0.1  $CB_HOSTNAME" | sudo tee -a /etc/hosts >/dev/null
+    Show 0 "Added '$CB_HOSTNAME' → 127.0.0.1 to /etc/hosts."
+  fi
+}
+
+_Print_Manual_CA_Instructions() {
+  local cert_file="$1"
+  echo ""
+  echo -e "  ${aCOLOUR[1]}Manual setup instructions:${COLOUR_RESET}"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}# 1. System trust store${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[2]}# Fedora / RHEL:${COLOUR_RESET}"
+  echo -e "  sudo cp $cert_file /etc/pki/ca-trust/source/anchors/${CB_CA_SYSTEM_NAME}.crt"
+  echo -e "  sudo update-ca-trust"
+  echo -e "  ${aCOLOUR[2]}# Debian / Ubuntu:${COLOUR_RESET}"
+  echo -e "  sudo cp $cert_file /usr/local/share/ca-certificates/${CB_CA_SYSTEM_NAME}.crt"
+  echo -e "  sudo update-ca-certificates"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}# 2. Chrome / Brave / Chromium:${COLOUR_RESET}"
+  echo -e "  certutil -d sql:\$HOME/.pki/nssdb -A -t 'C,,' -n '${CB_CA_NSS_NAME}' -i $cert_file"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}# 3. /etc/hosts:${COLOUR_RESET}"
+  echo -e "  echo '127.0.0.1  $CB_HOSTNAME' | sudo tee -a /etc/hosts"
+  echo ""
+}
+
+###############################################################################
+# API TOKEN
+###############################################################################
+
+Generate_API_Token() {
+  mkdir -p "$CB_CONFIG_DIR"
+  chmod 700 "$CB_CONFIG_DIR"
+
+  local env_file="$CB_CONFIG_DIR/env"
+
+  # Reuse existing token on re-installs to avoid breaking API integrations
+  if [[ -f "$env_file" ]] && grep -q '^CB_API_TOKEN=' "$env_file" 2>/dev/null; then
+    Show 0 "Existing API token found — reusing."
+    return
+  fi
+
+  local token
+  if ! command -v openssl >/dev/null 2>&1; then
+    Show 3 "openssl not found — generating token with /dev/urandom."
+    token=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  else
+    token=$(openssl rand -hex 32)
+  fi
+
+  cat > "$env_file" <<ENVEOF
+# Circuit Breaker — auto-generated environment (install.sh)
+# This file contains secrets. Do NOT share or commit it.
+CB_API_TOKEN=${token}
+ENVEOF
+
+  chmod 600 "$env_file"
+  Show 0 "API master token generated and saved to $env_file"
+}
+
+###############################################################################
 # INSTALL
 ###############################################################################
 
@@ -278,10 +600,21 @@ Pull_And_Run() {
   fi
 
   Show 2 "Starting Circuit Breaker..."
-  # Bind to all interfaces so the app is reachable from the host's public IP and
-  # any reverse proxy or Cloudflare tunnel. Secure with a host firewall (ufw/iptables).
+
+  local network_args=()
+  if [[ "$CB_TLS" == "1" ]]; then
+    network_args=(--network "$CB_NETWORK")
+  fi
+
+  local env_args=()
+  if [[ -f "$CB_CONFIG_DIR/env" ]]; then
+    env_args=(--env-file "$CB_CONFIG_DIR/env")
+  fi
+
   docker run -d \
     --name  "$CB_CONTAINER" \
+    "${network_args[@]}" \
+    "${env_args[@]}" \
     -p      "${CB_PORT}:8080" \
     -v      "${CB_VOLUME}:/data" \
     --security-opt seccomp=unconfined \
@@ -327,6 +660,11 @@ Welcome_Banner() {
   echo -e " ${aCOLOUR[1]}Circuit Breaker is running at:${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
 
+  # HTTPS address first if TLS is enabled
+  if [[ "$CB_TLS" == "1" ]]; then
+    echo -e "$GREEN_BULLET ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET}  ${aCOLOUR[2]}← HTTPS via Caddy${COLOUR_RESET}"
+  fi
+
   # Public IP first (most relevant on VPS/cloud)
   if [[ -n "$public_ip" ]]; then
     echo -e "$GREEN_BULLET http://${public_ip}:${CB_PORT}  ${aCOLOUR[2]}← public / VPS address${COLOUR_RESET}"
@@ -345,11 +683,18 @@ Welcome_Banner() {
   echo -e "$GREEN_BULLET http://localhost:${CB_PORT}"
 
   echo ""
-  echo -e "  Open your browser and visit the address above."
+  if [[ "$CB_TLS" == "1" ]]; then
+    echo -e "  Open your browser and visit ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET}"
+  else
+    echo -e "  Open your browser and visit the address above."
+  fi
   echo -e "  On first launch, the setup wizard will guide you through creating"
   echo -e "  your admin account and personalizing your dashboard."
   echo -e "$GREEN_LINE"
   echo ""
+  if [[ -f "$CB_CONFIG_DIR/env" ]]; then
+    echo -e "  ${aCOLOUR[2]}API Token : stored in ${CB_CONFIG_DIR}/env${COLOUR_RESET}"
+  fi
   echo -e "  ${aCOLOUR[2]}GitHub    : https://github.com/BlkLeg/circuitbreaker"
   echo -e "  ${aCOLOUR[2]}Docs      : https://blkleg.github.io/circuitbreaker${COLOUR_RESET}"
   echo ""
@@ -386,11 +731,32 @@ Find_Free_Port
 # Step 6: Docker
 Check_Docker
 
-# Step 7: Pull image and start container
+# Step 7: Generate API master token
+Generate_API_Token
+
+# Step 8: TLS prompt
+Prompt_TLS
+
+# Step 9: TLS pre-flight (network, Caddyfile, pull Caddy image)
+if [[ "$CB_TLS" == "1" ]]; then
+  Check_TLS_Ports
+fi
+if [[ "$CB_TLS" == "1" ]]; then
+  Setup_TLS
+fi
+
+# Step 10: Pull image and start container
 Pull_And_Run
 
-# Step 8: Wait for health
+# Step 11: Wait for health
 Wait_For_Ready
 
-# Step 9: Print welcome
+# Step 12: Start Caddy and trust CA
+if [[ "$CB_TLS" == "1" ]]; then
+  Start_Caddy
+  Wait_For_Caddy_CA
+  Trust_CA
+fi
+
+# Step 13: Print welcome
 Welcome_Banner

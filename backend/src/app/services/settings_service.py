@@ -33,9 +33,9 @@ _DEFAULTS = dict(
     favicon_path=None,
     login_logo_path=None,
     login_bg_path=None,
-    primary_color="#00d4ff",
-    accent_colors='["#ff6b6b","#4ecdc4"]',
-    theme_preset="cyberpunk-neon",
+    primary_color="#fe8019",
+    accent_colors='["#fabd2f","#b8bb26"]',
+    theme_preset="gruvbox-dark",
     custom_colors=None,
     discovery_enabled=False,
     discovery_auto_merge=False,
@@ -59,7 +59,9 @@ def get_or_create_settings(db: Session) -> AppSettings:
     return row
 
 
-def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
+def update_settings(
+    db: Session, payload: AppSettingsUpdate, *, user_id: int | None = None
+) -> AppSettings:
     row = get_or_create_settings(db)
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
@@ -84,9 +86,16 @@ def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
             if value is not None and value != "UTC" and value not in zoneinfo.available_timezones():
                 raise HTTPException(status_code=422, detail=f'Invalid timezone "{value}"')
             setattr(row, field, value)
-            _write_timezone_log(db, value or "UTC")
+            _write_timezone_log(db, value or "UTC", user_id=user_id)
             continue
-        if field in ("map_default_filters", "environments", "categories", "locations", "dock_order", "dock_hidden_items"):
+        if field in (
+            "map_default_filters",
+            "environments",
+            "categories",
+            "locations",
+            "dock_order",
+            "dock_hidden_items",
+        ):
             # Accept list/dict → serialize to JSON string; None → None
             if value is not None and not isinstance(value, str):
                 value = json.dumps(value)
@@ -100,14 +109,32 @@ def update_settings(db: Session, payload: AppSettingsUpdate) -> AppSettings:
     return row
 
 
-def _write_timezone_log(db: Session, timezone: str) -> None:
+def _write_timezone_log(db: Session, timezone: str, *, user_id: int | None = None) -> None:
     """Write a user-visible audit log entry when the timezone preference is changed."""
+    from sqlalchemy import select
+
+    from app.db.models import User
+
+    actor_name = "system"
+    actor_id: int | None = None
+    actor_gravatar: str | None = None
+
+    if user_id and user_id > 0:
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if user:
+            actor_name = user.display_name or user.email
+            actor_id = user.id
+            actor_gravatar = user.gravatar_hash
+
     now_iso = utcnow_iso()
     log_entry = Log(
         level="info",
         category="settings",
         action="update_timezone",
-        actor="system",
+        actor=actor_name,
+        actor_name=actor_name,
+        actor_id=actor_id,
+        actor_gravatar_hash=actor_gravatar,
         details=f'Timezone updated to "{timezone}"',
         created_at_utc=now_iso,
     )

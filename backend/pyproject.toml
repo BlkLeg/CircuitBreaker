@@ -30,6 +30,9 @@ dependencies = [
     "netaddr>=0.10",
     "apscheduler>=3.10",
     "httpx>=0.27",
+    "aiosqlite>=0.20.0",
+    "fastapi-users[sqlalchemy]>=13.0.0",
+    "nats-py>=2.9.0",
 ]
 
 [project.optional-dependencies]
@@ -62,7 +65,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "Q", "I", "UP"]
-ignore = ["E501"]
+ignore = ["E501", "B008"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { Palette } from 'lucide-react';
-import { THEME_PRESETS, PRESET_LABELS } from '../theme/presets';
+import { THEME_PRESETS, PRESET_LABELS, DEFAULT_PRESET } from '../theme/presets';
 import { applyTheme } from '../theme/applyTheme';
 import { settingsApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
@@ -12,7 +12,7 @@ export default function ThemePalette({ placement = 'floating' }) {
   const containerRef = useRef(null);
   const isHeaderPlacement = placement === 'header';
 
-  const activePreset = settings?.theme_preset ?? 'cyberpunk-neon';
+  const activePreset = settings?.theme_preset ?? DEFAULT_PRESET;
   const modeKey = settings?.theme === 'light' ? 'light' : 'dark';
   const activeColors = THEME_PRESETS[activePreset]?.[modeKey];
 
@@ -69,11 +69,13 @@ export default function ThemePalette({ placement = 'floating' }) {
   return (
     <div ref={containerRef} style={isHeaderPlacement ? S.inlineWrapper : S.wrapper}>
       {open && (
-        <div style={isHeaderPlacement ? S.inlinePopover : S.popover} role="menu" aria-label="Theme options">
+        <div
+          style={isHeaderPlacement ? S.inlinePopover : S.popover}
+          role="menu"
+          aria-label="Theme options"
+        >
           <div style={S.popoverTitle}>Theme</div>
-          <div style={S.grid}>
-            {nativeThemes.map(([key, colors]) => themeButton(key, colors))}
-          </div>
+          <div style={S.grid}>{nativeThemes.map(([key, colors]) => themeButton(key, colors))}</div>
           <div style={S.groupDivider}>
             <span style={S.groupDividerLine} />
             <span>theme.park</span>
@@ -86,7 +88,11 @@ export default function ThemePalette({ placement = 'floating' }) {
       )}
 
       <button
-        style={isHeaderPlacement ? S.inlineTrigger(open, activeColors?.primary) : S.trigger(activeColors?.primary)}
+        style={
+          isHeaderPlacement
+            ? S.inlineTrigger(open, activeColors?.primary)
+            : S.trigger(activeColors?.primary)
+        }
         title="Quick theme switcher"
         aria-label="Quick theme switcher"
         aria-expanded={open}
@@ -102,7 +108,7 @@ export default function ThemePalette({ placement = 'floating' }) {
 const S = {
   wrapper: {
     position: 'fixed',
-    bottom: 72,   // above the dock (~56px tall)
+    bottom: 72, // above the dock (~56px tall)
     left: 16,
     zIndex: 200,
   },

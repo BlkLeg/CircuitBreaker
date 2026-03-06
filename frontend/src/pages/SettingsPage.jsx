@@ -49,8 +49,11 @@ export default function SettingsPage() {
   const [form, setForm] = useState(null);
   const [origForm, setOrigForm] = useState(null);
   const [mapFilters, setMapFilters] = useState({ environment: '', include: ENTITY_TYPES.slice() });
-  const [origMapFilters, setOrigMapFilters] = useState({ environment: '', include: ENTITY_TYPES.slice() });
-  
+  const [origMapFilters, setOrigMapFilters] = useState({
+    environment: '',
+    include: ENTITY_TYPES.slice(),
+  });
+
   const [activeTab, setActiveTab] = useState(searchParams.get('tab') || 'general');
   const [searchQuery, setSearchQuery] = useState('');
   const [saving, setSaving] = useState(false);
@@ -73,6 +76,8 @@ export default function SettingsPage() {
       categories: ctxSettings.categories ?? [],
       locations: ctxSettings.locations ?? [],
       auth_enabled: ctxSettings.auth_enabled ?? false,
+      registration_open: ctxSettings.registration_open ?? true,
+      rate_limit_profile: ctxSettings.rate_limit_profile ?? 'normal',
       session_timeout_hours: ctxSettings.session_timeout_hours ?? 24,
       show_external_nodes_on_map: ctxSettings.show_external_nodes_on_map ?? true,
       show_header_widgets: ctxSettings.show_header_widgets ?? true,
@@ -84,11 +89,11 @@ export default function SettingsPage() {
     };
     setForm(initialForm);
     setOrigForm(initialForm);
-    
+
     const initialFilters = parseMapFilters(ctxSettings.map_default_filters);
     setMapFilters(initialFilters);
     setOrigMapFilters(initialFilters);
-    
+
     setAuthEnabled(ctxSettings.auth_enabled ?? false);
   }, [ctxSettings, setAuthEnabled]);
 
@@ -119,7 +124,7 @@ export default function SettingsPage() {
         default_environment: form.default_environment || null,
         map_default_filters: mapFiltersJson,
       });
-      
+
       if (form.timezone !== ctxTimezone) {
         setTimezone(form.timezone);
       }
@@ -127,7 +132,7 @@ export default function SettingsPage() {
       if ((form.language || 'en') !== (i18n.language || 'en')) {
         await i18n.changeLanguage(form.language || 'en');
       }
-      
+
       setAuthEnabled(form.auth_enabled);
       await reloadSettings();
       toast.success('Settings saved successfully');
@@ -204,7 +209,7 @@ export default function SettingsPage() {
   const filteredTabs = useMemo(() => {
     if (!searchQuery) return SETTINGS_TABS;
     const q = searchQuery.toLowerCase();
-    return SETTINGS_TABS.filter(tab => {
+    return SETTINGS_TABS.filter((tab) => {
       if (tab.label.toLowerCase().includes(q)) return true;
       if (tab.description.toLowerCase().includes(q)) return true;
       // Also match common keywords for specific tabs
@@ -214,9 +219,9 @@ export default function SettingsPage() {
         resources: ['environments', 'categories', 'locations', 'icons'],
         connectivity: ['discovery', 'nmap', 'snmp', 'api'],
         security: ['auth', 'login', 'password', 'timeout'],
-        system: ['backup', 'restore', 'reset', 'experimental', 'clear']
+        system: ['backup', 'restore', 'reset', 'experimental', 'clear'],
       };
-      return keywords[tab.id]?.some(k => k.includes(q));
+      return keywords[tab.id]?.some((k) => k.includes(q));
     });
   }, [searchQuery]);
 
@@ -227,16 +232,23 @@ export default function SettingsPage() {
     }
   }, [filteredTabs, searchQuery, activeTab]);
 
-  if (!form) return <div className="page"><div className="page-header"><h2>Settings</h2></div></div>;
+  if (!form)
+    return (
+      <div className="page">
+        <div className="page-header">
+          <h2>Settings</h2>
+        </div>
+      </div>
+    );
 
-  const currentTabLabel = SETTINGS_TABS.find(t => t.id === activeTab)?.label || 'Settings';
+  const currentTabLabel = SETTINGS_TABS.find((t) => t.id === activeTab)?.label || 'Settings';
 
   return (
     <div className="page">
       <div className="settings-layout">
         <aside className="settings-sidebar">
-          <SettingsNav 
-            activeTab={activeTab} 
+          <SettingsNav
+            activeTab={activeTab}
             onTabChange={handleTabChange}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
@@ -247,9 +259,11 @@ export default function SettingsPage() {
         <main className="settings-content">
           <div className="settings-content-header">
             <div>
-              <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '4px' }}>{currentTabLabel}</h2>
+              <h2 style={{ fontSize: '20px', fontWeight: 700, marginBottom: '4px' }}>
+                {currentTabLabel}
+              </h2>
               <p style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                {SETTINGS_TABS.find(t => t.id === activeTab)?.description}
+                {SETTINGS_TABS.find((t) => t.id === activeTab)?.description}
               </p>
             </div>
           </div>
@@ -277,20 +291,17 @@ export default function SettingsPage() {
                     </select>
                   </SettingField>
 
-                  <SettingField 
-                    label="Timezone" 
+                  <SettingField
+                    label="Timezone"
                     hint="Your local timezone for displaying timestamps across the app."
                   >
-                    <TimezoneSelect
-                      value={form.timezone}
-                      onChange={(v) => set('timezone', v)}
-                    />
+                    <TimezoneSelect value={form.timezone} onChange={(v) => set('timezone', v)} />
                   </SettingField>
                 </SettingSection>
 
                 <SettingSection title="Defaults">
-                  <SettingField 
-                    label="Default Environment" 
+                  <SettingField
+                    label="Default Environment"
                     hint="Initial environment filter for Services and Compute views."
                   >
                     <select
@@ -300,32 +311,41 @@ export default function SettingsPage() {
                     >
                       <option value="">— none —</option>
                       {(form.environments ?? []).map((env) => (
-                        <option key={env} value={env}>{env}</option>
+                        <option key={env} value={env}>
+                          {env}
+                        </option>
                       ))}
                     </select>
                   </SettingField>
 
-                  <SettingField 
-                    label="Map Default Environment" 
+                  <SettingField
+                    label="Map Default Environment"
                     hint="Initial environment filter for the Topology Map."
                   >
                     <select
                       className="form-control"
                       value={mapFilters.environment}
-                      onChange={(e) => setMapFilters((f) => ({ ...f, environment: e.target.value }))}
+                      onChange={(e) =>
+                        setMapFilters((f) => ({ ...f, environment: e.target.value }))
+                      }
                     >
                       <option value="">— none —</option>
                       {(form.environments ?? []).map((env) => (
-                        <option key={env} value={env}>{env}</option>
+                        <option key={env} value={env}>
+                          {env}
+                        </option>
                       ))}
                     </select>
                   </SettingField>
 
-                  <SettingField 
-                    label="Map Entity Inclusion" 
+                  <SettingField
+                    label="Map Entity Inclusion"
                     hint="Which entity types to show by default on the topology map."
                   >
-                    <div className="toggle-group" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                    <div
+                      className="toggle-group"
+                      style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}
+                    >
                       {ENTITY_TYPES.map((t) => (
                         <button
                           key={t}
@@ -341,7 +361,10 @@ export default function SettingsPage() {
                 </SettingSection>
 
                 <SettingSection title="UX Preferences">
-                  <SettingField label="Empty Page Hints" hint="Show helpful guidance when a view has no data.">
+                  <SettingField
+                    label="Empty Page Hints"
+                    hint="Show helpful guidance when a view has no data."
+                  >
                     <label className="toggle-switch">
                       <span className="sr-only">Empty Page Hints</span>
                       <input
@@ -352,8 +375,11 @@ export default function SettingsPage() {
                       <span className="toggle-switch-track" />
                     </label>
                   </SettingField>
-                  
-                  <SettingField label="External Nodes on Map" hint="Visualize cloud and external services on the topology map.">
+
+                  <SettingField
+                    label="External Nodes on Map"
+                    hint="Visualize cloud and external services on the topology map."
+                  >
                     <label className="toggle-switch">
                       <span className="sr-only">External Nodes on Map</span>
                       <input
@@ -372,8 +398,15 @@ export default function SettingsPage() {
             {activeTab === 'appearance' && (
               <div className="settings-sections-grid">
                 <SettingSection title="Theme Engine" className="settings-section--full">
-                  <SettingField label="Color Mode" hint="System preference will automatically follow your OS light/dark setting.">
-                    <select className="form-control" value={form.theme} onChange={(e) => set('theme', e.target.value)}>
+                  <SettingField
+                    label="Color Mode"
+                    hint="System preference will automatically follow your OS light/dark setting."
+                  >
+                    <select
+                      className="form-control"
+                      value={form.theme}
+                      onChange={(e) => set('theme', e.target.value)}
+                    >
                       <option value="auto">Auto (System)</option>
                       <option value="dark">Dark</option>
                       <option value="light">Light</option>
@@ -419,7 +452,10 @@ export default function SettingsPage() {
                         </label>
                       </SettingField>
 
-                      <SettingField label="Weather" hint="Show current weather for the configured location.">
+                      <SettingField
+                        label="Weather"
+                        hint="Show current weather for the configured location."
+                      >
                         <label className="toggle-switch">
                           <span className="sr-only">Weather Widget</span>
                           <input
@@ -454,7 +490,10 @@ export default function SettingsPage() {
             {/* ── Resources Tab ──────────────────────── */}
             {activeTab === 'resources' && (
               <div className="settings-sections-grid">
-                <SettingSection title="Locations" description="Physical or logical places where hardware resides (e.g. Rack A, Server Room).">
+                <SettingSection
+                  title="Locations"
+                  description="Physical or logical places where hardware resides (e.g. Rack A, Server Room)."
+                >
                   <ListEditor
                     items={form.locations ?? []}
                     onChange={(v) => set('locations', v)}
@@ -462,15 +501,22 @@ export default function SettingsPage() {
                   />
                 </SettingSection>
 
-                <SettingSection title="Environments" description="Lifecycle stages for your services and hardware.">
+                <SettingSection
+                  title="Environments"
+                  description="Lifecycle stages for your services and hardware."
+                >
                   <ListEditor
                     items={form.environments ?? []}
                     onChange={(v) => set('environments', v)}
                     placeholder="e.g. prod"
                   />
                 </SettingSection>
-                
-                <SettingSection title="Icon Library" className="settings-section--full" description="Custom SVG/PNG icons for your lab entities.">
+
+                <SettingSection
+                  title="Icon Library"
+                  className="settings-section--full"
+                  description="Custom SVG/PNG icons for your lab entities."
+                >
                   <IconLibraryManager />
                 </SettingSection>
               </div>
@@ -484,8 +530,8 @@ export default function SettingsPage() {
                 </SettingSection>
 
                 <SettingSection title="API Configuration">
-                  <SettingField 
-                    label="API Base URL" 
+                  <SettingField
+                    label="API Base URL"
                     hint="Reflects the base URL used by this deployment. Overwrite only if behind a complex proxy."
                   >
                     <input
@@ -504,7 +550,10 @@ export default function SettingsPage() {
             {activeTab === 'security' && (
               <div className="settings-sections-grid">
                 <SettingSection title="Authentication">
-                  <SettingField label="Enable Login" hint="Require credentials for all write operations.">
+                  <SettingField
+                    label="Enable Login"
+                    hint="Require credentials for all write operations."
+                  >
                     <label className="toggle-switch">
                       <span className="sr-only">Enable Login</span>
                       <input
@@ -517,17 +566,55 @@ export default function SettingsPage() {
                   </SettingField>
 
                   {form.auth_enabled && (
-                    <SettingField label="Session Duration" hint="Hours until a login token expires (1-720).">
-                      <input
-                        className="form-control"
-                        type="number"
-                        min={1}
-                        max={720}
-                        value={form.session_timeout_hours}
-                        onChange={(e) => set('session_timeout_hours', Number.parseInt(e.target.value, 10) || 24)}
-                        style={{ width: 100 }}
-                      />
-                    </SettingField>
+                    <>
+                      <SettingField
+                        label="Open Registration"
+                        hint="Allow new users to self-register. Disable to restrict account creation to admins."
+                      >
+                        <label className="toggle-switch">
+                          <span className="sr-only">Open Registration</span>
+                          <input
+                            type="checkbox"
+                            checked={form.registration_open}
+                            onChange={(e) => set('registration_open', e.target.checked)}
+                          />
+                          <span className="toggle-switch-track" />
+                        </label>
+                      </SettingField>
+
+                      <SettingField
+                        label="Rate Limit Profile"
+                        hint="Controls how aggressively the API throttles repeated requests."
+                      >
+                        <select
+                          className="form-control"
+                          value={form.rate_limit_profile}
+                          onChange={(e) => set('rate_limit_profile', e.target.value)}
+                          style={{ width: 160 }}
+                        >
+                          <option value="relaxed">Relaxed</option>
+                          <option value="normal">Normal</option>
+                          <option value="strict">Strict</option>
+                        </select>
+                      </SettingField>
+
+                      <SettingField
+                        label="Session Duration"
+                        hint="Hours until a login token expires (1-720)."
+                      >
+                        <input
+                          className="form-control"
+                          type="number"
+                          min={1}
+                          max={720}
+                          value={form.session_timeout_hours}
+                          onChange={(e) =>
+                            set('session_timeout_hours', Number.parseInt(e.target.value, 10) || 24)
+                          }
+                          style={{ width: 100 }}
+                        />
+                      </SettingField>
+                    </>
                   )}
                 </SettingSection>
               </div>
@@ -537,17 +624,30 @@ export default function SettingsPage() {
             {activeTab === 'system' && (
               <div className="settings-sections-grid">
                 <SettingSection title="Data Management">
-                  <SettingField label="Full Backup" hint="Export a JSON snapshot of all lab entities and relationships.">
-                    <button className="btn btn-secondary btn-sm" onClick={handleExport}>Download Backup</button>
+                  <SettingField
+                    label="Full Backup"
+                    hint="Export a JSON snapshot of all lab entities and relationships."
+                  >
+                    <button className="btn btn-secondary btn-sm" onClick={handleExport}>
+                      Download Backup
+                    </button>
                   </SettingField>
-                  
-                  <SettingField label="Clear Lab" hint="Destructive: Remove all entities but keep documentation.">
-                    <button className="btn btn-danger btn-sm" onClick={() => setClearLabOpen(true)}>Clear Lab...</button>
+
+                  <SettingField
+                    label="Clear Lab"
+                    hint="Destructive: Remove all entities but keep documentation."
+                  >
+                    <button className="btn btn-danger btn-sm" onClick={() => setClearLabOpen(true)}>
+                      Clear Lab...
+                    </button>
                   </SettingField>
                 </SettingSection>
 
                 <SettingSection title="Advanced">
-                  <SettingField label="Experimental Features" hint="Enable features still in beta. May be unstable.">
+                  <SettingField
+                    label="Experimental Features"
+                    hint="Enable features still in beta. May be unstable."
+                  >
                     <label className="toggle-switch">
                       <span className="sr-only">Experimental Features</span>
                       <input
@@ -559,8 +659,13 @@ export default function SettingsPage() {
                     </label>
                   </SettingField>
 
-                  <SettingField label="Factory Reset" hint="Instantly reset all application settings to defaults.">
-                    <button className="btn btn-danger btn-sm" onClick={handleReset}>Reset to Defaults</button>
+                  <SettingField
+                    label="Factory Reset"
+                    hint="Instantly reset all application settings to defaults."
+                  >
+                    <button className="btn btn-danger btn-sm" onClick={handleReset}>
+                      Reset to Defaults
+                    </button>
                   </SettingField>
                 </SettingSection>
               </div>
@@ -569,11 +674,11 @@ export default function SettingsPage() {
         </main>
       </div>
 
-      <SettingsActionBar 
-        isDirty={isDirty} 
-        saving={saving} 
-        onSave={handleSave} 
-        onReset={handleRevert} 
+      <SettingsActionBar
+        isDirty={isDirty}
+        saving={saving}
+        onSave={handleSave}
+        onReset={handleRevert}
       />
 
       <ConfirmDialog

@@ -16,14 +16,16 @@ class BrandingConfig(BaseModel):
     favicon_path: str | None = None
     login_logo_path: str | None = None
     login_bg_path: str | None = None
-    primary_color: str = "#00d4ff"
-    accent_colors: list[str] = ["#ff6b6b", "#4ecdc4"]
+    primary_color: str = "#fe8019"
+    accent_colors: list[str] = ["#fabd2f", "#b8bb26"]
 
     @field_validator("primary_color")
     @classmethod
     def validate_primary_color(cls, v: str) -> str:
         if not _HEX_RE.match(v):
-            raise ValueError(f"primary_color must be a valid 6-digit hex color (e.g. #00d4ff), got: {v!r}")
+            raise ValueError(
+                f"primary_color must be a valid 6-digit hex color (e.g. #fe8019), got: {v!r}"
+            )
         return v
 
     @field_validator("accent_colors")
@@ -48,10 +50,22 @@ class BrandingConfig(BaseModel):
 
 
 VALID_PRESETS = {
-    "cyberpunk-neon", "dark-matter", "solarized-dark", "nord",
-    "dracula", "gruvbox-dark", "monokai", "one-dark", "custom",
+    "cyberpunk-neon",
+    "dark-matter",
+    "solarized-dark",
+    "nord",
+    "dracula",
+    "gruvbox-dark",
+    "monokai",
+    "one-dark",
+    "custom",
     # theme.park vendored palettes
-    "tp-maroon", "tp-hotline", "tp-aquamarine", "tp-space-gray", "tp-hotpink", "tp-overseer",
+    "tp-maroon",
+    "tp-hotline",
+    "tp-aquamarine",
+    "tp-space-gray",
+    "tp-hotpink",
+    "tp-overseer",
 }
 
 
@@ -96,7 +110,12 @@ class AppSettingsRead(BaseModel):
     show_weather_widget: bool = True
     weather_location: str = "Phoenix, AZ"
     auth_enabled: bool = False
+    registration_open: bool = True
+    rate_limit_profile: str = "normal"
     session_timeout_hours: int = 24
+    dev_mode: bool = False
+    audit_log_retention_days: int = 90
+    audit_log_hide_ip: bool = False
     show_external_nodes_on_map: bool = True
     timezone: str = "UTC"
     language: str = "en"
@@ -114,7 +133,7 @@ class AppSettingsRead(BaseModel):
     ui_font: str = "inter"
     ui_font_size: str = "medium"
     # Advanced Theming
-    theme_preset: str = "cyberpunk-neon"
+    theme_preset: str = "gruvbox-dark"
     custom_colors: str | None = Field(default=None, exclude=True)  # raw JSON from ORM
     theme_colors: Any | None = None  # parsed in model_validator below — flat or {dark,light} dict
     # Flat branding columns — read from ORM but excluded from JSON output (nested via `branding`)
@@ -122,8 +141,8 @@ class AppSettingsRead(BaseModel):
     favicon_path: str | None = Field(default=None, exclude=True)
     login_logo_path: str | None = Field(default=None, exclude=True)
     login_bg_path: str | None = Field(default=None, exclude=True)
-    primary_color: str = Field(default="#00d4ff", exclude=True)
-    accent_colors: str | None = Field(default='["#ff6b6b","#4ecdc4"]', exclude=True)
+    primary_color: str = Field(default="#fe8019", exclude=True)
+    accent_colors: str | None = Field(default='["#fabd2f","#b8bb26"]', exclude=True)
     # Nested branding object (computed in model_validator)
     branding: BrandingConfig = BrandingConfig()
     created_at: datetime
@@ -136,9 +155,9 @@ class AppSettingsRead(BaseModel):
             try:
                 accent_colors = json.loads(raw_accents)
             except Exception:
-                accent_colors = ["#ff6b6b", "#4ecdc4"]
+                accent_colors = ["#fabd2f", "#b8bb26"]
         elif raw_accents is None:
-            accent_colors = ["#ff6b6b", "#4ecdc4"]
+            accent_colors = ["#fabd2f", "#b8bb26"]
         else:
             accent_colors = raw_accents
         self.branding = BrandingConfig(
@@ -146,7 +165,7 @@ class AppSettingsRead(BaseModel):
             favicon_path=self.favicon_path,
             login_logo_path=self.login_logo_path,
             login_bg_path=self.login_bg_path,
-            primary_color=self.primary_color or "#00d4ff",
+            primary_color=self.primary_color or "#fe8019",
             accent_colors=accent_colors,
         )
         return self
@@ -169,7 +188,9 @@ class AppSettingsRead(BaseModel):
             try:
                 return json.loads(v)
             except Exception as exc:
-                _logger.warning("Failed to parse 'environments' setting, using default. Error: %s", exc)
+                _logger.warning(
+                    "Failed to parse 'environments' setting, using default. Error: %s", exc
+                )
                 return ["prod", "staging", "dev"]
         if v is None:
             return ["prod", "staging", "dev"]
@@ -182,7 +203,9 @@ class AppSettingsRead(BaseModel):
             try:
                 return json.loads(v)
             except Exception as exc:
-                _logger.warning("Failed to parse 'categories' setting, using default. Error: %s", exc)
+                _logger.warning(
+                    "Failed to parse 'categories' setting, using default. Error: %s", exc
+                )
                 return []
         if v is None:
             return []
@@ -195,7 +218,9 @@ class AppSettingsRead(BaseModel):
             try:
                 return json.loads(v)
             except Exception as exc:
-                _logger.warning("Failed to parse 'locations' setting, using default. Error: %s", exc)
+                _logger.warning(
+                    "Failed to parse 'locations' setting, using default. Error: %s", exc
+                )
                 return []
         if v is None:
             return []
@@ -208,7 +233,9 @@ class AppSettingsRead(BaseModel):
             try:
                 return json.loads(v)
             except Exception as exc:
-                _logger.warning("Failed to parse 'dock_order' setting, using default. Error: %s", exc)
+                _logger.warning(
+                    "Failed to parse 'dock_order' setting, using default. Error: %s", exc
+                )
                 return None
         return v
 
@@ -219,7 +246,9 @@ class AppSettingsRead(BaseModel):
             try:
                 return json.loads(v)
             except Exception as exc:
-                _logger.warning("Failed to parse 'dock_hidden_items' setting, using default. Error: %s", exc)
+                _logger.warning(
+                    "Failed to parse 'dock_hidden_items' setting, using default. Error: %s", exc
+                )
                 return None
         return v
 
@@ -242,7 +271,12 @@ class AppSettingsUpdate(BaseModel):
     show_weather_widget: bool | None = None
     weather_location: str | None = None
     auth_enabled: bool | None = None
+    registration_open: bool | None = None
+    rate_limit_profile: Literal["relaxed", "normal", "strict"] | None = None
     session_timeout_hours: int | None = None
+    dev_mode: bool | None = None
+    audit_log_retention_days: int | None = None
+    audit_log_hide_ip: bool | None = None
     branding: BrandingConfig | None = None
     theme_preset: str | None = None
     show_external_nodes_on_map: bool | None = None

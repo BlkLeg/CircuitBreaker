@@ -7,6 +7,8 @@ from app.schemas.settings import AppSettingsRead, AppSettingsUpdate
 from app.services import settings_service
 
 router = APIRouter(tags=["settings"])
+
+
 @router.get("", response_model=AppSettingsRead)
 def get_settings(db: Session = Depends(get_db)):
     """Return the current app settings, initializing defaults on first access."""
@@ -14,9 +16,13 @@ def get_settings(db: Session = Depends(get_db)):
 
 
 @router.put("", response_model=AppSettingsRead)
-def put_settings(payload: AppSettingsUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def put_settings(
+    payload: AppSettingsUpdate,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
+):
     """Merge-update app settings. Only supplied fields are changed."""
-    return settings_service.update_settings(db, payload)
+    return settings_service.update_settings(db, payload, user_id=user_id)
 
 
 @router.post("/reset", response_model=AppSettingsRead)

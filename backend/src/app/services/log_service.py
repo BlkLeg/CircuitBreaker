@@ -5,6 +5,7 @@ instantiation elsewhere in the codebase is prohibited.
 
 Audit logs are append-only.  No update or delete path exists through this service.
 """
+
 import json
 import logging
 import sys
@@ -26,6 +27,7 @@ REDACTED_KEYS = {
     "telemetry_config",
     "jwt_secret",
     "password_hash",
+    "hashed_password",
 }
 
 
@@ -36,9 +38,7 @@ def sanitise_diff(obj):
         return None
     if isinstance(obj, dict):
         return {
-            k: "***REDACTED***"
-            if any(r in k.lower() for r in REDACTED_KEYS)
-            else sanitise_diff(v)
+            k: "***REDACTED***" if any(r in k.lower() for r in REDACTED_KEYS) else sanitise_diff(v)
             for k, v in obj.items()
         }
     if isinstance(obj, list):

@@ -16,6 +16,7 @@ Run the full suite:
 CB_API_TOKEN tests require the env var to be set:
     CB_API_TOKEN=MY_API_TOKEN_123 pytest tests/test_oobe_smoke.py::TestCBApiToken -v
 """
+
 import os
 
 import pytest
@@ -39,6 +40,7 @@ _PASS_WEAK = "weak"
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _register(client, email=_EMAIL, password=_PASS):
     status = client.get(f"{API}/bootstrap/status")
@@ -80,6 +82,7 @@ def _create_hardware(client, name="OOBE-Server", **headers):
 # 1. Fresh DB state
 # ===========================================================================
 
+
 class TestFreshDB:
     def test_settings_exist_with_defaults(self, client):
         """GET /settings returns 200 with sane defaults on a fresh DB."""
@@ -100,22 +103,31 @@ class TestFreshDB:
         /docs may contain at most one seeded welcome document; all other
         entity tables must be completely empty.
         """
-        for path in ("/hardware", "/compute-units", "/services",
-                     "/storage", "/networks", "/misc", "/docs"):
+        for path in (
+            "/hardware",
+            "/compute-units",
+            "/services",
+            "/storage",
+            "/networks",
+            "/misc",
+            "/docs",
+        ):
             resp = client.get(f"{API}{path}")
             assert resp.status_code == 200, f"GET {path} failed"
             body = resp.json()
             # Endpoints may return a list or a dict with a results key
             items = body if isinstance(body, list) else body.get("items", body.get("results", []))
             if path == "/docs":
-                assert len(items) <= 1, \
+                assert len(items) <= 1, (
                     f"{path} should have at most one default welcome doc on fresh start, got {items}"
+                )
             else:
                 assert len(items) == 0, f"{path} should be empty on fresh start, got {items}"
 
     def test_no_users_on_fresh_start(self, db):
         """Users table should have zero rows after initial migration."""
         from app.db.models import User
+
         count = db.query(User).count()
         assert count == 0
 
@@ -123,6 +135,7 @@ class TestFreshDB:
 # ===========================================================================
 # 2. First page load (API-level)
 # ===========================================================================
+
 
 class TestFirstPageLoad:
     def test_settings_read_unauthenticated(self, client):
@@ -156,6 +169,7 @@ class TestFirstPageLoad:
 # 3. Auth-disabled CRUD (writes succeed without Authorization header)
 # ===========================================================================
 
+
 class TestAuthDisabledCRUD:
     def test_create_hardware_no_auth(self, client):
         resp = _create_hardware(client)
@@ -184,6 +198,7 @@ class TestAuthDisabledCRUD:
 # 4. First user registration, enable auth, login / logout
 # ===========================================================================
 
+
 class TestFirstUserAndAuthFlow:
     def test_register_returns_token_and_profile(self, client):
         resp = _register(client)
@@ -208,6 +223,7 @@ class TestFirstUserAndAuthFlow:
     def test_register_sets_jwt_secret_in_db(self, client, db):
         """Registration must auto-generate and persist the JWT secret."""
         from app.db.models import AppSettings
+
         _register(client)
         cfg = db.get(AppSettings, 1)
         assert cfg is not None
@@ -227,8 +243,7 @@ class TestFirstUserAndAuthFlow:
         _enable_auth(client, token)
 
         resp = _create_hardware(client, name="ShouldFail")
-        assert resp.status_code == 401, \
-            f"Expected 401 after enabling auth, got {resp.status_code}"
+        assert resp.status_code == 401, f"Expected 401 after enabling auth, got {resp.status_code}"
 
     def test_enable_auth_still_allows_settings_read(self, client):
         """Read-only settings endpoint stays accessible after enabling auth."""
@@ -260,8 +275,9 @@ class TestFirstUserAndAuthFlow:
         resp = _login(client, password=_WRONG_PASS)
         assert resp.status_code == 401
         detail = resp.json().get("detail", "")
-        assert "password" not in detail.lower() or "invalid" in detail.lower(), \
+        assert "password" not in detail.lower() or "invalid" in detail.lower(), (
             f"Error message too specific: {detail!r}"
+        )
 
     def test_nonexistent_user_returns_401(self, client):
         resp = _login(client, email="ghost@example.com")
@@ -297,6 +313,7 @@ class TestFirstUserAndAuthFlow:
 # ===========================================================================
 # 5. Password & form validation
 # ===========================================================================
+
 
 class TestPasswordValidation:
     def test_rejects_short_password(self, client):
@@ -337,13 +354,15 @@ class TestPasswordValidation:
         resp = _register(client, password=_PASS_WEAK)
         assert resp.status_code == 400
         content_type = resp.headers.get("content-type", "")
-        assert "application/json" in content_type, \
+        assert "application/json" in content_type, (
             f"Expected JSON error, got content-type: {content_type}"
+        )
 
 
 # ===========================================================================
 # 6. CB_API_TOKEN static token behaviour
 # ===========================================================================
+
 
 @pytest.mark.skipif(
     not os.getenv("CB_API_TOKEN"),
@@ -398,8 +417,7 @@ class TestCBApiToken:
         resp = client.get(f"{API}/settings", headers=self._token_header())
         assert resp.status_code == 200
         body_text = resp.text
-        assert self.api_token not in body_text, \
-            "CB_API_TOKEN value leaked into settings response"
+        assert self.api_token not in body_text, "CB_API_TOKEN value leaked into settings response"
 
     def test_jwt_also_works_when_api_token_set(self, client):
         """When CB_API_TOKEN is set, valid JWTs must still be accepted.
@@ -414,8 +432,7 @@ class TestCBApiToken:
         assert reg.status_code == 200, f"Register failed: {reg.text}"
         jwt_token = reg.json()["token"]
 
-        resp = _create_hardware(client, name="JwtWithApiToken",
-                                headers=_auth_header(jwt_token))
+        resp = _create_hardware(client, name="JwtWithApiToken", headers=_auth_header(jwt_token))
         assert resp.status_code == 201
 
 
@@ -423,13 +440,14 @@ class TestCBApiToken:
 # 7. Secret / response cleanliness
 # ===========================================================================
 
+
 class TestSecretCleanliness:
-    def test_register_response_excludes_password_hash(self, client):
+    def test_register_response_excludes_hashed_password(self, client):
         """Registration response must never include the stored password hash."""
         resp = _register(client)
         assert resp.status_code == 200
         body_text = resp.text
-        assert "password_hash" not in body_text
+        assert "hashed_password" not in body_text
         assert "hash" not in resp.json().get("user", {})
 
     def test_register_response_excludes_jwt_secret(self, client):

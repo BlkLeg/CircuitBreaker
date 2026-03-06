@@ -1,8 +1,8 @@
 """Branding endpoints: favicon upload, login logo upload, login BG upload,
 asset deletion, dynamic manifest, Theme Park export/import."""
+
 import json
 from pathlib import Path
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -20,9 +20,9 @@ from app.services.settings_service import get_or_create_settings
 router = APIRouter(tags=["branding"])
 
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
-_MAX_FAVICON_BYTES = 512 * 1024   # 512 KB
+_MAX_FAVICON_BYTES = 512 * 1024  # 512 KB
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
-_MAX_BG_BYTES = 5 * 1024 * 1024    # 5 MB
+_MAX_BG_BYTES = 5 * 1024 * 1024  # 5 MB
 _FAVICON_ALLOWED = {".ico", ".png"}
 _LOGO_ALLOWED = {".png", ".jpg", ".jpeg", ".svg"}
 _BG_ALLOWED = {".jpg", ".jpeg", ".png"}
@@ -35,9 +35,9 @@ def _build_branding(row) -> BrandingConfig:
         try:
             accent_colors = json.loads(raw_accents)
         except Exception:
-            accent_colors = ["#ff6b6b", "#4ecdc4"]
+            accent_colors = ["#fabd2f", "#b8bb26"]
     elif raw_accents is None:
-        accent_colors = ["#ff6b6b", "#4ecdc4"]
+        accent_colors = ["#fabd2f", "#b8bb26"]
     else:
         accent_colors = raw_accents
     return BrandingConfig(
@@ -45,12 +45,16 @@ def _build_branding(row) -> BrandingConfig:
         favicon_path=row.favicon_path,
         login_logo_path=row.login_logo_path,
         login_bg_path=getattr(row, "login_bg_path", None),
-        primary_color=row.primary_color or "#00d4ff",
+        primary_color=row.primary_color or "#fe8019",
         accent_colors=accent_colors,
     )
 
 
-@router.post("/upload-favicon", response_model=BrandingConfig, responses={400: {"description": "Invalid favicon format or size"}})
+@router.post(
+    "/upload-favicon",
+    response_model=BrandingConfig,
+    responses={400: {"description": "Invalid favicon format or size"}},
+)
 async def upload_favicon(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
@@ -77,7 +81,11 @@ async def upload_favicon(
     return _build_branding(row)
 
 
-@router.post("/upload-login-logo", response_model=BrandingConfig, responses={400: {"description": "Invalid logo format or size"}})
+@router.post(
+    "/upload-login-logo",
+    response_model=BrandingConfig,
+    responses={400: {"description": "Invalid logo format or size"}},
+)
 async def upload_login_logo(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
@@ -86,7 +94,9 @@ async def upload_login_logo(
     """Upload a custom login logo (.png/.jpg/.svg, max 2 MB)."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _LOGO_ALLOWED:
-        raise HTTPException(status_code=400, detail=f"Login logo must be .png, .jpg, or .svg, got {suffix!r}")
+        raise HTTPException(
+            status_code=400, detail=f"Login logo must be .png, .jpg, or .svg, got {suffix!r}"
+        )
 
     data = await file.read()
     if len(data) > _MAX_LOGO_BYTES:
@@ -104,7 +114,11 @@ async def upload_login_logo(
     return _build_branding(row)
 
 
-@router.post("/upload-login-bg", response_model=BrandingConfig, responses={400: {"description": "Invalid background format or size"}})
+@router.post(
+    "/upload-login-bg",
+    response_model=BrandingConfig,
+    responses={400: {"description": "Invalid background format or size"}},
+)
 async def upload_login_bg(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
@@ -117,7 +131,9 @@ async def upload_login_bg(
     """
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _BG_ALLOWED:
-        raise HTTPException(status_code=400, detail=f"Login background must be .jpg or .png, got {suffix!r}")
+        raise HTTPException(
+            status_code=400, detail=f"Login background must be .jpg or .png, got {suffix!r}"
+        )
 
     data = await file.read()
     if len(data) > _MAX_BG_BYTES:
@@ -130,6 +146,7 @@ async def upload_login_bg(
         import io
 
         from PIL import Image
+
         img = Image.open(io.BytesIO(data))
         img.thumbnail((1920, 1080), Image.LANCZOS)
         if img.mode in ("RGBA", "P"):
@@ -156,12 +173,19 @@ async def upload_login_bg(
 
 _ASSET_MAP = {
     "favicon": ("favicon_path", ["favicon.ico"]),
-    "login-logo": ("login_logo_path", ["login-logo.png", "login-logo.jpg", "login-logo.jpeg", "login-logo.svg"]),
+    "login-logo": (
+        "login_logo_path",
+        ["login-logo.png", "login-logo.jpg", "login-logo.jpeg", "login-logo.svg"],
+    ),
     "login-bg": ("login_bg_path", ["login-bg.jpg"]),
 }
 
 
-@router.delete("/{asset_type}", response_model=BrandingConfig, responses={400: {"description": "Unknown asset type"}})
+@router.delete(
+    "/{asset_type}",
+    response_model=BrandingConfig,
+    responses={400: {"description": "Unknown asset type"}},
+)
 def delete_branding_asset(
     asset_type: str,
     db: Annotated[Session, Depends(get_db)],
@@ -172,7 +196,10 @@ def delete_branding_asset(
     Deletes the file from disk and clears the corresponding DB path.
     """
     if asset_type not in _ASSET_MAP:
-        raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset_type!r}. Must be one of: {', '.join(_ASSET_MAP)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown asset type: {asset_type!r}. Must be one of: {', '.join(_ASSET_MAP)}",
+        )
 
     col_name, candidate_files = _ASSET_MAP[asset_type]
 
@@ -193,6 +220,7 @@ def delete_branding_asset(
 
 # ── Dynamic PWA Manifest ──────────────────────────────────────────────────────
 
+
 @router.get("/manifest.json")
 def dynamic_manifest(db: Annotated[Session, Depends(get_db)]):
     """Generate a PWA manifest.json reflecting current branding settings."""
@@ -208,13 +236,15 @@ def dynamic_manifest(db: Annotated[Session, Depends(get_db)]):
             {"src": "/android-chrome-192x192.png", "sizes": "192x192", "type": _MIME_PNG},
             {"src": "/android-chrome-512x512.png", "sizes": "512x512", "type": _MIME_PNG},
         ],
-        "theme_color": row.primary_color or "#00d4ff",
-        "background_color": "#080c14",
+        "theme_color": row.primary_color or "#fe8019",
+        "background_color": "#282828",
         "display": "standalone",
     }
     # If a custom favicon was uploaded, insert it as the first 192/512 entry too
     if row.favicon_path:
-        manifest["icons"].insert(0, {"src": row.favicon_path, "sizes": "192x192", "type": _MIME_PNG})
+        manifest["icons"].insert(
+            0, {"src": row.favicon_path, "sizes": "192x192", "type": _MIME_PNG}
+        )
 
     return JSONResponse(content=manifest, media_type="application/manifest+json")
 

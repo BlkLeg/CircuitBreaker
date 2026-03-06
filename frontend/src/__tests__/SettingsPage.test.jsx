@@ -3,8 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import SettingsPage from '../pages/SettingsPage';
-import { AuthProvider } from '../context/AuthContext';
-import { TimezoneProvider } from '../context/TimezoneContext';
 import { ToastProvider } from '../components/common/Toast';
 
 vi.mock('react-i18next', () => ({
@@ -16,7 +14,30 @@ vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: vi.fn() },
 }));
 
-// Mock the context and APIs
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({
+    isAuthenticated: false,
+    authReady: true,
+    user: null,
+    token: null,
+    authEnabled: false,
+    setAuthEnabled: vi.fn(),
+    login: vi.fn(),
+    logout: vi.fn(),
+    openAuthModal: vi.fn(),
+    openProfileModal: vi.fn(),
+  }),
+  AuthProvider: ({ children }) => <div>{children}</div>,
+}));
+
+vi.mock('../context/TimezoneContext', () => ({
+  useTimezone: () => ({
+    timezone: 'UTC',
+    setTimezone: vi.fn(),
+  }),
+  TimezoneProvider: ({ children }) => <div>{children}</div>,
+}));
+
 vi.mock('../context/SettingsContext', () => ({
   useSettings: () => ({
     settings: {
@@ -25,15 +46,16 @@ vi.mock('../context/SettingsContext', () => ({
       categories: [],
       locations: [],
       auth_enabled: false,
-      timezone: 'UTC'
+      timezone: 'UTC',
     },
     reloadSettings: vi.fn(),
-    loading: false
+    loading: false,
   }),
-  SettingsProvider: ({ children }) => <div>{children}</div>
+  SettingsProvider: ({ children }) => <div>{children}</div>,
 }));
 
 vi.mock('../api/client', () => ({
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   settingsApi: {
     get: vi.fn(() => Promise.resolve({ data: { timezone: 'UTC' } })),
     update: vi.fn(() => Promise.resolve({ data: {} })),
@@ -59,11 +81,7 @@ describe('SettingsPage Redesign', () => {
     return render(
       <MemoryRouter>
         <ToastProvider>
-          <AuthProvider>
-            <TimezoneProvider>
-              <SettingsPage />
-            </TimezoneProvider>
-          </AuthProvider>
+          <SettingsPage />
         </ToastProvider>
       </MemoryRouter>
     );
@@ -87,10 +105,10 @@ describe('SettingsPage Redesign', () => {
     renderPage();
     const searchInput = screen.getByPlaceholderText('Search settings...');
     fireEvent.change(searchInput, { target: { value: 'Theme' } });
-    
+
     // "Appearance" should still be there because it matches "Theme" keyword
     expect(screen.getByText('Appearance')).toBeInTheDocument();
-    
+
     // "Security" should be filtered out
     expect(screen.queryByText('Security')).not.toBeInTheDocument();
   });

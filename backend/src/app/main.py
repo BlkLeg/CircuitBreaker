@@ -51,6 +51,7 @@ from app.core.rate_limit import limiter
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.migrations import run_migrations as _run_sql_migrations
 from app.db.session import Base, SessionLocal, engine
+from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 
@@ -91,14 +92,16 @@ def _seed_default_docs(db) -> None:
         if parsed_title:
             title = parsed_title
 
-    db.add(Doc(
-        title=title,
-        body_md=body_md,
-        body_html=render_markdown(body_md),
-        category="Getting Started",
-        pinned=True,
-        icon="book-open",
-    ))
+    db.add(
+        Doc(
+            title=title,
+            body_md=body_md,
+            body_html=render_markdown(body_md),
+            category="Getting Started",
+            pinned=True,
+            icon="book-open",
+        )
+    )
     db.commit()
 
 
@@ -206,11 +209,15 @@ def _run_migrations(conn) -> None:
     # networks.gateway_hardware_id
     net_cols = _get_columns(conn, "networks")
     if "gateway_hardware_id" not in net_cols:
-        conn.execute("ALTER TABLE networks ADD COLUMN gateway_hardware_id INTEGER REFERENCES hardware(id)")
+        conn.execute(
+            "ALTER TABLE networks ADD COLUMN gateway_hardware_id INTEGER REFERENCES hardware(id)"
+        )
     # app_settings: environments, categories, dock_order
     settings_cols = _get_columns(conn, "app_settings")
     if "environments" not in settings_cols:
-        conn.execute('ALTER TABLE app_settings ADD COLUMN environments TEXT DEFAULT \'["prod","staging","dev"]\'')
+        conn.execute(
+            'ALTER TABLE app_settings ADD COLUMN environments TEXT DEFAULT \'["prod","staging","dev"]\''
+        )
     if "categories" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN categories TEXT DEFAULT '[]'")
     if "dock_order" not in settings_cols:
@@ -298,15 +305,17 @@ def _run_migrations(conn) -> None:
     if "login_logo_path" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN login_logo_path TEXT")
     if "primary_color" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN primary_color TEXT DEFAULT '#00d4ff'")
+        conn.execute("ALTER TABLE app_settings ADD COLUMN primary_color TEXT DEFAULT '#fe8019'")
     if "accent_colors" not in settings_cols:
-        conn.execute('ALTER TABLE app_settings ADD COLUMN accent_colors TEXT DEFAULT \'["#ff6b6b","#4ecdc4"]\'')
+        conn.execute(
+            'ALTER TABLE app_settings ADD COLUMN accent_colors TEXT DEFAULT \'["#fabd2f","#b8bb26"]\''
+        )
     if "login_bg_path" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN login_bg_path TEXT")
     # app_settings: advanced theming
     settings_cols = _get_columns(conn, "app_settings")
     if "theme_preset" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN theme_preset TEXT DEFAULT 'cyberpunk-neon'")
+        conn.execute("ALTER TABLE app_settings ADD COLUMN theme_preset TEXT DEFAULT 'gruvbox-dark'")
     if "custom_colors" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN custom_colors TEXT")
     # storage.icon_slug
@@ -336,7 +345,9 @@ def _run_migrations(conn) -> None:
     if "show_weather_widget" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN show_weather_widget BOOLEAN DEFAULT TRUE")
     if "weather_location" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN weather_location TEXT DEFAULT 'Phoenix, AZ'")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN weather_location TEXT DEFAULT 'Phoenix, AZ'"
+        )
     if "language" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN language TEXT DEFAULT 'en'")
     user_cols = _get_columns(conn, "users")
@@ -407,7 +418,9 @@ def _run_migrations(conn) -> None:
     # app_settings: show_external_nodes_on_map
     settings_cols = _get_columns(conn, "app_settings")
     if "show_external_nodes_on_map" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN show_external_nodes_on_map BOOLEAN DEFAULT TRUE")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN show_external_nodes_on_map BOOLEAN DEFAULT TRUE"
+        )
     # v0.1.2: hardware vendor catalog + telemetry fields
     hw_cols = _get_columns(conn, "hardware")
     if "vendor_catalog_key" not in hw_cols:
@@ -460,9 +473,7 @@ def _run_migrations(conn) -> None:
             "SELECT id FROM categories WHERE name = ? COLLATE NOCASE", (cat_name,)
         ).fetchone()
         if cat_row:
-            conn.execute(
-                "UPDATE services SET category_id = ? WHERE id = ?", (cat_row[0], svc_id)
-            )
+            conn.execute("UPDATE services SET category_id = ? WHERE id = ?", (cat_row[0], svc_id))
     # v0.1.4: environments table + environment_id FK on hardware/compute_units/services
     conn.execute("""
         CREATE TABLE IF NOT EXISTS environments (
@@ -502,6 +513,7 @@ def _run_migrations(conn) -> None:
     # v0.1.5: services.ports_json — structured port bindings replacing freeform string
     import json as _json
     import re as _re
+
     svc_cols = _get_columns(conn, "services")
     if "ports_json" not in svc_cols:
         conn.execute("ALTER TABLE services ADD COLUMN ports_json TEXT")
@@ -550,6 +562,7 @@ def _run_migrations(conn) -> None:
 
     # v0.1.6: logs.created_at_utc — reliable UTC ISO 8601 string for frontend display
     from datetime import datetime
+
     log_cols = _get_columns(conn, "logs")
     if "created_at_utc" not in log_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN created_at_utc TEXT")
@@ -668,27 +681,39 @@ def _run_migrations(conn) -> None:
         conn.execute("ALTER TABLE hardware ADD COLUMN rack_id INTEGER REFERENCES racks(id)")
     hw_cols = _get_columns(conn, "hardware")
     if "source_scan_result_id" not in hw_cols:
-        conn.execute("ALTER TABLE hardware ADD COLUMN source_scan_result_id INTEGER REFERENCES scan_results(id)")
+        conn.execute(
+            "ALTER TABLE hardware ADD COLUMN source_scan_result_id INTEGER REFERENCES scan_results(id)"
+        )
     cu_cols = _get_columns(conn, "compute_units")
     if "status" not in cu_cols:
         conn.execute("ALTER TABLE compute_units ADD COLUMN status TEXT DEFAULT 'unknown'")
     if "download_speed_mbps" not in cu_cols:
-        conn.execute("ALTER TABLE compute_units ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL")
+        conn.execute(
+            "ALTER TABLE compute_units ADD COLUMN download_speed_mbps INTEGER DEFAULT NULL"
+        )
     if "upload_speed_mbps" not in cu_cols:
         conn.execute("ALTER TABLE compute_units ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
     # MAC unique index (partial — only non-NULL values)
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_hardware_mac ON hardware(mac_address) WHERE mac_address IS NOT NULL AND mac_address != ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_hardware_mac ON hardware(mac_address) WHERE mac_address IS NOT NULL AND mac_address != ''"
+    )
 
     # v0.1.4-discovery: app_settings discovery columns
     settings_cols = _get_columns(conn, "app_settings")
     if "discovery_auto_merge" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_auto_merge BOOLEAN DEFAULT FALSE")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_auto_merge BOOLEAN DEFAULT FALSE"
+        )
     if "discovery_nmap_args" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_nmap_args TEXT DEFAULT '-sV -O --osscan-limit -T4'")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_nmap_args TEXT DEFAULT '-sV -O --osscan-limit -T4'"
+        )
     if "discovery_snmp_community" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_snmp_community TEXT")
     if "discovery_http_probe" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_http_probe BOOLEAN DEFAULT TRUE")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_http_probe BOOLEAN DEFAULT TRUE"
+        )
 
     # v0.1.7: Networking (Router/AP) hardware extensions
     hw_cols = _get_columns(conn, "hardware")
@@ -709,7 +734,9 @@ def _run_migrations(conn) -> None:
     if "upload_speed_mbps" not in hw_cols:
         conn.execute("ALTER TABLE hardware ADD COLUMN upload_speed_mbps INTEGER DEFAULT NULL")
     if "discovery_retention_days" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_retention_days INTEGER DEFAULT 30")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_retention_days INTEGER DEFAULT 30"
+        )
 
     # live_metrics table
     conn.execute("""
@@ -768,17 +795,62 @@ def _run_migrations(conn) -> None:
     if "timezone" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC'")
     if "discovery_enabled" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+        )
     if "discovery_default_cidr" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_default_cidr TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_default_cidr TEXT NOT NULL DEFAULT ''"
+        )
     if "discovery_schedule_cron" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN discovery_schedule_cron TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_schedule_cron TEXT NOT NULL DEFAULT ''"
+        )
     if "scan_ack_accepted" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN scan_ack_accepted BOOLEAN NOT NULL DEFAULT FALSE")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN scan_ack_accepted BOOLEAN NOT NULL DEFAULT FALSE"
+        )
     if "ui_font" not in settings_cols:
         conn.execute("ALTER TABLE app_settings ADD COLUMN ui_font TEXT NOT NULL DEFAULT 'inter'")
     if "ui_font_size" not in settings_cols:
-        conn.execute("ALTER TABLE app_settings ADD COLUMN ui_font_size TEXT NOT NULL DEFAULT 'medium'")
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN ui_font_size TEXT NOT NULL DEFAULT 'medium'"
+        )
+
+    # ── Phase 1: FastAPI-Users user model extensions ─────────────────────────
+    user_cols = _get_columns(conn, "users")
+    if "is_active" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    if "is_superuser" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_superuser INTEGER NOT NULL DEFAULT 0")
+    if "updated_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN updated_at DATETIME")
+    user_cols = _get_columns(conn, "users")
+    if "password_hash" in user_cols and "hashed_password" not in user_cols:
+        conn.execute("ALTER TABLE users RENAME COLUMN password_hash TO hashed_password")
+    # Backfill superusers from admins
+    conn.execute("UPDATE users SET is_superuser = 1 WHERE is_admin = 1 AND is_superuser = 0")
+
+    # Phase 1: new AppSettings fields
+    settings_cols = _get_columns(conn, "app_settings")
+    if "registration_open" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN registration_open BOOLEAN NOT NULL DEFAULT 1"
+        )
+    if "rate_limit_profile" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN rate_limit_profile TEXT NOT NULL DEFAULT 'normal'"
+        )
+    if "dev_mode" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN dev_mode BOOLEAN NOT NULL DEFAULT 0")
+    if "audit_log_retention_days" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN audit_log_retention_days INTEGER NOT NULL DEFAULT 90"
+        )
+    if "audit_log_hide_ip" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN audit_log_hide_ip BOOLEAN NOT NULL DEFAULT 0"
+        )
 
     # ── Missing services columns (IP conflict tracking) ──────────────────────
     svc_cols = _get_columns(conn, "services")
@@ -793,7 +865,7 @@ def _run_migrations(conn) -> None:
 def init_db():
     """Synchronously initialize the database, apply migrations, and seed data."""
     if settings.database_url.startswith(_SQLITE_SCHEME):
-        db_path = Path(settings.database_url[len(_SQLITE_SCHEME):])
+        db_path = Path(settings.database_url[len(_SQLITE_SCHEME) :])
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # Ensure writable for WAL mode and migrations
         if db_path.exists():
@@ -831,6 +903,7 @@ def init_db():
 
 # ── App startup / lifespan ──────────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run startup and shutdown tasks."""
@@ -838,13 +911,12 @@ async def lifespan(app: FastAPI):
 
     from app.services import discovery_service
 
+    init_db()
+
     # ── Dev mode: enable verbose logging ──────────────────────────────────
     if settings.dev_mode:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
-        _logger.warning(
-            "DEV MODE is enabled — SQL logging is verbose. "
-            "Do NOT use in production."
-        )
+        _logger.warning("DEV MODE is enabled — SQL logging is verbose. Do NOT use in production.")
 
     # ── Register main event loop for APScheduler WS broadcasts ───────────
     loop = asyncio.get_running_loop()
@@ -877,11 +949,16 @@ async def lifespan(app: FastAPI):
     sched_db = SessionLocal()
     try:
         from app.db.models import DiscoveryProfile
-        profiles = sched_db.query(DiscoveryProfile).filter(
-            DiscoveryProfile.enabled == True,  # noqa: E712
-            DiscoveryProfile.schedule_cron.isnot(None),
-            DiscoveryProfile.schedule_cron != "",
-        ).all()
+
+        profiles = (
+            sched_db.query(DiscoveryProfile)
+            .filter(
+                DiscoveryProfile.enabled == True,  # noqa: E712
+                DiscoveryProfile.schedule_cron.isnot(None),
+                DiscoveryProfile.schedule_cron != "",
+            )
+            .all()
+        )
         for profile in profiles:
             try:
                 if not profile.schedule_cron:
@@ -931,10 +1008,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(LegacyTokenMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
+
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
@@ -953,6 +1032,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def unhandled_error_handler(request: Request, exc: Exception):
     if settings.dev_mode:
         import traceback
+
         return JSONResponse(
             status_code=500,
             content={"detail": str(exc), "traceback": traceback.format_exc()},
@@ -964,39 +1044,43 @@ async def unhandled_error_handler(request: Request, exc: Exception):
 
 _V1 = "/api/v1"
 
-app.include_router(hardware.router,       prefix=f"{_V1}/hardware",          tags=["hardware"])
-app.include_router(hardware.hw_conn_router, prefix=f"{_V1}",                 tags=["hardware"])
-app.include_router(compute_units.router,  prefix=f"{_V1}/compute-units",     tags=["compute-units"])
-app.include_router(services.router,       prefix=f"{_V1}/services",          tags=["services"])
-app.include_router(storage.router,        prefix=f"{_V1}/storage",           tags=["storage"])
-app.include_router(networks.router,       prefix=f"{_V1}/networks",          tags=["networks"])
-app.include_router(misc.router,           prefix=f"{_V1}/misc",              tags=["misc"])
-app.include_router(docs.router,           prefix=f"{_V1}/docs",              tags=["docs"])
-app.include_router(graph.router,          prefix=f"{_V1}/graph",             tags=["graph"])
-app.include_router(search.router,         prefix=f"{_V1}/search",            tags=["search"])
-app.include_router(logs.router,           prefix=f"{_V1}/logs",              tags=["logs"])
-app.include_router(auth.router,           prefix=f"{_V1}/auth",              tags=["auth"])
-app.include_router(clusters.router,       prefix=f"{_V1}/hardware-clusters", tags=["clusters"])
-app.include_router(external_nodes.router, prefix=f"{_V1}/external-nodes",    tags=["external-nodes"])
-app.include_router(bootstrap.router,      prefix=f"{_V1}/bootstrap",         tags=["bootstrap"])
-app.include_router(catalog.router,        prefix=f"{_V1}/catalog",           tags=["catalog"])
-app.include_router(telemetry_api.router,  prefix=f"{_V1}/hardware",          tags=["telemetry"])
-app.include_router(categories.router,     prefix=f"{_V1}/categories",        tags=["categories"])
-app.include_router(environments.router,   prefix=f"{_V1}/environments",      tags=["environments"])
-app.include_router(discovery_router,      prefix=f"{_V1}/discovery",         tags=["discovery"])
-app.include_router(ws_discovery_router,   prefix=f"{_V1}/discovery",         tags=["discovery-ws"])
-app.include_router(ip_check_router,       prefix=f"{_V1}",                   tags=["ip-check"])
-app.include_router(settings_router,       prefix=f"{_V1}/settings",          tags=["settings"])
-app.include_router(branding_router,       prefix=f"{_V1}/branding",          tags=["branding"])
-app.include_router(assets_router,         prefix=f"{_V1}/assets",            tags=["assets"])
-app.include_router(admin_router,          prefix=f"{_V1}/admin",             tags=["admin"])
-app.include_router(security_router,       prefix=f"{_V1}/security",          tags=["security"])
-app.include_router(metrics_router,        prefix=f"{_V1}/metrics",           tags=["metrics"])
-app.include_router(timezones_router,      prefix=f"{_V1}/timezones",         tags=["timezones"])
-app.include_router(rack_api.router,       prefix=f"{_V1}/racks",             tags=["racks"])
+app.include_router(hardware.router, prefix=f"{_V1}/hardware", tags=["hardware"])
+app.include_router(hardware.hw_conn_router, prefix=f"{_V1}", tags=["hardware"])
+app.include_router(compute_units.router, prefix=f"{_V1}/compute-units", tags=["compute-units"])
+app.include_router(services.router, prefix=f"{_V1}/services", tags=["services"])
+app.include_router(storage.router, prefix=f"{_V1}/storage", tags=["storage"])
+app.include_router(networks.router, prefix=f"{_V1}/networks", tags=["networks"])
+app.include_router(misc.router, prefix=f"{_V1}/misc", tags=["misc"])
+app.include_router(docs.router, prefix=f"{_V1}/docs", tags=["docs"])
+app.include_router(graph.router, prefix=f"{_V1}/graph", tags=["graph"])
+app.include_router(search.router, prefix=f"{_V1}/search", tags=["search"])
+app.include_router(logs.router, prefix=f"{_V1}/logs", tags=["logs"])
+app.include_router(auth.auth_jwt_router, prefix=f"{_V1}/auth/jwt", tags=["auth"])
+app.include_router(auth.reset_password_router, prefix=f"{_V1}/auth", tags=["auth"])
+app.include_router(auth.users_router, prefix=f"{_V1}/users", tags=["users"])
+app.include_router(auth.router, prefix=f"{_V1}/auth", tags=["auth"])
+app.include_router(clusters.router, prefix=f"{_V1}/hardware-clusters", tags=["clusters"])
+app.include_router(external_nodes.router, prefix=f"{_V1}/external-nodes", tags=["external-nodes"])
+app.include_router(bootstrap.router, prefix=f"{_V1}/bootstrap", tags=["bootstrap"])
+app.include_router(catalog.router, prefix=f"{_V1}/catalog", tags=["catalog"])
+app.include_router(telemetry_api.router, prefix=f"{_V1}/hardware", tags=["telemetry"])
+app.include_router(categories.router, prefix=f"{_V1}/categories", tags=["categories"])
+app.include_router(environments.router, prefix=f"{_V1}/environments", tags=["environments"])
+app.include_router(discovery_router, prefix=f"{_V1}/discovery", tags=["discovery"])
+app.include_router(ws_discovery_router, prefix=f"{_V1}/discovery", tags=["discovery-ws"])
+app.include_router(ip_check_router, prefix=f"{_V1}", tags=["ip-check"])
+app.include_router(settings_router, prefix=f"{_V1}/settings", tags=["settings"])
+app.include_router(branding_router, prefix=f"{_V1}/branding", tags=["branding"])
+app.include_router(assets_router, prefix=f"{_V1}/assets", tags=["assets"])
+app.include_router(admin_router, prefix=f"{_V1}/admin", tags=["admin"])
+app.include_router(security_router, prefix=f"{_V1}/security", tags=["security"])
+app.include_router(metrics_router, prefix=f"{_V1}/metrics", tags=["metrics"])
+app.include_router(timezones_router, prefix=f"{_V1}/timezones", tags=["timezones"])
+app.include_router(rack_api.router, prefix=f"{_V1}/racks", tags=["racks"])
 
 
 # ── Health check ───────────────────────────────────────────────────────────
+
 
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
@@ -1051,6 +1135,7 @@ async def favicon_file():
         return FileResponse(str(_frontend_dir / "favicon.ico"), media_type="image/x-icon")
     return Response(status_code=404)
 
+
 if _frontend_dir:
     _assets = _frontend_dir / "assets"
     if _assets.exists():
@@ -1077,8 +1162,7 @@ if _frontend_dir:
             return FileResponse(str(index))
         return Response(status_code=404)
 else:
+
     @app.get("/", include_in_schema=False)
     async def root():
         return HTMLResponse("<h1>Circuit Breaker API</h1><p>Frontend not built.</p>")
-
-

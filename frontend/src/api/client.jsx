@@ -42,6 +42,18 @@ client.interceptors.response.use(
       window.dispatchEvent(new CustomEvent('cb:session-expired'));
     }
 
+    // Rate limited — surface retry-after info
+    if (status === 429) {
+      const retryAfter = error.response.headers?.['retry-after'];
+      const msg = retryAfter
+        ? `Too many requests. Try again in ${retryAfter} seconds.`
+        : 'Too many requests. Please slow down and try again shortly.';
+      const rateLimitErr = new Error(msg);
+      rateLimitErr.statusCode = 429;
+      rateLimitErr.isRateLimited = true;
+      return Promise.reject(rateLimitErr);
+    }
+
     // Build a user-facing message
     let message;
     // Server errors — don't expose raw detail
@@ -54,9 +66,7 @@ client.interceptors.response.use(
       if (Array.isArray(detail)) {
         // Pydantic validation_error: array of { field, msg } (our custom schema)
         // or FastAPI's default [ { loc, msg, type } ]
-        message = detail
-          .map((e) => e.msg || JSON.stringify(e))
-          .join('; ');
+        message = detail.map((e) => e.msg || JSON.stringify(e)).join('; ');
       } else {
         message = detail || error.message;
       }
@@ -95,7 +105,8 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
-  addConnection: (sourceId, targetId) => client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
+  addConnection: (sourceId, targetId) =>
+    client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
   removeConnection: (connectionId) => client.delete(`/hardware-connections/${connectionId}`),
 };
 
@@ -111,17 +122,19 @@ export const computeUnitsApi = {
     form.append('file', file);
     form.append('name', file.name.replace(/\.[^.]+$/, ''));
     form.append('category', 'UPLOADED');
-    return client.post('/compute-units/icons/upload', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    }).then((res) => ({
-      ...res,
-      data: {
-        ...res.data,
-        slug: res.data.slug || res.data.filename,
-        path: res.data.path || res.data.url,
-        label: res.data.label || file.name.replace(/\.[^.]+$/, ''),
-      },
-    }));
+    return client
+      .post('/compute-units/icons/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((res) => ({
+        ...res,
+        data: {
+          ...res.data,
+          slug: res.data.slug || res.data.filename,
+          path: res.data.path || res.data.url,
+          label: res.data.label || file.name.replace(/\.[^.]+$/, ''),
+        },
+      }));
   },
   listIcons: () => client.get('/compute-units/icons'),
 };
@@ -166,7 +179,8 @@ export const networksApi = {
   removeMember: (id, computeId) => client.delete(`/networks/${id}/members/${computeId}`),
   getHardwareMembers: (id) => client.get(`/networks/${id}/hardware-members`),
   addHardwareMember: (id, data) => client.post(`/networks/${id}/hardware-members`, data),
-  removeHardwareMember: (id, hardwareId) => client.delete(`/networks/${id}/hardware-members/${hardwareId}`),
+  removeHardwareMember: (id, hardwareId) =>
+    client.delete(`/networks/${id}/hardware-members/${hardwareId}`),
 };
 
 export const miscApi = {
@@ -195,8 +209,7 @@ export const docsApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
-  exportAll: () =>
-    client.get('/docs/export', { responseType: 'blob' }),
+  exportAll: () => client.get('/docs/export', { responseType: 'blob' }),
   importDocs: (file) => {
     const form = new FormData();
     form.append('file', file);
@@ -210,9 +223,11 @@ export const graphApi = {
   topology: (params) => client.get('/graph/topology', { params }),
   getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
   saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
-  placeNode: (node_id, environment = 'default') => client.post('/graph/place-node', { node_id, environment }),
+  placeNode: (node_id, environment = 'default') =>
+    client.post('/graph/place-node', { node_id, environment }),
   deleteEdge: (edge_id) => client.delete(`/graph/edges/${edge_id}`),
-  updateEdgeType: (edge_id, connection_type) => client.patch(`/graph/edges/${edge_id}`, { connection_type }),
+  updateEdgeType: (edge_id, connection_type) =>
+    client.patch(`/graph/edges/${edge_id}`, { connection_type }),
 };
 
 export const searchApi = {
@@ -238,60 +253,60 @@ export const adminApi = {
 };
 
 export const clustersApi = {
-  list:         (params)        => client.get('/hardware-clusters', { params }),
-  get:          (id)            => client.get(`/hardware-clusters/${id}`),
-  create:       (data)          => client.post('/hardware-clusters', data),
-  update:       (id, data)      => client.patch(`/hardware-clusters/${id}`, data),
-  delete:       (id)            => client.delete(`/hardware-clusters/${id}`),
-  getMembers:   (id)            => client.get(`/hardware-clusters/${id}/members`),
-  addMember:    (id, data)      => client.post(`/hardware-clusters/${id}/members`, data),
+  list: (params) => client.get('/hardware-clusters', { params }),
+  get: (id) => client.get(`/hardware-clusters/${id}`),
+  create: (data) => client.post('/hardware-clusters', data),
+  update: (id, data) => client.patch(`/hardware-clusters/${id}`, data),
+  delete: (id) => client.delete(`/hardware-clusters/${id}`),
+  getMembers: (id) => client.get(`/hardware-clusters/${id}/members`),
+  addMember: (id, data) => client.post(`/hardware-clusters/${id}/members`, data),
   updateMember: (id, mid, data) => client.patch(`/hardware-clusters/${id}/members/${mid}`, data),
-  removeMember: (id, mid)       => client.delete(`/hardware-clusters/${id}/members/${mid}`),
+  removeMember: (id, mid) => client.delete(`/hardware-clusters/${id}/members/${mid}`),
 };
 
 export const logsApi = {
-  list:    (params) => client.get('/logs', { params }),
-  actions: ()       => client.get('/logs/actions'),
-  clear:   ()       => client.delete('/logs'),
-  stream:  (since)  => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
+  list: (params) => client.get('/logs', { params }),
+  actions: () => client.get('/logs/actions'),
+  clear: () => client.delete('/logs'),
+  stream: (since) => `/api/v1/logs/stream${since ? `?since=${encodeURIComponent(since)}` : ''}`,
 };
 
 export const externalNodesApi = {
-  list:           (params) => client.get('/external-nodes', { params }),
-  get:            (id)     => client.get(`/external-nodes/${id}`),
-  create:         (data)   => client.post('/external-nodes', data),
-  update:         (id, d)  => client.patch(`/external-nodes/${id}`, d),
-  delete:         (id)     => client.delete(`/external-nodes/${id}`),
-  getNetworks:    (id)     => client.get(`/external-nodes/${id}/networks`),
-  addNetwork:     (id, d)  => client.post(`/external-nodes/${id}/networks`, d),
-  removeNetwork:  (relId)  => client.delete(`/external-node-networks/${relId}`),
-  getServices:    (id)     => client.get(`/external-nodes/${id}/services`),
+  list: (params) => client.get('/external-nodes', { params }),
+  get: (id) => client.get(`/external-nodes/${id}`),
+  create: (data) => client.post('/external-nodes', data),
+  update: (id, d) => client.patch(`/external-nodes/${id}`, d),
+  delete: (id) => client.delete(`/external-nodes/${id}`),
+  getNetworks: (id) => client.get(`/external-nodes/${id}/networks`),
+  addNetwork: (id, d) => client.post(`/external-nodes/${id}/networks`, d),
+  removeNetwork: (relId) => client.delete(`/external-node-networks/${relId}`),
+  getServices: (id) => client.get(`/external-nodes/${id}/services`),
 };
 
 export const catalogApi = {
-  vendors: ()    => client.get('/catalog/vendors').then((r) => r.data),
-  search:  (q)   => client.get('/catalog/search', { params: { q } }).then((r) => r.data),
+  vendors: () => client.get('/catalog/vendors').then((r) => r.data),
+  search: (q) => client.get('/catalog/search', { params: { q } }).then((r) => r.data),
   devices: (vendorKey) => client.get(`/catalog/vendors/${vendorKey}/devices`).then((r) => r.data),
 };
 
 export const telemetryApi = {
-  get:       (id)      => client.get(`/hardware/${id}/telemetry`).then((r) => r.data),
+  get: (id) => client.get(`/hardware/${id}/telemetry`).then((r) => r.data),
   setConfig: (id, cfg) => client.post(`/hardware/${id}/telemetry/config`, cfg).then((r) => r.data),
-  pollNow:   (id)      => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
+  pollNow: (id) => client.post(`/hardware/${id}/telemetry/poll`).then((r) => r.data),
 };
 
 export const categoriesApi = {
-  list:   ()            => client.get('/categories'),
-  create: (payload)     => client.post('/categories', payload),
+  list: () => client.get('/categories'),
+  create: (payload) => client.post('/categories', payload),
   update: (id, payload) => client.patch(`/categories/${id}`, payload),
-  remove: (id)          => client.delete(`/categories/${id}`),
+  remove: (id) => client.delete(`/categories/${id}`),
 };
 
 export const environmentsApi = {
-  list:   (params)      => client.get('/environments', { params }),
-  create: (payload)     => client.post('/environments', payload),
+  list: (params) => client.get('/environments', { params }),
+  create: (payload) => client.post('/environments', payload),
   update: (id, payload) => client.patch(`/environments/${id}`, payload),
-  remove: (id)          => client.delete(`/environments/${id}`),
+  remove: (id) => client.delete(`/environments/${id}`),
 };
 
 export const ipCheckApi = {

@@ -8,14 +8,19 @@ export const authApi = {
     if (displayName) body.display_name = displayName;
     return client.post('/auth/register', body);
   },
-  login: (email, password) => client.post('/auth/login', { email, password }),
+  login: (email, password) => {
+    const params = new URLSearchParams();
+    params.append('username', email);
+    params.append('password', password);
+    return client.post('/auth/jwt/login', params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  },
   me: () => client.get('/auth/me'),
   updateProfile: (formData, tokenOverride) => {
-    // Do NOT set Content-Type manually — the request interceptor in client.jsx
-    // detects FormData and removes the default 'application/json' header so the
-    // browser sets the correct 'multipart/form-data; boundary=...' automatically.
     const headers = tokenOverride ? { Authorization: `Bearer ${tokenOverride}` } : {};
-    return client.put('/auth/me', formData, { headers });
+    return client.put('/auth/me/avatar', formData, { headers });
   },
-  logout: () => client.post('/auth/logout'),
+  logout: () => client.post('/auth/jwt/logout'),
+  forgotPassword: (email) => client.post('/auth/forgot-password', { email }),
 };

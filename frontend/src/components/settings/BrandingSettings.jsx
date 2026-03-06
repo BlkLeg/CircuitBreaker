@@ -89,7 +89,14 @@ function ColorInput({ label, value, onChange, error }) {
         type="color"
         value={HEX_RE.test(value) ? value : '#000000'}
         onChange={(e) => onChange(e.target.value)}
-        style={{ width: 36, height: 28, padding: 0, border: 'none', cursor: 'pointer', borderRadius: 4 }}
+        style={{
+          width: 36,
+          height: 28,
+          padding: 0,
+          border: 'none',
+          cursor: 'pointer',
+          borderRadius: 4,
+        }}
         title={label}
       />
       <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
@@ -120,9 +127,9 @@ export default function BrandingSettings() {
   const branding = settings?.branding ?? {};
 
   const [appName, setAppName] = useState(branding.app_name ?? 'Circuit Breaker');
-  const [primaryColor, setPrimaryColor] = useState(branding.primary_color ?? '#00d4ff');
+  const [primaryColor, setPrimaryColor] = useState(branding.primary_color ?? '#fe8019');
   const [accentColors, setAccentColors] = useState(
-    branding.accent_colors?.length ? [...branding.accent_colors] : ['#ff6b6b', '#4ecdc4']
+    branding.accent_colors?.length ? [...branding.accent_colors] : ['#fabd2f', '#b8bb26']
   );
   const [colorErrors, setColorErrors] = useState({});
   const [saving, setSaving] = useState(false);
@@ -169,7 +176,10 @@ export default function BrandingSettings() {
 
   const handleSaveBranding = async () => {
     const errs = validateColors(primaryColor, accentColors);
-    if (Object.keys(errs).length) { setColorErrors(errs); return; }
+    if (Object.keys(errs).length) {
+      setColorErrors(errs);
+      return;
+    }
     setColorErrors({});
     setSaving(true);
     try {
@@ -202,9 +212,10 @@ export default function BrandingSettings() {
       toast.success('Favicon updated.');
     } catch (err) {
       const detail = err.response?.data?.detail ?? err.message;
-      const message = err.statusCode === 413
-        ? 'Favicon upload failed: File is too large. Use an icon 512 KB or smaller.'
-        : `Favicon upload failed: ${detail}`;
+      const message =
+        err.statusCode === 413
+          ? 'Favicon upload failed: File is too large. Use an icon 512 KB or smaller.'
+          : `Favicon upload failed: ${detail}`;
       toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, favicon: false }));
@@ -222,9 +233,10 @@ export default function BrandingSettings() {
       toast.success('Login logo updated.');
     } catch (err) {
       const detail = err.response?.data?.detail ?? err.message;
-      const message = err.statusCode === 413
-        ? 'Logo upload failed: File is too large. Use an image 2 MB or smaller.'
-        : `Logo upload failed: ${detail}`;
+      const message =
+        err.statusCode === 413
+          ? 'Logo upload failed: File is too large. Use an image 2 MB or smaller.'
+          : `Logo upload failed: ${detail}`;
       toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, logo: false }));
@@ -242,9 +254,10 @@ export default function BrandingSettings() {
       toast.success('Login background updated.');
     } catch (err) {
       const detail = err.response?.data?.detail ?? err.message;
-      const message = err.statusCode === 413
-        ? 'Background upload failed: File is too large. Use an image 5 MB or smaller.'
-        : `Background upload failed: ${detail}`;
+      const message =
+        err.statusCode === 413
+          ? 'Background upload failed: File is too large. Use an image 5 MB or smaller.'
+          : `Background upload failed: ${detail}`;
       toast.error(message);
     } finally {
       setUploading((u) => ({ ...u, bg: false }));
@@ -302,9 +315,7 @@ export default function BrandingSettings() {
   const logoSrc = branding.login_logo_path
     ? `${branding.login_logo_path}?t=${Date.now()}`
     : '/CB-AZ_Final.png';
-  const bgSrc = branding.login_bg_path
-    ? `${branding.login_bg_path}?t=${Date.now()}`
-    : null;
+  const bgSrc = branding.login_bg_path ? `${branding.login_bg_path}?t=${Date.now()}` : null;
 
   return (
     <div>
@@ -315,7 +326,17 @@ export default function BrandingSettings() {
         <label htmlFor="branding-app-name" style={S.label}>
           App Name
           {nameSaving && (
-            <span style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none', letterSpacing: 0, fontSize: 10, color: 'var(--color-primary)', opacity: 0.8 }}>
+            <span
+              style={{
+                marginLeft: 8,
+                fontWeight: 400,
+                textTransform: 'none',
+                letterSpacing: 0,
+                fontSize: 10,
+                color: 'var(--color-primary)',
+                opacity: 0.8,
+              }}
+            >
               saving…
             </span>
           )}
@@ -331,7 +352,9 @@ export default function BrandingSettings() {
             placeholder="Circuit Breaker"
           />
         </div>
-        <span style={S.hint}>Shown in the header, login page, and browser tab. Saves automatically on blur.</span>
+        <span style={S.hint}>
+          Shown in the header, login page, and browser tab. Saves automatically on blur.
+        </span>
       </div>
 
       <div style={S.divider} />
@@ -368,17 +391,23 @@ export default function BrandingSettings() {
 
       {/* Live preview */}
       <div style={S.previewBox}>
-        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginRight: 4 }}>Preview:</span>
-        <button type="button" style={S.previewBtn(HEX_RE.test(primaryColor) ? primaryColor : '#00d4ff')}>
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginRight: 4 }}>
+          Preview:
+        </span>
+        <button
+          type="button"
+          style={S.previewBtn(HEX_RE.test(primaryColor) ? primaryColor : '#fe8019')}
+        >
           Primary
         </button>
-        {accentColors.filter(Boolean).map((c) => (
-          HEX_RE.test(c) && (
-            <button key={c} type="button" style={S.previewBtn(c)}>
-              Accent {accentColors.indexOf(c) + 1}
-            </button>
-          )
-        ))}
+        {accentColors.filter(Boolean).map(
+          (c) =>
+            HEX_RE.test(c) && (
+              <button key={c} type="button" style={S.previewBtn(c)}>
+                Accent {accentColors.indexOf(c) + 1}
+              </button>
+            )
+        )}
       </div>
 
       <div style={{ marginTop: 12 }}>
@@ -423,15 +452,21 @@ export default function BrandingSettings() {
                 disabled={deleting.favicon}
                 onClick={() => handleDeleteAsset('favicon', 'Favicon')}
                 title="Remove custom favicon"
-                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+                style={{
+                  color: 'var(--color-danger)',
+                  background: 'transparent',
+                  border: '1px solid var(--color-danger)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
               >
-                <Trash2 size={12} />{deleting.favicon ? 'Removing…' : 'Remove'}
+                <Trash2 size={12} />
+                {deleting.favicon ? 'Removing…' : 'Remove'}
               </button>
             )}
           </div>
-          <span style={{ ...S.hint, marginTop: 4 }}>
-            .ico or .png, max 512 KB
-          </span>
+          <span style={{ ...S.hint, marginTop: 4 }}>.ico or .png, max 512 KB</span>
         </div>
       </div>
 
@@ -466,15 +501,21 @@ export default function BrandingSettings() {
                 disabled={deleting.logo}
                 onClick={() => handleDeleteAsset('login-logo', 'Login logo')}
                 title="Remove custom login logo"
-                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+                style={{
+                  color: 'var(--color-danger)',
+                  background: 'transparent',
+                  border: '1px solid var(--color-danger)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
               >
-                <Trash2 size={12} />{deleting.logo ? 'Removing…' : 'Remove'}
+                <Trash2 size={12} />
+                {deleting.logo ? 'Removing…' : 'Remove'}
               </button>
             )}
           </div>
-          <span style={{ ...S.hint, marginTop: 4 }}>
-            .png / .jpg / .svg, max 2 MB
-          </span>
+          <span style={{ ...S.hint, marginTop: 4 }}>.png / .jpg / .svg, max 2 MB</span>
           <span style={{ ...S.hint, display: 'block' }}>
             Ideal size 512×512 px, transparent background recommended.
           </span>
@@ -494,10 +535,29 @@ export default function BrandingSettings() {
           <img
             src={bgSrc}
             alt="Login background"
-            style={{ width: 160, height: 90, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+            style={{
+              width: 160,
+              height: 90,
+              objectFit: 'cover',
+              borderRadius: 4,
+              border: '1px solid var(--color-border)',
+            }}
           />
         ) : (
-          <div style={{ width: 160, height: 90, borderRadius: 4, border: '1px dashed var(--color-border)', background: 'var(--color-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: 'var(--color-text-muted)' }}>
+          <div
+            style={{
+              width: 160,
+              height: 90,
+              borderRadius: 4,
+              border: '1px dashed var(--color-border)',
+              background: 'var(--color-bg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 11,
+              color: 'var(--color-text-muted)',
+            }}
+          >
             No background
           </div>
         )}
@@ -525,9 +585,17 @@ export default function BrandingSettings() {
                 disabled={deleting.bg}
                 onClick={() => handleDeleteAsset('login-bg', 'Background')}
                 title="Remove login background"
-                style={{ color: 'var(--color-danger)', background: 'transparent', border: '1px solid var(--color-danger)', display: 'flex', alignItems: 'center', gap: 4 }}
+                style={{
+                  color: 'var(--color-danger)',
+                  background: 'transparent',
+                  border: '1px solid var(--color-danger)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
               >
-                <Trash2 size={12} />{deleting.bg ? 'Removing…' : 'Remove'}
+                <Trash2 size={12} />
+                {deleting.bg ? 'Removing…' : 'Remove'}
               </button>
             )}
           </div>
@@ -542,24 +610,16 @@ export default function BrandingSettings() {
       {/* ── Theme Park ──────────────────────────── */}
       <div style={S.subTitle}>Theme Park</div>
       <span style={S.hint}>
-        Export or import a JSON theme that contains app name and colors (file paths are not exported).
+        Export or import a JSON theme that contains app name and colors (file paths are not
+        exported).
       </span>
       <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-        <button
-          className="btn btn-secondary btn-sm"
-          type="button"
-          onClick={handleExport}
-        >
+        <button className="btn btn-secondary btn-sm" type="button" onClick={handleExport}>
           Export JSON
         </button>
         <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
           <span>Import JSON</span>
-          <input
-            type="file"
-            accept=".json"
-            style={{ display: 'none' }}
-            onChange={handleImport}
-          />
+          <input type="file" accept=".json" style={{ display: 'none' }} onChange={handleImport} />
         </label>
       </div>
     </div>

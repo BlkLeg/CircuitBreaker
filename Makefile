@@ -127,7 +127,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh preflight
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh trust-ca preflight
 
 lock: ## Regenerate backend/requirements.txt from poetry.lock
 	@echo "Regenerating backend/requirements.txt from poetry.lock..."
@@ -164,6 +164,76 @@ compose-fresh: ## Wipe all volumes then rebuild and start a clean stack (trigger
 	docker compose down -v
 	DOCKER_BUILDKIT=1 docker compose up --build -d
 	@echo "✅ Fresh stack running — open the app to complete first-run setup."
+	@echo "💡 Run 'make trust-ca' to trust the new Caddy CA for HTTPS."
+
+trust-ca: ## Extract Caddy root CA and install into system + browser trust stores
+	@echo "─── Extracting Caddy root CA ───"
+	@mkdir -p $(HOME)/.circuit-breaker
+	@tries=0; \
+	while ! docker exec cb-caddy test -f /data/caddy/pki/authorities/local/root.crt 2>/dev/null; do \
+		tries=$$((tries + 1)); \
+		if [ $$tries -ge 15 ]; then echo "❌ Timed out waiting for Caddy CA. Is cb-caddy running?"; exit 1; fi; \
+		echo "  Waiting for Caddy to generate CA... ($$tries/15)"; \
+		sleep 2; \
+	done
+	@docker cp cb-caddy:/data/caddy/pki/authorities/local/root.crt $(HOME)/.circuit-breaker/caddy-root-ca.crt
+	@echo "✅ CA extracted to $(HOME)/.circuit-breaker/caddy-root-ca.crt"
+	@echo ""
+	@echo "─── Installing into system trust store (requires sudo) ───"
+	@if [ -d /etc/pki/ca-trust/source/anchors ]; then \
+		if sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /etc/pki/ca-trust/source/anchors/circuit-breaker-caddy-ca.crt \
+		   && sudo update-ca-trust; then \
+			echo "✅ CA trusted by system (Fedora/RHEL)."; \
+		else \
+			echo "⚠️  sudo failed. Run manually:"; \
+			echo "   sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /etc/pki/ca-trust/source/anchors/circuit-breaker-caddy-ca.crt && sudo update-ca-trust"; \
+		fi; \
+	elif [ -d /usr/local/share/ca-certificates ]; then \
+		if sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /usr/local/share/ca-certificates/circuit-breaker-caddy-ca.crt \
+		   && sudo update-ca-certificates; then \
+			echo "✅ CA trusted by system (Debian/Ubuntu)."; \
+		else \
+			echo "⚠️  sudo failed. Run manually:"; \
+			echo "   sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /usr/local/share/ca-certificates/circuit-breaker-caddy-ca.crt && sudo update-ca-certificates"; \
+		fi; \
+	elif [ -d /etc/ca-certificates/trust-source/anchors ]; then \
+		if sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /etc/ca-certificates/trust-source/anchors/circuit-breaker-caddy-ca.crt \
+		   && sudo trust extract-compat; then \
+			echo "✅ CA trusted by system (Arch)."; \
+		else \
+			echo "⚠️  sudo failed. Run manually:"; \
+			echo "   sudo cp $(HOME)/.circuit-breaker/caddy-root-ca.crt /etc/ca-certificates/trust-source/anchors/circuit-breaker-caddy-ca.crt && sudo trust extract-compat"; \
+		fi; \
+	else \
+		echo "⚠️  Could not detect system CA store. Install manually."; \
+	fi
+	@echo ""
+	@echo "─── Installing into browser trust store (NSS) ───"
+	@if command -v certutil >/dev/null 2>&1; then \
+		mkdir -p $(HOME)/.pki/nssdb; \
+		certutil -d sql:$(HOME)/.pki/nssdb -D -n "CircuitBreaker-Caddy-CA" 2>/dev/null || true; \
+		certutil -d sql:$(HOME)/.pki/nssdb -A -t "C,," -n "CircuitBreaker-Caddy-CA" -i $(HOME)/.circuit-breaker/caddy-root-ca.crt; \
+		echo "✅ CA trusted by Chrome / Brave / Chromium."; \
+	else \
+		echo "⚠️  certutil not found. Install nss-tools (Fedora) or libnss3-tools (Debian)."; \
+		echo "   Then run: certutil -d sql:$(HOME)/.pki/nssdb -A -t 'C,,' -n 'CircuitBreaker-Caddy-CA' -i $(HOME)/.circuit-breaker/caddy-root-ca.crt"; \
+	fi
+	@echo ""
+	@echo "─── Checking /etc/hosts ───"
+	@if grep -q "circuitbreaker.local" /etc/hosts 2>/dev/null; then \
+		echo "✅ circuitbreaker.local already in /etc/hosts."; \
+	else \
+		if echo "127.0.0.1  circuitbreaker.local" | sudo tee -a /etc/hosts >/dev/null; then \
+			echo "✅ Added circuitbreaker.local → 127.0.0.1 to /etc/hosts."; \
+		else \
+			echo "⚠️  sudo failed. Run manually:"; \
+			echo "   echo '127.0.0.1  circuitbreaker.local' | sudo tee -a /etc/hosts"; \
+		fi; \
+	fi
+	@echo ""
+	@echo "─── Done ───"
+	@echo "Close ALL browser windows, reopen, and visit https://circuitbreaker.local"
+	@echo "(Browsers cache certificate state per-session — a full restart is required.)"
 
 preflight: test frontend-build docker-build ## Run pre-commit checks (test, build frontend, build docker)
 	@echo "\n✅ Preflight checks completed."

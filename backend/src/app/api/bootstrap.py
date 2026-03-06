@@ -1,8 +1,9 @@
 from typing import Annotated
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.core.rate_limit import limiter
+from app.core.rate_limit import get_limit, limiter
 from app.db.session import get_db
 from app.schemas.auth import (
     BootstrapInitializeRequest,
@@ -21,7 +22,7 @@ def get_bootstrap_status(db: Annotated[Session, Depends(get_db)]):
 
 
 @router.post("/initialize", response_model=BootstrapInitializeResponse)
-@limiter.limit("5/minute")
+@limiter.limit(lambda: get_limit("auth"))
 def initialize_bootstrap(
     request: Request,
     payload: BootstrapInitializeRequest,

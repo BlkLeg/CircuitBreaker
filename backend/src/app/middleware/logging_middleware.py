@@ -1,4 +1,5 @@
 """HTTP middleware that automatically logs all mutating API operations to the audit log."""
+
 import json
 import logging
 import re
@@ -15,7 +16,7 @@ _logger = logging.getLogger(__name__)
 
 # Paths that should never be logged (read-only or internal)
 _SKIP_PATHS = re.compile(
-    r"/(logs|health|openapi\.json|swagger|redoc|user-icons|icons|assets)",
+    r"/(logs|health|openapi\.json|swagger|redoc|user-icons|icons|assets|bootstrap)",
     re.IGNORECASE,
 )
 
@@ -23,51 +24,81 @@ _SKIP_PATHS = re.compile(
 # Patterns are matched in order; first match wins.
 # {entity} in action_template is replaced with the parsed entity type.
 _ROUTE_RULES: list[tuple[str, re.Pattern, str, str]] = [
-    ("POST",   re.compile(r"^/api/v1/bootstrap/initialize$"),             "bootstrap_create_user",      "bootstrap"),
+    ("POST", re.compile(r"^/api/v1/bootstrap/initialize$"), "bootstrap_create_user", "bootstrap"),
     # Relationship endpoints (must come before simple CRUD patterns)
-    ("POST",   re.compile(r"^/api/v1/services/\d+/dependencies$"),        "add_service_dependency",   "relationships"),
-    ("DELETE", re.compile(r"^/api/v1/services/\d+/dependencies/\d+$"),    "remove_service_dependency","relationships"),
-    ("POST",   re.compile(r"^/api/v1/services/\d+/storage$"),             "attach_service_storage",   "relationships"),
-    ("DELETE", re.compile(r"^/api/v1/services/\d+/storage/\d+$"),         "detach_service_storage",   "relationships"),
-    ("POST",   re.compile(r"^/api/v1/services/\d+/misc$"),                "attach_service_misc",      "relationships"),
-    ("DELETE", re.compile(r"^/api/v1/services/\d+/misc/\d+$"),            "detach_service_misc",      "relationships"),
-    ("POST",   re.compile(r"^/api/v1/networks/\d+/members$"),             "add_network_member",       "relationships"),
-    ("DELETE", re.compile(r"^/api/v1/networks/\d+/members/\d+$"),         "remove_network_member",    "relationships"),
-    ("POST",   re.compile(r"^/api/v1/docs/attach$"),                      "attach_doc",               "docs"),
-    ("DELETE", re.compile(r"^/api/v1/docs/attach$"),                      "detach_doc",               "docs"),
+    (
+        "POST",
+        re.compile(r"^/api/v1/services/\d+/dependencies$"),
+        "add_service_dependency",
+        "relationships",
+    ),
+    (
+        "DELETE",
+        re.compile(r"^/api/v1/services/\d+/dependencies/\d+$"),
+        "remove_service_dependency",
+        "relationships",
+    ),
+    (
+        "POST",
+        re.compile(r"^/api/v1/services/\d+/storage$"),
+        "attach_service_storage",
+        "relationships",
+    ),
+    (
+        "DELETE",
+        re.compile(r"^/api/v1/services/\d+/storage/\d+$"),
+        "detach_service_storage",
+        "relationships",
+    ),
+    ("POST", re.compile(r"^/api/v1/services/\d+/misc$"), "attach_service_misc", "relationships"),
+    (
+        "DELETE",
+        re.compile(r"^/api/v1/services/\d+/misc/\d+$"),
+        "detach_service_misc",
+        "relationships",
+    ),
+    ("POST", re.compile(r"^/api/v1/networks/\d+/members$"), "add_network_member", "relationships"),
+    (
+        "DELETE",
+        re.compile(r"^/api/v1/networks/\d+/members/\d+$"),
+        "remove_network_member",
+        "relationships",
+    ),
+    ("POST", re.compile(r"^/api/v1/docs/attach$"), "attach_doc", "docs"),
+    ("DELETE", re.compile(r"^/api/v1/docs/attach$"), "detach_doc", "docs"),
     # Graph / topology map actions
-    ("POST",   re.compile(r"^/api/v1/graph/layout$"),                     "save_graph_layout",        "graph"),
-    ("POST",   re.compile(r"^/api/v1/graph/place-node$"),                 "place_graph_node",         "graph"),
-    ("PATCH",  re.compile(r"^/api/v1/graph/edges/.+$"),                   "update_graph_edge",        "graph"),
-    ("DELETE", re.compile(r"^/api/v1/graph/edges/.+$"),                   "delete_graph_edge",        "graph"),
+    ("POST", re.compile(r"^/api/v1/graph/layout$"), "save_graph_layout", "graph"),
+    ("POST", re.compile(r"^/api/v1/graph/place-node$"), "place_graph_node", "graph"),
+    ("PATCH", re.compile(r"^/api/v1/graph/edges/.+$"), "update_graph_edge", "graph"),
+    ("DELETE", re.compile(r"^/api/v1/graph/edges/.+$"), "delete_graph_edge", "graph"),
     # Settings
-    ("PUT",    re.compile(r"^/api/v1/settings$"),                         "update_settings",          "settings"),
-    ("POST",   re.compile(r"^/api/v1/settings/reset$"),                   "reset_settings",           "settings"),
+    ("PUT", re.compile(r"^/api/v1/settings$"), "update_settings", "settings"),
+    ("POST", re.compile(r"^/api/v1/settings/reset$"), "reset_settings", "settings"),
     # Simple CRUD — derive action from method + entity segment
-    ("POST",   re.compile(r"^/api/v1/(?P<entity>[^/]+)$"),               "create_{entity}",           "crud"),
-    ("PATCH",  re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"),           "update_{entity}",           "crud"),
-    ("PUT",    re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"),           "update_{entity}",           "crud"),
-    ("DELETE", re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"),           "delete_{entity}",           "crud"),
+    ("POST", re.compile(r"^/api/v1/(?P<entity>[^/]+)$"), "create_{entity}", "crud"),
+    ("PATCH", re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"), "update_{entity}", "crud"),
+    ("PUT", re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"), "update_{entity}", "crud"),
+    ("DELETE", re.compile(r"^/api/v1/(?P<entity>[^/]+)/\d+$"), "delete_{entity}", "crud"),
 ]
 
 # Normalise entity segment → canonical entity_type string
 _ENTITY_ALIASES = {
     "compute-units": "compute",
-    "hardware":      "hardware",
+    "hardware": "hardware",
     "hardware-connections": "hardware_connection",
     "hardware-clusters": "cluster",
-    "services":      "service",
+    "services": "service",
     "service-external-nodes": "service_external_dependency",
-    "storage":       "storage",
-    "networks":      "network",
+    "storage": "storage",
+    "networks": "network",
     "external-node-networks": "external_network_link",
     "external-nodes": "external_node",
-    "misc":          "misc",
-    "docs":          "doc",
-    "settings":      "settings",
-    "graphs":        "graph",
-    "categories":    "category",
-    "environments":  "environment",
+    "misc": "misc",
+    "docs": "doc",
+    "settings": "settings",
+    "graphs": "graph",
+    "categories": "category",
+    "environments": "environment",
 }
 
 
@@ -141,9 +172,11 @@ def _match_rule(method: str, path: str):
 async def _read_body(request: Request) -> bytes:
     """Read and cache the request body so downstream handlers can still read it."""
     body = await request.body()
+
     # Re-inject so downstream can read it again
     async def receive():
         return {"type": "http.request", "body": body, "more_body": False}
+
     request._receive = receive  # noqa: SLF001
     return body
 
@@ -166,30 +199,78 @@ async def _read_response_body(response: Response) -> bytes:
 
 
 def _resolve_actor(request: Request) -> tuple[str, str | None, int | None]:
-    """Extract the user's display name, gravatar hash, and ID from the JWT.
+    """Extract the user's display name, gravatar hash, and ID from the request.
 
-    Returns ('anonymous', None, None) when no valid token is present or auth is
-    disabled.
+    Resolution order:
+      1. CB_API_TOKEN (legacy middleware flag or raw Bearer match)
+      2. FastAPI-Users JWT (``sub`` claim with ``aud=["fastapi-users:auth"]``)
+      3. Legacy JWT (``user_id`` claim, no audience)
+
+    Returns ('anonymous', None, None) when no valid credential is present or
+    auth is disabled.
     """
+    import os
+
+    import jwt as pyjwt
+    from sqlalchemy import select
+
+    from app.db.models import User
+
     try:
+        # 1. CB_API_TOKEN — set by LegacyTokenMiddleware or raw header match
+        if getattr(request.state, "legacy_admin", False):
+            return "api-token", None, 0
+
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return "anonymous", None, None
-        token = auth_header[len("Bearer "):]
+        token = auth_header[len("Bearer ") :]
 
-        from sqlalchemy import select
+        api_token = os.getenv("CB_API_TOKEN")
+        if api_token and token == api_token:
+            return "api-token", None, 0
 
-        from app.core.security import decode_token
-        from app.db.models import User
         from app.services.settings_service import get_or_create_settings
 
         with SessionLocal() as db:
             cfg = get_or_create_settings(db)
             if not cfg.auth_enabled or not cfg.jwt_secret:
                 return "anonymous", None, None
-            user_id = decode_token(token, cfg.jwt_secret)
+
+            user_id: int | None = None
+
+            # 2. FastAPI-Users JWT (sub + aud)
+            try:
+                payload = pyjwt.decode(
+                    token,
+                    cfg.jwt_secret,
+                    algorithms=["HS256"],
+                    audience=["fastapi-users:auth"],
+                )
+                sub = payload.get("sub")
+                if sub is not None:
+                    user_id = int(sub)
+            except (pyjwt.PyJWTError, ValueError, TypeError):
+                pass
+
+            # 3. Legacy JWT (user_id, no audience)
+            if user_id is None:
+                try:
+                    payload = pyjwt.decode(
+                        token,
+                        cfg.jwt_secret,
+                        algorithms=["HS256"],
+                        options={"verify_aud": False},
+                    )
+                    uid = payload.get("user_id")
+                    if uid is not None:
+                        user_id = uid
+                except (pyjwt.PyJWTError, ValueError, TypeError):
+                    pass
+
             if not user_id:
                 return "anonymous", None, None
+
             user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
             if user:
                 return (user.display_name or user.email), user.gravatar_hash, user.id
@@ -296,7 +377,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         diff: dict | None = None
         try:
             before = json.loads(old_value_str) if old_value_str else None
-            after  = json.loads(new_value_str) if new_value_str else None
+            after = json.loads(new_value_str) if new_value_str else None
             if before is not None or after is not None:
                 diff = {"before": before, "after": after}
         except Exception:
@@ -343,11 +424,11 @@ def _fetch_entity_json(entity_type: str, entity_id: int) -> str | None:
 
     _MODEL_MAP = {
         "hardware": Hardware,
-        "compute":  ComputeUnit,
-        "service":  Service,
-        "storage":  Storage,
-        "network":  Network,
-        "misc":     MiscItem,
+        "compute": ComputeUnit,
+        "service": Service,
+        "storage": Storage,
+        "network": Network,
+        "misc": MiscItem,
     }
     model = _MODEL_MAP.get(entity_type)
     if not model:
@@ -359,10 +440,8 @@ def _fetch_entity_json(entity_type: str, entity_id: int) -> str | None:
             return None
         # Serialize column attributes to a dict
         from sqlalchemy import inspect as sa_inspect
-        data = {
-            col.key: getattr(row, col.key)
-            for col in sa_inspect(type(row)).column_attrs
-        }
+
+        data = {col.key: getattr(row, col.key) for col in sa_inspect(type(row)).column_attrs}
         # Convert datetimes to ISO strings
         for k, v in data.items():
             if isinstance(v, datetime):
@@ -379,6 +458,7 @@ def _scrub_sensitive_data(json_str: str | None) -> str | None:
     except Exception:
         return json_str
     from app.services.log_service import sanitise_diff
+
     return json.dumps(sanitise_diff(data))
 
 
@@ -408,6 +488,7 @@ def _write_log(
     scrubbed_details = _scrub_sensitive_data(details)
 
     from app.services.log_service import write_log
+
     write_log(
         db=None,  # log_service opens its own session
         action=action,

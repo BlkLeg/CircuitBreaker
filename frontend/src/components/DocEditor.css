@@ -33,9 +33,9 @@
 }
 
 .doc-editor-draft-banner button.restore {
-  background: var(--color-primary, #00d4ff);
+  background: var(--color-primary, #fe8019);
   color: #000;
-  border-color: var(--color-primary, #00d4ff);
+  border-color: var(--color-primary, #fe8019);
 }
 
 /* ── Save status bar ──────────────────────────────────────── */
@@ -99,15 +99,15 @@
 
 /* ── MDEditor theme overrides ─────────────────────────────── */
 .w-md-editor {
-  --color-fg-default: var(--color-text, #e6e6e6) !important;
-  --color-canvas-default: var(--color-bg, #1a1a2e) !important;
-  --color-canvas-subtle: var(--color-bg-subtle, #16213e) !important;
-  --color-border-default: var(--color-border, #2a2a4a) !important;
-  --color-border-muted: var(--color-border, #2a2a4a) !important;
-  border-color: var(--color-border, #2a2a4a) !important;
+  --color-fg-default: var(--color-text, #ebdbb2) !important;
+  --color-canvas-default: var(--color-bg, #282828) !important;
+  --color-canvas-subtle: var(--color-bg-subtle, #3c3836) !important;
+  --color-border-default: var(--color-border, #504945) !important;
+  --color-border-muted: var(--color-border, #504945) !important;
+  border-color: var(--color-border, #504945) !important;
   border-radius: var(--radius, 6px) !important;
-  background-color: var(--color-bg, #1a1a2e) !important;
-  color: var(--color-text, #e6e6e6) !important;
+  background-color: var(--color-bg, #282828) !important;
+  color: var(--color-text, #ebdbb2) !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   flex: 1;
   min-height: 0;
@@ -117,8 +117,8 @@
   display: flex !important;
   flex-wrap: nowrap !important;
   align-items: center !important;
-  background: var(--color-bg-subtle, #16213e) !important;
-  border-bottom-color: var(--color-border, #2a2a4a) !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
+  border-bottom-color: var(--color-border, #504945) !important;
   padding: 6px 10px !important;
   gap: 4px !important;
 }
@@ -130,16 +130,16 @@
 }
 
 /* Divider between toolbar groups */
-.w-md-editor-toolbar li[data-name="divider"] {
+.w-md-editor-toolbar li[data-name='divider'] {
   width: 1px !important;
   height: 20px !important;
-  background: var(--color-border, #2a2a4a) !important;
+  background: var(--color-border, #504945) !important;
   margin: 0 6px !important;
   padding: 0 !important;
 }
 
 .w-md-editor-toolbar li > button {
-  color: var(--color-text-muted, #a0a0c0) !important;
+  color: var(--color-text-muted, #a89984) !important;
   height: 32px !important;
   min-width: 32px !important;
   display: inline-flex !important;
@@ -148,33 +148,34 @@
   border-radius: 4px !important;
   margin: 0 !important;
   padding: 0 6px !important;
-  transition: background 0.15s, color 0.15s !important;
+  transition:
+    background 0.15s,
+    color 0.15s !important;
 }
 
 .w-md-editor-toolbar li > button:hover,
 .w-md-editor-toolbar li > button:focus {
-  color: var(--color-primary, #00d4ff) !important;
-  background: rgba(0, 212, 255, 0.1) !important;
+  color: var(--color-primary, #fe8019) !important;
+  background: rgba(254, 128, 25, 0.1) !important;
 }
 
 .w-md-editor-toolbar li.active > button {
-  color: var(--color-primary, #00d4ff) !important;
+  color: var(--color-primary, #fe8019) !important;
 }
 
 .w-md-editor-text-pre > code,
 .w-md-editor-text-input,
 .w-md-editor-text textarea {
-  font-family:
-    "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace !important;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace !important;
   font-size: 14px !important;
   line-height: 1.6 !important;
-  color: var(--color-text, #e6e6e6) !important;
+  color: var(--color-text, #ebdbb2) !important;
 }
 
 /* Preview pane */
 .w-md-editor-preview .wmde-markdown {
-  background: var(--color-bg, #1a1a2e) !important;
-  color: var(--color-text, #e6e6e6) !important;
+  background: var(--color-bg, #282828) !important;
+  color: var(--color-text, #ebdbb2) !important;
   font-family: inherit !important;
   padding: 16px !important;
 }
@@ -182,45 +183,45 @@
 .w-md-editor-preview .wmde-markdown h1,
 .w-md-editor-preview .wmde-markdown h2,
 .w-md-editor-preview .wmde-markdown h3 {
-  border-bottom-color: var(--color-border, #2a2a4a) !important;
-  color: var(--color-text, #e6e6e6) !important;
+  border-bottom-color: var(--color-border, #504945) !important;
+  color: var(--color-text, #ebdbb2) !important;
 }
 
 .w-md-editor-preview .wmde-markdown a {
-  color: var(--color-primary, #00d4ff) !important;
+  color: var(--color-primary, #fe8019) !important;
 }
 
 .w-md-editor-preview .wmde-markdown code {
-  background: var(--color-bg-subtle, #16213e) !important;
-  color: var(--color-primary, #00d4ff) !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
+  color: var(--color-primary, #fe8019) !important;
   border-radius: 3px;
   padding: 2px 6px;
   font-size: 0.9em;
 }
 
 .w-md-editor-preview .wmde-markdown pre {
-  background: var(--color-bg-subtle, #16213e) !important;
-  border: 1px solid var(--color-border, #2a2a4a) !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
+  border: 1px solid var(--color-border, #504945) !important;
   border-radius: var(--radius, 6px) !important;
 }
 
 .w-md-editor-preview .wmde-markdown pre code {
-  color: var(--color-text, #e6e6e6) !important;
+  color: var(--color-text, #ebdbb2) !important;
   font-size: 13px;
 }
 
 .w-md-editor-preview .wmde-markdown blockquote {
-  border-left-color: var(--color-primary, #00d4ff) !important;
-  color: var(--color-text-muted, #a0a0c0) !important;
+  border-left-color: var(--color-primary, #fe8019) !important;
+  color: var(--color-text-muted, #a89984) !important;
 }
 
 .w-md-editor-preview .wmde-markdown table th {
-  background: var(--color-bg-subtle, #16213e) !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
 }
 
 .w-md-editor-preview .wmde-markdown table td,
 .w-md-editor-preview .wmde-markdown table th {
-  border-color: var(--color-border, #2a2a4a) !important;
+  border-color: var(--color-border, #504945) !important;
 }
 
 .w-md-editor-preview .wmde-markdown img {
@@ -230,9 +231,9 @@
 
 /* Drag handle */
 .w-md-editor-bar {
-  background: var(--color-bg-subtle, #16213e) !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
 }
 
 .w-md-editor-bar svg {
-  color: var(--color-text-muted, #a0a0c0) !important;
+  color: var(--color-text-muted, #a89984) !important;
 }

@@ -1,4 +1,5 @@
 """Auth business logic: register, login, profile management."""
+
 import json
 import logging
 import re
@@ -32,7 +33,7 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Hard limits applied before any regex to prevent polynomial backtracking on
 # arbitrarily large user-supplied strings (ReDoS mitigation).
-_MAX_EMAIL_LEN = 254    # RFC 5321 maximum
+_MAX_EMAIL_LEN = 254  # RFC 5321 maximum
 _MAX_PASSWORD_LEN = 1024
 
 
@@ -44,6 +45,7 @@ def _to_profile(user: User) -> UserProfile:
         display_name=user.display_name,
         gravatar_hash=user.gravatar_hash,
         is_admin=user.is_admin,
+        is_superuser=user.is_superuser,
         language=user.language or "en",
         profile_photo_url=photo_url,
     )
@@ -92,17 +94,20 @@ def register(
         raise HTTPException(status_code=400, detail="Password is too long")
     _validate_password(password)
 
-    # First user becomes admin
-    is_admin = db.query(User).count() == 0
+    is_first_user = db.query(User).count() == 0
 
     now = utcnow_iso()
     user = User(
         email=email.strip().lower(),
-        password_hash=hash_password(password),
+        hashed_password=hash_password(password),
         gravatar_hash=gravatar_hash(email),
-        display_name=display_name.strip() if display_name and display_name.strip() else email.split("@")[0],
+        display_name=display_name.strip()
+        if display_name and display_name.strip()
+        else email.split("@")[0],
         language=cfg.language or "en",
-        is_admin=is_admin,
+        is_admin=is_first_user,
+        is_superuser=is_first_user,
+        is_active=True,
         created_at=now,
     )
     db.add(user)
@@ -111,7 +116,7 @@ def register(
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered") from None
 
     # Auto-generate jwt_secret if not yet set (user is registering before enabling auth in settings)
     if not cfg.jwt_secret:
@@ -119,6 +124,7 @@ def register(
         db.commit()
 
     from app.services.log_service import write_log
+
     write_log(
         db=None,
         action="register_user",
@@ -200,14 +206,19 @@ def bootstrap_initialize(
     now = utcnow_iso()
     user = User(
         email=email_norm,
-        password_hash=hash_password(password),
+        hashed_password=hash_password(password),
         gravatar_hash=gravatar_hash(email_norm),
         display_name=_derive_display_name(email_norm, display_name),
         language=language or "en",
         is_admin=True,
+        is_superuser=True,
+        is_active=True,
         created_at=now,
     )
     db.add(user)
+    db.flush()  # assign user.id so audit logs can reference it
+
+    _actor_display = user.display_name or user.email
 
     cfg.auth_enabled = True
     cfg.theme_preset = theme_preset
@@ -225,6 +236,7 @@ def bootstrap_initialize(
         cfg.language = language
     if timezone:
         from zoneinfo import available_timezones
+
         if timezone == "UTC" or timezone in available_timezones():
             cfg.timezone = timezone
             _ts_tz = utcnow()
@@ -234,7 +246,10 @@ def bootstrap_initialize(
                 level="info",
                 category="settings",
                 action="update_timezone",
-                actor="system",
+                actor=_actor_display,
+                actor_name=_actor_display,
+                actor_id=user.id,
+                actor_gravatar_hash=user.gravatar_hash,
                 details=f'Timezone set to "{timezone}" during initial setup',
                 status_code=200,
             )
@@ -247,9 +262,12 @@ def bootstrap_initialize(
         level="info",
         category="bootstrap",
         action="bootstrap_create_user",
-        actor="system",
+        actor=_actor_display,
+        actor_name=_actor_display,
+        actor_id=user.id,
         actor_gravatar_hash=gravatar_hash(email_norm),
         entity_type="user",
+        entity_id=user.id,
         details=json.dumps(
             {
                 "email": email_norm,
@@ -268,7 +286,7 @@ def bootstrap_initialize(
         db.refresh(user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Email already registered")
+        raise HTTPException(status_code=409, detail="Email already registered") from None
 
     token = _make_token(user, cfg)
     return BootstrapInitializeResponse(
@@ -278,11 +296,13 @@ def bootstrap_initialize(
     )
 
 
-def login(db: Session, email: str, password: str, cfg: AppSettings, ip_address: str | None = None) -> AuthResponse:
+def login(
+    db: Session, email: str, password: str, cfg: AppSettings, ip_address: str | None = None
+) -> AuthResponse:
     from app.services.log_service import write_log
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
-    if not user or not verify_password(password, user.password_hash):
+    if not user or not verify_password(password, user.hashed_password):
         write_log(
             db=None,
             action="login_failed",
@@ -353,6 +373,7 @@ async def update_profile(
             import io
 
             from PIL import Image
+
             img = Image.open(io.BytesIO(data))
             img.thumbnail((256, 256))
             buf = io.BytesIO()
@@ -379,6 +400,7 @@ async def update_profile(
 
     if changed_fields:
         from app.services.log_service import write_log
+
         write_log(
             db=None,
             action="update_profile",
@@ -412,6 +434,7 @@ def delete_account(db: Session, user_id: int) -> None:
     db.commit()
 
     from app.services.log_service import write_log
+
     write_log(
         db=None,
         action="delete_account",
@@ -423,4 +446,3 @@ def delete_account(db: Session, user_id: int) -> None:
         actor_name=actor_name,
         actor_id=user_id,
     )
-

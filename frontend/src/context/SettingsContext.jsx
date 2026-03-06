@@ -18,6 +18,7 @@ if (_cachedPreset && _cachedPreset !== 'custom' && THEME_PRESETS[_cachedPreset])
 const DEFAULTS = {
   id: 1,
   theme: 'dark',
+  theme_preset: DEFAULT_PRESET,
   default_environment: '',
   show_experimental_features: false,
   api_base_url: '',
@@ -86,12 +87,12 @@ export function SettingsProvider({ children }) {
       // Fallback: derive from branding for backwards compatibility
       const accents = settings.branding.accent_colors ?? [];
       colors = {
-        primary:    settings.branding.primary_color,
-        secondary:  '#0f172a',
-        accent1:    accents[0] ?? settings.branding.primary_color,
-        accent2:    accents[1] ?? settings.branding.primary_color,
+        primary: settings.branding.primary_color,
+        secondary: '#0f172a',
+        accent1: accents[0] ?? settings.branding.primary_color,
+        accent2: accents[1] ?? settings.branding.primary_color,
         background: '#080c14',
-        surface:    '#0d1117',
+        surface: '#0d1117',
       };
     } else {
       colors = THEME_PRESETS[DEFAULT_PRESET];
@@ -134,14 +135,10 @@ export function SettingsProvider({ children }) {
 
   const contextValue = useMemo(
     () => ({ settings, reloadSettings, loading }),
-    [settings, reloadSettings, loading],
+    [settings, reloadSettings, loading]
   );
 
-  return (
-    <SettingsContext.Provider value={contextValue}>
-      {children}
-    </SettingsContext.Provider>
-  );
+  return <SettingsContext.Provider value={contextValue}>{children}</SettingsContext.Provider>;
 }
 
 SettingsProvider.propTypes = {
