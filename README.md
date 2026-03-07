@@ -1,5 +1,6 @@
 # Circuit Breaker
 
+
 ![Circuit Breaker Logo](screenshots/cb_night-full.png)
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that lets you document,
@@ -36,6 +37,7 @@ in between — through an interactive topology map and rack simulator.
 - **Gravatar support** — account profiles pull from Gravatar for a familiar feel.
 
 ---
+## Live Demo
 
 ## Screenshots
 
@@ -44,6 +46,7 @@ in between — through an interactive topology map and rack simulator.
 ![Login Screen](screenshots/01-Login.png)
 
 ### Speed-centric connections (w/ live animations)
+[topology-1.webm](https://github.com/user-attachments/assets/7262ec4e-7527-47a9-9073-38d7c92fda1a)
 
 ![Speed-centric Connections](screenshots/speed-connection.png)
 The lowest node speed dictates the overall speed of the animation to mimic real-world effects.
