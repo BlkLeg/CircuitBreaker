@@ -36,6 +36,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analytics = [
+    "duckdb>=1.0.0",
+    "duckdb-engine>=0.13.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",

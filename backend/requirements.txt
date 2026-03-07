@@ -49,6 +49,8 @@ python-multipart==0.0.22
 python-nmap==0.7.1
 pyyaml==6.0.3
 requests==2.32.5
+docker>=7.0.0
+ping3>=4.0.0
 scapy==2.7.0
 slowapi==0.1.9
 sqlalchemy==2.0.47
@@ -64,3 +66,7 @@ watchfiles==1.1.1
 webencodings==0.5.1
 websockets==16.0
 wrapt==2.1.1
+
+# Optional: analytics engine (install via `pip install .[analytics]`)
+# duckdb>=1.0.0
+# duckdb-engine>=0.13.0

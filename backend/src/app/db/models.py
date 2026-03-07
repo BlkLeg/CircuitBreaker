@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.time import utcnow
@@ -174,6 +174,55 @@ class Hardware(Base):
         foreign_keys="HardwareConnection.target_hardware_id",
         back_populates="target_hardware",
     )
+    monitor: Mapped["HardwareMonitor | None"] = relationship(
+        "HardwareMonitor", back_populates="hardware", uselist=False
+    )
+
+
+# ── Uptime Monitoring ────────────────────────────────────────────────────────
+
+
+class HardwareMonitor(Base):
+    """One monitoring config row per hardware device."""
+
+    __tablename__ = "hardware_monitors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID), unique=True, nullable=False, index=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    interval_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    # JSON array: ["icmp","tcp","http","snmp"]
+    probe_methods: Mapped[str] = mapped_column(
+        Text, nullable=False, default='["icmp","tcp","http"]'
+    )
+    last_status: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uptime_pct_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="monitor")
+
+
+class UptimeEvent(Base):
+    """Rolling history of probe results for a monitored hardware device."""
+
+    __tablename__ = "uptime_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False)  # "up" | "down"
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    probe_method: Mapped[str | None] = mapped_column(String, nullable=True)
+    checked_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    hardware: Mapped["Hardware"] = relationship("Hardware")
 
 
 # ── Compute Units ───────────────────────────────────────────────────────────
@@ -287,6 +336,10 @@ class Service(Base):
     ip_mode: Mapped[str] = mapped_column(Text, default="explicit", server_default="explicit")
     ip_conflict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     ip_conflict_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
+    # Docker container metadata
+    docker_container_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    docker_image: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_docker_container: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -392,6 +445,10 @@ class Network(Base):
     gateway_hardware_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey(_FK_HARDWARE_ID), nullable=True
     )
+    # Docker network metadata
+    docker_network_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    docker_driver: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_docker_network: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -405,6 +462,36 @@ class Network(Base):
     )
     hardware_memberships: Mapped[list["HardwareNetwork"]] = relationship(
         "HardwareNetwork", back_populates="network"
+    )
+    peers_as_a: Mapped[list["NetworkPeer"]] = relationship(
+        "NetworkPeer",
+        foreign_keys="NetworkPeer.network_a_id",
+        back_populates="network_a",
+        cascade="all, delete-orphan",
+    )
+    peers_as_b: Mapped[list["NetworkPeer"]] = relationship(
+        "NetworkPeer",
+        foreign_keys="NetworkPeer.network_b_id",
+        back_populates="network_b",
+        cascade="all, delete-orphan",
+    )
+
+
+class NetworkPeer(Base):
+    __tablename__ = "network_peers"
+    __table_args__ = (UniqueConstraint("network_a_id", "network_b_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    network_a_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
+    network_b_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
+    relation: Mapped[str] = mapped_column(String, nullable=False, default="peers_with")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    network_a: Mapped["Network"] = relationship(
+        "Network", foreign_keys=[network_a_id], back_populates="peers_as_a"
+    )
+    network_b: Mapped["Network"] = relationship(
+        "Network", foreign_keys=[network_b_id], back_populates="peers_as_b"
     )
 
 
@@ -700,9 +787,21 @@ class AppSettings(Base):
     discovery_http_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     discovery_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     scan_ack_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Safe discovery mode
+    discovery_mode: Mapped[str] = mapped_column(String, nullable=False, default="safe")
+    docker_discovery_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    docker_socket_path: Mapped[str] = mapped_column(
+        String, nullable=False, default="/var/run/docker.sock"
+    )
+    docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
     ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
+    # CVE sync
+    cve_sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cve_sync_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    cve_last_sync_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -723,6 +822,9 @@ class DiscoveryProfile(Base):
     snmp_community_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
     snmp_version: Mapped[str] = mapped_column(String, default="2c")
     snmp_port: Mapped[int] = mapped_column(Integer, default=161)
+    docker_network_types: Mapped[str] = mapped_column(String, default='["bridge"]')
+    docker_port_scan: Mapped[int] = mapped_column(Integer, default=0)
+    docker_socket_path: Mapped[str] = mapped_column(String, default="/var/run/docker.sock")
     schedule_cron: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     last_run: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -759,6 +861,7 @@ class ScanJob(Base):
         "DiscoveryProfile", back_populates="jobs"
     )
     results: Mapped[list["ScanResult"]] = relationship("ScanResult", back_populates="job")
+    logs: Mapped[list["ScanLog"]] = relationship("ScanLog", back_populates="job")
 
 
 class ScanResult(Base):
@@ -787,6 +890,23 @@ class ScanResult(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 
     job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="results")
+
+
+class ScanLog(Base):
+    __tablename__ = "scan_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_job_id: Mapped[int] = mapped_column(Integer, ForeignKey("scan_jobs.id"), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    level: Mapped[str] = mapped_column(String, nullable=False)  # INFO, SUCCESS, WARN, ERROR
+    phase: Mapped[str | None] = mapped_column(String, nullable=True)  # ping, arp, nmap, snmp, http
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Raw command output, error traces
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    job: Mapped["ScanJob"] = relationship("ScanJob", back_populates="logs")
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -881,3 +1001,29 @@ class LiveMetric(Base):
     status: Mapped[str | None] = mapped_column(String)  # up/down/offline
     assigned_to: Mapped[str | None] = mapped_column(String)  # service slug or null
     subnet: Mapped[str | None] = mapped_column(String)  # 10.10.10.0/24
+
+
+# ── CVE Entries (stored in separate cve.db) ──────────────────────────────────
+
+
+class CVEEntry(Base):
+    """NVD/CVE records kept in a dedicated SQLite database (data/cve.db).
+
+    The table is created by ``cve_session.init_cve_db()``; it also lives in the
+    main Base metadata so ``create_all`` on the primary DB is a safe no-op (the
+    table simply won't be populated there).
+    """
+
+    __tablename__ = "cve_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    cve_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
+    vendor: Mapped[str | None] = mapped_column(String, index=True)
+    product: Mapped[str | None] = mapped_column(String, index=True)
+    version_start: Mapped[str | None] = mapped_column(String)
+    version_end: Mapped[str | None] = mapped_column(String)
+    severity: Mapped[str | None] = mapped_column(String)  # low / medium / high / critical
+    cvss_score: Mapped[float | None] = mapped_column(Float)
+    summary: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

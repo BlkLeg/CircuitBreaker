@@ -129,9 +129,19 @@ class AppSettingsRead(BaseModel):
     discovery_http_probe: bool = True
     discovery_retention_days: int = 30
     scan_ack_accepted: bool = False
+    # Safe discovery mode
+    discovery_mode: str = "safe"
+    docker_discovery_enabled: bool = False
+    docker_socket_path: str = "/var/run/docker.sock"
+    docker_sync_interval_minutes: int = 5
+    graph_default_layout: str = "dagre"
     # Font preferences
     ui_font: str = "inter"
     ui_font_size: str = "medium"
+    # CVE sync
+    cve_sync_enabled: bool = False
+    cve_sync_interval_hours: int = 24
+    cve_last_sync_at: str | None = None
     # Advanced Theming
     theme_preset: str = "gruvbox-dark"
     custom_colors: str | None = Field(default=None, exclude=True)  # raw JSON from ORM
@@ -292,9 +302,18 @@ class AppSettingsUpdate(BaseModel):
     discovery_http_probe: bool | None = None
     discovery_retention_days: int | None = None
     scan_ack_accepted: bool | None = None
+    # Safe discovery mode
+    discovery_mode: Literal["safe", "full"] | None = None
+    docker_discovery_enabled: bool | None = None
+    docker_socket_path: str | None = None
+    docker_sync_interval_minutes: int | None = None
+    graph_default_layout: str | None = None
     # Font preferences
     ui_font: str | None = None
     ui_font_size: str | None = None
+    # CVE sync
+    cve_sync_enabled: bool | None = None
+    cve_sync_interval_hours: int | None = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: dict[str, Any] | None = None
 

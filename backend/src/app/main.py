@@ -1,7 +1,8 @@
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from datetime import UTC
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -35,9 +36,11 @@ from app.api import telemetry as telemetry_api
 from app.api.admin import router as admin_router
 from app.api.assets import router as assets_router
 from app.api.branding import router as branding_router
+from app.api.cve import router as cve_router
 from app.api.discovery import router as discovery_router
 from app.api.ip_check import router as ip_check_router
 from app.api.metrics import router as metrics_router
+from app.api.monitor import router as monitor_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
 from app.api.timezones import router as timezones_router
@@ -817,6 +820,30 @@ def _run_migrations(conn) -> None:
             "ALTER TABLE app_settings ADD COLUMN ui_font_size TEXT NOT NULL DEFAULT 'medium'"
         )
 
+    # ── Phase 2: CVE sync settings ───────────────────────────────────────────
+    settings_cols = _get_columns(conn, "app_settings")
+    if "cve_sync_enabled" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN cve_sync_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+    if "cve_sync_interval_hours" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN cve_sync_interval_hours INTEGER NOT NULL DEFAULT 24"
+        )
+    if "cve_last_sync_at" not in settings_cols:
+        conn.execute("ALTER TABLE app_settings ADD COLUMN cve_last_sync_at TEXT")
+
+    # ── Phase 2.5: Safe discovery mode ───────────────────────────────────────
+    settings_cols = _get_columns(conn, "app_settings")
+    if "discovery_mode" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN discovery_mode TEXT NOT NULL DEFAULT 'safe'"
+        )
+    if "docker_discovery_enabled" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE app_settings ADD COLUMN docker_discovery_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+
     # ── Phase 1: FastAPI-Users user model extensions ─────────────────────────
     user_cols = _get_columns(conn, "users")
     if "is_active" not in user_cols:
@@ -913,6 +940,11 @@ async def lifespan(app: FastAPI):
 
     init_db()
 
+    # ── CVE database (separate SQLite file) ───────────────────────────────
+    from app.db.cve_session import init_cve_db
+
+    init_cve_db()
+
     # ── Dev mode: enable verbose logging ──────────────────────────────────
     if settings.dev_mode:
         logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
@@ -935,6 +967,37 @@ async def lifespan(app: FastAPI):
         id="purge_old_scan_results",
         replace_existing=True,
     )
+
+    # Daily purge of old audit log entries based on retention setting
+    from app.services.log_purge import purge_old_audit_logs
+
+    scheduler.add_job(
+        purge_old_audit_logs,
+        trigger=CronTrigger(hour=3, minute=15),
+        id="audit_log_purge",
+        replace_existing=True,
+    )
+
+    # CVE sync — only scheduled when enabled in settings
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from app.services.cve_service import sync_nvd_feed
+
+    cve_db = SessionLocal()
+    try:
+        cve_settings = cve_db.query(models.AppSettings).first()
+        if cve_settings and cve_settings.cve_sync_enabled:
+            interval_hours = cve_settings.cve_sync_interval_hours or 24
+            scheduler.add_job(
+                sync_nvd_feed,
+                trigger=IntervalTrigger(hours=interval_hours),
+                id="cve_sync",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+            _logger.info("CVE sync scheduled every %d hours", interval_hours)
+    finally:
+        cve_db.close()
 
     # IP Pool refresh every hour
     scheduler.add_job(
@@ -976,6 +1039,40 @@ async def lifespan(app: FastAPI):
                 _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
     finally:
         sched_db.close()
+
+    # Uptime monitor — poll all enabled monitors every 30 seconds
+    from apscheduler.triggers.interval import IntervalTrigger as _IT
+
+    from app.services.monitor_service import run_all_monitors_job
+
+    scheduler.add_job(
+        run_all_monitors_job,
+        trigger=_IT(seconds=30),
+        id="uptime_monitor",
+        replace_existing=True,
+        max_instances=1,
+    )
+    _logger.info("Uptime monitor scheduled (30s interval).")
+
+    # Docker topology sync — only when docker_discovery_enabled
+    docker_db = SessionLocal()
+    try:
+        docker_settings = docker_db.query(models.AppSettings).first()
+        if docker_settings and getattr(docker_settings, "docker_discovery_enabled", False):
+            interval_mins = getattr(docker_settings, "docker_sync_interval_minutes", 5) or 5
+            from app.services.docker_discovery import run_docker_sync_job
+
+            scheduler.add_job(
+                run_docker_sync_job,
+                trigger=_IT(minutes=interval_mins),
+                id="docker_topology_sync",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=60,
+            )
+            _logger.info("Docker topology sync scheduled every %d minutes.", interval_mins)
+    finally:
+        docker_db.close()
 
     scheduler.start()
     _logger.info("APScheduler started.")
@@ -1078,6 +1175,9 @@ app.include_router(metrics_router, prefix=f"{_V1}/metrics", tags=["metrics"])
 app.include_router(timezones_router, prefix=f"{_V1}/timezones", tags=["timezones"])
 app.include_router(rack_api.router, prefix=f"{_V1}/racks", tags=["racks"])
 
+app.include_router(cve_router, prefix=f"{_V1}/cve", tags=["cve"])
+app.include_router(monitor_router, prefix=f"{_V1}/monitors", tags=["monitors"])
+
 
 # ── Health check ───────────────────────────────────────────────────────────
 
@@ -1111,6 +1211,12 @@ def _get_frontend_dir() -> Path | None:
 
 
 _frontend_dir = _get_frontend_dir()
+_frontend_root_files: dict[str, Path] = {}
+if _frontend_dir:
+    _frontend_dir_resolved = _frontend_dir.resolve()
+    for _entry in _frontend_dir_resolved.iterdir():
+        if _entry.is_file():
+            _frontend_root_files[_entry.name] = _entry
 
 _uploads_dir = Path(settings.uploads_dir)
 _user_icons_dir = _uploads_dir / "icons"
@@ -1145,7 +1251,9 @@ if _frontend_dir:
     if _icons.exists():
         app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @app.get(
+        "/{full_path:path}", include_in_schema=False, responses={404: {"description": "Not found"}}
+    )
     async def spa_fallback(full_path: str, request: Request):
         # API routes must never fall through to the SPA
         if full_path.startswith("api/"):
@@ -1154,10 +1262,18 @@ if _frontend_dir:
         # icons) before falling back to the SPA index.html.  Without this check,
         # the browser receives HTML when it requests JSON/binary assets and shows
         # "Manifest: Syntax error" or broken icon errors.
-        candidate = _frontend_dir / full_path  # type: ignore[operator]
-        if candidate.exists() and candidate.is_file():
-            return FileResponse(str(candidate))
-        index = _frontend_dir / "index.html"  # type: ignore[operator]
+        frontend_dir_resolved = _frontend_dir.resolve()  # type: ignore[operator]
+        rel_path = PurePosixPath(full_path.lstrip("/"))
+        if any(part in (".", "..") for part in rel_path.parts):
+            raise HTTPException(status_code=404, detail="Not found")
+        if len(rel_path.parts) == 1:
+            candidate = _frontend_root_files.get(rel_path.parts[0])
+        else:
+            candidate = None
+        if candidate and candidate.is_file():
+            content_type, _ = mimetypes.guess_type(candidate.name)
+            return Response(content=candidate.read_bytes(), media_type=content_type)
+        index = frontend_dir_resolved / "index.html"
         if index.exists():
             return FileResponse(str(index))
         return Response(status_code=404)

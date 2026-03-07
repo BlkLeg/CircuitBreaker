@@ -149,7 +149,7 @@ def require_write_auth(
     return user_id
 
 
-def require_auth_always(request: Request, user_id: int | None = Depends(get_optional_user)) -> int:
+def require_auth_always(user_id: int | None = Depends(get_optional_user)) -> int:
     """Validates JWT regardless of app_settings.auth_enabled."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")

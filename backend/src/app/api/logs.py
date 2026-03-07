@@ -2,6 +2,7 @@
 
 Audit logs are append-only. No update or delete endpoints exist by design.
 """
+
 import asyncio
 import json
 from datetime import datetime
@@ -28,6 +29,7 @@ def list_logs(
     end_time: str | None = None,
     category: str | None = None,
     action: str | None = None,
+    actor: str | None = None,
     entity_type: str | None = None,
     entity_id: int | None = None,
     level: str | None = None,
@@ -64,6 +66,11 @@ def list_logs(
         q = q.where(Log.action == action)
         count_q = count_q.where(Log.action == action)
 
+    if actor:
+        actor_filter = or_(Log.actor == actor, Log.actor_name == actor)
+        q = q.where(actor_filter)
+        count_q = count_q.where(actor_filter)
+
     if entity_type:
         q = q.where(Log.entity_type == entity_type)
         count_q = count_q.where(Log.entity_type == entity_type)
@@ -86,6 +93,8 @@ def list_logs(
             Log.entity_name.ilike(pattern),
             Log.details.ilike(pattern),
             Log.new_value.ilike(pattern),
+            Log.actor.ilike(pattern),
+            Log.actor_name.ilike(pattern),
         )
         q = q.where(search_filter)
         count_q = count_q.where(search_filter)
@@ -111,9 +120,11 @@ def list_actions(db: Session = Depends(get_db)):
     """Return the distinct set of action strings present in the logs table.
     Used by the frontend to populate the action filter dropdown dynamically.
     """
-    rows = db.execute(
-        select(distinct(Log.action)).where(Log.action.isnot(None)).order_by(Log.action)
-    ).scalars().all()
+    rows = (
+        db.execute(select(distinct(Log.action)).where(Log.action.isnot(None)).order_by(Log.action))
+        .scalars()
+        .all()
+    )
     return {"actions": rows}
 
 
@@ -157,28 +168,32 @@ async def stream_logs(since: str | None = None):
                     rows = db.execute(q).scalars().all()
 
                 for row in rows:
-                    payload = json.dumps({
-                        "id": row.id,
-                        "timestamp": row.timestamp.isoformat(),
-                        "created_at_utc": row.created_at_utc,
-                        "elapsed_seconds": _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None,
-                        "level": row.level,
-                        "severity": row.severity or row.level,
-                        "category": row.category,
-                        "action": row.action,
-                        "actor": row.actor,
-                        "actor_name": row.actor_name,
-                        "actor_gravatar_hash": row.actor_gravatar_hash,
-                        "entity_type": row.entity_type,
-                        "entity_id": row.entity_id,
-                        "entity_name": row.entity_name,
-                        "diff": row.diff,
-                        "old_value": row.old_value,
-                        "new_value": row.new_value,
-                        "user_agent": row.user_agent,
-                        "ip_address": row.ip_address,
-                        "details": row.details,
-                    })
+                    payload = json.dumps(
+                        {
+                            "id": row.id,
+                            "timestamp": row.timestamp.isoformat(),
+                            "created_at_utc": row.created_at_utc,
+                            "elapsed_seconds": _elapsed_seconds(row.created_at_utc)
+                            if row.created_at_utc
+                            else None,
+                            "level": row.level,
+                            "severity": row.severity or row.level,
+                            "category": row.category,
+                            "action": row.action,
+                            "actor": row.actor,
+                            "actor_name": row.actor_name,
+                            "actor_gravatar_hash": row.actor_gravatar_hash,
+                            "entity_type": row.entity_type,
+                            "entity_id": row.entity_id,
+                            "entity_name": row.entity_name,
+                            "diff": row.diff,
+                            "old_value": row.old_value,
+                            "new_value": row.new_value,
+                            "user_agent": row.user_agent,
+                            "ip_address": row.ip_address,
+                            "details": row.details,
+                        }
+                    )
                     yield f"data: {payload}\n\n"
                     if last_dt is None or row.timestamp > last_dt:
                         last_dt = row.timestamp

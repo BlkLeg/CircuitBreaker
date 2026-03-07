@@ -37,12 +37,20 @@ const HANDLE_POS_STYLE = {
 };
 
 const TELEMETRY_RING = {
-  healthy:  { shadow: '0 0 0 2.5px #22c55e, 0 0 8px 2px #22c55e66', animation: 'tm-pulse 2s ease-in-out infinite' },
+  healthy: {
+    shadow: '0 0 0 2.5px #22c55e, 0 0 8px 2px #22c55e66',
+    animation: 'tm-pulse 2s ease-in-out infinite',
+  },
   degraded: { shadow: '0 0 0 2.5px #eab308', animation: 'none' },
   critical: { shadow: '0 0 0 3px #ef4444, 0 0 12px 4px #ef444466', animation: 'none' },
 };
 
-const USER_ICON_SIZED_ICON_SOURCES = ['/icons/vendors/CB_AZ_SUN.png', '/icons/vendors/CB_CITY_DAY.png', '/icons/vendors/CB_NIGHT_FULL.png', '/icons/vendors/CB_NIGHT_HALF.png'];
+const USER_ICON_SIZED_ICON_SOURCES = [
+  '/icons/vendors/CB_AZ_SUN.png',
+  '/icons/vendors/CB_CITY_DAY.png',
+  '/icons/vendors/CB_NIGHT_FULL.png',
+  '/icons/vendors/CB_NIGHT_HALF.png',
+];
 
 function getStorageBarColor(pct) {
   if (pct >= 85) return 'var(--color-danger)';
@@ -71,41 +79,45 @@ function CustomNode({ data, selected }) {
           position: 'relative',
         }}
       >
-        <div style={{
-          position: 'absolute',
-          top: 12,
-          left: 12,
-          color: cloudBorder,
-          fontSize: 12,
-          fontWeight: 600,
-        }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            left: 12,
+            color: cloudBorder,
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
           {data.label}
         </div>
         {data.memberCount != null && (
-          <div style={{
-            position: 'absolute',
-            top: 12,
-            right: 12,
-            color: cloudBorder,
-            fontSize: 10,
-            fontWeight: 600,
-            background: 'rgba(38, 40, 40, 0.7)',
-            padding: '2px 8px',
-            borderRadius: 8,
-            border: `1px solid ${cloudBorder}44`,
-          }}>
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              color: cloudBorder,
+              fontSize: 10,
+              fontWeight: 600,
+              background: 'rgba(38, 40, 40, 0.7)',
+              padding: '2px 8px',
+              borderRadius: 8,
+              border: `1px solid ${cloudBorder}44`,
+            }}
+          >
             {data.memberCount} nodes
           </div>
         )}
         {/* Handles for connections */}
-        <Handle type="target" id="t-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
+        <Handle type="target" id="t-top" position={Position.Top} style={INVISIBLE_HANDLE} />
+        <Handle type="target" id="t-right" position={Position.Right} style={INVISIBLE_HANDLE} />
         <Handle type="target" id="t-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-top"    position={Position.Top}    style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-right"  position={Position.Right}  style={INVISIBLE_HANDLE} />
+        <Handle type="target" id="t-left" position={Position.Left} style={INVISIBLE_HANDLE} />
+        <Handle type="source" id="s-top" position={Position.Top} style={INVISIBLE_HANDLE} />
+        <Handle type="source" id="s-right" position={Position.Right} style={INVISIBLE_HANDLE} />
         <Handle type="source" id="s-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-left"   position={Position.Left}   style={INVISIBLE_HANDLE} />
+        <Handle type="source" id="s-left" position={Position.Left} style={INVISIBLE_HANDLE} />
       </div>
     );
   }
@@ -121,11 +133,13 @@ function CustomNode({ data, selected }) {
   const isMaintenance = status === 'maintenance';
 
   const tStatus = data.telemetry_status;
-  const tRing = (tStatus && tStatus !== 'unknown') ? TELEMETRY_RING[tStatus] : null;
+  const tRing = tStatus && tStatus !== 'unknown' ? TELEMETRY_RING[tStatus] : null;
   const tData = data.telemetry_data || {};
   const hasIpConflict = !!data.ip_conflict;
-  const isUploadedIcon = typeof data.iconSrc === 'string'
-    && (data.iconSrc.includes('/user-icons/') || USER_ICON_SIZED_ICON_SOURCES.some((iconPath) => data.iconSrc.includes(iconPath)));
+  const isUploadedIcon =
+    typeof data.iconSrc === 'string' &&
+    (data.iconSrc.includes('/user-icons/') ||
+      USER_ICON_SIZED_ICON_SOURCES.some((iconPath) => data.iconSrc.includes(iconPath)));
 
   const baseShadow = glowAlpha
     ? `0 0 20px ${glowAlpha}`
@@ -146,21 +160,69 @@ function CustomNode({ data, selected }) {
   return (
     <div
       className="map-node-shell"
-      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0, userSelect: 'none', cursor: 'pointer', position: 'relative' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 0,
+        userSelect: 'none',
+        cursor: 'pointer',
+        position: 'relative',
+      }}
     >
       {/* Glow ring + icon */}
       <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
         {/* 4 target handles — one per side, aligned to visible port dots */}
-        <Handle type="target" id="t-top"    position={Position.Top}    style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }} />
-        <Handle type="target" id="t-right"  position={Position.Right}  style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }} />
-        <Handle type="target" id="t-bottom" position={Position.Bottom} style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }} />
-        <Handle type="target" id="t-left"   position={Position.Left}   style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }} />
+        <Handle
+          type="target"
+          id="t-top"
+          position={Position.Top}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }}
+        />
+        <Handle
+          type="target"
+          id="t-right"
+          position={Position.Right}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }}
+        />
+        <Handle
+          type="target"
+          id="t-bottom"
+          position={Position.Bottom}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }}
+        />
+        <Handle
+          type="target"
+          id="t-left"
+          position={Position.Left}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }}
+        />
 
         {/* 4 source handles — one per side, aligned to visible port dots */}
-        <Handle type="source" id="s-top"    position={Position.Top}    style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }} />
-        <Handle type="source" id="s-right"  position={Position.Right}  style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }} />
-        <Handle type="source" id="s-bottom" position={Position.Bottom} style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }} />
-        <Handle type="source" id="s-left"   position={Position.Left}   style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }} />
+        <Handle
+          type="source"
+          id="s-top"
+          position={Position.Top}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }}
+        />
+        <Handle
+          type="source"
+          id="s-right"
+          position={Position.Right}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }}
+        />
+        <Handle
+          type="source"
+          id="s-bottom"
+          position={Position.Bottom}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }}
+        />
+        <Handle
+          type="source"
+          id="s-left"
+          position={Position.Left}
+          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }}
+        />
 
         {data.isClusterMember && (
           <div
@@ -179,7 +241,10 @@ function CustomNode({ data, selected }) {
         <span className="map-node-port map-node-port-right" />
         <span className="map-node-port map-node-port-bottom" />
         <span className="map-node-port map-node-port-left" />
-        <span className="map-node-ping map-node-ping-bottom-right" style={{ '--ping-color': pingColor, animationDelay: '0.6s' }} />
+        <span
+          className="map-node-ping map-node-ping-bottom-right"
+          style={{ '--ping-color': pingColor, animationDelay: '0.6s' }}
+        />
 
         {/* Maintenance Mode Banner — caution tape above node */}
         {isMaintenance && (
@@ -190,7 +255,8 @@ function CustomNode({ data, selected }) {
               left: -8,
               right: -8,
               height: 16,
-              background: 'repeating-linear-gradient(45deg, #c09550, #c09550 10px, #1f2121 10px, #1f2121 20px)',
+              background:
+                'repeating-linear-gradient(45deg, #c09550, #c09550 10px, #1f2121 10px, #1f2121 20px)',
               borderRadius: 8,
               fontSize: 7,
               color: '#fff',
@@ -207,19 +273,21 @@ function CustomNode({ data, selected }) {
           </div>
         )}
 
-        <div style={{
-          width: 64,
-          height: 64,
-          borderRadius: '50%',
-          background: ringBg,
-          border: statusColors ? `3px solid ${glow}` : `1.5px solid ${glow}99`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          transition: 'box-shadow 0.2s ease, transform 0.2s ease',
-          ...ringStyle,
-          ...selectedStyle,
-        }}>
+        <div
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            background: ringBg,
+            border: statusColors ? `3px solid ${glow}` : `1.5px solid ${glow}99`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'box-shadow 0.2s ease, transform 0.2s ease',
+            ...ringStyle,
+            ...selectedStyle,
+          }}
+        >
           {data.iconSrc ? (
             <img
               src={data.iconSrc}
@@ -230,7 +298,8 @@ function CustomNode({ data, selected }) {
                 objectFit: 'contain',
                 transform: isUploadedIcon ? 'scale(2.5)' : 'none',
                 transformOrigin: 'center',
-                filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))',
+                filter:
+                  'drop-shadow(0 2px 6px rgba(0,0,0,0.7)) drop-shadow(0 0 8px rgba(255,255,255,0.1))',
               }}
               onError={(e) => {
                 if (!e.target.dataset.fallbackApplied) {
@@ -277,63 +346,149 @@ function CustomNode({ data, selected }) {
       </div>
 
       {/* Label */}
-      <div style={{
-        fontSize: 12,
-        fontWeight: 600,
-        color: 'var(--color-text)',
-        textAlign: 'center',
-        maxWidth: 130,
-        lineHeight: 1.3,
-        letterSpacing: '0.01em',
-        whiteSpace: 'normal',
-        wordBreak: 'break-word',
-      }}>
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: 'var(--color-text)',
+          textAlign: 'center',
+          maxWidth: 130,
+          lineHeight: 1.3,
+          letterSpacing: '0.01em',
+          whiteSpace: 'normal',
+          wordBreak: 'break-word',
+        }}
+      >
         {data.label}
       </div>
 
       {/* IP address (compute) or CIDR (network) */}
       {(data.ip_address || data.cidr) && (
-        <div style={{
-          fontSize: 10,
-          color: 'var(--color-primary)',
-          marginTop: 3,
-          fontFamily: 'monospace',
-          letterSpacing: '0.02em',
-        }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: 'var(--color-primary)',
+            marginTop: 3,
+            fontFamily: 'monospace',
+            letterSpacing: '0.02em',
+          }}
+        >
           {data.ip_address || data.cidr}
         </div>
       )}
 
       {/* Storage capacity badge — hardware nodes with used_gb tracking */}
-      {data.storage_summary?.used_gb != null && data.storage_summary?.total_gb > 0 && (() => {
-        const pct = Math.min(100, Math.round(data.storage_summary.used_gb / data.storage_summary.total_gb * 100));
-        const barColor = getStorageBarColor(pct);
-        const totalLabel = data.storage_summary.total_gb >= 1024
-          ? `${(data.storage_summary.total_gb / 1024).toFixed(1)}TB`
-          : `${data.storage_summary.total_gb}GB`;
-        return (
-          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-            <div style={{ width: 56, height: 4, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
-              <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 3 }} />
+      {data.storage_summary?.used_gb != null &&
+        data.storage_summary?.total_gb > 0 &&
+        (() => {
+          const pct = Math.min(
+            100,
+            Math.round((data.storage_summary.used_gb / data.storage_summary.total_gb) * 100)
+          );
+          const barColor = getStorageBarColor(pct);
+          const totalLabel =
+            data.storage_summary.total_gb >= 1024
+              ? `${(data.storage_summary.total_gb / 1024).toFixed(1)}TB`
+              : `${data.storage_summary.total_gb}GB`;
+          return (
+            <div
+              style={{
+                marginTop: 4,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2,
+              }}
+            >
+              <div
+                style={{
+                  width: 56,
+                  height: 4,
+                  borderRadius: 3,
+                  background: 'var(--color-border)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    width: `${pct}%`,
+                    height: '100%',
+                    background: barColor,
+                    borderRadius: 3,
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: 9, color: barColor, fontFamily: 'monospace' }}>
+                {totalLabel}
+              </div>
             </div>
-            <div style={{ fontSize: 9, color: barColor, fontFamily: 'monospace' }}>{totalLabel}</div>
-          </div>
-        );
-      })()}
+          );
+        })()}
 
       {/* Telemetry badge — cpu_temp / power when available */}
       {tRing && (tData.cpu_temp != null || tData.system_power_w != null) && (
         <div style={{ marginTop: 3, display: 'flex', gap: 5 }}>
           {tData.cpu_temp != null && (
-            <span style={{ fontSize: 9, fontFamily: 'monospace', color: tData.cpu_temp >= 80 ? '#ef4444' : 'var(--color-text-muted)' }}>
+            <span
+              style={{
+                fontSize: 9,
+                fontFamily: 'monospace',
+                color: tData.cpu_temp >= 80 ? '#ef4444' : 'var(--color-text-muted)',
+              }}
+            >
               {tData.cpu_temp}°C
             </span>
           )}
           {tData.system_power_w != null && (
-            <span style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--color-text-muted)' }}>
+            <span
+              style={{ fontSize: 9, fontFamily: 'monospace', color: 'var(--color-text-muted)' }}
+            >
               {tData.system_power_w}W
             </span>
           )}
+        </div>
+      )}
+
+      {/* Docker driver badge (docker_network nodes) */}
+      {data.docker_driver && (
+        <div
+          className="badge-driver"
+          style={{
+            marginTop: 3,
+            fontSize: 9,
+            padding: '1px 6px',
+            borderRadius: 8,
+            background: '#0b6e8e33',
+            border: '1px solid #1cb8d855',
+            color: '#1cb8d8',
+            fontFamily: 'monospace',
+            letterSpacing: '0.04em',
+          }}
+        >
+          {data.docker_driver}
+        </div>
+      )}
+
+      {/* Docker image badge (docker_container nodes) */}
+      {data.docker_image && (
+        <div
+          style={{
+            marginTop: 2,
+            fontSize: 9,
+            padding: '1px 5px',
+            borderRadius: 8,
+            background: '#1e6ba822',
+            border: '1px solid #2d8ae044',
+            color: '#2d8ae0',
+            fontFamily: 'monospace',
+            maxWidth: 120,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={data.docker_image}
+        >
+          {data.docker_image.split('/').pop()}
         </div>
       )}
     </div>
@@ -381,6 +536,8 @@ export default memo(CustomNode, (prev, next) => {
     prev.data.cidr === next.data.cidr &&
     prev.data.storage_summary === next.data.storage_summary &&
     prev.data.telemetry_data === next.data.telemetry_data &&
+    prev.data.docker_driver === next.data.docker_driver &&
+    prev.data.docker_image === next.data.docker_image &&
     prev.selected === next.selected
   );
 });

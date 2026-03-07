@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.rate_limit import get_limit, limiter
 from app.core.scheduler import _scheduler
 from app.core.security import require_auth_always, require_write_auth
-from app.db.models import ScanJob, ScanResult, User
+from app.db.models import ScanJob, ScanLog, ScanResult, User
 from app.db.session import get_db
 from app.schemas.discovery import (
     AdHocScanRequest,
@@ -21,10 +21,13 @@ from app.schemas.discovery import (
     EnhancedBulkMergeRequest,
     MergeRequest,
     ScanJobOut,
+    ScanLogOut,
     ScanResultOut,
 )
 from app.services import discovery_profiles_service, discovery_service
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
+from app.services.discovery_safe import docker_discover, is_docker_socket_available
+from app.services.discovery_service import _has_raw_socket_privilege
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
@@ -58,6 +61,13 @@ def get_discovery_status(db: Session = Depends(get_db)):
         if job_times:
             next_scheduled = min(job_times).isoformat()
 
+    configured_mode = getattr(settings, "discovery_mode", "safe")
+    net_raw = _has_raw_socket_privilege()
+    effective_mode = configured_mode if (configured_mode == "safe" or net_raw) else "safe"
+    docker_sock = is_docker_socket_available()
+    docker_enabled = getattr(settings, "docker_discovery_enabled", False)
+    docker_count = len(docker_discover()) if (docker_enabled and docker_sock) else 0
+
     return DiscoveryStatusOut(
         discovery_enabled=settings.discovery_enabled,
         scan_ack_accepted=settings.scan_ack_accepted,
@@ -65,6 +75,11 @@ def get_discovery_status(db: Session = Depends(get_db)):
         active_jobs=[ScanJobOut.model_validate(j) for j in active_jobs],
         last_scan=last_scan,
         next_scheduled=next_scheduled,
+        discovery_mode=configured_mode,
+        effective_mode=effective_mode,
+        net_raw_capable=net_raw,
+        docker_available=docker_sock,
+        docker_container_count=docker_count,
     )
 
 
@@ -218,6 +233,25 @@ def get_job_results(job_id: int, limit: int = 100, db: Session = Depends(get_db)
     return results
 
 
+@router.get("/jobs/{job_id}/logs", response_model=list[ScanLogOut])
+def get_job_logs(
+    job_id: int, level: str | None = None, limit: int = 100, db: Session = Depends(get_db)
+):
+    """Get scan logs for a specific job, optionally filtered by level."""
+    job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    query = select(ScanLog).where(ScanLog.scan_job_id == job_id)
+
+    if level:
+        query = query.where(ScanLog.level == level.upper())
+
+    logs = db.scalars(query.order_by(ScanLog.timestamp.asc()).limit(limit)).all()
+
+    return logs
+
+
 # --- Results ---
 
 
@@ -281,3 +315,58 @@ def suggest_actions(
 @router.get("/vendor-catalog")
 def vendor_catalog():
     return get_vendor_catalog()
+
+
+# ── Docker discovery endpoints ───────────────────────────────────────────────
+
+
+@router.get("/docker/status")
+def docker_status(db: Session = Depends(get_db)):
+    """Return Docker socket connectivity status and last sync summary."""
+    from app.services.docker_discovery import get_docker_status, get_last_sync_result
+
+    settings = get_or_create_settings(db)
+    socket_path = getattr(settings, "docker_socket_path", "/var/run/docker.sock")
+    status = get_docker_status(socket_path)
+    last_sync = get_last_sync_result()
+    return {**status, "last_sync": last_sync}
+
+
+@router.post("/docker/sync")
+def docker_sync(
+    background_tasks: BackgroundTasks,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+):
+    """Trigger an immediate Docker topology sync (runs in background)."""
+    from app.services.docker_discovery import sync_docker_topology
+
+    settings = get_or_create_settings(db)
+    socket_path = getattr(settings, "docker_socket_path", "/var/run/docker.sock")
+    background_tasks.add_task(sync_docker_topology, socket_path=socket_path)
+    return {"status": "sync_started", "socket_path": socket_path}
+
+
+@router.get("/docker/networks")
+def docker_networks(db: Session = Depends(get_db)):
+    """List all Network rows that were discovered via Docker."""
+    from sqlalchemy import select as _select
+
+    from app.db.models import Network
+
+    nets = db.scalars(
+        _select(Network).where(Network.is_docker_network == True)  # noqa: E712
+    ).all()
+    return [
+        {
+            "id": n.id,
+            "name": n.name,
+            "docker_network_id": n.docker_network_id,
+            "docker_driver": n.docker_driver,
+            "cidr": n.cidr,
+            "gateway": n.gateway,
+            "created_at": n.created_at,
+            "updated_at": n.updated_at,
+        }
+        for n in nets
+    ]

@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { EdgeLabelRenderer, getBezierPath, useReactFlow } from 'reactflow';
+import { EdgeLabelRenderer, getSmoothStepPath, useReactFlow } from 'reactflow';
 import { MapEdgeCallbacksContext } from '../../pages/MapPage';
 import { CONNECTION_STYLES } from '../../config/mapTheme';
 import { graphApi } from '../../api/client';
@@ -23,7 +23,7 @@ function resolveBandwidth(rawValue) {
 function resolveEdgeStyle(connStyle, style, isCluster) {
   const strokeColor = connStyle?.stroke || style.stroke || '#6c7086';
   const strokeWidth = connStyle?.strokeWidth || style.strokeWidth || 1.5;
-  const dashArray = isCluster ? '6 3' : (connStyle?.strokeDasharray || null);
+  const dashArray = isCluster ? '6 3' : connStyle?.strokeDasharray || null;
   const opacity = isCluster ? 0.7 : (style.opacity ?? 0.75);
   return { strokeColor, strokeWidth, dashArray, opacity };
 }
@@ -72,35 +72,42 @@ export default function CustomEdge({
   const typedEdge = connectionType !== null;
   const connStyle = typedEdge ? CONNECTION_STYLES[connectionType] : null;
 
-  const [bezierPath, labelX, labelY] = getBezierPath({
+  const [defaultPath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 16,
   });
 
   const pathD = cp
     ? `M ${sourceX} ${sourceY} Q ${cp.x} ${cp.y} ${targetX} ${targetY}`
-    : bezierPath;
+    : defaultPath;
 
   const bendX = cp ? (sourceX + 2 * cp.x + targetX) / 4 : labelX;
   const bendY = cp ? (sourceY + 2 * cp.y + targetY) / 4 : labelY;
 
   const isClusterEdge = relation === 'cluster_member' || relation === 'clustermember';
-  const { strokeColor, strokeWidth, dashArray, opacity } = resolveEdgeStyle(connStyle, style, isClusterEdge);
+  const { strokeColor, strokeWidth, dashArray, opacity } = resolveEdgeStyle(
+    connStyle,
+    style,
+    isClusterEdge
+  );
 
   const bandwidth = resolveBandwidth(data?.bandwidth);
-  const particleCount = typedEdge ? (connStyle?.particles || 0) : 0;
-  const particleSize = typedEdge ? (connStyle?.particleSize || 3) : 3;
+  const particleCount = typedEdge ? connStyle?.particles || 0 : 0;
+  const particleSize = typedEdge ? connStyle?.particleSize || 3 : 3;
   const particleDuration = typedEdge
     ? computeParticleDuration(connStyle?.baseSpeed || 1, bandwidth)
     : null;
 
   const effectiveStrokeWidth = selected ? strokeWidth * 1.8 : strokeWidth;
   const animationStyle = dashArray
-    ? { animation: `cb-edge-flow ${Math.max(0.35, 1.5 / (connStyle?.baseSpeed || 1))}s linear infinite` }
+    ? {
+        animation: `cb-edge-flow ${Math.max(0.35, 1.5 / (connStyle?.baseSpeed || 1))}s linear infinite`,
+      }
     : {};
 
   const displayBandwidth = formatBandwidth(bandwidth);
@@ -127,7 +134,8 @@ export default function CustomEdge({
         await unlinkByEdge(edgeForUnlink);
       } catch (unlinkErr) {
         const msg = unlinkErr?.message || '';
-        const canFallback = msg.includes('No unlink mapping') || msg.includes('Cannot parse node IDs for unlink');
+        const canFallback =
+          msg.includes('No unlink mapping') || msg.includes('Cannot parse node IDs for unlink');
         if (!canFallback) throw unlinkErr;
         if (!isUpdatableEdgeId(id)) {
           throw new Error(`Edge '${id}' is structural or implicit and cannot be deleted here.`);

@@ -46,6 +46,11 @@ _DEFAULTS = dict(
     discovery_http_probe=True,
     discovery_retention_days=30,
     scan_ack_accepted=False,
+    discovery_mode="safe",
+    docker_discovery_enabled=False,
+    docker_socket_path="/var/run/docker.sock",
+    docker_sync_interval_minutes=5,
+    graph_default_layout="dagre",
 )
 
 

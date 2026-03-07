@@ -11,12 +11,15 @@ from app.db.models import (  # noqa: F401 (Service used for reactive cascade)
     ComputeUnit,
     EntityTag,
     Hardware,
+    HardwareClusterMember,
     HardwareConnection,
+    HardwareMonitor,
     HardwareNetwork,
     Network,
     Service,
     Storage,
     Tag,
+    UptimeEvent,
 )
 from app.schemas.hardware import HardwareCreate, HardwareUpdate
 from app.services.environments_service import resolve_environment_id
@@ -34,17 +37,21 @@ def _norm_mac(mac: str | None) -> str | None:
     cleaned = re.sub(r"[^0-9a-fA-F]", "", mac)
     if len(cleaned) != 12:
         return mac.strip().upper()  # Can't normalize — return uppercased original
-    return ":".join(cleaned[i:i+2] for i in range(0, 12, 2)).upper()
+    return ":".join(cleaned[i : i + 2] for i in range(0, 12, 2)).upper()
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
     """Upsert tags and sync EntityTag rows for the given entity."""
-    existing = db.execute(
-        select(EntityTag).where(
-            EntityTag.entity_type == entity_type,
-            EntityTag.entity_id == entity_id,
+    existing = (
+        db.execute(
+            select(EntityTag).where(
+                EntityTag.entity_type == entity_type,
+                EntityTag.entity_id == entity_id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for et in existing:
         db.delete(et)
     db.flush()
@@ -59,12 +66,16 @@ def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[st
 
 
 def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = db.execute(
-        select(EntityTag).where(
-            EntityTag.entity_type == entity_type,
-            EntityTag.entity_id == entity_id,
+    rows = (
+        db.execute(
+            select(EntityTag).where(
+                EntityTag.entity_type == entity_type,
+                EntityTag.entity_id == entity_id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [row.tag.name for row in rows]
 
 
@@ -82,7 +93,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
             d["telemetry_data"] = json.loads(d["telemetry_data"])
         except (json.JSONDecodeError, TypeError):
             d["telemetry_data"] = {}
-    
+
     # Deserialize networking extensions (v0.1.7)
     for field in ("wifi_standards", "wifi_bands", "port_map_json"):
         if isinstance(d.get(field), str):
@@ -90,7 +101,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
                 d[field] = json.loads(d[field])
             except (json.JSONDecodeError, TypeError):
                 d[field] = [] if field != "port_map_json" else []
-    
+
     # Expose port_map_json as port_map in the API
     d["port_map"] = d.pop("port_map_json", [])
 
@@ -126,7 +137,10 @@ def list_hardware(
         stmt = stmt.where(or_(Hardware.name.ilike(f"%{q}%"), Hardware.notes.ilike(f"%{q}%")))
     if tag:
         stmt = (
-            stmt.join(EntityTag, (EntityTag.entity_type == "hardware") & (EntityTag.entity_id == Hardware.id))
+            stmt.join(
+                EntityTag,
+                (EntityTag.entity_type == "hardware") & (EntityTag.entity_id == Hardware.id),
+            )
             .join(Tag, Tag.id == EntityTag.tag_id)
             .where(Tag.name == tag)
         )
@@ -164,12 +178,12 @@ def get_hardware(db: Session, hardware_id: int) -> dict:
 def _sync_port_edges(db: Session, hardware_id: int, port_map: list) -> None:
     """Sync 'connects_to' graph edges based on port map connectivity."""
     from app.services.graph_service import create_edge
-    
+
     for p in port_map:
         data = p.model_dump() if hasattr(p, "model_dump") else p
         target_hw_id = data.get("connected_hardware_id")
         target_cu_id = data.get("connected_compute_id")
-        
+
         if target_hw_id:
             create_edge(db, "hardware", hardware_id, "hardware", target_hw_id, "connects_to")
         if target_cu_id:
@@ -203,7 +217,10 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
             )
             raise HTTPException(
                 status_code=409,
-                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+                detail={
+                    "detail": "IP conflict detected",
+                    "conflicts": [c.to_dict() for c in conflicts],
+                },
             )
 
     # CB-LEARN-002: auto-fill u_height/role from catalog when null but catalog keys present
@@ -212,6 +229,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
     rack_id = payload.rack_id
     if payload.vendor_catalog_key and payload.model_catalog_key:
         from app.services.catalog_service import get_device_spec
+
         spec = get_device_spec(payload.vendor_catalog_key, payload.model_catalog_key)
         if spec:
             if u_height is None and spec.get("u_height"):
@@ -223,6 +241,7 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
     rack_unit = payload.rack_unit
     if rack_id is not None and rack_unit is not None and u_height is not None:
         from app.services.rack_service import check_rack_overlap
+
         overlaps = check_rack_overlap(db, rack_id, rack_unit, u_height)
         if overlaps:
             raise HTTPException(
@@ -233,11 +252,15 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
     # CB-PATTERN-001: MAC normalization + soft-alert on duplicate
     mac = _norm_mac(getattr(payload, "mac_address", None))
     if mac:
-        existing = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
+        existing = db.execute(
+            select(Hardware).where(Hardware.mac_address == mac)
+        ).scalar_one_or_none()
         if existing:
             _logger.warning(
                 "Duplicate MAC detected for new hardware %r: conflicts with existing hardware id=%d %r. Saving both (freeform-first).",
-                payload.name, existing.id, existing.name,
+                payload.name,
+                existing.id,
+                existing.name,
             )
 
     telemetry_config_json = None
@@ -270,7 +293,11 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         wifi_bands=json.dumps(payload.wifi_bands) if payload.wifi_bands else None,
         max_tx_power_dbm=payload.max_tx_power_dbm,
         port_count=payload.port_count,
-        port_map_json=json.dumps([p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]) if payload.port_map else None,
+        port_map_json=json.dumps(
+            [p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]
+        )
+        if payload.port_map
+        else None,
         software_platform=payload.software_platform,
         download_speed_mbps=payload.download_speed_mbps,
         upload_speed_mbps=payload.upload_speed_mbps,
@@ -308,23 +335,30 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
             )
             raise HTTPException(
                 status_code=409,
-                detail={"detail": "IP conflict detected", "conflicts": [c.to_dict() for c in conflicts]},
+                detail={
+                    "detail": "IP conflict detected",
+                    "conflicts": [c.to_dict() for c in conflicts],
+                },
             )
     update_data = payload.model_dump(exclude_unset=True, exclude={"tags", "port_map"})
     # Serialize TelemetryConfig Pydantic model to JSON string for storage
     if "telemetry_config" in payload.model_fields_set and payload.telemetry_config is not None:
         tc = payload.telemetry_config
-        update_data["telemetry_config"] = tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(tc)
-    
+        update_data["telemetry_config"] = (
+            tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(tc)
+        )
+
     # Serialize networking extensions (v0.1.7)
     if "wifi_standards" in payload.model_fields_set and payload.wifi_standards is not None:
         update_data["wifi_standards"] = json.dumps(payload.wifi_standards)
     if "wifi_bands" in payload.model_fields_set and payload.wifi_bands is not None:
         update_data["wifi_bands"] = json.dumps(payload.wifi_bands)
-    
+
     if "port_map" in payload.model_fields_set:
         if payload.port_map is not None:
-            update_data["port_map_json"] = json.dumps([p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map])
+            update_data["port_map_json"] = json.dumps(
+                [p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]
+            )
             _sync_port_edges(db, hardware_id, payload.port_map)
         else:
             update_data["port_map_json"] = None
@@ -339,9 +373,20 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
     effective_rack_id = update_data.get("rack_id", hw.rack_id)
     effective_rack_unit = update_data.get("rack_unit", hw.rack_unit)
     effective_u_height = update_data.get("u_height", hw.u_height)
-    if effective_rack_id is not None and effective_rack_unit is not None and effective_u_height is not None:
+    if (
+        effective_rack_id is not None
+        and effective_rack_unit is not None
+        and effective_u_height is not None
+    ):
         from app.services.rack_service import check_rack_overlap
-        overlaps = check_rack_overlap(db, effective_rack_id, effective_rack_unit, effective_u_height, exclude_hardware_id=hardware_id)
+
+        overlaps = check_rack_overlap(
+            db,
+            effective_rack_id,
+            effective_rack_unit,
+            effective_u_height,
+            exclude_hardware_id=hardware_id,
+        )
         if overlaps:
             raise HTTPException(
                 status_code=422,
@@ -362,7 +407,11 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all()
     )
     # Also services on compute units hosted by this hardware
-    cus = db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id)).scalars().all()
+    cus = (
+        db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id))
+        .scalars()
+        .all()
+    )
     for cu in cus:
         affected += list(
             db.execute(select(Service).where(Service.compute_id == cu.id)).scalars().all()
@@ -376,6 +425,7 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         db.commit()
     # CB-STATE-001: recalculate hardware status (respects status_override)
     from app.services.status_service import recalculate_hardware_status
+
     recalculate_hardware_status(db, hardware_id)
     db.commit()
     return _to_dict(db, hw)
@@ -387,25 +437,77 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
         raise ValueError(f"Hardware {hardware_id} not found")
     # Block if dependent entities still exist
     blocking: list[str] = []
-    cu_count = len(db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id)).scalars().all())
+    cu_count = len(
+        db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id))
+        .scalars()
+        .all()
+    )
     if cu_count:
         blocking.append(f"{cu_count} compute unit(s)")
-    st_count = len(db.execute(select(Storage).where(Storage.hardware_id == hardware_id)).scalars().all())
+    st_count = len(
+        db.execute(select(Storage).where(Storage.hardware_id == hardware_id)).scalars().all()
+    )
     if st_count:
         blocking.append(f"{st_count} storage item(s)")
-    svc_count = len(db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all())
+    svc_count = len(
+        db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all()
+    )
     if svc_count:
         blocking.append(f"{svc_count} service(s)")
     if blocking:
         raise ValueError(
             f"Cannot delete: this hardware has {', '.join(blocking)} assigned to it. Remove them first."
         )
-    # Cascade-remove network memberships (join table, safe to auto-remove)
-    for row in db.execute(select(HardwareNetwork).where(HardwareNetwork.hardware_id == hardware_id)).scalars().all():
+    # ── Safe cascades (join/history tables — no user data lost) ──────────────
+
+    # Network memberships
+    for row in (
+        db.execute(select(HardwareNetwork).where(HardwareNetwork.hardware_id == hardware_id))
+        .scalars()
+        .all()
+    ):
         db.delete(row)
-    # Null out gateway references from any networks pointing here
-    for net in db.execute(select(Network).where(Network.gateway_hardware_id == hardware_id)).scalars().all():
+    # Null out gateway references from networks pointing here
+    for net in (
+        db.execute(select(Network).where(Network.gateway_hardware_id == hardware_id))
+        .scalars()
+        .all()
+    ):
         net.gateway_hardware_id = None
+    # Cluster memberships (removes device from any cluster; clusters themselves are kept)
+    for row in (
+        db.execute(
+            select(HardwareClusterMember).where(HardwareClusterMember.hardware_id == hardware_id)
+        )
+        .scalars()
+        .all()
+    ):
+        db.delete(row)
+    # Physical connections (both directions)
+    for row in (
+        db.execute(
+            select(HardwareConnection).where(
+                (HardwareConnection.source_hardware_id == hardware_id)
+                | (HardwareConnection.target_hardware_id == hardware_id)
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        db.delete(row)
+    # Uptime monitor + event history
+    for row in (
+        db.execute(select(UptimeEvent).where(UptimeEvent.hardware_id == hardware_id))
+        .scalars()
+        .all()
+    ):
+        db.delete(row)
+    monitor = db.execute(
+        select(HardwareMonitor).where(HardwareMonitor.hardware_id == hardware_id)
+    ).scalar_one_or_none()
+    if monitor:
+        db.delete(monitor)
+
     db.flush()
     _sync_tags(db, "hardware", hw.id, [])
     db.delete(hw)
@@ -417,8 +519,12 @@ def find_orphans(db: Session) -> list[dict]:
     all_hw = db.execute(select(Hardware)).scalars().all()
     orphans = []
     for hw in all_hw:
-        has_cu = db.execute(select(ComputeUnit.id).where(ComputeUnit.hardware_id == hw.id).limit(1)).first()
-        has_svc = db.execute(select(Service.id).where(Service.hardware_id == hw.id).limit(1)).first()
+        has_cu = db.execute(
+            select(ComputeUnit.id).where(ComputeUnit.hardware_id == hw.id).limit(1)
+        ).first()
+        has_svc = db.execute(
+            select(Service.id).where(Service.hardware_id == hw.id).limit(1)
+        ).first()
         has_st = db.execute(select(Storage.id).where(Storage.hardware_id == hw.id).limit(1)).first()
         if not has_cu and not has_svc and not has_st:
             orphans.append(_to_dict(db, hw))
@@ -434,10 +540,7 @@ def list_hardware_groups(db: Session) -> list[dict]:
             func.count(Hardware.id).label("count"),
         ).group_by(Hardware.vendor, Hardware.model)
     ).all()
-    return [
-        {"vendor": r.vendor, "model": r.model, "count": r.count}
-        for r in rows
-    ]
+    return [{"vendor": r.vendor, "model": r.model, "count": r.count} for r in rows]
 
 
 def add_hardware_connection(db: Session, source_id: int, target_id: int) -> dict:
@@ -452,7 +555,13 @@ def add_hardware_connection(db: Session, source_id: int, target_id: int) -> dict
     db.add(conn)
     db.commit()
     db.refresh(conn)
-    return {"id": conn.id, "source_hardware_id": conn.source_hardware_id, "target_hardware_id": conn.target_hardware_id, "connection_type": conn.connection_type, "bandwidth_mbps": conn.bandwidth_mbps}
+    return {
+        "id": conn.id,
+        "source_hardware_id": conn.source_hardware_id,
+        "target_hardware_id": conn.target_hardware_id,
+        "connection_type": conn.connection_type,
+        "bandwidth_mbps": conn.bandwidth_mbps,
+    }
 
 
 def remove_hardware_connection(db: Session, connection_id: int) -> None:
@@ -477,21 +586,27 @@ def update_hardware_connection_type(db: Session, connection_id: int, connection_
 
 def list_network_memberships(db: Session, hardware_id: int) -> list[dict]:
     """Return all networks this hardware node directly belongs to (via HardwareNetwork)."""
-    rows = db.execute(
-        select(HardwareNetwork).where(HardwareNetwork.hardware_id == hardware_id)
-    ).scalars().all()
+    rows = (
+        db.execute(select(HardwareNetwork).where(HardwareNetwork.hardware_id == hardware_id))
+        .scalars()
+        .all()
+    )
     result = []
     for hn in rows:
         net = db.get(Network, hn.network_id)
-        result.append({
-            "id": hn.id,
-            "network_id": hn.network_id,
-            "ip_address": hn.ip_address,
-            "network": {
-                "name": net.name if net else None,
-                "cidr": net.cidr if net else None,
-                "vlan_id": net.vlan_id if net else None,
-                "gateway": net.gateway if net else None,
-            } if net else None,
-        })
+        result.append(
+            {
+                "id": hn.id,
+                "network_id": hn.network_id,
+                "ip_address": hn.ip_address,
+                "network": {
+                    "name": net.name if net else None,
+                    "cidr": net.cidr if net else None,
+                    "vlan_id": net.vlan_id if net else None,
+                    "gateway": net.gateway if net else None,
+                }
+                if net
+                else None,
+            }
+        )
     return result

@@ -24,6 +24,9 @@ services:
       - backend-data:/app/data
       - ../data/uploads/icons:/app/data/uploads/icons
       - ../data/uploads/branding:/app/data/uploads/branding
+      # Docker socket for container auto-discovery (read-only).
+      # Requires "Docker Container Discovery" enabled in Settings → Discovery.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DATABASE_URL=sqlite:////app/data/app.db
       - UPLOADS_DIR=/app/data/uploads
@@ -32,6 +35,8 @@ services:
       # If unset, an ephemeral key is generated each restart (credentials lost on restart).
       # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - CB_VAULT_KEY=
+      # Discovery mode: 'safe' (default, ping+TCP, no privileges) | 'full' (ARP+nmap, requires NET_RAW)
+      - DISCOVERY_MODE=safe
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]

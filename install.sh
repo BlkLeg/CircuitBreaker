@@ -10,22 +10,31 @@
 #   wget -qO- https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 #
 # Environment variable overrides (usable with curl | bash):
-#   CB_PORT=8080                         Host port to expose (default: 8080)
+#   CB_MODE=docker|binary                Install mode
+#   CB_PORT=8080                         Host port (Docker mode)
 #   CB_VOLUME=circuit-breaker-data       Docker volume name or host path
 #   CB_IMAGE=ghcr.io/blkleg/...          Override the Docker image
 #   CB_CONTAINER=circuit-breaker         Container name
 #   CB_TLS=1                             Enable HTTPS via Caddy reverse proxy
 #   CB_HOSTNAME=circuitbreaker.local     Hostname for TLS certificate
+#   CB_VERSION=latest                    Image/binary version tag
+#   CB_YES=1                             Non-interactive mode
 #
 
-set -e
+set -eo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # ─── Trap Ctrl-C ─────────────────────────────────────────────────────────────
 trap 'echo -e "${COLOUR_RESET}"; exit 1' INT
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
-CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:latest}"
+CB_MODE="${CB_MODE:-}"
+CB_VERSION="${CB_VERSION:-latest}"
+CB_YES="${CB_YES:-0}"
+CB_NO_DESKTOP="${CB_NO_DESKTOP:-0}"
+CB_NO_SYSTEMD="${CB_NO_SYSTEMD:-0}"
+
+CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_VERSION}}"
 CB_PORT="${CB_PORT:-8080}"
 CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
 CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
@@ -66,18 +75,30 @@ Show() {
   esac
 }
 
+Confirm() {
+  # Confirm "question" — returns 0 (yes) or 1 (no). Skips to default 'y' in non-interactive mode.
+  local msg="$1"
+  local default="${2:-n}"
+  if [[ "$CB_YES" == "1" ]]; then
+    [[ "$default" == "y" ]] && return 0 || return 1
+  fi
+  printf "  %s [y/N] " "$msg"
+  read -r reply < /dev/tty
+  case "$reply" in [yY][eE][sS]|[yY]) return 0 ;; *) return 1 ;; esac
+}
+
 # ─── Header ──────────────────────────────────────────────────────────────────
 Print_Header() {
   clear
   echo -e "${aCOLOUR[0]}"
   cat <<'BANNER'
-  ░██████  ░██                               ░██   ░██    ░████████                                  ░██                           
- ░██   ░██                                         ░██    ░██    ░██                                 ░██                           
-░██        ░██░██░████  ░███████  ░██    ░██ ░██░████████ ░██    ░██  ░██░████  ░███████   ░██████   ░██    ░██ ░███████  ░██░████ 
-░██        ░██░███     ░██    ░██ ░██    ░██ ░██   ░██    ░████████   ░███     ░██    ░██       ░██  ░██   ░██ ░██    ░██ ░███     
-░██        ░██░██      ░██        ░██    ░██ ░██   ░██    ░██     ░██ ░██      ░█████████  ░███████  ░███████  ░█████████ ░██      
- ░██   ░██ ░██░██      ░██    ░██ ░██   ░███ ░██   ░██    ░██     ░██ ░██      ░██        ░██   ░██  ░██   ░██ ░██        ░██      
-  ░██████  ░██░██       ░███████   ░█████░██ ░██    ░████ ░█████████  ░██       ░███████   ░█████░██ ░██    ░██ ░███████  ░██      
+  ░██████  ░██                               ░██   ░██    ░████████                                  ░██
+ ░██   ░██                                         ░██    ░██    ░██                                 ░██
+░██        ░██░██░████  ░███████  ░██    ░██ ░██░████████ ░██    ░██  ░██░████  ░███████   ░██████   ░██    ░██ ░███████  ░██░████
+░██        ░██░███     ░██    ░██ ░██    ░██ ░██   ░██    ░████████   ░███     ░██    ░██       ░██  ░██   ░██ ░██    ░██ ░███
+░██        ░██░██      ░██        ░██    ░██ ░██   ░██    ░██     ░██ ░██      ░█████████  ░███████  ░███████  ░█████████ ░██
+ ░██   ░██ ░██░██      ░██    ░██ ░██   ░███ ░██   ░██    ░██     ░██ ░██      ░██        ░██   ░██  ░██   ░██ ░██        ░██
+  ░██████  ░██░██       ░███████   ░█████░██ ░██    ░████ ░█████████  ░██       ░███████   ░█████░██ ░██    ░██ ░███████  ░██
 
 BANNER
   echo -e "${COLOUR_RESET}"
@@ -91,49 +112,65 @@ usage() {
   cat <<EOF
 Usage: install.sh [OPTIONS]
 
-  --port PORT       Host port for Circuit Breaker    (default: 8080)
-  --volume NAME     Docker volume name or host path  (default: circuit-breaker-data)
-  --image IMAGE     Override the Docker image        (default: ghcr.io/blkleg/circuitbreaker:latest)
-  --container NAME  Container name                   (default: circuit-breaker)
-  --tls             Enable HTTPS via Caddy reverse proxy
-  --hostname NAME   Hostname for TLS certificate     (default: circuitbreaker.local)
-  --help            Show this help message and exit
+Install mode:
+  --mode docker|binary  Choose install mode (skips interactive prompt)
+  --version TAG         Image / binary version tag  (default: latest)
+  --yes                 Non-interactive; accept all defaults
+
+Docker mode options:
+  --port PORT           Host port for Circuit Breaker    (default: 8080)
+  --volume NAME         Docker volume name or host path  (default: circuit-breaker-data)
+  --image IMAGE         Override the Docker image        (default: ghcr.io/blkleg/circuitbreaker:latest)
+  --container NAME      Container name                   (default: circuit-breaker)
+  --tls                 Enable HTTPS via Caddy reverse proxy
+  --hostname NAME       Hostname for TLS certificate     (default: circuitbreaker.local)
+
+Binary mode options:
+  --no-desktop          Skip .desktop file and icon install
+  --no-systemd          Skip systemd service setup (useful in WSL/containers)
+
+  --help                Show this help and exit
 
 Environment variables (compatible with 'curl | bash' piping):
+  CB_MODE, CB_VERSION, CB_YES, CB_NO_DESKTOP, CB_NO_SYSTEMD
   CB_PORT, CB_VOLUME, CB_IMAGE, CB_CONTAINER, CB_TLS, CB_HOSTNAME
 
 Examples:
-  # Default install
+  # Interactive install (prompts for Docker vs Binary)
   curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 
-  # Custom port
-  CB_PORT=9090 curl -fsSL .../install.sh | bash
+  # Docker install, non-interactive
+  bash install.sh --mode docker --yes
 
-  # Install with HTTPS enabled
-  CB_TLS=1 curl -fsSL .../install.sh | bash
-
-  # Local run with flags
-  bash install.sh --port 9090 --tls --hostname mylab.local
+  # Binary install, specific version, skip desktop
+  bash install.sh --mode binary --version v0.1.4 --no-desktop
 EOF
   exit 0
 }
 
 # ─── Parse CLI flags ─────────────────────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --port)      CB_PORT="$2";      shift 2 ;;
-    --volume)    CB_VOLUME="$2";    shift 2 ;;
-    --image)     CB_IMAGE="$2";     shift 2 ;;
-    --container) CB_CONTAINER="$2"; shift 2 ;;
-    --tls)       CB_TLS="1";        shift 1 ;;
-    --hostname)  CB_HOSTNAME="$2";  shift 2 ;;
-    --help|-h)   usage ;;
-    *) echo "Unknown option: $1"; usage ;;
-  esac
-done
+parse_flags() {
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --mode)       CB_MODE="$2";      shift 2 ;;
+      --version)    CB_VERSION="$2";   CB_IMAGE="ghcr.io/blkleg/circuitbreaker:${2}"; shift 2 ;;
+      --port)       CB_PORT="$2";      shift 2 ;;
+      --volume)     CB_VOLUME="$2";    shift 2 ;;
+      --image)      CB_IMAGE="$2";     shift 2 ;;
+      --container)  CB_CONTAINER="$2"; shift 2 ;;
+      --tls)        CB_TLS="1";        shift 1 ;;
+      --hostname)   CB_HOSTNAME="$2";  shift 2 ;;
+      --yes)        CB_YES=1;          shift 1 ;;
+      --no-desktop) CB_NO_DESKTOP=1;   shift 1 ;;
+      --no-systemd) CB_NO_SYSTEMD=1;   shift 1 ;;
+      --help|-h)    usage ;;
+      *) echo "Unknown option: $1"; usage ;;
+    esac
+  done
+}
 
 ###############################################################################
-# CHECKS
+# SYSTEM CHECKS
 ###############################################################################
 
 # 0. Detect download region (for Docker mirror selection)
@@ -165,6 +202,17 @@ Check_Arch() {
   Show 0 "Architecture: $machine (${ARCH})"
 }
 
+# Arch string for binary downloads (amd64/arm64 only — arm/v7 not supported for native binary)
+Detect_Binary_Arch() {
+  local machine
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64)        echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) Show 1 "Native binary install requires amd64 or arm64. Detected: $machine. Use --mode docker instead." ;;
+  esac
+}
+
 # 2. Check OS (Linux only for automated install)
 Check_OS() {
   local os
@@ -191,12 +239,10 @@ Check_Memory() {
   free_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo "0")
   if [[ "$free_mb" -lt 256 ]]; then
     Show 3 "Low memory: ${free_mb} MB available. Circuit Breaker recommends at least 256 MB free."
-    printf "  Continue anyway? [y/N] "
-    read -r reply < /dev/tty
-    case "$reply" in
-      [yY][eE][sS]|[yY]) Show 3 "Memory check bypassed." ;;
-      *) Show 1 "Installation aborted due to low memory." ;;
-    esac
+    if ! Confirm "Continue anyway?"; then
+      Show 1 "Installation aborted due to low memory."
+    fi
+    Show 3 "Memory check bypassed."
   else
     Show 0 "Memory: ${free_mb} MB available."
   fi
@@ -208,12 +254,10 @@ Check_Disk() {
   free_gb=$(df -BG / 2>/dev/null | awk 'NR==2{gsub("G",""); print $4}' || echo "0")
   if [[ "$free_gb" -lt 1 ]]; then
     Show 3 "Low disk space: ${free_gb} GB free. Recommend at least 1 GB."
-    printf "  Continue anyway? [y/N] "
-    read -r reply < /dev/tty
-    case "$reply" in
-      [yY][eE][sS]|[yY]) Show 3 "Disk check bypassed." ;;
-      *) Show 1 "Installation aborted due to low disk space." ;;
-    esac
+    if ! Confirm "Continue anyway?"; then
+      Show 1 "Installation aborted due to low disk space."
+    fi
+    Show 3 "Disk check bypassed."
   else
     Show 0 "Disk: ${free_gb} GB free."
   fi
@@ -232,8 +276,24 @@ Find_Free_Port() {
   fi
 }
 
+# 6. Validate sudo access (binary mode requires it throughout)
+Require_Sudo() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    # Running as root — define sudo as a no-op
+    sudo() { "$@"; }
+    export -f sudo
+    Show 0 "Running as root."
+    return
+  fi
+  Show 2 "Binary install requires sudo for system directories. Validating access..."
+  if ! sudo -v 2>/dev/null; then
+    Show 1 "sudo access is required for native binary install. Re-run as root or with sudo."
+  fi
+  Show 0 "sudo access confirmed."
+}
+
 ###############################################################################
-# DOCKER
+# DOCKER HELPERS
 ###############################################################################
 
 Check_Docker_Daemon() {
@@ -277,8 +337,12 @@ Check_Docker() {
     Show 0 "Docker $ver detected."
     Check_Docker_Daemon
   else
-    Show 2 "Docker is not installed. Installing now..."
-    Install_Docker
+    Show 2 "Docker is not installed."
+    if Confirm "Install Docker now?" "y"; then
+      Install_Docker
+    else
+      Show 1 "Docker is required for Docker mode. Install Docker and re-run, or use --mode binary."
+    fi
   fi
 }
 
@@ -309,20 +373,14 @@ Prompt_TLS() {
   echo ""
   echo -e "  ${aCOLOUR[4]}Requires:${COLOUR_RESET} root (sudo) access for CA trust and /etc/hosts"
   echo ""
-  printf "  Enable HTTPS? [y/N] "
-  read -r reply < /dev/tty
-  echo ""
 
-  case "$reply" in
-    [yY][eE][sS]|[yY])
-      CB_TLS="1"
-      Show 0 "HTTPS will be enabled via Caddy."
-      ;;
-    *)
-      CB_TLS=""
-      Show 2 "Skipping HTTPS. Circuit Breaker will be HTTP-only."
-      ;;
-  esac
+  if Confirm "Enable HTTPS?"; then
+    CB_TLS="1"
+    Show 0 "HTTPS will be enabled via Caddy."
+  else
+    CB_TLS=""
+    Show 2 "Skipping HTTPS. Circuit Breaker will be HTTP-only."
+  fi
 }
 
 Check_TLS_Ports() {
@@ -339,15 +397,12 @@ Check_TLS_Ports() {
   if [[ "$conflict" == "1" ]]; then
     echo ""
     echo -e "  Caddy needs ports 80 (HTTP→HTTPS redirect) and 443 (HTTPS)."
-    printf "  Continue anyway? [y/N] "
-    read -r reply < /dev/tty
-    case "$reply" in
-      [yY][eE][sS]|[yY]) Show 3 "Port conflict acknowledged." ;;
-      *)
-        Show 2 "Disabling HTTPS due to port conflict."
-        CB_TLS=""
-        ;;
-    esac
+    if ! Confirm "Continue anyway?"; then
+      Show 2 "Disabling HTTPS due to port conflict."
+      CB_TLS=""
+    else
+      Show 3 "Port conflict acknowledged."
+    fi
   else
     Show 0 "Ports 80 and 443 are available."
   fi
@@ -459,17 +514,12 @@ Trust_CA() {
   echo -e "   $GREEN_BULLET Install CA certificate into system trust store"
   echo -e "   $GREEN_BULLET Add '${CB_HOSTNAME}' → 127.0.0.1 to /etc/hosts"
   echo ""
-  printf "  Proceed? [Y/n] "
-  read -r reply < /dev/tty
-  echo ""
 
-  case "$reply" in
-    [nN][oO]|[nN])
-      Show 3 "CA trust skipped. Browsers will show security warnings."
-      _Print_Manual_CA_Instructions "$cert_file"
-      return
-      ;;
-  esac
+  if ! Confirm "Proceed?" "y"; then
+    Show 3 "CA trust skipped. Browsers will show security warnings."
+    _Print_Manual_CA_Instructions "$cert_file"
+    return
+  fi
 
   echo -e "  ${aCOLOUR[4]}You may be prompted for your password.${COLOUR_RESET}"
   echo ""
@@ -555,6 +605,9 @@ _Print_Manual_CA_Instructions() {
 ###############################################################################
 
 Generate_API_Token() {
+  # CB_CONFIG_DIR controls where the token is written:
+  #   Docker mode: ~/.circuit-breaker/env
+  #   Binary mode: /etc/circuit-breaker/env  (CB_CONFIG_DIR overridden before call)
   mkdir -p "$CB_CONFIG_DIR"
   chmod 700 "$CB_CONFIG_DIR"
 
@@ -585,7 +638,7 @@ ENVEOF
 }
 
 ###############################################################################
-# INSTALL
+# DOCKER INSTALL HELPERS
 ###############################################################################
 
 Pull_And_Run() {
@@ -625,72 +678,562 @@ Pull_And_Run() {
 }
 
 Wait_For_Ready() {
+  local port="${1:-$CB_PORT}"
   Show 2 "Waiting for Circuit Breaker to be ready..."
   local tries=0
-  # Use curl from the host against the exposed port — more reliable than docker exec
-  # (curl is not installed inside the container) and also validates the port mapping.
-  until curl -sf http://127.0.0.1:${CB_PORT}/api/v1/health >/dev/null 2>&1; do
+  until curl -sf "http://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; do
     tries=$((tries + 1))
     if [[ $tries -ge 30 ]]; then
-      Show 1 "Health check timed out after $((tries * 2))s. Check logs: docker logs $CB_CONTAINER"
+      Show 1 "Health check timed out after $((tries * 2))s."
     fi
     sleep 2
   done
   Show 0 "Circuit Breaker is ready."
 }
 
+# Install the Docker-based systemd unit (embeds unit inline — works when curl | bash)
+Setup_Systemd_Docker() {
+  if [[ "$CB_NO_SYSTEMD" == "1" ]]; then
+    Show 2 "Skipping systemd setup (--no-systemd)."
+    return
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    Show 3 "systemctl not found — skipping systemd service install."
+    return
+  fi
+
+  Show 2 "Installing systemd service (Docker mode)..."
+  sudo tee /etc/systemd/system/circuit-breaker.service >/dev/null <<UNIT
+[Unit]
+Description=Circuit Breaker (Docker)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment="CB_CONTAINER=${CB_CONTAINER}"
+Environment="CB_IMAGE=${CB_IMAGE}"
+Environment="CB_PORT=${CB_PORT}"
+Environment="CB_VOLUME=${CB_VOLUME}"
+
+ExecStartPre=-/usr/bin/docker stop \${CB_CONTAINER}
+ExecStartPre=-/usr/bin/docker rm   \${CB_CONTAINER}
+ExecStart=/usr/bin/docker run \\
+  --name  \${CB_CONTAINER} \\
+  --detach \\
+  -p      \${CB_PORT}:8080 \\
+  -v      \${CB_VOLUME}:/data \\
+  --security-opt seccomp=unconfined \\
+  \${CB_IMAGE}
+ExecStop=/usr/bin/docker stop \${CB_CONTAINER}
+ExecReload=/usr/bin/docker pull \${CB_IMAGE} && \${EXEC_STOP} && \${EXEC_START}
+
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now circuit-breaker
+  Show 0 "systemd service enabled: circuit-breaker"
+}
+
 ###############################################################################
-# WELCOME BANNER
+# BINARY INSTALL HELPERS
 ###############################################################################
 
-Welcome_Banner() {
-  # Try to resolve the public IP — useful on VPS/cloud where the host NIC only
-  # shows a private address and the public IP is assigned at the hypervisor.
+Download_Binary() {
+  local arch url tmpdir
+  tmpdir=$(mktemp -d)
+  arch=$(Detect_Binary_Arch)
+
+  if [[ "$CB_VERSION" == "latest" ]]; then
+    Show 2 "Resolving latest release from GitHub..."
+    url=$(curl -fsSL https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest \
+          | grep '"browser_download_url"' \
+          | grep "linux-${arch}\.tar\.gz" \
+          | head -1 | cut -d'"' -f4 || true)
+  else
+    url="https://github.com/BlkLeg/CircuitBreaker/releases/download/${CB_VERSION}/circuit-breaker-${CB_VERSION}-linux-${arch}.tar.gz"
+  fi
+
+  if [[ -z "$url" ]]; then
+    rm -rf "$tmpdir"
+    Show 1 "Could not resolve binary download URL for ${arch}. Check https://github.com/BlkLeg/CircuitBreaker/releases"
+  fi
+
+  Show 2 "Downloading: $url"
+  curl -fsSL "$url" -o "$tmpdir/cb.tar.gz" || { rm -rf "$tmpdir"; Show 1 "Download failed."; }
+  tar -xzf "$tmpdir/cb.tar.gz" -C "$tmpdir"
+
+  if [[ ! -f "$tmpdir/circuit-breaker" ]]; then
+    # Some tarballs have a subdirectory
+    local found
+    found=$(find "$tmpdir" -name "circuit-breaker" -type f | head -1 || true)
+    [[ -z "$found" ]] && { rm -rf "$tmpdir"; Show 1 "Binary not found in archive."; }
+    cp "$found" "$tmpdir/circuit-breaker"
+  fi
+
+  sudo install -Dm755 "$tmpdir/circuit-breaker" /usr/local/bin/circuit-breaker
+  rm -rf "$tmpdir"
+  Show 0 "Binary installed to /usr/local/bin/circuit-breaker"
+}
+
+Create_User_And_Dirs() {
+  if ! id circuitbreaker &>/dev/null; then
+    sudo useradd --system --no-create-home --shell /usr/sbin/nologin circuitbreaker
+    Show 0 "System user 'circuitbreaker' created."
+  else
+    Show 0 "System user 'circuitbreaker' already exists."
+  fi
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker /var/lib/circuit-breaker
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker /var/log/circuit-breaker
+  sudo install -d -m 755 /etc/circuit-breaker
+  Show 0 "Directories created."
+}
+
+Generate_Config() {
+  local cfg="/etc/circuit-breaker/config.yaml"
+  if [[ -f "$cfg" ]]; then
+    Show 0 "Config already exists at $cfg — skipping (idempotent)."
+    return
+  fi
+  sudo tee "$cfg" >/dev/null <<CFGEOF
+# Circuit Breaker configuration — generated by install.sh
+port: 8080
+data_dir: /var/lib/circuit-breaker
+log_dir: /var/log/circuit-breaker
+auth_enabled: false
+CFGEOF
+  Show 0 "Config written to $cfg"
+}
+
+Setup_Systemd_Binary() {
+  if [[ "$CB_NO_SYSTEMD" == "1" ]]; then
+    Show 2 "Skipping systemd setup (--no-systemd)."
+    return
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    Show 3 "systemctl not found — skipping systemd service install."
+    return
+  fi
+
+  Show 2 "Installing systemd service (native binary)..."
+  sudo tee /etc/systemd/system/circuit-breaker.service >/dev/null <<'UNIT'
+[Unit]
+Description=Circuit Breaker (Native)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=circuitbreaker
+Group=circuitbreaker
+WorkingDirectory=/var/lib/circuit-breaker
+EnvironmentFile=-/etc/circuit-breaker/env
+ExecStart=/usr/local/bin/circuit-breaker --config /etc/circuit-breaker/config.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # Copy API token env file so the service picks it up
+  if [[ -f "/etc/circuit-breaker/env" ]]; then
+    sudo chmod 640 /etc/circuit-breaker/env
+    sudo chown root:circuitbreaker /etc/circuit-breaker/env
+  fi
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now circuit-breaker
+  Show 0 "systemd service enabled: circuit-breaker"
+}
+
+Setup_Desktop() {
+  if [[ "$CB_NO_DESKTOP" == "1" ]]; then
+    Show 2 "Skipping desktop integration (--no-desktop)."
+    return
+  fi
+  if ! command -v xdg-open >/dev/null 2>&1 && [[ -z "${DISPLAY:-}" ]] && [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    Show 3 "No display environment detected — skipping desktop integration."
+    return
+  fi
+
+  Show 2 "Installing desktop integration..."
+
+  # Write .desktop file
+  sudo tee /usr/share/applications/circuit-breaker.desktop >/dev/null <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Circuit Breaker
+Comment=Homelab topology, documented.
+Exec=xdg-open http://localhost:8080
+Icon=circuit-breaker
+Terminal=false
+Categories=Network;System;Utility;
+DESKTOP
+  Show 0 ".desktop file installed."
+
+  # Install icon — prefer local repo copy, fall back to GitHub raw
+  local icon_dest="/usr/share/icons/hicolor/256x256/apps/circuit-breaker.png"
+  sudo install -d /usr/share/icons/hicolor/256x256/apps/
+
+  local icon_src=""
+  # Look for icon relative to this script (local repo run)
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || echo "")"
+  for candidate in \
+    "$script_dir/frontend/public/android-chrome-512x512.png" \
+    "$script_dir/frontend/public/android-chrome-192x192.png" \
+    "$script_dir/frontend/public/CB-AZ_Final.png"; do
+    if [[ -f "$candidate" ]]; then
+      icon_src="$candidate"
+      break
+    fi
+  done
+
+  if [[ -n "$icon_src" ]]; then
+    sudo install -Dm644 "$icon_src" "$icon_dest"
+    Show 0 "Icon installed from local repo."
+  else
+    # Download from GitHub
+    Show 2 "Downloading app icon from GitHub..."
+    local icon_url="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/frontend/public/android-chrome-512x512.png"
+    if curl -fsSL "$icon_url" -o /tmp/cb-icon.png 2>/dev/null; then
+      sudo install -Dm644 /tmp/cb-icon.png "$icon_dest"
+      rm -f /tmp/cb-icon.png
+      Show 0 "Icon installed."
+    else
+      Show 3 "Could not download icon — desktop entry will use a fallback."
+    fi
+  fi
+
+  # Refresh icon cache
+  gtk-update-icon-cache /usr/share/icons/hicolor/ 2>/dev/null || true
+
+  # Desktop shortcut (interactive sessions only)
+  if [[ -d "$HOME/Desktop" ]] && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    ln -sf /usr/share/applications/circuit-breaker.desktop "$HOME/Desktop/circuit-breaker.desktop" 2>/dev/null || true
+    Show 0 "Desktop shortcut created at ~/Desktop/circuit-breaker.desktop"
+  fi
+}
+
+###############################################################################
+# UNINSTALL SCRIPT (written at install time)
+###############################################################################
+
+Write_Uninstall_Script() {
+  local mode="$1"
+  local dest="/usr/local/bin/uninstall-circuit-breaker"
+  local tmp
+  tmp=$(mktemp)
+
+  # Header — variables expanded at write time
+  cat > "$tmp" <<HEADER
+#!/usr/bin/env bash
+# Circuit Breaker Uninstaller
+# Generated by install.sh — mode: ${mode}
+set -e
+
+COLOUR_RESET='\e[0m'
+GREEN='\e[38;5;154m'
+RED='\e[91m'
+YELLOW='\e[33m'
+GREY='\e[90m'
+
+Show() {
+  case \$1 in
+    0) echo -e "\${GREY}[\${COLOUR_RESET}\${GREEN} OK \${COLOUR_RESET}\${GREY}]\${COLOUR_RESET} \$2" ;;
+    1) echo -e "\${GREY}[\${COLOUR_RESET}\${RED}FAILED\${COLOUR_RESET}\${GREY}]\${COLOUR_RESET} \$2"; exit 1 ;;
+    2) echo -e "\${GREY}[\${COLOUR_RESET}\${GREEN} INFO \${COLOUR_RESET}\${GREY}]\${COLOUR_RESET} \$2" ;;
+    3) echo -e "\${GREY}[\${COLOUR_RESET}\${YELLOW}NOTICE\${COLOUR_RESET}\${GREY}]\${COLOUR_RESET} \$2" ;;
+  esac
+}
+
+CB_YES=\${CB_YES:-0}
+Confirm() {
+  local msg="\$1"
+  [[ "\$CB_YES" == "1" ]] && return 1
+  printf "  %s [y/N] " "\$msg"
+  read -r r < /dev/tty
+  case "\$r" in [yY][eE][sS]|[yY]) return 0 ;; *) return 1 ;; esac
+}
+
+INSTALLED_MODE="${mode}"
+HEADER
+
+  # Embed mode-specific variables
+  if [[ "$mode" == "docker" ]]; then
+    cat >> "$tmp" <<DOCKER_VARS
+CB_CONTAINER="${CB_CONTAINER}"
+CB_IMAGE="${CB_IMAGE}"
+CB_VOLUME="${CB_VOLUME}"
+CB_TLS="${CB_TLS}"
+CB_HOSTNAME="${CB_HOSTNAME}"
+CB_CADDY_CONTAINER="${CB_CADDY_CONTAINER}"
+CB_CADDY_DATA_VOLUME="${CB_CADDY_DATA_VOLUME}"
+CB_CADDY_CONFIG_VOLUME="${CB_CADDY_CONFIG_VOLUME}"
+CB_NETWORK="${CB_NETWORK}"
+CB_CA_SYSTEM_NAME="${CB_CA_SYSTEM_NAME}"
+CB_CA_NSS_NAME="${CB_CA_NSS_NAME}"
+CB_CONFIG_DIR="${CB_CONFIG_DIR}"
+DOCKER_VARS
+  fi
+
+  # Uninstall logic — single-quote heredoc so no expansion happens here
+  cat >> "$tmp" << 'UNINSTALL_BODY'
+
+echo ""
+echo "  Circuit Breaker Uninstaller"
+echo "  ─────────────────────────────────────────────────────"
+echo ""
+
+stop_systemd() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled circuit-breaker &>/dev/null; then
+    Show 2 "Stopping systemd service..."
+    sudo systemctl stop circuit-breaker 2>/dev/null || true
+    sudo systemctl disable circuit-breaker 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/circuit-breaker.service
+    sudo systemctl daemon-reload
+    Show 0 "systemd service removed."
+  fi
+}
+
+if [[ "$INSTALLED_MODE" == "docker" ]]; then
+
+  stop_systemd
+
+  Show 2 "Stopping Docker container: $CB_CONTAINER"
+  docker stop "$CB_CONTAINER" 2>/dev/null || true
+  docker rm   "$CB_CONTAINER" 2>/dev/null || true
+  Show 0 "Container removed."
+
+  if Confirm "Remove Docker volume '$CB_VOLUME' (all data)?"; then
+    docker volume rm "$CB_VOLUME" 2>/dev/null || true
+    Show 0 "Volume removed."
+  else
+    Show 3 "Volume '$CB_VOLUME' kept."
+  fi
+
+  if Confirm "Remove Docker image '$CB_IMAGE'?"; then
+    docker rmi "$CB_IMAGE" 2>/dev/null || true
+    Show 0 "Image removed."
+  fi
+
+  # TLS cleanup
+  if [[ -n "$CB_TLS" ]]; then
+    Show 2 "Removing Caddy container..."
+    docker stop "$CB_CADDY_CONTAINER" 2>/dev/null || true
+    docker rm   "$CB_CADDY_CONTAINER" 2>/dev/null || true
+    docker volume rm "$CB_CADDY_DATA_VOLUME" "$CB_CADDY_CONFIG_VOLUME" 2>/dev/null || true
+    docker network rm "$CB_NETWORK" 2>/dev/null || true
+    Show 0 "Caddy removed."
+
+    # Remove system CA
+    sudo rm -f "/etc/pki/ca-trust/source/anchors/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    sudo rm -f "/usr/local/share/ca-certificates/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    sudo rm -f "/etc/ca-certificates/trust-source/anchors/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    command -v update-ca-trust        >/dev/null 2>&1 && sudo update-ca-trust        || true
+    command -v update-ca-certificates >/dev/null 2>&1 && sudo update-ca-certificates || true
+    Show 0 "System CA removed."
+
+    # Remove NSS entry
+    if command -v certutil >/dev/null 2>&1; then
+      certutil -d sql:"$HOME/.pki/nssdb" -D -n "$CB_CA_NSS_NAME" 2>/dev/null || true
+      Show 0 "Browser CA removed."
+    fi
+
+    # /etc/hosts
+    if grep -q "$CB_HOSTNAME" /etc/hosts 2>/dev/null; then
+      sudo sed -i "/$CB_HOSTNAME/d" /etc/hosts
+      Show 0 "Removed '$CB_HOSTNAME' from /etc/hosts."
+    fi
+  fi
+
+  # Config dir
+  if [[ -d "$CB_CONFIG_DIR" ]]; then
+    if Confirm "Remove config directory '$CB_CONFIG_DIR' (contains API token)?"; then
+      rm -rf "$CB_CONFIG_DIR"
+      Show 0 "Config directory removed."
+    fi
+  fi
+
+elif [[ "$INSTALLED_MODE" == "binary" ]]; then
+
+  stop_systemd
+
+  sudo rm -f /usr/local/bin/circuit-breaker
+  Show 0 "Binary removed."
+
+  sudo rm -rf /etc/circuit-breaker/
+  Show 0 "Config removed."
+
+  sudo rm -f /usr/share/applications/circuit-breaker.desktop
+  sudo rm -f /usr/share/icons/hicolor/256x256/apps/circuit-breaker.png
+  rm -f "$HOME/Desktop/circuit-breaker.desktop" 2>/dev/null || true
+  gtk-update-icon-cache /usr/share/icons/hicolor/ 2>/dev/null || true
+  Show 0 "Desktop entry and icon removed."
+
+  if Confirm "Remove data (/var/lib/circuit-breaker) and logs (/var/log/circuit-breaker)?"; then
+    sudo rm -rf /var/lib/circuit-breaker /var/log/circuit-breaker
+    Show 0 "Data and logs removed."
+  else
+    Show 3 "Data and logs kept at /var/lib/circuit-breaker and /var/log/circuit-breaker"
+  fi
+
+  if id circuitbreaker &>/dev/null; then
+    sudo userdel circuitbreaker 2>/dev/null || true
+    Show 0 "System user 'circuitbreaker' removed."
+  fi
+
+fi
+
+sudo rm -f /usr/local/bin/uninstall-circuit-breaker
+Show 0 "Circuit Breaker uninstalled."
+UNINSTALL_BODY
+
+  sudo install -Dm755 "$tmp" "$dest"
+  rm -f "$tmp"
+  Show 0 "Uninstall script installed to $dest"
+}
+
+###############################################################################
+# MODE SELECTION
+###############################################################################
+
+Prompt_Mode() {
+  # Skip if set by flag or environment
+  if [[ -n "$CB_MODE" ]]; then
+    Show 0 "Install mode: $CB_MODE"
+    return
+  fi
+
+  # Non-interactive default
+  if [[ "$CB_YES" == "1" ]]; then
+    CB_MODE="docker"
+    Show 0 "Non-interactive mode: defaulting to Docker install."
+    return
+  fi
+
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}How would you like to install Circuit Breaker?${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  ${aCOLOUR[1]}[1]${COLOUR_RESET} Docker container  ${aCOLOUR[2]}(recommended — no build dependencies required)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[2]${COLOUR_RESET} Native binary     ${aCOLOUR[2]}(systemd service, FHS paths, no Docker required)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[Q]${COLOUR_RESET} Quit"
+  echo ""
+  printf "  Choice [1/2/Q]: "
+  read -r choice < /dev/tty
+  echo ""
+
+  case "$choice" in
+    1)    CB_MODE="docker" ;;
+    2)    CB_MODE="binary" ;;
+    [qQ]) echo "  Exiting."; exit 0 ;;
+    *)    Show 1 "Invalid choice '$choice'. Re-run and enter 1, 2, or Q." ;;
+  esac
+  Show 0 "Install mode: $CB_MODE"
+}
+
+###############################################################################
+# MODE ORCHESTRATORS
+###############################################################################
+
+Install_Docker_Mode() {
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Docker Install${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+
+  Find_Free_Port
+  Check_Docker
+  Generate_API_Token
+  Prompt_TLS
+  if [[ "$CB_TLS" == "1" ]]; then
+    Check_TLS_Ports
+    Setup_TLS
+  fi
+  Pull_And_Run
+  Wait_For_Ready "$CB_PORT"
+  if [[ "$CB_TLS" == "1" ]]; then
+    Start_Caddy
+    Wait_For_Caddy_CA
+    Trust_CA
+  fi
+  Setup_Systemd_Docker
+  Write_Uninstall_Script "docker"
+  Welcome_Banner_Docker
+}
+
+Install_Binary_Mode() {
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Native Binary Install${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+
+  Require_Sudo
+  Download_Binary
+  Create_User_And_Dirs
+
+  # For binary mode, write config + token to /etc/circuit-breaker/
+  CB_CONFIG_DIR="/etc/circuit-breaker"
+  Generate_Config
+  Generate_API_Token
+
+  Setup_Systemd_Binary
+  Setup_Desktop
+  Wait_For_Ready 8080
+  Write_Uninstall_Script "binary"
+  Welcome_Banner_Binary
+}
+
+###############################################################################
+# WELCOME BANNERS
+###############################################################################
+
+Welcome_Banner_Docker() {
   local public_ip=""
   public_ip=$(curl -4 -sf --connect-timeout 4 https://ipinfo.io/ip 2>/dev/null \
               || curl -4 -sf --connect-timeout 4 https://ifconfig.me  2>/dev/null \
               || true)
-  # Discard anything that doesn't look like an IPv4 address
   if ! [[ "$public_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     public_ip=""
   fi
 
   echo ""
   echo -e "$GREEN_LINE"
-  echo -e " ${aCOLOUR[1]}Circuit Breaker is running at:${COLOUR_RESET}"
+  echo -e " ${aCOLOUR[1]}Circuit Breaker is running!${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}Mode    :${COLOUR_RESET} Docker"
+  echo -e "  ${aCOLOUR[2]}Image   :${COLOUR_RESET} $CB_IMAGE"
+  echo -e "  ${aCOLOUR[2]}Volume  :${COLOUR_RESET} $CB_VOLUME"
+  echo -e "  ${aCOLOUR[2]}Service :${COLOUR_RESET} systemctl status circuit-breaker"
+  echo ""
 
-  # HTTPS address first if TLS is enabled
   if [[ "$CB_TLS" == "1" ]]; then
     echo -e "$GREEN_BULLET ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET}  ${aCOLOUR[2]}← HTTPS via Caddy${COLOUR_RESET}"
   fi
-
-  # Public IP first (most relevant on VPS/cloud)
   if [[ -n "$public_ip" ]]; then
     echo -e "$GREEN_BULLET http://${public_ip}:${CB_PORT}  ${aCOLOUR[2]}← public / VPS address${COLOUR_RESET}"
   fi
-
-  # Private LAN addresses
   if command -v ip >/dev/null 2>&1; then
     while IFS= read -r ip_addr; do
-      # Skip the address if it matches the public IP already printed
       [[ "$ip_addr" == "$public_ip" ]] && continue
       echo -e "$GREEN_BULLET http://${ip_addr}:${CB_PORT}"
     done < <(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
   fi
-
-  # Always show localhost as a fallback
   echo -e "$GREEN_BULLET http://localhost:${CB_PORT}"
-
-  echo ""
-  if [[ "$CB_TLS" == "1" ]]; then
-    echo -e "  Open your browser and visit ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET}"
-  else
-    echo -e "  Open your browser and visit the address above."
-  fi
-  echo -e "  On first launch, the setup wizard will guide you through creating"
-  echo -e "  your admin account and personalizing your dashboard."
-  echo -e "$GREEN_LINE"
   echo ""
   if [[ -f "$CB_CONFIG_DIR/env" ]]; then
     echo -e "  ${aCOLOUR[2]}API Token : stored in ${CB_CONFIG_DIR}/env${COLOUR_RESET}"
@@ -700,7 +1243,38 @@ Welcome_Banner() {
   echo ""
   echo -e "  To stop      : docker stop $CB_CONTAINER"
   echo -e "  To start     : docker start $CB_CONTAINER"
-  echo -e "  To uninstall : curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash"
+  echo -e "  To uninstall : sudo uninstall-circuit-breaker"
+  echo -e "${COLOUR_RESET}"
+}
+
+Welcome_Banner_Binary() {
+  local ver
+  ver=$(/usr/local/bin/circuit-breaker --version 2>/dev/null | head -1 || echo "$CB_VERSION")
+
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Circuit Breaker is running!${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}Mode    :${COLOUR_RESET} Native binary"
+  echo -e "  ${aCOLOUR[2]}Version :${COLOUR_RESET} ${ver}"
+  echo -e "  ${aCOLOUR[2]}Binary  :${COLOUR_RESET} /usr/local/bin/circuit-breaker"
+  echo -e "  ${aCOLOUR[2]}Config  :${COLOUR_RESET} /etc/circuit-breaker/config.yaml"
+  echo -e "  ${aCOLOUR[2]}Data    :${COLOUR_RESET} /var/lib/circuit-breaker"
+  echo -e "  ${aCOLOUR[2]}Service :${COLOUR_RESET} systemctl status circuit-breaker"
+  echo ""
+  echo -e "$GREEN_BULLET ${aCOLOUR[0]}http://localhost:8080${COLOUR_RESET}"
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r ip_addr; do
+      echo -e "$GREEN_BULLET http://${ip_addr}:8080"
+    done < <(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+  fi
+  echo ""
+  echo -e "  ${aCOLOUR[2]}GitHub    : https://github.com/BlkLeg/circuitbreaker"
+  echo -e "  ${aCOLOUR[2]}Docs      : https://blkleg.github.io/circuitbreaker${COLOUR_RESET}"
+  echo ""
+  echo -e "  To manage : systemctl start|stop|restart circuit-breaker"
+  echo -e "  To uninstall : sudo uninstall-circuit-breaker"
   echo -e "${COLOUR_RESET}"
 }
 
@@ -708,55 +1282,23 @@ Welcome_Banner() {
 # MAIN
 ###############################################################################
 
-Print_Header
+main() {
+  parse_flags "$@"
 
-# Step 0: Detect region
-Get_Region
+  Print_Header
+  Get_Region
+  Check_Arch
+  Check_OS
+  Check_Memory
+  Check_Disk
 
-# Step 1: Architecture
-Check_Arch
+  Prompt_Mode
 
-# Step 2: OS
-Check_OS
+  case "$CB_MODE" in
+    docker) Install_Docker_Mode ;;
+    binary) Install_Binary_Mode ;;
+    *) Show 1 "Unknown install mode: '$CB_MODE'. Use --mode docker or --mode binary." ;;
+  esac
+}
 
-# Step 3: Memory
-Check_Memory
-
-# Step 4: Disk
-Check_Disk
-
-# Step 5: Port
-Find_Free_Port
-
-# Step 6: Docker
-Check_Docker
-
-# Step 7: Generate API master token
-Generate_API_Token
-
-# Step 8: TLS prompt
-Prompt_TLS
-
-# Step 9: TLS pre-flight (network, Caddyfile, pull Caddy image)
-if [[ "$CB_TLS" == "1" ]]; then
-  Check_TLS_Ports
-fi
-if [[ "$CB_TLS" == "1" ]]; then
-  Setup_TLS
-fi
-
-# Step 10: Pull image and start container
-Pull_And_Run
-
-# Step 11: Wait for health
-Wait_For_Ready
-
-# Step 12: Start Caddy and trust CA
-if [[ "$CB_TLS" == "1" ]]; then
-  Start_Caddy
-  Wait_For_Caddy_CA
-  Trust_CA
-fi
-
-# Step 13: Print welcome
-Welcome_Banner
+main "$@"

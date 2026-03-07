@@ -127,16 +127,19 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh trust-ca preflight
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh trust-ca preflight dev-stop-install
 
 lock: ## Regenerate backend/requirements.txt from poetry.lock
 	@echo "Regenerating backend/requirements.txt from poetry.lock..."
 	@python3 scripts/gen_requirements.py
 	@echo "✅ requirements.txt updated — commit the file alongside poetry.lock."
 
-docker-build: ## Build primary beta image with tag 'circuit-breaker:beta'
-	@echo "Building circuit-breaker:beta image..."
+docker-build: ## Build unified beta image + compose services from local source
+	@echo "Building circuit-breaker:beta (unified image)..."
 	DOCKER_BUILDKIT=1 docker build -t circuit-breaker:beta .
+	@echo "Building compose services (cb-backend, cb-frontend)..."
+	DOCKER_BUILDKIT=1 docker compose build
+	@echo "✅ All images built from local source."
 
 setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx builder is active
 	@echo "Registering QEMU binfmt handlers for multi-arch emulation..."
@@ -146,7 +149,17 @@ setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx bu
 	  || docker buildx use cb-multiarch
 	@echo "✅ QEMU + buildx ready."
 
-compose-up: ## Rebuild and start docker compose stack (port 8080)
+dev-stop-install: ## Stop the install-script-deployed container if running (avoids port/name conflicts)
+	@if docker inspect circuit-breaker >/dev/null 2>&1; then \
+		echo "Stopping install-script container 'circuit-breaker'..."; \
+		docker stop circuit-breaker >/dev/null 2>&1 || true; \
+		echo "✅ Stopped. Data volume 'circuit-breaker-data' is preserved."; \
+		echo "   Restart later with: docker start circuit-breaker"; \
+	else \
+		echo "No install-script container found — nothing to stop."; \
+	fi
+
+compose-up: dev-stop-install ## Rebuild and start docker compose stack (stops install-script container first)
 	@echo "Starting docker-compose stack..."
 	DOCKER_BUILDKIT=1 docker compose up --build -d
 
@@ -159,7 +172,7 @@ compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
 	docker compose down -v
 	@echo "✅ Stack stopped and volumes removed."
 
-compose-fresh: ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
+compose-fresh: dev-stop-install ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."
 	docker compose down -v
 	DOCKER_BUILDKIT=1 docker compose up --build -d

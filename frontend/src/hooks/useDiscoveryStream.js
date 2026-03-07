@@ -36,28 +36,28 @@ export const discoveryEmitter = mitt();
 
 const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY ?? 'cb_token';
 
-const BACKOFF_BASE       = 2000;   // 2 seconds
-const BACKOFF_MAX        = 30000;  // 30 seconds
+const BACKOFF_BASE = 2000; // 2 seconds
+const BACKOFF_MAX = 30000; // 30 seconds
 const BACKOFF_MULTIPLIER = 1.5;
-const CAP_RETRY_DELAY    = 60000;  // 60 seconds — wait longer when the cap is hit
+const CAP_RETRY_DELAY = 60000; // 60 seconds — wait longer when the cap is hit
 
 // Errors that should not trigger an immediate reconnect loop.
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
 function getWsUrl() {
   const proto = globalThis.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host  = globalThis.location.host;
+  const host = globalThis.location.host;
   return `${proto}://${host}/api/v1/discovery/stream`;
 }
 
 export function useDiscoveryStream() {
-  const [connected, setConnected]       = useState(false);
+  const [connected, setConnected] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
-  const wsRef             = useRef(null);
-  const attemptRef        = useRef(0);
-  const retryTimerRef     = useRef(null);
-  const intentionalRef    = useRef(false);  // true when we closed on purpose (auth fail)
+  const wsRef = useRef(null);
+  const attemptRef = useRef(0);
+  const retryTimerRef = useRef(null);
+  const intentionalRef = useRef(false); // true when we closed on purpose (auth fail)
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) {
@@ -70,9 +70,11 @@ export function useDiscoveryStream() {
     clearRetry();
 
     // Don't open a second socket if one is already open/connecting
-    if (wsRef.current &&
-        (wsRef.current.readyState === WebSocket.OPEN ||
-         wsRef.current.readyState === WebSocket.CONNECTING)) {
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN ||
+        wsRef.current.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
@@ -115,7 +117,7 @@ export function useDiscoveryStream() {
       // Connection cap hit — back off for longer before retrying.
       if (msg.error === 'connection_limit_exceeded') {
         setConnected(false);
-        intentionalRef.current = false;  // allow retry after delay
+        intentionalRef.current = false; // allow retry after delay
         ws.close();
         retryTimerRef.current = setTimeout(() => {
           attemptRef.current = 0;
@@ -157,6 +159,17 @@ export function useDiscoveryStream() {
             total: msg.total,
           });
           break;
+        case 'scan_log_entry':
+          discoveryEmitter.emit('scan:log_entry', {
+            job_id: msg.job_id,
+            log_id: msg.log_id,
+            timestamp: msg.timestamp,
+            level: msg.level,
+            phase: msg.phase,
+            message: msg.message,
+            details: msg.details,
+          });
+          break;
         case 'result_added':
           discoveryEmitter.emit('result:added', msg.result);
           setPendingCount((c) => c + 1);
@@ -180,10 +193,7 @@ export function useDiscoveryStream() {
 
       // Exponential backoff reconnect
       const attempt = attemptRef.current;
-      const delay   = Math.min(
-        BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, attempt),
-        BACKOFF_MAX
-      );
+      const delay = Math.min(BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, attempt), BACKOFF_MAX);
       attemptRef.current = attempt + 1;
       retryTimerRef.current = setTimeout(connect, delay);
     };
@@ -201,8 +211,8 @@ export function useDiscoveryStream() {
     const onVisibility = () => {
       if (document.visibilityState === 'visible' && !intentionalRef.current) {
         const ws = wsRef.current;
-        const isActive = ws &&
-          (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+        const isActive =
+          ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
         if (!isActive) {
           attemptRef.current = 0;
           connect();

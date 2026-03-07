@@ -1,19 +1,22 @@
-
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
-from app.db.models import ComputeNetwork, EntityTag, HardwareNetwork, Network, Tag
+from app.db.models import ComputeNetwork, EntityTag, HardwareNetwork, Network, NetworkPeer, Tag
 from app.schemas.networks import NetworkCreate, NetworkUpdate
 
 
 def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[str]) -> None:
-    existing = db.execute(
-        select(EntityTag).where(
-            EntityTag.entity_type == entity_type,
-            EntityTag.entity_id == entity_id,
+    existing = (
+        db.execute(
+            select(EntityTag).where(
+                EntityTag.entity_type == entity_type,
+                EntityTag.entity_id == entity_id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for et in existing:
         db.delete(et)
     db.flush()
@@ -28,12 +31,16 @@ def _sync_tags(db: Session, entity_type: str, entity_id: int, tag_names: list[st
 
 
 def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
-    rows = db.execute(
-        select(EntityTag).where(
-            EntityTag.entity_type == entity_type,
-            EntityTag.entity_id == entity_id,
+    rows = (
+        db.execute(
+            select(EntityTag).where(
+                EntityTag.entity_type == entity_type,
+                EntityTag.entity_id == entity_id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [row.tag.name for row in rows]
 
 
@@ -58,14 +65,15 @@ def list_networks(
     if cidr:
         stmt = stmt.where(Network.cidr.ilike(f"%{cidr}%"))
     if q:
-        stmt = stmt.where(
-            or_(Network.name.ilike(f"%{q}%"), Network.description.ilike(f"%{q}%"))
-        )
+        stmt = stmt.where(or_(Network.name.ilike(f"%{q}%"), Network.description.ilike(f"%{q}%")))
     if gateway_hardware_id is not None:
         stmt = stmt.where(Network.gateway_hardware_id == gateway_hardware_id)
     if tag:
         stmt = (
-            stmt.join(EntityTag, (EntityTag.entity_type == "network") & (EntityTag.entity_id == Network.id))
+            stmt.join(
+                EntityTag,
+                (EntityTag.entity_type == "network") & (EntityTag.entity_id == Network.id),
+            )
             .join(Tag, Tag.id == EntityTag.tag_id)
             .where(Tag.name == tag)
         )
@@ -117,9 +125,17 @@ def delete_network(db: Session, network_id: int) -> None:
     if net is None:
         raise ValueError(f"Network {network_id} not found")
     # Cascade-remove join-table memberships (safe to auto-remove)
-    for row in db.execute(select(ComputeNetwork).where(ComputeNetwork.network_id == network_id)).scalars().all():
+    for row in (
+        db.execute(select(ComputeNetwork).where(ComputeNetwork.network_id == network_id))
+        .scalars()
+        .all()
+    ):
         db.delete(row)
-    for row in db.execute(select(HardwareNetwork).where(HardwareNetwork.network_id == network_id)).scalars().all():
+    for row in (
+        db.execute(select(HardwareNetwork).where(HardwareNetwork.network_id == network_id))
+        .scalars()
+        .all()
+    ):
         db.delete(row)
     db.flush()
     _sync_tags(db, "network", net.id, [])
@@ -138,7 +154,9 @@ def list_compute_members(db: Session, network_id: int) -> list[ComputeNetwork]:
     )
 
 
-def add_compute_member(db: Session, network_id: int, compute_id: int, ip_address: str | None) -> ComputeNetwork:
+def add_compute_member(
+    db: Session, network_id: int, compute_id: int, ip_address: str | None
+) -> ComputeNetwork:
     if db.get(Network, network_id) is None:
         raise ValueError(f"Network {network_id} not found")
     cn = ComputeNetwork(network_id=network_id, compute_id=compute_id, ip_address=ip_address)
@@ -172,8 +190,11 @@ def list_hardware_members(db: Session, network_id: int) -> list[HardwareNetwork]
     )
 
 
-def add_hardware_member(db: Session, network_id: int, hardware_id: int, ip_address: str | None) -> HardwareNetwork:
+def add_hardware_member(
+    db: Session, network_id: int, hardware_id: int, ip_address: str | None
+) -> HardwareNetwork:
     from app.db.models import Network as _Network  # avoid circular at top-level
+
     if db.get(_Network, network_id) is None:
         raise ValueError(f"Network {network_id} not found")
     hn = HardwareNetwork(network_id=network_id, hardware_id=hardware_id, ip_address=ip_address)
@@ -194,3 +215,57 @@ def remove_hardware_member(db: Session, network_id: int, hardware_id: int) -> No
         raise ValueError("Hardware network membership not found")
     db.delete(hn)
     db.commit()
+
+
+# ── Network peering ──────────────────────────────────────────────────────────
+
+
+def list_peers(db: Session, network_id: int) -> list[NetworkPeer]:
+    return list(
+        db.execute(
+            select(NetworkPeer).where(
+                or_(NetworkPeer.network_a_id == network_id, NetworkPeer.network_b_id == network_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def add_peer(db: Session, network_id: int, peer_id: int) -> NetworkPeer:
+    if network_id == peer_id:
+        raise ValueError("A network cannot peer with itself.")
+    if db.get(Network, network_id) is None:
+        raise ValueError(f"Network {network_id} not found.")
+    if db.get(Network, peer_id) is None:
+        raise ValueError(f"Network {peer_id} not found.")
+    a_id, b_id = min(network_id, peer_id), max(network_id, peer_id)
+    existing = db.execute(
+        select(NetworkPeer).where(
+            NetworkPeer.network_a_id == a_id, NetworkPeer.network_b_id == b_id
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+    peer = NetworkPeer(network_a_id=a_id, network_b_id=b_id)
+    db.add(peer)
+    db.commit()
+    db.refresh(peer)
+    return peer
+
+
+def remove_peer(db: Session, network_id: int, peer_id: int) -> None:
+    a_id, b_id = min(network_id, peer_id), max(network_id, peer_id)
+    peer = db.execute(
+        select(NetworkPeer).where(
+            NetworkPeer.network_a_id == a_id, NetworkPeer.network_b_id == b_id
+        )
+    ).scalar_one_or_none()
+    if peer is None:
+        raise ValueError("Network peer relationship not found.")
+    db.delete(peer)
+    db.commit()
+
+
+def list_all_peers(db: Session) -> list[NetworkPeer]:
+    return list(db.execute(select(NetworkPeer)).scalars().all())

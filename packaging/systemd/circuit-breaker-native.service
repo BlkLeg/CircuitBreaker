@@ -1,0 +1,18 @@
+[Unit]
+Description=Circuit Breaker (Native)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=circuitbreaker
+Group=circuitbreaker
+WorkingDirectory=/var/lib/circuit-breaker
+EnvironmentFile=-/etc/circuit-breaker/env
+ExecStart=/usr/local/bin/circuit-breaker --config /etc/circuit-breaker/config.yaml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

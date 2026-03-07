@@ -37,6 +37,7 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
         encrypted_community = vault.encrypt(payload.snmp_community)
 
     scan_types_json = json.dumps(payload.scan_types)
+    docker_network_types_json = json.dumps(payload.docker_network_types)
     now_iso = utcnow_iso()
 
     profile = DiscoveryProfile(
@@ -47,10 +48,13 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
         snmp_community_encrypted=encrypted_community,
         snmp_version=payload.snmp_version,
         snmp_port=payload.snmp_port,
+        docker_network_types=docker_network_types_json,
+        docker_port_scan=1 if payload.docker_port_scan else 0,
+        docker_socket_path=payload.docker_socket_path,
         schedule_cron=payload.schedule_cron,
         enabled=1 if payload.enabled else 0,
         created_at=now_iso,
-        updated_at=now_iso
+        updated_at=now_iso,
     )
 
     db.add(profile)
@@ -65,7 +69,7 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
         entity_id=profile.id,
         entity_name=profile.name,
         actor_name=actor,
-        severity="info"
+        severity="info",
     )
 
     if profile.schedule_cron and profile.enabled:
@@ -74,7 +78,9 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
     return profile
 
 
-def update_profile(db: Session, profile_id: int, payload: DiscoveryProfileUpdate, actor: str) -> DiscoveryProfile:
+def update_profile(
+    db: Session, profile_id: int, payload: DiscoveryProfileUpdate, actor: str
+) -> DiscoveryProfile:
     profile = get_profile(db, profile_id)
     vault = _get_vault()
     old_cron = profile.schedule_cron
@@ -86,6 +92,10 @@ def update_profile(db: Session, profile_id: int, payload: DiscoveryProfileUpdate
     for field, value in data.items():
         if field == "scan_types":
             profile.scan_types = json.dumps(value)
+        elif field == "docker_network_types":
+            profile.docker_network_types = json.dumps(value)
+        elif field == "docker_port_scan":
+            profile.docker_port_scan = 1 if value else 0
         elif field == "snmp_community":
             if value is not None:
                 if value == "":
@@ -113,7 +123,7 @@ def update_profile(db: Session, profile_id: int, payload: DiscoveryProfileUpdate
         entity_id=profile.id,
         entity_name=profile.name,
         actor_name=actor,
-        severity="info"
+        severity="info",
     )
 
     if changed_schedule:
@@ -124,13 +134,14 @@ def update_profile(db: Session, profile_id: int, payload: DiscoveryProfileUpdate
 
 def delete_profile(db: Session, profile_id: int, actor: str) -> None:
     profile = get_profile(db, profile_id)
-    
+
     # Must nullify foreign keys first based on cascading rules (Assuming cascade in db not setup automatically for now, but jobs is set back_populates)
     from app.db.models import ScanJob
+
     jobs = db.query(ScanJob).filter(ScanJob.profile_id == profile_id).all()
     for job in jobs:
         job.profile_id = None
-        
+
     db.delete(profile)
     db.commit()
 
@@ -142,7 +153,7 @@ def delete_profile(db: Session, profile_id: int, actor: str) -> None:
         entity_id=profile_id,
         entity_name=profile.name,
         actor_name=actor,
-        severity="info"
+        severity="info",
     )
 
     reload_discovery_jobs(db)

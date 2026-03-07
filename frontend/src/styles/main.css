@@ -253,40 +253,26 @@ body {
 /* Dock — transparent scroll rail; each item floats independently */
 .dock {
   position: fixed;
-  bottom: 20px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  padding: 4px 0;
-  /* show ~5 pills; 6th peeks to hint scrollability */
-  max-width: calc(5 * 80px + 4 * 8px + 32px);
-  overflow-x: auto;
-  -ms-overflow-style: none;
-  background: transparent;
-  border: none;
-  box-shadow: none;
+  gap: 4px;
+  padding: 8px 14px 10px;
+  background: rgba(13, 17, 23, 0.72);
+  background: color-mix(in srgb, var(--color-surface-alt) 72%, transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom-color: rgba(255, 255, 255, 0.04);
+  border-radius: 22px;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.55),
+    0 2px 8px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   z-index: 100;
-  /* Fade edges so scrolled-off pills dissolve instead of hard-clipping */
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent 0%,
-    black 48px,
-    black calc(100% - 48px),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent 0%,
-    black 48px,
-    black calc(100% - 48px),
-    transparent 100%
-  );
-}
-
-.dock::-webkit-scrollbar {
-  display: none;
+  overflow: visible;
 }
 
 /* Status indicator pulsing */
@@ -496,88 +482,101 @@ body {
   border: 2px solid var(--color-surface);
 }
 
-/* Each nav item is its own floating pill */
+/* ── macOS-style dock icon wrappers ──────────────────────────────────── */
 .dock-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 10px 18px;
-  border-radius: 18px;
-  min-width: 72px;
+  justify-content: center;
+  /* Base icon size; scaling handled via --dock-scale transform */
+  width: 48px;
+  height: 48px;
   flex-shrink: 0;
+  border-radius: 14px;
   color: var(--color-text-muted);
   text-decoration: none;
   cursor: pointer;
-  transition:
-    color 0.18s,
-    background 0.18s,
-    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
-    box-shadow 0.18s;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
   -webkit-user-select: none;
   user-select: none;
-  /* Individual pill glass */
-  background: rgba(13, 17, 23, 0.75); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
-  border: 1px solid rgba(254, 128, 25, 0.1); /* fallback: no color-mix */
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03); /* fallback: no color-mix */
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 color-mix(in srgb, var(--color-surface) 5%, transparent);
-}
-
-.dock-item svg {
+  transform-origin: bottom center;
+  transform: scale(var(--dock-scale, 1));
   transition:
-    transform 0.18s,
-    filter 0.18s;
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.15s;
+  will-change: transform;
+  font: inherit;
 }
 
 .dock-item:hover {
   color: var(--color-text);
-  background: rgba(13, 17, 23, 0.88); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-surface-alt) 88%, transparent);
-  border-color: rgba(254, 128, 25, 0.22); /* fallback: no color-mix */
-  transform: translateY(-4px);
-  box-shadow:
-    0 8px 28px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04); /* fallback: no color-mix */
-  box-shadow:
-    0 8px 28px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 color-mix(in srgb, var(--color-surface) 7%, transparent);
+}
+
+.dock-item svg {
+  transition: filter 0.15s;
+  pointer-events: none;
 }
 
 .dock-item:hover svg {
-  transform: scale(1.12);
-  filter: drop-shadow(0 0 6px rgba(254, 128, 25, 0.4)); /* fallback: no color-mix */
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-primary) 40%, transparent));
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--color-primary) 45%, transparent));
 }
 
+/* Active state: primary color icon + dot indicator */
 .dock-item.active {
   color: var(--color-primary);
-  background: rgba(254, 128, 25, 0.08); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  border-color: rgba(254, 128, 25, 0.38); /* fallback: no color-mix */
-  box-shadow:
-    0 0 14px rgba(254, 128, 25, 0.25),
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04); /* fallback: no color-mix */
-  box-shadow:
-    0 0 14px color-mix(in srgb, var(--color-primary) 25%, transparent),
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 color-mix(in srgb, var(--color-surface) 6%, transparent);
 }
 
 .dock-item.active svg {
-  filter: drop-shadow(0 0 8px rgba(254, 128, 25, 0.65)); /* fallback: no color-mix */
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--color-primary) 65%, transparent));
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--color-primary) 60%, transparent));
+}
+
+/* Active dot below icon */
+.dock-active-dot {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 70%, transparent);
+}
+
+/* Tooltip label above icon */
+.dock-tooltip {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: rgba(13, 17, 23, 0.92);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.15s,
+    transform 0.15s;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+.dock-item:hover .dock-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .dock-item--stub {
@@ -585,22 +584,7 @@ body {
   cursor: not-allowed;
 }
 
-.dock-item--stub:hover {
-  transform: none;
-  background: rgba(13, 17, 23, 0.75); /* fallback: no color-mix */
-  background: color-mix(in srgb, var(--color-surface-alt) 75%, transparent);
-  border-color: rgba(254, 128, 25, 0.1); /* fallback: no color-mix */
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03); /* fallback: no color-mix */
-  box-shadow:
-    0 4px 20px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 color-mix(in srgb, var(--color-surface) 5%, transparent);
-  color: var(--color-text-muted);
-}
-
 .dock-item--stub:hover svg {
-  transform: none;
   filter: none;
 }
 
@@ -608,13 +592,13 @@ body {
 @keyframes jiggle {
   0%,
   100% {
-    transform: rotate(-2.5deg) translateY(0);
+    transform: scale(var(--dock-scale, 1)) rotate(-2.5deg);
   }
   25% {
-    transform: rotate(2.5deg) translateY(-1px);
+    transform: scale(var(--dock-scale, 1)) rotate(2.5deg) translateY(-1px);
   }
   75% {
-    transform: rotate(-2.5deg) translateY(-1px);
+    transform: scale(var(--dock-scale, 1)) rotate(-2.5deg) translateY(-1px);
   }
 }
 
@@ -631,18 +615,18 @@ body {
 
 /* Grip / reorder toggle button */
 .dock-item--grip {
-  background: none;
-  border: none;
-  font: inherit;
-  color: inherit;
-  padding: 0;
-  opacity: 0.4;
-  transition: opacity 0.15s;
+  opacity: 0.45;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
+  width: auto;
+  padding: 0 4px;
+  height: 48px;
 }
 
 .dock-item--grip:hover,
 .dock-item--grip.active {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 .dock-item--grip.active {
@@ -2020,6 +2004,32 @@ body {
   color: var(--color-text-muted);
 }
 
+/* ── Node Context Menu ─────────────────────────────────────────────────── */
+.context-menu {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.context-menu button {
+  background: transparent;
+  border: none;
+  color: var(--color-text);
+}
+
+.context-menu button:hover {
+  background: color-mix(in srgb, var(--color-border) 60%, var(--color-surface));
+  color: var(--color-primary);
+}
+
+.context-menu button:hover svg {
+  color: var(--color-primary);
+}
+
+.context-menu-danger,
+.context-menu-danger svg {
+  color: var(--color-danger) !important;
+}
+
 /* ── Map Page ──────────────────────────────────────────────────────────── */
 .map-page .page-header select {
   background: var(--color-surface);
@@ -3358,44 +3368,9 @@ body {
     padding: calc(var(--header-height) + 16px) 16px 80px;
   }
 
-  /* Dock Mobile View (Fixed Bottom Navigation) */
+  /* Dock Mobile View — hidden on mobile (MobileTabBar takes over) */
   .dock {
-    width: 100%;
-    bottom: 0;
-    max-width: none;
-    padding: 8px 12px;
-    background: rgba(13, 17, 23, 0.95); /* fallback: no color-mix */
-    background: color-mix(in srgb, var(--color-surface) 95%, transparent);
-    -webkit-backdrop-filter: blur(24px);
-    backdrop-filter: blur(24px);
-    border-top: 1px solid var(--color-border);
-    justify-content: space-around;
-    border-radius: 0;
-    overflow-x: visible; /* Prevent scrolling inside the bar on mobile */
-  }
-
-  .dock-item {
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    min-width: 0;
-    flex: 1;
-    border-radius: 8px;
-    padding: 8px 4px;
-    gap: 4px;
-  }
-
-  .dock-item:hover {
-    transform: none;
-    box-shadow: none;
-    background: rgba(255, 255, 255, 0.05);
-  }
-
-  .dock-item.active {
-    box-shadow: none;
-    background: rgba(254, 128, 25, 0.1); /* fallback: no color-mix */
-    background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-    border: none;
+    display: none;
   }
 
   /* Docs Page Layout */

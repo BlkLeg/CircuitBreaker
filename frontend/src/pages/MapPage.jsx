@@ -62,7 +62,18 @@ import {
 // re-rendering every edge when the callback ref changes.
 export const MapEdgeCallbacksContext = React.createContext({ current: null });
 
-import { getDagreLayout, getForceLayout, getTreeLayout } from '../utils/layouts';
+import {
+  getDagreLayout,
+  getForceLayout,
+  getTreeLayout,
+  getHierarchicalNetworkLayout,
+  getRadialLayout,
+  getElkLayeredLayout,
+  getCircularClusterLayout,
+  getGridRackLayout,
+  getConcentricLayout,
+} from '../utils/layouts';
+import MapToolbar from '../components/MapToolbar';
 import { groupNodesIntoCloud, restoreFromCloudView } from '../utils/cloudView';
 
 // ── Node Styles ─────────────────────────────────────────────────────────────
@@ -75,6 +86,8 @@ const NODE_STYLES = {
   network: { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }, // cyan
   misc: { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }, // gray
   external: { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }, // sky blue
+  docker_network: { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }, // docker teal
+  docker_container: { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }, // docker blue
 };
 
 // Per-relation edge accent colours
@@ -89,6 +102,7 @@ const EDGE_COLORS = {
   on_network: '#00d4aa',
   has_storage: '#c47a2a',
   cluster_member: '#a78bfa',
+  peers_with: '#fe8019',
 };
 
 const NODE_TYPE_LABELS = {
@@ -100,7 +114,16 @@ const NODE_TYPE_LABELS = {
   network: 'Network',
   misc: 'Misc',
   external: 'External',
+  docker_network: 'Docker Net',
+  docker_container: 'Container',
 };
+
+// Node types shown as individual toggle chips in the "Show:" bar.
+// Docker sub-types (docker_network / docker_container) are controlled via the
+// single 'docker' include key and rendered separately, so we exclude them here.
+const FILTER_NODE_TYPES = Object.keys(NODE_STYLES).filter(
+  (t) => t !== 'docker_network' && t !== 'docker_container'
+);
 
 const CONNECTION_TYPE_LEGEND = [
   { key: 'ethernet', label: '🔌 Ethernet', color: '#32b89e' },
@@ -1252,6 +1275,7 @@ function MapInternal() {
     network: true,
     misc: true,
     external: true,
+    docker: false,
   });
   // Sub-role filter for hardware nodes (null = show all)
   const [hwRoleFilter, setHwRoleFilter] = useState(null);
@@ -1555,6 +1579,9 @@ function MapInternal() {
             : {}),
           status: n.status || null,
           status_override: n.status_override || null,
+          docker_image: n.docker_image || null,
+          docker_driver: n.docker_driver || null,
+          is_docker: n.type === 'docker_network' || n.type === 'docker_container',
           telemetry_status: n.telemetry_status || 'unknown',
           telemetry_data: n.telemetry_data || null,
           telemetry_last_polled: n.telemetry_last_polled || null,
@@ -1739,18 +1766,9 @@ function MapInternal() {
         return;
       }
 
-      setTimeout(() => {
-        let layout;
+      const baseNodes = cloudViewEnabled ? restoreFromCloudView(nodes) : [...nodes];
 
-        // We must flatten nodes before re-layout if cloud view is on,
-        // but it's simpler to layout the base nodes, then re-apply cloud.
-
-        const baseNodes = cloudViewEnabled ? restoreFromCloudView(nodes) : [...nodes];
-
-        if (engine === 'dagre') layout = getDagreLayout(baseNodes, edges, 'TB');
-        else if (engine === 'force') layout = getForceLayout(baseNodes, edges);
-        else if (engine === 'tree') layout = getTreeLayout(baseNodes, edges);
-
+      const _applyResult = (layout) => {
         if (layout) {
           let finalNodes = layout.nodes;
           if (cloudViewEnabled) {
@@ -1763,9 +1781,37 @@ function MapInternal() {
         setLayoutEngine(engine);
         dirtyRef.current = true;
         setLoading(false);
+      };
+
+      if (engine === 'elk_layered') {
+        getElkLayeredLayout(baseNodes, edges)
+          .then(_applyResult)
+          .catch(() => _applyResult(getDagreLayout(baseNodes, edges, 'LR')));
+        return;
+      }
+
+      setTimeout(() => {
+        let layout;
+        if (engine === 'dagre') layout = getDagreLayout(baseNodes, edges, 'TB');
+        else if (engine === 'force') layout = getForceLayout(baseNodes, edges);
+        else if (engine === 'tree') layout = getTreeLayout(baseNodes, edges);
+        else if (engine === 'hierarchical_network')
+          layout = getHierarchicalNetworkLayout(baseNodes, edges);
+        else if (engine === 'radial') layout = getRadialLayout(baseNodes, edges);
+        else if (engine === 'circular_cluster') layout = getCircularClusterLayout(baseNodes, edges);
+        else if (engine === 'grid_rack') layout = getGridRackLayout(baseNodes, edges);
+        else if (engine === 'concentric') layout = getConcentricLayout(baseNodes, edges);
+        _applyResult(layout);
       }, 50);
     },
     [nodes, edges, setNodes, setEdges, fitView, cloudViewEnabled]
+  );
+
+  const applyPreset = useCallback(
+    (preset) => {
+      applyLayout(preset.layout);
+    },
+    [applyLayout]
   );
 
   const updateNodePos = useCallback(
@@ -2314,7 +2360,7 @@ function MapInternal() {
       const { nodeId, targetId } = data;
       try {
         if (action.startsWith('link_to_')) {
-          await createLinkByNodeIds(nodeId, targetId, true);
+          await createLinkByNodeIds(nodeId, targetId, nodesRef.current);
           toast.success('Nodes linked successfully');
           fetchData();
         } else if (action === 'edit_icon') {
@@ -3393,24 +3439,43 @@ function MapInternal() {
             >
               Show:
             </span>
-            {Object.entries(NODE_STYLES).map(([type, style]) => (
-              <button
-                key={type}
-                onClick={() => setIncludeTypes((prev) => ({ ...prev, [type]: !prev[type] }))}
-                style={{
-                  padding: '3px 8px',
-                  borderRadius: 4,
-                  border: `1px solid ${style.borderColor}`,
-                  background: includeTypes[type] ? style.background : 'transparent',
-                  color: includeTypes[type] ? '#fff' : style.background,
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s',
-                }}
-              >
-                {NODE_TYPE_LABELS[type]}
-              </button>
-            ))}
+            {FILTER_NODE_TYPES.map((type) => {
+              const style = NODE_STYLES[type];
+              return (
+                <button
+                  key={type}
+                  onClick={() => setIncludeTypes((prev) => ({ ...prev, [type]: !prev[type] }))}
+                  style={{
+                    padding: '3px 8px',
+                    borderRadius: 4,
+                    border: `1px solid ${style.borderColor}`,
+                    background: includeTypes[type] ? style.background : 'transparent',
+                    color: includeTypes[type] ? '#fff' : style.background,
+                    fontSize: 11,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {NODE_TYPE_LABELS[type]}
+                </button>
+              );
+            })}
+            {/* Docker toggle — single button controlling both docker_network + docker_container */}
+            <button
+              onClick={() => setIncludeTypes((prev) => ({ ...prev, docker: !prev.docker }))}
+              style={{
+                padding: '3px 8px',
+                borderRadius: 4,
+                border: '1px solid #1cb8d8',
+                background: includeTypes.docker ? '#0b6e8e' : 'transparent',
+                color: includeTypes.docker ? '#fff' : '#1cb8d8',
+                fontSize: 11,
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+            >
+              Docker
+            </button>
 
             {/* Hardware sub-role chips */}
             {includeTypes.hardware && (
@@ -3451,34 +3516,7 @@ function MapInternal() {
               </>
             )}
 
-            {/* Divider */}
-            <span
-              style={{
-                color: 'var(--color-text-muted)',
-                borderLeft: '1px solid var(--color-border)',
-                paddingLeft: 8,
-                fontSize: 11,
-              }}
-            >
-              Layout:
-            </span>
-            <select
-              value={layoutEngine}
-              onChange={(e) => applyLayout(e.target.value)}
-              style={{
-                padding: '5px 10px',
-                borderRadius: 6,
-                border: '1px solid var(--color-border)',
-                background: 'var(--color-bg)',
-                color: 'var(--color-text)',
-                fontSize: 12,
-              }}
-            >
-              <option value="dagre">Dagre (Hierarchical)</option>
-              <option value="force">Force Directed</option>
-              <option value="tree">Tree</option>
-              <option value="manual">Manual / Saved</option>
-            </select>
+            <MapToolbar layout={layoutEngine} onChange={applyLayout} onPreset={applyPreset} />
 
             <button
               onClick={() => setCloudViewEnabled(!cloudViewEnabled)}
@@ -4329,29 +4367,34 @@ function MapInternal() {
                           marginBottom: 10,
                         }}
                       >
-                        {Object.entries(NODE_STYLES).map(([type, style]) => (
-                          <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {Object.entries(NODE_STYLES).map(([type, style]) => {
+                          const isDockerType =
+                            type === 'docker_network' || type === 'docker_container';
+                          const isActive = isDockerType ? includeTypes.docker : includeTypes[type];
+                          return (
                             <div
-                              style={{
-                                width: 10,
-                                height: 10,
-                                background: style.background,
-                                borderRadius: 2,
-                                border: `1px solid ${style.borderColor}`,
-                              }}
-                            />
-                            <span
-                              style={{
-                                textTransform: 'capitalize',
-                                color: includeTypes[type]
-                                  ? 'var(--color-text)'
-                                  : 'var(--color-text-muted)',
-                              }}
+                              key={type}
+                              style={{ display: 'flex', alignItems: 'center', gap: 8 }}
                             >
-                              {type}
-                            </span>
-                          </div>
-                        ))}
+                              <div
+                                style={{
+                                  width: 10,
+                                  height: 10,
+                                  background: style.background,
+                                  borderRadius: 2,
+                                  border: `1px solid ${style.borderColor}`,
+                                }}
+                              />
+                              <span
+                                style={{
+                                  color: isActive ? 'var(--color-text)' : 'var(--color-text-muted)',
+                                }}
+                              >
+                                {NODE_TYPE_LABELS[type] || type}
+                              </span>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       <div

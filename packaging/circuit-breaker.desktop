@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Circuit Breaker
+Comment=Homelab topology, documented.
+Exec=xdg-open http://localhost:8080
+Icon=circuit-breaker
+Terminal=false
+Categories=Network;System;Utility;

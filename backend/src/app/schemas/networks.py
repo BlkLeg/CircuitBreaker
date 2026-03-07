@@ -63,3 +63,17 @@ class HardwareNetworkRead(BaseModel):
     hardware_id: int
     network_id: int
     ip_address: str | None = None
+
+
+class NetworkPeerCreate(BaseModel):
+    peer_network_id: int
+
+
+class NetworkPeerRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    network_a_id: int
+    network_b_id: int
+    relation: str = "peers_with"
+    created_at: datetime

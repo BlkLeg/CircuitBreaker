@@ -29,9 +29,10 @@ import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
 
 // Heavy pages lazy-loaded so their chunks (reactflow/elkjs, md-editor, scan UI)
 // are only downloaded when the user first navigates to those routes.
-const DocsPage      = React.lazy(() => import('./pages/DocsPage'));
-const MapPage       = React.lazy(() => import('./pages/MapPage'));
+const DocsPage = React.lazy(() => import('./pages/DocsPage'));
+const MapPage = React.lazy(() => import('./pages/MapPage'));
 const DiscoveryPage = React.lazy(() => import('./pages/DiscoveryPage'));
+const DiscoveryHistoryPage = React.lazy(() => import('./pages/DiscoveryHistoryPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -39,7 +40,7 @@ function AppInner() {
   const { pendingCount } = useDiscoveryStream();
 
   const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
-  const handleOpenPalette  = useCallback(() => setPaletteOpen(true),  []);
+  const handleOpenPalette = useCallback(() => setPaletteOpen(true), []);
 
   useEffect(() => {
     const handler = (e) => {
@@ -60,21 +61,22 @@ function AppInner() {
       <div className="page-content">
         <ErrorBoundary>
           <React.Suspense fallback={null}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/map" replace />} />
-            <Route path="/hardware" element={<HardwarePage />} />
-            <Route path="/compute-units" element={<ComputeUnitsPage />} />
-            <Route path="/services" element={<ServicesPage />} />
-            <Route path="/storage" element={<StoragePage />} />
-            <Route path="/networks" element={<NetworksPage />} />
-            <Route path="/external-nodes" element={<ExternalNodesPage />} />
-            <Route path="/misc" element={<MiscPage />} />
-            <Route path="/docs" element={<DocsPage />} />
-            <Route path="/map" element={<MapPage />} />
-            <Route path="/logs" element={<LogsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/discovery" element={<DiscoveryPage />} />
-          </Routes>
+            <Routes>
+              <Route path="/" element={<Navigate to="/map" replace />} />
+              <Route path="/hardware" element={<HardwarePage />} />
+              <Route path="/compute-units" element={<ComputeUnitsPage />} />
+              <Route path="/services" element={<ServicesPage />} />
+              <Route path="/storage" element={<StoragePage />} />
+              <Route path="/networks" element={<NetworksPage />} />
+              <Route path="/external-nodes" element={<ExternalNodesPage />} />
+              <Route path="/misc" element={<MiscPage />} />
+              <Route path="/docs" element={<DocsPage />} />
+              <Route path="/map" element={<MapPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/discovery" element={<DiscoveryPage />} />
+              <Route path="/discovery/history" element={<DiscoveryHistoryPage />} />
+            </Routes>
           </React.Suspense>
         </ErrorBoundary>
       </div>
@@ -104,7 +106,8 @@ function AppRoutes() {
     if (!background) setBootstrapLoading(true);
     if (background) setIsRetrying(true);
 
-    authApi.bootstrapStatus()
+    authApi
+      .bootstrapStatus()
       .then((res) => {
         setNeedsBootstrap(Boolean(res.data?.needs_bootstrap));
         setBootstrapError('');
@@ -212,15 +215,15 @@ function App() {
   return (
     <I18nextProvider i18n={i18n}>
       <BrowserRouter>
-      <SettingsProvider>
-      <TimezoneProvider>
-      <AuthProvider>
-      <ToastProvider>
-        <AppRoutes />
-      </ToastProvider>
-      </AuthProvider>
-      </TimezoneProvider>
-      </SettingsProvider>
+        <SettingsProvider>
+          <TimezoneProvider>
+            <AuthProvider>
+              <ToastProvider>
+                <AppRoutes />
+              </ToastProvider>
+            </AuthProvider>
+          </TimezoneProvider>
+        </SettingsProvider>
       </BrowserRouter>
     </I18nextProvider>
   );

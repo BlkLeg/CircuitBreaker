@@ -3,14 +3,31 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
-import { computeUnitsApi, networksApi, servicesApi, hardwareApi, storageApi } from '../../api/client';
-import { Server, Layers, ExternalLink, Database, Wifi, HardDrive, Router, Cable, Link } from 'lucide-react';
+import {
+  computeUnitsApi,
+  networksApi,
+  servicesApi,
+  hardwareApi,
+  storageApi,
+} from '../../api/client';
+import {
+  Server,
+  Layers,
+  ExternalLink,
+  Database,
+  Wifi,
+  HardDrive,
+  Router,
+  Cable,
+  Link,
+} from 'lucide-react';
 import { getVendorIcon } from '../../icons/vendorIcons';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import { IconImg } from '../common/IconPickerModal';
 import { useSettings } from '../../context/SettingsContext';
 import { HARDWARE_ROLES } from '../../config/hardwareRoles';
 import TelemetryPanel from '../TelemetryPanel';
+import VulnerabilityPanel from './VulnerabilityPanel';
 import PortEditor from './PortEditor';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
@@ -29,7 +46,10 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   const fetchData = useCallback(async () => {
     if (!hardware) return;
     try {
-      const isNetworkingDevice = hardware.role === 'router' || hardware.role === 'access_point' || hardware.role === 'switch';
+      const isNetworkingDevice =
+        hardware.role === 'router' ||
+        hardware.role === 'access_point' ||
+        hardware.role === 'switch';
       const fetches = [
         computeUnitsApi.list({ hardware_id: hardware.id }),
         hardwareApi.getNetworkMemberships(hardware.id),
@@ -38,9 +58,11 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         hardwareApi.getClusters(hardware.id),
       ];
       if (isNetworkingDevice) fetches.push(hardwareApi.getPorts(hardware.id));
-      if (hardware.role === 'router') fetches.push(networksApi.list({ gateway_hardware_id: hardware.id }));
-      
-      const [cuRes, memRes, svcRes, stRes, clusterRes, portsRes, routedRes] = await Promise.all(fetches);
+      if (hardware.role === 'router')
+        fetches.push(networksApi.list({ gateway_hardware_id: hardware.id }));
+
+      const [cuRes, memRes, svcRes, stRes, clusterRes, portsRes, routedRes] =
+        await Promise.all(fetches);
       setComputeUnits(cuRes.data);
       setDirectMemberships(memRes.data);
       setHwServices(svcRes.data);
@@ -53,8 +75,12 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
     }
   }, [hardware]);
 
-  useEffect(() => { if (isOpen) fetchData(); }, [isOpen, fetchData]);
-  useEffect(() => { if (isOpen) setActiveTab('overview'); }, [isOpen]);
+  useEffect(() => {
+    if (isOpen) fetchData();
+  }, [isOpen, fetchData]);
+  useEffect(() => {
+    if (isOpen) setActiveTab('overview');
+  }, [isOpen]);
 
   // Must be declared before any early return — React Rules of Hooks
   const connectedDevicesSummary = useMemo(() => {
@@ -84,12 +110,15 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
 
   if (!hardware) return null;
 
-  const isNetworkingDevice = hardware.role === 'router' || hardware.role === 'access_point' || hardware.role === 'switch';
+  const isNetworkingDevice =
+    hardware.role === 'router' || hardware.role === 'access_point' || hardware.role === 'switch';
   const isRouter = hardware.role === 'router';
   const isAccessPoint = hardware.role === 'access_point';
   const roleLabel = HARDWARE_ROLES.find((r) => r.value === hardware.role)?.label ?? hardware.role;
-  const networkMembershipTabCount = (isRouter ? routedNetworks.length : 0) + directMemberships.length;
-  const hasWirelessInfo = isAccessPoint || (hardware.wifi_standards && hardware.wifi_standards.length > 0);
+  const networkMembershipTabCount =
+    (isRouter ? routedNetworks.length : 0) + directMemberships.length;
+  const hasWirelessInfo =
+    isAccessPoint || (hardware.wifi_standards && hardware.wifi_standards.length > 0);
 
   const handlePortsSaved = (updatedPorts) => {
     setPorts(updatedPorts);
@@ -100,35 +129,79 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   return (
     <Drawer isOpen={isOpen} onClose={onClose} title={`Hardware: ${hardware.name}`}>
       <div className="tabs">
-        <button className={`tab ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
+        <button
+          className={`tab ${activeTab === 'overview' ? 'active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          Overview
+        </button>
         {isNetworkingDevice && (
-            <button className={`tab ${activeTab === 'network' ? 'active' : ''}`} onClick={() => setActiveTab('network')}>
-                Network <span className="tab-badge">{ports.length}</span>
-            </button>
+          <button
+            className={`tab ${activeTab === 'network' ? 'active' : ''}`}
+            onClick={() => setActiveTab('network')}
+          >
+            Network <span className="tab-badge">{ports.length}</span>
+          </button>
         )}
-        <button className={`tab ${activeTab === 'network-memberships' ? 'active' : ''}`} onClick={() => setActiveTab('network-memberships')}>
-          Network Memberships {networkMembershipTabCount > 0 && <span className="tab-badge">{networkMembershipTabCount}</span>}
+        <button
+          className={`tab ${activeTab === 'network-memberships' ? 'active' : ''}`}
+          onClick={() => setActiveTab('network-memberships')}
+        >
+          Network Memberships{' '}
+          {networkMembershipTabCount > 0 && (
+            <span className="tab-badge">{networkMembershipTabCount}</span>
+          )}
         </button>
-        <button className={`tab ${activeTab === 'compute' ? 'active' : ''}`} onClick={() => setActiveTab('compute')}>
-          Compute {computeUnits.length > 0 && <span className="tab-badge">{computeUnits.length}</span>}
+        <button
+          className={`tab ${activeTab === 'compute' ? 'active' : ''}`}
+          onClick={() => setActiveTab('compute')}
+        >
+          Compute{' '}
+          {computeUnits.length > 0 && <span className="tab-badge">{computeUnits.length}</span>}
         </button>
-        <button className={`tab ${activeTab === 'services' ? 'active' : ''}`} onClick={() => setActiveTab('services')}>
+        <button
+          className={`tab ${activeTab === 'services' ? 'active' : ''}`}
+          onClick={() => setActiveTab('services')}
+        >
           Services {hwServices.length > 0 && <span className="tab-badge">{hwServices.length}</span>}
         </button>
-        <button className={`tab ${activeTab === 'storage' ? 'active' : ''}`} onClick={() => setActiveTab('storage')}>
+        <button
+          className={`tab ${activeTab === 'storage' ? 'active' : ''}`}
+          onClick={() => setActiveTab('storage')}
+        >
           Storage {hwStorage.length > 0 && <span className="tab-badge">{hwStorage.length}</span>}
         </button>
-        <button className={`tab ${activeTab === 'clusters' ? 'active' : ''}`} onClick={() => setActiveTab('clusters')}>
+        <button
+          className={`tab ${activeTab === 'clusters' ? 'active' : ''}`}
+          onClick={() => setActiveTab('clusters')}
+        >
           Clusters {hwClusters.length > 0 && <span className="tab-badge">{hwClusters.length}</span>}
         </button>
-        <button className={`tab ${activeTab === 'docs' ? 'active' : ''}`} onClick={() => setActiveTab('docs')}>Docs</button>
+        <button
+          className={`tab ${activeTab === 'vulnerabilities' ? 'active' : ''}`}
+          onClick={() => setActiveTab('vulnerabilities')}
+        >
+          Vulnerabilities
+        </button>
+        <button
+          className={`tab ${activeTab === 'docs' ? 'active' : ''}`}
+          onClick={() => setActiveTab('docs')}
+        >
+          Docs
+        </button>
       </div>
 
       <div className="tab-content" style={{ marginTop: 20 }}>
         {activeTab === 'overview' && (
           <div className="detail-section">
-            <div className="field-group"><span className="field-label">Name</span><div>{hardware.name}</div></div>
-            <div className="field-group"><span className="field-label">Role</span><div>{roleLabel || '—'}</div></div>
+            <div className="field-group">
+              <span className="field-label">Name</span>
+              <div>{hardware.name}</div>
+            </div>
+            <div className="field-group">
+              <span className="field-label">Role</span>
+              <div>{roleLabel || '—'}</div>
+            </div>
             <div className="field-group">
               <span className="field-label">Vendor</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -144,8 +217,14 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                 <span>{getVendorIcon(hardware.vendor ?? 'other').label}</span>
               </div>
             </div>
-            <div className="field-group"><span className="field-label">Model</span><div>{hardware.model || '—'}</div></div>
-            <div className="field-group"><span className="field-label">Location</span><div>{hardware.location || '—'}</div></div>
+            <div className="field-group">
+              <span className="field-label">Model</span>
+              <div>{hardware.model || '—'}</div>
+            </div>
+            <div className="field-group">
+              <span className="field-label">Location</span>
+              <div>{hardware.location || '—'}</div>
+            </div>
             {hardware.ip_address && (
               <div className="field-group">
                 <span className="field-label">IP Address</span>
@@ -165,15 +244,22 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   <img
                     src={CPU_BRAND_MAP[hardware.cpu_brand]?.icon}
                     alt={CPU_BRAND_MAP[hardware.cpu_brand]?.label}
-                    width={18} height={18} style={{ objectFit: 'contain' }}
-                    onError={(e) => { e.target.style.display = 'none'; }}
+                    width={18}
+                    height={18}
+                    style={{ objectFit: 'contain' }}
+                    onError={(e) => {
+                      e.target.style.display = 'none';
+                    }}
                   />
                   <span>{CPU_BRAND_MAP[hardware.cpu_brand]?.label ?? hardware.cpu_brand}</span>
                 </div>
               </div>
             )}
             {hardware.notes && (
-              <div className="field-group"><span className="field-label">Notes</span><p style={{ margin: 0 }}>{hardware.notes}</p></div>
+              <div className="field-group">
+                <span className="field-label">Notes</span>
+                <p style={{ margin: 0 }}>{hardware.notes}</p>
+              </div>
             )}
           </div>
         )}
@@ -199,12 +285,38 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                     <h4 style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Wifi size={15} /> Wireless Info
                     </h4>
-                    <div className="field-group"><span className="field-label">WiFi Standards</span><div>{(hardware.wifi_standards || []).join(', ') || '—'}</div></div>
-                    <div className="field-group"><span className="field-label">WiFi Bands</span><div>{(hardware.wifi_bands || []).join(', ') || '—'}</div></div>
-                    <div className="field-group"><span className="field-label">Max TX Power</span><div>{hardware.max_tx_power_dbm ? `${hardware.max_tx_power_dbm} dBm` : '—'}</div></div>
-                    <div className="field-group"><span className="field-label">Software Platform</span><div>{hardware.software_platform || '—'}</div></div>
-                    <div className="field-group"><span className="field-label">WAN Download</span><div>{hardware.download_speed_mbps ? `${hardware.download_speed_mbps} Mbps` : '—'}</div></div>
-                    <div className="field-group"><span className="field-label">WAN Upload</span><div>{hardware.upload_speed_mbps ? `${hardware.upload_speed_mbps} Mbps` : '—'}</div></div>
+                    <div className="field-group">
+                      <span className="field-label">WiFi Standards</span>
+                      <div>{(hardware.wifi_standards || []).join(', ') || '—'}</div>
+                    </div>
+                    <div className="field-group">
+                      <span className="field-label">WiFi Bands</span>
+                      <div>{(hardware.wifi_bands || []).join(', ') || '—'}</div>
+                    </div>
+                    <div className="field-group">
+                      <span className="field-label">Max TX Power</span>
+                      <div>
+                        {hardware.max_tx_power_dbm ? `${hardware.max_tx_power_dbm} dBm` : '—'}
+                      </div>
+                    </div>
+                    <div className="field-group">
+                      <span className="field-label">Software Platform</span>
+                      <div>{hardware.software_platform || '—'}</div>
+                    </div>
+                    <div className="field-group">
+                      <span className="field-label">WAN Download</span>
+                      <div>
+                        {hardware.download_speed_mbps
+                          ? `${hardware.download_speed_mbps} Mbps`
+                          : '—'}
+                      </div>
+                    </div>
+                    <div className="field-group">
+                      <span className="field-label">WAN Upload</span>
+                      <div>
+                        {hardware.upload_speed_mbps ? `${hardware.upload_speed_mbps} Mbps` : '—'}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -218,11 +330,26 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                     <div className="port-map-summary">
                       {ports.map((p) => (
                         <div key={p.port_id} className="port-summary-item">
-                          <span className="port-summary-label">{p.label || `Port ${p.port_id}`}</span>
+                          <span className="port-summary-label">
+                            {p.label || `Port ${p.port_id}`}
+                          </span>
                           <span className="port-summary-info">
-                            {p.speed_mbps && <span>{p.speed_mbps >= 1000 ? `${p.speed_mbps / 1000}G` : `${p.speed_mbps}M`}</span>}
+                            {p.speed_mbps && (
+                              <span>
+                                {p.speed_mbps >= 1000
+                                  ? `${p.speed_mbps / 1000}G`
+                                  : `${p.speed_mbps}M`}
+                              </span>
+                            )}
                             {(p.connected_hardware_id || p.connected_compute_id) && (
-                              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-success)' }}>
+                              <span
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  color: 'var(--color-success)',
+                                }}
+                              >
                                 <Link size={12} /> Connected
                               </span>
                             )}
@@ -242,11 +369,29 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   ) : (
                     <div className="list-group">
                       {connectedDevicesSummary.map((device, idx) => (
-                        <div key={idx} className="list-item" style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}>
+                        <div
+                          key={idx}
+                          className="list-item"
+                          style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}
+                        >
                           <span style={{ fontWeight: 600 }}>{device.name}</span>
-                          <span className="text-muted" style={{ marginLeft: 8 }}>({device.type})</span>
-                          {device.port_label && <span className="text-muted" style={{ marginLeft: 8 }}>on {device.port_label}</span>}
-                          {device.speed_mbps && <span className="text-muted" style={{ marginLeft: 8 }}>({device.speed_mbps >= 1000 ? `${device.speed_mbps / 1000}G` : `${device.speed_mbps}M`})</span>}
+                          <span className="text-muted" style={{ marginLeft: 8 }}>
+                            ({device.type})
+                          </span>
+                          {device.port_label && (
+                            <span className="text-muted" style={{ marginLeft: 8 }}>
+                              on {device.port_label}
+                            </span>
+                          )}
+                          {device.speed_mbps && (
+                            <span className="text-muted" style={{ marginLeft: 8 }}>
+                              (
+                              {device.speed_mbps >= 1000
+                                ? `${device.speed_mbps / 1000}G`
+                                : `${device.speed_mbps}M`}
+                              )
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -265,17 +410,32 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
                   <Router size={15} /> Routed Networks
                 </h4>
                 {routedNetworks.length === 0 ? (
-                  <p className="text-muted" style={{ marginBottom: 16 }}>No networks have this node set as their gateway.</p>
+                  <p className="text-muted" style={{ marginBottom: 16 }}>
+                    No networks have this node set as their gateway.
+                  </p>
                 ) : (
                   <div style={{ marginBottom: 20 }}>
                     {routedNetworks.map((net) => (
-                      <div key={net.id} style={{
-                        padding: '8px 12px', marginBottom: 6,
-                        border: '1px solid var(--color-border)', borderRadius: 6,
-                        background: 'var(--color-surface)',
-                      }}>
+                      <div
+                        key={net.id}
+                        style={{
+                          padding: '8px 12px',
+                          marginBottom: 6,
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 6,
+                          background: 'var(--color-surface)',
+                        }}
+                      >
                         <div style={{ fontWeight: 600, marginBottom: 2 }}>{net.name}</div>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        <div
+                          style={{
+                            fontSize: '0.8rem',
+                            color: 'var(--color-text-muted)',
+                            display: 'flex',
+                            gap: 12,
+                            flexWrap: 'wrap',
+                          }}
+                        >
                           {net.cidr && <span style={{ fontFamily: 'monospace' }}>{net.cidr}</span>}
                           {net.vlan_id != null && <span>VLAN {net.vlan_id}</span>}
                           {net.gateway && <span>GW: {net.gateway}</span>}
@@ -295,16 +455,35 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
               <p className="text-muted">Not directly attached to any networks.</p>
             ) : (
               directMemberships.map((mem) => (
-                <div key={mem.id} style={{
-                  padding: '8px 12px', marginBottom: 6,
-                  border: '1px solid var(--color-border)', borderRadius: 6,
-                  background: 'var(--color-surface)',
-                }}>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>{mem.network?.name ?? `Network #${mem.network_id}`}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                    {mem.network?.cidr && <span style={{ fontFamily: 'monospace' }}>{mem.network.cidr}</span>}
+                <div
+                  key={mem.id}
+                  style={{
+                    padding: '8px 12px',
+                    marginBottom: 6,
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 6,
+                    background: 'var(--color-surface)',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                    {mem.network?.name ?? `Network #${mem.network_id}`}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--color-text-muted)',
+                      display: 'flex',
+                      gap: 12,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    {mem.network?.cidr && (
+                      <span style={{ fontFamily: 'monospace' }}>{mem.network.cidr}</span>
+                    )}
                     {mem.network?.vlan_id != null && <span>VLAN {mem.network.vlan_id}</span>}
-                    {mem.ip_address && <span style={{ fontFamily: 'monospace' }}>IP: {mem.ip_address}</span>}
+                    {mem.ip_address && (
+                      <span style={{ fontFamily: 'monospace' }}>IP: {mem.ip_address}</span>
+                    )}
                   </div>
                 </div>
               ))
@@ -317,11 +496,20 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
             <h4 style={{ marginBottom: 12 }}>Hosted Compute Units</h4>
             <div className="list-group">
               {computeUnits.map((cu) => (
-                <div key={cu.id} className="list-item" style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}>
+                <div
+                  key={cu.id}
+                  className="list-item"
+                  style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}
+                >
                   <Server size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
                   {cu.name} <span className="text-muted">({cu.kind})</span>
                   {cu.ip_address && (
-                    <span className="text-muted" style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: '0.8rem' }}>{cu.ip_address}</span>
+                    <span
+                      className="text-muted"
+                      style={{ marginLeft: 8, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    >
+                      {cu.ip_address}
+                    </span>
                   )}
                 </div>
               ))}
@@ -335,29 +523,53 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
             <h4 style={{ marginBottom: 12 }}>Directly Attached Services</h4>
             {hwServices.length === 0 ? (
               <p className="text-muted">
-                No services attached directly to this hardware.<br />
+                No services attached directly to this hardware.
+                <br />
                 <span style={{ fontSize: '0.8rem' }}>
-                  Attach services (VPNs, Suricata, firewall plugins, etc.) via the Services page by setting Hardware to this node.
+                  Attach services (VPNs, Suricata, firewall plugins, etc.) via the Services page by
+                  setting Hardware to this node.
                 </span>
               </p>
             ) : (
               hwServices.map((svc) => (
-                <div key={svc.id} style={{
-                  padding: '8px 12px', marginBottom: 6,
-                  border: '1px solid var(--color-border)', borderRadius: 6,
-                  background: 'var(--color-surface)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                }}>
+                <div
+                  key={svc.id}
+                  style={{
+                    padding: '8px 12px',
+                    marginBottom: 6,
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 6,
+                    background: 'var(--color-surface)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
                   <div>
                     <div style={{ fontWeight: 600, marginBottom: 2 }}>{svc.name}</div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', gap: 10 }}>
+                    <div
+                      style={{
+                        fontSize: '0.8rem',
+                        color: 'var(--color-text-muted)',
+                        display: 'flex',
+                        gap: 10,
+                      }}
+                    >
                       {svc.category && <span>{svc.category}</span>}
-                      {svc.status && <span style={{ textTransform: 'capitalize' }}>{svc.status}</span>}
+                      {svc.status && (
+                        <span style={{ textTransform: 'capitalize' }}>{svc.status}</span>
+                      )}
                       {svc.environment && <span>{svc.environment}</span>}
                     </div>
                   </div>
                   {svc.url && (
-                    <a href={svc.url} target="_blank" rel="noreferrer" className="btn btn-sm" title="Open URL">
+                    <a
+                      href={svc.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn btn-sm"
+                      title="Open URL"
+                    >
                       <ExternalLink size={13} />
                     </a>
                   )}
@@ -377,42 +589,105 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
             ) : (
               hwStorage.map((st) => {
                 const capLabel = st.capacity_gb
-                  ? st.capacity_gb >= 1024 ? `${(st.capacity_gb / 1024).toFixed(1)} TB` : `${st.capacity_gb} GB`
+                  ? st.capacity_gb >= 1024
+                    ? `${(st.capacity_gb / 1024).toFixed(1)} TB`
+                    : `${st.capacity_gb} GB`
                   : null;
                 return (
-                  <div key={st.id} style={{
-                    padding: '8px 12px', marginBottom: 6,
-                    border: '1px solid var(--color-border)', borderRadius: 6,
-                    background: 'var(--color-surface)',
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <div
+                    key={st.id}
+                    style={{
+                      padding: '8px 12px',
+                      marginBottom: 6,
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      background: 'var(--color-surface)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: 4,
+                      }}
+                    >
                       <span style={{ fontWeight: 600 }}>{st.name}</span>
-                      <span style={{
-                        fontSize: '0.75rem', padding: '1px 6px', borderRadius: 3,
-                        background: 'var(--color-glow)', color: 'var(--color-primary)',
-                        textTransform: 'uppercase', letterSpacing: '0.04em',
-                      }}>{st.kind}</span>
+                      <span
+                        style={{
+                          fontSize: '0.75rem',
+                          padding: '1px 6px',
+                          borderRadius: 3,
+                          background: 'var(--color-glow)',
+                          color: 'var(--color-primary)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.04em',
+                        }}
+                      >
+                        {st.kind}
+                      </span>
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                      {capLabel && <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>{capLabel}</span>}
+                    <div
+                      style={{
+                        fontSize: '0.8rem',
+                        color: 'var(--color-text-muted)',
+                        display: 'flex',
+                        gap: 12,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      {capLabel && (
+                        <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>
+                          {capLabel}
+                        </span>
+                      )}
                       {st.path && <span style={{ fontFamily: 'monospace' }}>{st.path}</span>}
                       {st.protocol && <span>{st.protocol.toUpperCase()}</span>}
                     </div>
-                    {st.used_gb != null && st.capacity_gb > 0 && (() => {
-                      const pct = Math.min(100, Math.round(st.used_gb / st.capacity_gb * 100));
-                      const barColor = pct >= 85 ? 'var(--color-danger)' : pct >= 60 ? '#f7c948' : 'var(--color-online)';
-                      return (
-                        <div style={{ marginTop: 8 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
-                            <span>Used</span>
-                            <span style={{ color: barColor }}>{pct}%</span>
+                    {st.used_gb != null &&
+                      st.capacity_gb > 0 &&
+                      (() => {
+                        const pct = Math.min(100, Math.round((st.used_gb / st.capacity_gb) * 100));
+                        const barColor =
+                          pct >= 85
+                            ? 'var(--color-danger)'
+                            : pct >= 60
+                              ? '#f7c948'
+                              : 'var(--color-online)';
+                        return (
+                          <div style={{ marginTop: 8 }}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                fontSize: 10,
+                                color: 'var(--color-text-muted)',
+                                marginBottom: 3,
+                              }}
+                            >
+                              <span>Used</span>
+                              <span style={{ color: barColor }}>{pct}%</span>
+                            </div>
+                            <div
+                              style={{
+                                height: 4,
+                                borderRadius: 2,
+                                background: 'var(--color-border)',
+                                overflow: 'hidden',
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: `${pct}%`,
+                                  height: '100%',
+                                  background: barColor,
+                                  borderRadius: 2,
+                                }}
+                              />
+                            </div>
                           </div>
-                          <div style={{ height: 4, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
-                            <div style={{ width: `${pct}%`, height: '100%', background: barColor, borderRadius: 2 }} />
-                          </div>
-                        </div>
-                      );
-                    })()}
+                        );
+                      })()}
                   </div>
                 );
               })
@@ -427,24 +702,45 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
               <p className="text-muted">This hardware is not assigned to any clusters.</p>
             ) : (
               hwClusters.map((item) => (
-                <div key={item.membership_id} style={{
-                  padding: '8px 12px', marginBottom: 6,
-                  border: '1px solid var(--color-border)', borderRadius: 6,
-                  background: 'var(--color-surface)',
-                }}>
+                <div
+                  key={item.membership_id}
+                  style={{
+                    padding: '8px 12px',
+                    marginBottom: 6,
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 6,
+                    background: 'var(--color-surface)',
+                  }}
+                >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 600 }}>{item.cluster?.name ?? `Cluster #${item.membership_id}`}</span>
+                    <span style={{ fontWeight: 600 }}>
+                      {item.cluster?.name ?? `Cluster #${item.membership_id}`}
+                    </span>
                     {item.role && (
-                      <span style={{
-                        fontSize: '0.72rem', padding: '1px 6px', borderRadius: 3,
-                        background: 'var(--color-glow)', color: 'var(--color-primary)',
-                        textTransform: 'uppercase', letterSpacing: '0.04em',
-                      }}>
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          padding: '1px 6px',
+                          borderRadius: 3,
+                          background: 'var(--color-glow)',
+                          color: 'var(--color-primary)',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.04em',
+                        }}
+                      >
                         {item.role}
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 2, display: 'flex', gap: 10 }}>
+                  <div
+                    style={{
+                      fontSize: '0.8rem',
+                      color: 'var(--color-text-muted)',
+                      marginTop: 2,
+                      display: 'flex',
+                      gap: 10,
+                    }}
+                  >
                     {item.cluster?.environment && <span>{item.cluster.environment}</span>}
                     {item.cluster?.location && <span>{item.cluster.location}</span>}
                   </div>
@@ -452,6 +748,10 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
               ))
             )}
           </div>
+        )}
+
+        {activeTab === 'vulnerabilities' && (
+          <VulnerabilityPanel entityType="hardware" entityId={hardware.id} />
         )}
 
         {activeTab === 'docs' && <DocsPanel entityType="hardware" entityId={hardware.id} />}
@@ -495,16 +795,18 @@ HardwareDetail.propTypes = {
     software_platform: PropTypes.string,
     download_speed_mbps: PropTypes.number,
     upload_speed_mbps: PropTypes.number,
-    port_map: PropTypes.arrayOf(PropTypes.shape({
-      port_id: PropTypes.number.isRequired,
-      label: PropTypes.string,
-      type: PropTypes.string,
-      speed_mbps: PropTypes.number,
-      connected_hardware_id: PropTypes.number,
-      connected_compute_id: PropTypes.number,
-      vlan_id: PropTypes.number,
-      notes: PropTypes.string,
-    })),
+    port_map: PropTypes.arrayOf(
+      PropTypes.shape({
+        port_id: PropTypes.number.isRequired,
+        label: PropTypes.string,
+        type: PropTypes.string,
+        speed_mbps: PropTypes.number,
+        connected_hardware_id: PropTypes.number,
+        connected_compute_id: PropTypes.number,
+        vlan_id: PropTypes.number,
+        notes: PropTypes.string,
+      })
+    ),
   }),
   isOpen: PropTypes.bool.isRequired,
   onClose: PropTypes.func.isRequired,

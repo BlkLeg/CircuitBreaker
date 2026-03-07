@@ -181,6 +181,10 @@ export const networksApi = {
   addHardwareMember: (id, data) => client.post(`/networks/${id}/hardware-members`, data),
   removeHardwareMember: (id, hardwareId) =>
     client.delete(`/networks/${id}/hardware-members/${hardwareId}`),
+  getPeers: (id) => client.get(`/networks/${id}/peers`),
+  addPeer: (id, peerNetworkId) =>
+    client.post(`/networks/${id}/peers`, { peer_network_id: peerNetworkId }),
+  removePeer: (id, peerNetworkId) => client.delete(`/networks/${id}/peers/${peerNetworkId}`),
 };
 
 export const miscApi = {
@@ -311,6 +315,13 @@ export const environmentsApi = {
 
 export const ipCheckApi = {
   check: (payload) => client.post('/ip-check', payload),
+};
+
+export const cveApi = {
+  search: (params) => client.get('/cve/search', { params }),
+  forEntity: (type, id) => client.get(`/cve/entity/${type}/${id}`),
+  triggerSync: () => client.post('/cve/sync'),
+  status: () => client.get('/cve/status'),
 };
 
 export default client;

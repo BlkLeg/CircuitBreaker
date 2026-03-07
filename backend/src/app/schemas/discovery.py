@@ -1,6 +1,6 @@
 import json
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DiscoveryProfileCreate(BaseModel):
@@ -8,11 +8,15 @@ class DiscoveryProfileCreate(BaseModel):
     cidr: str
     scan_types: list[str] = ["nmap"]
     nmap_arguments: str | None = None
-    snmp_community: str | None = None   # plaintext input only; never in output
+    snmp_community: str | None = None  # plaintext input only; never in output
     snmp_version: str = "2c"
     snmp_port: int = 161
+    docker_network_types: list[str] = ["bridge"]
+    docker_port_scan: bool = False
+    docker_socket_path: str = "/var/run/docker.sock"
     schedule_cron: str | None = None
     enabled: bool = True
+
 
 class DiscoveryProfileUpdate(BaseModel):
     name: str | None = None
@@ -22,8 +26,12 @@ class DiscoveryProfileUpdate(BaseModel):
     snmp_community: str | None = None
     snmp_version: str | None = None
     snmp_port: int | None = None
+    docker_network_types: list[str] | None = None
+    docker_port_scan: bool | None = None
+    docker_socket_path: str | None = None
     schedule_cron: str | None = None
     enabled: bool | None = None
+
 
 class DiscoveryProfileOut(BaseModel):
     id: int
@@ -34,6 +42,9 @@ class DiscoveryProfileOut(BaseModel):
     # snmp_community_encrypted NEVER included
     snmp_version: str
     snmp_port: int
+    docker_network_types: list[str]
+    docker_port_scan: bool
+    docker_socket_path: str
     schedule_cron: str | None
     enabled: bool
     last_run: str | None
@@ -50,6 +61,14 @@ class DiscoveryProfileOut(BaseModel):
             except Exception:
                 return [v]
         return v
+
+    @field_validator("docker_network_types", mode="before")
+    @classmethod
+    def parse_docker_network_types(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
+
 
 class ScanJobOut(BaseModel):
     id: int
@@ -70,6 +89,7 @@ class ScanJobOut(BaseModel):
     progress_message: str | None = None
     created_at: str
     model_config = ConfigDict(from_attributes=True)
+
 
 class ScanResultOut(BaseModel):
     id: int
@@ -93,6 +113,19 @@ class ScanResultOut(BaseModel):
     created_at: str
     model_config = ConfigDict(from_attributes=True)
 
+
+class ScanLogOut(BaseModel):
+    id: int
+    scan_job_id: int
+    timestamp: str
+    level: str
+    phase: str | None
+    message: str
+    details: str | None
+    created_at: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class AdHocScanRequest(BaseModel):
     cidr: str
     scan_types: list[str] = ["nmap"]
@@ -100,10 +133,12 @@ class AdHocScanRequest(BaseModel):
     snmp_community: str | None = None
     label: str | None = None
 
+
 class MergeRequest(BaseModel):
-    action: str               # 'accept' | 'reject'
+    action: str  # 'accept' | 'reject'
     entity_type: str | None = None
-    overrides: dict = {}
+    overrides: dict = Field(default_factory=dict)
+
 
 class BulkMergeRequest(BaseModel):
     result_ids: list[int]
@@ -112,6 +147,7 @@ class BulkMergeRequest(BaseModel):
 
 class BulkAssignment(BaseModel):
     """Per-node overrides for enhanced bulk merge."""
+
     result_id: int
     vendor: str | None = None
     vendor_catalog_key: str | None = None
@@ -141,6 +177,7 @@ class EnhancedBulkMergeNetwork(BaseModel):
 
 class EnhancedBulkMergeRequest(BaseModel):
     """Full-featured bulk merge with cluster, network, rack, and per-node assignments."""
+
     result_ids: list[int]
     cluster: EnhancedBulkMergeCluster | None = None
     network: EnhancedBulkMergeNetwork | None = None
@@ -159,4 +196,10 @@ class DiscoveryStatusOut(BaseModel):
     pending_results: int
     active_jobs: list[ScanJobOut]
     last_scan: str | None
-    next_scheduled: str | None    # ISO string of next APScheduler fire time
+    next_scheduled: str | None  # ISO string of next APScheduler fire time
+    # Safe-mode capability info
+    discovery_mode: str = "safe"
+    effective_mode: str = "safe"  # actual mode after privilege check
+    net_raw_capable: bool = False
+    docker_available: bool = False
+    docker_container_count: int = 0
