@@ -229,13 +229,6 @@ services:
     #   - "backend:host-gateway"
     restart: unless-stopped
 
-  cloudflared:
-    # Optional Cloudflare tunnel — only starts when the "tunnel" profile is active.
-    # docker compose --profile tunnel up
-    profiles: ["tunnel"]
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
-
 volumes:
   postgres_data:
   backend-data:
