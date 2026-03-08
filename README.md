@@ -66,7 +66,7 @@
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Open: <http://localhost:8080>
+Open: <https://localhost> or <https://circuitbreaker.local> <https://192.168.x.x> (Your host IP)
 
 **Overrides**: `CB_PORT=9090 curl ... | bash`
 
