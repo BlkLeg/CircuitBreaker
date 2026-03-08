@@ -1,10 +1,22 @@
 import asyncio
 import json
 import logging
+import time
+from pathlib import Path
 
 from app.core.nats_client import nats_client
 
 logger = logging.getLogger(__name__)
+
+_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+
+
+def _touch_healthy() -> None:
+    """Update heartbeat file so the container healthcheck can verify liveness."""
+    try:
+        _HEALTHY_FILE.write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 async def _run_masscan(cidr: str) -> list[str]:
@@ -114,11 +126,13 @@ async def run_worker():
     semaphore = asyncio.Semaphore(2)
     await _setup_jetstream(semaphore)
     logger.info("Discovery worker started")
+    _touch_healthy()
 
     # Watchdog: re-subscribe via JetStream after NATS reconnects
     was_connected = True
     while True:
         await asyncio.sleep(10)
+        _touch_healthy()
         now_connected = nats_client.is_connected
         if was_connected and not now_connected:
             logger.warning("Discovery worker: NATS disconnected — waiting for auto-reconnect")

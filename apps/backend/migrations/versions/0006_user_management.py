@@ -105,8 +105,16 @@ def upgrade() -> None:
             "fk_users_masquerade_target", "users", ["masquerade_target"], ["id"]
         )
 
-    # Backfill role for existing admins
-    op.execute("UPDATE users SET role = 'admin' WHERE is_admin = 1 OR is_superuser = 1")
+    # Backfill role for existing admins — only reference columns that exist.
+    # Older fastapi-users schemas may omit is_admin / is_superuser entirely.
+    updated_user_cols = {c["name"] for c in inspector.get_columns("users")}
+    _admin_parts = []
+    if "is_admin" in updated_user_cols:
+        _admin_parts.append("is_admin = 1")
+    if "is_superuser" in updated_user_cols:
+        _admin_parts.append("is_superuser = 1")
+    if _admin_parts:
+        op.execute(f"UPDATE users SET role = 'admin' WHERE {' OR '.join(_admin_parts)}")  # noqa: S608
 
     # ── Extend logs ──────────────────────────────────────────────────────────
     with op.batch_alter_table("logs") as batch_op:
@@ -152,9 +160,15 @@ def upgrade() -> None:
             "app_settings",
             sa.Column("masquerade_enabled", sa.Boolean(), nullable=False, server_default="1"),
         )
+    if "registration_open" not in app_cols:
+        op.add_column(
+            "app_settings",
+            sa.Column("registration_open", sa.Boolean(), nullable=False, server_default="1"),
+        )
 
 
 def downgrade() -> None:
+    op.drop_column("app_settings", "registration_open")
     op.drop_column("app_settings", "masquerade_enabled")
     op.drop_column("app_settings", "invite_expiry_days")
     op.drop_column("app_settings", "login_lockout_minutes")

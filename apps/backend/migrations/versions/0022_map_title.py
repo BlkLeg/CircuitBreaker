@@ -17,6 +17,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+
+    if not insp.has_table("app_settings"):
+        return
+
+    cols = {c["name"] for c in insp.get_columns("app_settings")}
+    if "map_title" in cols:
+        return
+
     op.add_column(
         "app_settings",
         sa.Column("map_title", sa.String(), nullable=False, server_default="Topology"),

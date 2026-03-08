@@ -13,6 +13,8 @@ import {
   Copy,
   Download,
   CheckCircle2,
+  Lock,
+  ExternalLink,
 } from 'lucide-react';
 import { authApi } from '../api/auth.js';
 import apiClient from '../api/client';
@@ -117,6 +119,33 @@ function OOBEWizardPage({ onCompleted }) {
     { value: 'zh', label: '中文 (简体)' },
     { value: 'ja', label: '日本語' },
   ];
+
+  // ── Caddy HTTPS detection ────────────────────────────────────────────────
+  // Detect when the user is behind Caddy (HTTPS on a non-dev host).
+  // Port 5173 = Vite dev, 8080/8000 = direct nginx/backend, no Caddy.
+  const _caddyDetection = useMemo(() => {
+    const { hostname, protocol, port } = window.location;
+    const isDevHost =
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      port === '5173' ||
+      port === '8080' ||
+      port === '8000';
+    if (isDevHost) return { active: false };
+    const isHttps = protocol === 'https:';
+    const isHttp80 = protocol === 'http:' && port === '';
+    if (!isHttps && !isHttp80) return { active: false };
+    const httpsOrigin = `https://${hostname}`;
+    const certUrl = `http://${hostname}/caddy-root-ca.crt`;
+    return { active: true, isHttps, httpsOrigin, certUrl };
+  }, []);
+
+  // Auto-populate external app URL when running behind Caddy and field is empty.
+  useEffect(() => {
+    if (step === 5 && !externalAppUrl && _caddyDetection.active) {
+      setExternalAppUrl(_caddyDetection.httpsOrigin);
+    }
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePhotoFile = (e) => {
     const f = e.target.files[0];
@@ -1530,6 +1559,81 @@ function OOBEWizardPage({ onCompleted }) {
                   local network. You can skip SMTP and rely on your vault key as the offline
                   recovery path.
                 </p>
+
+                {/* ── Caddy HTTPS notice ── */}
+                {_caddyDetection.active && (
+                  <div
+                    style={{
+                      background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)',
+                      borderRadius: 6,
+                      padding: '10px 14px',
+                      marginBottom: 18,
+                      fontSize: '0.82rem',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        marginBottom: 6,
+                        fontWeight: 600,
+                      }}
+                    >
+                      <Lock size={13} style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
+                      {_caddyDetection.isHttps
+                        ? 'Caddy HTTPS is active'
+                        : 'Caddy HTTPS is available'}
+                    </div>
+                    {!_caddyDetection.isHttps && (
+                      <p style={{ margin: '0 0 6px' }}>
+                        Caddy is running and will upgrade your connection to HTTPS. Install the CA
+                        certificate so your browser trusts it without warnings.
+                      </p>
+                    )}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                      <a
+                        href={_caddyDetection.certUrl}
+                        download="caddy-root-ca.crt"
+                        className="btn btn-secondary btn-sm"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                      >
+                        <Download size={12} />
+                        Download CA Certificate
+                      </a>
+                      {!_caddyDetection.isHttps && (
+                        <a
+                          href={_caddyDetection.httpsOrigin}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn btn-secondary btn-sm"
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                        >
+                          <ExternalLink size={12} />
+                          Open HTTPS URL
+                        </a>
+                      )}
+                    </div>
+                    <p
+                      style={{
+                        margin: '8px 0 0',
+                        fontSize: '0.75rem',
+                        color: 'var(--color-text-muted)',
+                      }}
+                    >
+                      Install the certificate in your OS or browser trust store. On macOS:
+                      double-click and set to <em>Always Trust</em>. On Windows: import into{' '}
+                      <em>Trusted Root Certification Authorities</em>. On Linux:{' '}
+                      <code>
+                        sudo cp caddy-root-ca.crt /usr/local/share/ca-certificates/ && sudo
+                        update-ca-certificates
+                      </code>
+                      .
+                    </p>
+                  </div>
+                )}
 
                 <div style={{ marginBottom: 18 }}>
                   <label className="login-label" htmlFor="oobe-external-app-url">

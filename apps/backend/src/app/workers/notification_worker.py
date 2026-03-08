@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import smtplib
+import time
 from email.message import EmailMessage
+from pathlib import Path
 
 import httpx
 
@@ -11,6 +13,16 @@ from app.db.models import NotificationRoute
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+
+
+def _touch_healthy() -> None:
+    """Update heartbeat file so the container healthcheck can verify liveness."""
+    try:
+        _HEALTHY_FILE.write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 async def notify_slack(provider_config, title, message, severity):
@@ -144,15 +156,17 @@ async def run_worker():
         await nats_client.connect()
         if nats_client.is_connected:
             break
-        logger.warning(f"Waiting for NATS... retrying in {backoff}s")
+        logger.warning("Waiting for NATS... retrying in %ds", backoff)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 60)
 
     await nats_client.subscribe("alert.>", handler=process_alert)
     logger.info("Notification worker started and listening on alert.>")
+    _touch_healthy()
 
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
+        _touch_healthy()
         if not nats_client.is_connected:
             logger.warning("Notification worker: NATS not connected — waiting for auto-reconnect")
 

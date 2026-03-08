@@ -24,16 +24,42 @@ def get_dialect() -> str:
 
 
 def upgrade() -> None:
-    # Add new columns
-    op.add_column("logs", sa.Column("previous_hash", sa.String(), nullable=True))
-    op.add_column("logs", sa.Column("log_hash", sa.String(), nullable=True))
-
-    # Create index on log_hash
-    with op.batch_alter_table("logs") as batch_op:
-        batch_op.create_index(batch_op.f("ix_logs_log_hash"), ["log_hash"], unique=True)
-
-    # Backfill missing hashes sequence
     conn = op.get_bind()
+    insp = sa.inspect(conn)
+
+    if not insp.has_table("logs"):
+        return
+
+    log_cols = {c["name"] for c in insp.get_columns("logs")}
+
+    if "previous_hash" not in log_cols:
+        op.add_column("logs", sa.Column("previous_hash", sa.String(), nullable=True))
+    if "log_hash" not in log_cols:
+        op.add_column("logs", sa.Column("log_hash", sa.String(), nullable=True))
+
+    # Create index on log_hash (guard against already existing)
+    existing_indexes = {idx["name"] for idx in insp.get_indexes("logs")}
+    if "ix_logs_log_hash" not in existing_indexes:
+        with op.batch_alter_table("logs") as batch_op:
+            batch_op.create_index(batch_op.f("ix_logs_log_hash"), ["log_hash"], unique=True)
+
+    # Backfill missing hashes sequence — requires all source columns to be present.
+    required_for_backfill = {
+        "id",
+        "timestamp",
+        "action",
+        "actor_id",
+        "role_at_time",
+        "entity_type",
+        "entity_id",
+        "diff",
+        "ip_address",
+    }
+    # Re-read columns after any additions above.
+    log_cols = {c["name"] for c in insp.get_columns("logs")}
+    if not required_for_backfill.issubset(log_cols):
+        return
+
     logs = conn.execute(
         sa.text(
             "SELECT id, timestamp, action, actor_id, role_at_time, entity_type, entity_id, diff, ip_address FROM logs ORDER BY id ASC"

@@ -186,10 +186,12 @@ def run_alembic_upgrade():
             return
 
         if "users" in table_names and "alembic_version" not in table_names:
-            # Old SQLite-era DB with no alembic tracking: stamp current head and
-            # then let upgrade() apply any genuinely new migrations.
+            # Old DB with no alembic tracking: stamp to the revision just before
+            # 0017 (webhooks/oauth) so upgrade() will run 0017+ and add any
+            # missing columns (e.g. registration_open). Stamping to "head" would
+            # make upgrade a no-op and leave the schema outdated.
             alembic_cfg = Config(_alembic_ini)
-            command.stamp(alembic_cfg, "head")
+            command.stamp(alembic_cfg, "a3b4c5d6e7fc")  # 0015_proxmox_storage
     except Exception:
         pass
 

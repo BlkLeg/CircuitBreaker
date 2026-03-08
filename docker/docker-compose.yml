@@ -71,22 +71,14 @@ services:
       nats:
         condition: service_started
     environment:
-      # Default: SQLite persisted to the backend-data volume.
-      # For PostgreSQL: set CB_DB_URL=postgresql://breaker:pass@postgres:5432/circuitbreaker
-      # and start with: docker compose --profile pg up
+      # SQLite by default; set CB_DB_URL for PostgreSQL (see README.md).
       - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
-      # Vault encryption key for all secrets (SNMP, iDRAC, SSH, SMTP passwords).
-      # On a fresh install this is left empty — the key is auto-generated during the
-      # OOBE setup wizard and written to /data/.env (persistent volume, chmod 0600).
-      # On subsequent restarts the app loads the key from /data/.env automatically.
-      # To pre-seed the key (e.g. after a volume migration) set CB_VAULT_KEY here or
-      # in docker/.env before starting the container.
+      # Auto-generated during OOBE and persisted to /data/.env in the volume.
+      # Pre-seed with CB_VAULT_KEY=<key> in docker/.env to skip generation.
       - CB_VAULT_KEY=${CB_VAULT_KEY:-}
-      # Discovery mode: 'safe' (default, ping+TCP, no privileges) | 'full' (ARP+nmap, requires NET_RAW)
       - DISCOVERY_MODE=safe
-      # NATS message bus — Phase 3 realtime messaging
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
@@ -95,47 +87,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    # ──────────────────────────────────────────────────────────────────
-    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (NATIVE LINUX DOCKER ONLY)
-    #
-    # ⚠️  DOCKER DESKTOP INCOMPATIBILITY (macOS / Docker Desktop for Linux)
-    #
-    # The ARP scan phase requires two things to work correctly:
-    #   1. NET_RAW / NET_ADMIN Linux capabilities (to send raw packets)
-    #   2. network_mode: "host" so the container can reach your LAN
-    #
-    # However, network_mode: "host" is NOT compatible with Docker Desktop
-    # (macOS or the Docker Desktop for Linux app), because Docker Desktop
-    # runs all containers inside a lightweight VM. In that environment,
-    # "host" mode grants access to the VM's network, not your actual LAN,
-    # and it breaks the nginx → backend proxy used by the frontend.
-    #
-    # CURRENT STATUS: ARP scanning is disabled by default so that the
-    # default `make compose-up` works on both Docker Desktop and native
-    # Linux Docker. nmap TCP/ICMP host detection is used as a fallback
-    # and works without any special capabilities or network mode.
-    #
-    # TO ENABLE ARP SCANNING (native Linux Docker only — not Docker Desktop):
-    #   1. Uncomment the `cap_add` and `network_mode` blocks below.
-    #   2. Also uncomment the `extra_hosts` block in the `frontend` service.
-    #   3. Run: make compose-up
-    #
-    # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
-    # container the ability to craft and send arbitrary raw packets.
-    # Only enable this on trusted, isolated homelab networks.
-    #
-    # For full documentation see:
-    # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
-    # ──────────────────────────────────────────────────────────────────
+    # ARP scanning (native Linux Docker only) — uncomment to enable full discovery mode.
+    # See README.md → "ARP Scan / Full Discovery" for setup instructions and caveats.
     # cap_add:
     #   - NET_RAW
     #   - NET_ADMIN
     # network_mode: "host"
-    # NOTE: when network_mode: "host" is enabled, sysctls for net.ipv6.*
-    # are not allowed because the container shares the host's network
-    # namespace. To disable IPv6, set it on the host directly:
-    #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
-
 
   worker:
     build:
@@ -156,11 +113,11 @@ services:
       replicas: 2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.workers.discovery' > /dev/null || exit 1"]
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 45s
 
   webhook-worker:
     build:
@@ -177,11 +134,11 @@ services:
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.workers.webhook_worker' > /dev/null || exit 1"]
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 45s
 
   notification-worker:
     build:
@@ -198,11 +155,11 @@ services:
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.workers.notification_worker' > /dev/null || exit 1"]
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 45s
 
   frontend:
     build:
@@ -214,17 +171,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    # ──────────────────────────────────────────────────────────────────
-    # NOTE: The extra_hosts block below is only needed when the backend
-    # is running with network_mode: "host" (native Linux Docker + ARP
-    # scanning enabled). In that configuration the backend is NOT on the
-    # Docker bridge network, so nginx must resolve "backend" to the host
-    # gateway IP instead.
-    #
-    # Leave this commented out for the default (Docker Desktop compatible)
-    # setup. Only uncomment it alongside the cap_add / network_mode blocks
-    # in the backend service above.
-    # ──────────────────────────────────────────────────────────────────
+    # Required only when backend uses network_mode: "host" (ARP scanning).
     # extra_hosts:
     #   - "backend:host-gateway"
     restart: unless-stopped

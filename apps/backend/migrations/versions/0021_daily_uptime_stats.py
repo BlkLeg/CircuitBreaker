@@ -17,6 +17,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    tables = set(insp.get_table_names())
+
+    if "daily_uptime_stats" in tables:
+        return
+
+    if "hardware" not in tables:
+        return
+
     op.create_table(
         "daily_uptime_stats",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),

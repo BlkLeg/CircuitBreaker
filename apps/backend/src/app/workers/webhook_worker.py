@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -13,6 +14,16 @@ from app.db.models import WebhookDelivery, WebhookRule
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+
+
+def _touch_healthy() -> None:
+    """Update heartbeat file so the container healthcheck can verify liveness."""
+    try:
+        _HEALTHY_FILE.write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 _RETRY_BACKOFF_S = [1, 5, 30]
@@ -171,9 +182,11 @@ async def run_worker():
 
     await nats_client.subscribe(">", handler=process_event)
     logger.info("Webhook worker started and listening on all events")
+    _touch_healthy()
 
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)
+        _touch_healthy()
         if not nats_client.is_connected:
             logger.warning("Webhook worker: NATS not connected — waiting for auto-reconnect")
 

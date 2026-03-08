@@ -34,15 +34,33 @@ def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
 
+    if not insp.has_table("users"):
+        return
+
     user_cols = {c["name"] for c in insp.get_columns("users")}
-    invite_cols = {c["name"] for c in insp.get_columns("user_invites")}
+
+    # Guard: 0006 may have been skipped on old DBs stamped to 0015.
+    # Add role column with the same definition used in 0006 so the backfill below works.
+    if "role" not in user_cols:
+        op.add_column(
+            "users",
+            sa.Column("role", sa.String(), nullable=False, server_default="viewer"),
+        )
+        user_cols.add("role")
 
     if "scopes" not in user_cols:
         op.add_column("users", sa.Column("scopes", sa.Text(), nullable=False, server_default="[]"))
+        user_cols.add("scopes")
     if "demo_expires" not in user_cols:
         op.add_column("users", sa.Column("demo_expires", sa.DateTime(timezone=True), nullable=True))
-    if "scopes" not in invite_cols:
-        op.add_column("user_invites", sa.Column("scopes", sa.Text(), nullable=True))
+
+    if insp.has_table("user_invites"):
+        invite_cols = {c["name"] for c in insp.get_columns("user_invites")}
+        if "scopes" not in invite_cols:
+            op.add_column("user_invites", sa.Column("scopes", sa.Text(), nullable=True))
+
+    if not {"id", "role", "scopes"}.issubset(user_cols):
+        return
 
     rows = bind.execute(sa.text("SELECT id, role, scopes FROM users")).fetchall()
     for row in rows:

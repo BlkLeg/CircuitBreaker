@@ -110,6 +110,99 @@ Why? Explosive growth—Proxmox scans add 100s of VMs. PG scales infinitely.
 
 ***
 
+## Docker Compose — Production Stack
+
+The full stack (`docker/docker-compose.yml`) includes:
+
+| Service | Role |
+|---------|------|
+| `caddy` | Reverse proxy — automatic HTTPS via local self-signed cert (`.local`) or ACME (public domain) |
+| `backend` | FastAPI app + Alembic migrations |
+| `frontend` | nginx serving the built React app |
+| `worker` | Discovery worker (2 replicas) |
+| `webhook-worker` | Webhook dispatch worker |
+| `notification-worker` | Alert / notification worker |
+| `nats` | Message bus (JetStream) |
+| `postgres` _(optional)_ | PostgreSQL — only starts with `--profile pg` |
+
+### Quick start
+
+```bash
+# Clone and start (builds from source):
+git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Access at `https://circuitbreaker.local` (default domain). See **Caddy HTTPS** below if your browser shows a certificate warning.
+
+### Environment variables
+
+Copy `docker/.env.example` to `docker/.env` and set as needed:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `CB_DOMAIN` | `circuitbreaker.local` | Domain Caddy listens on. Use a public FQDN for automatic ACME certs. |
+| `CB_TLS_EMAIL` | _(empty)_ | Required for Let's Encrypt on public domains. |
+| `CB_LOCAL_CERTS` | `local_certs` | Set to empty string to use ACME on a public domain. |
+| `CB_DB_URL` | SQLite | Override to `postgresql://breaker:pass@postgres:5432/circuitbreaker` to use the optional PG service. |
+| `CB_VAULT_KEY` | _(auto)_ | Fernet key for secret encryption. Auto-generated during OOBE; persisted to `/data/.env` in the volume. |
+| `CB_DB_PASSWORD` | `breaker` | PostgreSQL password (only used with `--profile pg`). |
+
+### Caddy HTTPS — CA Certificate
+
+Caddy issues a self-signed CA for `.local` / LAN domains.
+Browsers won't trust it until you install the CA certificate.
+
+**Download the cert** (available over HTTP before redirecting):
+
+```
+http://circuitbreaker.local/caddy-root-ca.crt
+```
+
+Or click the **Download CA Certificate** button shown in the first-run OOBE wizard.
+
+**Install instructions:**
+
+| OS | Steps |
+|----|-------|
+| **macOS** | Double-click `caddy-root-ca.crt` → Keychain Access → select *Always Trust* |
+| **Windows** | Double-click → *Install Certificate* → *Local Machine* → *Trusted Root Certification Authorities* |
+| **Linux (Debian/Ubuntu)** | `sudo cp caddy-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
+| **Firefox** | Settings → Privacy & Security → Certificates → *Import* |
+| **Chrome/Edge** | Uses the OS trust store (macOS/Windows). On Linux: Settings → Security → *Manage Certificates* |
+
+For a **public domain**, set `CB_DOMAIN=myserver.example.com` and `CB_TLS_EMAIL=admin@example.com`. Caddy will provision a trusted Let's Encrypt certificate automatically — no manual cert installation needed.
+
+### ARP Scan / Full Discovery
+
+By default, discovery uses nmap TCP/ICMP and works without elevated privileges. To enable ARP scanning (faster, more reliable on LAN):
+
+> **Native Linux Docker only — not supported on Docker Desktop (macOS / Docker Desktop for Linux).**
+> `network_mode: host` is required so the container can reach your LAN directly. Docker Desktop runs containers inside a VM, so host mode accesses the VM's network, not your LAN, and breaks the nginx → backend proxy.
+
+1. In `docker/docker-compose.yml`, uncomment under the `backend` service:
+   ```yaml
+   cap_add:
+     - NET_RAW
+     - NET_ADMIN
+   network_mode: "host"
+   ```
+2. Uncomment under the `frontend` service:
+   ```yaml
+   extra_hosts:
+     - "backend:host-gateway"
+   ```
+3. Restart: `docker compose -f docker/docker-compose.yml up -d`
+
+**Security note:** `NET_RAW` + `NET_ADMIN` allow the container to craft and send arbitrary raw packets. Only enable this on trusted, isolated homelab networks.
+
+When `network_mode: host` is active, IPv6 sysctls cannot be set per-container (they share the host namespace). To disable IPv6 on the host instead:
+```bash
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+```
+
+---
+
 ## Build from Source
 
 ```bash
