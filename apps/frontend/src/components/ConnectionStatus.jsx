@@ -4,13 +4,22 @@
  * Appears as a fixed bottom-right pill when the SSE stream or the
  * discovery WebSocket loses its connection.  Disappears automatically
  * when all streams are back online.
+ *
+ * A 5-second grace period prevents the banner from flashing during
+ * normal page loads.  A dismiss button lets mobile users hide it
+ * manually if the backend is temporarily unreachable.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { sseEmitter, isSSEConnected } from '../lib/sseClient.js';
+
+const GRACE_MS = 5000;
 
 export default function ConnectionStatus({ discoveryConnected }) {
   const [sseConnected, setSseConnected] = useState(isSSEConnected());
+  const [visible, setVisible] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const timerRef = useRef(null);
 
   useEffect(() => {
     const onStatus = ({ connected }) => setSseConnected(connected);
@@ -19,7 +28,37 @@ export default function ConnectionStatus({ discoveryConnected }) {
   }, []);
 
   const offline = !sseConnected || discoveryConnected === false;
-  if (!offline) return null;
+
+  // When we come back online, reset dismiss state so the banner can reappear
+  // if connectivity is lost again.
+  useEffect(() => {
+    if (!offline) {
+      setVisible(false);
+      setDismissed(false);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+
+    // Only show the banner after the grace period to avoid flashing on load
+    if (!timerRef.current) {
+      timerRef.current = setTimeout(() => {
+        setVisible(true);
+        timerRef.current = null;
+      }, GRACE_MS);
+    }
+
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [offline]);
+
+  if (!visible || dismissed) return null;
 
   return (
     <div
@@ -41,7 +80,6 @@ export default function ConnectionStatus({ discoveryConnected }) {
         color: 'rgba(199, 210, 254, 0.9)',
         backdropFilter: 'blur(6px)',
         boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-        pointerEvents: 'none',
         userSelect: 'none',
       }}
     >
@@ -60,6 +98,23 @@ export default function ConnectionStatus({ discoveryConnected }) {
         ))}
       </span>
       Reconnecting to live data...
+      <button
+        type="button"
+        aria-label="Dismiss"
+        onClick={() => setDismissed(true)}
+        style={{
+          marginLeft: 4,
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          color: 'rgba(199, 210, 254, 0.6)',
+          fontSize: 14,
+          lineHeight: 1,
+          padding: '0 2px',
+        }}
+      >
+        ×
+      </button>
       <style>{`
         @keyframes cb-pulse {
           0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }

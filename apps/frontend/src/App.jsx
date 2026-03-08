@@ -45,8 +45,9 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
-  const { pendingCount, connected: discoveryConnected } = useDiscoveryStream();
+  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, authEnabled } =
+    useAuth();
+  const { pendingCount, connected: discoveryConnected } = useDiscoveryStream({ authEnabled });
 
   // Start the SSE client once at app root; tear down on unmount
   useEffect(() => {

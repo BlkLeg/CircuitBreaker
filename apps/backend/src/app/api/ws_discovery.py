@@ -123,7 +123,11 @@ async def discovery_stream(websocket: WebSocket) -> None:
         else:
             with _db_session.SessionLocal() as db:
                 cfg = get_or_create_settings(db)
-                if cfg.jwt_secret:
+                # When auth is disabled, any connection is allowed through.
+                if not cfg.auth_enabled:
+                    authenticated = True
+                    user_id = 0  # anonymous sentinel
+                elif cfg.jwt_secret:
                     if is_session_revoked(db, raw_token):
                         authenticated = False
                     else:

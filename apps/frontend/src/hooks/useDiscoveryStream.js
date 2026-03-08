@@ -50,7 +50,7 @@ function getWsUrl() {
   return `${proto}://${host}/api/v1/discovery/stream`;
 }
 
-export function useDiscoveryStream() {
+export function useDiscoveryStream({ authEnabled = true } = {}) {
   const [connected, setConnected] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
@@ -88,8 +88,8 @@ export function useDiscoveryStream() {
     }
 
     const token = localStorage.getItem(TOKEN_KEY);
-    if (!token) {
-      // No token — wait for auth; will reconnect on visibility change
+    if (!token && authEnabled) {
+      // Auth is enabled but no token yet — wait for login
       return;
     }
 
@@ -97,7 +97,8 @@ export function useDiscoveryStream() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      ws.send(token);
+      // Send empty string when auth is disabled; backend accepts it in that mode
+      ws.send(token ?? '');
     };
 
     ws.onmessage = (event) => {
@@ -224,7 +225,7 @@ export function useDiscoveryStream() {
       // onclose fires after onerror — reconnect logic lives there
       ws.close();
     };
-  }, [clearRetry]);
+  }, [clearRetry, authEnabled]);
 
   // Mount: connect and set up visibility listener
   useEffect(() => {
