@@ -30,8 +30,14 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 
 - Authentication on/off
 - Session timeout
+- Password Resets (available when SMTP is enabled)
 
-### Discovery behavior
+### Email Notifications & SMTP
+
+- Outbound Email Server Configuration (Host, Port, User, TLS/SSL)
+- Enables password reset flows for users locked out of their accounts.
+
+### Integrations
 
 - Discovery-specific options from the Discovery settings area
 

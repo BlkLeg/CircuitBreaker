@@ -19,6 +19,7 @@ WORKDIR /app/backend
 # exercised on ARM where source builds are necessary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    g++ \
     libjpeg-dev \
     zlib1g-dev \
     libffi-dev \

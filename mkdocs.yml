@@ -29,6 +29,7 @@ nav:
       - Metrics: metrics.md
       - Cross-Browser Audit: cross-browser-audit.md
   - Updates:
+      - v0.2.0 Overview: updates/v0.2.0-overview.md
       - v0.1.4 Release Notes: updates/v0-1-4_release.md
       - v0.1.4 Docs SOT: updates/v0-1-4_docs_sot.md
       - v0.1.2 Patch Notes: updates/v0-1-2_patch.md

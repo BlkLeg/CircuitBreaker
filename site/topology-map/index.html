@@ -99,7 +99,7 @@
     </li>
         </ul>
     </li>
-    <li class="toctree-l2"><a class="reference internal" href="#side-panel-details">Side Panel Details</a>
+    <li class="toctree-l2"><a class="reference internal" href="#side-panel-details-and-live-pulse-telemetry">Side Panel Details and Live Pulse Telemetry</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#live-health-and-status">Live Health and Status</a>
     </li>
@@ -132,6 +132,8 @@
               </ul>
               <p class="caption"><span class="caption-text">Updates</span></p>
               <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0.2.0-overview/">v0.2.0 Overview</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
@@ -185,9 +187,16 @@
 </ul>
 <h3 id="layout-and-view">Layout and view<a class="headerlink" href="#layout-and-view" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Switch between <strong>Dagre</strong>, <strong>Force</strong>, <strong>Tree</strong>, and <strong>Manual/Saved</strong> layouts.</li>
+<li>Switch between traditional automated structures like <strong>Dagre</strong>, <strong>Force</strong>, and <strong>Tree</strong>.</li>
+<li>For advanced architectural needs, use the new intelligent layouts:<ul>
+<li><strong>Network-First Hierarchical</strong>: Orders networks at the top, cascading down to hypervisors, compute nodes, and then services.</li>
+<li><strong>Radial and Concentric</strong>: Radiates service-centric views outwards—perfect for microservice and Docker service visualizations.</li>
+<li><strong>Layered VLAN/Segment view</strong>: Arranges components left-to-right (WAN, DMZ, LAN, Management, etc).</li>
+<li><strong>Circular Cluster</strong>: Designed specifically to showcase Proxmox virtualization pools or Docker overlays.</li>
+</ul>
+</li>
 <li>Use <strong>Cloud View</strong> to simplify large mixed maps.</li>
-<li>Save current placement with <strong>Save Positions</strong>.</li>
+<li>Save current placement with <strong>Save Positions</strong> (all customized options, including groupings and layouts, adhere to this state when reloaded).</li>
 <li>Use <strong>Refresh</strong> to reload current data.</li>
 </ul>
 <h3 id="legend-and-navigation">Legend and navigation<a class="headerlink" href="#legend-and-navigation" title="Permanent link">&para;</a></h3>
@@ -234,12 +243,13 @@
 <li>Remove labels when no longer needed.</li>
 </ul>
 <hr />
-<h2 id="side-panel-details">Side Panel Details<a class="headerlink" href="#side-panel-details" title="Permanent link">&para;</a></h2>
+<h2 id="side-panel-details-and-live-pulse-telemetry">Side Panel Details and Live Pulse Telemetry<a class="headerlink" href="#side-panel-details-and-live-pulse-telemetry" title="Permanent link">&para;</a></h2>
 <p>Selecting a node opens details such as:</p>
 <ul>
 <li>Related nodes and relationship direction</li>
 <li>Key system details for that entity</li>
 <li>Effective status and source status signals</li>
+<li><strong>Live Pulse Metrics</strong>: Host, VM, LXC, and service nodes stream inline metrics directly on hover via Pulse cards (e.g., showing CPU, memory, disk, and network stats updated live from backend poller jobs, like Proxmox). This keeps telemetry centralized without needing external dashboards.</li>
 <li>Uplink speed controls where supported</li>
 <li>Quick jump to full entity page</li>
 </ul>

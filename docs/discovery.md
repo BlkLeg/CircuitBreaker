@@ -19,7 +19,15 @@ Nothing is added automatically without your approval.
 
 ## Discovery Workflow
 
-### 1) Create a scan profile
+### 1) Choose a Discovery Mode
+
+Circuit Breaker allows you to balance discovery depth against network safety and isolation requirements:
+
+- **Safe Mode (Default):** Performs ICMP pings (using user-space methods) and TCP connect scans on common ports (22, 80, 443, 8080, 8443). Safe mode operates entirely within standard Docker environments without requiring elevated capabilities like `NET_RAW`.
+- **Full Mode:** Utilizes comprehensive port scanning, ARP requests, and Scapy methodologies for deeper inspection, including MAC address resolution. This mode requires Docker elevated permissions (`NET_RAW`, `NET_ADMIN`) and usually host network mode.
+- **Docker-Aware Discovery:** If the host's Docker socket (`/var/run/docker.sock`) is mounted read-only into the Circuit Breaker container, the discovery pipeline can directly read container configurations. This automatically populates Docker network modes (bridges, overlays) and maps container services to external exposed ports.
+
+### 2) Create a scan profile
 
 Use **Scan Profiles** when you want a repeatable scan target.
 
@@ -27,10 +35,10 @@ A profile typically includes:
 
 - A name
 - Target range (CIDR)
-- Scan method settings
+- Scan method settings (Safe vs. Full)
 - Schedule options
 
-### 2) Run an ad-hoc scan
+### 3) Run an ad-hoc scan
 
 Use **Ad-hoc Scan** for one-time checks.
 
@@ -40,7 +48,7 @@ This is useful after changes like:
 - Device migration
 - Service move
 
-### 3) Review findings
+### 4) Review findings
 
 Open the **Review Queue** to inspect discovered items before import.
 

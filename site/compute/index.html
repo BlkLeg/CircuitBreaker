@@ -59,6 +59,8 @@
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#adding-compute">Adding Compute</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#proxmox-workloads-clusters">Proxmox Workloads &amp; Clusters</a>
+    </li>
     <li class="toctree-l2"><a class="reference internal" href="#why-compute-mapping-matters">Why Compute Mapping Matters</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#related-guides">Related Guides</a>
@@ -100,6 +102,8 @@
               </ul>
               <p class="caption"><span class="caption-text">Updates</span></p>
               <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0.2.0-overview/">v0.2.0 Overview</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
@@ -149,6 +153,14 @@
 <li><strong>Host hardware</strong> where it runs</li>
 <li><strong>Resource notes</strong> (CPU/memory summary)</li>
 <li><strong>Purpose</strong> of the workload</li>
+</ul>
+<hr />
+<h2 id="proxmox-workloads-clusters">Proxmox Workloads &amp; Clusters<a class="headerlink" href="#proxmox-workloads-clusters" title="Permanent link">&para;</a></h2>
+<p>If you configure a <strong>Proxmox API Integration</strong> within Settings, Circuit Breaker bridges the virtual-to-physical gap effortlessly. QEMU and LXC workloads discovered across the API are automatically mapped downward structurally to their respective host Hardware nodes.</p>
+<p>Features unlocked during Proxmox Discovery include:</p>
+<ul>
+<li><strong>Per-VM &amp; Container Pulse Stats:</strong> Inline rendering of VM CPU/memory/disk performance dynamically syncing directly to the front-end map.</li>
+<li><strong>Run State Inference:</strong> A transparent green/red halo indicating the live <code>running</code> or <code>stopped</code> condition of the workload directly over its topology icon.</li>
 </ul>
 <hr />
 <h2 id="why-compute-mapping-matters">Why Compute Mapping Matters<a class="headerlink" href="#why-compute-mapping-matters" title="Permanent link">&para;</a></h2>

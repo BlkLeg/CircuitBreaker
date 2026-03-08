@@ -38,7 +38,25 @@ Use this profile when more users or broader network access are involved.
 
 ---
 
-## 3) Practical Security Habits
+## 3) Secrets Management & Vault
+
+Circuit Breaker leverages an AES-powered secure vault to persist sensitive settings entirely locally without compromising plaintext readability. 
+
+By defining the `CB_VAULT_KEY` environment variable on deployment, Circuit Breaker can strictly lock:
+
+- **SMTP Access Credentials** (Used for user password resets / outbound messaging).
+- **Proxmox API Tokens** (The Secret component of the PVEAuditor token ID used during API cluster scans).
+- **SNMP Community Strings** & **iDRAC/iLO details**.
+
+**Vault Best Practices:**
+
+- Treat `CB_VAULT_KEY` like a master root key. 
+- You must generate a highly secure base-64 encoded cryptographic string for `CB_VAULT_KEY`.
+- If you lose or alter the `CB_VAULT_KEY` across restarts, the stored vault secrets in the database become unreadable and any associated integrations (like Proxmox maps or SMTP pipelines) will fail to authenticate until re-entered in Settings.
+
+---
+
+## 4) Practical Security Habits
 
 - Rotate tokens on a regular schedule.
 - Avoid sharing admin credentials.
