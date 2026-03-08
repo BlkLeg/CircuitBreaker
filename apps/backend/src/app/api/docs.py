@@ -217,9 +217,17 @@ async def upload_doc_image(
     doc_dir = (_DOC_UPLOADS_DIR / str(doc_id)).resolve()
     if not doc_dir.is_relative_to(doc_root):
         raise HTTPException(status_code=400, detail="Invalid document ID.")
+
     doc_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid.uuid4().hex[:12]}.{ext}"
-    (doc_dir / filename).write_bytes(data)
+    # Validate filename doesn't contain path separators
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    file_path = doc_dir / filename
+    # Final check that resolved file path is within the doc directory
+    if not file_path.resolve().is_relative_to(doc_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    file_path.write_bytes(data)
 
     url = f"/uploads/docs/{doc_id}/{filename}"
     return {"url": url}

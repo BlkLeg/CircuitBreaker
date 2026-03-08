@@ -398,14 +398,10 @@ def delete_service(db: Session, service_id: int) -> None:
         .all()
     ):
         db.delete(link)
-    for link in list(
-        db.execute(  # type: ignore[assignment]
-            select(ServiceMisc).where(ServiceMisc.service_id == svc.id)
-        )
-        .scalars()
-        .all()
+    for misc_link in list(
+        db.execute(select(ServiceMisc).where(ServiceMisc.service_id == svc.id)).scalars().all()
     ):
-        db.delete(link)
+        db.delete(misc_link)
     db.flush()
     db.delete(svc)
     db.commit()

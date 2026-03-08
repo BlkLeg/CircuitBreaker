@@ -36,6 +36,7 @@ import IconPickerModal, { getIconEntry } from '../components/common/IconPickerMo
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import FormModal from '../components/common/FormModal';
 import { getVendorIcon } from '../icons/vendorIcons';
+import { useTimezone } from '../context/TimezoneContext';
 import ContextMenu from '../components/map/ContextMenu';
 import TelemetrySidebar from '../components/map/TelemetrySidebar';
 import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
@@ -863,6 +864,10 @@ function parseLayoutData(raw) {
       visualLines: Array.isArray(parsed.visualLines) ? parsed.visualLines : [],
       nodeShapes:
         parsed.nodeShapes && typeof parsed.nodeShapes === 'object' ? parsed.nodeShapes : {},
+      edgeMode: parsed.edgeMode || 'smoothstep',
+      edgeLabelVisible: parsed.edgeLabelVisible ?? true,
+      nodeSpacing: parsed.nodeSpacing || 1,
+      groupBy: parsed.groupBy || 'none',
     };
   }
   return {
@@ -872,6 +877,10 @@ function parseLayoutData(raw) {
     labels: [],
     visualLines: [],
     nodeShapes: {},
+    edgeMode: 'smoothstep',
+    edgeLabelVisible: true,
+    nodeSpacing: 1,
+    groupBy: 'none',
   };
 }
 
@@ -1235,6 +1244,7 @@ function resolveNonOverlappingPosition(candidate, nodesArr, movingNodeId) {
 
 function MapInternal() {
   const isMobile = useIsMobile();
+  const { timezone } = useTimezone();
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
   const viewport = useViewport();
   const hasRestoredViewport = useRef(false);
@@ -1776,6 +1786,10 @@ function MapInternal() {
       let savedLabels = [];
       let savedVisualLines = [];
       let savedNodeShapes = {};
+      let savedEdgeMode = null;
+      let savedEdgeLabelVisible = null;
+      let savedNodeSpacing = null;
+      let savedGroupBy = null;
       try {
         const scopedLayoutName = getLayoutName();
         const layoutNames =
@@ -1791,12 +1805,21 @@ function MapInternal() {
           savedLabels = Array.isArray(parsed.labels) ? parsed.labels : [];
           savedVisualLines = Array.isArray(parsed.visualLines) ? parsed.visualLines : [];
           savedNodeShapes = parsed.nodeShapes || {};
+          savedEdgeMode = parsed.edgeMode;
+          savedEdgeLabelVisible = parsed.edgeLabelVisible;
+          savedNodeSpacing = parsed.nodeSpacing;
+          savedGroupBy = parsed.groupBy;
           setLastSaved(layoutRes.data.updated_at);
           break;
         }
       } catch {
         /* no saved layout */
       }
+
+      setEdgeMode(savedEdgeMode || 'smoothstep');
+      setEdgeLabelVisible(savedEdgeLabelVisible ?? true);
+      setNodeSpacing(savedNodeSpacing || 1);
+      setGroupBy(savedGroupBy || 'none');
 
       const normalizedSavedBoundaries = savedBoundaries
         .filter(
@@ -2084,12 +2107,16 @@ function MapInternal() {
           endFlow: vl.endFlow,
           lineType: vl.lineType,
         })),
+        edgeMode,
+        edgeLabelVisible,
+        nodeSpacing,
+        groupBy,
       };
       await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
       setLastSaved(new Date().toISOString());
       dirtyRef.current = false;
     },
-    [boundaries, getLayoutName]
+    [boundaries, getLayoutName, edgeMode, edgeLabelVisible, nodeSpacing, groupBy]
   );
 
   // Keep the ref current so autoPlaceNew can call it without a forward-reference.
@@ -3963,7 +3990,7 @@ function MapInternal() {
               )}
               {lastSaved && (
                 <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                  Saved: {new Date(lastSaved).toLocaleTimeString()}
+                  Saved: {new Date(lastSaved).toLocaleTimeString(undefined, { timeZone: timezone })}
                 </span>
               )}
             </div>
