@@ -1,6 +1,7 @@
 # Generated from poetry.lock — do not edit manually.
 # Regenerate: python3 scripts/gen_requirements.py
 # SQLite driver (default). For PostgreSQL see requirements-pg.txt.
+aiosmtplib>=3.0
 aiosqlite>=0.20.0
 alembic==1.18.4
 annotated-doc==0.0.4
