@@ -1,5 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
+import { Maximize2, Minimize2 } from 'lucide-react';
 
 const LAYOUTS = [
   { id: 'dagre', label: 'Dagre (Hierarchical)', group: 'Standard' },
@@ -67,6 +68,8 @@ export default function MapToolbar({
   onPreset,
   viewOptions,
   onViewOptionsChange,
+  onFullscreen,
+  isFullscreen,
   style,
 }) {
   const standardLayouts = LAYOUTS.filter((l) => l.group === 'Standard');
@@ -171,6 +174,31 @@ export default function MapToolbar({
           </button>
         </>
       )}
+
+      {onFullscreen && (
+        <>
+          <span style={_sep} />
+          <button
+            onClick={onFullscreen}
+            title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            style={{
+              ..._baseBtn,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '5px 10px',
+              background: isFullscreen ? 'var(--color-glow)' : 'var(--color-bg)',
+              color: isFullscreen ? 'var(--color-primary)' : 'var(--color-text-muted)',
+              border: isFullscreen
+                ? '1px solid var(--color-primary)'
+                : '1px solid var(--color-border)',
+            }}
+          >
+            {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            {isFullscreen ? 'Exit' : 'Fullscreen'}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -185,6 +213,8 @@ MapToolbar.propTypes = {
     nodeSpacing: PropTypes.number,
   }),
   onViewOptionsChange: PropTypes.func,
+  onFullscreen: PropTypes.func,
+  isFullscreen: PropTypes.bool,
   style: PropTypes.object,
 };
 
@@ -192,6 +222,8 @@ MapToolbar.defaultProps = {
   onPreset: null,
   viewOptions: { edgeMode: 'smoothstep', edgeLabelVisible: true, nodeSpacing: 1 },
   onViewOptionsChange: null,
+  onFullscreen: null,
+  isFullscreen: false,
   style: {},
 };
 

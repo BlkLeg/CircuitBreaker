@@ -2,11 +2,13 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { Eye, EyeOff } from 'lucide-react';
 import { logsApi } from '../api/client';
 import { IconImg } from '../components/common/IconPickerModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import TimestampCell from '../components/TimestampCell.jsx';
 import { formatAbsolute } from '../lib/time.js';
+import { useAuth } from '../context/AuthContext.jsx';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
 
@@ -510,7 +512,7 @@ ExpandedContent.propTypes = {
   log: PropTypes.object.isRequired,
 };
 
-function LogRow({ log, expanded, onToggle, navigate }) {
+function LogRow({ log, expanded, onToggle, navigate, isAdmin, revealed, onToggleReveal }) {
   const color = actionColor(log.action);
   const isLoginFailed = log.action === 'login_failed';
   const hasDiff = !!(log.diff || log.old_value || log.new_value);
@@ -598,7 +600,7 @@ function LogRow({ log, expanded, onToggle, navigate }) {
           </div>
         </td>
 
-        {/* IP */}
+        {/* IP — blurred by default; admin can reveal per-row */}
         <td
           style={{
             padding: '10px 12px',
@@ -608,14 +610,41 @@ function LogRow({ log, expanded, onToggle, navigate }) {
           }}
         >
           {log.ip_address ? (
-            <span
-              style={{
-                fontWeight: isLoginFailed ? 700 : 400,
-                color: isLoginFailed ? '#f9a825' : undefined,
-              }}
-            >
-              {log.ip_address}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span
+                style={{
+                  fontWeight: isLoginFailed ? 700 : 400,
+                  color: isLoginFailed ? '#f9a825' : undefined,
+                  filter: revealed ? 'none' : 'blur(4px)',
+                  userSelect: revealed ? 'text' : 'none',
+                  transition: 'filter 0.2s',
+                }}
+              >
+                {log.ip_address}
+              </span>
+              {isAdmin && (
+                <button
+                  type="button"
+                  title={revealed ? 'Hide IP' : 'Reveal IP'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleReveal(log.id);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 2,
+                    color: 'var(--color-text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                  }}
+                  aria-label={revealed ? 'Hide IP address' : 'Reveal IP address'}
+                >
+                  {revealed ? <EyeOff size={12} /> : <Eye size={12} />}
+                </button>
+              )}
+            </div>
           ) : (
             <span style={{ opacity: 0.4 }}>—</span>
           )}
@@ -651,6 +680,15 @@ LogRow.propTypes = {
   expanded: PropTypes.bool.isRequired,
   onToggle: PropTypes.func.isRequired,
   navigate: PropTypes.func.isRequired,
+  isAdmin: PropTypes.bool,
+  revealed: PropTypes.bool,
+  onToggleReveal: PropTypes.func,
+};
+
+LogRow.defaultProps = {
+  isAdmin: false,
+  revealed: false,
+  onToggleReveal: () => {},
 };
 
 // ── Virtualized table (used when > 50 rows to avoid DOM bloat) ────────────────────────────────
@@ -666,6 +704,10 @@ function LogsVirtualTable({
   setTimestampSort,
   navigate,
   tableContainerRef,
+  isAdmin,
+  revealedIps,
+  onToggleRevealIp,
+  onRevealAll,
 }) {
   const useVirtual = logs.length > 50;
 
@@ -709,7 +751,27 @@ function LogsVirtualTable({
             <th>Action</th>
             <th>Entity</th>
             <th>Actor</th>
-            <th>IP</th>
+            <th style={{ position: 'relative' }}>
+              IP
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={onRevealAll}
+                  title="Reveal all IPs in this view"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    marginLeft: 6,
+                    color: 'var(--color-text-muted)',
+                    verticalAlign: 'middle',
+                  }}
+                  aria-label="Reveal all IP addresses"
+                >
+                  <Eye size={11} />
+                </button>
+              )}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -742,6 +804,9 @@ function LogsVirtualTable({
                 expanded={expandedId === log.id}
                 onToggle={() => setExpandedId((prev) => (prev === log.id ? null : log.id))}
                 navigate={navigate}
+                isAdmin={isAdmin}
+                revealed={revealedIps.has(log.id)}
+                onToggleReveal={onToggleRevealIp}
               />
             );
           })}
@@ -765,14 +830,27 @@ LogsVirtualTable.propTypes = {
   setTimestampSort: PropTypes.func.isRequired,
   navigate: PropTypes.func.isRequired,
   tableContainerRef: PropTypes.object.isRequired,
+  isAdmin: PropTypes.bool,
+  revealedIps: PropTypes.instanceOf(Set),
+  onToggleRevealIp: PropTypes.func,
+  onRevealAll: PropTypes.func,
 };
 
+LogsVirtualTable.defaultProps = {
+  expandedId: null,
+  isAdmin: false,
+  revealedIps: new Set(),
+  onToggleRevealIp: () => {},
+  onRevealAll: () => {},
+};
 // ── Main Page ───────────────────────────────────────────────────────────────────────────────
 
 function LogsPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
 
   const [logs, setLogs] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -781,6 +859,20 @@ function LogsPage() {
   const [expandedId, setExpandedId] = useState(null);
   const [availableActions, setAvailableActions] = useState([]);
   const [availableActors, setAvailableActors] = useState([]);
+  const [revealedIps, setRevealedIps] = useState(() => new Set());
+
+  const handleToggleRevealIp = useCallback((id) => {
+    setRevealedIps((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const handleRevealAll = useCallback(() => {
+    setRevealedIps(new Set(logs.map((l) => l.id)));
+  }, [logs]);
 
   const [timestampSort, setTimestampSort] = useState(() => searchParams.get('sort') || 'desc');
   const [limit, setLimit] = useState(() => Number(searchParams.get('limit')) || 100);
@@ -1263,6 +1355,10 @@ function LogsPage() {
         setTimestampSort={setTimestampSort}
         navigate={navigate}
         tableContainerRef={tableContainerRef}
+        isAdmin={isAdmin}
+        revealedIps={revealedIps}
+        onToggleRevealIp={handleToggleRevealIp}
+        onRevealAll={handleRevealAll}
       />
 
       {/* Pagination */}

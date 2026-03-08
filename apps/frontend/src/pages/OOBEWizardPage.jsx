@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Moon,
   Sun,
@@ -15,6 +15,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { authApi } from '../api/auth.js';
+import apiClient from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { applyTheme } from '../theme/applyTheme';
@@ -47,6 +48,7 @@ function timezoneToCity(tz) {
 function OOBEWizardPage({ onCompleted }) {
   const { i18n } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const { login, setAuthEnabled } = useAuth();
   const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
@@ -95,6 +97,18 @@ function OOBEWizardPage({ onCompleted }) {
   const [smtpTls, setSmtpTls] = useState(true);
   const [externalAppUrl, setExternalAppUrl] = useState(settings?.api_base_url ?? '');
 
+  // OAuth bootstrap state — set when returning from OAuth redirect with ?bootstrap=1
+  const [oauthBootstrapToken, setOauthBootstrapToken] = useState(null);
+  const [oauthBootstrapEmail, setOauthBootstrapEmail] = useState(null);
+  const [oauthBootstrapProvider, setOauthBootstrapProvider] = useState(null);
+  // OAuth provider setup sub-form
+  const [oauthSetupMode, setOauthSetupMode] = useState(false);
+  const [oauthSetupProvider, setOauthSetupProvider] = useState('github');
+  const [oauthSetupClientId, setOauthSetupClientId] = useState('');
+  const [oauthSetupClientSecret, setOauthSetupClientSecret] = useState('');
+  const [oauthSetupDiscoveryUrl, setOauthSetupDiscoveryUrl] = useState('');
+  const [oauthSetupSaving, setOauthSetupSaving] = useState(false);
+
   const languages = [
     { value: 'en', label: 'English' },
     { value: 'es', label: 'Español' },
@@ -131,6 +145,44 @@ function OOBEWizardPage({ onCompleted }) {
   useEffect(() => {
     document.documentElement.dataset.theme = selectedThemeMode;
     applyTheme(THEME_PRESETS[DEFAULT_PRESET], DEFAULT_PRESET);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Detect OAuth bootstrap return: /oobe?oauth_token=...&bootstrap=1&provider=...
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const oauthToken = params.get('oauth_token');
+    const isBootstrap = params.get('bootstrap') === '1';
+    if (!oauthToken || !isBootstrap) return;
+
+    // Restore in-progress OOBE state saved before the OAuth redirect
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('oobe_state') || '{}');
+      if (saved.selectedPreset) setSelectedPreset(saved.selectedPreset);
+      if (saved.selectedThemeMode) setSelectedThemeMode(saved.selectedThemeMode);
+      if (saved.timezone) setTimezone(saved.timezone);
+      if (saved.language) setLanguage(saved.language);
+      if (saved.selectedFont) setSelectedFont(saved.selectedFont);
+      if (saved.selectedFontSize) setSelectedFontSize(saved.selectedFontSize);
+      if (saved.weatherLocation) setWeatherLocation(saved.weatherLocation);
+      if (saved.externalAppUrl) setExternalAppUrl(saved.externalAppUrl);
+    } catch {
+      // Ignore parse errors — defaults are fine
+    }
+    sessionStorage.removeItem('oobe_state');
+
+    setOauthBootstrapToken(oauthToken);
+    setOauthBootstrapProvider(params.get('provider') || 'oauth');
+
+    // Fetch the user profile to display their email in the confirmation banner
+    authApi
+      .meWithToken(oauthToken)
+      .then((res) => setOauthBootstrapEmail(res.data?.email || null))
+      .catch(() => {});
+
+    // Clean token from URL without triggering a re-render loop
+    globalThis.history.replaceState({}, '', '/oobe');
+    // Skip account creation step — go straight to theme
+    setStep(3);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -243,7 +295,7 @@ function OOBEWizardPage({ onCompleted }) {
   };
 
   const goNext = () => {
-    if (step === 2 && !accountValid) {
+    if (step === 2 && !oauthBootstrapToken && !accountValid) {
       setError('Please fix account validation errors before continuing.');
       return;
     }
@@ -290,8 +342,77 @@ function OOBEWizardPage({ onCompleted }) {
     document.documentElement.style.fontSize = `${size.rootPx}px`;
   };
 
+  const handleOauthSignup = async () => {
+    if (!oauthSetupClientId.trim() || !oauthSetupClientSecret.trim()) {
+      setError('Client ID and Client Secret are required.');
+      return;
+    }
+    if (oauthSetupProvider === 'oidc' && !oauthSetupDiscoveryUrl.trim()) {
+      setError('Discovery URL is required for OIDC.');
+      return;
+    }
+    setError('');
+    setOauthSetupSaving(true);
+    try {
+      // Persist provider config to backend before redirecting
+      if (oauthSetupProvider === 'oidc') {
+        const existing = await apiClient
+          .get('/settings/oauth')
+          .then((r) => r.data.oidc_providers || []);
+        const newEntry = {
+          slug: 'oidc',
+          name: 'oidc',
+          label: 'OIDC',
+          enabled: true,
+          client_id: oauthSetupClientId.trim(),
+          client_secret: oauthSetupClientSecret.trim(),
+          discovery_url: oauthSetupDiscoveryUrl.trim(),
+        };
+        const merged = [...existing.filter((p) => p.slug !== 'oidc'), newEntry];
+        await apiClient.patch('/settings/oauth', { oidc_providers: merged });
+      } else {
+        await apiClient.patch('/settings/oauth', {
+          oauth_providers: {
+            [oauthSetupProvider]: {
+              enabled: true,
+              client_id: oauthSetupClientId.trim(),
+              client_secret: oauthSetupClientSecret.trim(),
+            },
+          },
+        });
+      }
+    } catch {
+      setError('Failed to save OAuth provider settings. Please try again.');
+      setOauthSetupSaving(false);
+      return;
+    }
+
+    // Save in-progress OOBE state so it survives the OAuth redirect
+    sessionStorage.setItem(
+      'oobe_state',
+      JSON.stringify({
+        selectedPreset,
+        selectedThemeMode,
+        timezone,
+        language,
+        selectedFont,
+        selectedFontSize,
+        weatherLocation,
+        externalAppUrl,
+      })
+    );
+
+    // Navigate to OAuth authorize endpoint (full-page redirect)
+    if (oauthSetupProvider === 'oidc') {
+      globalThis.location.href = '/api/v1/auth/oauth/oidc/oidc';
+    } else {
+      globalThis.location.href = `/api/v1/auth/oauth/${oauthSetupProvider}`;
+    }
+  };
+
   const submitBootstrap = async () => {
-    if (!accountValid) {
+    const localAccountRequired = !oauthBootstrapToken;
+    if (localAccountRequired && !accountValid) {
       setStep(2);
       setError('Account details are invalid.');
       return;
@@ -299,10 +420,7 @@ function OOBEWizardPage({ onCompleted }) {
     setSubmitting(true);
     setError('');
     try {
-      const response = await authApi.bootstrapInitialize({
-        email,
-        password,
-        display_name: displayName || undefined,
+      const sharedSettings = {
         theme_preset: selectedPreset,
         api_base_url: externalAppUrl.trim() || undefined,
         theme: selectedThemeMode,
@@ -323,7 +441,23 @@ function OOBEWizardPage({ onCompleted }) {
               smtp_tls: smtpTls,
             }
           : {}),
-      });
+      };
+
+      let response;
+      if (oauthBootstrapToken) {
+        response = await authApi.bootstrapInitializeOAuth({
+          oauth_token: oauthBootstrapToken,
+          display_name: displayName || undefined,
+          ...sharedSettings,
+        });
+      } else {
+        response = await authApi.bootstrapInitialize({
+          email,
+          password,
+          display_name: displayName || undefined,
+          ...sharedSettings,
+        });
+      }
 
       const token = response.data.token;
       let user = response.data.user;
@@ -721,137 +855,422 @@ function OOBEWizardPage({ onCompleted }) {
             )}
 
             {step === 2 && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  goNext();
-                }}
-                noValidate
-              >
+              <div>
                 <h2 className="login-card-title">Create Account</h2>
                 <p className="login-card-subtitle">
                   Create the first admin account for this installation.
                 </p>
 
-                <div className="oobe-avatar-wrap">
-                  <button
-                    type="button"
-                    className="oobe-avatar-btn"
-                    onClick={() => photoFileRef.current?.click()}
-                    title="Upload profile photo (optional)"
+                {/* ── OAuth confirmation banner (shown after returning from OAuth) ── */}
+                {oauthBootstrapToken && (
+                  <div
+                    style={{
+                      background: 'var(--color-surface-2, var(--color-surface))',
+                      border: '1px solid var(--color-online)',
+                      borderRadius: '0.5rem',
+                      padding: '0.875rem 1rem',
+                      marginBottom: '1rem',
+                    }}
                   >
-                    <img
-                      src={sanitizeImageSrc(photoPreview || gravatarPreview)}
-                      alt="Avatar preview"
-                      className="oobe-avatar"
-                    />
-                    <span className="oobe-avatar-overlay" aria-hidden="true">
-                      📷
-                    </span>
-                  </button>
-                  {photoFile ? (
-                    <div className="oobe-avatar-status">
-                      <span className="oobe-avatar-status-text">✓ Custom photo ready</span>
-                      <button
-                        type="button"
-                        className="oobe-avatar-clear"
-                        onClick={clearPhoto}
-                        title="Remove custom photo"
-                      >
-                        <X size={11} /> Remove
-                      </button>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        marginBottom: '0.375rem',
+                      }}
+                    >
+                      <CheckCircle2
+                        size={16}
+                        style={{ color: 'var(--color-online)', flexShrink: 0 }}
+                      />
+                      <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                        Signed in via {oauthBootstrapProvider || 'OAuth'}
+                      </span>
                     </div>
-                  ) : (
-                    <span className="oobe-avatar-status-text oobe-avatar-status-text--muted">
-                      Using Gravatar · click to upload your own
-                    </span>
-                  )}
-                  <input
-                    ref={photoFileRef}
-                    type="file"
-                    accept="image/jpeg,image/png"
-                    style={{ display: 'none' }}
-                    onChange={handlePhotoFile}
-                  />
-                </div>
+                    {oauthBootstrapEmail && (
+                      <p
+                        style={{
+                          fontSize: '0.8125rem',
+                          color: 'var(--color-text-muted)',
+                          margin: '0 0 0.5rem 1.5rem',
+                        }}
+                      >
+                        {oauthBootstrapEmail}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{
+                        fontSize: '0.75rem',
+                        padding: '0.25rem 0.625rem',
+                        marginLeft: '1.5rem',
+                      }}
+                      onClick={() => {
+                        setOauthBootstrapToken(null);
+                        setOauthBootstrapEmail(null);
+                        setOauthBootstrapProvider(null);
+                      }}
+                    >
+                      Change account
+                    </button>
+                  </div>
+                )}
 
-                <div className="login-field">
-                  <label className="login-label" htmlFor="oobe-email">
-                    Email
-                  </label>
-                  <input
-                    id="oobe-email"
-                    type="email"
-                    className="login-input"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </div>
+                {/* ── Local sign-up form + OAuth alternative (hidden when OAuth bootstrap is active) ── */}
+                {!oauthBootstrapToken && (
+                  <>
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        goNext();
+                      }}
+                      noValidate
+                    >
+                      <div className="oobe-avatar-wrap">
+                        <button
+                          type="button"
+                          className="oobe-avatar-btn"
+                          onClick={() => photoFileRef.current?.click()}
+                          title="Upload profile photo (optional)"
+                        >
+                          <img
+                            src={sanitizeImageSrc(photoPreview || gravatarPreview)}
+                            alt="Avatar preview"
+                            className="oobe-avatar"
+                          />
+                          <span className="oobe-avatar-overlay" aria-hidden="true">
+                            📷
+                          </span>
+                        </button>
+                        {photoFile ? (
+                          <div className="oobe-avatar-status">
+                            <span className="oobe-avatar-status-text">✓ Custom photo ready</span>
+                            <button
+                              type="button"
+                              className="oobe-avatar-clear"
+                              onClick={clearPhoto}
+                              title="Remove custom photo"
+                            >
+                              <X size={11} /> Remove
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="oobe-avatar-status-text oobe-avatar-status-text--muted">
+                            Using Gravatar · click to upload your own
+                          </span>
+                        )}
+                        <input
+                          ref={photoFileRef}
+                          type="file"
+                          accept="image/jpeg,image/png"
+                          style={{ display: 'none' }}
+                          onChange={handlePhotoFile}
+                        />
+                      </div>
 
-                <div className="login-field">
-                  <label className="login-label" htmlFor="oobe-display-name">
-                    Display Name (optional)
-                  </label>
-                  <input
-                    id="oobe-display-name"
-                    type="text"
-                    className="login-input"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                  />
-                </div>
+                      <div className="login-field">
+                        <label className="login-label" htmlFor="oobe-email">
+                          Email
+                        </label>
+                        <input
+                          id="oobe-email"
+                          type="email"
+                          className="login-input"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          required
+                        />
+                      </div>
 
-                <div className="login-field">
-                  <label className="login-label" htmlFor="oobe-password">
-                    Password
-                  </label>
-                  <input
-                    id="oobe-password"
-                    type="password"
-                    className="login-input"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
+                      <div className="login-field">
+                        <label className="login-label" htmlFor="oobe-display-name">
+                          Display Name (optional)
+                        </label>
+                        <input
+                          id="oobe-display-name"
+                          type="text"
+                          className="login-input"
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                        />
+                      </div>
 
-                <div className="login-field">
-                  <label className="login-label" htmlFor="oobe-password-confirm">
-                    Confirm Password
-                  </label>
-                  <input
-                    id="oobe-password-confirm"
-                    type="password"
-                    className="login-input"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    required
-                  />
-                </div>
+                      <div className="login-field">
+                        <label className="login-label" htmlFor="oobe-password">
+                          Password
+                        </label>
+                        <input
+                          id="oobe-password"
+                          type="password"
+                          className="login-input"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          required
+                        />
+                      </div>
 
-                <ul className="oobe-rules">
-                  {RULES.map((rule) => (
-                    <li key={rule.label} className={rule.test(password) ? 'pass' : ''}>
-                      {rule.test(password) ? '✓' : '✗'} {rule.label}
-                    </li>
-                  ))}
-                  {confirmPassword && (
-                    <li className={passwordsMatch ? 'pass' : ''}>
-                      {passwordsMatch ? '✓' : '✗'} Passwords match
-                    </li>
-                  )}
-                </ul>
+                      <div className="login-field">
+                        <label className="login-label" htmlFor="oobe-password-confirm">
+                          Confirm Password
+                        </label>
+                        <input
+                          id="oobe-password-confirm"
+                          type="password"
+                          className="login-input"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          required
+                        />
+                      </div>
 
-                <div className="oobe-actions">
-                  <button type="button" className="btn btn-secondary" onClick={goBack}>
-                    Back
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    Next
-                  </button>
-                </div>
-              </form>
+                      <ul className="oobe-rules">
+                        {RULES.map((rule) => (
+                          <li key={rule.label} className={rule.test(password) ? 'pass' : ''}>
+                            {rule.test(password) ? '✓' : '✗'} {rule.label}
+                          </li>
+                        ))}
+                        {confirmPassword && (
+                          <li className={passwordsMatch ? 'pass' : ''}>
+                            {passwordsMatch ? '✓' : '✗'} Passwords match
+                          </li>
+                        )}
+                      </ul>
+
+                      <div className="oobe-actions">
+                        <button type="button" className="btn btn-secondary" onClick={goBack}>
+                          Back
+                        </button>
+                        <button type="submit" className="btn btn-primary">
+                          Next
+                        </button>
+                      </div>
+                    </form>
+
+                    {/* ── OAuth alternative ── */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.75rem',
+                        margin: '1.25rem 0 1rem',
+                      }}
+                    >
+                      <hr
+                        style={{
+                          flex: 1,
+                          border: 'none',
+                          borderTop: '1px solid var(--color-border)',
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: '0.75rem',
+                          color: 'var(--color-text-muted)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        OR
+                      </span>
+                      <hr
+                        style={{
+                          flex: 1,
+                          border: 'none',
+                          borderTop: '1px solid var(--color-border)',
+                        }}
+                      />
+                    </div>
+
+                    {!oauthSetupMode ? (
+                      <div style={{ textAlign: 'center' }}>
+                        <p
+                          style={{
+                            fontSize: '0.8125rem',
+                            color: 'var(--color-text-muted)',
+                            marginBottom: '0.625rem',
+                          }}
+                        >
+                          Sign up with an OAuth provider instead
+                        </p>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'center',
+                            gap: '0.5rem',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          {[
+                            { id: 'github', label: 'GitHub' },
+                            { id: 'google', label: 'Google' },
+                            { id: 'oidc', label: 'OIDC' },
+                          ].map(({ id, label }) => (
+                            <button
+                              key={id}
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: '0.8125rem', padding: '0.375rem 0.875rem' }}
+                              onClick={() => {
+                                setOauthSetupProvider(id);
+                                setOauthSetupMode(true);
+                                setError('');
+                              }}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            marginBottom: '0.75rem',
+                          }}
+                        >
+                          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                            Sign up with{' '}
+                            {{ github: 'GitHub', google: 'Google', oidc: 'OIDC' }[
+                              oauthSetupProvider
+                            ] || oauthSetupProvider}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem' }}
+                            onClick={() => {
+                              setOauthSetupMode(false);
+                              setOauthSetupClientId('');
+                              setOauthSetupClientSecret('');
+                              setOauthSetupDiscoveryUrl('');
+                              setError('');
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-oauth-client-id">
+                            Client ID
+                          </label>
+                          <input
+                            id="oobe-oauth-client-id"
+                            type="text"
+                            className="login-input"
+                            value={oauthSetupClientId}
+                            onChange={(e) => setOauthSetupClientId(e.target.value)}
+                            autoComplete="off"
+                          />
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-oauth-client-secret">
+                            Client Secret
+                          </label>
+                          <input
+                            id="oobe-oauth-client-secret"
+                            type="password"
+                            className="login-input"
+                            value={oauthSetupClientSecret}
+                            onChange={(e) => setOauthSetupClientSecret(e.target.value)}
+                            autoComplete="new-password"
+                          />
+                        </div>
+
+                        {oauthSetupProvider === 'oidc' && (
+                          <div className="login-field">
+                            <label className="login-label" htmlFor="oobe-oauth-discovery-url">
+                              Discovery URL
+                            </label>
+                            <input
+                              id="oobe-oauth-discovery-url"
+                              type="url"
+                              className="login-input"
+                              placeholder="https://auth.example.com/.well-known/openid-configuration"
+                              value={oauthSetupDiscoveryUrl}
+                              onChange={(e) => setOauthSetupDiscoveryUrl(e.target.value)}
+                            />
+                          </div>
+                        )}
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-oauth-redirect-uri">
+                            Callback / Redirect URI
+                          </label>
+                          <div style={{ display: 'flex', gap: '0.375rem', alignItems: 'center' }}>
+                            <input
+                              id="oobe-oauth-redirect-uri"
+                              type="text"
+                              className="login-input"
+                              readOnly
+                              value={
+                                oauthSetupProvider === 'oidc'
+                                  ? `${globalThis.location.origin}/api/v1/auth/oauth/oidc/oidc/callback`
+                                  : `${globalThis.location.origin}/api/v1/auth/oauth/${oauthSetupProvider}/callback`
+                              }
+                              style={{ flex: 1, cursor: 'text' }}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ padding: '0.375rem 0.5rem', flexShrink: 0 }}
+                              title="Copy"
+                              onClick={() => {
+                                const uri =
+                                  oauthSetupProvider === 'oidc'
+                                    ? `${globalThis.location.origin}/api/v1/auth/oauth/oidc/oidc/callback`
+                                    : `${globalThis.location.origin}/api/v1/auth/oauth/${oauthSetupProvider}/callback`;
+                                navigator.clipboard.writeText(uri).catch(() => {});
+                              }}
+                            >
+                              <Copy size={13} />
+                            </button>
+                          </div>
+                          <p
+                            style={{
+                              fontSize: '0.75rem',
+                              color: 'var(--color-text-muted)',
+                              marginTop: '0.25rem',
+                            }}
+                          >
+                            Register this URL as an authorized redirect URI in your OAuth app.
+                          </p>
+                        </div>
+
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-primary login-btn-submit"
+                            disabled={oauthSetupSaving}
+                            onClick={handleOauthSignup}
+                          >
+                            {oauthSetupSaving
+                              ? 'Saving…'
+                              : `Continue with ${{ github: 'GitHub', google: 'Google', oidc: 'OIDC' }[oauthSetupProvider] || oauthSetupProvider}`}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── Nav buttons when returning from OAuth (local form is bypassed) ── */}
+                {oauthBootstrapToken && (
+                  <div className="oobe-actions">
+                    <button type="button" className="btn btn-secondary" onClick={goBack}>
+                      Back
+                    </button>
+                    <button type="button" className="btn btn-primary" onClick={goNext}>
+                      Next
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
 
             {step === 3 && (

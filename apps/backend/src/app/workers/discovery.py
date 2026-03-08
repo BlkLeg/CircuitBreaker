@@ -80,34 +80,54 @@ async def process_job(msg, semaphore: asyncio.Semaphore):
                 pass
 
 
+async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
+    """Create stream and subscribe via JetStream. Returns True on success."""
+    try:
+        js = nats_client._nc.jetstream()
+        try:
+            await js.add_stream(name="DISCOVERY", subjects=["discovery.jobs"])
+        except Exception as e:
+            logger.warning("Stream may already exist: %s", e)
+
+        def cb(msg):
+            asyncio.create_task(process_job(msg, semaphore))
+
+        await js.subscribe("discovery.jobs", queue="discovery_workers", cb=cb)
+        logger.info("Discovery worker subscribed to discovery.jobs")
+        return True
+    except Exception as exc:
+        logger.error("JetStream setup failed: %s", exc)
+        return False
+
+
 async def run_worker():
     # Retry connecting to NATS with backoff — exiting would cause a Docker restart loop.
     backoff = 2
-    while not nats_client._nc:
+    while not nats_client.is_connected:
         await nats_client.connect()
-        if nats_client._nc:
+        if nats_client.is_connected:
             break
         logger.error("Failed to connect to NATS, retrying in %ds…", backoff)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 60)
 
-    js = nats_client._nc.jetstream()
-
-    try:
-        await js.add_stream(name="DISCOVERY", subjects=["discovery.jobs"])
-    except Exception as e:
-        logger.warning(f"Stream may already exist: {e}")
-
     semaphore = asyncio.Semaphore(2)
+    await _setup_jetstream(semaphore)
+    logger.info("Discovery worker started")
 
-    def cb(msg):
-        asyncio.create_task(process_job(msg, semaphore))
-
-    await js.subscribe("discovery.jobs", queue="discovery_workers", cb=cb)
-    logger.info("Discovery worker started and listening on discovery.jobs")
-
+    # Watchdog: re-subscribe via JetStream after NATS reconnects
+    was_connected = True
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(10)
+        now_connected = nats_client.is_connected
+        if was_connected and not now_connected:
+            logger.warning("Discovery worker: NATS disconnected — waiting for auto-reconnect")
+        elif not was_connected and now_connected:
+            logger.info(
+                "Discovery worker: NATS reconnected — re-initialising JetStream subscription"
+            )
+            await _setup_jetstream(semaphore)
+        was_connected = now_connected
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ nav:
       - Services: services.md
       - Auto-Discovery (Beta): discovery.md
       - Settings: settings.md
+      - Authentication & Access: auth-access.md
+      - Webhooks & Notifications: integrations-webhooks-notifications.md
       - Topology Map: topology-map.md
       - Audit Log: audit-log.md
       - Notes & Runbooks: notes.md

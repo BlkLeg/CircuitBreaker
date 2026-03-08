@@ -15,6 +15,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.api import (
     auth,
+    auth_oauth,
     bootstrap,
     catalog,
     categories,
@@ -46,12 +47,14 @@ from app.api.events import router as events_router
 from app.api.ip_check import router as ip_check_router
 from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
+from app.api.notifications import router as notifications_router
 from app.api.proxmox import router as proxmox_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
 from app.api.system import router as system_router
 from app.api.timezones import router as timezones_router
 from app.api.vault import router as vault_router
+from app.api.webhooks import router as webhooks_router
 from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ws_topology import router as ws_topology_router
 from app.core import (
@@ -293,6 +296,10 @@ async def lifespan(app: FastAPI):
     from apscheduler.triggers.cron import CronTrigger
 
     scheduler = AsyncIOScheduler()
+    from app.core.scheduler import set_scheduler_instance
+
+    # Keep discovery profile reloads/status views pointed at the live runtime scheduler.
+    set_scheduler_instance(scheduler)
 
     # Daily purge of old scan results
     scheduler.add_job(
@@ -310,6 +317,17 @@ async def lifespan(app: FastAPI):
         trigger=CronTrigger(hour=3, minute=15),
         id="audit_log_purge",
         replace_existing=True,
+    )
+
+    # Daily uptime rollup for fast historical uptime reads.
+    from app.workers.rollup_worker import run_rollup_job
+
+    scheduler.add_job(
+        run_rollup_job,
+        trigger=CronTrigger(hour=0, minute=5),
+        id="daily_uptime_rollup",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
 
     # Daily PostgreSQL backup (no-op for SQLite installs)
@@ -544,6 +562,15 @@ async def lifespan(app: FastAPI):
     finally:
         listener_db.close()
 
+    # ── Webhook and notification workers ──────────────────────────────────
+    from app.workers import discovery as discovery_worker
+    from app.workers import notification_worker, webhook_worker
+
+    asyncio.create_task(webhook_worker.run_worker())
+    asyncio.create_task(notification_worker.run_worker())
+    asyncio.create_task(discovery_worker.run_worker())
+    _logger.info("Webhook, notification, and discovery workers started.")
+
     yield  # ── app is running ──
 
     await listener_service.stop()
@@ -658,6 +685,9 @@ app.include_router(capabilities_router, prefix=f"{_V1}/capabilities", tags=["cap
 app.include_router(cve_router, prefix=f"{_V1}/cve", tags=["cve"])
 app.include_router(monitor_router, prefix=f"{_V1}/monitors", tags=["monitors"])
 app.include_router(events_router, prefix=f"{_V1}/events", tags=["events"])
+app.include_router(webhooks_router, prefix=f"{_V1}/webhooks", tags=["webhooks"])
+app.include_router(notifications_router, prefix=f"{_V1}/notifications", tags=["notifications"])
+app.include_router(auth_oauth.router, prefix=f"{_V1}", tags=["oauth"])
 app.include_router(proxmox_router, prefix=f"{_V1}/integrations/proxmox", tags=["proxmox"])
 
 

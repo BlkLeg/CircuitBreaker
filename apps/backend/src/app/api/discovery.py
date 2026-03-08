@@ -5,9 +5,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
-from app.core.scheduler import _scheduler
-from app.core.security import require_auth_always, require_write_auth
+from app.core.rbac import require_role
+from app.core.scheduler import get_scheduler
 from app.db.models import ListenerEvent, ScanJob, ScanLog, ScanResult, User
 from app.db.session import get_db
 from app.schemas.discovery import (
@@ -53,9 +54,10 @@ def get_discovery_status(db: Session = Depends(get_db)):
 
     # Simple check for next scheduled run time
     next_scheduled = None
-    if _scheduler.running:
+    scheduler = get_scheduler()
+    if scheduler.running:
         job_times = []
-        for j in _scheduler.get_jobs():
+        for j in scheduler.get_jobs():
             if j.id.startswith("discovery_profile_") and j.next_run_time:
                 job_times.append(j.next_run_time)
         if job_times:
@@ -95,10 +97,10 @@ def get_profiles(db: Session = Depends(get_db)):
 def create_profile(
     payload: DiscoveryProfileCreate,
     req: Request,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    actor = _get_actor(db, user_id)
+    actor = _get_actor(db, user.id)
     return discovery_profiles_service.create_profile(db, payload, actor)
 
 
@@ -106,18 +108,18 @@ def create_profile(
 def update_profile(
     profile_id: int,
     payload: DiscoveryProfileUpdate,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    actor = _get_actor(db, user_id)
+    actor = _get_actor(db, user.id)
     return discovery_profiles_service.update_profile(db, profile_id, payload, actor)
 
 
 @router.delete("/profiles/{profile_id}", status_code=204)
 def delete_profile(
-    profile_id: int, user_id: int = Depends(require_write_auth), db: Session = Depends(get_db)
+    profile_id: int, user: User = require_role("admin"), db: Session = Depends(get_db)
 ):
-    actor = _get_actor(db, user_id)
+    actor = _get_actor(db, user.id)
     discovery_profiles_service.delete_profile(db, profile_id, actor)
     return None
 
@@ -128,9 +130,10 @@ async def run_profile_scan(
     request: Request,
     profile_id: int,
     bg_tasks: BackgroundTasks,
-    user_id: int = Depends(require_auth_always),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
+    user_id = user.id
     profile = discovery_profiles_service.get_profile(db, profile_id)
     if not profile.enabled:
         raise HTTPException(status_code=400, detail="Profile is disabled")
@@ -167,9 +170,10 @@ async def run_adhoc_scan(
     request: Request,
     payload: AdHocScanRequest,
     bg_tasks: BackgroundTasks,
-    user_id: int = Depends(require_auth_always),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
+    user_id = user.id
     try:
         job = discovery_service.create_scan_job(
             db,
@@ -183,6 +187,14 @@ async def run_adhoc_scan(
     except ValueError as exc:
         _logger.warning("Ad-hoc scan request rejected: %s", exc)
         raise HTTPException(status_code=422, detail="Invalid scan request parameters.") from None
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="scan_triggered",
+        resource=f"scan_job:{job.id}",
+        status="ok",
+    )
     # B2: async def — asyncio.create_task schedules on the running event loop
     asyncio.create_task(discovery_service.run_scan_job(job.id))
     return job
@@ -207,7 +219,10 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/jobs/{job_id}", status_code=200)
 async def cancel_job(
-    job_id: int, user_id: int = Depends(require_auth_always), db: Session = Depends(get_db)
+    job_id: int,
+    request: Request,
+    user: User = require_role("admin"),
+    db: Session = Depends(get_db),
 ):
     """B9: Cancel a running or queued scan job."""
     from app.core.time import utcnow_iso
@@ -220,6 +235,15 @@ async def cancel_job(
     job.status = "cancelled"
     job.completed_at = utcnow_iso()
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="scan_cancelled",
+        resource=f"scan_job:{job_id}",
+        status="ok",
+        severity="warn",
+    )
     asyncio.create_task(
         discovery_service._emit_ws_event(
             "job_update", {"job": ScanJobOut.model_validate(job).model_dump()}
@@ -280,7 +304,7 @@ def list_results(status: str = "pending", job_id: int = None, db: Session = Depe
 def merge_result(
     result_id: int,
     payload: MergeRequest,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
     return discovery_service.merge_scan_result(
@@ -289,33 +313,34 @@ def merge_result(
         payload.action,
         payload.entity_type,
         payload.overrides,
-        actor=_get_actor(db, user_id),
+        actor=_get_actor(db, user.id),
     )
 
 
 @router.post("/results/bulk-merge")
 def bulk_merge(
     payload: BulkMergeRequest,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
     return discovery_service.bulk_merge_results(
-        db, payload.result_ids, payload.action, actor=_get_actor(db, user_id)
+        db, payload.result_ids, payload.action, actor=_get_actor(db, user.id)
     )
 
 
 @router.post("/results/enhanced-bulk-merge")
 def enhanced_bulk_merge(
     payload: EnhancedBulkMergeRequest,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
-    return discovery_service.enhanced_bulk_merge(db, payload, actor=_get_actor(db, user_id))
+    return discovery_service.enhanced_bulk_merge(db, payload, actor=_get_actor(db, user.id))
 
 
 @router.post("/results/suggest")
 def suggest_actions(
     payload: BulkSuggestRequest,
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
     return suggest_bulk_actions(db, payload.result_ids)
@@ -344,7 +369,7 @@ def docker_status(db: Session = Depends(get_db)):
 @router.post("/docker/sync")
 def docker_sync(
     background_tasks: BackgroundTasks,
-    user_id: int = Depends(require_write_auth),
+    user: User = require_role("admin"),
     db: Session = Depends(get_db),
 ):
     """Trigger an immediate Docker topology sync (runs in background)."""
@@ -426,7 +451,7 @@ def get_listener_events(
 
 
 @router.post("/self-cluster")
-def trigger_self_cluster(db: Session = Depends(get_db)):
+def trigger_self_cluster(db: Session = Depends(get_db), user: User = require_role("admin")):
     """Detect Circuit Breaker containers and group them into a cluster node."""
     from app.services.self_discovery import autocreate_self_cluster
 
@@ -434,7 +459,7 @@ def trigger_self_cluster(db: Session = Depends(get_db)):
 
 
 @router.get("/self-cluster/status")
-def get_self_cluster_status(db: Session = Depends(get_db)):
+def get_self_cluster_status(db: Session = Depends(get_db), user: User = require_role("admin")):
     """Return the current Circuit Breaker self-cluster state."""
     from app.db.models import HardwareCluster, HardwareClusterMember
 

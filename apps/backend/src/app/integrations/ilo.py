@@ -1,4 +1,4 @@
-import requests
+import requests  # type: ignore[import-untyped]
 import urllib3
 
 urllib3.disable_warnings()

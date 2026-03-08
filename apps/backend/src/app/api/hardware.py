@@ -1,10 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
@@ -33,11 +34,21 @@ def list_hardware(
 )
 def create_hardware(
     payload: HardwareCreate,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    user_id: Annotated[int | None, Depends(require_write_auth)] = None,
 ):
     try:
-        return hardware_service.create_hardware(db, payload)
+        result = hardware_service.create_hardware(db, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="hardware_created",
+            resource=f"hardware:{result['id']}",
+            status="ok",
+        )
+        return result
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=DUPLICATE_IDENTIFIER_ERROR) from exc
@@ -71,12 +82,22 @@ def get_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)]):
 def replace_hardware(
     hardware_id: int,
     payload: HardwareCreate,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    user_id: Annotated[int | None, Depends(require_write_auth)] = None,
 ):
     update = HardwareUpdate(**payload.model_dump())
     try:
-        return hardware_service.update_hardware(db, hardware_id, update)
+        result = hardware_service.update_hardware(db, hardware_id, update)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="hardware_updated",
+            resource=f"hardware:{hardware_id}",
+            status="ok",
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -88,11 +109,21 @@ def replace_hardware(
 def patch_hardware(
     hardware_id: int,
     payload: HardwareUpdate,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    user_id: Annotated[int | None, Depends(require_write_auth)] = None,
 ):
     try:
-        return hardware_service.update_hardware(db, hardware_id, payload)
+        result = hardware_service.update_hardware(db, hardware_id, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="hardware_updated",
+            resource=f"hardware:{hardware_id}",
+            status="ok",
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -103,11 +134,21 @@ def patch_hardware(
 @router.delete("/{hardware_id}", status_code=204)
 def delete_hardware(
     hardware_id: int,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    user_id: Annotated[int | None, Depends(require_write_auth)] = None,
 ):
     try:
         hardware_service.delete_hardware(db, hardware_id)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="hardware_deleted",
+            resource=f"hardware:{hardware_id}",
+            status="ok",
+            severity="warn",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IntegrityError as exc:

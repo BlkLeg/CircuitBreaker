@@ -78,3 +78,17 @@ Thumbs.db
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
+
+# TLS / Certificates and Web Server Data (Caddy)
+*.key
+*.pem
+*.crt
+*.bundle
+*.p12
+*.pfx
+certs/
+certificates/
+caddy/data/
+caddy/config/
+docker/caddy_data/
+docker/caddy_config/

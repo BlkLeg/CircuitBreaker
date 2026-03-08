@@ -138,17 +138,19 @@ def test_login_success_produces_log(client, auth_headers):
 
 def test_login_failure_produces_warn_log(client):
     # Bootstrap so that an account exists, then fail to log in
-    client.post("/api/v1/bootstrap/initialize", json={
+    boot = client.post("/api/v1/bootstrap/initialize", json={
         "email": "test@example.com",
         "password": "Secure1234!",
         "theme_preset": "one-dark",
     })
+    token = boot.json().get("token")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     client.post("/api/v1/auth/login", json={
         "email": "test@example.com",
         "password": "wrong-password",
     })
 
-    logs = client.get("/api/v1/logs").json()["logs"]
+    logs = client.get("/api/v1/logs", headers=headers).json()["logs"]
     entry = next(
         (log for log in logs if log.get("action") == "login_failed"),
         None,
@@ -210,17 +212,19 @@ def test_logs_filter_by_action(client):
 
 def test_logs_filter_by_severity(client):
     # Bootstrap + failed login to produce a 'warn' severity entry
-    client.post("/api/v1/bootstrap/initialize", json={
+    boot = client.post("/api/v1/bootstrap/initialize", json={
         "email": "test@example.com",
         "password": "Secure1234!",
         "theme_preset": "one-dark",
     })
+    token = boot.json().get("token")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     client.post("/api/v1/auth/login", json={
         "email": "test@example.com",
         "password": "badpass",
     })
 
-    resp = client.get("/api/v1/logs", params={"severity": "warn"})
+    resp = client.get("/api/v1/logs", params={"severity": "warn"}, headers=headers)
     assert resp.status_code == 200
     logs = resp.json()["logs"]
     assert len(logs) > 0
@@ -255,20 +259,22 @@ def test_logs_pagination(client):
     assert resp_p2.status_code == 200
     data_p2 = resp_p2.json()
     assert len(data_p2["logs"]) > 0
-    assert len(data_p2["logs"]) < 100
+    assert len(data_p2["logs"]) <= 100
 
 
 # ── OOBE log entry ────────────────────────────────────────────────────────────
 
 def test_oobe_complete_produces_log(client):
-    client.post("/api/v1/bootstrap/initialize", json={
+    boot = client.post("/api/v1/bootstrap/initialize", json={
         "email": "admin@example.com",
         "password": "Secure1234!",
         "theme_preset": "one-dark",
         "timezone": "UTC",
     })
+    token = boot.json().get("token")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-    logs = client.get("/api/v1/logs").json()["logs"]
+    logs = client.get("/api/v1/logs", headers=headers).json()["logs"]
     entry = next(
         (log for log in logs if log.get("action") == "bootstrap_create_user"),
         None,

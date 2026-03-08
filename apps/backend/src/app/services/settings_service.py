@@ -51,6 +51,7 @@ _DEFAULTS = dict(
     docker_socket_path="/var/run/docker.sock",
     docker_sync_interval_minutes=5,
     graph_default_layout="dagre",
+    map_title="Topology",
 )
 
 
@@ -58,7 +59,12 @@ def get_or_create_settings(db: Session) -> AppSettings:
     row = db.get(AppSettings, 1)
     if row is None:
         row = AppSettings(**_DEFAULTS)
+        row.jwt_secret = secrets.token_hex(32)
         db.add(row)
+        db.commit()
+        db.refresh(row)
+    elif not row.jwt_secret:
+        row.jwt_secret = secrets.token_hex(32)
         db.commit()
         db.refresh(row)
     return row
@@ -115,9 +121,6 @@ def update_settings(
             # callers can omit the field to keep the existing password.
             continue
         setattr(row, field, value)
-    # Auto-generate JWT secret when auth is being enabled for the first time
-    if data.get("auth_enabled") and not row.jwt_secret:
-        row.jwt_secret = secrets.token_hex(32)
     row.updated_at = utcnow()
     db.commit()
     db.refresh(row)

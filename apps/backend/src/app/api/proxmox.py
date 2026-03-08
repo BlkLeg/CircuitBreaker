@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.security import require_write_auth
+from app.core.rbac import require_role
 from app.db.session import get_db
 from app.schemas.proxmox import (
     ProxmoxActionRequest,
@@ -64,7 +64,11 @@ def _config_out(config) -> dict:
 
 
 @router.post("", response_model=ProxmoxConfigOut)
-def create_proxmox_config(body: ProxmoxConfigCreate, db: Session = Depends(get_db)):
+def create_proxmox_config(
+    body: ProxmoxConfigCreate,
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
+):
     _require_vault()
     config = proxmox_service.create_integration(
         db,
@@ -86,13 +90,15 @@ def create_proxmox_config(body: ProxmoxConfigCreate, db: Session = Depends(get_d
 
 
 @router.get("", response_model=list[ProxmoxConfigOut])
-def list_proxmox_configs(db: Session = Depends(get_db)):
+def list_proxmox_configs(db: Session = Depends(get_db), current_user=require_role("admin")):
     configs = proxmox_service.list_integrations(db)
     return [_config_out(c) for c in configs]
 
 
 @router.get("/{integration_id}", response_model=ProxmoxConfigOut)
-def get_proxmox_config(integration_id: int, db: Session = Depends(get_db)):
+def get_proxmox_config(
+    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
+):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -101,7 +107,10 @@ def get_proxmox_config(integration_id: int, db: Session = Depends(get_db)):
 
 @router.put("/{integration_id}", response_model=ProxmoxConfigOut)
 def update_proxmox_config(
-    integration_id: int, body: ProxmoxConfigUpdate, db: Session = Depends(get_db)
+    integration_id: int,
+    body: ProxmoxConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
 ):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
@@ -129,7 +138,9 @@ def update_proxmox_config(
 
 
 @router.delete("/{integration_id}")
-def delete_proxmox_config(integration_id: int, db: Session = Depends(get_db)):
+def delete_proxmox_config(
+    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
+):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -148,7 +159,9 @@ def delete_proxmox_config(integration_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{integration_id}/test", response_model=ProxmoxTestResponse)
-async def test_proxmox_connection(integration_id: int, db: Session = Depends(get_db)):
+async def test_proxmox_connection(
+    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
+):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -160,7 +173,7 @@ async def test_proxmox_connection(integration_id: int, db: Session = Depends(get
 async def discover_proxmox_cluster(
     integration_id: int,
     db: Session = Depends(get_db),
-    user_id: int | None = Depends(require_write_auth),
+    current_user=require_role("admin"),
 ):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
@@ -169,12 +182,8 @@ async def discover_proxmox_cluster(
     result = await proxmox_service.discover_and_import(db, config)
 
     actor_name = "system"
-    if user_id:
-        from app.db.models import User
-
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            actor_name = user.display_name or user.email
+    if current_user:
+        actor_name = current_user.display_name or current_user.email
 
     write_log(
         db,
@@ -182,7 +191,7 @@ async def discover_proxmox_cluster(
         action="proxmox_discover",
         entity_type="integration_config",
         entity_id=config.id,
-        actor_id=user_id,
+        actor_id=current_user.id,
         actor_name=actor_name,
         details=f"nodes={result['nodes_imported']} vms={result['vms_imported']} cts={result['cts_imported']}",
     )
@@ -190,7 +199,9 @@ async def discover_proxmox_cluster(
 
 
 @router.get("/{integration_id}/status", response_model=ProxmoxSyncStatus)
-def get_proxmox_status(integration_id: int, db: Session = Depends(get_db)):
+def get_proxmox_status(
+    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
+):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -211,6 +222,7 @@ async def proxmox_vm_action(
     vmid: int,
     body: ProxmoxActionRequest,
     db: Session = Depends(get_db),
+    current_user=require_role("admin"),
 ):
     if vm_type not in ("qemu", "lxc"):
         raise HTTPException(status_code=400, detail="vm_type must be 'qemu' or 'lxc'")

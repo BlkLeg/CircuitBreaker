@@ -100,20 +100,22 @@ def load_vault_key(db: Session) -> str | None:
             m = _ENV_KEY_RE.search(content)
             if m:
                 file_key = m.group(1).strip()
-                if file_key:
+                if file_key and _is_valid_fernet_key(file_key):
                     _key_source = str(_DATA_ENV_PATH)
                     return file_key
         except OSError as exc:
             _logger.warning("Could not read vault key from %s: %s", _DATA_ENV_PATH, exc)
 
-    # 3. AppSettings.vault_key in the database
+    # 3. AppSettings.vault_key in DB (fallback when env/file absent or unwritable)
     try:
         from app.db.models import AppSettings
 
         cfg = db.get(AppSettings, 1)
-        if cfg and cfg.vault_key and cfg.vault_key.strip():
-            _key_source = "database"
-            return cfg.vault_key.strip()
+        if cfg and getattr(cfg, "vault_key", None):
+            db_key = (cfg.vault_key or "").strip()
+            if db_key and _is_valid_fernet_key(db_key):
+                _key_source = "database"
+                return db_key
     except Exception as exc:  # noqa: BLE001
         _logger.warning("Could not read vault key from database: %s", exc)
 
@@ -155,12 +157,11 @@ def write_vault_key_to_env(key: str) -> None:
 
 
 def _persist_key_to_db(db: Session, key: str) -> None:
-    """Store the vault key and its hash in AppSettings (DB fallback)."""
+    """Store the vault key hash in AppSettings."""
     from app.db.models import AppSettings
 
     cfg = db.get(AppSettings, 1)
     if cfg:
-        cfg.vault_key = key
         cfg.vault_key_hash = _sha256(key)
         cfg.vault_key_rotated_at = utcnow()
         db.commit()

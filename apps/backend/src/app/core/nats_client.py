@@ -8,6 +8,7 @@ never crashes due to a missing message bus.
 import json
 import logging
 import os
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -17,12 +18,17 @@ NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
 
 
 class NATSClient:
-    """Thin wrapper around nats-py with graceful degradation."""
+    """Thin wrapper around nats-py with graceful degradation and auto-reconnect."""
 
     def __init__(self, url: str = NATS_URL) -> None:
         self._url = url
         self._nc: Any = None
+        self._js: Any = None
         self._connected = False
+        # subject → callback registry for resubscription after reconnect
+        self._subs: dict[str, Callable] = {}
+        # buffer for messages published while disconnected (maxlen caps memory)
+        self._publish_buffer: deque[tuple[str, bytes]] = deque(maxlen=200)
 
     @property
     def is_connected(self) -> bool:
@@ -32,12 +38,38 @@ class NATSClient:
         try:
             import nats
 
+            async def _on_disconnected() -> None:
+                self._connected = False
+                _logger.warning("NATS disconnected from %s", self._url)
+
+            async def _on_reconnected() -> None:
+                self._connected = True
+                _logger.info(
+                    "NATS reconnected to %s — resubscribing %d subjects",
+                    self._url,
+                    len(self._subs),
+                )
+                for subject, cb in self._subs.copy().items():
+                    try:
+                        await self._nc.subscribe(subject, cb=cb)
+                        _logger.debug("Resubscribed to %s", subject)
+                    except Exception as exc:
+                        _logger.error("Resubscribe failed for %s: %s", subject, exc)
+                await self._flush_publish_buffer()
+
+            async def _on_error(exc: Exception) -> None:
+                _logger.error("NATS error: %s", exc)
+
             self._nc = await nats.connect(
                 self._url,
-                # Fail fast so the app starts even without NATS.
                 connect_timeout=3,
-                max_reconnect_attempts=0,  # do not retry background reconnects
+                max_reconnect_attempts=60,
+                reconnect_time_wait=5,
+                disconnected_cb=_on_disconnected,
+                reconnected_cb=_on_reconnected,
+                error_cb=_on_error,
             )
+            self._js = self._nc.jetstream()
             self._connected = True
             _logger.info("NATS connected to %s", self._url)
         except Exception as exc:
@@ -54,27 +86,54 @@ class NATSClient:
                 self._connected = False
                 self._nc = None
 
+    async def _flush_publish_buffer(self) -> None:
+        """Drain buffered messages accumulated during a disconnect period."""
+        flushed = 0
+        while self._publish_buffer and self._connected and self._nc:
+            try:
+                subject, data = self._publish_buffer.popleft()
+                await self._nc.publish(subject, data)
+                flushed += 1
+            except Exception as exc:
+                _logger.warning("NATS buffer flush failed: %s", exc)
+                break
+        if flushed:
+            _logger.info("NATS flushed %d buffered messages", flushed)
+
     async def publish(self, subject: str, payload: dict | str | bytes) -> None:
+        if isinstance(payload, dict):
+            data = json.dumps(payload).encode()
+        elif isinstance(payload, str):
+            data = payload.encode()
+        else:
+            data = payload
+
         if not self._connected or not self._nc:
+            self._publish_buffer.append((subject, data))
+            _logger.debug(
+                "NATS not connected — buffered message to %s (%d buffered)",
+                subject,
+                len(self._publish_buffer),
+            )
             return
         try:
-            if isinstance(payload, dict):
-                data = json.dumps(payload).encode()
-            elif isinstance(payload, str):
-                data = payload.encode()
-            else:
-                data = payload
             await self._nc.publish(subject, data)
         except Exception as exc:
             _logger.warning("NATS publish to %s failed: %s", subject, exc)
+            self._publish_buffer.append((subject, data))
 
     async def subscribe(
         self,
         subject: str,
         handler: Callable[..., Awaitable[None]],
     ) -> Any:
+        # Always register for resubscription on reconnect
+        self._subs[subject] = handler
+
         if not self._connected or not self._nc:
-            _logger.warning("NATS not connected — skipping subscribe to %s", subject)
+            _logger.warning(
+                "NATS not connected — subscribe to %s deferred until reconnect", subject
+            )
             return None
         try:
             sub = await self._nc.subscribe(subject, cb=handler)
@@ -83,6 +142,35 @@ class NATSClient:
         except Exception as exc:
             _logger.warning("NATS subscribe to %s failed: %s", subject, exc)
             return None
+
+    async def kv_put(self, bucket: str, key: str, value: dict | str | bytes) -> None:
+        if not self._connected or not self._js:
+            return
+        try:
+            if isinstance(value, dict):
+                data = json.dumps(value).encode()
+            elif isinstance(value, str):
+                data = value.encode()
+            else:
+                data = value
+            kv = await self._js.key_value(bucket)
+            await kv.put(key, data)
+        except Exception as exc:
+            _logger.warning("NATS KV put %s.%s failed: %s", bucket, key, exc)
+
+    async def kv_get(self, bucket: str, key: str) -> bytes | None:
+        if not self._connected or not self._js:
+            return None
+        try:
+            kv = await self._js.key_value(bucket)
+            entry = await kv.get(key)
+            return entry.value if entry else None
+        except Exception:
+            return None
+
+
+def get_nc() -> NATSClient:
+    return nats_client
 
 
 nats_client = NATSClient()

@@ -54,11 +54,13 @@ class UserProfile(BaseModel):
     language: str = "en"
     profile_photo_url: str | None = None
     role: str | None = None  # Phase 6.5: admin | editor | viewer
+    scopes: list[str] = []
 
 
 class AuthResponse(BaseModel):
     token: str
     user: UserProfile
+    backup_codes: list[str] | None = None
 
 
 class BootstrapStatusResponse(BaseModel):
@@ -98,3 +100,24 @@ class BootstrapInitializeResponse(BaseModel):
     theme: BootstrapThemeResponse
     vault_key: str | None = None
     vault_key_warning: bool = False
+
+
+class BootstrapInitializeOAuthRequest(BaseModel):
+    oauth_token: str
+    display_name: str | None = None
+    theme_preset: str
+    api_base_url: str | None = None
+    theme: str | None = "dark"
+    timezone: str | None = "UTC"
+    language: str | None = "en"
+    ui_font: str | None = "inter"
+    ui_font_size: str | None = "medium"
+    weather_location: str | None = None
+    smtp_enabled: bool | None = None
+    smtp_host: str | None = None
+    smtp_port: int | None = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str | None = "Circuit Breaker"
+    smtp_tls: bool | None = True

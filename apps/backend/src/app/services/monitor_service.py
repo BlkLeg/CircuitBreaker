@@ -14,7 +14,7 @@ import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
@@ -227,15 +227,57 @@ def run_monitor(db: Session, monitor: HardwareMonitor) -> None:
 
     now = utcnow_iso()
 
-    # Write event to history
-    event = UptimeEvent(
-        hardware_id=monitor.hardware_id,
-        status=status,
-        latency_ms=latency,
-        probe_method=method_used,
-        checked_at=now,
-    )
-    db.add(event)
+    # NATS Telemetry Publisher
+    try:
+        import asyncio
+
+        from app.core.nats_client import get_nc
+
+        nc = get_nc()
+        if nc and nc.is_connected:
+            payload = {
+                "hardware_id": monitor.hardware_id,
+                "status": status,
+                "latency_ms": latency,
+                "probe_method": method_used,
+                "checked_at": now,
+            }
+            # Fire and forget publishing to NATS
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    nc.publish(f"telemetry.raw.{monitor.hardware_id}", json.dumps(payload).encode())
+                )
+            except RuntimeError:
+                # No running loop (e.g., synchronous thread)
+                pass
+    except Exception as exc:
+        logger.debug("Failed to publish telemetry to NATS: %s", exc)
+
+    # Write event to history ONLY if status changed or it's a daily heartbeat
+    # For daily heartbeat, checking if last_checked_at is older than 24h
+    write_event = False
+    if monitor.last_status != status:
+        write_event = True
+    elif monitor.last_checked_at:
+        try:
+            last_dt = datetime.fromisoformat(monitor.last_checked_at.replace("Z", "+00:00"))
+            if datetime.now(UTC) - last_dt > timedelta(hours=24):
+                write_event = True
+        except ValueError:
+            write_event = True  # bad format, write just in case
+    else:
+        write_event = True
+
+    if write_event:
+        event = UptimeEvent(
+            hardware_id=monitor.hardware_id,
+            status=status,
+            latency_ms=latency,
+            probe_method=method_used,
+            checked_at=now,
+        )
+        db.add(event)
 
     # Update monitor state
     if status == "up":
@@ -253,33 +295,32 @@ def run_monitor(db: Session, monitor: HardwareMonitor) -> None:
     if status == "up":
         hw.last_seen = now
 
-    # Compute 24h uptime percentage from recent events
-    cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
-    total = (
-        db.scalar(
-            select(func.count())
-            .select_from(UptimeEvent)
-            .where(
-                UptimeEvent.hardware_id == monitor.hardware_id,
-                UptimeEvent.checked_at >= cutoff,
+    # Compute 24h uptime percentage from daily rollups (last 2 days to cover 24h rolling)
+    try:
+        from app.db.models import DailyUptimeStats
+
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        yesterday_str = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        stats = db.scalars(
+            select(DailyUptimeStats).where(
+                DailyUptimeStats.hardware_id == monitor.hardware_id,
+                DailyUptimeStats.date.in_([today_str, yesterday_str]),
             )
-        )
-        or 0
-    )
-    up_count = (
-        db.scalar(
-            select(func.count())
-            .select_from(UptimeEvent)
-            .where(
-                UptimeEvent.hardware_id == monitor.hardware_id,
-                UptimeEvent.checked_at >= cutoff,
-                UptimeEvent.status == "up",
-            )
-        )
-        or 0
-    )
-    if total > 0:
-        monitor.uptime_pct_24h = round((up_count / total) * 100, 1)
+        ).all()
+
+        total_mins = sum(s.total_minutes for s in stats)
+        up_mins = sum(s.uptime_minutes for s in stats)
+
+        # If we have daily stats, use them
+        if total_mins > 0:
+            monitor.uptime_pct_24h = round((up_mins / total_mins) * 100, 1)
+        else:
+            # Fallback for new monitors without rollups yet
+            monitor.uptime_pct_24h = 100.0 if status == "up" else 0.0
+
+    except Exception as exc:
+        logger.debug("Failed to calculate 24h uptime from rollups: %s", exc)
 
     # Prune events older than 7 days to keep the table tidy
     prune_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()

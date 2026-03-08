@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import PropTypes from 'prop-types';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 import i18n from './i18n';
@@ -19,6 +20,8 @@ import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
+import ConnectionStatus from './components/ConnectionStatus.jsx';
+import { canEdit, isAdmin } from './utils/rbac';
 
 // Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
 const DocsPage = React.lazy(() => import('./pages/DocsPage'));
@@ -43,7 +46,7 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
-  const { pendingCount } = useDiscoveryStream();
+  const { pendingCount, connected: discoveryConnected } = useDiscoveryStream();
 
   // Start the SSE client once at app root; tear down on unmount
   useEffect(() => {
@@ -70,6 +73,7 @@ function AppInner() {
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
       <SecurityBanner />
+      <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div className="page-content">
         <ErrorBoundary>
           <React.Suspense fallback={null}>
@@ -84,12 +88,40 @@ function AppInner() {
               <Route path="/misc" element={<MiscPage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/map" element={<MapPage />} />
-              <Route path="/logs" element={<LogsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
+              <Route
+                path="/logs"
+                element={
+                  <RequireAdmin>
+                    <LogsPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <RequireEditor>
+                    <SettingsPage />
+                  </RequireEditor>
+                }
+              />
               <Route path="/discovery" element={<DiscoveryPage />} />
               <Route path="/discovery/history" element={<DiscoveryHistoryPage />} />
-              <Route path="/admin/users" element={<AdminUsersPage />} />
-              <Route path="/admin/users/:id/actions" element={<UserActionsPage />} />
+              <Route
+                path="/admin/users"
+                element={
+                  <RequireAdmin>
+                    <AdminUsersPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route
+                path="/admin/users/:id/actions"
+                element={
+                  <RequireAdmin>
+                    <UserActionsPage />
+                  </RequireAdmin>
+                }
+              />
               <Route path="/invite/accept" element={<InviteAcceptPage />} />
               <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -103,6 +135,24 @@ function AppInner() {
     </div>
   );
 }
+
+function RequireEditor({ children }) {
+  const { user } = useAuth();
+  return canEdit(user) ? children : <Navigate to="/map" replace />;
+}
+
+function RequireAdmin({ children }) {
+  const { user } = useAuth();
+  return isAdmin(user) ? children : <Navigate to="/map" replace />;
+}
+
+RequireEditor.propTypes = {
+  children: PropTypes.node.isRequired,
+};
+
+RequireAdmin.propTypes = {
+  children: PropTypes.node.isRequired,
+};
 
 function AppRoutes() {
   const { isAuthenticated, authEnabled, authReady } = useAuth();

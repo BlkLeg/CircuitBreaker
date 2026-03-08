@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Navigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { adminUsersApi } from '../api/client';
 import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell';
+import { useAuth } from '../context/AuthContext.jsx';
+import { isAdmin } from '../utils/rbac';
 
 export default function UserActionsPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const toast = useToast();
   const [logs, setLogs] = useState([]);
 
@@ -38,6 +41,10 @@ export default function UserActionsPage() {
   useEffect(() => {
     fetchActions();
   }, [fetchActions]);
+
+  if (!isAdmin(user)) {
+    return <Navigate to="/map" replace />;
+  }
 
   return (
     <div className="page-container" style={{ padding: 24 }}>

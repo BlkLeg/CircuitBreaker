@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.external_nodes import ServiceExternalNodeLink, ServiceExternalNodeRead
@@ -66,10 +67,22 @@ def list_services(
 
 @router.post("", response_model=Service, status_code=201)
 def create_service(
-    payload: ServiceCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)
+    payload: ServiceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
 ):
     try:
-        return services_service.create_service(db, payload)
+        result = services_service.create_service(db, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="service_created",
+            resource=f"service:{result['id']}",
+            status="ok",
+        )
+        return result
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -89,11 +102,21 @@ def get_service(service_id: int, db: Session = Depends(get_db)):
 def patch_service(
     service_id: int,
     payload: ServiceUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    user_id: int | None = Depends(require_write_auth),
 ):
     try:
-        return services_service.update_service(db, service_id, payload)
+        result = services_service.update_service(db, service_id, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="service_updated",
+            resource=f"service:{service_id}",
+            status="ok",
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -104,9 +127,23 @@ def patch_service(
 
 
 @router.delete("/{service_id}", status_code=204)
-def delete_service(service_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_service(
+    service_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
+):
     try:
         services_service.delete_service(db, service_id)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="service_deleted",
+            resource=f"service:{service_id}",
+            status="ok",
+            severity="warn",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:

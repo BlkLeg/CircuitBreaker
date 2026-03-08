@@ -28,6 +28,34 @@
 ![Scan Page]  
 ![Mobile View]
 
+### 🎨 Customizability
+
+- Branding
+- Logos
+- Favicons
+- Login background
+- Map names
+
+### 🔒 Security
+
+- Built-in HTTPS
+- OAuth/OIDC - GitHub, Google, generic OIDC providers
+- MFA
+- RBAC roles + scopes (viewer/editor/admin/demo)
+- Fernet secured secrets management
+- Audit logging for non-repudiation
+- JWT 
+
+### 🔌 Integrations
+
+- Webhooks and notification routing for Slack, Discord, and custom endpoints
+
+### ⚡ Speed
+
+- Scans and maps Proxmox topology in under 60 seconds
+- Scans subnet in under 2 minutes (depends on worker count)
+- Loads quickly on low-resource devices like Pi and mini pcs
+
 ***
 
 ## Quick Start

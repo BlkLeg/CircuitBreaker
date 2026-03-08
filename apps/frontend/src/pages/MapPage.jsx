@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import PropTypes from 'prop-types';
 import { createPortal } from 'react-dom';
 import ReactFlow, {
   Background,
@@ -13,29 +12,13 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
-import { X } from 'lucide-react';
-import {
-  graphApi,
-  hardwareApi,
-  computeUnitsApi,
-  servicesApi,
-  storageApi,
-  networksApi,
-  miscApi,
-  clustersApi,
-  externalNodesApi,
-  telemetryApi,
-  environmentsApi,
-  settingsApi,
-  proxmoxApi,
-} from '../api/client';
-import { getPendingResults } from '../api/discovery.js';
-import { listMonitors } from '../api/monitor.js';
+import { graphApi, environmentsApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
+import { createMonitor, updateMonitor, runImmediateCheck } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
-import IconPickerModal, { getIconEntry } from '../components/common/IconPickerModal';
+import { useAuth } from '../context/AuthContext.jsx';
+import IconPickerModal from '../components/common/IconPickerModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import FormModal from '../components/common/FormModal';
-import { getVendorIcon } from '../icons/vendorIcons';
 import { useTimezone } from '../context/TimezoneContext';
 import ContextMenu from '../components/map/ContextMenu';
 import TelemetrySidebar from '../components/map/TelemetrySidebar';
@@ -47,21 +30,25 @@ import CreateNodeModal from '../components/map/CreateNodeModal';
 import CustomNode from '../components/map/CustomNode';
 import CustomEdge from '../components/map/CustomEdge';
 import ConnectionTypePicker from '../components/map/ConnectionTypePicker';
-import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
+import DeleteConflictModal from '../components/map/DeleteConflictModal';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
-import Sidebar from '../components/Map/Sidebar';
+import Sidebar from '../components/map/Sidebar';
 import { useToast } from '../components/common/Toast';
-import { normalizeConnectionType } from '../components/map/connectionTypes';
+import { X } from 'lucide-react';
+import {
+  CONNECTION_TYPE_OPTIONS,
+  normalizeConnectionType,
+} from '../components/map/connectionTypes';
 import { CONNECTION_STYLES } from '../config/mapTheme';
 import { HARDWARE_ROLES } from '../config/hardwareRoles';
-import { validateIpAddress } from '../utils/validation';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import {
   createLinkByNodeIds,
   inferEdgeNodeIdsFromMeta,
   unlinkByEdge,
+  isUpdatableEdgeId,
 } from '../components/map/linkMutations';
 
 import { MapEdgeCallbacksContext, MapViewOptionsContext } from '../components/map/mapContexts';
@@ -84,421 +71,60 @@ import MapToolbar from '../components/MapToolbar';
 const SigmaMap = React.lazy(() => import('../components/map/SigmaMap'));
 import { groupNodesIntoCloud, restoreFromCloudView } from '../utils/cloudView';
 
-// ── Node Styles ─────────────────────────────────────────────────────────────
-const NODE_STYLES = {
-  cluster: { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }, // violet
-  hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }, // steel blue
-  compute: { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' }, // green
-  service: { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' }, // orange
-  storage: { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' }, // purple
-  network: { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }, // cyan
-  misc: { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }, // gray
-  external: { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }, // sky blue
-  docker_network: { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }, // docker teal
-  docker_container: { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }, // docker blue
-};
+// ── Extracted modules ────────────────────────────────────────────────────────
+import {
+  NODE_STYLES,
+  NODE_TYPE_LABELS,
+  FILTER_NODE_TYPES,
+  CONNECTION_TYPE_LEGEND,
+  STATUS_LEGEND,
+  NODE_TYPE_ROUTES,
+  ENTITY_API_UPDATE_ICON,
+  ENTITY_API_UPDATE_STATUS,
+  ENTITY_API_UPDATE_ALIAS,
+  STATUS_OPTIONS_BY_TYPE,
+  STATUS_OPTION_LABEL,
+  BOUNDARY_PRESETS,
+  BOUNDARY_SHAPES,
+  resolveBoundaryPreset,
+  boundaryFillString,
+  normalizeBoundaryName,
+  DEFAULT_BOUNDARY_COLOR,
+  DEFAULT_BOUNDARY_FILL_OPACITY,
+} from '../components/map/mapConstants';
+import {
+  applyEdgeSides,
+  computeBoundaryPolygon,
+  boundaryFlowRect,
+  nodeCenterInFlow,
+  nodeBoundsInFlow,
+  rectIntersectsRect,
+  flowToScreenPoint,
+  boundaryPath,
+  boundaryRoundedRectPath,
+  boundaryEllipsePath,
+} from '../utils/mapGeometryUtils';
+import {
+  buildRelatedNodes,
+  buildNodeSysinfoRows,
+  buildNodeStatusDetails,
+  makeBulkRow,
+  validateBulkRows,
+  runBulkCreate,
+  getDefaultQuickCreateValues,
+} from '../utils/mapDataUtils';
+import { useMapDataLoad } from '../hooks/useMapDataLoad';
+import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
+import { useMapMutations } from '../hooks/useMapMutations';
+import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
+import { canEdit } from '../utils/rbac';
 
-// Per-relation edge accent colours — peers_with tracks the theme primary
-const EDGE_COLOR_MAP = {
-  hosts: '#4a7fa5',
-  runs: '#3a7d44',
-  connects_to: '#0eb8b8',
-  depends_on: '#e07030',
-  uses: '#7b4fa0',
-  integrates_with: '#6b7a96',
-  routes: '#ff6b35',
-  on_network: '#00d4aa',
-  has_storage: '#c47a2a',
-  cluster_member: '#a78bfa',
-};
-
-function getEdgeColor(relation) {
-  if (relation === 'peers_with') {
-    return (
-      getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim() ||
-      '#fe8019'
-    );
-  }
-  return EDGE_COLOR_MAP[relation] || '#6c7086';
-}
-
-const NODE_TYPE_LABELS = {
-  cluster: 'Cluster',
-  hardware: 'Hardware',
-  compute: 'Compute',
-  service: 'Service',
-  storage: 'Storage',
-  network: 'Network',
-  misc: 'Misc',
-  external: 'External',
-  docker_network: 'Docker Net',
-  docker_container: 'Container',
-};
-
-// Node types shown as individual toggle chips in the "Show:" bar.
-// Docker sub-types (docker_network / docker_container) are controlled via the
-// single 'docker' include key and rendered separately, so we exclude them here.
-const FILTER_NODE_TYPES = Object.keys(NODE_STYLES).filter(
-  (t) => t !== 'docker_network' && t !== 'docker_container'
-);
-
-const CONNECTION_TYPE_LEGEND = [
-  { key: 'ethernet', label: '🔌 Ethernet', color: '#32b89e' },
-  { key: 'wireless', label: '📶 Wireless', color: '#7c5cbf' },
-  { key: 'tunnel', label: '🕳️ Tunnel', color: '#e68161' },
-  { key: 'ssh', label: '🛡️ SSH', color: '#32b89e' },
-  { key: 'wg', label: '🔒 WireGuard', color: '#c01521' },
-  { key: 'vpn', label: '🌐 VPN', color: '#2074c2' },
-];
-
-const STATUS_LEGEND = [
-  { key: 'active', label: 'Active', color: '#32b89e' },
-  { key: 'warning', label: 'Warning', color: '#e68161' },
-  { key: 'error', label: 'Error', color: '#ff5459' },
-];
-
-// Map node type → page route for "Open in HUD"
-const NODE_TYPE_ROUTES = {
-  cluster: '/hardware',
-  hardware: '/hardware',
-  compute: '/compute-units',
-  service: '/services',
-  storage: '/storage',
-  network: '/networks',
-  misc: '/misc',
-  external: '/external-nodes',
-};
-
-const BASE_NODE_STYLE = {
-  background: 'transparent',
-  border: 'none',
-  boxShadow: 'none',
-  padding: 0,
-  width: 140,
-};
-
-// ── Icon Resolution ──────────────────────────────────────────────────────────
-
-const KIND_ICON = {
-  // Storage kinds
-  disk: 'hdd',
-  pool: 'nas',
-  dataset: 'nas',
-  share: 'nas',
-  // Compute kinds (fallback only — explicit icon_slug takes priority)
-  container: 'docker',
-};
-
-const ROLE_ICON = {
-  router: 'router',
-  firewall: 'firewall',
-  switch: 'switch',
-  ap: 'switch', // Access Point → same switch icon
-  nas: 'nas',
-};
-
-function resolveNodeIcon(type, icon_slug, vendor, kind, role) {
-  if (
-    icon_slug &&
-    (icon_slug.startsWith('/') ||
-      icon_slug.startsWith('http://') ||
-      icon_slug.startsWith('https://'))
-  ) {
-    return icon_slug;
-  }
-  if (
-    icon_slug &&
-    typeof icon_slug === 'string' &&
-    (/^[a-zA-Z0-9_.-]+$/.test(icon_slug) || icon_slug.startsWith('user-'))
-  ) {
-    const iconEntry = getIconEntry(icon_slug);
-    return iconEntry?.path ?? null;
-  }
-  if (type === 'hardware' && ROLE_ICON[role]) {
-    const safeRole = ROLE_ICON[role];
-    return getIconEntry(safeRole)?.path ?? null;
-  }
-  if (type === 'hardware' && vendor) return getVendorIcon(vendor)?.path ?? null;
-  if (type === 'network') return getIconEntry('network')?.path ?? null;
-  if (kind && KIND_ICON[kind]) {
-    const safeKind = KIND_ICON[kind];
-    return getIconEntry(safeKind)?.path ?? null;
-  }
-  if (type === 'external') return getIconEntry('internet')?.path ?? null;
-  return null;
-}
-
-// ── Module-level pure helpers ───────────────────────────────────────────────
-
-// Omit a single key from an object without leaving an unused variable binding.
-function omitKey(obj, key) {
-  return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== key));
-}
-
-// Tag-hide predicate extracted to avoid exceeding 4 function-nesting depths.
-function isHiddenByTag(node, trimmedTag) {
-  if (!trimmedTag) return false;
-  return !(node._tags || []).some((t) => t.toLowerCase().includes(trimmedTag));
-}
-
-// Apply a telemetry API response to a node list.
-function applyTelemetryUpdate(current, nodeId, res) {
-  return current.map((cn) => {
-    if (cn.id !== nodeId) return cn;
-    return {
-      ...cn,
-      data: {
-        ...cn.data,
-        telemetry_status: res.status || 'unknown',
-        telemetry_data: res.data || null,
-        telemetry_last_polled: res.last_polled || null,
-      },
-    };
-  });
-}
-
-// Apply a bulk monitors list response to node data.
-function applyMonitorUpdates(current, monitors) {
-  const byHwId = {};
-  monitors.forEach((m) => {
-    byHwId[m.hardware_id] = m;
-  });
-  return current.map((cn) => {
-    if (cn.originalType !== 'hardware') return cn;
-    const m = byHwId[cn._refId];
-    if (!m) return cn;
-    return {
-      ...cn,
-      data: {
-        ...cn.data,
-        monitor_status: m.last_status ?? null,
-        monitor_latency_ms: m.latency_ms ?? null,
-        monitor_last_checked_at: m.last_checked_at ?? null,
-        monitor_uptime_pct_24h: m.uptime_pct_24h ?? null,
-      },
-    };
-  });
-}
-
-function buildRelatedNodes(nodeId, nodesArr, edgesArr) {
-  const related = [];
-  edgesArr.forEach((edge) => {
-    if (edge.source === nodeId) {
-      const target = nodesArr.find((node) => node.id === edge.target);
-      if (target)
-        related.push({ direction: 'out', relation: edge._relation || edge.label, node: target });
-    } else if (edge.target === nodeId) {
-      const source = nodesArr.find((node) => node.id === edge.source);
-      if (source)
-        related.push({ direction: 'in', relation: edge._relation || edge.label, node: source });
-    }
-  });
-  return related;
-}
-
-function buildNodeSysinfoRows(node) {
-  const type = node?.originalType;
-  if (!type) return [];
-
-  const fields = ENTITY_FIELDS[type] || [];
-  return fields
-    .map((field) => {
-      const rawValue = node?.data?.[field.key];
-      if (rawValue == null || rawValue === '') return null;
-      const rendered = typeof field.fmt === 'function' ? field.fmt(rawValue) : String(rawValue);
-      if (!rendered || rendered === '—') return null;
-      return {
-        key: field.key,
-        label: field.label,
-        value: rendered,
-      };
-    })
-    .filter(Boolean);
-}
-
-function buildNodeStatusDetails(node) {
-  const modelStatus = node?.data?.status || null;
-  const overrideStatus = node?.data?.status_override || null;
-  const telemetryStatus = node?.data?.telemetry_status || null;
-  const telemetryLastPolled = node?.data?.telemetry_last_polled || null;
-
-  const effectiveStatus =
-    overrideStatus && overrideStatus !== 'auto'
-      ? overrideStatus
-      : modelStatus || telemetryStatus || 'unknown';
-
-  return {
-    effectiveStatus,
-    modelStatus,
-    overrideStatus,
-    telemetryStatus,
-    telemetryLastPolled,
-  };
-}
-
-// ── Node rank — used for dagre ordering and debug tooltips ──────────────────
-// Lower rank = higher in the hierarchy (closer to root).
-function getNodeRank(node) {
-  const type = node.originalType || node.data?.originalType;
-  switch (type) {
-    case 'external':
-      return 0;
-    case 'network':
-      return 1;
-    case 'cluster':
-      return 2;
-    case 'hardware':
-      return 3;
-    case 'compute':
-      return 4;
-    case 'service':
-      return 5;
-    case 'storage':
-    case 'misc':
-      return 6;
-    default:
-      return 5;
-  }
-}
-
-// ── Custom Node & Edge types ─────────────────────────────────────────────────
-// CustomNode and CustomEdge are defined in components/map/ and registered here.
-// Both 'iconNode'/'custom' keys are registered for backward compatibility with
-// existing saved layouts and the Phase 1 backend (which emits type:"custom").
+// ── ReactFlow node/edge type registrations ───────────────────────────────────
+// Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
 const NODE_TYPES = { iconNode: CustomNode, custom: CustomNode };
 const EDGE_TYPES = { smart: CustomEdge, custom: CustomEdge };
 
-// ── Entity field definitions for the sidebar ────────────────────────────────
-const ENTITY_FIELDS = {
-  hardware: [
-    { key: 'role', label: 'Role' },
-    { key: 'vendor', label: 'Vendor' },
-    { key: 'model', label: 'Model' },
-    { key: 'ip_address', label: 'IP Address' },
-    { key: 'wan_uplink', label: 'WAN / Uplink' },
-    { key: 'cpu', label: 'CPU' },
-    { key: 'memory_gb', label: 'Memory', fmt: (v) => `${v} GB` },
-    { key: 'location', label: 'Location' },
-    { key: 'notes', label: 'Notes' },
-  ],
-  compute: [
-    { key: 'kind', label: 'Kind' },
-    { key: 'os', label: 'OS' },
-    { key: 'ip_address', label: 'IP Address' },
-    { key: 'cpu_cores', label: 'CPU Cores' },
-    { key: 'memory_mb', label: 'Memory', fmt: (v) => `${v} MB` },
-    { key: 'disk_gb', label: 'Disk', fmt: (v) => `${v} GB` },
-    { key: 'environment', label: 'Env' },
-    { key: 'notes', label: 'Notes' },
-  ],
-  service: [
-    { key: 'slug', label: 'Slug' },
-    { key: 'category', label: 'Category' },
-    { key: 'status', label: 'Status' },
-    { key: 'ip_address', label: 'IP Address' },
-    { key: 'url', label: 'URL' },
-    {
-      key: 'ports',
-      label: 'Ports',
-      fmt: (v) =>
-        Array.isArray(v)
-          ? v
-              .map((p) => (p.port ? `${p.port}/${p.protocol || 'tcp'}` : '—'))
-              .filter(Boolean)
-              .join(', ') || '—'
-          : String(v ?? '—'),
-    },
-    { key: 'environment', label: 'Env' },
-    { key: 'description', label: 'Description' },
-  ],
-  storage: [
-    { key: 'kind', label: 'Kind' },
-    { key: 'capacity_gb', label: 'Capacity', fmt: (v) => `${v} GB` },
-    { key: 'path', label: 'Path' },
-    { key: 'protocol', label: 'Protocol' },
-    { key: 'notes', label: 'Notes' },
-  ],
-  network: [
-    { key: 'cidr', label: 'CIDR' },
-    { key: 'vlan_id', label: 'VLAN ID' },
-    { key: 'gateway', label: 'Gateway' },
-    { key: 'description', label: 'Description' },
-  ],
-  misc: [
-    { key: 'kind', label: 'Kind' },
-    { key: 'url', label: 'URL' },
-    { key: 'description', label: 'Description' },
-  ],
-  cluster: [
-    { key: 'description', label: 'Description' },
-    { key: 'environment', label: 'Env' },
-    { key: 'location', label: 'Location' },
-    { key: 'member_count', label: 'Members' },
-  ],
-  external: [
-    { key: 'provider', label: 'Provider' },
-    { key: 'kind', label: 'Kind' },
-    { key: 'region', label: 'Region' },
-    { key: 'ip_address', label: 'IP Address' },
-    { key: 'environment', label: 'Environment' },
-    { key: 'notes', label: 'Notes' },
-  ],
-};
-
-const ENTITY_API_UPDATE_ICON = {
-  cluster: (id, slug) => clustersApi.update(id, { icon_slug: slug }),
-  hardware: (id, slug) => hardwareApi.update(id, { vendor_icon_slug: slug }),
-  compute: (id, slug) => computeUnitsApi.update(id, { icon_slug: slug }),
-  service: (id, slug) => servicesApi.update(id, { icon_slug: slug }),
-  storage: (id, slug) => storageApi.update(id, { icon_slug: slug }),
-  network: (id, slug) => networksApi.update(id, { icon_slug: slug }),
-  misc: (id, slug) => miscApi.update(id, { icon_slug: slug }),
-  external: (id, slug) => externalNodesApi.update(id, { icon_slug: slug }),
-};
-
-const ENTITY_API_UPDATE_STATUS = {
-  hardware: (id, val) => hardwareApi.update(id, { status_override: val || null }),
-  compute: (id, val) => computeUnitsApi.update(id, { status_override: val || null }),
-  service: (id, val) => servicesApi.update(id, { status: val || 'running' }),
-};
-
-const ENTITY_API_UPDATE_ALIAS = {
-  cluster: (id, name) => clustersApi.update(id, { name }),
-  hardware: (id, name) => hardwareApi.update(id, { name }),
-  compute: (id, name) => computeUnitsApi.update(id, { name }),
-  service: (id, name) => servicesApi.update(id, { name }),
-  storage: (id, name) => storageApi.update(id, { name }),
-  network: (id, name) => networksApi.update(id, { name }),
-  misc: (id, name) => miscApi.update(id, { name }),
-  external: (id, name) => externalNodesApi.update(id, { name }),
-};
-
-const ENTITY_API_DELETE = {
-  cluster: (id) => clustersApi.delete(id),
-  hardware: (id) => hardwareApi.delete(id),
-  compute: (id) => computeUnitsApi.delete(id),
-  service: (id) => servicesApi.delete(id),
-  storage: (id) => storageApi.delete(id),
-  network: (id) => networksApi.delete(id),
-  misc: (id) => miscApi.delete(id),
-  external: (id) => externalNodesApi.delete(id),
-};
-
-const STATUS_OPTIONS_BY_TYPE = {
-  hardware: ['auto', 'online', 'offline', 'degraded', 'maintenance'],
-  compute: ['auto', 'running', 'stopped', 'degraded', 'maintenance'],
-  service: ['running', 'stopped', 'degraded', 'maintenance'],
-};
-
-const STATUS_OPTION_LABEL = {
-  auto: '🧭 Auto (derived)',
-  online: '🟢 Online',
-  offline: '🔴 Offline',
-  degraded: '🟠 Degraded',
-  maintenance: '🛠️ Maintenance',
-  running: '🟢 Running',
-  stopped: '⏹️ Stopped',
-};
+// ── Small module-level helpers ───────────────────────────────────────────────
 
 function isLightTheme(settings) {
   return (
@@ -507,737 +133,19 @@ function isLightTheme(settings) {
   );
 }
 
+function omitKey(obj, key) {
+  return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== key));
+}
+
+function isHiddenByTag(node, trimmedTag) {
+  if (!trimmedTag) return false;
+  return !(node._tags || []).some((t) => t.toLowerCase().includes(trimmedTag));
+}
+
 function getQuickCreateTitle(mode) {
   if (mode === 'service') return 'New Service';
   if (mode === 'compute') return 'New Compute Unit';
   return 'New Storage';
-}
-
-function slugifyName(name) {
-  return String(name || '')
-    .trim()
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, '-')
-    .replaceAll(/^-+|-+$/g, '');
-}
-
-function makeBulkRow(mode, defaults = {}) {
-  const rowId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  if (mode === 'compute') {
-    return {
-      id: rowId,
-      name: '',
-      kind: defaults.kind || 'vm',
-      ip_address: '',
-      os: '',
-      icon_slug: '',
-    };
-  }
-  if (mode === 'storage') {
-    return {
-      id: rowId,
-      name: '',
-      kind: 'disk',
-      capacity_gb: '',
-      path: '',
-      protocol: '',
-      icon_slug: '',
-    };
-  }
-  return {
-    id: rowId,
-    name: '',
-    port: '',
-    protocol: 'tcp',
-    status: 'running',
-    ip_address: '',
-    url: '',
-    icon_slug: '',
-  };
-}
-
-function buildBulkServicePayload(row, initialValues) {
-  const payload = {
-    name: row.name.trim(),
-    slug: slugifyName(row.name),
-    status: row.status || 'running',
-    url: row.url?.trim() || null,
-    ip_address: row.ip_address?.trim() || null,
-    icon_slug: row.icon_slug?.trim() || null,
-    description: null,
-    tags: [],
-  };
-
-  if (row.port) {
-    payload.ports = [
-      {
-        port: Number.parseInt(row.port, 10),
-        protocol: row.protocol || 'tcp',
-      },
-    ];
-  }
-
-  const runsOn = initialValues?.runs_on;
-  if (runsOn?.startsWith('hw_')) {
-    payload.hardware_id = Number.parseInt(runsOn.slice(3), 10);
-    payload.compute_id = null;
-  } else if (runsOn?.startsWith('cu_')) {
-    payload.compute_id = Number.parseInt(runsOn.slice(3), 10);
-    payload.hardware_id = null;
-  }
-
-  return payload;
-}
-
-function buildBulkComputePayload(row, initialValues) {
-  return {
-    name: row.name.trim(),
-    kind: row.kind || 'vm',
-    hardware_id: initialValues?.hardware_id || null,
-    ip_address: row.ip_address?.trim() || null,
-    os: row.os || null,
-    icon_slug: row.icon_slug?.trim() || null,
-  };
-}
-
-function buildBulkStoragePayload(row, initialValues) {
-  return {
-    name: row.name.trim(),
-    kind: row.kind || 'disk',
-    capacity_gb: row.capacity_gb === '' ? null : Number(row.capacity_gb),
-    path: row.path?.trim() || null,
-    protocol: row.protocol?.trim() || null,
-    icon_slug: row.icon_slug?.trim() || null,
-    hardware_id: initialValues?.hardware_id || null,
-  };
-}
-
-function validateBulkRows(mode, rows) {
-  const errors = {};
-  rows.forEach((row) => {
-    if (!row.name?.trim()) {
-      errors[row.id] = 'Name is required.';
-      return;
-    }
-    if (mode === 'service') {
-      if (row.port && Number.isNaN(Number.parseInt(row.port, 10))) {
-        errors[row.id] = 'Port must be a number.';
-        return;
-      }
-      const ipErr = validateIpAddress(row.ip_address || '');
-      if (ipErr) errors[row.id] = ipErr;
-    }
-    if (mode === 'compute') {
-      const ipErr = validateIpAddress(row.ip_address || '');
-      if (ipErr) errors[row.id] = ipErr;
-    }
-  });
-  return errors;
-}
-
-async function runBulkCreate(mode, rows, initialValues) {
-  const failed = [];
-  let successCount = 0;
-
-  for (const row of rows) {
-    try {
-      if (mode === 'service') {
-        await servicesApi.create(buildBulkServicePayload(row, initialValues));
-      } else if (mode === 'compute') {
-        await computeUnitsApi.create(buildBulkComputePayload(row, initialValues));
-      } else if (mode === 'storage') {
-        await storageApi.create(buildBulkStoragePayload(row, initialValues));
-      }
-      successCount += 1;
-    } catch (err) {
-      failed.push({
-        rowId: row.id,
-        name: row.name || 'Unnamed',
-        message: err?.message || 'Create failed',
-      });
-    }
-  }
-
-  return { successCount, failed };
-}
-
-function getServiceDefaults(targetNode) {
-  if (!targetNode?._refId) return {};
-  if (targetNode.originalType === 'compute') return { runs_on: `cu_${targetNode._refId}` };
-  if (targetNode.originalType === 'hardware') return { runs_on: `hw_${targetNode._refId}` };
-  return {};
-}
-
-function getComputeDefaults(targetNode, kindHint) {
-  const defaults = {};
-  if (kindHint) defaults.kind = kindHint;
-  if (targetNode?.originalType === 'hardware' && targetNode._refId)
-    defaults.hardware_id = targetNode._refId;
-  return defaults;
-}
-
-function getStorageDefaults(targetNode) {
-  if (targetNode?.originalType === 'hardware' && targetNode._refId) {
-    return { hardware_id: targetNode._refId };
-  }
-  return {};
-}
-
-function getDefaultQuickCreateValues(mode, targetNode, kindHint = null) {
-  if (mode === 'service') return getServiceDefaults(targetNode);
-  if (mode === 'compute') return getComputeDefaults(targetNode, kindHint);
-  if (mode === 'storage') return getStorageDefaults(targetNode);
-  return {};
-}
-
-function DeleteConflictModal({ modal, onCancel, onForceRemove }) {
-  if (!modal?.open) return null;
-
-  return (
-    <div className="modal-overlay">
-      <dialog
-        open
-        className="modal"
-        aria-labelledby="delete-conflict-title"
-        style={{ width: 460, margin: 0 }}
-      >
-        <div
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
-        >
-          <h3 id="delete-conflict-title">Delete Conflict</h3>
-          <button
-            type="button"
-            className="btn"
-            aria-label="Close delete conflict dialog"
-            onClick={onCancel}
-            style={{
-              width: 28,
-              height: 28,
-              padding: 0,
-              borderRadius: 999,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <X size={14} />
-          </button>
-        </div>
-        <p style={{ marginTop: 10, color: 'var(--color-text-muted)', fontSize: 13 }}>
-          Could not delete <strong>{modal.nodeLabel}</strong> because related links/dependencies
-          still exist.
-        </p>
-        {modal.reason && (
-          <p style={{ marginTop: 8, color: 'var(--color-danger)', fontSize: 12 }}>{modal.reason}</p>
-        )}
-        {modal.blockers.length > 0 && (
-          <div
-            style={{
-              marginTop: 12,
-              maxHeight: 180,
-              overflowY: 'auto',
-              border: '1px solid var(--color-border)',
-              borderRadius: 8,
-            }}
-          >
-            {modal.blockers.map((b, i) => (
-              <div
-                key={`${b.edgeId}-${i}`}
-                style={{
-                  padding: '8px 10px',
-                  borderBottom:
-                    i < modal.blockers.length - 1 ? '1px solid var(--color-border)' : 'none',
-                  fontSize: 12,
-                }}
-              >
-                <span style={{ color: 'var(--color-text)' }}>{b.otherLabel}</span>
-                <span style={{ color: 'var(--color-text-muted)' }}> · {b.relation}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-          <button type="button" className="btn" disabled={modal.forcing} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={modal.forcing}
-            onClick={onForceRemove}
-          >
-            {modal.forcing ? 'Removing…' : 'Force remove'}
-          </button>
-        </div>
-      </dialog>
-    </div>
-  );
-}
-
-DeleteConflictModal.propTypes = {
-  modal: PropTypes.shape({
-    open: PropTypes.bool,
-    nodeLabel: PropTypes.string,
-    reason: PropTypes.string,
-    forcing: PropTypes.bool,
-    blockers: PropTypes.arrayOf(
-      PropTypes.shape({
-        edgeId: PropTypes.string,
-        relation: PropTypes.string,
-        otherLabel: PropTypes.string,
-      })
-    ),
-  }).isRequired,
-  onCancel: PropTypes.func.isRequired,
-  onForceRemove: PropTypes.func.isRequired,
-};
-
-// ── Layout Algorithms ───────────────────────────────────────────────────────
-// Note: Core layout engines are now imported from utils/layouts.js.
-
-// ── Edge Routing Helpers ─────────────────────────────────────────────────────
-
-/**
- * Determine the optimal side for an edge to exit/enter based on the relative
- * positions of the source and target nodes.
- *
- * If the horizontal distance dominates → exit the side that faces the target
- * (right when target is to the right, left when target is to the left).
- * Otherwise use top/bottom for primarily vertical connections.
- */
-function computeSide(sourcePos, targetPos) {
-  const dx = targetPos.x - sourcePos.x;
-  const dy = targetPos.y - sourcePos.y;
-  if (Math.abs(dx) > Math.abs(dy)) {
-    return { sourceSide: dx > 0 ? 'right' : 'left', targetSide: dx > 0 ? 'left' : 'right' };
-  }
-  return { sourceSide: dy > 0 ? 'bottom' : 'top', targetSide: dy > 0 ? 'top' : 'bottom' };
-}
-
-/**
- * Apply sourceHandle / targetHandle to edges based on relative node positions.
- *
- * @param {Node[]} nodesArr - current nodes with positions
- * @param {Edge[]} edgesArr - current edges
- * @param {Object} overrides - edgeId → { source_side, target_side, control_point }
- * @param {string|null} onlyNodeId - if set, only recompute edges connected to this node
- */
-function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = null) {
-  const posMap = Object.fromEntries(nodesArr.map((n) => [n.id, n.position]));
-  return edgesArr.map((e) => {
-    const isConnected = e.source === onlyNodeId || e.target === onlyNodeId;
-    if (onlyNodeId && !isConnected) return e;
-
-    const override = overrides[e.id];
-    const src = posMap[e.source] ?? { x: 0, y: 0 };
-    const tgt = posMap[e.target] ?? { x: 0, y: 0 };
-    const { sourceSide, targetSide } = override
-      ? { sourceSide: override.source_side, targetSide: override.target_side }
-      : computeSide(src, tgt);
-
-    return {
-      ...e,
-      sourceHandle: `s-${sourceSide}`,
-      targetHandle: `t-${targetSide}`,
-      data: {
-        ...e.data,
-        controlPoint: override?.control_point ?? e.data?.controlPoint ?? null,
-      },
-    };
-  });
-}
-
-/**
- * Parse the stored layout JSON — handles both the new format
- *   { nodes: {...}, edges: {...} }
- * and the legacy format
- *   { "hw-1": {x,y}, ... }  (flat node position map).
- */
-function parseLayoutData(raw) {
-  const parsed = JSON.parse(raw);
-  if (parsed && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)) {
-    return {
-      nodes: parsed.nodes || {},
-      edges: parsed.edges || {},
-      boundaries: parsed.boundaries || [],
-      labels: parsed.labels || [],
-      visualLines: Array.isArray(parsed.visualLines) ? parsed.visualLines : [],
-      nodeShapes:
-        parsed.nodeShapes && typeof parsed.nodeShapes === 'object' ? parsed.nodeShapes : {},
-      edgeMode: parsed.edgeMode || 'smoothstep',
-      edgeLabelVisible: parsed.edgeLabelVisible ?? true,
-      nodeSpacing: parsed.nodeSpacing || 1,
-      groupBy: parsed.groupBy || 'none',
-    };
-  }
-  return {
-    nodes: parsed || {},
-    edges: {},
-    boundaries: [],
-    labels: [],
-    visualLines: [],
-    nodeShapes: {},
-    edgeMode: 'smoothstep',
-    edgeLabelVisible: true,
-    nodeSpacing: 1,
-    groupBy: 'none',
-  };
-}
-
-function normalizeBoundaryName(name, index) {
-  const trimmed = String(name || '').trim();
-  return trimmed || `Boundary ${index + 1}`;
-}
-
-/**
- * Auto-generates transient boundaries that group docker containers (and their
- * directly-connected docker networks) by shared host (compute_id / hardware_id).
- * IDs are prefixed with "boundary-docker-auto-" so they are excluded from
- * layout snapshots and always regenerated fresh from the current node state.
- *
- * @param {object[]} rfNodes  - ReactFlow nodes (with node.originalType and node.data)
- * @param {object[]} rfEdges  - ReactFlow edges
- * @param {object[]} savedBoundaries - boundaries loaded from the saved layout
- * @returns {object[]} array of new boundary objects to merge into state
- */
-function groupDockerIntoBoundaries(rfNodes, rfEdges, savedBoundaries) {
-  // Group docker_container nodes by host key
-  const groups = new Map(); // hostKey → { ids: Set, name: string|null }
-  for (const n of rfNodes) {
-    if (n.originalType !== 'docker_container') continue;
-    const hostKey = n.data.compute_id
-      ? `cu-${n.data.compute_id}`
-      : n.data.hardware_id
-        ? `hw-${n.data.hardware_id}`
-        : null;
-    if (!hostKey) continue;
-    if (!groups.has(hostKey)) groups.set(hostKey, { ids: new Set(), name: null });
-    groups.get(hostKey).ids.add(n.id);
-  }
-  if (groups.size === 0) return [];
-
-  // Map each container node id → its hostKey for edge traversal
-  const containerHostMap = new Map();
-  for (const [hostKey, group] of groups) {
-    for (const id of group.ids) containerHostMap.set(id, hostKey);
-  }
-
-  // Pull in docker_network nodes that have an edge to a container in the group
-  const dockerNetworkIds = new Set(
-    rfNodes.filter((n) => n.originalType === 'docker_network').map((n) => n.id)
-  );
-  for (const e of rfEdges) {
-    const srcKey = containerHostMap.get(e.source);
-    const tgtKey = containerHostMap.get(e.target);
-    if (srcKey && dockerNetworkIds.has(e.target)) groups.get(srcKey).ids.add(e.target);
-    if (tgtKey && dockerNetworkIds.has(e.source)) groups.get(tgtKey).ids.add(e.source);
-  }
-
-  // Derive a human-readable name from compose project labels
-  for (const [, group] of groups) {
-    for (const nodeId of group.ids) {
-      const n = rfNodes.find((x) => x.id === nodeId && x.originalType === 'docker_container');
-      if (!n?.data?.docker_labels) continue;
-      try {
-        const labels =
-          typeof n.data.docker_labels === 'string'
-            ? JSON.parse(n.data.docker_labels)
-            : n.data.docker_labels;
-        const project = labels?.['com.docker.compose.project'];
-        if (project) {
-          group.name = project;
-          break;
-        }
-      } catch {
-        /* unparseable labels — ignore */
-      }
-    }
-  }
-
-  // Build auto-boundary objects, skipping groups already covered by a saved boundary
-  const autoBoundaries = [];
-  for (const [hostKey, group] of groups) {
-    const memberIds = [...group.ids];
-    if (memberIds.length < 2) continue;
-
-    const boundaryId = `boundary-docker-auto-${hostKey}`;
-    // Skip if this exact auto-boundary already exists as saved (user customised it)
-    if (savedBoundaries.some((b) => b.id === boundaryId)) continue;
-    // Also skip if a user-created boundary already covers most of these nodes
-    const userCovered = savedBoundaries.some(
-      (b) =>
-        !b.id?.startsWith('boundary-docker-auto-') &&
-        Array.isArray(b.memberIds) &&
-        memberIds.filter((id) => b.memberIds.includes(id)).length >= Math.ceil(memberIds.length / 2)
-    );
-    if (userCovered) continue;
-
-    autoBoundaries.push({
-      id: boundaryId,
-      name: group.name || 'Docker Stack',
-      memberIds,
-      flowRect: null,
-      color: '#1cb8d8',
-      fillOpacity: 0.04,
-      shape: 'rectangle',
-    });
-  }
-  return autoBoundaries;
-}
-
-const BOUNDARY_PRESETS = [
-  { key: 'blue', label: 'Blue', stroke: 'rgba(95, 205, 255, 0.75)', fill: [70, 170, 220] },
-  { key: 'cyan', label: 'Cyan', stroke: 'rgba(0, 210, 200, 0.75)', fill: [0, 190, 180] },
-  { key: 'green', label: 'Green', stroke: 'rgba(80, 200, 100, 0.75)', fill: [60, 180, 80] },
-  { key: 'yellow', label: 'Yellow', stroke: 'rgba(230, 200, 50, 0.75)', fill: [210, 180, 40] },
-  { key: 'orange', label: 'Orange', stroke: 'rgba(240, 150, 50, 0.75)', fill: [220, 130, 40] },
-  { key: 'red', label: 'Red', stroke: 'rgba(230, 80, 80, 0.75)', fill: [210, 60, 60] },
-  { key: 'purple', label: 'Purple', stroke: 'rgba(170, 110, 220, 0.75)', fill: [150, 90, 200] },
-  { key: 'gray', label: 'Gray', stroke: 'rgba(160, 170, 180, 0.75)', fill: [140, 150, 160] },
-];
-
-const DEFAULT_BOUNDARY_COLOR = 'blue';
-const DEFAULT_BOUNDARY_FILL_OPACITY = 0.12;
-
-function resolveBoundaryPreset(colorKey) {
-  return BOUNDARY_PRESETS.find((p) => p.key === colorKey) || BOUNDARY_PRESETS[0];
-}
-
-function boundaryFillString(preset, opacity) {
-  const [r, g, b] = preset.fill;
-  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
-}
-
-const LEGACY_LABEL_COLOR_MAP = {
-  yellow: 'yellow',
-  blue: 'blue',
-  green: 'green',
-  pink: 'red',
-  gray: 'gray',
-};
-
-function normalizeMapLabel(label, index) {
-  const rawColor = String(label?.color || 'blue');
-  const color = LEGACY_LABEL_COLOR_MAP[rawColor] || rawColor;
-  const validKeys = BOUNDARY_PRESETS.map((p) => p.key);
-  return {
-    id: String(label?.id || `map-label-${Date.now()}-${index}`),
-    text: String(label?.text || '').trim() || 'Label',
-    x: Number.isFinite(label?.x) ? Number(label.x) : 160,
-    y: Number.isFinite(label?.y) ? Number(label.y) : 160,
-    width: Math.max(140, Number(label?.width) || 220),
-    height: Math.max(48, Number(label?.height) || 48),
-    color: validKeys.includes(color) ? color : 'blue',
-  };
-}
-
-function boundaryFlowRect(startFlow, endFlow) {
-  return {
-    minX: Math.min(startFlow.x, endFlow.x),
-    maxX: Math.max(startFlow.x, endFlow.x),
-    minY: Math.min(startFlow.y, endFlow.y),
-    maxY: Math.max(startFlow.y, endFlow.y),
-  };
-}
-
-function nodeCenterInFlow(node) {
-  const width = Number(node?.width || 140);
-  const height = Number(node?.height || 140);
-  const basePos = node?.positionAbsolute || node?.position || { x: 0, y: 0 };
-  const x = Number(basePos.x || 0) + width / 2;
-  const y = Number(basePos.y || 0) + height / 2;
-  return { x, y };
-}
-
-function nodeBoundsInFlow(node) {
-  const width = Number(node?.width || 140);
-  const height = Number(node?.height || 140);
-  const basePos = node?.positionAbsolute || node?.position || { x: 0, y: 0 };
-  const x = Number(basePos.x || 0);
-  const y = Number(basePos.y || 0);
-  return {
-    minX: x,
-    maxX: x + width,
-    minY: y,
-    maxY: y + height,
-  };
-}
-
-function rectIntersectsRect(a, b) {
-  return a.minX <= b.maxX && a.maxX >= b.minX && a.minY <= b.maxY && a.maxY >= b.minY;
-}
-
-function cross(o, a, b) {
-  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-}
-
-function convexHull(points) {
-  if (points.length <= 1) return points;
-  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
-
-  const lower = [];
-  for (const point of sorted) {
-    while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop();
-    lower.push(point);
-  }
-
-  const upper = [];
-  for (let i = sorted.length - 1; i >= 0; i -= 1) {
-    const point = sorted[i];
-    while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop();
-    upper.push(point);
-  }
-
-  lower.pop();
-  upper.pop();
-  return [...lower, ...upper];
-}
-
-function expandPolygon(points, padding = 46) {
-  if (!points.length) return points;
-  const centroid = points.reduce((acc, point) => ({ x: acc.x + point.x, y: acc.y + point.y }), {
-    x: 0,
-    y: 0,
-  });
-  centroid.x /= points.length;
-  centroid.y /= points.length;
-
-  return points.map((point) => {
-    const dx = point.x - centroid.x;
-    const dy = point.y - centroid.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    return {
-      x: Math.round((point.x + (dx / dist) * padding) * 10) / 10,
-      y: Math.round((point.y + (dy / dist) * padding) * 10) / 10,
-    };
-  });
-}
-
-function computeBoundaryPolygon(boundary, nodesArr) {
-  const memberIds = Array.isArray(boundary.memberIds)
-    ? new Set(boundary.memberIds.map(String))
-    : null;
-  const members = memberIds ? nodesArr.filter((node) => memberIds.has(String(node.id))) : [];
-
-  if (members.length < 1) {
-    const rect = boundary?.flowRect;
-    if (
-      !rect ||
-      !Number.isFinite(rect.minX) ||
-      !Number.isFinite(rect.maxX) ||
-      !Number.isFinite(rect.minY) ||
-      !Number.isFinite(rect.maxY)
-    ) {
-      return [];
-    }
-    return [
-      { x: rect.minX, y: rect.minY },
-      { x: rect.maxX, y: rect.minY },
-      { x: rect.maxX, y: rect.maxY },
-      { x: rect.minX, y: rect.maxY },
-    ];
-  }
-
-  const cloud = [];
-  members.forEach((node) => {
-    const width = Number(node?.width || 140);
-    const height = Number(node?.height || 140);
-    const basePos = node?.positionAbsolute || node?.position || { x: 0, y: 0 };
-    const x = Number(basePos.x || 0);
-    const y = Number(basePos.y || 0);
-    cloud.push(
-      { x: x - 18, y: y - 20 },
-      { x: x + width + 18, y: y - 20 },
-      { x: x - 18, y: y + height + 20 },
-      { x: x + width + 18, y: y + height + 20 }
-    );
-  });
-
-  const hull = convexHull(cloud);
-  return expandPolygon(hull, 28);
-}
-
-function flowToScreenPoint(point, viewportValue) {
-  return {
-    x: point.x * viewportValue.zoom + viewportValue.x,
-    y: point.y * viewportValue.zoom + viewportValue.y,
-  };
-}
-
-function boundaryPath(points, viewportValue) {
-  if (!points.length) return '';
-  const screenPoints = points.map((point) => flowToScreenPoint(point, viewportValue));
-  return (
-    screenPoints
-      .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
-      .join(' ') + ' Z'
-  );
-}
-
-function boundaryRoundedRectPath(bbox, viewportValue, radius) {
-  const tl = flowToScreenPoint({ x: bbox.minX, y: bbox.minY }, viewportValue);
-  const br = flowToScreenPoint({ x: bbox.maxX, y: bbox.maxY }, viewportValue);
-  const w = br.x - tl.x;
-  const h = br.y - tl.y;
-  const r = Math.min(radius * viewportValue.zoom, w / 2, h / 2);
-  return `M ${tl.x + r} ${tl.y} L ${br.x - r} ${tl.y} Q ${br.x} ${tl.y} ${br.x} ${tl.y + r} L ${br.x} ${br.y - r} Q ${br.x} ${br.y} ${br.x - r} ${br.y} L ${tl.x + r} ${br.y} Q ${tl.x} ${br.y} ${tl.x} ${br.y - r} L ${tl.x} ${tl.y + r} Q ${tl.x} ${tl.y} ${tl.x + r} ${tl.y} Z`;
-}
-
-function boundaryEllipsePath(bbox, viewportValue) {
-  const tl = flowToScreenPoint({ x: bbox.minX, y: bbox.minY }, viewportValue);
-  const br = flowToScreenPoint({ x: bbox.maxX, y: bbox.maxY }, viewportValue);
-  const cx = (tl.x + br.x) / 2;
-  const cy = (tl.y + br.y) / 2;
-  const rx = (br.x - tl.x) / 2;
-  const ry = (br.y - tl.y) / 2;
-  return `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`;
-}
-
-const BOUNDARY_SHAPES = [
-  { key: 'rectangle', label: 'Rectangle', icon: '▭' },
-  { key: 'rounded', label: 'Rounded', icon: '▢' },
-  { key: 'ellipse', label: 'Ellipse', icon: '⬭' },
-];
-
-function distanceBetweenPositions(a, b) {
-  const dx = (a?.x ?? 0) - (b?.x ?? 0);
-  const dy = (a?.y ?? 0) - (b?.y ?? 0);
-  return Math.hypot(dx, dy);
-}
-
-function hasNodeCollision(candidate, nodesArr, movingNodeId, threshold = 150) {
-  return nodesArr.some((node) => {
-    if (!node || node.id === movingNodeId) return false;
-    if (
-      !node.position ||
-      typeof node.position.x !== 'number' ||
-      typeof node.position.y !== 'number'
-    )
-      return false;
-    return distanceBetweenPositions(candidate, node.position) < threshold;
-  });
-}
-
-function resolveNonOverlappingPosition(candidate, nodesArr, movingNodeId) {
-  if (!hasNodeCollision(candidate, nodesArr, movingNodeId)) return candidate;
-
-  const radiusStep = 90;
-  const angleStep = 20;
-  const maxRings = 8;
-
-  for (let ring = 1; ring <= maxRings; ring += 1) {
-    const radius = radiusStep * ring;
-    for (let angle = 0; angle < 360; angle += angleStep) {
-      const rad = (Math.PI / 180) * angle;
-      const testPos = {
-        x: Math.round((candidate.x + radius * Math.cos(rad)) * 10) / 10,
-        y: Math.round((candidate.y + radius * Math.sin(rad)) * 10) / 10,
-      };
-      if (!hasNodeCollision(testPos, nodesArr, movingNodeId)) return testPos;
-    }
-  }
-
-  return candidate;
 }
 
 // ── Main Component ──────────────────────────────────────────────────────────
@@ -1249,15 +157,20 @@ function MapInternal() {
   const viewport = useViewport();
   const hasRestoredViewport = useRef(false);
   const { settings } = useSettings();
+  const { user } = useAuth();
   const { caps } = useCapabilities();
   const toast = useToast();
   const navigate = useNavigate();
+  const canMapEdit = canEdit(user);
 
   const isLight = isLightTheme(settings);
   const bgGridColor = isLight ? '#c8d4e0' : '#1a2035';
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+  const outerMapRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1364,16 +277,67 @@ function MapInternal() {
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
 
-  // Pending discoveries badge
-  const [pendingDiscoveries, setPendingDiscoveries] = useState(0);
+  // Pending discoveries badge + real-time telemetry/monitor polling
+  const { pendingDiscoveries } = useMapRealTimeUpdates({
+    setNodes,
+    nodesRef,
+  });
+
+  // Live topology sync: node moves, cable add/remove, status changes from other clients
+  useTopologyStream();
   useEffect(() => {
-    getPendingResults({ limit: 1 })
-      .then((r) => setPendingDiscoveries(r.data?.total ?? 0))
-      .catch(() => {});
-    const onAdded = () => setPendingDiscoveries((c) => c + 1);
-    discoveryEmitter.on('result:added', onAdded);
-    return () => discoveryEmitter.off('result:added', onAdded);
-  }, []);
+    const onNodeMoved = ({ node_id, x, y }) => {
+      setNodes((prev) => prev.map((n) => (n.id === node_id ? { ...n, position: { x, y } } : n)));
+    };
+
+    const onCableAdded = ({ source_id, target_id, connection_type, bandwidth_mbps }) => {
+      const newEdge = {
+        id: `cable-${source_id}-${target_id}`,
+        source: source_id,
+        target: target_id,
+        type: 'smart',
+        style: { strokeWidth: 1.5, opacity: 0.75 },
+        data: {
+          label: connection_type || 'ethernet',
+          relation: connection_type || 'ethernet',
+          controlPoint: null,
+          connection_type: connection_type || 'ethernet',
+          bandwidth: bandwidth_mbps ?? null,
+        },
+      };
+      setEdges((prev) => {
+        const exists = prev.some((e) => e.source === source_id && e.target === target_id);
+        return exists ? prev : [...prev, newEdge];
+      });
+    };
+
+    const onCableRemoved = ({ source_id, target_id, connection_id }) => {
+      setEdges((prev) =>
+        prev.filter((e) => {
+          if (connection_id != null && String(e.id) === String(connection_id)) return false;
+          if (e.source === source_id && e.target === target_id) return false;
+          return true;
+        })
+      );
+    };
+
+    const onStatusChanged = ({ node_id, status }) => {
+      setNodes((prev) =>
+        prev.map((n) => (n.id === node_id ? { ...n, data: { ...n.data, status } } : n))
+      );
+    };
+
+    topologyEmitter.on('topology:node_moved', onNodeMoved);
+    topologyEmitter.on('topology:cable_added', onCableAdded);
+    topologyEmitter.on('topology:cable_removed', onCableRemoved);
+    topologyEmitter.on('topology:node_status_changed', onStatusChanged);
+    return () => {
+      topologyEmitter.off('topology:node_moved', onNodeMoved);
+      topologyEmitter.off('topology:cable_added', onCableAdded);
+      topologyEmitter.off('topology:cable_removed', onCableRemoved);
+      topologyEmitter.off('topology:node_status_changed', onStatusChanged);
+    };
+  }, [setNodes, setEdges]);
 
   // Filters
   const [envFilter, setEnvFilter] = useState('');
@@ -1582,43 +546,6 @@ function MapInternal() {
     );
   }, [hwRoleFilter, setNodes]);
 
-  // Telemetry polling — refresh every 60s for hardware nodes that have active telemetry
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const liveHwNodes = nodesRef.current.filter(
-        (n) =>
-          n.originalType === 'hardware' &&
-          n.data.telemetry_status &&
-          n.data.telemetry_status !== 'unknown'
-      );
-      liveHwNodes.forEach(async (n) => {
-        try {
-          const res = await telemetryApi.get(n._refId);
-          setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
-        } catch {
-          /* silent — connection may be unavailable */
-        }
-      });
-    }, 60_000);
-    return () => clearInterval(interval);
-  }, [setNodes]);
-
-  // Monitor polling — refresh every 60s so node latency badges and sidebar stay live
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await listMonitors();
-        const monitors = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
-        setNodes((prev) =>
-          applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, monitors)
-        );
-      } catch {
-        /* silent */
-      }
-    }, 60_000);
-    return () => clearInterval(interval);
-  }, [setNodes]);
-
   const getIncludeCSV = (types) => {
     const MAP = {
       hardware: 'hardware',
@@ -1670,265 +597,39 @@ function MapInternal() {
     return candidates[0]?.id || null;
   }, []);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const includeCSV = getIncludeCSV(includeTypes);
-      const res = await graphApi.topology({
-        environment_id: envFilter || undefined,
-        include: includeCSV,
-      });
-
-      const rawN = res.data.nodes.map((n) => {
-        const nodeShell = {
-          id: n.id,
-          type: 'iconNode',
-          className: n.role === 'switch' ? 'node-switch' : '',
-          data: {},
-          position: { x: 0, y: 0 },
-          style: { ...BASE_NODE_STYLE },
-          hidden: n.type === 'cluster' && !includeTypes.cluster,
-          originalType: n.type,
-          _tags: n.tags || [],
-          _refId: n.ref_id,
-          _computeId: n.compute_id || null,
-          _hwId: n.hardware_id || null,
-          _hwRole: n.type === 'hardware' ? n.role || null : null,
-        };
-        // Compute rank early so it's available in node.data for tooltips/debug
-        const rank = getNodeRank(nodeShell);
-        nodeShell.data = {
-          label: n.label,
-          role: n.role || null,
-          iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role),
-          icon_slug: n.icon_slug ?? null,
-          glowColor: NODE_STYLES[n.type]?.glowColor,
-          rank,
-          ip_address: n.ip_address || null,
-          ports: Array.isArray(n.ports) ? n.ports : [],
-          cidr: n.cidr || null,
-          storage_summary: n.storage_summary || null,
-          storage_allocated: n.storage_allocated || null,
-          capacity_gb: n.capacity_gb || null,
-          used_gb: n.used_gb || null,
-          ...(n.type === 'cluster'
-            ? { member_count: n.member_count, environment: n.environment }
-            : {}),
-          status: n.status || null,
-          status_override: n.status_override || null,
-          docker_image: n.docker_image || null,
-          docker_driver: n.docker_driver || null,
-          docker_labels: n.docker_labels || null,
-          compute_id: n.compute_id ?? null,
-          hardware_id: n.hardware_id ?? null,
-          is_docker: n.type === 'docker_network' || n.type === 'docker_container',
-          telemetry_status: n.telemetry_status || 'unknown',
-          telemetry_data: n.telemetry_data || null,
-          telemetry_last_polled: n.telemetry_last_polled || null,
-          u_height: n.u_height ?? 1,
-          rack_unit: n.rack_unit ?? null,
-          ip_conflict: n.ip_conflict ?? false,
-          download_speed_mbps: n.download_speed_mbps ?? null,
-          upload_speed_mbps: n.upload_speed_mbps ?? null,
-          proxmox_vmid: n.proxmox_vmid ?? null,
-          proxmox_type: n.proxmox_type ?? null,
-          proxmox_status: n.proxmox_status ?? null,
-          proxmox_node_name: n.proxmox_node_name ?? null,
-          integration_config_id: n.integration_config_id ?? null,
-        };
-        return nodeShell;
-      });
-
-      const rawE = res.data.edges.map((e) => {
-        const color = getEdgeColor(e.relation);
-        const relation = e.data?.relation || e.relation;
-        return {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          type: 'smart',
-          label: showLabels ? relation : '',
-          animated: e.relation === 'depends_on' || e.relation === 'runs',
-          style: { stroke: color, strokeWidth: 1.5, opacity: 0.75 },
-          _relation: e.relation,
-          data: {
-            // Gate both label and relation on showLabels so the relation pill
-            // in CustomEdge respects the labels toggle (confirmed by H-A logs).
-            label: showLabels ? relation : '',
-            relation: showLabels ? relation : '',
-            controlPoint: null,
-            connection_type: normalizeConnectionType(e.data?.connection_type),
-            bandwidth: e.data?.bandwidth || null,
-          },
-        };
-      });
-
-      const clusterMembers = new Set();
-      rawE.forEach((e) => {
-        if (e._relation === 'cluster_member' || e.data?.relation === 'cluster_member') {
-          clusterMembers.add(e.source);
-          clusterMembers.add(e.target);
-        }
-      });
-      const rawNodesWithClusterHints = rawN.map((node) => ({
-        ...node,
-        data: {
-          ...node.data,
-          isClusterMember: clusterMembers.has(node.id),
-        },
-      }));
-
-      // Try to load saved layout (environment-scoped with default fallback)
-      let savedNodePositions = null;
-      let savedEdgeOverrides = {};
-      let savedBoundaries = [];
-      let savedLabels = [];
-      let savedVisualLines = [];
-      let savedNodeShapes = {};
-      let savedEdgeMode = null;
-      let savedEdgeLabelVisible = null;
-      let savedNodeSpacing = null;
-      let savedGroupBy = null;
-      try {
-        const scopedLayoutName = getLayoutName();
-        const layoutNames =
-          scopedLayoutName === 'default' ? ['default'] : [scopedLayoutName, 'default'];
-
-        for (const layoutName of layoutNames) {
-          const layoutRes = await graphApi.getLayout(layoutName);
-          if (!layoutRes.data.layout_data) continue;
-          const parsed = parseLayoutData(layoutRes.data.layout_data);
-          savedNodePositions = parsed.nodes;
-          savedEdgeOverrides = parsed.edges || {};
-          savedBoundaries = Array.isArray(parsed.boundaries) ? parsed.boundaries : [];
-          savedLabels = Array.isArray(parsed.labels) ? parsed.labels : [];
-          savedVisualLines = Array.isArray(parsed.visualLines) ? parsed.visualLines : [];
-          savedNodeShapes = parsed.nodeShapes || {};
-          savedEdgeMode = parsed.edgeMode;
-          savedEdgeLabelVisible = parsed.edgeLabelVisible;
-          savedNodeSpacing = parsed.nodeSpacing;
-          savedGroupBy = parsed.groupBy;
-          setLastSaved(layoutRes.data.updated_at);
-          break;
-        }
-      } catch {
-        /* no saved layout */
-      }
-
-      setEdgeMode(savedEdgeMode || 'smoothstep');
-      setEdgeLabelVisible(savedEdgeLabelVisible ?? true);
-      setNodeSpacing(savedNodeSpacing || 1);
-      setGroupBy(savedGroupBy || 'none');
-
-      const normalizedSavedBoundaries = savedBoundaries
-        .filter(
-          (boundary) =>
-            (Array.isArray(boundary?.memberIds) && boundary.memberIds.length >= 1) ||
-            boundary?.flowRect
-        )
-        .map((boundary, index) => ({
-          id: boundary.id || `boundary-${Date.now()}-${index}`,
-          name: normalizeBoundaryName(boundary.name, index),
-          memberIds: boundary.memberIds,
-          flowRect: boundary.flowRect,
-          color: boundary.color || null,
-          fillOpacity: boundary.fillOpacity ?? null,
-          shape: boundary.shape || 'rectangle',
-        }));
-
-      // Auto-generate transient boundaries for docker stacks. These are keyed with
-      // "boundary-docker-auto-" prefix so saveLayoutSnapshot skips them — they are
-      // always regenerated from live node data rather than persisted.
-      const dockerAutoBoundaries = groupDockerIntoBoundaries(
-        rawNodesWithClusterHints,
-        rawE,
-        normalizedSavedBoundaries
-      );
-
-      setBoundaries([...normalizedSavedBoundaries, ...dockerAutoBoundaries]);
-      setMapLabels(savedLabels.map((label, index) => normalizeMapLabel(label, index)));
-      setVisualLines(
-        savedVisualLines
-          .filter((vl) => vl?.startFlow && vl?.endFlow && vl?.lineType)
-          .map((vl, index) => ({
-            id: vl.id || `vline-${Date.now()}-${index}`,
-            startFlow: { x: Number(vl.startFlow.x) || 0, y: Number(vl.startFlow.y) || 0 },
-            endFlow: { x: Number(vl.endFlow.x) || 0, y: Number(vl.endFlow.y) || 0 },
-            lineType: vl.lineType,
-          }))
-      );
-
-      if (savedNodePositions) {
-        const mergedNodes = rawNodesWithClusterHints.map((n) => {
-          // Inject persisted shape into node data
-          const shapeData = savedNodeShapes[n.id]
-            ? { ...n.data, nodeShape: savedNodeShapes[n.id] }
-            : n.data;
-          const nodeWithShape = { ...n, data: shapeData };
-          if (savedNodePositions[n.id])
-            return { ...nodeWithShape, position: savedNodePositions[n.id] };
-          // Only mark for auto-placement if this node hasn't already been placed
-          // this session. Prevents re-firing toasts after every fetchData call.
-          if (autoPlacedIdsRef.current.has(n.id)) return nodeWithShape;
-          return { ...nodeWithShape, position: { x: 0, y: 0 }, _needsAutoPlace: true };
-        });
-        setEdgeOverrides(savedEdgeOverrides);
-        edgeOverridesRef.current = savedEdgeOverrides;
-
-        let initialNodes = mergedNodes;
-        if (cloudViewEnabled) {
-          initialNodes = groupNodesIntoCloud(initialNodes);
-        }
-
-        setNodes(initialNodes);
-        setEdges(applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides));
-        setLayoutEngine('manual');
-      } else {
-        // Node count heuristic: use Tree for very large graphs instead of DAG
-        const layout = getDagreLayout(rawNodesWithClusterHints, rawE, 'TB');
-        let initialNodes = layout.nodes;
-        if (cloudViewEnabled) {
-          initialNodes = groupNodesIntoCloud(initialNodes);
-        }
-
-        setNodes(initialNodes);
-        setEdges(applyEdgeSides(initialNodes, layout.edges, {}));
-        setLayoutEngine(settings?.graph_default_layout || 'dagre');
-      }
-
-      setTimeout(() => {
-        const saved = localStorage.getItem('cb_map_viewport');
-        if (saved && !hasRestoredViewport.current) {
-          try {
-            setViewport(JSON.parse(saved));
-            hasRestoredViewport.current = true;
-          } catch {
-            fitView({ padding: isMobile ? 0.35 : 0.2 });
-          }
-        } else {
-          // Use more generous padding on mobile so the graph fits the narrower viewport.
-          fitView({ padding: isMobile ? 0.35 : 0.2 });
-        }
-      }, 50);
-    } catch (err) {
-      setError(err.message || 'Failed to load topology');
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    envFilter,
-    includeTypes,
+  const { fetchData, autoPlaceNew, updateNodePos } = useMapDataLoad({
+    setLoading,
+    setError,
+    setEdgeMode,
+    setEdgeLabelVisible,
+    setNodeSpacing,
+    setGroupBy,
+    setLastSaved,
+    setBoundaries,
+    setMapLabels,
+    setVisualLines,
+    setEdgeOverrides,
+    setNodes,
+    setEdges,
+    setLayoutEngine,
+    edgeOverridesRef,
+    autoPlacedIdsRef,
+    placingNodesRef,
+    pendingPlacementCountRef,
+    batchPlacedCountRef,
+    saveLayoutRef,
+    hasRestoredViewport,
     fitView,
-    getLayoutName,
+    setViewport,
+    cloudViewEnabled,
     isMobile,
     showLabels,
-    cloudViewEnabled,
-    setEdges,
-    setNodes,
-    setViewport,
-    settings?.graph_default_layout,
-  ]);
+    settings,
+    envFilter,
+    includeTypes,
+    getLayoutName,
+    toast,
+  });
 
   useEffect(() => {
     fetchData();
@@ -2015,53 +716,6 @@ function MapInternal() {
     [applyLayout]
   );
 
-  const updateNodePos = useCallback(
-    (id, pos) => {
-      setNodes((nds) => {
-        const safePos = resolveNonOverlappingPosition(pos, nds, id);
-        return nds.map((n) =>
-          n.id === id ? { ...n, position: safePos, _needsAutoPlace: false } : n
-        );
-      });
-    },
-    [setNodes]
-  );
-
-  const autoPlaceNew = useCallback(
-    async (newNodeId) => {
-      pendingPlacementCountRef.current += 1;
-      try {
-        const res = await graphApi.placeNode(newNodeId, envFilter || 'default');
-        autoPlacedIdsRef.current.add(newNodeId);
-        placingNodesRef.current.delete(newNodeId);
-        updateNodePos(newNodeId, { x: res.data.x, y: res.data.y });
-        batchPlacedCountRef.current += 1;
-        dirtyRef.current = true;
-      } catch (e) {
-        placingNodesRef.current.delete(newNodeId);
-        console.error('Auto-place failed', e);
-      } finally {
-        pendingPlacementCountRef.current -= 1;
-        // Show a single toast and auto-save when the entire parallel batch drains.
-        if (pendingPlacementCountRef.current === 0 && batchPlacedCountRef.current > 0) {
-          const count = batchPlacedCountRef.current;
-          batchPlacedCountRef.current = 0;
-          toast.success(count === 1 ? 'Node auto-placed' : `${count} nodes auto-placed`, {
-            toastId: 'auto-place-batch',
-            autoClose: 2000,
-          });
-          // Auto-save so positions persist across page reloads (H-C fix).
-          // Use saveLayoutRef to avoid forward-reference TDZ (saveLayoutSnapshot
-          // is declared after autoPlaceNew in this component body).
-          saveLayoutRef
-            .current?.()
-            .catch((err) => console.error('Auto-save after placement failed', err));
-        }
-      }
-    },
-    [envFilter, updateNodePos, toast]
-  );
-
   useEffect(() => {
     // Look for nodes marked _needsAutoPlace that aren't already in-flight.
     const nodesToPlace = nodes.filter(
@@ -2075,60 +729,33 @@ function MapInternal() {
     }
   }, [nodes, autoPlaceNew]);
 
-  const saveLayoutSnapshot = useCallback(
-    async ({ labelsOverride } = {}) => {
-      const nodePositions = {};
-      const nodeShapes = {};
-      nodesRef.current.forEach((n) => {
-        nodePositions[n.id] = n.position;
-        if (n.data?.nodeShape) nodeShapes[n.id] = n.data.nodeShape;
-      });
-      const payload = {
-        nodes: nodePositions,
-        nodeShapes,
-        edges: edgeOverridesRef.current,
-        boundaries: boundaries
-          .filter((b) => !b.id?.startsWith('boundary-docker-auto-'))
-          .map((boundary, index) => ({
-            id: boundary.id,
-            name: normalizeBoundaryName(boundary.name, index),
-            memberIds: boundary.memberIds,
-            flowRect: boundary.flowRect,
-            color: boundary.color || DEFAULT_BOUNDARY_COLOR,
-            fillOpacity: boundary.fillOpacity ?? DEFAULT_BOUNDARY_FILL_OPACITY,
-            shape: boundary.shape || 'rectangle',
-          })),
-        labels: (labelsOverride ?? mapLabelsRef.current).map((label, index) =>
-          normalizeMapLabel(label, index)
-        ),
-        visualLines: visualLinesRef.current.map((vl) => ({
-          id: vl.id,
-          startFlow: vl.startFlow,
-          endFlow: vl.endFlow,
-          lineType: vl.lineType,
-        })),
-        edgeMode,
-        edgeLabelVisible,
-        nodeSpacing,
-        groupBy,
-      };
-      await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
-      setLastSaved(new Date().toISOString());
-      dirtyRef.current = false;
-    },
-    [boundaries, getLayoutName, edgeMode, edgeLabelVisible, nodeSpacing, groupBy]
-  );
+  const { saveLayoutSnapshot, saveLayout, handleDeleteNodeAction, forceRemoveDeleteConflicts } =
+    useMapMutations({
+      nodesRef,
+      edgeOverridesRef,
+      mapLabelsRef,
+      visualLinesRef,
+      dirtyRef,
+      boundaries,
+      edgeMode,
+      edgeLabelVisible,
+      nodeSpacing,
+      groupBy,
+      setLastSaved,
+      setError,
+      setConfirmState,
+      setDeleteConflictModal,
+      setSelectedNode,
+      edges,
+      deleteConflictModal,
+      selectedNodeId: selectedNode?.id,
+      getLayoutName,
+      fetchData,
+      toast,
+    });
 
-  // Keep the ref current so autoPlaceNew can call it without a forward-reference.
+  // Keep the ref current so autoPlaceNew can call saveLayoutSnapshot without TDZ.
   saveLayoutRef.current = saveLayoutSnapshot;
-
-  const saveLayout = async () => {
-    try {
-      await saveLayoutSnapshot();
-    } catch (err) {
-      setError('Failed to save layout: ' + err.message);
-    }
-  };
 
   // ── Node interactions ──────────────────────────────────────────────────────
 
@@ -2150,6 +777,7 @@ function MapInternal() {
   const handlePaneContextMenu = useCallback(
     (event) => {
       event.preventDefault();
+      if (!canMapEdit) return;
       setContextMenu(null);
       setCreateNodeModal({
         isOpen: true,
@@ -2159,7 +787,7 @@ function MapInternal() {
         }),
       });
     },
-    [screenToFlowPosition]
+    [canMapEdit, screenToFlowPosition]
   );
 
   const handleCreateNode = useCallback(
@@ -2484,119 +1112,6 @@ function MapInternal() {
     [navigate, openQuickCreateModal, toast]
   );
 
-  const getDeleteBlockers = useCallback(
-    (nodeId) => {
-      const currentNodes = nodesRef.current;
-      const connected = edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
-      return connected.map((edge) => {
-        const otherNodeId = edge.source === nodeId ? edge.target : edge.source;
-        const otherNode = currentNodes.find((n) => n.id === otherNodeId);
-        return {
-          edgeId: edge.id,
-          relation: edge._relation || edge.data?.relation || edge.label || 'linked',
-          otherLabel: otherNode?.data?.label || otherNodeId,
-        };
-      });
-    },
-    [edges]
-  );
-
-  const forceRemoveDeleteConflicts = useCallback(async () => {
-    if (
-      !deleteConflictModal.nodeId ||
-      !deleteConflictModal.nodeRefId ||
-      !deleteConflictModal.nodeType
-    )
-      return;
-    const deleter = ENTITY_API_DELETE[deleteConflictModal.nodeType];
-    if (!deleter) {
-      toast.error('Delete is not supported for this node type.');
-      return;
-    }
-
-    setDeleteConflictModal((m) => ({ ...m, forcing: true }));
-    try {
-      const connectedEdges = edges.filter(
-        (edge) =>
-          edge.source === deleteConflictModal.nodeId || edge.target === deleteConflictModal.nodeId
-      );
-
-      for (const edge of connectedEdges) {
-        const edgeForUnlink = {
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          _relation: edge._relation,
-          data: edge.data,
-          label: edge.label,
-        };
-        await unlinkByEdge(edgeForUnlink);
-      }
-
-      await deleter(deleteConflictModal.nodeRefId);
-      if (selectedNode?.id === deleteConflictModal.nodeId) setSelectedNode(null);
-      setDeleteConflictModal((m) => ({ ...m, open: false, forcing: false }));
-      toast.success('Node deleted after removing conflicts.');
-      fetchData();
-    } catch (err) {
-      setDeleteConflictModal((m) => ({ ...m, forcing: false }));
-      toast.error(err?.message || 'Force remove failed.');
-    }
-  }, [
-    deleteConflictModal.nodeId,
-    deleteConflictModal.nodeRefId,
-    deleteConflictModal.nodeType,
-    edges,
-    fetchData,
-    selectedNode?.id,
-    toast,
-  ]);
-
-  const handleDeleteNodeAction = useCallback(
-    (nodeId) => {
-      const targetNode = nodesRef.current.find((n) => n.id === nodeId);
-      if (!targetNode) {
-        toast.error('Could not resolve node for deletion.');
-        return;
-      }
-
-      const deleter = ENTITY_API_DELETE[targetNode.originalType];
-      if (!deleter || !targetNode._refId) {
-        toast.error('Delete is not supported for this node type.');
-        return;
-      }
-
-      const label = targetNode.data?.label || targetNode.id;
-      setConfirmState({
-        open: true,
-        message: `Delete node "${label}"? This uses the same delete behavior as the entity page.`,
-        onConfirm: async () => {
-          setConfirmState((s) => ({ ...s, open: false }));
-          try {
-            await deleter(targetNode._refId);
-            if (selectedNode?.id === targetNode.id) setSelectedNode(null);
-            toast.success('Node deleted.');
-            fetchData();
-          } catch (err) {
-            const reason = err?.message || 'Failed to delete node.';
-            const blockers = getDeleteBlockers(targetNode.id);
-            setDeleteConflictModal({
-              open: true,
-              nodeId: targetNode.id,
-              nodeRefId: targetNode._refId,
-              nodeType: targetNode.originalType,
-              nodeLabel: label,
-              blockers,
-              reason,
-              forcing: false,
-            });
-          }
-        },
-      });
-    },
-    [fetchData, getDeleteBlockers, selectedNode?.id, toast]
-  );
-
   const handleContextAction = useCallback(
     async (action, data) => {
       const { nodeId, targetId } = data;
@@ -2676,6 +1191,34 @@ function MapInternal() {
           }
         } else if (handleQuickCreateAction(action, nodeId)) {
           return;
+        } else if (action === 'monitor_create') {
+          const nd = nodesRef.current.find((n) => n.id === nodeId);
+          if (!nd?._refId) return;
+          await createMonitor({
+            hardware_id: nd._refId,
+            probe_methods: ['icmp', 'tcp', 'http'],
+            interval_secs: 60,
+            enabled: true,
+          });
+          toast.success('Monitoring enabled');
+          fetchData();
+        } else if (action === 'monitor_toggle') {
+          const nd = nodesRef.current.find((n) => n.id === nodeId);
+          if (!nd?._refId) return;
+          const next = !nd.data?.monitor_enabled;
+          await updateMonitor(nd._refId, { enabled: next });
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === nodeId ? { ...n, data: { ...n.data, monitor_enabled: next } } : n
+            )
+          );
+          toast.success(next ? 'Monitoring resumed' : 'Monitoring paused');
+        } else if (action === 'monitor_check_now') {
+          const nd = nodesRef.current.find((n) => n.id === nodeId);
+          if (!nd?._refId) return;
+          await runImmediateCheck(nd._refId);
+          toast.success('Probe triggered');
+          fetchData();
         } else {
           toast.info(`Action ${action} triggered but specific handler not implemented yet`);
         }
@@ -2717,11 +1260,15 @@ function MapInternal() {
     [fetchData, iconPickerNode, toast]
   );
 
-  const handleNodeContextMenu = useCallback((event, node) => {
-    event.preventDefault();
-    setTelemetrySidebarNode(null);
-    setContextMenu({ x: event.clientX, y: event.clientY, node });
-  }, []);
+  const handleNodeContextMenu = useCallback(
+    (event, node) => {
+      event.preventDefault();
+      if (!canMapEdit) return;
+      setTelemetrySidebarNode(null);
+      setContextMenu({ x: event.clientX, y: event.clientY, node });
+    },
+    [canMapEdit]
+  );
 
   const handleNodeClick = useCallback((event, node) => {
     setTelemetrySidebarNode(null);
@@ -3386,8 +1933,39 @@ function MapInternal() {
 
   const handleEdgeContextMenu = useCallback((event, _edge) => {
     event.preventDefault();
-    setEdgeMenu({ edgeId: _edge.id, x: event.clientX, y: event.clientY });
+    setEdgeMenu({
+      edgeId: _edge.id,
+      x: event.clientX,
+      y: event.clientY,
+      connectionType: _edge.data?.connection_type || 'ethernet',
+      isUpdatable: isUpdatableEdgeId(_edge.id),
+    });
   }, []);
+
+  const persistEdgeType = useCallback(async (edgeId, connectionType) => {
+    if (!edgeId) return false;
+    try {
+      await graphApi.updateEdgeType(edgeId, connectionType);
+      return true;
+    } catch (err) {
+      console.warn('Could not persist edge type:', err?.message);
+      return false;
+    }
+  }, []);
+
+  const handleEdgeConnectionTypeChange = useCallback(
+    async (edgeId, newType) => {
+      const normalized = normalizeConnectionType(newType) || 'ethernet';
+      setEdges((prev) =>
+        prev.map((e) =>
+          e.id === edgeId ? { ...e, data: { ...e.data, connection_type: normalized } } : e
+        )
+      );
+      setEdgeMenu((prev) => (prev ? { ...prev, connectionType: normalized } : prev));
+      await persistEdgeType(edgeId, normalized);
+    },
+    [persistEdgeType, setEdges]
+  );
 
   const handleControlPointChange = useCallback(
     (edgeId, clientPos) => {
@@ -3548,17 +2126,6 @@ function MapInternal() {
     [getNewestEdgeId, getTopologyParams]
   );
 
-  const persistEdgeType = useCallback(async (edgeId, connectionType) => {
-    if (!edgeId) return false;
-    try {
-      await graphApi.updateEdgeType(edgeId, connectionType);
-      return true;
-    } catch (err) {
-      console.warn('Could not persist edge type:', err?.message);
-      return false;
-    }
-  }, []);
-
   const createConnection = useCallback(
     async (connection, connectionType) => {
       const linkMeta = await createLinkByNodeIds(
@@ -3674,16 +2241,32 @@ function MapInternal() {
     [edgeMode, edgeLabelVisible, nodeSpacing, groupBy]
   );
 
+  const handleToggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      outerMapRef.current?.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
   return (
     <MapViewOptionsContext.Provider value={viewOptions}>
       <MapEdgeCallbacksContext.Provider value={edgeCallbacksRef}>
         <div
+          ref={outerMapRef}
           className="page map-page"
           style={{
-            height: 'calc(100vh - 60px)',
+            height: isFullscreen ? '100vh' : 'calc(100vh - 60px)',
             display: 'flex',
             flexDirection: 'column',
             position: 'relative',
+            background: 'var(--color-bg)',
           }}
         >
           <style>{`@keyframes tm-pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }`}</style>
@@ -3703,7 +2286,7 @@ function MapInternal() {
               backdropFilter: 'blur(6px)',
             }}
           >
-            <h2 style={{ marginRight: 16 }}>Topology</h2>
+            <h2 style={{ marginRight: 16 }}>{settings.map_title || 'Topology'}</h2>
 
             <div
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}
@@ -3865,6 +2448,8 @@ function MapInternal() {
                     setEdgeLabelVisible(opts.edgeLabelVisible);
                   if (opts.nodeSpacing !== nodeSpacing) setNodeSpacing(opts.nodeSpacing);
                 }}
+                onFullscreen={handleToggleFullscreen}
+                isFullscreen={isFullscreen}
               />
 
               <button
@@ -4903,7 +3488,7 @@ function MapInternal() {
             )}
 
             {/* Node context menu — avoidRectRef prevents it from covering the floating sidebar panel */}
-            {contextMenu && (
+            {contextMenu && canMapEdit && (
               <ContextMenu
                 position={{ x: contextMenu.x, y: contextMenu.y }}
                 node={contextMenu.node}
@@ -5181,8 +3766,8 @@ function MapInternal() {
             {/* Edge anchor context menu */}
             {edgeMenu &&
               (() => {
-                const menuW = 200;
-                const menuH = 200;
+                const menuW = 220;
+                const menuH = edgeMenu.isUpdatable ? 420 : 220;
                 const ex = Math.min(edgeMenu.x, window.innerWidth - menuW - 8);
                 const ey = Math.min(edgeMenu.y, window.innerHeight - menuH - 8);
                 const currentOverride = edgeOverrides[edgeMenu.edgeId] || {};
@@ -5206,6 +3791,71 @@ function MapInternal() {
                     }}
                     onMouseDown={(e) => e.stopPropagation()}
                   >
+                    {/* ── Connection Type ────────────────────────────── */}
+                    {edgeMenu.isUpdatable && (
+                      <>
+                        <div
+                          style={{
+                            padding: '7px 12px 5px',
+                            borderBottom: '1px solid var(--color-border)',
+                            fontSize: 10,
+                            color: 'var(--color-text-muted)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                          }}
+                        >
+                          Connection Type
+                        </div>
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(3, 1fr)',
+                            gap: 4,
+                            padding: '6px 10px 8px',
+                          }}
+                        >
+                          {CONNECTION_TYPE_OPTIONS.map((t) => {
+                            const style = CONNECTION_STYLES[t] || {};
+                            const isActive =
+                              (normalizeConnectionType(edgeMenu.connectionType) || 'ethernet') ===
+                              t;
+                            return (
+                              <button
+                                key={t}
+                                onClick={() => handleEdgeConnectionTypeChange(edgeMenu.edgeId, t)}
+                                title={t}
+                                style={{
+                                  padding: '3px 4px',
+                                  borderRadius: 4,
+                                  border: isActive
+                                    ? `2px solid ${style.stroke || '#888'}`
+                                    : '1px solid var(--color-border)',
+                                  background: isActive ? `${style.stroke}22` : 'transparent',
+                                  color: style.stroke || 'var(--color-text)',
+                                  fontSize: 10,
+                                  cursor: 'pointer',
+                                  textAlign: 'center',
+                                  fontWeight: isActive ? 700 : 400,
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  transition: 'all 0.12s',
+                                }}
+                              >
+                                {t}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div
+                          style={{
+                            height: 1,
+                            background: 'var(--color-border)',
+                            margin: '0 0 2px',
+                          }}
+                        />
+                      </>
+                    )}
                     <div
                       style={{
                         padding: '7px 12px 5px',
@@ -5355,6 +4005,9 @@ function MapInternal() {
                 navigate(NODE_TYPE_ROUTES[node?.originalType] || '/');
               }}
               onBoundsChange={handleSidebarBoundsChange}
+              onMonitorAction={(action) =>
+                handleContextAction(action, { nodeId: selectedNode?.id })
+              }
             />
           </div>
         </div>

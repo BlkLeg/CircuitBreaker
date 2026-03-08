@@ -60,6 +60,23 @@ def recalculate_hardware_status(db: Session, hardware_id: int) -> str:
     new_status = _worst_status(child_statuses)
     hw.status = new_status
     db.flush()
+
+    # Cache status to NATS KV
+    try:
+        import asyncio
+
+        from app.core.nats_client import get_nc
+
+        nc = get_nc()
+        if nc and nc.is_connected:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(nc.kv_put("status_cache", f"hardware.{hardware_id}", new_status))
+            except RuntimeError:
+                pass
+    except Exception as exc:
+        _logger.debug("Failed to cache hardware status to NATS KV: %s", exc)
+
     return new_status
 
 
@@ -83,4 +100,21 @@ def recalculate_compute_status(db: Session, cu_id: int) -> str:
     new_status = _worst_status(svc_statuses)
     cu.status = new_status
     db.flush()
+
+    # Cache status to NATS KV
+    try:
+        import asyncio
+
+        from app.core.nats_client import get_nc
+
+        nc = get_nc()
+        if nc and nc.is_connected:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(nc.kv_put("status_cache", f"compute.{cu_id}", new_status))
+            except RuntimeError:
+                pass
+    except Exception as exc:
+        _logger.debug("Failed to cache compute status to NATS KV: %s", exc)
+
     return new_status

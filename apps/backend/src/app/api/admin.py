@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.security import require_write_auth
+from app.core.rbac import require_role
 from app.core.time import utcnow_iso
 from app.db import models
 from app.db.session import get_db
@@ -244,7 +244,7 @@ def _svc_ext_to_dict(r: models.ServiceExternalNode) -> dict:
 
 @router.get("/export")
 def export_backup(
-    db: Annotated[Session, Depends(get_db)], _: Annotated[None, Depends(require_write_auth)] = None
+    db: Annotated[Session, Depends(get_db)], _: Annotated[None, require_role("admin")] = None
 ):
     """Export a full JSON snapshot of all entities, tags, docs, and relationships.
 
@@ -354,7 +354,7 @@ def _restore_entities(db: Session, data: dict) -> None:
 def import_backup(
     payload: ImportPayload,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Restore a backup snapshot.
 
@@ -410,7 +410,7 @@ def _wipe_entities_keep_docs(db: Session) -> None:
     "/clear-lab", status_code=200, responses={500: {"description": "Clear lab operation failed"}}
 )
 def clear_lab(
-    db: Annotated[Session, Depends(get_db)], _: Annotated[None, Depends(require_write_auth)] = None
+    db: Annotated[Session, Depends(get_db)], _: Annotated[None, require_role("admin")] = None
 ):
     """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
     clusters, external nodes, tags, and their relationships) while preserving all

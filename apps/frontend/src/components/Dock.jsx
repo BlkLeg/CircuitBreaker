@@ -16,10 +16,12 @@ import {
   ScanSearch,
 } from 'lucide-react';
 import { settingsApi } from '../api/client';
+import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import MobileTabBar from './MobileTabBar';
 import { useTranslation } from 'react-i18next';
+import { canEdit, isAdmin } from '../utils/rbac';
 
 export const NAV_MAP = {
   '/hardware': { icon: Cpu, label: 'Hardware', labelKey: 'header.hardware' },
@@ -61,6 +63,7 @@ function gaussian(dist) {
 function Dock({ pendingCount = 0 }) {
   const { t } = useTranslation('common');
   const isMobile = useIsMobile();
+  const { user } = useAuth();
   const navRef = useRef(null);
   const itemRefs = useRef([]); // refs to each .dock-item wrapper
   const dragItem = useRef(null);
@@ -91,8 +94,15 @@ function Dock({ pendingCount = 0 }) {
   );
 
   const hiddenItems = new Set(settings?.dock_hidden_items ?? []);
+  const allowSettings = canEdit(user);
+  const allowLogs = isAdmin(user);
   const navItems = order
-    .filter((path) => NAV_MAP[path] && !hiddenItems.has(path))
+    .filter((path) => {
+      if (!NAV_MAP[path] || hiddenItems.has(path)) return false;
+      if (path === '/settings' && !allowSettings) return false;
+      if (path === '/logs' && !allowLogs) return false;
+      return true;
+    })
     .map((path) => {
       const item = NAV_MAP[path];
       return {

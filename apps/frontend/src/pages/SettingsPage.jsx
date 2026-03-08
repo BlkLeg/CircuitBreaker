@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import PropTypes from 'prop-types';
 import { useSearchParams } from 'react-router-dom';
 import { settingsApi, adminApi, cveApi } from '../api/client';
 import { useSettings } from '../context/SettingsContext';
@@ -71,6 +72,12 @@ function StatusBadge({ ok, labelOk = 'Connected', labelNo = 'Unavailable' }) {
     </span>
   );
 }
+
+StatusBadge.propTypes = {
+  ok: PropTypes.bool.isRequired,
+  labelOk: PropTypes.string,
+  labelNo: PropTypes.string,
+};
 
 function CveSecuritySection({ form, set }) {
   const [cveStatus, setCveStatus] = useState(null);
@@ -172,11 +179,27 @@ function CveSecuritySection({ form, set }) {
   );
 }
 
+CveSecuritySection.propTypes = {
+  form: PropTypes.object.isRequired,
+  set: PropTypes.func.isRequired,
+};
+
+import WebhooksManager from '../components/settings/WebhooksManager';
+import NotificationsManager from '../components/settings/NotificationsManager';
+import OAuthProvidersManager from '../components/settings/OAuthProvidersManager';
+
 export default function SettingsPage() {
   const { i18n, t } = useTranslation();
   const { settings: ctxSettings, reloadSettings } = useSettings();
   const { setAuthEnabled, user } = useAuth();
   const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
+  const allowedTabs = useMemo(
+    () =>
+      isAdmin
+        ? SETTINGS_TABS
+        : SETTINGS_TABS.filter((t) => ['integrations', 'webhooks'].includes(t.id)),
+    [isAdmin]
+  );
   const { timezone: ctxTimezone, setTimezone } = useTimezone();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useToast();
@@ -241,6 +264,7 @@ export default function SettingsPage() {
       scan_aggressiveness: ctxSettings.scan_aggressiveness ?? 'normal',
       // Phase 6: topology + integrations
       graph_default_layout: ctxSettings.graph_default_layout ?? 'dagre',
+      map_title: ctxSettings.map_title ?? 'Topology',
       ui_font: ctxSettings.ui_font ?? 'inter',
       ui_font_size: ctxSettings.ui_font_size ?? 'medium',
       docker_discovery_enabled: ctxSettings.docker_discovery_enabled ?? false,
@@ -298,6 +322,11 @@ export default function SettingsPage() {
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
   const handleSave = async () => {
+    if (!isAdmin) {
+      toast.error('Only admins can update system settings.');
+      return;
+    }
+    if (!form) return;
     setSaving(true);
     try {
       const mapFiltersJson = JSON.stringify({
@@ -439,9 +468,9 @@ export default function SettingsPage() {
   };
 
   const filteredTabs = useMemo(() => {
-    if (!searchQuery) return SETTINGS_TABS;
+    if (!searchQuery) return allowedTabs;
     const q = searchQuery.toLowerCase();
-    return SETTINGS_TABS.filter((tab) => {
+    return allowedTabs.filter((tab) => {
       if (tab.label.toLowerCase().includes(q)) return true;
       if (tab.description.toLowerCase().includes(q)) return true;
       // Also match common keywords for specific tabs
@@ -461,13 +490,14 @@ export default function SettingsPage() {
           'hypervisor',
           'vm',
         ],
+        webhooks: ['webhook', 'endpoint', 'delivery', 'event', 'notification', 'sink', 'route'],
         security: ['auth', 'login', 'password', 'timeout', 'audit'],
         users: ['users', 'invite', 'role', 'admin', 'masquerade', 'sessions', 'accounts', 'local'],
         system: ['backup', 'restore', 'reset', 'experimental', 'clear'],
       };
       return keywords[tab.id]?.some((k) => k.includes(q));
     });
-  }, [searchQuery]);
+  }, [allowedTabs, searchQuery]);
 
   useEffect(() => {
     // If current tab is filtered out, switch to first available
@@ -475,6 +505,13 @@ export default function SettingsPage() {
       if (filteredTabs.length > 0) setActiveTab(filteredTabs[0].id);
     }
   }, [filteredTabs, searchQuery, activeTab]);
+
+  useEffect(() => {
+    if (!allowedTabs.some((t) => t.id === activeTab) && allowedTabs.length > 0) {
+      setActiveTab(allowedTabs[0].id);
+      setSearchParams({ tab: allowedTabs[0].id });
+    }
+  }, [activeTab, allowedTabs, setSearchParams]);
 
   if (!form)
     return (
@@ -485,7 +522,7 @@ export default function SettingsPage() {
       </div>
     );
 
-  const currentTabLabel = SETTINGS_TABS.find((t) => t.id === activeTab)?.label || 'Settings';
+  const currentTabLabel = allowedTabs.find((t) => t.id === activeTab)?.label || 'Settings';
 
   return (
     <div className="page">
@@ -508,7 +545,7 @@ export default function SettingsPage() {
                 {currentTabLabel}
               </h2>
               <p style={{ fontSize: '13px', color: 'var(--color-text-muted)' }}>
-                {SETTINGS_TABS.find((t) => t.id === activeTab)?.description}
+                {allowedTabs.find((t) => t.id === activeTab)?.description}
               </p>
             </div>
           </div>
@@ -961,6 +998,19 @@ export default function SettingsPage() {
 
                 <SettingSection title="Topology Map">
                   <SettingField
+                    label="Map Title"
+                    hint="The heading shown at the top of the topology map."
+                  >
+                    <input
+                      className="form-control"
+                      type="text"
+                      value={form.map_title}
+                      onChange={(e) => set('map_title', e.target.value)}
+                      style={{ width: 240 }}
+                      maxLength={80}
+                    />
+                  </SettingField>
+                  <SettingField
                     label="Default Layout"
                     hint="Layout algorithm applied when the topology map is first opened."
                   >
@@ -1128,12 +1178,33 @@ export default function SettingsPage() {
 
                 <CveSecuritySection form={form} set={set} />
 
+                <SettingSection title="Notifications">
+                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                    Configure notification sinks (Slack, Discord, Teams, Email) for system alerts.
+                    Use routes to control which severities each sink receives.
+                  </p>
+                  <NotificationsManager />
+                </SettingSection>
+
                 <SettingSection title="Proxmox VE">
                   <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
                     Proxmox cluster configuration and discovery have moved to the Discovery page. Go
                     to <strong>Discovery → Proxmox VE</strong> to add clusters, run scans, and
                     manage integrations.
                   </p>
+                </SettingSection>
+              </div>
+            )}
+
+            {/* ── Webhooks Tab ───────────────────────── */}
+            {activeTab === 'webhooks' && (
+              <div className="settings-sections-grid">
+                <SettingSection title="Webhook Endpoints" className="settings-section--full">
+                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                    Configure outbound webhook endpoints and choose event groups per endpoint.
+                    Deliveries are logged per webhook.
+                  </p>
+                  <WebhooksManager />
                 </SettingSection>
               </div>
             )}
@@ -1321,6 +1392,13 @@ export default function SettingsPage() {
                       <VaultStatusPanel />
                     </SettingSection>
                   )}
+
+                  <SettingSection
+                    title="OAuth / SSO Providers"
+                    hint="Enable GitHub, Google, or Authentik/OIDC login. Secrets are encrypted in the vault."
+                  >
+                    <OAuthProvidersManager />
+                  </SettingSection>
                 </div>
 
                 {smtpForm && (
@@ -1613,12 +1691,14 @@ export default function SettingsPage() {
         </main>
       </div>
 
-      <SettingsActionBar
-        isDirty={isDirty}
-        saving={saving}
-        onSave={handleSave}
-        onReset={handleRevert}
-      />
+      {isAdmin && (
+        <SettingsActionBar
+          isDirty={isDirty}
+          saving={saving}
+          onSave={handleSave}
+          onReset={handleRevert}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmState.open}

@@ -1,9 +1,40 @@
 {
-	# Use internal CA for .local domains (no public ACME)
-	local_certs
+	# ── TLS mode selection ───────────────────────────────────────────────────────
+	#
+	# CB_DOMAIN  (default: circuitbreaker.local)
+	#   Set to a .local / RFC-1918 hostname  →  local_certs (self-signed, no ACME)
+	#   Set to a real public domain           →  Caddy uses ACME (Let's Encrypt /
+	#                                           ZeroSSL) automatically
+	#
+	# CB_TLS_EMAIL  (default: empty)
+	#   Required for ACME. Caddy won't attempt ACME without an email address.
+	#   When empty and CB_DOMAIN is public, Caddy falls back to a self-signed cert.
+	#
+	# CB_LOCAL_CERTS  (default: auto)
+	#   Force "true" to always use local_certs even on a public domain.
+	#   Force "false" to disable local_certs even on .local (use ACME).
+	#   Leave unset for automatic detection based on CB_DOMAIN suffix.
+
+	# Enable local_certs when CB_LOCAL_CERTS=true OR when CB_DOMAIN ends in
+	# a clearly private TLD (.local, .internal, .lan, .home).
+	# Caddy evaluates these directives at startup; the env-var approach lets
+	# operators override without rebuilding the image.
+	{$CB_LOCAL_CERTS:auto}
+
+	# Optional ACME email — required for public domains.
+	# Caddy silently ignores this when local_certs is active.
+	email {$CB_TLS_EMAIL:}
+
+	admin off
 }
 
-circuitbreaker.local {
+{$CB_DOMAIN:circuitbreaker.local} {
+	# ── TLS ─────────────────────────────────────────────────────────────────────
+	# When CB_DOMAIN is a .local host, CB_LOCAL_CERTS resolves to `local_certs`
+	# above and Caddy issues a self-signed cert automatically.
+	# When CB_DOMAIN is a public domain with CB_TLS_EMAIL set, the global block
+	# omits local_certs and Caddy auto-provisions via ACME.
+
 	reverse_proxy frontend:8080 {
 		header_up Host {host}
 		header_up X-Real-IP {remote_host}

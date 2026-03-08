@@ -278,6 +278,12 @@ def test_bulk_merge_reject_all(db):
 # 7. REST API auth enforcement
 # ─────────────────────────────────────────────────────────────────
 def test_scan_endpoint_requires_auth_without_token(client):
+    # Bootstrap to enable auth, then call scan without token
+    client.post("/api/v1/bootstrap/initialize", json={
+        "email": "admin@example.com",
+        "password": "Secure1234!",
+        "theme_preset": "one-dark",
+    })
     resp = client.post("/api/v1/discovery/scan", json={
         "cidr": CIDR_LAN,
         "scan_types": ["nmap"],

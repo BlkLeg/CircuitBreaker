@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.rbac import require_role
+from app.db.models import User
 from app.db.session import get_db
 from app.schemas.categories import CategoryCreate, CategoryRead, CategoryUpdate
 from app.services.categories_service import (
@@ -21,7 +23,11 @@ def get_categories(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=CategoryRead, status_code=201)
-def post_category(payload: CategoryCreate, db: Session = Depends(get_db)):
+def post_category(
+    payload: CategoryCreate,
+    db: Session = Depends(get_db),
+    _user: User = require_role("editor"),
+):
     try:
         cat = create_category(db, payload.name, payload.color)
     except IntegrityError as exc:
@@ -41,7 +47,12 @@ def post_category(payload: CategoryCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{category_id}", response_model=CategoryRead)
-def patch_category(category_id: int, payload: CategoryUpdate, db: Session = Depends(get_db)):
+def patch_category(
+    category_id: int,
+    payload: CategoryUpdate,
+    db: Session = Depends(get_db),
+    _user: User = require_role("editor"),
+):
     try:
         update_category(db, category_id, payload.name, payload.color)
     except ValueError as exc:
@@ -57,7 +68,11 @@ def patch_category(category_id: int, payload: CategoryUpdate, db: Session = Depe
 
 
 @router.delete("/{category_id}", status_code=204)
-def del_category(category_id: int, db: Session = Depends(get_db)):
+def del_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+    _user: User = require_role("editor"),
+):
     try:
         delete_category(db, category_id)
     except ValueError as exc:

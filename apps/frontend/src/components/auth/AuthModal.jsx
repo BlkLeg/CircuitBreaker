@@ -95,6 +95,11 @@ function AuthModal({ isOpen, onClose }) {
     try {
       if (tab === 'login') {
         const res = await authApi.login(email, password);
+        if (res.data.requires_mfa) {
+          onClose();
+          navigate('/login', { state: { mfa_token: res.data.mfa_token, email } });
+          return;
+        }
         if (res.data.requires_change) {
           onClose();
           navigate('/auth/change-password', { state: { change_token: res.data.change_token } });

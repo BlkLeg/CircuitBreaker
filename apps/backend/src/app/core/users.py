@@ -5,6 +5,7 @@ session (db/async_session.py) while the rest of the app stays sync.
 """
 
 import logging
+import os
 import re
 import secrets
 from collections.abc import AsyncGenerator
@@ -20,7 +21,9 @@ from app.db.models import User
 
 _logger = logging.getLogger(__name__)
 
-_FALLBACK_SECRET = secrets.token_hex(32)
+_FALLBACK_SECRET = (
+    os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or secrets.token_hex(32)
+)
 
 
 # ---------------------------------------------------------------------------
@@ -198,10 +201,17 @@ def _get_jwt_secret() -> str:
             db.close()
     except Exception:
         pass
+
+    import os
+
+    if stable_fallback := os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN"):
+        return stable_fallback
     return _FALLBACK_SECRET
 
 
 def get_jwt_strategy() -> JWTStrategy:
+    import os
+
     try:
         from app.db.session import SessionLocal
         from app.services.settings_service import get_or_create_settings
@@ -210,12 +220,19 @@ def get_jwt_strategy() -> JWTStrategy:
         try:
             cfg = get_or_create_settings(db)
             lifetime = cfg.session_timeout_hours * 3600
-            secret = cfg.jwt_secret or _FALLBACK_SECRET
+
+            fallback = (
+                os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or _FALLBACK_SECRET
+            )
+            secret = cfg.jwt_secret or fallback
         finally:
             db.close()
     except Exception:
         lifetime = 86400
-        secret = _FALLBACK_SECRET
+        secret = (
+            os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or _FALLBACK_SECRET
+        )
+
     return JWTStrategy(secret=secret, lifetime_seconds=lifetime)
 
 

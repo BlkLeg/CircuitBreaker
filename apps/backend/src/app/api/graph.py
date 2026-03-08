@@ -367,6 +367,8 @@ def build_topology_graph(
                     "icon_slug": cluster.icon_slug,
                     "environment": cluster.environment,
                     "member_count": len(cluster.members),
+                    "cluster_type": cluster.type or "manual",
+                    "docs": get_docs("hardware_cluster", cluster.id),
                 }
             )
 
@@ -928,7 +930,11 @@ def get_layout(name: str = "default", db: Session = Depends(get_db)):
 
 
 @router.post("/layout")
-async def save_layout(data: LayoutUpdate, db: Session = Depends(get_db)):
+async def save_layout(
+    data: LayoutUpdate,
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
     try:
         layout = db.execute(
             select(GraphLayout).where(GraphLayout.name == data.name)
@@ -957,7 +963,11 @@ async def save_layout(data: LayoutUpdate, db: Session = Depends(get_db)):
 
 
 @router.post("/place-node")
-def place_node(data: PlaceNodeInput, db: Session = Depends(get_db)):
+def place_node(
+    data: PlaceNodeInput,
+    db: Session = Depends(get_db),
+    _=Depends(require_write_auth),
+):
     from app.services.graph_service import place_node_safe
 
     safe_pos = place_node_safe(db, data.node_id, environment=data.environment)

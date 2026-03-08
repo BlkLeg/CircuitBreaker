@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import require_write_auth
+from app.core.rbac import require_role
 from app.core.time import utcnow
 from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
@@ -58,7 +58,7 @@ def _build_branding(row) -> BrandingConfig:
 async def upload_favicon(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Upload a custom favicon (.ico or .png, max 512 KB)."""
     suffix = Path(file.filename or "").suffix.lower()
@@ -89,7 +89,7 @@ async def upload_favicon(
 async def upload_login_logo(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Upload a custom login logo (.png/.jpg/.svg, max 2 MB)."""
     suffix = Path(file.filename or "").suffix.lower()
@@ -122,7 +122,7 @@ async def upload_login_logo(
 async def upload_login_bg(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Upload a custom login background (.jpg/.png, max 5 MB).
 
@@ -189,7 +189,7 @@ _ASSET_MAP = {
 def delete_branding_asset(
     asset_type: str,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Remove a branding asset (favicon, login-logo, or login-bg).
 
@@ -277,7 +277,7 @@ def export_theme(db: Annotated[Session, Depends(get_db)]):
 def import_theme(
     payload: ThemeParkImport,
     db: Annotated[Session, Depends(get_db)],
-    _: Annotated[None, Depends(require_write_auth)] = None,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Import a Theme Park JSON blob. Updates name/colors only; does NOT change file paths."""
     row = get_or_create_settings(db)

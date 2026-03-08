@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.networks import (
@@ -41,9 +42,21 @@ def list_networks(
 
 @router.post("", response_model=Network, status_code=201)
 def create_network(
-    payload: NetworkCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)
+    payload: NetworkCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
 ):
-    return networks_service.create_network(db, payload)
+    result = networks_service.create_network(db, payload)
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="network_created",
+        resource=f"network:{result['id']}",
+        status="ok",
+    )
+    return result
 
 
 @router.get("/{network_id}", response_model=Network)
@@ -58,19 +71,43 @@ def get_network(network_id: int, db: Session = Depends(get_db)):
 def patch_network(
     network_id: int,
     payload: NetworkUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    user_id: int | None = Depends(require_write_auth),
 ):
     try:
-        return networks_service.update_network(db, network_id, payload)
+        result = networks_service.update_network(db, network_id, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="network_updated",
+            resource=f"network:{network_id}",
+            status="ok",
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.delete("/{network_id}", status_code=204)
-def delete_network(network_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_network(
+    network_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
+):
     try:
         networks_service.delete_network(db, network_id)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="network_deleted",
+            resource=f"network:{network_id}",
+            status="ok",
+            severity="warn",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IntegrityError as exc:

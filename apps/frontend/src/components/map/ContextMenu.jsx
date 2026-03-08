@@ -16,6 +16,7 @@ import {
   Shapes,
   Pin,
   PinOff,
+  Radio,
 } from 'lucide-react';
 import { NODE_SHAPES } from './CustomNode';
 
@@ -468,6 +469,47 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
             <HardDrive className={iconClass} />
             Add Storage
           </button>
+        )}
+
+        {entityType === 'hardware' && (
+          <>
+            <div className="tw-my-1 tw-border-t tw-border-cb-border" />
+            {node.data?.monitor_status != null ? (
+              <>
+                <button
+                  onClick={() => {
+                    onAction('monitor_toggle', { nodeId: node.id });
+                    onClose();
+                  }}
+                  className={menuRowClass}
+                >
+                  <Radio className={iconClass} />
+                  {node.data.monitor_enabled === false ? 'Enable Monitoring' : 'Disable Monitoring'}
+                </button>
+                <button
+                  onClick={() => {
+                    onAction('monitor_check_now', { nodeId: node.id });
+                    onClose();
+                  }}
+                  className={menuRowClass}
+                >
+                  <Activity className={iconClass} />
+                  Check Now
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => {
+                  onAction('monitor_create', { nodeId: node.id });
+                  onClose();
+                }}
+                className={menuRowClass}
+              >
+                <Radio className={iconClass} />
+                Enable Monitoring
+              </button>
+            )}
+          </>
         )}
 
         <div className="tw-my-1 tw-border-t tw-border-cb-border" />

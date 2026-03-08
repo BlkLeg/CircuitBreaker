@@ -45,6 +45,14 @@ services:
       - caddy_config:/config
     depends_on:
       - frontend
+    environment:
+      # Domain Caddy listens on. Set to a public FQDN for automatic ACME certs.
+      - CB_DOMAIN=${CB_DOMAIN:-circuitbreaker.local}
+      # Email for ACME / Let's Encrypt — required for public domains. A placeholder
+      # is used by default (ignored when local_certs is active).
+      - CB_TLS_EMAIL=${CB_TLS_EMAIL:-admin@circuitbreaker.local}
+      # "local_certs" for .local/LAN domains (default); empty string for ACME/Let's Encrypt.
+      - CB_LOCAL_CERTS=${CB_LOCAL_CERTS:-local_certs}
     restart: unless-stopped
 
   backend:
@@ -52,8 +60,6 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     container_name: cb-backend
-    env_file:
-      - ../apps/backend/.env
     volumes:
       - backend-data:/app/data
       - ../data/uploads/icons:/app/data/uploads/icons
@@ -136,8 +142,6 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     command: ["python", "-m", "app.workers.discovery"]
-    env_file:
-      - ../apps/backend/.env
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -153,6 +157,48 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'app.workers.discovery' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  webhook-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "app.workers.webhook_worker"]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+    environment:
+      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - NATS_URL=nats://nats:4222
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.workers.webhook_worker' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  notification-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "app.workers.notification_worker"]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+    environment:
+      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - NATS_URL=nats://nats:4222
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.workers.notification_worker' > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

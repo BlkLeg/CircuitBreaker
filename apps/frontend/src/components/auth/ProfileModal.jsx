@@ -6,7 +6,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { sanitizeImageSrc } from '../../utils/validation.js';
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const TABS = ['profile', 'sessions', 'password'];
+const TABS = ['profile', 'sessions', 'password', 'security'];
 
 function avatarUrl(user) {
   if (user?.profile_photo_url) return user.profile_photo_url;
@@ -34,6 +34,14 @@ function ProfileModal({ isOpen, onClose }) {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordSaving, setPasswordSaving] = useState(false);
+  // Security / MFA tab
+  const [mfaStatus, setMfaStatus] = useState(null); // null=unknown, true=enabled, false=disabled
+  const [mfaSetupUri, setMfaSetupUri] = useState(''); // provisioning URI for QR
+  const [mfaSecret, setMfaSecret] = useState(''); // raw secret for manual entry
+  const [mfaCode, setMfaCode] = useState(''); // 6-digit confirm / disable
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaBackupCodes, setMfaBackupCodes] = useState(null); // shown once after setup
+  const [mfaDisableMode, setMfaDisableMode] = useState(false);
 
   const fetchSessions = useCallback(async () => {
     setSessionsLoading(true);
@@ -49,7 +57,16 @@ function ProfileModal({ isOpen, onClose }) {
 
   useEffect(() => {
     if (isOpen && activeTab === 'sessions') fetchSessions();
-  }, [isOpen, activeTab, fetchSessions]);
+    if (isOpen && activeTab === 'security') {
+      // Seed MFA status from the user object (mfa_enabled field)
+      setMfaStatus(user?.mfa_enabled ?? false);
+      setMfaSetupUri('');
+      setMfaSecret('');
+      setMfaCode('');
+      setMfaBackupCodes(null);
+      setMfaDisableMode(false);
+    }
+  }, [isOpen, activeTab, fetchSessions, user]);
 
   useEffect(() => {
     if (isOpen && user) {
@@ -153,6 +170,65 @@ function ProfileModal({ isOpen, onClose }) {
       setError(err?.message || 'Failed to change password');
     } finally {
       setPasswordSaving(false);
+    }
+  };
+
+  // MFA helpers
+  const handleMfaSetup = async () => {
+    setMfaLoading(true);
+    setError('');
+    try {
+      const res = await authApi.mfaSetup();
+      setMfaSetupUri(res.data.totp_uri);
+      setMfaSecret(res.data.secret);
+      setMfaCode('');
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to start MFA setup');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaConfirm = async (e) => {
+    e.preventDefault();
+    if (!mfaCode.trim()) return;
+    setMfaLoading(true);
+    setError('');
+    try {
+      const res = await authApi.mfaActivate(mfaCode.trim());
+      const backups = res.data.backup_codes;
+      setMfaStatus(true);
+      setMfaSetupUri('');
+      setMfaSecret('');
+      setMfaCode('');
+      if (backups?.length) setMfaBackupCodes(backups);
+      // Refresh user object
+      const meRes = await authApi.me();
+      login(token, meRes.data);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Invalid code — try again');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaDisable = async (e) => {
+    e.preventDefault();
+    if (!mfaCode.trim()) return;
+    setMfaLoading(true);
+    setError('');
+    try {
+      await authApi.mfaDisable(mfaCode.trim());
+      setMfaStatus(false);
+      setMfaDisableMode(false);
+      setMfaCode('');
+      // Refresh user
+      const meRes = await authApi.me();
+      login(token, meRes.data);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Invalid MFA code');
+    } finally {
+      setMfaLoading(false);
     }
   };
 
@@ -471,6 +547,244 @@ function ProfileModal({ isOpen, onClose }) {
               {passwordSaving ? 'Changing...' : 'Change Password'}
             </button>
           </form>
+        )}
+
+        {activeTab === 'security' && (
+          <div>
+            {/* MFA status */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: 20,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                  Authenticator App (TOTP)
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                  Two-factor authentication via Google Authenticator, Aegis, etc.
+                </div>
+              </div>
+              <span
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: 12,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: mfaStatus ? 'rgba(0,200,100,.15)' : 'rgba(150,150,150,.15)',
+                  color: mfaStatus ? 'var(--color-online)' : 'var(--color-text-muted)',
+                  border: `1px solid ${mfaStatus ? 'var(--color-online)' : 'transparent'}`,
+                }}
+              >
+                {mfaStatus ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
+
+            {/* Backup codes shown once after activation */}
+            {mfaBackupCodes && (
+              <div
+                style={{
+                  background: 'rgba(255,200,0,.07)',
+                  border: '1px solid rgba(255,200,0,.3)',
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: '#f9a825' }}>
+                  ⚠ Save your backup codes — shown only once
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: '4px 16px',
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                  }}
+                >
+                  {mfaBackupCodes.map((c, i) => (
+                    <span key={i}>{c}</span>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMfaBackupCodes(null)}
+                  style={{
+                    marginTop: 10,
+                    fontSize: 12,
+                    color: 'var(--color-text-muted)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: 0,
+                  }}
+                >
+                  I&apos;ve saved these codes
+                </button>
+              </div>
+            )}
+
+            {/* Setup flow */}
+            {!mfaStatus && !mfaSetupUri && !mfaBackupCodes && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={mfaLoading}
+                onClick={handleMfaSetup}
+              >
+                {mfaLoading ? 'Generating…' : 'Set up Authenticator'}
+              </button>
+            )}
+
+            {!mfaStatus && mfaSetupUri && (
+              <form onSubmit={handleMfaConfirm}>
+                <div style={{ marginBottom: 12, fontSize: 12 }}>
+                  Scan the QR code with your authenticator app, or copy the setup link below.
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <a
+                    href={mfaSetupUri}
+                    style={{ fontSize: 10, wordBreak: 'break-all', color: 'var(--color-primary)' }}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {mfaSetupUri}
+                  </a>
+                </div>
+                {mfaSecret && (
+                  <div
+                    style={{
+                      fontFamily: 'monospace',
+                      fontSize: 11,
+                      marginBottom: 12,
+                      background: 'var(--color-bg)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      padding: '6px 10px',
+                      letterSpacing: '0.1em',
+                    }}
+                  >
+                    {mfaSecret}
+                  </div>
+                )}
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="6-digit code"
+                  value={mfaCode}
+                  onChange={(e) => {
+                    setMfaCode(e.target.value.replace(/\D/g, ''));
+                    setError('');
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: 8,
+                    borderRadius: 6,
+                    marginBottom: 10,
+                    textAlign: 'center',
+                    letterSpacing: '0.3em',
+                    fontSize: 16,
+                  }}
+                  autoFocus
+                />
+                {error && (
+                  <p style={{ color: 'var(--color-danger)', fontSize: 12, margin: '0 0 8px' }}>
+                    {error}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary btn-sm"
+                    disabled={mfaLoading || mfaCode.length !== 6}
+                  >
+                    {mfaLoading ? 'Verifying…' : 'Confirm & Enable'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      setMfaSetupUri('');
+                      setMfaSecret('');
+                      setMfaCode('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Disable flow */}
+            {mfaStatus && !mfaDisableMode && (
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  setMfaDisableMode(true);
+                  setMfaCode('');
+                  setError('');
+                }}
+              >
+                Disable MFA
+              </button>
+            )}
+
+            {mfaStatus && mfaDisableMode && (
+              <form onSubmit={handleMfaDisable}>
+                <div style={{ fontSize: 12, marginBottom: 8 }}>
+                  Enter your current TOTP code (or a backup code) to disable MFA.
+                </div>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={20}
+                  placeholder="Code"
+                  value={mfaCode}
+                  onChange={(e) => {
+                    setMfaCode(e.target.value.trim());
+                    setError('');
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: 8,
+                    borderRadius: 6,
+                    marginBottom: 10,
+                    textAlign: 'center',
+                    letterSpacing: '0.2em',
+                  }}
+                  autoFocus
+                />
+                {error && (
+                  <p style={{ color: 'var(--color-danger)', fontSize: 12, margin: '0 0 8px' }}>
+                    {error}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="submit"
+                    className="btn btn-danger btn-sm"
+                    disabled={mfaLoading || !mfaCode.trim()}
+                  >
+                    {mfaLoading ? 'Disabling…' : 'Confirm Disable'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setMfaDisableMode(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
         )}
 
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>

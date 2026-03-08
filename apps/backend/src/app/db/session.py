@@ -14,13 +14,13 @@ is_sqlite = db_url.startswith("sqlite")
 
 engine_kwargs: dict[str, Any]
 if is_sqlite:
-    engine_kwargs = {"connect_args": {"check_same_thread": False}}
+    engine_kwargs = {"connect_args": {"check_same_thread": False, "timeout": 30}}
 else:
     # Pool defaults suit mid-range servers; lower via env vars on constrained hosts
     # (e.g. Raspberry Pi or single-core VMs).  Each idle PG connection uses ~2-5 MB.
     engine_kwargs = {
-        "pool_size": int(os.environ.get("DB_POOL_SIZE", "5")),
-        "max_overflow": int(os.environ.get("DB_MAX_OVERFLOW", "5")),
+        "pool_size": int(os.environ.get("DB_POOL_SIZE", "10")),
+        "max_overflow": int(os.environ.get("DB_MAX_OVERFLOW", "10")),
         "pool_recycle": 300,
         "pool_pre_ping": True,
     }

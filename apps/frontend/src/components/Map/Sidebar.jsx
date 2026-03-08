@@ -1,8 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { X, ExternalLink, Link2, Activity, Info, FileText, Radio } from 'lucide-react';
+import {
+  X,
+  ExternalLink,
+  Link2,
+  Activity,
+  Info,
+  FileText,
+  Radio,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { telemetryApi } from '../../api/client';
+import { telemetryApi, docsApi } from '../../api/client';
 
 function formatSpeedLabel(mbps) {
   const value = Number(mbps) || 0;
@@ -33,6 +43,106 @@ function SectionTitle({ icon: Icon, title }) {
 SectionTitle.propTypes = {
   icon: PropTypes.elementType.isRequired,
   title: PropTypes.string.isRequired,
+};
+
+function DocRow({ doc, expanded, onToggle }) {
+  const [bodyHtml, setBodyHtml] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!expanded || bodyHtml != null) return;
+    let cancelled = false;
+    setLoading(true);
+    docsApi
+      .get(doc.id)
+      .then((res) => {
+        if (!cancelled) setBodyHtml(res.data?.body_html ?? res.data?.body_md ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) setBodyHtml('');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.id, expanded, bodyHtml]);
+
+  const title = doc.title || 'Untitled';
+  const truncated = title.length > 32 ? `${title.slice(0, 32)}…` : title;
+
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 0',
+        }}
+      >
+        <button
+          type="button"
+          onClick={onToggle}
+          style={{
+            padding: 2,
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <span
+          style={{
+            flex: 1,
+            fontSize: 12,
+            color: 'var(--color-text)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {truncated}
+        </span>
+        <a
+          href={`/docs?id=${doc.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: 'var(--color-text-muted)' }}
+          title="Open in Docs"
+        >
+          <ExternalLink size={14} />
+        </a>
+      </div>
+      {expanded && (
+        <div
+          style={{
+            marginLeft: 20,
+            maxHeight: 120,
+            overflowY: 'auto',
+            fontSize: 12,
+            color: 'var(--color-text)',
+            padding: '6px 8px',
+            background: 'var(--color-bg)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 6,
+          }}
+          dangerouslySetInnerHTML={{
+            __html: loading ? '<em>Loading…</em>' : bodyHtml || '<em>No content</em>',
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+DocRow.propTypes = {
+  doc: PropTypes.shape({ id: PropTypes.number, title: PropTypes.string }).isRequired,
+  expanded: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
 };
 
 const ENTITY_TYPE_MAP = {
@@ -213,14 +323,20 @@ export default function Sidebar({
   onUplinkChange,
   onOpenInHud,
   onBoundsChange,
+  onMonitorAction,
 }) {
   const [speed, setSpeed] = useState(1000);
   const [position, setPosition] = useState({ x: 24, y: 84 });
+  const [expandedDocId, setExpandedDocId] = useState(null);
   const dragRef = useRef({ offsetX: 0, offsetY: 0, dragging: false, move: null, up: null });
   const debounceRef = useRef(null);
   const panelRef = useRef(null);
 
   const nodeId = node?.id || null;
+
+  useEffect(() => {
+    setExpandedDocId(null);
+  }, [nodeId]);
 
   // Emit the panel's viewport-relative bounding rect whenever position changes so
   // the context menu can shift itself away from the panel.
@@ -545,68 +661,166 @@ export default function Sidebar({
 
             <SidebarTelemetryBlock node={node} />
 
-            {node.data?.monitor_status && (
-              <div style={{ marginBottom: 12 }}>
+            {node?.originalType === 'hardware' && onMonitorAction && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  opacity:
+                    node.data?.monitor_status != null && node.data?.monitor_enabled === false
+                      ? 0.6
+                      : 1,
+                }}
+              >
                 <SectionTitle icon={Radio} title="Monitor" />
-                <div
-                  style={{
-                    background: 'var(--color-bg)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 8,
-                    padding: '4px 10px',
-                  }}
-                >
-                  {[
-                    { label: 'Status', value: node.data.monitor_status },
-                    node.data.monitor_latency_ms != null && {
-                      label: 'Latency',
-                      value: `${Math.round(node.data.monitor_latency_ms)} ms`,
-                    },
-                    node.data.monitor_uptime_pct_24h != null && {
-                      label: 'Uptime (24h)',
-                      value: `${node.data.monitor_uptime_pct_24h.toFixed(1)}%`,
-                    },
-                    node.data.monitor_last_checked_at && {
-                      label: 'Last Checked',
-                      value: new Date(node.data.monitor_last_checked_at).toLocaleString(),
-                    },
-                  ]
-                    .filter(Boolean)
-                    .map((row, index, arr) => (
-                      <div
-                        key={row.label}
+                {node.data?.monitor_status != null ? (
+                  <>
+                    <div
+                      style={{
+                        background: 'var(--color-bg)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 8,
+                        padding: '4px 10px',
+                      }}
+                    >
+                      {[
+                        { label: 'Status', value: node.data.monitor_status },
+                        node.data.monitor_latency_ms != null && {
+                          label: 'Latency',
+                          value: `${Math.round(node.data.monitor_latency_ms)} ms`,
+                        },
+                        node.data.monitor_uptime_pct_24h != null && {
+                          label: 'Uptime (24h)',
+                          value: `${node.data.monitor_uptime_pct_24h.toFixed(1)}%`,
+                        },
+                        node.data.monitor_last_checked_at && {
+                          label: 'Last Checked',
+                          value: new Date(node.data.monitor_last_checked_at).toLocaleString(),
+                        },
+                      ]
+                        .filter(Boolean)
+                        .map((row, index, arr) => (
+                          <div
+                            key={row.label}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              padding: '6px 0',
+                              borderBottom:
+                                index < arr.length - 1 ? '1px solid var(--color-border)' : 'none',
+                              gap: 8,
+                            }}
+                          >
+                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                              {row.label}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 12,
+                                fontWeight: row.label === 'Status' ? 700 : 400,
+                                color:
+                                  row.label === 'Status'
+                                    ? node.data.monitor_status === 'up'
+                                      ? 'var(--color-online)'
+                                      : node.data.monitor_status === 'down'
+                                        ? 'var(--color-danger)'
+                                        : 'var(--color-text-muted)'
+                                    : 'var(--color-text)',
+                                textAlign: 'right',
+                              }}
+                            >
+                              {row.value}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        marginTop: 6,
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                        Enabled
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onMonitorAction('monitor_toggle')}
                         style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          padding: '6px 0',
-                          borderBottom:
-                            index < arr.length - 1 ? '1px solid var(--color-border)' : 'none',
-                          gap: 8,
+                          padding: '2px 8px',
+                          fontSize: 12,
+                          borderRadius: 4,
+                          border: '1px solid var(--color-border)',
+                          background: 'var(--color-bg)',
+                          color: 'var(--color-text)',
+                          cursor: 'pointer',
                         }}
                       >
-                        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                          {row.label}
-                        </span>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: row.label === 'Status' ? 700 : 400,
-                            color:
-                              row.label === 'Status'
-                                ? node.data.monitor_status === 'up'
-                                  ? 'var(--color-online)'
-                                  : node.data.monitor_status === 'down'
-                                    ? 'var(--color-danger)'
-                                    : 'var(--color-text-muted)'
-                                : 'var(--color-text)',
-                            textAlign: 'right',
-                          }}
-                        >
-                          {row.value}
-                        </span>
-                      </div>
-                    ))}
-                </div>
+                        {node.data.monitor_enabled === false ? 'Enable' : 'Disable'}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onMonitorAction('monitor_check_now')}
+                      style={{
+                        marginTop: 6,
+                        width: '100%',
+                        padding: '6px 10px',
+                        fontSize: 12,
+                        borderRadius: 4,
+                        border: '1px solid var(--color-border)',
+                        background: 'var(--color-bg)',
+                        color: 'var(--color-text)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <Activity size={14} />
+                      Check Now
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onMonitorAction('monitor_create')}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      fontSize: 12,
+                      borderRadius: 8,
+                      border: '1px solid var(--color-border)',
+                      background: 'var(--color-bg)',
+                      color: 'var(--color-text)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <Radio size={14} />
+                    Enable Monitoring
+                  </button>
+                )}
+              </div>
+            )}
+
+            {node?.data?.docs?.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <SectionTitle icon={FileText} title="Documents" />
+                {node.data.docs.map((doc) => (
+                  <DocRow
+                    key={doc.id}
+                    doc={doc}
+                    expanded={expandedDocId === doc.id}
+                    onToggle={() => setExpandedDocId(expandedDocId === doc.id ? null : doc.id)}
+                  />
+                ))}
               </div>
             )}
 
@@ -809,6 +1023,8 @@ Sidebar.propTypes = {
   onOpenInHud: PropTypes.func,
   /** Called with { left, top, right, bottom } whenever the panel repositions, or null when hidden */
   onBoundsChange: PropTypes.func,
+  /** Called with 'monitor_create' | 'monitor_toggle' | 'monitor_check_now' for hardware nodes */
+  onMonitorAction: PropTypes.func,
 };
 
 Sidebar.defaultProps = {
@@ -820,4 +1036,5 @@ Sidebar.defaultProps = {
   onUplinkChange: undefined,
   onOpenInHud: undefined,
   onBoundsChange: undefined,
+  onMonitorAction: undefined,
 };

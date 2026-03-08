@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.security import require_write_auth
+from app.core.rbac import require_role
 from app.core.time import elapsed_seconds as _elapsed_seconds
 from app.db.models import Log
 from app.db.session import SessionLocal, get_db
@@ -37,6 +37,7 @@ def list_logs(
     search: str | None = None,
     sort: str | None = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
+    _=require_role("admin"),
 ):
     _order = Log.timestamp.asc() if sort == "asc" else Log.timestamp.desc()
     q = select(Log).order_by(_order)
@@ -116,7 +117,10 @@ def list_logs(
 
 
 @router.get("/actions")
-def list_actions(db: Session = Depends(get_db)):
+def list_actions(
+    db: Session = Depends(get_db),
+    _=require_role("admin"),
+):
     """Return the distinct set of action strings present in the logs table.
     Used by the frontend to populate the action filter dropdown dynamically.
     """
@@ -128,8 +132,70 @@ def list_actions(db: Session = Depends(get_db)):
     return {"actions": rows}
 
 
+@router.get("/audit", response_model=LogsResponse)
+def list_audit_logs(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    start_time: str | None = None,
+    end_time: str | None = None,
+    action: str | None = None,
+    actor: str | None = None,
+    sort: str | None = Query("desc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+    _=require_role("admin"),
+):
+    """Admin-only endpoint that returns entries with category='audit'."""
+    from datetime import datetime as _dt
+
+    _order = Log.timestamp.asc() if sort == "asc" else Log.timestamp.desc()
+    q = select(Log).where(Log.category == "audit").order_by(_order)
+    count_q = select(func.count()).select_from(Log).where(Log.category == "audit")
+
+    if start_time:
+        try:
+            dt = _dt.fromisoformat(start_time.replace("Z", "+00:00"))
+            q = q.where(Log.timestamp >= dt)
+            count_q = count_q.where(Log.timestamp >= dt)
+        except ValueError:
+            pass
+
+    if end_time:
+        try:
+            dt = _dt.fromisoformat(end_time.replace("Z", "+00:00"))
+            q = q.where(Log.timestamp <= dt)
+            count_q = count_q.where(Log.timestamp <= dt)
+        except ValueError:
+            pass
+
+    if action:
+        q = q.where(Log.action == action)
+        count_q = count_q.where(Log.action == action)
+
+    if actor:
+        actor_filter = or_(Log.actor == actor, Log.actor_name == actor)
+        q = q.where(actor_filter)
+        count_q = count_q.where(actor_filter)
+
+    total_count = db.execute(count_q).scalar_one()
+    rows = db.execute(q.offset(offset).limit(limit)).scalars().all()
+
+    from app.core.time import elapsed_seconds as _elapsed_seconds
+
+    logs_out = []
+    for row in rows:
+        entry = LogEntry.model_validate(row)
+        entry.elapsed_seconds = _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None
+        logs_out.append(entry)
+
+    return LogsResponse(
+        logs=logs_out,
+        total_count=total_count,
+        has_more=(offset + limit) < total_count,
+    )
+
+
 @router.delete("")
-def clear_logs(db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def clear_logs(db: Session = Depends(get_db), _=require_role("admin")):
     deleted = db.execute(select(Log)).scalars().all()
     count = len(deleted)
     for row in deleted:
@@ -139,7 +205,10 @@ def clear_logs(db: Session = Depends(get_db), _=Depends(require_write_auth)):
 
 
 @router.get("/stream")
-async def stream_logs(since: str | None = None):
+async def stream_logs(
+    since: str | None = None,
+    _=require_role("admin"),
+):
     """Server-Sent Events endpoint — streams new log entries since a given timestamp."""
 
     since_dt: datetime | None = None

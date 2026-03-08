@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.rate_limit import get_limit, limiter
 from app.db.session import get_db
 from app.schemas.auth import (
+    BootstrapInitializeOAuthRequest,
     BootstrapInitializeRequest,
     BootstrapInitializeResponse,
     BootstrapStatusResponse,
@@ -52,3 +53,14 @@ def initialize_bootstrap(
         smtp_from_name=payload.smtp_from_name,
         smtp_tls=payload.smtp_tls,
     )
+
+
+@router.post("/initialize-oauth", response_model=BootstrapInitializeResponse)
+@limiter.limit(lambda: get_limit("auth"))
+def initialize_bootstrap_oauth(
+    request: Request,
+    payload: BootstrapInitializeOAuthRequest,
+    db: Annotated[Session, Depends(get_db)],
+):
+    cfg = get_or_create_settings(db)
+    return auth_service.bootstrap_initialize_oauth(db=db, cfg=cfg, payload=payload)

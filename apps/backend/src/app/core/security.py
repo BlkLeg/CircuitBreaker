@@ -8,7 +8,7 @@ FastAPI-Users for JWT validation and the CB_API_TOKEN legacy middleware.
 import hashlib
 import logging
 import os
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 import bcrypt
 import jwt
@@ -16,6 +16,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
+from app.db.models import User
 from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
@@ -52,11 +53,25 @@ def gravatar_hash(email: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def create_token(user_id: int, secret: str, timeout_hours: int) -> str:
+def create_token(
+    user_id: int,
+    secret: str,
+    timeout_hours: int,
+    *,
+    role: str | None = None,
+    scopes: list[str] | None = None,
+    demo_expires: str | None = None,
+) -> str:
     payload = {
         "user_id": user_id,
         "exp": utcnow() + timedelta(hours=timeout_hours),
     }
+    if role:
+        payload["role"] = role
+    if scopes is not None:
+        payload["scopes"] = scopes
+    if demo_expires:
+        payload["demo_expires"] = demo_expires
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -84,6 +99,21 @@ def _extract_bearer(request: Request) -> str | None:
 def _is_legacy_admin(request: Request) -> bool:
     """Check if the LegacyTokenMiddleware flagged this request."""
     return getattr(request.state, "legacy_admin", False)
+
+
+def _is_user_accessible(db: Session, user_id: int) -> bool:
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        return False
+    if user.locked_until and user.locked_until > utcnow():
+        return False
+    if user.role == "demo" and user.demo_expires:
+        expiry = user.demo_expires
+        if getattr(expiry, "tzinfo", None) is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if expiry <= utcnow():
+            return False
+    return True
 
 
 def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | None:
@@ -123,7 +153,8 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
         )
         sub = payload.get("sub")
         if sub is not None:
-            return int(sub)
+            uid = int(sub)
+            return uid if _is_user_accessible(db, uid) else None
     except (jwt.PyJWTError, ValueError, TypeError):
         pass
 
@@ -132,9 +163,10 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
         payload = jwt.decode(
             raw_token, cfg.jwt_secret, algorithms=["HS256"], options={"verify_aud": False}
         )
-        uid = payload.get("user_id")
-        if uid is not None:
-            return uid
+        uid_raw = payload.get("user_id")
+        if uid_raw is not None:
+            uid_int = int(uid_raw)
+            return uid_int if _is_user_accessible(db, uid_int) else None
     except (jwt.PyJWTError, ValueError, TypeError):
         pass
 
@@ -144,13 +176,25 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
 def require_write_auth(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int | None:
-    """Raise 401 when write access is not authorised."""
+    """Raise 401/403 when write access is not authorised."""
+    from app.core.rbac import _effective_role, effective_scopes, has_scope
     from app.services.settings_service import get_or_create_settings
 
     cfg = get_or_create_settings(db)
     auth_required = cfg.auth_enabled or bool(_get_api_token())
     if auth_required and user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    if not auth_required:
+        return user_id
+    if user_id == 0:
+        return user_id
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    role = _effective_role(user)
+    scopes = effective_scopes(user)
+    if role not in {"admin", "editor"} and not has_scope(scopes, "write", "*"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     return user_id
 
 

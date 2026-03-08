@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { searchApi } from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
+import { canEdit, isAdmin } from '../utils/rbac';
 
 // Navigation items — only honest entries that navigate directly to what they say.
 // Ghost commands (actions that just navigate to a route without applying a filter/action)
@@ -98,7 +99,7 @@ function CommandPalette({ isOpen, onClose }) {
   const panelRef = useRef(null);
   const activeItemRef = useRef(null);
   const navigate = useNavigate();
-  const { openAuthModal, openProfileModal } = useAuth();
+  const { openAuthModal, openProfileModal, user } = useAuth();
 
   // Stable ref-backed action map — avoids stale closures without recreating handleSelect
   const authFnsRef = useRef({});
@@ -199,10 +200,21 @@ function CommandPalette({ isOpen, onClose }) {
   if (!isOpen) return null;
 
   const showDefaults = !query.trim();
+  const visibleDefaultItems = DEFAULT_ITEMS.filter((item) => {
+    if ((item.id.startsWith('settings-') || item.id === 'settings-open') && !canEdit(user)) {
+      return false;
+    }
+    if (item.id === 'nav-logs' && !isAdmin(user)) {
+      return false;
+    }
+    return true;
+  });
   const defaultMatches = query.trim()
-    ? DEFAULT_ITEMS.filter((item) => item.title.toLowerCase().includes(query.trim().toLowerCase()))
+    ? visibleDefaultItems.filter((item) =>
+        item.title.toLowerCase().includes(query.trim().toLowerCase())
+      )
     : [];
-  const items = showDefaults ? DEFAULT_ITEMS : [...defaultMatches, ...results];
+  const items = showDefaults ? visibleDefaultItems : [...defaultMatches, ...results];
 
   return (
     <div className="palette-overlay">

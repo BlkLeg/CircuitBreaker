@@ -1,12 +1,14 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
+from app.core.rbac import require_role, require_scope
 from app.core.time import utcnow
-from app.db.models import ComputeUnit, Hardware, Storage, TelemetryTimeseries
+from app.db.models import ComputeUnit, Hardware, Storage, TelemetryTimeseries, User
 from app.db.session import get_db
 from app.integrations.dispatcher import poll_hardware
 from app.schemas.hardware import TelemetryConfig
@@ -53,8 +55,10 @@ def get_telemetry(hardware_id: int, db: Session = Depends(get_db)):
 def configure_telemetry(
     hardware_id: int,
     config: TelemetryConfig,
+    request: Request,
     db: Session = Depends(get_db),
     vault: CredentialVault = Depends(get_vault),
+    current_user: User = require_scope("write", "telemetry"),
 ):
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if not hw:
@@ -66,14 +70,24 @@ def configure_telemetry(
 
     hw.telemetry_config = json.dumps(config_dict)
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="telemetry_config_updated",
+        resource=f"hardware:{hardware_id}",
+        status="ok",
+    )
     return {"message": "Telemetry config saved.", "hardware_id": hardware_id}
 
 
 @router.post("/{hardware_id}/telemetry/poll")
 def poll_now(
     hardware_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     vault: CredentialVault = Depends(get_vault),
+    current_user: User = require_role("admin"),
 ):
     """Manual on-demand poll."""
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
@@ -99,6 +113,14 @@ def poll_now(
 
     recalculate_hardware_status(db, hardware_id)
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=current_user.id,
+        action="telemetry_poll_triggered",
+        resource=f"hardware:{hardware_id}",
+        status="ok",
+    )
 
     return {
         "hardware_id": hardware_id,

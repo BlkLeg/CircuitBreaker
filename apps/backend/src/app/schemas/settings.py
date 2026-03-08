@@ -142,6 +142,7 @@ class AppSettingsRead(BaseModel):
     docker_socket_path: str = "/var/run/docker.sock"
     docker_sync_interval_minutes: int = 5
     graph_default_layout: str = "dagre"
+    map_title: str = "Topology"
     # Font preferences
     ui_font: str = "inter"
     ui_font_size: str = "medium"
@@ -355,6 +356,7 @@ class AppSettingsUpdate(BaseModel):
     docker_socket_path: str | None = None
     docker_sync_interval_minutes: int | None = None
     graph_default_layout: str | None = None
+    map_title: str | None = None
     # Font preferences
     ui_font: str | None = None
     ui_font_size: str | None = None

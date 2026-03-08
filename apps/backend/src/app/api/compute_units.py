@@ -2,12 +2,13 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.config import settings
 from app.core.security import require_write_auth
 from app.db.models import ComputeNetwork, UserIcon
@@ -51,10 +52,22 @@ def list_compute_units(
 
 @router.post("", response_model=ComputeUnit, status_code=201)
 def create_compute_unit(
-    payload: ComputeUnitCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)
+    payload: ComputeUnitCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
 ):
     try:
-        return compute_units_service.create_compute_unit(db, payload)
+        result = compute_units_service.create_compute_unit(db, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="compute_unit_created",
+            resource=f"compute_unit:{result['id']}",
+            status="ok",
+        )
+        return result
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -213,11 +226,21 @@ def get_compute_unit(cu_id: int, db: Session = Depends(get_db)):
 def patch_compute_unit(
     cu_id: int,
     payload: ComputeUnitUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
+    user_id: int | None = Depends(require_write_auth),
 ):
     try:
-        return compute_units_service.update_compute_unit(db, cu_id, payload)
+        result = compute_units_service.update_compute_unit(db, cu_id, payload)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="compute_unit_updated",
+            resource=f"compute_unit:{cu_id}",
+            status="ok",
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -228,9 +251,23 @@ def patch_compute_unit(
 
 
 @router.delete("/{cu_id}", status_code=204)
-def delete_compute_unit(cu_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_compute_unit(
+    cu_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
+):
     try:
         compute_units_service.delete_compute_unit(db, cu_id)
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="compute_unit_deleted",
+            resource=f"compute_unit:{cu_id}",
+            status="ok",
+            severity="warn",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IntegrityError as exc:

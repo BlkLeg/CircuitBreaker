@@ -9,15 +9,27 @@ logger = logging.getLogger(__name__)
 _scheduler = AsyncIOScheduler()
 
 
+def set_scheduler_instance(scheduler: AsyncIOScheduler) -> None:
+    """Bind scheduler helpers to the app's active scheduler instance."""
+    global _scheduler
+    _scheduler = scheduler
+
+
+def get_scheduler() -> AsyncIOScheduler:
+    return _scheduler
+
+
 def start_scheduler():
-    if not _scheduler.running:
-        _scheduler.start()
+    scheduler = get_scheduler()
+    if not scheduler.running:
+        scheduler.start()
         logger.info("APScheduler started")
 
 
 def shutdown_scheduler():
-    if _scheduler.running:
-        _scheduler.shutdown(wait=False)
+    scheduler = get_scheduler()
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
         logger.info("APScheduler stopped")
 
 
@@ -32,7 +44,9 @@ def reload_discovery_jobs(db):
     from app.services.discovery_service import purge_old_scan_results, run_scan_job_by_profile
 
     # Remove all existing discovery jobs
-    for job in _scheduler.get_jobs():
+    scheduler = get_scheduler()
+
+    for job in scheduler.get_jobs():
         if job.id.startswith("discovery_profile_") or job.id == "discovery_purge":
             job.remove()
 
@@ -49,7 +63,7 @@ def reload_discovery_jobs(db):
     for profile in profiles:
         try:
             trigger = CronTrigger.from_crontab(profile.schedule_cron)
-            _scheduler.add_job(
+            scheduler.add_job(
                 run_scan_job_by_profile,
                 trigger=trigger,
                 id=f"discovery_profile_{profile.id}",
@@ -64,10 +78,21 @@ def reload_discovery_jobs(db):
             logger.error(f"Failed to schedule profile {profile.id}: {e}")
 
     # Register daily purge job
-    _scheduler.add_job(
+    scheduler.add_job(
         purge_old_scan_results,
         trigger=CronTrigger(hour=3, minute=0),
         id="discovery_purge",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # Register daily aggregation rollup job
+    from app.workers.rollup_worker import run_rollup_job
+
+    scheduler.add_job(
+        run_rollup_job,
+        trigger=CronTrigger(hour=0, minute=5),  # Run at 12:05 AM
+        id="daily_uptime_rollup",
         replace_existing=True,
         misfire_grace_time=3600,
     )

@@ -145,8 +145,10 @@ export function useTopologyStream() {
         switch (eventData.type) {
           case 'node_moved':
             topologyEmitter.emit('topology:node_moved', {
-              layout_name: eventData.layout_name,
-              layout_data: eventData.layout_data,
+              node_id: eventData.node_id,
+              node_type: eventData.node_type,
+              x: eventData.x,
+              y: eventData.y,
             });
             break;
           case 'cable_added':

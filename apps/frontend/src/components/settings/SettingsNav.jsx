@@ -1,4 +1,5 @@
 import React from 'react';
+import PropTypes from 'prop-types';
 import {
   Settings,
   Palette,
@@ -10,6 +11,7 @@ import {
   X,
   Plug,
   Users,
+  Webhook,
 } from 'lucide-react';
 
 export const SETTINGS_TABS = [
@@ -42,6 +44,12 @@ export const SETTINGS_TABS = [
     label: 'Integrations',
     icon: Plug,
     description: 'NATS, Docker, and external service controls.',
+  },
+  {
+    id: 'webhooks',
+    label: 'Webhooks',
+    icon: Webhook,
+    description: 'Webhook endpoints, event routing, and delivery logs.',
   },
   {
     id: 'security',
@@ -179,3 +187,12 @@ export default function SettingsNav({
     </div>
   );
 }
+
+SettingsNav.propTypes = {
+  activeTab: PropTypes.string.isRequired,
+  onTabChange: PropTypes.func.isRequired,
+  searchQuery: PropTypes.string.isRequired,
+  onSearchChange: PropTypes.func.isRequired,
+  tabs: PropTypes.array,
+  isAdmin: PropTypes.bool,
+};

@@ -230,6 +230,27 @@ class UptimeEvent(Base):
     hardware: Mapped["Hardware"] = relationship("Hardware")
 
 
+class DailyUptimeStats(Base):
+    """Daily aggregated rollups for hardware uptime."""
+
+    __tablename__ = "daily_uptime_stats"
+    __table_args__ = (UniqueConstraint("hardware_id", "date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID, ondelete="CASCADE"), nullable=False, index=True
+    )
+    date: Mapped[str] = mapped_column(String, nullable=False)  # ISO date string YYYY-MM-DD
+    total_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    uptime_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    hardware: Mapped["Hardware"] = relationship("Hardware")
+
+
 # ── Compute Units ───────────────────────────────────────────────────────────
 
 
@@ -827,6 +848,7 @@ class AppSettings(Base):
     )
     docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
+    map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
     ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
@@ -848,6 +870,12 @@ class AppSettings(Base):
     scan_aggressiveness: Mapped[str] = mapped_column(String, nullable=False, default="normal")
     mdns_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ssdp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Feature 8: Federated Auth
+    oauth_providers: Mapped[str | None] = mapped_column(
+        Text
+    )  # JSON: {"github": {...}, "google": {...}}
+    oidc_providers: Mapped[str | None] = mapped_column(Text)  # JSON array of OIDC providers
     arp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tcp_probe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # v0.2.0: Self-aware cluster
@@ -870,7 +898,9 @@ class AppSettings(Base):
     smtp_last_test_at: Mapped[str | None] = mapped_column(String)
     smtp_last_test_status: Mapped[str | None] = mapped_column(String)
     # Phase 7: Vault encryption
-    vault_key: Mapped[str | None] = mapped_column(Text)  # DB fallback copy of CB_VAULT_KEY
+    vault_key: Mapped[str | None] = mapped_column(
+        Text
+    )  # Plaintext key for DB fallback when env/file unwritable
     vault_key_hash: Mapped[str | None] = mapped_column(Text)  # SHA-256 of the vault key
     vault_key_rotation_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     vault_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1094,6 +1124,8 @@ class User(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=_now)
     # Phase 6.5: RBAC, invite, lockout, masquerade
     role: Mapped[str] = mapped_column(String, nullable=False, default="viewer")
+    scopes: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    demo_expires: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     invited_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     login_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1102,6 +1134,17 @@ class User(Base):
     )
     # Local user creation: force a password change on first login
     force_password_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # External Auth
+    provider: Mapped[str] = mapped_column(
+        String, nullable=False, default="local"
+    )  # "local", "github", "oidc"
+    oauth_tokens: Mapped[str | None] = mapped_column(Text)  # JSON blob for oauth refresh tokens etc
+    # MFA / TOTP (Phase 7 security hardening)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    totp_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backup_codes: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # JSON list of hashed codes
 
     sessions: Mapped[list["UserSession"]] = relationship(
         "UserSession",
@@ -1142,6 +1185,7 @@ class UserInvite(Base):
     token: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     email: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False)
+    scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
     invited_by: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -1275,3 +1319,76 @@ class CVEEntry(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ── Webhooks & Notifications ──────────────────────────────────────────────────
+
+
+class WebhookRule(Base):
+    __tablename__ = "webhook_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)  # display label
+    target_url: Mapped[str] = mapped_column(String, nullable=False)
+    secret: Mapped[str | None] = mapped_column(String, nullable=True)  # Used for HMAC signing
+    # Backward-compat field; superseded by events_enabled for v1 webhook UI.
+    topics: Mapped[str] = mapped_column(String, nullable=False, default="*")
+    events_enabled: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    headers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+class NotificationSink(Base):
+    __tablename__ = "notification_sinks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    provider_type: Mapped[str] = mapped_column(String, nullable=False)  # 'slack', 'email', 'teams'
+    provider_config: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # JSON blob (encrypted if needed, or simply stored)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class NotificationRoute(Base):
+    __tablename__ = "notification_routes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sink_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("notification_sinks.id"), nullable=False
+    )
+    alert_severity: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'info', 'warning', 'critical'
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    sink: Mapped["NotificationSink"] = relationship("NotificationSink")
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("webhook_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    subject: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class OAuthState(Base):
+    __tablename__ = "oauth_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    state: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)

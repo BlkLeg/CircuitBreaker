@@ -1,9 +1,51 @@
 import React, { useEffect, useState } from 'react';
+import PropTypes from 'prop-types';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Server, Network, Monitor, Loader2 } from 'lucide-react';
 import { authApi } from '../api/auth.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
+
+const PROVIDER_LABELS = {
+  github: 'GitHub',
+  google: 'Google',
+  oidc: 'OIDC',
+  authentik: 'Authentik',
+};
+
+function OAuthButton({ provider, apiBase }) {
+  const label = provider.label || PROVIDER_LABELS[provider.name] || provider.name;
+  const href =
+    provider.type === 'oidc'
+      ? `${apiBase}/api/v1/auth/oauth/oidc/${provider.name}`
+      : `${apiBase}/api/v1/auth/oauth/${provider.name}`;
+  return (
+    <a
+      href={href}
+      className="btn btn-secondary"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        width: '100%',
+        marginBottom: 8,
+        textDecoration: 'none',
+      }}
+    >
+      <span style={{ fontSize: 13 }}>Sign in with {label}</span>
+    </a>
+  );
+}
+
+OAuthButton.propTypes = {
+  provider: PropTypes.shape({
+    name: PropTypes.string.isRequired,
+    label: PropTypes.string,
+    type: PropTypes.string,
+  }).isRequired,
+  apiBase: PropTypes.string.isRequired,
+};
 
 function LoginPage() {
   const { login, isAuthenticated } = useAuth();
@@ -18,8 +60,15 @@ function LoginPage() {
   const [resetMessage, setResetMessage] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [oauthProviders, setOauthProviders] = useState([]);
   /* track which field is focused so we can apply .focused glow class */
   const [focused, setFocused] = useState('');
+  /* MFA two-step flow */
+  const [mfaStep, setMfaStep] = useState(false); // true = show TOTP input
+  const [mfaToken, setMfaToken] = useState(''); // short-lived mfa_token from /login
+  const [mfaCode, setMfaCode] = useState(''); // 6-digit TOTP / backup code
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [useBackup, setUseBackup] = useState(false);
 
   const successMessage = location.state?.message ?? null;
   const loginBg = branding?.login_bg_path;
@@ -32,6 +81,40 @@ function LoginPage() {
   useEffect(() => {
     if (isAuthenticated) navigate('/map', { replace: true });
   }, [isAuthenticated, navigate]);
+
+  // Pre-seed MFA step when redirected from AuthModal with an active mfa_token
+  useEffect(() => {
+    const savedMfaToken = location.state?.mfa_token ?? null;
+    if (savedMfaToken) {
+      setMfaToken(savedMfaToken);
+      setMfaStep(true);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load enabled OAuth providers for login buttons
+  useEffect(() => {
+    authApi
+      .getOAuthProviders()
+      .then((res) => setOauthProviders(res.data.providers || []))
+      .catch(() => {});
+  }, []);
+
+  // Handle ?oauth_token=<jwt> callback from OAuth provider redirect
+  useEffect(() => {
+    const params = new URLSearchParams(globalThis.location.search);
+    const oauthToken = params.get('oauth_token');
+    if (!oauthToken) return;
+    // Clear the token from the URL immediately
+    globalThis.history.replaceState({}, '', globalThis.location.pathname);
+    // Fetch user profile using the token, then log in
+    authApi
+      .meWithToken(oauthToken)
+      .then((res) => {
+        login(oauthToken, res.data);
+        navigate('/map', { replace: true });
+      })
+      .catch(() => setError('OAuth login failed. Please try again.'));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -54,6 +137,13 @@ function LoginPage() {
         });
         return;
       }
+      if (res.data.requires_mfa) {
+        setMfaToken(res.data.mfa_token);
+        setMfaStep(true);
+        setMfaCode('');
+        setUseBackup(false);
+        return;
+      }
       const { token, user: userData } = res.data;
       login(token, userData);
       navigate('/map', { replace: true });
@@ -66,6 +156,44 @@ function LoginPage() {
       setError(msg);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleMfaSubmit = async (e) => {
+    e.preventDefault();
+    if (!mfaCode.trim()) return;
+    setError('');
+    setMfaLoading(true);
+    try {
+      const res = await authApi.mfaVerify(mfaToken, mfaCode.trim());
+      const { token, user: userData } = res.data;
+      login(token, userData);
+      navigate('/map', { replace: true });
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err?.message || 'Invalid code. Try again.';
+      setError(msg);
+      setMfaCode('');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleMfaCodeChange = (e) => {
+    const val = e.target.value.replace(/\s/g, '');
+    setMfaCode(val);
+    setError('');
+    // Auto-submit on 6 digits for TOTP
+    if (!useBackup && val.length === 6 && /^\d{6}$/.test(val)) {
+      authApi
+        .mfaVerify(mfaToken, val)
+        .then((res) => {
+          login(res.data.token, res.data.user);
+          navigate('/map', { replace: true });
+        })
+        .catch((err) => {
+          setError(err?.response?.data?.detail || 'Invalid code. Try again.');
+          setMfaCode('');
+        });
     }
   };
 
@@ -119,116 +247,239 @@ function LoginPage() {
             {/* Success banner (e.g. from post-registration redirect) */}
             {successMessage && <div className="login-success-banner">{successMessage}</div>}
 
-            <form onSubmit={handleSubmit} noValidate>
-              {/* Email */}
-              <div className="login-field">
-                <label className="login-label" htmlFor="login-email">
-                  Email
-                </label>
-                <input
-                  id="login-email"
-                  type="email"
-                  className={`login-input${focused === 'email' ? ' focused' : ''}`}
-                  value={email}
-                  onChange={(e) => {
-                    setEmail(e.target.value);
-                    setError('');
-                    setResetMessage('');
-                  }}
-                  onFocus={() => setFocused('email')}
-                  onBlur={() => setFocused('')}
-                  autoComplete="email"
-                  autoFocus
-                  required
-                  aria-label="Email address"
-                />
-              </div>
-
-              {/* Password */}
-              <div className="login-field" style={{ marginBottom: 8 }}>
-                <label className="login-label" htmlFor="login-password">
-                  Password
-                </label>
-                <input
-                  id="login-password"
-                  type="password"
-                  className={`login-input${focused === 'password' ? ' focused' : ''}`}
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    setError('');
-                  }}
-                  onFocus={() => setFocused('password')}
-                  onBlur={() => setFocused('')}
-                  autoComplete="current-password"
-                  required
-                  aria-label="Password"
-                />
-              </div>
-
-              {/* Backend error */}
-              {error && (
-                <div className="login-error-banner" role="alert">
-                  {error}
+            {/* ── Step 2: MFA challenge ── */}
+            {mfaStep ? (
+              <form onSubmit={handleMfaSubmit} noValidate>
+                <div style={{ marginBottom: 16, textAlign: 'center' }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>🔐</div>
+                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
+                    {useBackup
+                      ? 'Enter one of your saved backup codes.'
+                      : 'Enter the 6-digit code from your authenticator app.'}
+                  </p>
                 </div>
-              )}
 
-              {resetMessage && (
-                <div className="login-success-banner" role="status">
-                  {resetMessage}
+                <div className="login-field">
+                  <label className="login-label" htmlFor="mfa-code">
+                    {useBackup ? 'Backup Code' : 'Authenticator Code'}
+                  </label>
+                  <input
+                    id="mfa-code"
+                    type="text"
+                    inputMode={useBackup ? 'text' : 'numeric'}
+                    pattern={useBackup ? undefined : '[0-9]*'}
+                    maxLength={useBackup ? 20 : 6}
+                    className={`login-input${focused === 'mfa' ? ' focused' : ''}`}
+                    value={mfaCode}
+                    onChange={handleMfaCodeChange}
+                    onFocus={() => setFocused('mfa')}
+                    onBlur={() => setFocused('')}
+                    autoComplete="one-time-code"
+                    autoFocus
+                    required
+                    placeholder={useBackup ? 'XXXXXXXX' : '000000'}
+                    style={{ letterSpacing: useBackup ? 'normal' : '0.3em', textAlign: 'center' }}
+                    aria-label={useBackup ? 'Backup code' : 'TOTP code'}
+                  />
                 </div>
-              )}
 
-              <div style={{ textAlign: 'right', marginBottom: 12 }}>
+                {error && (
+                  <div className="login-error-banner" role="alert">
+                    {error}
+                  </div>
+                )}
+
                 <button
-                  type="button"
-                  onClick={handleForgotPassword}
-                  disabled={resetLoading}
+                  type="submit"
+                  className="btn btn-primary login-btn-submit"
+                  disabled={mfaLoading || !mfaCode.trim()}
+                  style={{ marginTop: 12 }}
+                >
+                  {mfaLoading ? 'Verifying…' : 'Verify'}
+                </button>
+
+                <div
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    cursor: resetLoading ? 'default' : 'pointer',
-                    color: 'var(--color-primary)',
+                    marginTop: 12,
+                    display: 'flex',
+                    justifyContent: 'space-between',
                     fontSize: 12,
-                    padding: 0,
-                    textDecoration: 'underline',
-                    opacity: resetLoading ? 0.7 : 1,
                   }}
                 >
-                  {resetLoading ? 'Sending reset link…' : 'Forgot Password?'}
-                </button>
-                <div style={{ marginTop: 8 }}>
                   <button
                     type="button"
-                    onClick={() => navigate('/reset-password/vault', { state: { email } })}
                     style={{
                       background: 'none',
                       border: 'none',
                       cursor: 'pointer',
                       color: 'var(--color-text-muted)',
-                      fontSize: 12,
                       padding: 0,
                       textDecoration: 'underline',
                     }}
+                    onClick={() => {
+                      setMfaStep(false);
+                      setMfaToken('');
+                      setError('');
+                    }}
                   >
-                    Reset with Vault Key
+                    ← Back
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--color-primary)',
+                      padding: 0,
+                      textDecoration: 'underline',
+                    }}
+                    onClick={() => {
+                      setUseBackup((v) => !v);
+                      setMfaCode('');
+                      setError('');
+                    }}
+                  >
+                    {useBackup ? 'Use authenticator app' : 'Use backup code'}
                   </button>
                 </div>
-              </div>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} noValidate>
+                {/* Email */}
+                <div className="login-field">
+                  <label className="login-label" htmlFor="login-email">
+                    Email
+                  </label>
+                  <input
+                    id="login-email"
+                    type="email"
+                    className={`login-input${focused === 'email' ? ' focused' : ''}`}
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setError('');
+                      setResetMessage('');
+                    }}
+                    onFocus={() => setFocused('email')}
+                    onBlur={() => setFocused('')}
+                    autoComplete="email"
+                    autoFocus
+                    required
+                    aria-label="Email address"
+                  />
+                </div>
 
-              <button type="submit" className="btn btn-primary login-btn-submit" disabled={loading}>
-                {loading ? (
-                  <>
-                    <span className="login-spin" aria-hidden="true">
-                      <Loader2 size={14} />
-                    </span>{' '}
-                    Signing in…
-                  </>
-                ) : (
-                  'Sign In'
+                {/* Password */}
+                <div className="login-field" style={{ marginBottom: 8 }}>
+                  <label className="login-label" htmlFor="login-password">
+                    Password
+                  </label>
+                  <input
+                    id="login-password"
+                    type="password"
+                    className={`login-input${focused === 'password' ? ' focused' : ''}`}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setError('');
+                    }}
+                    onFocus={() => setFocused('password')}
+                    onBlur={() => setFocused('')}
+                    autoComplete="current-password"
+                    required
+                    aria-label="Password"
+                  />
+                </div>
+
+                {/* Backend error */}
+                {error && (
+                  <div className="login-error-banner" role="alert">
+                    {error}
+                  </div>
                 )}
-              </button>
-            </form>
+
+                {resetMessage && (
+                  <div className="login-success-banner" role="output">
+                    {resetMessage}
+                  </div>
+                )}
+
+                <div style={{ textAlign: 'right', marginBottom: 12 }}>
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={resetLoading}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: resetLoading ? 'default' : 'pointer',
+                      color: 'var(--color-primary)',
+                      fontSize: 12,
+                      padding: 0,
+                      textDecoration: 'underline',
+                      opacity: resetLoading ? 0.7 : 1,
+                    }}
+                  >
+                    {resetLoading ? 'Sending reset link…' : 'Forgot Password?'}
+                  </button>
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => navigate('/reset-password/vault', { state: { email } })}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: 'var(--color-text-muted)',
+                        fontSize: 12,
+                        padding: 0,
+                        textDecoration: 'underline',
+                      }}
+                    >
+                      Reset with Vault Key
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="btn btn-primary login-btn-submit"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <>
+                      <span className="login-spin" aria-hidden="true">
+                        <Loader2 size={14} />
+                      </span>{' '}
+                      Signing in…
+                    </>
+                  ) : (
+                    'Sign In'
+                  )}
+                </button>
+              </form>
+            )}
+
+            {oauthProviders.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}
+                  aria-hidden="true"
+                >
+                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                  <span
+                    style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}
+                  >
+                    or continue with
+                  </span>
+                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                </div>
+                {oauthProviders.map((p) => (
+                  <OAuthButton key={p.name} provider={p} apiBase="" />
+                ))}
+              </div>
+            )}
 
             <p className="login-footer">
               {'Need help? '}
@@ -239,7 +490,7 @@ function LoginPage() {
               >
                 See the docs
               </a>
-              .
+              {'.'}
             </p>
           </div>
 

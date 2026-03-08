@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.rbac import require_role
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.services.settings_service import get_or_create_settings
@@ -107,7 +108,7 @@ async def upload_user_icon(
 )
 async def upload_favicon(
     file: Annotated[UploadFile, File()],
-    _: Annotated[int | None, Depends(require_write_auth)],
+    _: Annotated[int | None, require_role("admin")],
     db: Annotated[Session, Depends(get_db)],
 ):
     if file.content_type not in _ALLOWED_TYPES:
