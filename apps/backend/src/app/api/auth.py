@@ -298,7 +298,12 @@ def vault_reset_password(
 
 
 def _to_profile(user: User) -> UserProfile:
-    photo_url = f"/uploads/profiles/{user.profile_photo}" if user.profile_photo else None
+    if user.profile_photo and user.profile_photo.startswith(("http://", "https://")):
+        photo_url = user.profile_photo
+    elif user.profile_photo:
+        photo_url = f"/uploads/profiles/{user.profile_photo}"
+    else:
+        photo_url = None
     role = getattr(user, "role", None) or ("admin" if user.is_admin else "viewer")
     try:
         scopes = json.loads(getattr(user, "scopes", "[]") or "[]")
@@ -315,6 +320,7 @@ def _to_profile(user: User) -> UserProfile:
         is_superuser=user.is_superuser,
         language=user.language or "en",
         profile_photo_url=photo_url,
+        mfa_enabled=bool(getattr(user, "mfa_enabled", False)),
         role=role,
         scopes=[str(s) for s in scopes if str(s).strip()],
     )
@@ -558,6 +564,39 @@ class MfaConfirmRequest(BaseModel):
     code: str  # TOTP code to prove ownership before disabling / activating
 
 
+class MfaBackupCodesResponse(BaseModel):
+    backup_codes: list[str]
+
+
+def _generate_backup_codes() -> list[str]:
+    return [secrets.token_hex(5).upper() for _ in range(_BACKUP_CODE_COUNT)]
+
+
+def _store_backup_codes(user: User, raw_codes: list[str]) -> None:
+    from app.core.security import hash_password as _hash
+
+    user.backup_codes = json.dumps([_hash(c) for c in raw_codes])
+
+
+def _verify_mfa_confirmation_code(user: User, code: str) -> bool:
+    code = code.strip()
+    if user.totp_secret:
+        totp = pyotp.TOTP(user.totp_secret)
+        if totp.verify(code, valid_window=1):
+            return True
+
+    if user.backup_codes:
+        from app.core.security import verify_password as _vp
+
+        stored = json.loads(user.backup_codes)
+        for i, hashed in enumerate(stored):
+            if _vp(code, hashed):
+                stored.pop(i)
+                user.backup_codes = json.dumps(stored)
+                return True
+    return False
+
+
 @router.post("/mfa/setup", tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
 def mfa_setup(
@@ -576,6 +615,8 @@ def mfa_setup(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled")
 
     secret = pyotp.random_base32()
     user.totp_secret = secret
@@ -597,9 +638,8 @@ def mfa_activate(
     db: Session = Depends(get_db),
 ):
     """Confirm a newly generated TOTP secret and enable MFA."""
-    from app.core.security import hash_password as _hash
     from app.services.auth_service import _make_token, _to_profile
-    from app.services.user_service import record_session
+    from app.services.user_service import record_session, revoke_token_session
 
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -618,12 +658,15 @@ def mfa_activate(
     if not totp.verify(code, valid_window=1):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
-    raw_codes = [secrets.token_hex(5).upper() for _ in range(_BACKUP_CODE_COUNT)]
-    user.backup_codes = json.dumps([_hash(c) for c in raw_codes])
+    raw_codes = _generate_backup_codes()
+    _store_backup_codes(user, raw_codes)
     user.mfa_enabled = True
     db.commit()
 
     token = _make_token(user, cfg)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        revoke_token_session(db, auth_header[len("Bearer ") :].strip())
     record_session(db, user, request, token, cfg)
     from app.core.audit import log_audit
 
@@ -724,26 +767,7 @@ def mfa_disable(
     if not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
 
-    code = payload.code.strip()
-    verified = False
-
-    if user.totp_secret:
-        totp = pyotp.TOTP(user.totp_secret)
-        if totp.verify(code, valid_window=1):
-            verified = True
-
-    if not verified and user.backup_codes:
-        from app.core.security import verify_password as _vp
-
-        stored = json.loads(user.backup_codes)
-        for i, hashed in enumerate(stored):
-            if _vp(code, hashed):
-                stored.pop(i)
-                user.backup_codes = json.dumps(stored)
-                verified = True
-                break
-
-    if not verified:
+    if not _verify_mfa_confirmation_code(user, payload.code):
         raise HTTPException(status_code=401, detail="Invalid MFA code")
 
     user.mfa_enabled = False
@@ -754,3 +778,40 @@ def mfa_disable(
 
     log_audit(db, request, user_id=user_id, action="mfa_disabled", resource="auth", status="ok")
     return {"detail": "MFA disabled successfully"}
+
+
+@router.post("/mfa/backup-codes/regenerate", response_model=MfaBackupCodesResponse, tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def mfa_regenerate_backup_codes(
+    request: Request,
+    payload: MfaConfirmRequest,
+    user_id: int | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    """Replace existing MFA backup codes after re-verifying user possession."""
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.mfa_enabled or not user.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA must be enabled first")
+
+    if not _verify_mfa_confirmation_code(user, payload.code):
+        raise HTTPException(status_code=401, detail="Invalid MFA code")
+
+    raw_codes = _generate_backup_codes()
+    _store_backup_codes(user, raw_codes)
+    db.commit()
+
+    from app.core.audit import log_audit
+
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="mfa_backup_codes_regenerated",
+        resource="auth",
+        status="ok",
+    )
+    return MfaBackupCodesResponse(backup_codes=raw_codes)

@@ -13,6 +13,7 @@ class LogEntry(BaseModel):
     action: str
     actor: str | None = None
     actor_gravatar_hash: str | None = None
+    actor_profile_photo_url: str | None = None
     entity_type: str | None = None
     entity_id: int | None = None
     old_value: str | None = None

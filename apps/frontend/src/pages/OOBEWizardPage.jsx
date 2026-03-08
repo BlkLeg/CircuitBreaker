@@ -26,6 +26,7 @@ import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
 import { gravatarHash } from '../utils/md5.js';
 import { sanitizeImageSrc } from '../utils/validation.js';
 import TimezoneSelect from '../components/TimezoneSelect.jsx';
+import OAuthProviderIcon from '../components/auth/OAuthProviderIcon.jsx';
 import { useTranslation } from 'react-i18next';
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -140,6 +141,11 @@ function OOBEWizardPage({ onCompleted }) {
     return { active: true, isHttps, httpsOrigin, certUrl };
   }, []);
 
+  const openCertificateDownload = useCallback(() => {
+    if (!_caddyDetection.active) return;
+    globalThis.open(_caddyDetection.certUrl, '_blank', 'noopener,noreferrer');
+  }, [_caddyDetection]);
+
   // Auto-populate external app URL when running behind Caddy and field is empty.
   useEffect(() => {
     if (step === 5 && !externalAppUrl && _caddyDetection.active) {
@@ -202,10 +208,21 @@ function OOBEWizardPage({ onCompleted }) {
     setOauthBootstrapToken(oauthToken);
     setOauthBootstrapProvider(params.get('provider') || 'oauth');
 
-    // Fetch the user profile to display their email in the confirmation banner
+    // Fetch the OAuth-returned profile so the wizard can show the real
+    // account email, display name, and remote avatar instead of gravatar.
     authApi
       .meWithToken(oauthToken)
-      .then((res) => setOauthBootstrapEmail(res.data?.email || null))
+      .then((res) => {
+        const user = res.data || {};
+        setOauthBootstrapEmail(user.email || null);
+        setEmail(user.email || '');
+        if (user.display_name) {
+          setDisplayName((current) => current || user.display_name);
+        }
+        if (user.profile_photo_url) {
+          setPhotoPreview(user.profile_photo_url);
+        }
+      })
       .catch(() => {});
 
     // Clean token from URL without triggering a re-render loop
@@ -950,209 +967,63 @@ function OOBEWizardPage({ onCompleted }) {
                 {/* ── Local sign-up form + OAuth alternative (hidden when OAuth bootstrap is active) ── */}
                 {!oauthBootstrapToken && (
                   <>
-                    <form
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        goNext();
-                      }}
-                      noValidate
-                    >
-                      <div className="oobe-avatar-wrap">
-                        <button
-                          type="button"
-                          className="oobe-avatar-btn"
-                          onClick={() => photoFileRef.current?.click()}
-                          title="Upload profile photo (optional)"
-                        >
-                          <img
-                            src={sanitizeImageSrc(photoPreview || gravatarPreview)}
-                            alt="Avatar preview"
-                            className="oobe-avatar"
-                          />
-                          <span className="oobe-avatar-overlay" aria-hidden="true">
-                            📷
-                          </span>
-                        </button>
-                        {photoFile ? (
-                          <div className="oobe-avatar-status">
-                            <span className="oobe-avatar-status-text">✓ Custom photo ready</span>
-                            <button
-                              type="button"
-                              className="oobe-avatar-clear"
-                              onClick={clearPhoto}
-                              title="Remove custom photo"
-                            >
-                              <X size={11} /> Remove
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="oobe-avatar-status-text oobe-avatar-status-text--muted">
-                            Using Gravatar · click to upload your own
-                          </span>
-                        )}
-                        <input
-                          ref={photoFileRef}
-                          type="file"
-                          accept="image/jpeg,image/png"
-                          style={{ display: 'none' }}
-                          onChange={handlePhotoFile}
-                        />
-                      </div>
-
-                      <div className="login-field">
-                        <label className="login-label" htmlFor="oobe-email">
-                          Email
-                        </label>
-                        <input
-                          id="oobe-email"
-                          type="email"
-                          className="login-input"
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          required
-                        />
-                      </div>
-
-                      <div className="login-field">
-                        <label className="login-label" htmlFor="oobe-display-name">
-                          Display Name (optional)
-                        </label>
-                        <input
-                          id="oobe-display-name"
-                          type="text"
-                          className="login-input"
-                          value={displayName}
-                          onChange={(e) => setDisplayName(e.target.value)}
-                        />
-                      </div>
-
-                      <div className="login-field">
-                        <label className="login-label" htmlFor="oobe-password">
-                          Password
-                        </label>
-                        <input
-                          id="oobe-password"
-                          type="password"
-                          className="login-input"
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          required
-                        />
-                      </div>
-
-                      <div className="login-field">
-                        <label className="login-label" htmlFor="oobe-password-confirm">
-                          Confirm Password
-                        </label>
-                        <input
-                          id="oobe-password-confirm"
-                          type="password"
-                          className="login-input"
-                          value={confirmPassword}
-                          onChange={(e) => setConfirmPassword(e.target.value)}
-                          required
-                        />
-                      </div>
-
-                      <ul className="oobe-rules">
-                        {RULES.map((rule) => (
-                          <li key={rule.label} className={rule.test(password) ? 'pass' : ''}>
-                            {rule.test(password) ? '✓' : '✗'} {rule.label}
-                          </li>
-                        ))}
-                        {confirmPassword && (
-                          <li className={passwordsMatch ? 'pass' : ''}>
-                            {passwordsMatch ? '✓' : '✗'} Passwords match
-                          </li>
-                        )}
-                      </ul>
-
-                      <div className="oobe-actions">
-                        <button type="button" className="btn btn-secondary" onClick={goBack}>
-                          Back
-                        </button>
-                        <button type="submit" className="btn btn-primary">
-                          Next
-                        </button>
-                      </div>
-                    </form>
-
-                    {/* ── OAuth alternative ── */}
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.75rem',
-                        margin: '1.25rem 0 1rem',
-                      }}
-                    >
-                      <hr
-                        style={{
-                          flex: 1,
-                          border: 'none',
-                          borderTop: '1px solid var(--color-border)',
-                        }}
-                      />
-                      <span
-                        style={{
-                          fontSize: '0.75rem',
-                          color: 'var(--color-text-muted)',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        OR
-                      </span>
-                      <hr
-                        style={{
-                          flex: 1,
-                          border: 'none',
-                          borderTop: '1px solid var(--color-border)',
-                        }}
-                      />
-                    </div>
-
+                    {/* ── OAuth provider buttons — top of card ── */}
                     {!oauthSetupMode ? (
-                      <div style={{ textAlign: 'center' }}>
-                        <p
-                          style={{
-                            fontSize: '0.8125rem',
-                            color: 'var(--color-text-muted)',
-                            marginBottom: '0.625rem',
-                          }}
-                        >
-                          Sign up with an OAuth provider instead
-                        </p>
+                      <div style={{ marginBottom: '0.25rem' }}>
+                        {[
+                          { id: 'github', label: 'GitHub' },
+                          { id: 'google', label: 'Google' },
+                          { id: 'oidc', label: 'SSO / OIDC' },
+                        ].map(({ id, label }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 10,
+                              width: '100%',
+                              marginBottom: 8,
+                              fontWeight: 500,
+                              fontSize: 14,
+                            }}
+                            onClick={() => {
+                              setOauthSetupProvider(id);
+                              setOauthSetupMode(true);
+                              setError('');
+                            }}
+                          >
+                            <OAuthProviderIcon name={id} />
+                            <span>Continue with {label}</span>
+                          </button>
+                        ))}
                         <div
                           style={{
                             display: 'flex',
-                            justifyContent: 'center',
-                            gap: '0.5rem',
-                            flexWrap: 'wrap',
+                            alignItems: 'center',
+                            gap: 8,
+                            margin: '16px 0 12px',
                           }}
+                          aria-hidden="true"
                         >
-                          {[
-                            { id: 'github', label: 'GitHub' },
-                            { id: 'google', label: 'Google' },
-                            { id: 'oidc', label: 'OIDC' },
-                          ].map(({ id, label }) => (
-                            <button
-                              key={id}
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: '0.8125rem', padding: '0.375rem 0.875rem' }}
-                              onClick={() => {
-                                setOauthSetupProvider(id);
-                                setOauthSetupMode(true);
-                                setError('');
-                              }}
-                            >
-                              {label}
-                            </button>
-                          ))}
+                          <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--color-text-muted)',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            or create account with email
+                          </span>
+                          <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
                         </div>
                       </div>
                     ) : (
-                      <div>
+                      /* ── OAuth setup sub-form (shown instead of email form) ── */
+                      <div style={{ marginBottom: '1rem' }}>
                         <div
                           style={{
                             display: 'flex',
@@ -1161,12 +1032,15 @@ function OOBEWizardPage({ onCompleted }) {
                             marginBottom: '0.75rem',
                           }}
                         >
-                          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>
-                            Sign up with{' '}
-                            {{ github: 'GitHub', google: 'Google', oidc: 'OIDC' }[
-                              oauthSetupProvider
-                            ] || oauthSetupProvider}
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <OAuthProviderIcon name={oauthSetupProvider} />
+                            <span style={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+                              Sign up with{' '}
+                              {{ github: 'GitHub', google: 'Google', oidc: 'SSO / OIDC' }[
+                                oauthSetupProvider
+                              ] || oauthSetupProvider}
+                            </span>
+                          </div>
                           <button
                             type="button"
                             className="btn btn-secondary"
@@ -1179,7 +1053,7 @@ function OOBEWizardPage({ onCompleted }) {
                               setError('');
                             }}
                           >
-                            Cancel
+                            ← Back
                           </button>
                         </div>
 
@@ -1271,19 +1145,148 @@ function OOBEWizardPage({ onCompleted }) {
                           </p>
                         </div>
 
-                        <div style={{ marginTop: '0.75rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary login-btn-submit"
+                          disabled={oauthSetupSaving}
+                          onClick={handleOauthSignup}
+                          style={{ marginTop: '0.25rem' }}
+                        >
+                          {oauthSetupSaving
+                            ? 'Saving…'
+                            : `Continue with ${{ github: 'GitHub', google: 'Google', oidc: 'SSO / OIDC' }[oauthSetupProvider] || oauthSetupProvider}`}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* ── Email/password form — hidden while OAuth setup sub-form is active ── */}
+                    {!oauthSetupMode && (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          goNext();
+                        }}
+                        noValidate
+                      >
+                        <div className="oobe-avatar-wrap">
                           <button
                             type="button"
-                            className="btn btn-primary login-btn-submit"
-                            disabled={oauthSetupSaving}
-                            onClick={handleOauthSignup}
+                            className="oobe-avatar-btn"
+                            onClick={() => photoFileRef.current?.click()}
+                            title="Upload profile photo (optional)"
                           >
-                            {oauthSetupSaving
-                              ? 'Saving…'
-                              : `Continue with ${{ github: 'GitHub', google: 'Google', oidc: 'OIDC' }[oauthSetupProvider] || oauthSetupProvider}`}
+                            <img
+                              src={sanitizeImageSrc(photoPreview || gravatarPreview)}
+                              alt="Avatar preview"
+                              className="oobe-avatar"
+                            />
+                            <span className="oobe-avatar-overlay" aria-hidden="true">
+                              📷
+                            </span>
+                          </button>
+                          {photoFile ? (
+                            <div className="oobe-avatar-status">
+                              <span className="oobe-avatar-status-text">✓ Custom photo ready</span>
+                              <button
+                                type="button"
+                                className="oobe-avatar-clear"
+                                onClick={clearPhoto}
+                                title="Remove custom photo"
+                              >
+                                <X size={11} /> Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="oobe-avatar-status-text oobe-avatar-status-text--muted">
+                              Using Gravatar · click to upload your own
+                            </span>
+                          )}
+                          <input
+                            ref={photoFileRef}
+                            type="file"
+                            accept="image/jpeg,image/png"
+                            style={{ display: 'none' }}
+                            onChange={handlePhotoFile}
+                          />
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-email">
+                            Email
+                          </label>
+                          <input
+                            id="oobe-email"
+                            type="email"
+                            className="login-input"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            required
+                          />
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-display-name">
+                            Display Name (optional)
+                          </label>
+                          <input
+                            id="oobe-display-name"
+                            type="text"
+                            className="login-input"
+                            value={displayName}
+                            onChange={(e) => setDisplayName(e.target.value)}
+                          />
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-password">
+                            Password
+                          </label>
+                          <input
+                            id="oobe-password"
+                            type="password"
+                            className="login-input"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            required
+                          />
+                        </div>
+
+                        <div className="login-field">
+                          <label className="login-label" htmlFor="oobe-password-confirm">
+                            Confirm Password
+                          </label>
+                          <input
+                            id="oobe-password-confirm"
+                            type="password"
+                            className="login-input"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            required
+                          />
+                        </div>
+
+                        <ul className="oobe-rules">
+                          {RULES.map((rule) => (
+                            <li key={rule.label} className={rule.test(password) ? 'pass' : ''}>
+                              {rule.test(password) ? '✓' : '✗'} {rule.label}
+                            </li>
+                          ))}
+                          {confirmPassword && (
+                            <li className={passwordsMatch ? 'pass' : ''}>
+                              {passwordsMatch ? '✓' : '✗'} Passwords match
+                            </li>
+                          )}
+                        </ul>
+
+                        <div className="oobe-actions">
+                          <button type="button" className="btn btn-secondary" onClick={goBack}>
+                            Back
+                          </button>
+                          <button type="submit" className="btn btn-primary">
+                            Next
                           </button>
                         </div>
-                      </div>
+                      </form>
                     )}
                   </>
                 )}
@@ -1594,15 +1597,15 @@ function OOBEWizardPage({ onCompleted }) {
                       </p>
                     )}
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-                      <a
-                        href={_caddyDetection.certUrl}
-                        download="caddy-root-ca.crt"
+                      <button
+                        type="button"
                         className="btn btn-secondary btn-sm"
                         style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                        onClick={openCertificateDownload}
                       >
                         <Download size={12} />
                         Download CA Certificate
-                      </a>
+                      </button>
                       {!_caddyDetection.isHttps && (
                         <a
                           href={_caddyDetection.httpsOrigin}

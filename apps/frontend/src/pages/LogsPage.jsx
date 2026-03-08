@@ -9,18 +9,41 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import TimestampCell from '../components/TimestampCell.jsx';
 import { formatAbsolute } from '../lib/time.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import { sanitizeImageSrc } from '../utils/validation.js';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
 
-function ActorAvatar({ actor, gravatarHash, size = 20 }) {
-  if (gravatarHash) {
+function ActorAvatar({ actor, profilePhotoUrl, gravatarHash, size = 20 }) {
+  const [photoBroken, setPhotoBroken] = useState(false);
+  const [gravatarBroken, setGravatarBroken] = useState(false);
+
+  useEffect(() => {
+    setPhotoBroken(false);
+  }, [profilePhotoUrl]);
+
+  useEffect(() => {
+    setGravatarBroken(false);
+  }, [gravatarHash]);
+
+  const photoSrc = photoBroken ? '' : sanitizeImageSrc(profilePhotoUrl);
+  const gravatarSrc =
+    !gravatarBroken && gravatarHash
+      ? `https://www.gravatar.com/avatar/${gravatarHash}?s=${size * 2}&d=404`
+      : '';
+
+  if (photoSrc || gravatarSrc) {
+    const src = photoSrc || gravatarSrc;
     return (
       <img
-        src={`https://www.gravatar.com/avatar/${gravatarHash}?s=${size * 2}&d=identicon`}
+        src={src}
         alt={actor || 'user'}
         width={size}
         height={size}
-        style={{ borderRadius: '50%', flexShrink: 0 }}
+        style={{ borderRadius: '50%', flexShrink: 0, objectFit: 'cover' }}
+        onError={() => {
+          if (photoSrc) setPhotoBroken(true);
+          else if (gravatarSrc) setGravatarBroken(true);
+        }}
       />
     );
   }
@@ -52,12 +75,14 @@ function ActorAvatar({ actor, gravatarHash, size = 20 }) {
 
 ActorAvatar.propTypes = {
   actor: PropTypes.string,
+  profilePhotoUrl: PropTypes.string,
   gravatarHash: PropTypes.string,
   size: PropTypes.number,
 };
 
 ActorAvatar.defaultProps = {
   actor: null,
+  profilePhotoUrl: null,
   gravatarHash: null,
   size: 20,
 };
@@ -580,7 +605,12 @@ function LogRow({ log, expanded, onToggle, navigate, isAdmin, revealed, onToggle
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <ActorAvatar actor={log.actor} gravatarHash={log.actor_gravatar_hash} size={18} />
+            <ActorAvatar
+              actor={log.actor}
+              profilePhotoUrl={log.actor_profile_photo_url}
+              gravatarHash={log.actor_gravatar_hash}
+              size={18}
+            />
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span>{log.actor_name || log.actor || 'anonymous'}</span>
               {log.role_at_time && (

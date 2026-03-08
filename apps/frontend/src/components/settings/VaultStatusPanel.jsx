@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import PropTypes from 'prop-types';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -46,11 +47,16 @@ function KeySourceBadge({ source }) {
   return <span style={{ color: 'var(--color-online, #4caf50)' }}>{source}</span>;
 }
 
+KeySourceBadge.propTypes = {
+  source: PropTypes.string,
+};
+
 export default function VaultStatusPanel() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [rotating, setRotating] = useState(false);
+  const [initializing, setInitializing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [confirmRotate, setConfirmRotate] = useState(false);
@@ -90,6 +96,20 @@ export default function VaultStatusPanel() {
     }
   };
 
+  const handleInitialize = async () => {
+    setInitializing(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      const res = await client.post('/admin/vault/initialize');
+      setStatus(res.data);
+    } catch (err) {
+      setError(err.message || 'Vault initialization failed.');
+    } finally {
+      setInitializing(false);
+    }
+  };
+
   const handleTest = async () => {
     setTesting(true);
     setTestResult(null);
@@ -113,6 +133,11 @@ export default function VaultStatusPanel() {
 
   const meta = STATUS_META[status?.status] ?? STATUS_META.ephemeral;
   const StatusIcon = meta.icon;
+  const rotateButtonLabel = rotating
+    ? 'Rotating…'
+    : confirmRotate
+      ? 'Confirm Rotation'
+      : 'Rotate Key';
 
   return (
     <div
@@ -286,6 +311,19 @@ export default function VaultStatusPanel() {
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {status?.status === 'ephemeral' && (
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={handleInitialize}
+            disabled={initializing}
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <ShieldCheck size={13} />
+            {initializing ? 'Initializing…' : 'Initialize Key'}
+          </button>
+        )}
+
         <button
           type="button"
           className={`btn btn-sm ${confirmRotate ? 'btn-danger' : 'btn-secondary'}`}
@@ -299,7 +337,7 @@ export default function VaultStatusPanel() {
           style={{ display: 'flex', alignItems: 'center', gap: 6 }}
         >
           <RotateCcw size={13} className={rotating ? 'spin' : ''} />
-          {rotating ? 'Rotating…' : confirmRotate ? 'Confirm Rotation' : 'Rotate Key'}
+          {rotateButtonLabel}
         </button>
 
         <button

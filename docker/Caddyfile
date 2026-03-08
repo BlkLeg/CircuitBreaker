@@ -115,7 +115,9 @@ localhost {
 
 # ── HTTP catch-all — handles IP and alternative-hostname access ───────────────
 # Serves the CA cert (for first-time download) then redirects to HTTPS.
-# Matches any HTTP request not already handled by the named-domain blocks above.
+# When a Cloudflare Tunnel (or other reverse proxy) sets X-Forwarded-Proto:
+# https, the connection is already TLS-terminated upstream — skip the redirect
+# and serve the content directly to avoid a redirect loop.
 :80 {
 	route /caddy-root-ca.crt {
 		root * /data/caddy/pki/authorities/local
@@ -124,6 +126,23 @@ localhost {
 		header Content-Type "application/x-pem-file"
 		header Content-Disposition `attachment; filename="caddy-root-ca.crt"`
 	}
+
+	@already_https header X-Forwarded-Proto https
+	route @already_https {
+		reverse_proxy frontend:8080 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+		}
+		encode gzip
+		header {
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			-Server
+		}
+	}
+
 	redir https://{host}{uri} 307
 }
 

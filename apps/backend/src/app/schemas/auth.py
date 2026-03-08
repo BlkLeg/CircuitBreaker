@@ -12,6 +12,7 @@ class UserRead(schemas.BaseUser[int]):
     is_admin: bool = False
     language: str = "en"
     profile_photo_url: str | None = None
+    mfa_enabled: bool = False
 
 
 class UserCreate(schemas.BaseUserCreate):
@@ -53,6 +54,7 @@ class UserProfile(BaseModel):
     is_superuser: bool = False
     language: str = "en"
     profile_photo_url: str | None = None
+    mfa_enabled: bool = False
     role: str | None = None  # Phase 6.5: admin | editor | viewer
     scopes: list[str] = []
 

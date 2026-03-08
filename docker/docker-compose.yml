@@ -1,3 +1,10 @@
+name: circuitbreaker
+
+networks:
+  cb_net:
+    name: circuitbreaker
+    driver: bridge
+
 services:
   postgres:
     # Optional PostgreSQL service — only starts when the "pg" profile is active.
@@ -7,6 +14,7 @@ services:
     image: postgres:16-alpine
     container_name: cb-postgres
     restart: unless-stopped
+    networks: [cb_net]
     environment:
       - POSTGRES_DB=circuitbreaker
       - POSTGRES_USER=breaker
@@ -24,6 +32,7 @@ services:
     image: nats:2-alpine
     container_name: cb-nats
     restart: unless-stopped
+    networks: [cb_net]
     # JetStream enabled for optional durable message streams.
     # Management HTTP on port 8222 — not exposed externally by default.
     command: ["--jetstream", "-m", "8222"]
@@ -36,6 +45,7 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: cb-caddy
+    networks: [cb_net]
     ports:
       - "80:80"
       - "443:443"
@@ -60,6 +70,7 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     container_name: cb-backend
+    networks: [cb_net]
     volumes:
       - backend-data:/app/data
       - ../data/uploads/icons:/app/data/uploads/icons
@@ -73,6 +84,7 @@ services:
     environment:
       # SQLite by default; set CB_DB_URL for PostgreSQL (see README.md).
       - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
       # Auto-generated during OOBE and persisted to /data/.env in the volume.
@@ -99,6 +111,7 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     command: ["python", "-m", "app.workers.discovery"]
+    networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -106,6 +119,7 @@ services:
         condition: service_started
     environment:
       - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DATA_DIR=/app/data
       - DISCOVERY_MODE=full
       - NATS_URL=nats://nats:4222
       - NATS_KV_SYNC=true
@@ -124,6 +138,7 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     command: ["python", "-m", "app.workers.webhook_worker"]
+    networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -131,6 +146,7 @@ services:
         condition: service_started
     environment:
       - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
@@ -145,6 +161,7 @@ services:
       context: ..
       dockerfile: docker/backend.Dockerfile
     command: ["python", "-m", "app.workers.notification_worker"]
+    networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -152,6 +169,7 @@ services:
         condition: service_started
     environment:
       - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
@@ -168,12 +186,34 @@ services:
     expose:
       - "8080"
     container_name: cb-frontend
+    networks: [cb_net]
     depends_on:
       backend:
         condition: service_healthy
     # Required only when backend uses network_mode: "host" (ARP scanning).
     # extra_hosts:
     #   - "backend:host-gateway"
+    restart: unless-stopped
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    container_name: cb-cloudflared
+    networks: [cb_net]
+    # Routes Cloudflare edge traffic → Caddy (which handles all routing).
+    # Configure the tunnel origin in the Cloudflare Zero Trust dashboard to:
+    #   http://caddy:80
+    #
+    # The token is read from CLOUDFLARE_TUNNEL_TOKEN in the root .env file.
+    # When running this compose file directly from docker/ (not via the root
+    # docker-compose.yml or make), use:
+    #   docker compose --env-file ../.env --profile tunnel up -d
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      - caddy
     restart: unless-stopped
 
 volumes:

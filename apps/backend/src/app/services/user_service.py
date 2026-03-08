@@ -108,6 +108,24 @@ def revoke_all_sessions(db: Session, user_id: int, except_token_hash: str | None
     return revoked
 
 
+def revoke_token_session(db: Session, token: str | None) -> bool:
+    """Revoke the specific tracked session that matches a raw JWT."""
+    if not token:
+        return False
+    token_hash = _hash_token(token)
+    session = (
+        db.query(UserSession)
+        .filter(UserSession.jwt_token_hash == token_hash)
+        .filter(UserSession.revoked == False)  # noqa: E712
+        .first()
+    )
+    if not session:
+        return False
+    session.revoked = True
+    db.commit()
+    return True
+
+
 def record_failed_login(db: Session, user: User, cfg: AppSettings | None = None) -> None:
     """Increment login_attempts; lock if threshold reached."""
     if user.id == 0:

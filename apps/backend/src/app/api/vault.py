@@ -1,6 +1,6 @@
-"""Vault API — key health, rotation, and decryption test endpoints."""
+"""Vault API — key health, initialization, rotation, and decryption test endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,24 @@ def get_vault_health(
     _user=require_role("admin"),
 ):
     """Return vault status: active key source, encrypted secret count, last rotation."""
+    return vault_service.get_vault_status(db)
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/vault/initialize  — admin only
+# ---------------------------------------------------------------------------
+
+
+@router.post("/admin/vault/initialize", response_model=VaultStatusResponse)
+def initialize_vault_key(
+    db: Session = Depends(get_db),
+    _user=require_role("admin"),
+):
+    """Create the first persistent vault key when the vault is uninitialized."""
+    try:
+        vault_service.initialize_vault_key(db)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return vault_service.get_vault_status(db)
 
 

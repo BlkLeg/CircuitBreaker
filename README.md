@@ -178,6 +178,48 @@ Copy `docker/.env.example` to `docker/.env` and set as needed:
 | `CB_VAULT_KEY` | _(auto)_ | Fernet key for secret encryption. Auto-generated during OOBE; persisted to `/data/.env` in the volume. |
 | `CB_DB_PASSWORD` | `breaker` | PostgreSQL password (only used with `--profile pg`). |
 
+### Persistence Layout
+
+The source `docker/docker-compose.yml` uses a mix of **named volumes** (managed by Docker) and **bind mounts** (specific host folders). These are the important ones:
+
+| Mount | Type | Container path | What it stores | Notes |
+|------|------|----------------|----------------|-------|
+| `backend-data` | Named volume | `/app/data` | SQLite DB, vault key file, encrypted credentials metadata, generated runtime data | This is the most important persistence mount |
+| `../data/uploads/icons` | Bind mount | `/app/data/uploads/icons` | Custom uploaded icons | Lets you inspect/back up icons directly on the host |
+| `../data/uploads/branding` | Bind mount | `/app/data/uploads/branding` | Branding assets, login background, logos | Safe to back up independently |
+| `caddy_data` | Named volume | `/data` in `cb-caddy` | Local CA, certificates, ACME state | Required for HTTPS continuity across restarts |
+| `caddy_config` | Named volume | `/config` in `cb-caddy` | Caddy autosave/config state | Usually leave this alone |
+| `nats_data` | Named volume | `/data/nats` | NATS / JetStream state | Needed for durable worker messaging |
+| `postgres_data` | Named volume | `/var/lib/postgresql/data` | PostgreSQL data | Only used when `--profile pg` is enabled |
+
+Important paths inside the backend data volume:
+
+- `/app/data/app.db`: default SQLite database
+- `/app/data/.env`: persisted `CB_VAULT_KEY` written during OOBE
+- `/app/data/uploads/`: runtime uploads and derived assets
+
+Example: mount specific host folders instead of Docker-managed named volumes
+
+```yaml
+services:
+  backend:
+    volumes:
+      - ./data/backend:/app/data
+      - ./data/icons:/app/data/uploads/icons
+      - ./data/branding:/app/data/uploads/branding
+
+  caddy:
+    volumes:
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+
+  nats:
+    volumes:
+      - ./data/nats:/data/nats
+```
+
+If you switch to host folders, keep those directories backed up together. The most critical pair is the backend data directory and the Caddy data directory.
+
 ### Caddy HTTPS — CA Certificate
 
 Caddy issues a self-signed CA for `.local` / LAN domains.

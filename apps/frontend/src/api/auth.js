@@ -55,4 +55,6 @@ export const authApi = {
   mfaVerify: (mfaToken, code) => client.post('/auth/mfa/verify', { mfa_token: mfaToken, code }),
   /** Disable MFA. Requires current TOTP or a backup code for proof of possession. */
   mfaDisable: (code) => client.post('/auth/mfa/disable', { code }),
+  /** Regenerate backup codes after re-verifying with a TOTP or current backup code. */
+  mfaRegenerateBackupCodes: (code) => client.post('/auth/mfa/backup-codes/regenerate', { code }),
 };

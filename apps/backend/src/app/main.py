@@ -1,6 +1,7 @@
 import logging
 import mimetypes
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC
 from pathlib import Path, PurePosixPath
@@ -68,6 +69,33 @@ from app.db.session import SessionLocal
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+
+# ---------------------------------------------------------------------------
+# OAuth param scrubber for uvicorn access logs
+# ---------------------------------------------------------------------------
+# The OAuth callback URLs carry one-time-use `code` and `state` query params
+# that are sensitive — logging them verbatim would allow replaying the flow
+# from log files.  This filter replaces their values with [redacted] in
+# uvicorn's access log before anything is written to disk.
+_OAUTH_SCRUB_RE = re.compile(
+    r"(?<=[?&])(?:code|state|oauth_token|access_token)=[^& \"]+",
+    re.IGNORECASE,
+)
+
+
+class _OAuthScrubFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args and isinstance(record.args, tuple):
+            record.args = tuple(
+                _OAUTH_SCRUB_RE.sub(lambda m: m.group(0).split("=")[0] + "=[redacted]", a)
+                if isinstance(a, str)
+                else a
+                for a in record.args
+            )
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
 
 _SQLITE_SCHEME = "sqlite:///"
 _logger = logging.getLogger(__name__)

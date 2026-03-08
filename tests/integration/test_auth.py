@@ -4,6 +4,7 @@ Auth system tests — covers gaps F3-1 through F3-7.
 Uses the existing ``client`` / ``db`` fixtures from conftest.py (in-memory SQLite).
 """
 
+import pyotp
 import pytest
 
 DEFAULT_TEST_EMAIL = "test@example.com"
@@ -442,6 +443,119 @@ class TestProfile:
 
         resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
         assert resp.status_code == 401
+
+
+def test_mfa_enable_sets_profile_flag_and_requires_challenge_on_login(client):
+    reg = _register(client)
+    token = reg.json()["token"]
+    headers = _auth_header(token)
+
+    setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
+    assert setup.status_code == 200
+    setup_data = setup.json()
+    assert setup_data["totp_uri"].startswith("otpauth://")
+    assert setup_data["secret"]
+
+    activate = client.post(
+        "/api/v1/auth/mfa/activate",
+        json={"code": pyotp.TOTP(setup_data["secret"]).now()},
+        headers=headers,
+    )
+    assert activate.status_code == 200
+    activate_data = activate.json()
+    assert activate_data["user"]["mfa_enabled"] is True
+    assert len(activate_data["backup_codes"]) == 8
+
+    old_me = client.get("/api/v1/auth/me", headers=headers)
+    assert old_me.status_code == 401
+
+    me = client.get("/api/v1/auth/me", headers=_auth_header(activate_data["token"]))
+    assert me.status_code == 200
+    assert me.json()["mfa_enabled"] is True
+
+    sessions = client.get("/api/v1/users/me/sessions", headers=_auth_header(activate_data["token"]))
+    assert sessions.status_code == 200
+    assert len(sessions.json()) == 1
+
+    login = _login(client)
+    assert login.status_code == 200
+    assert login.json()["requires_mfa"] is True
+    assert login.json()["mfa_token"]
+
+    verify = client.post(
+        "/api/v1/auth/mfa/verify",
+        json={
+            "mfa_token": login.json()["mfa_token"],
+            "code": pyotp.TOTP(setup_data["secret"]).now(),
+        },
+    )
+    assert verify.status_code == 200
+    assert verify.json()["user"]["mfa_enabled"] is True
+
+
+def test_mfa_setup_rejects_when_mfa_already_enabled(client):
+    reg = _register(client)
+    token = reg.json()["token"]
+    headers = _auth_header(token)
+
+    setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
+    assert setup.status_code == 200
+    secret = setup.json()["secret"]
+
+    activate = client.post(
+        "/api/v1/auth/mfa/activate",
+        json={"code": pyotp.TOTP(secret).now()},
+        headers=headers,
+    )
+    assert activate.status_code == 200
+
+    second_setup = client.post(
+        "/api/v1/auth/mfa/setup",
+        headers=_auth_header(activate.json()["token"]),
+    )
+    assert second_setup.status_code == 400
+    assert "already enabled" in second_setup.json()["detail"].lower()
+
+
+def test_mfa_backup_codes_can_be_regenerated_and_old_codes_stop_working(client):
+    reg = _register(client)
+    token = reg.json()["token"]
+    headers = _auth_header(token)
+
+    setup = client.post("/api/v1/auth/mfa/setup", headers=headers)
+    secret = setup.json()["secret"]
+    activate = client.post(
+        "/api/v1/auth/mfa/activate",
+        json={"code": pyotp.TOTP(secret).now()},
+        headers=headers,
+    )
+    assert activate.status_code == 200
+    initial_codes = activate.json()["backup_codes"]
+    new_headers = _auth_header(activate.json()["token"])
+
+    regen = client.post(
+        "/api/v1/auth/mfa/backup-codes/regenerate",
+        json={"code": pyotp.TOTP(secret).now()},
+        headers=new_headers,
+    )
+    assert regen.status_code == 200
+    new_codes = regen.json()["backup_codes"]
+    assert len(new_codes) == 8
+    assert set(new_codes).isdisjoint(set(initial_codes))
+
+    disable_with_old = client.post(
+        "/api/v1/auth/mfa/disable",
+        json={"code": initial_codes[0]},
+        headers=new_headers,
+    )
+    assert disable_with_old.status_code == 401
+
+    disable_with_new = client.post(
+        "/api/v1/auth/mfa/disable",
+        json={"code": new_codes[0]},
+        headers=new_headers,
+    )
+    assert disable_with_new.status_code == 200
 
 
 # ---------------------------------------------------------------------------

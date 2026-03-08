@@ -56,7 +56,7 @@ def gravatar_hash(email: str) -> str:
 def create_token(
     user_id: int,
     secret: str,
-    timeout_hours: int,
+    timeout_hours: int | None,
     *,
     role: str | None = None,
     scopes: list[str] | None = None,
@@ -64,7 +64,7 @@ def create_token(
 ) -> str:
     payload = {
         "user_id": user_id,
-        "exp": utcnow() + timedelta(hours=timeout_hours),
+        "exp": utcnow() + timedelta(hours=timeout_hours or 24),
     }
     if role:
         payload["role"] = role

@@ -5,11 +5,12 @@ import { Server, Network, Monitor, Loader2 } from 'lucide-react';
 import { authApi } from '../api/auth.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
+import OAuthProviderIcon from '../components/auth/OAuthProviderIcon.jsx';
 
 const PROVIDER_LABELS = {
   github: 'GitHub',
   google: 'Google',
-  oidc: 'OIDC',
+  oidc: 'SSO',
   authentik: 'Authentik',
 };
 
@@ -22,18 +23,22 @@ function OAuthButton({ provider, apiBase }) {
   return (
     <a
       href={href}
-      className="btn btn-secondary"
+      className="btn btn-secondary oauth-btn"
       style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
+        gap: 10,
         width: '100%',
         marginBottom: 8,
         textDecoration: 'none',
+        fontWeight: 500,
+        fontSize: 14,
+        letterSpacing: 0.1,
       }}
     >
-      <span style={{ fontSize: 13 }}>Sign in with {label}</span>
+      <OAuthProviderIcon name={provider.name} />
+      <span>Continue with {label}</span>
     </a>
   );
 }
@@ -242,10 +247,31 @@ function LoginPage() {
 
           <div className="login-card">
             {/* Card title removed - logo and context are sufficient */}
-            <p className="login-card-subtitle">Enter your credentials to continue.</p>
+            <p className="login-card-subtitle">Sign in to your homelab.</p>
 
             {/* Success banner (e.g. from post-registration redirect) */}
             {successMessage && <div className="login-success-banner">{successMessage}</div>}
+
+            {/* ── OAuth buttons at top — only shown on the credentials step ── */}
+            {!mfaStep && oauthProviders.length > 0 && (
+              <div style={{ marginBottom: 4 }}>
+                {oauthProviders.map((p) => (
+                  <OAuthButton key={p.name} provider={p} apiBase="" />
+                ))}
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 12px' }}
+                  aria-hidden="true"
+                >
+                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                  <span
+                    style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}
+                  >
+                    or sign in with email
+                  </span>
+                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+                </div>
+              </div>
+            )}
 
             {/* ── Step 2: MFA challenge ── */}
             {mfaStep ? (
@@ -459,26 +485,6 @@ function LoginPage() {
                   )}
                 </button>
               </form>
-            )}
-
-            {oauthProviders.length > 0 && (
-              <div style={{ marginTop: 16 }}>
-                <div
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}
-                  aria-hidden="true"
-                >
-                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
-                  <span
-                    style={{ fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}
-                  >
-                    or continue with
-                  </span>
-                  <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
-                </div>
-                {oauthProviders.map((p) => (
-                  <OAuthButton key={p.name} provider={p} apiBase="" />
-                ))}
-              </div>
             )}
 
             <p className="login-footer">

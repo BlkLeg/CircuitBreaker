@@ -51,7 +51,12 @@ def _scopes_for_role(role: str) -> str:
 
 
 def _to_profile(user: User) -> UserProfile:
-    photo_url = f"/uploads/profiles/{user.profile_photo}" if user.profile_photo else None
+    if user.profile_photo and user.profile_photo.startswith(("http://", "https://")):
+        photo_url = user.profile_photo
+    elif user.profile_photo:
+        photo_url = f"/uploads/profiles/{user.profile_photo}"
+    else:
+        photo_url = None
     role = getattr(user, "role", None) or ("admin" if user.is_admin else "viewer")
     try:
         scopes = json.loads(getattr(user, "scopes", "[]") or "[]")
@@ -68,6 +73,7 @@ def _to_profile(user: User) -> UserProfile:
         is_superuser=user.is_superuser,
         language=user.language or "en",
         profile_photo_url=photo_url,
+        mfa_enabled=bool(getattr(user, "mfa_enabled", False)),
         role=role,
         scopes=[str(s) for s in scopes if str(s).strip()],
     )
@@ -356,6 +362,40 @@ def _derive_display_name(email: str, display_name: str | None) -> str:
     return " ".join(part.capitalize() for part in cleaned.split())
 
 
+def _generate_and_persist_vault_key(db: Session) -> str | None:
+    """Generate the first vault key during OOBE and return the plaintext copy.
+
+    Returns ``None`` when a vault key already exists or generation fails.
+    """
+    try:
+        from app.services import vault_service
+        from app.services.credential_vault import get_vault
+
+        cfg_fresh = db.get(AppSettings, 1)
+        if cfg_fresh and (cfg_fresh.vault_key or cfg_fresh.vault_key_hash):
+            return None
+
+        new_key = vault_service.generate_vault_key()
+        vault_service.write_vault_key_to_env(new_key)
+
+        import hashlib
+        import os
+
+        if cfg_fresh:
+            cfg_fresh.vault_key = new_key
+            cfg_fresh.vault_key_hash = hashlib.sha256(new_key.encode()).hexdigest()
+            cfg_fresh.vault_key_rotated_at = utcnow()
+            db.commit()
+
+        os.environ["CB_VAULT_KEY"] = new_key
+        get_vault().reinitialize(new_key)
+        _logger.info("Vault key generated and stored during OOBE bootstrap.")
+        return new_key
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("Vault key generation during OOBE failed: %s", exc)
+        return None
+
+
 def bootstrap_initialize(
     db: Session,
     cfg: AppSettings,
@@ -514,33 +554,7 @@ def bootstrap_initialize(
     record_session(db, user, None, token, cfg)
 
     # ── Phase 7: Generate and persist the vault key ────────────────────────
-    vault_key_plaintext: str | None = None
-    try:
-        from app.services import vault_service
-        from app.services.credential_vault import get_vault
-
-        new_key = vault_service.generate_vault_key()
-        vault_service.write_vault_key_to_env(new_key)
-
-        # Persist the key and its hash into AppSettings as a DB fallback
-        import hashlib
-        import os
-
-        cfg_fresh = db.get(AppSettings, 1)
-        if cfg_fresh:
-            cfg_fresh.vault_key = new_key
-            cfg_fresh.vault_key_hash = hashlib.sha256(new_key.encode()).hexdigest()
-            cfg_fresh.vault_key_rotated_at = utcnow()
-            db.commit()
-
-        # Inject into process env so the singleton is immediately usable
-        os.environ["CB_VAULT_KEY"] = new_key
-        get_vault().reinitialize(new_key)
-
-        vault_key_plaintext = new_key
-        _logger.info("Vault key generated and stored during OOBE bootstrap.")
-    except Exception as _ve:  # noqa: BLE001
-        _logger.warning("Vault key generation during OOBE failed: %s", _ve)
+    vault_key_plaintext = _generate_and_persist_vault_key(db)
 
     settings_bootstrap: dict[str, object] = {}
     if public_base_url:
@@ -574,8 +588,11 @@ def bootstrap_initialize_oauth(
     """Complete bootstrap when the first admin signed up via OAuth instead of local credentials."""
     from app.core.security import decode_token, gravatar_hash
 
-    # Guard: only valid while exactly one user exists and auth hasn't been fully enabled yet
-    if cfg.auth_enabled or db.query(User).count() != 1:
+    # Guard: only valid while auth hasn't been fully enabled yet.
+    # The user-count check is intentionally omitted — retrying OAuth with the same
+    # account creates the same user (upsert), and retrying with a different account
+    # may leave orphaned rows; what matters is that setup isn't finished yet.
+    if cfg.auth_enabled:
         raise HTTPException(status_code=409, detail=_MSG_BOOTSTRAP_DONE)
 
     if not cfg.jwt_secret:
@@ -685,6 +702,10 @@ def bootstrap_initialize_oauth(
 
     record_session(db, user, None, token, cfg)
 
+    # Generate/persist the first vault key for OAuth bootstrap too, and return the
+    # plaintext copy so the OOBE ceremony can show it to the user.
+    vault_key_plaintext = _generate_and_persist_vault_key(db)
+
     # Apply api_base_url / SMTP via settings_service (same as local bootstrap path)
     public_base_url = (payload.api_base_url or "").strip() or None
     settings_bootstrap: dict[str, object] = {}
@@ -705,8 +726,8 @@ def bootstrap_initialize_oauth(
         token=token,
         user=_to_profile(user),
         theme=BootstrapThemeResponse(preset=cfg.theme_preset or payload.theme_preset),
-        vault_key=None,
-        vault_key_warning=False,
+        vault_key=vault_key_plaintext,
+        vault_key_warning=vault_key_plaintext is not None,
     )
 
 

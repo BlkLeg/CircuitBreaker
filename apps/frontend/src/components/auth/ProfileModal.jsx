@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
+import { QRCodeSVG } from 'qrcode.react';
 import { authApi } from '../../api/auth.js';
 import { usersApi } from '../../api/client';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -41,7 +42,9 @@ function ProfileModal({ isOpen, onClose }) {
   const [mfaCode, setMfaCode] = useState(''); // 6-digit confirm / disable
   const [mfaLoading, setMfaLoading] = useState(false);
   const [mfaBackupCodes, setMfaBackupCodes] = useState(null); // shown once after setup
+  const [mfaBackupCodesCopied, setMfaBackupCodesCopied] = useState(false);
   const [mfaDisableMode, setMfaDisableMode] = useState(false);
+  const [mfaRegenerateMode, setMfaRegenerateMode] = useState(false);
 
   const fetchSessions = useCallback(async () => {
     setSessionsLoading(true);
@@ -64,7 +67,9 @@ function ProfileModal({ isOpen, onClose }) {
       setMfaSecret('');
       setMfaCode('');
       setMfaBackupCodes(null);
+      setMfaBackupCodesCopied(false);
       setMfaDisableMode(false);
+      setMfaRegenerateMode(false);
     }
   }, [isOpen, activeTab, fetchSessions, user]);
 
@@ -227,6 +232,53 @@ function ProfileModal({ isOpen, onClose }) {
       login(token, meRes.data);
     } catch (err) {
       setError(err?.response?.data?.detail || 'Invalid MFA code');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const formatBackupCodesText = () =>
+    mfaBackupCodes?.length
+      ? `Circuit Breaker MFA backup codes\n\n${mfaBackupCodes.join('\n')}\n`
+      : '';
+
+  const handleBackupCodesCopy = async () => {
+    const text = formatBackupCodesText();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setMfaBackupCodesCopied(true);
+      setTimeout(() => setMfaBackupCodesCopied(false), 2500);
+    } catch {
+      setError('Failed to copy backup codes');
+    }
+  };
+
+  const handleBackupCodesDownload = () => {
+    const text = formatBackupCodesText();
+    if (!text) return;
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `circuit-breaker-mfa-backup-codes-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleMfaRegenerate = async (e) => {
+    e.preventDefault();
+    if (!mfaCode.trim()) return;
+    setMfaLoading(true);
+    setError('');
+    try {
+      const res = await authApi.mfaRegenerateBackupCodes(mfaCode.trim());
+      setMfaBackupCodes(res.data.backup_codes || []);
+      setMfaBackupCodesCopied(false);
+      setMfaRegenerateMode(false);
+      setMfaCode('');
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Failed to regenerate backup codes');
     } finally {
       setMfaLoading(false);
     }
@@ -606,9 +658,25 @@ function ProfileModal({ isOpen, onClose }) {
                     fontSize: 12,
                   }}
                 >
-                  {mfaBackupCodes.map((c, i) => (
-                    <span key={i}>{c}</span>
+                  {mfaBackupCodes.map((c) => (
+                    <span key={c}>{c}</span>
                   ))}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleBackupCodesCopy}
+                  >
+                    {mfaBackupCodesCopied ? 'Copied!' : 'Copy Codes'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleBackupCodesDownload}
+                  >
+                    Download Codes
+                  </button>
                 </div>
                 <button
                   type="button"
@@ -646,6 +714,24 @@ function ProfileModal({ isOpen, onClose }) {
                 <div style={{ marginBottom: 12, fontSize: 12 }}>
                   Scan the QR code with your authenticator app, or copy the setup link below.
                 </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginBottom: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      background: '#fff',
+                      padding: 10,
+                      borderRadius: 8,
+                      border: '1px solid var(--color-border)',
+                    }}
+                  >
+                    <QRCodeSVG value={mfaSetupUri} size={168} includeMargin title="MFA QR code" />
+                  </div>
+                </div>
                 <div style={{ marginBottom: 8 }}>
                   <a
                     href={mfaSetupUri}
@@ -679,7 +765,7 @@ function ProfileModal({ isOpen, onClose }) {
                   placeholder="6-digit code"
                   value={mfaCode}
                   onChange={(e) => {
-                    setMfaCode(e.target.value.replace(/\D/g, ''));
+                    setMfaCode(e.target.value.replaceAll(/\D/g, ''));
                     setError('');
                   }}
                   style={{
@@ -722,18 +808,81 @@ function ProfileModal({ isOpen, onClose }) {
             )}
 
             {/* Disable flow */}
-            {mfaStatus && !mfaDisableMode && (
-              <button
-                type="button"
-                className="btn btn-danger btn-sm"
-                onClick={() => {
-                  setMfaDisableMode(true);
-                  setMfaCode('');
-                  setError('');
-                }}
-              >
-                Disable MFA
-              </button>
+            {mfaStatus && !mfaDisableMode && !mfaRegenerateMode && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    setMfaRegenerateMode(true);
+                    setMfaCode('');
+                    setError('');
+                  }}
+                >
+                  Regenerate Backup Codes
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  onClick={() => {
+                    setMfaDisableMode(true);
+                    setMfaCode('');
+                    setError('');
+                  }}
+                >
+                  Disable MFA
+                </button>
+              </div>
+            )}
+
+            {mfaStatus && mfaRegenerateMode && (
+              <form onSubmit={handleMfaRegenerate}>
+                <div style={{ fontSize: 12, marginBottom: 8 }}>
+                  Enter your current TOTP code or a backup code to replace all existing backup
+                  codes.
+                </div>
+                <input
+                  type="text"
+                  inputMode="text"
+                  maxLength={20}
+                  placeholder="Code"
+                  value={mfaCode}
+                  onChange={(e) => {
+                    setMfaCode(e.target.value.trim());
+                    setError('');
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: 8,
+                    borderRadius: 6,
+                    marginBottom: 10,
+                    textAlign: 'center',
+                    letterSpacing: '0.2em',
+                  }}
+                  autoFocus
+                />
+                {error && (
+                  <p style={{ color: 'var(--color-danger)', fontSize: 12, margin: '0 0 8px' }}>
+                    {error}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="submit"
+                    className="btn btn-secondary btn-sm"
+                    disabled={mfaLoading || !mfaCode.trim()}
+                  >
+                    {mfaLoading ? 'Regenerating…' : 'Confirm Regenerate'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setMfaRegenerateMode(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
             )}
 
             {mfaStatus && mfaDisableMode && (

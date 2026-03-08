@@ -14,11 +14,22 @@ from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
 from app.core.time import elapsed_seconds as _elapsed_seconds
-from app.db.models import Log
+from app.db.models import Log, User
 from app.db.session import SessionLocal, get_db
 from app.schemas.logs import LogEntry, LogsResponse
 
 router = APIRouter(tags=["logs"])
+
+
+def _actor_profile_photo_url(db: Session, actor_id: int | None) -> str | None:
+    if not actor_id:
+        return None
+    user = db.get(User, actor_id)
+    if not user or not user.profile_photo:
+        return None
+    if user.profile_photo.startswith(("http://", "https://")):
+        return user.profile_photo
+    return f"/uploads/profiles/{user.profile_photo}"
 
 
 @router.get("", response_model=LogsResponse)
@@ -107,6 +118,7 @@ def list_logs(
     for row in rows:
         entry = LogEntry.model_validate(row)
         entry.elapsed_seconds = _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None
+        entry.actor_profile_photo_url = _actor_profile_photo_url(db, row.actor_id)
         logs_out.append(entry)
 
     return LogsResponse(
@@ -185,6 +197,7 @@ def list_audit_logs(
     for row in rows:
         entry = LogEntry.model_validate(row)
         entry.elapsed_seconds = _elapsed_seconds(row.created_at_utc) if row.created_at_utc else None
+        entry.actor_profile_photo_url = _actor_profile_photo_url(db, row.actor_id)
         logs_out.append(entry)
 
     return LogsResponse(
@@ -252,6 +265,7 @@ async def stream_logs(
                             "actor": row.actor,
                             "actor_name": row.actor_name,
                             "actor_gravatar_hash": row.actor_gravatar_hash,
+                            "actor_profile_photo_url": _actor_profile_photo_url(db, row.actor_id),
                             "entity_type": row.entity_type,
                             "entity_id": row.entity_id,
                             "entity_name": row.entity_name,

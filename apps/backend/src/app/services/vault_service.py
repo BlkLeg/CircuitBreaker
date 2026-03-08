@@ -261,6 +261,55 @@ def rotate_vault_key(db: Session) -> None:
         pass
 
 
+def initialize_vault_key(db: Session) -> None:
+    """Generate and persist the first vault key when none exists yet.
+
+    Safety guard: refuse initialization if encrypted secrets already exist while
+    the vault is uninitialized, because generating a fresh key would make those
+    ciphertexts permanently unreadable.
+    """
+    from app.services.log_service import write_log
+    from app.services.settings_service import get_or_create_settings
+
+    vault = get_vault()
+    if vault.is_initialized:
+        raise RuntimeError("Vault is already initialized.")
+
+    if _count_encrypted_secrets(db) > 0:
+        raise RuntimeError(
+            "Cannot initialize a new vault key while encrypted secrets already exist. "
+            "Restore the original key or recover from backup first."
+        )
+
+    cfg = get_or_create_settings(db)
+    new_key_str = generate_vault_key()
+
+    write_vault_key_to_env(new_key_str)
+    cfg.vault_key = new_key_str
+    cfg.vault_key_hash = _sha256(new_key_str)
+    cfg.vault_key_rotated_at = utcnow()
+    db.commit()
+
+    vault.reinitialize(new_key_str)
+    os.environ["CB_VAULT_KEY"] = new_key_str
+
+    global _key_source
+    _key_source = str(_DATA_ENV_PATH)
+
+    _logger.info("Vault key initialized successfully.")
+
+    try:
+        write_log(
+            db,
+            action="vault_key_initialized",
+            entity_type="app_settings",
+            entity_id=getattr(cfg, "id", 1),
+            details=f"new_key_hash_prefix={_sha256(new_key_str)[:16]}",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Status reporting
 # ---------------------------------------------------------------------------

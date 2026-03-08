@@ -25,6 +25,7 @@ nav:
       - Notes & Runbooks: notes.md
   - Operations:
       - Deployment & Security: deployment-security.md
+      - Remote Access & Tunnels: remote-access.md
       - cb CLI Tool: cb-cli.md
       - Backup & Restore: backup-restore.md
   - Reference:

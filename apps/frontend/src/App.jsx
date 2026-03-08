@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 import i18n from './i18n';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
@@ -155,6 +155,12 @@ RequireAdmin.propTypes = {
   children: PropTypes.node.isRequired,
 };
 
+// Preserves query-string (e.g. ?oauth_token=...) when redirecting to /login
+function NavigateToLogin() {
+  const location = useLocation();
+  return <Navigate to={`/login${location.search}`} replace />;
+}
+
 function AppRoutes() {
   const { isAuthenticated, authEnabled, authReady } = useAuth();
   const { settings } = useSettings();
@@ -270,7 +276,7 @@ function AppRoutes() {
           <Route path="/invite/accept" element={<InviteAcceptPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/reset-password/vault" element={<VaultResetPage />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<NavigateToLogin />} />
         </Routes>
       </React.Suspense>
     );

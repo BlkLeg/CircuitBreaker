@@ -50,7 +50,7 @@ The vault protects:
 
 ### Vault key lifecycle
 
-**You do not need to generate the vault key manually.** During the first-run setup wizard (OOBE), Circuit Breaker automatically generates a cryptographically secure key, writes it to `/data/.env` inside the data volume, and shows it once so you can back it up.
+**You do not need to generate the vault key manually.** During the first-run setup wizard (OOBE), Circuit Breaker automatically generates a cryptographically secure key, writes it to `/app/data/.env` inside the backend data volume, and shows it once so you can back it up.
 
 **If the vault ends up uninitialized** (after a crash, accidental volume deletion, or a headless deploy with no OOBE), use the `cb` CLI to recover:
 
@@ -65,6 +65,28 @@ See [cb CLI Tool](cb-cli.md#cb-vault-recover) for details.
 - Back up the key shown during OOBE — store it in a password manager or offline secure location.
 - Treat the vault key like a master root credential. Anyone with it can decrypt your stored secrets.
 - If you lose the key and cannot recover it, you will need to re-enter all encrypted secrets (SMTP, Proxmox tokens, SNMP strings) in **Settings** after running `cb vault-recover`.
+
+### What must be persisted
+
+For Docker Compose installs, persistence is split across a few mounts:
+
+| Mount | Stores | Why it matters |
+|---|---|---|
+| `backend-data` → `/app/data` | `app.db`, vault key file, encrypted-secret metadata, uploads runtime data | Required for users, settings, scans, Proxmox config, SMTP config, and vault continuity |
+| `../data/uploads/icons` → `/app/data/uploads/icons` | Uploaded icons | Needed only if you use custom icons |
+| `../data/uploads/branding` → `/app/data/uploads/branding` | Branding assets | Needed only if you customize logos/backgrounds |
+| `caddy_data` | Caddy local CA / ACME state | Prevents HTTPS trust/cert state from being regenerated every restart |
+| `caddy_config` | Caddy autosave/config state | Usually low-risk, but keep with `caddy_data` for clean restores |
+| `nats_data` | JetStream state | Keeps worker messaging state durable |
+| `postgres_data` | PostgreSQL data | Only relevant when using the optional PostgreSQL profile |
+
+If you replace named volumes with host folders, back up these locations together:
+
+1. The backend data directory (`/app/data`)
+2. The Caddy data directory
+3. Any branding/icon directories you mounted separately
+
+If you restore `app.db` without the vault key file, encrypted secrets such as Proxmox API tokens and SMTP passwords will no longer be readable.
 
 ---
 

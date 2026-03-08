@@ -127,7 +127,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh trust-ca preflight dev-stop-install
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh tunnel-up tunnel-down trust-ca preflight dev-stop-install
 
 lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
 	@echo "Regenerating apps/backend/requirements.txt from poetry.lock..."
@@ -180,6 +180,17 @@ install-cb: ## Install the cb CLI tool for this compose stack (writes /usr/local
 	@printf '# Circuit Breaker — install config (written by make install-cb)\nCB_MODE=compose\nCB_CONTAINER=cb-backend\nCB_BACKEND_CONTAINER=cb-backend\nCB_DATA_DIR=/app/data\nCB_PORT=443\nCB_IMAGE=\nCB_VOLUME=\n' > $(HOME)/.circuit-breaker/install.conf
 	@chmod 600 $(HOME)/.circuit-breaker/install.conf
 	@echo "✅ cb installed. Run: cb help"
+
+tunnel-up: ## Start the Cloudflare Tunnel container (requires CLOUDFLARE_TUNNEL_TOKEN in .env)
+	@echo "Starting Cloudflare Tunnel..."
+	@docker rm -f cb-cloudflared >/dev/null 2>&1 || true
+	docker compose --profile tunnel up -d --no-deps --force-recreate cloudflared
+	@echo "✅ Tunnel container started. Check logs: docker logs cb-cloudflared -f"
+
+tunnel-down: ## Stop the Cloudflare Tunnel container
+	@echo "Stopping Cloudflare Tunnel..."
+	docker compose --profile tunnel stop cloudflared
+	@echo "✅ Tunnel stopped."
 
 compose-fresh: dev-stop-install ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."

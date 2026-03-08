@@ -13,6 +13,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.rate_limit import get_limit, limiter
+from app.core.time import utcnow_iso
 from app.db.models import AppSettings, OAuthState, User
 from app.db.session import get_db
 
@@ -88,6 +89,69 @@ def _get_oidc_config(db: Session, provider_slug: str) -> dict:
     return cfg
 
 
+def _ensure_provider_enabled(
+    db: Session, provider_name: str, cfg: dict, *, provider_type: str
+) -> None:
+    """Persist the provider as enabled so it remains visible on the login screen.
+
+    This is a defensive write for successful OAuth/OIDC flows. It preserves any
+    existing secret fields already stored in AppSettings while ensuring the
+    provider stays enabled for future sign-ins after logout/bootstrap.
+    """
+    settings = db.query(AppSettings).first()
+    if not settings:
+        return
+
+    changed = False
+    if provider_type == "oauth":
+        providers = json.loads(settings.oauth_providers or "{}")
+        entry = dict(providers.get(provider_name) or {})
+        if entry.get("enabled") is not True:
+            entry["enabled"] = True
+            changed = True
+        if cfg.get("client_id") and entry.get("client_id") != cfg.get("client_id"):
+            entry["client_id"] = cfg["client_id"]
+            changed = True
+        providers[provider_name] = entry
+        if changed:
+            settings.oauth_providers = json.dumps(providers)
+    else:
+        raw = json.loads(settings.oidc_providers or "[]")
+        items = raw if isinstance(raw, list) else list(raw.values())
+        slug = cfg.get("slug") or cfg.get("name") or provider_name
+        matched = False
+        updated_items: list[dict] = []
+        for item in items:
+            item_slug = item.get("slug") or item.get("name")
+            if item_slug == slug:
+                merged = dict(item)
+                if merged.get("enabled") is not True:
+                    merged["enabled"] = True
+                    changed = True
+                for key in ("client_id", "discovery_url", "label", "name", "slug"):
+                    if cfg.get(key) and merged.get(key) != cfg.get(key):
+                        merged[key] = cfg[key]
+                        changed = True
+                updated_items.append(merged)
+                matched = True
+            else:
+                updated_items.append(item)
+        if not matched:
+            new_entry = {
+                k: v
+                for k, v in cfg.items()
+                if k in {"slug", "name", "label", "client_id", "discovery_url"}
+            }
+            new_entry["enabled"] = True
+            updated_items.append(new_entry)
+            changed = True
+        if changed:
+            settings.oidc_providers = json.dumps(updated_items)
+
+    if changed:
+        db.commit()
+
+
 def _get_app_base_url(db: Session, request: Request | None = None) -> str:
     settings = db.query(AppSettings).first()
     api_base_url = getattr(settings, "api_base_url", None) if settings else None
@@ -135,6 +199,7 @@ def _upsert_oauth_user(
     display_name: str,
     provider: str,
     oauth_tokens: dict,
+    avatar_url: str | None = None,
 ) -> tuple[User, bool]:
     """Upsert an OAuth user. Returns (user, is_new)."""
     user = db.query(User).filter(User.email == email).first()
@@ -148,14 +213,18 @@ def _upsert_oauth_user(
             hashed_password=hash_password(secrets.token_urlsafe(32)),
             provider=provider,
             is_active=True,
-            is_verified=True,
             role="viewer",
+            created_at=utcnow_iso(),
+            profile_photo=avatar_url,
         )
         db.add(user)
     else:
         assert user is not None
         user.provider = provider
         user.oauth_tokens = json.dumps(oauth_tokens)
+        # Always refresh the avatar so it stays current
+        if avatar_url:
+            user.profile_photo = avatar_url
     db.commit()
     db.refresh(user)
     assert user is not None
@@ -174,23 +243,25 @@ def _issue_jwt_and_redirect(user: User, base_url: str, db: Session) -> RedirectR
 
 def _bootstrap_redirect_or_none(
     user: User,
-    is_new: bool,
     base_url: str,
     provider_name: str,
     db: Session,
 ) -> RedirectResponse | None:
-    """If this is the very first user (bootstrap mode), redirect to OOBE instead of the map."""
-    if not is_new:
-        return None
-    if db.query(User).count() != 1:
-        return None
+    """Redirect to OOBE bootstrap flow whenever setup hasn't been completed yet.
+
+    This handles both fresh accounts and retries with the same OAuth provider/email —
+    as long as auth_enabled is False the user must finish OOBE before using the app.
+    """
     import secrets as _secrets_mod
 
     from app.services.auth_service import _make_token
     from app.services.settings_service import get_or_create_settings
 
     cfg = get_or_create_settings(db)
-    # Ensure jwt_secret is set so we can issue a valid token
+    # Bootstrap is already done — let the normal login flow take over.
+    if cfg.auth_enabled:
+        return None
+    # Ensure a jwt_secret exists so we can issue the bootstrap token.
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets_mod.token_hex(32)
         db.commit()
@@ -248,6 +319,7 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
     _pop_state_or_400(db, state, OAuthState.provider == "github")
 
     cfg = _get_oauth_config(db, "github")
+    _ensure_provider_enabled(db, "github", cfg, provider_type="oauth")
     base_url = _get_app_base_url(db, request)
 
     async with httpx.AsyncClient() as client:
@@ -291,10 +363,16 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
         raise HTTPException(400, "Could not obtain email from GitHub account")
 
     display_name = gh_user.get("name") or gh_user.get("login", "")
+    avatar_url = gh_user.get("avatar_url")
     user, is_new = _upsert_oauth_user(
-        db, email, display_name, "github", {"access_token": access_token}
+        db,
+        email,
+        display_name,
+        "github",
+        {"access_token": access_token},
+        avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, is_new, base_url, "github", db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db)
     if bootstrap_redir:
         return bootstrap_redir
     return _issue_jwt_and_redirect(user, base_url, db)
@@ -335,6 +413,7 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
     _pop_state_or_400(db, state, OAuthState.provider == "google")
 
     cfg = _get_oauth_config(db, "google")
+    _ensure_provider_enabled(db, "google", cfg, provider_type="oauth")
     base_url = _get_app_base_url(db, request)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/google/callback"
 
@@ -366,10 +445,16 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
     if not email:
         raise HTTPException(400, "Could not obtain email from Google account")
     display_name = g_user.get("name", "")
+    avatar_url = g_user.get("picture")
     user, is_new = _upsert_oauth_user(
-        db, email, display_name, "google", {"access_token": access_token}
+        db,
+        email,
+        display_name,
+        "google",
+        {"access_token": access_token},
+        avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, is_new, base_url, "google", db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db)
     if bootstrap_redir:
         return bootstrap_redir
     return _issue_jwt_and_redirect(user, base_url, db)
@@ -431,6 +516,7 @@ async def oidc_callback(
     verifier = oauth_state.provider.split(":", 2)[2]
 
     cfg = _get_oidc_config(db, provider_slug)
+    _ensure_provider_enabled(db, provider_slug, cfg, provider_type="oidc")
     base_url = _get_app_base_url(db, request)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{provider_slug}/callback"
 
@@ -465,10 +551,16 @@ async def oidc_callback(
     if not email:
         raise HTTPException(400, "OIDC provider did not return email")
     display_name = userinfo.get("name") or userinfo.get("preferred_username", "")
+    avatar_url = userinfo.get("picture")
     user, is_new = _upsert_oauth_user(
-        db, email, display_name, "oidc", {"access_token": access_token}
+        db,
+        email,
+        display_name,
+        "oidc",
+        {"access_token": access_token},
+        avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, is_new, base_url, provider_slug, db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db)
     if bootstrap_redir:
         return bootstrap_redir
     return _issue_jwt_and_redirect(user, base_url, db)

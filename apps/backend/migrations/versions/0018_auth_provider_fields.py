@@ -30,8 +30,18 @@ def upgrade() -> None:
         op.add_column("app_settings", sa.Column("oidc_providers", sa.Text(), nullable=True))
     if "session_timeout_hours" not in existing_cols:
         op.add_column(
-            "app_settings", sa.Column("session_timeout_hours", sa.Integer(), nullable=True)
+            "app_settings",
+            sa.Column(
+                "session_timeout_hours",
+                sa.Integer(),
+                nullable=True,
+                server_default="24",
+            ),
         )
+    # Backfill NULL rows that were created before the server_default was added.
+    op.execute(
+        "UPDATE app_settings SET session_timeout_hours = 24 WHERE session_timeout_hours IS NULL"
+    )
 
 
 def downgrade() -> None:
