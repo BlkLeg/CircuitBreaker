@@ -1,0 +1,4 @@
+# PostgreSQL drivers — install in addition to requirements.txt when DATABASE_URL=postgresql://...
+# pip install -r requirements.txt -r requirements-pg.txt
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.0

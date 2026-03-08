@@ -95,14 +95,14 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
       
-      - name: Install backend dependencies
-        run: pip install ./backend
+      - name: Install apps/backend dependencies
+        run: pip install ./apps/backend
 
       - name: Build Linux static binary
         run: |
           pyinstaller --onefile --noconsole \
             --name "circuit-breaker-${{ github.ref_name }}-linux-amd64" \
-            backend/src/app/main.py
+            apps/backend/src/app/main.py
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

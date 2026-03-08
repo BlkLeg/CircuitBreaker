@@ -1,0 +1,56 @@
+{
+  "server": {
+    "viewBox": "0 0 40 40",
+    "path": "M2 11 L38 11 L38 29 L2 29 Z M6 15 L34 15 M6 25 L34 25",
+    "class": "server-shape",
+    "roles": ["server", "compute", "hypervisor", "hardware"]
+  },
+  "switch": {
+    "viewBox": "0 0 40 40",
+    "path": "M2 13 L38 13 L38 27 L2 27 Z M7 17 L11 17 M15 17 L19 17 M23 17 L27 17 M31 17 L35 17 M7 23 L11 23 M15 23 L19 23 M23 23 L27 23 M31 23 L35 23",
+    "class": "switch-shape",
+    "roles": ["switch"]
+  },
+  "rack": {
+    "viewBox": "0 0 40 40",
+    "path": "M5 2 L35 2 L35 38 L5 38 Z M5 9 L35 9 M5 16 L35 16 M5 23 L35 23 M5 30 L35 30",
+    "class": "rack-shape",
+    "roles": ["rack"]
+  },
+  "ups": {
+    "viewBox": "0 0 40 40",
+    "path": "M9 4 L31 4 L31 36 L9 36 Z M13 10 L27 10 M13 30 L27 30 M20 2 L20 4",
+    "class": "ups-shape",
+    "roles": ["ups"]
+  },
+  "router": {
+    "viewBox": "0 0 40 40",
+    "path": "M3 10 L37 10 L37 30 L3 30 Z M9 16 L9 24 M14 16 L14 24 M20 16 L20 24 M26 16 L26 24 M31 16 L31 24",
+    "class": "router-shape",
+    "roles": ["router", "firewall", "pdu"]
+  },
+  "nas": {
+    "viewBox": "0 0 40 40",
+    "path": "M4 4 L36 4 L36 36 L4 36 Z M14 8 L14 32 M20 8 L20 32 M26 8 L26 32",
+    "class": "nas-shape",
+    "roles": ["nas"]
+  },
+  "storage": {
+    "viewBox": "0 0 40 40",
+    "path": "M4 4 L36 4 L36 36 L4 36 Z M4 14 L36 14 M4 24 L36 24 M8 7 L32 7 M8 18 L32 18 M8 29 L32 29",
+    "class": "storage-shape",
+    "roles": ["storage"]
+  },
+  "sbc": {
+    "viewBox": "0 0 40 40",
+    "path": "M8 8 L32 8 L32 32 L8 32 Z M10 11 L20 11 L20 19 L10 19 Z M23 13 L29 13 M23 17 L29 17 M23 21 L29 21",
+    "class": "sbc-shape",
+    "roles": ["sbc"]
+  },
+  "default": {
+    "viewBox": "0 0 40 40",
+    "path": "M4 20 A16 16 0 1 1 36 20 A16 16 0 1 1 4 20 Z",
+    "class": "default-shape",
+    "roles": []
+  }
+}

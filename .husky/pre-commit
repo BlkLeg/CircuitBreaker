@@ -1,3 +1,1 @@
-#!/usr/bin/env sh
-# Run lint-staged from the frontend directory so it can find its config.
-cd "$(git rev-parse --show-toplevel)/frontend" && npx lint-staged
+npx lint-staged

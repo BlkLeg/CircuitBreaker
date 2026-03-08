@@ -15,24 +15,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     snmp \
     ipmitool \
     nmap \
-    net-tools \
+    libpcap0.8 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Dependency layer (cached until requirements.txt changes) ---
 # BuildKit cache mount keeps the wheel cache on the host between builds so
 # subsequent runs are instant even when the network is unavailable.
 # --timeout 120 --retries 5 guard against transient PyPI read timeouts.
-COPY backend/requirements.txt ./requirements.txt
+COPY apps/backend/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 5 -r requirements.txt
 
 # --- App layer (invalidated only when source changes) ---
 # VERSION must land at /VERSION so hatchling's path = "../VERSION" resolves.
 COPY VERSION /VERSION
-COPY backend/pyproject.toml ./
-COPY backend/src ./src
+COPY apps/backend/pyproject.toml ./
+COPY apps/backend/src ./src
+COPY apps/backend/alembic.ini ./alembic.ini
+COPY apps/backend/migrations ./migrations
 RUN pip install --no-cache-dir --no-deps . \
     && mkdir -p /app/data /app/data/uploads/icons /app/data/uploads/branding
+
+# Default logo embedded into the image so emails can attach it via CID
+# without requiring an externally reachable URL (homelab installs are LAN-only).
+COPY apps/frontend/public/CB-AZ_Final.png /app/default-logo.png
 
 ENV PYTHONPATH=/app/src
 ENV PORT=8000

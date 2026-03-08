@@ -3,13 +3,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY apps/frontend/package.json apps/frontend/package-lock.json* ./
 RUN npm ci
 
 # VERSION must land at /VERSION (one level above WORKDIR /app) so the
 # syncversion script's readFileSync('../VERSION') resolves correctly.
 COPY VERSION /VERSION
-COPY frontend/ ./
+COPY apps/frontend/ ./
 
 RUN npm run build
 

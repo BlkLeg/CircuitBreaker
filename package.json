@@ -1,0 +1,27 @@
+{
+  "name": "circuitbreaker",
+  "version": "1.0.0",
+  "description": "![Circuit Breaker Logo](screenshots/cb_night-full.png)",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepare": "husky"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^16.3.2"
+  },
+  "lint-staged": {
+    "*": {
+      "{ts,tsx,py}": "[\"make lint\"]"
+    },
+    "apps/**/tests/**": "echo '🚫 Tests blocked from prod paths' && exit 1"
+  }
+}

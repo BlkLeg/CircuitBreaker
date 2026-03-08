@@ -22,17 +22,17 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install backend deps (for snyk)
+      - name: Install apps/backend deps (for snyk)
         run: |
           python -m pip install --upgrade pip
-          pip install -e "./backend[dev]"
-      - name: Install frontend deps
-        working-directory: frontend
+          pip install -e "./apps/backend[dev]"
+      - name: Install apps/frontend deps
+        working-directory: apps/frontend
         run: npm ci
       - name: Run Snyk scan
         uses: snyk/actions/python@master

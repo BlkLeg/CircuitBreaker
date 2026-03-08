@@ -5,8 +5,8 @@
 # ==============================================================================
 BACKEND_PORT  ?= 8000
 FRONTEND_PORT ?= 5173
-BACKEND_DIR   ?= backend
-FRONTEND_DIR  ?= frontend
+BACKEND_DIR   ?= apps/backend
+FRONTEND_DIR  ?= apps/frontend
 # VERSION: raw semver read from the canonical repo-root VERSION file.
 # Edit /VERSION to cut a release — everything else derives from it.
 VERSION       ?= $(shell cat VERSION 2>/dev/null | tr -d '[:space:]' || git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0-dev")
@@ -31,7 +31,7 @@ help: ## Show available targets
 
 dev: stop ## Start backend + frontend for local development
 	@echo "Starting backend  → http://localhost:$(BACKEND_PORT)"
-	@cd $(BACKEND_DIR)/src && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
+	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
 	@echo "Starting frontend → http://localhost:$(FRONTEND_PORT)"
 	@cd $(FRONTEND_DIR) && npm start &
 
@@ -43,7 +43,7 @@ stop: ## Kill any process holding the dev ports
 backend: ## Kill port $(BACKEND_PORT) and restart the backend
 	@lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 2>/dev/null || true
 	@echo "Starting backend → http://localhost:$(BACKEND_PORT)"
-	cd $(BACKEND_DIR)/src && $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
+	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
@@ -70,7 +70,7 @@ typecheck: ## Run backend (mypy) and frontend (tsc --noEmit) type checks
 	@cd $(FRONTEND_DIR) && npx tsc --noEmit
 
 hooks: ## Install git pre-commit hooks (Husky + lint-staged)
-	@cd $(FRONTEND_DIR) && npx husky install ../.husky && echo "✅ Git hooks installed."
+	@cd $(FRONTEND_DIR) && npx husky install ../../.husky && echo "✅ Git hooks installed."
 
 ci: lint test typecheck ## Run linting, tests, and type checks
 
@@ -79,12 +79,12 @@ release: ## Build and push v0.1.4 multi-arch image
 
 test: ## Run backend tests
 	@echo "Running backend tests..."
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest -q
+	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q
 	@cd $(FRONTEND_DIR) && npm run test
 
 test-backend: ## Run backend tests with verbose output
 	@echo "Running backend tests..."
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ -v --asyncio-mode=auto --cov=src/app
+	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -v --asyncio-mode=auto --cov=src/app
 
 test-frontend: ## Run frontend component tests
 	@echo "Running frontend tests..."
@@ -93,7 +93,7 @@ test-frontend: ## Run frontend component tests
 test-all: test-backend test-frontend ## Run all backend + frontend tests
 
 test-coverage: ## Run all tests with coverage reports
-	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/python -m pytest tests/ --cov=src/app --cov-report=term-missing --asyncio-mode=auto
+	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration --cov=src/app --cov-report=term-missing --asyncio-mode=auto
 	@cd $(FRONTEND_DIR) && npm run test:coverage
 
 docs: ## Serve docs locally with Zensical
@@ -129,8 +129,8 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 .PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh trust-ca preflight dev-stop-install
 
-lock: ## Regenerate backend/requirements.txt from poetry.lock
-	@echo "Regenerating backend/requirements.txt from poetry.lock..."
+lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
+	@echo "Regenerating apps/backend/requirements.txt from poetry.lock..."
 	@python3 scripts/gen_requirements.py
 	@echo "✅ requirements.txt updated — commit the file alongside poetry.lock."
 

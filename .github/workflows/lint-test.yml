@@ -15,7 +15,7 @@ permissions: read-all
 
 jobs:
   # ── Backend ──────────────────────────────────────────────────────────────
-  backend-lint:
+  apps/backend-lint:
     name: Backend Lint (ruff)
     runs-on: ubuntu-latest
     steps:
@@ -27,11 +27,11 @@ jobs:
       - name: Install Ruff
         uses: astral-sh/ruff-action@v3
       - name: Lint
-        run: ruff check backend/src/app
+        run: ruff check apps/backend/src/app
       - name: Format check
-        run: ruff format --check backend/src/
+        run: ruff format --check apps/backend/src/
 
-  backend-test:
+  apps/backend-test:
     name: Backend Tests (pytest)
     runs-on: ubuntu-latest
     steps:
@@ -43,18 +43,18 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e "./backend[dev]"
+          pip install -e "./apps/backend[dev]"
       - name: Run tests with coverage
-        working-directory: backend
+        working-directory: apps/backend
         run: pytest tests/ --cov=src/app --cov-report=xml -v
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: always()
         with:
-          files: backend/coverage.xml
-          flags: backend
+          files: apps/backend/coverage.xml
+          flags: apps/backend
 
-  backend-typecheck:
+  apps/backend-typecheck:
     name: Backend Typecheck (mypy)
     runs-on: ubuntu-latest
     continue-on-error: true  # Advisory only: mypy is being adopted incrementally
@@ -67,13 +67,13 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e "./backend[dev]"
+          pip install -e "./apps/backend[dev]"
       - name: Run mypy
-        working-directory: backend
+        working-directory: apps/backend
         run: mypy src/app --ignore-missing-imports --no-error-summary
 
   # ── Frontend ─────────────────────────────────────────────────────────────
-  frontend-lint:
+  apps/frontend-lint:
     name: Frontend Lint (eslint + prettier)
     runs-on: ubuntu-latest
     steps:
@@ -83,18 +83,18 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
       - name: Install deps
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm ci
       - name: ESLint
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm run lint
       - name: Prettier check
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm run format:check
 
-  frontend-test:
+  apps/frontend-test:
     name: Frontend Tests (vitest)
     runs-on: ubuntu-latest
     steps:
@@ -104,20 +104,20 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
       - name: Install deps
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm ci
       - name: Run tests with coverage
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm run test:ci -- --coverage
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: always()
         with:
-          flags: frontend
+          flags: apps/frontend
 
-  frontend-typecheck:
+  apps/frontend-typecheck:
     name: Frontend Typecheck (tsc)
     runs-on: ubuntu-latest
     steps:
@@ -127,10 +127,10 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
       - name: Install deps
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npm ci
       - name: tsc --noEmit
-        working-directory: frontend
+        working-directory: apps/frontend
         run: npx tsc --noEmit

@@ -1,0 +1,239 @@
+/* DocEditor — theme integration for @uiw/react-md-editor */
+
+/* ── Container ────────────────────────────────────────────── */
+.doc-editor-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+}
+
+/* ── Draft recovery banner ────────────────────────────────── */
+.doc-editor-draft-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-warning-bg, rgba(255, 193, 7, 0.12));
+  border: 1px solid var(--color-warning, #ffc107);
+  border-radius: var(--radius, 6px);
+  font-size: 0.875rem;
+  color: var(--color-text);
+}
+
+.doc-editor-draft-banner button {
+  padding: 4px 12px;
+  border-radius: var(--radius, 6px);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.doc-editor-draft-banner button.restore {
+  background: var(--color-primary, #fe8019);
+  color: #000;
+  border-color: var(--color-primary, #fe8019);
+}
+
+/* ── Save status bar ──────────────────────────────────────── */
+.doc-editor-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  padding: 2px 0;
+  min-height: 20px;
+}
+
+.doc-editor-status .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.doc-editor-status .status-dot.saved {
+  background: #4caf50;
+}
+.doc-editor-status .status-dot.saving {
+  background: #ff9800;
+  animation: pulse-dot 1s infinite;
+}
+.doc-editor-status .status-dot.unsaved {
+  background: #9e9e9e;
+}
+.doc-editor-status .status-dot.error {
+  background: #f44336;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ── Emoji picker popover ─────────────────────────────────── */
+.emoji-picker-popover {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  z-index: 1000;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.emoji-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+}
+
+/* ── MDEditor theme overrides ─────────────────────────────── */
+.w-md-editor {
+  --color-fg-default: var(--color-text, #ebdbb2) !important;
+  --color-canvas-default: var(--color-bg, #282828) !important;
+  --color-canvas-subtle: var(--color-bg-subtle, #3c3836) !important;
+  --color-border-default: var(--color-border, #504945) !important;
+  --color-border-muted: var(--color-border, #504945) !important;
+  border-color: var(--color-border, #504945) !important;
+  border-radius: var(--radius, 6px) !important;
+  background-color: var(--color-bg, #282828) !important;
+  color: var(--color-text, #ebdbb2) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  flex: 1;
+  min-height: 0;
+}
+
+.w-md-editor-toolbar {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  background: var(--color-bg-subtle, #3c3836) !important;
+  border-bottom-color: var(--color-border, #504945) !important;
+  padding: 6px 10px !important;
+  gap: 4px !important;
+}
+
+.w-md-editor-toolbar ul {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+
+/* Divider between toolbar groups */
+.w-md-editor-toolbar li[data-name='divider'] {
+  width: 1px !important;
+  height: 20px !important;
+  background: var(--color-border, #504945) !important;
+  margin: 0 6px !important;
+  padding: 0 !important;
+}
+
+.w-md-editor-toolbar li > button {
+  color: var(--color-text-muted, #a89984) !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 4px !important;
+  margin: 0 !important;
+  padding: 0 6px !important;
+  transition:
+    background 0.15s,
+    color 0.15s !important;
+}
+
+.w-md-editor-toolbar li > button:hover,
+.w-md-editor-toolbar li > button:focus {
+  color: var(--color-primary, #fe8019) !important;
+  background: color-mix(in srgb, var(--color-primary, #fe8019) 10%, transparent) !important;
+}
+
+.w-md-editor-toolbar li.active > button {
+  color: var(--color-primary, #fe8019) !important;
+}
+
+.w-md-editor-text-pre > code,
+.w-md-editor-text-input,
+.w-md-editor-text textarea {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--color-text, #ebdbb2) !important;
+}
+
+/* Preview pane */
+.w-md-editor-preview .wmde-markdown {
+  background: var(--color-bg, #282828) !important;
+  color: var(--color-text, #ebdbb2) !important;
+  font-family: inherit !important;
+  padding: 16px !important;
+}
+
+.w-md-editor-preview .wmde-markdown h1,
+.w-md-editor-preview .wmde-markdown h2,
+.w-md-editor-preview .wmde-markdown h3 {
+  border-bottom-color: var(--color-border, #504945) !important;
+  color: var(--color-text, #ebdbb2) !important;
+}
+
+.w-md-editor-preview .wmde-markdown a {
+  color: var(--color-primary, #fe8019) !important;
+}
+
+.w-md-editor-preview .wmde-markdown code {
+  background: var(--color-bg-subtle, #3c3836) !important;
+  color: var(--color-primary, #fe8019) !important;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 0.9em;
+}
+
+.w-md-editor-preview .wmde-markdown pre {
+  background: var(--color-bg-subtle, #3c3836) !important;
+  border: 1px solid var(--color-border, #504945) !important;
+  border-radius: var(--radius, 6px) !important;
+}
+
+.w-md-editor-preview .wmde-markdown pre code {
+  color: var(--color-text, #ebdbb2) !important;
+  font-size: 13px;
+}
+
+.w-md-editor-preview .wmde-markdown blockquote {
+  border-left-color: var(--color-primary, #fe8019) !important;
+  color: var(--color-text-muted, #a89984) !important;
+}
+
+.w-md-editor-preview .wmde-markdown table th {
+  background: var(--color-bg-subtle, #3c3836) !important;
+}
+
+.w-md-editor-preview .wmde-markdown table td,
+.w-md-editor-preview .wmde-markdown table th {
+  border-color: var(--color-border, #504945) !important;
+}
+
+.w-md-editor-preview .wmde-markdown img {
+  max-width: 100%;
+  border-radius: var(--radius, 6px);
+}
+
+/* Drag handle */
+.w-md-editor-bar {
+  background: var(--color-bg-subtle, #3c3836) !important;
+}
+
+.w-md-editor-bar svg {
+  color: var(--color-text-muted, #a89984) !important;
+}

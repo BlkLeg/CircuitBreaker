@@ -1,4 +1,38 @@
 services:
+  postgres:
+    # Optional PostgreSQL service — only starts when the "pg" profile is active.
+    # Default deployment uses SQLite (DATABASE_URL=sqlite:///.../app.db).
+    # To use PostgreSQL: docker compose --profile pg up
+    profiles: ["pg"]
+    image: postgres:16-alpine
+    container_name: cb-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=circuitbreaker
+      - POSTGRES_USER=breaker
+      - POSTGRES_PASSWORD=${CB_DB_PASSWORD:-breaker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "breaker", "-d", "circuitbreaker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nats:
+    image: nats:2-alpine
+    container_name: cb-nats
+    restart: unless-stopped
+    # JetStream enabled for optional durable message streams.
+    # Management HTTP on port 8222 — not exposed externally by default.
+    command: ["--jetstream", "-m", "8222"]
+    expose:
+      - "4222"
+      - "8222"
+    volumes:
+      - nats_data:/data/nats
+
   caddy:
     image: caddy:2-alpine
     container_name: cb-caddy
@@ -19,7 +53,7 @@ services:
       dockerfile: docker/backend.Dockerfile
     container_name: cb-backend
     env_file:
-      - ../backend/.env
+      - ../apps/backend/.env
     volumes:
       - backend-data:/app/data
       - ../data/uploads/icons:/app/data/uploads/icons
@@ -27,16 +61,27 @@ services:
       # Docker socket for container auto-discovery (read-only).
       # Requires "Docker Container Discovery" enabled in Settings → Discovery.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      nats:
+        condition: service_started
     environment:
-      - DATABASE_URL=sqlite:////app/data/app.db
+      # Default: SQLite persisted to the backend-data volume.
+      # For PostgreSQL: set CB_DB_URL=postgresql://breaker:pass@postgres:5432/circuitbreaker
+      # and start with: docker compose --profile pg up
+      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
-      # Optional: set a persistent Fernet key for the telemetry credential vault.
-      # If unset, an ephemeral key is generated each restart (credentials lost on restart).
-      # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - CB_VAULT_KEY=
+      # Vault encryption key for all secrets (SNMP, iDRAC, SSH, SMTP passwords).
+      # On a fresh install this is left empty — the key is auto-generated during the
+      # OOBE setup wizard and written to /data/.env (persistent volume, chmod 0600).
+      # On subsequent restarts the app loads the key from /data/.env automatically.
+      # To pre-seed the key (e.g. after a volume migration) set CB_VAULT_KEY here or
+      # in docker/.env before starting the container.
+      - CB_VAULT_KEY=${CB_VAULT_KEY:-}
       # Discovery mode: 'safe' (default, ping+TCP, no privileges) | 'full' (ARP+nmap, requires NET_RAW)
       - DISCOVERY_MODE=safe
+      # NATS message bus — Phase 3 realtime messaging
+      - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
@@ -85,6 +130,34 @@ services:
     # namespace. To disable IPv6, set it on the host directly:
     #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
 
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ["python", "-m", "app.workers.discovery"]
+    env_file:
+      - ../apps/backend/.env
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+    environment:
+      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - DISCOVERY_MODE=full
+      - NATS_URL=nats://nats:4222
+      - NATS_KV_SYNC=true
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep app.workers.discovery || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   frontend:
     build:
       context: ..
@@ -110,7 +183,16 @@ services:
     #   - "backend:host-gateway"
     restart: unless-stopped
 
+  cloudflared:
+    # Optional Cloudflare tunnel — only starts when the "tunnel" profile is active.
+    # docker compose --profile tunnel up
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+
 volumes:
+  postgres_data:
   backend-data:
   caddy_data:
   caddy_config:
+  nats_data:
