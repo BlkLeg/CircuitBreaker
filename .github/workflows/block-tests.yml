@@ -3,6 +3,8 @@ on: [pull_request]
 jobs:
   check-prod:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
