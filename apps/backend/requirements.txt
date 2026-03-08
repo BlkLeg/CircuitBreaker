@@ -66,3 +66,4 @@ webencodings==0.5.1
 websockets==16.0
 wrapt==2.1.1
 proxmoxer>=2.0.0
+psutil>=5.9.0

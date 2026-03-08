@@ -49,6 +49,7 @@ from app.api.monitor import router as monitor_router
 from app.api.proxmox import router as proxmox_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
+from app.api.system import router as system_router
 from app.api.timezones import router as timezones_router
 from app.api.vault import router as vault_router
 from app.api.ws_discovery import router as ws_discovery_router
@@ -641,6 +642,7 @@ app.include_router(ws_discovery_router, prefix=f"{_V1}/discovery", tags=["discov
 app.include_router(ws_topology_router, prefix=f"{_V1}/topology", tags=["topology-ws"])
 app.include_router(ip_check_router, prefix=f"{_V1}", tags=["ip-check"])
 app.include_router(settings_router, prefix=f"{_V1}/settings", tags=["settings"])
+app.include_router(system_router, prefix=f"{_V1}/system", tags=["system"])
 app.include_router(branding_router, prefix=f"{_V1}/branding", tags=["branding"])
 app.include_router(assets_router, prefix=f"{_V1}/assets", tags=["assets"])
 app.include_router(admin_router, prefix=f"{_V1}/admin", tags=["admin"])

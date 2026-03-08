@@ -7,6 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.proxmox import (
     ProxmoxActionRequest,
@@ -156,17 +157,33 @@ async def test_proxmox_connection(integration_id: int, db: Session = Depends(get
 
 
 @router.post("/{integration_id}/discover", response_model=ProxmoxDiscoverResponse)
-async def discover_proxmox_cluster(integration_id: int, db: Session = Depends(get_db)):
+async def discover_proxmox_cluster(
+    integration_id: int,
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(require_write_auth),
+):
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
     result = await proxmox_service.discover_and_import(db, config)
+
+    actor_name = "system"
+    if user_id:
+        from app.db.models import User
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            actor_name = user.display_name or user.email
+
     write_log(
         db,
         category="integrations",
         action="proxmox_discover",
         entity_type="integration_config",
         entity_id=config.id,
+        actor_id=user_id,
+        actor_name=actor_name,
         details=f"nodes={result['nodes_imported']} vms={result['vms_imported']} cts={result['cts_imported']}",
     )
     return result

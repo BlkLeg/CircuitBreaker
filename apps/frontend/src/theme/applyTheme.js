@@ -32,6 +32,10 @@ export function applyTheme(presetOrColors, presetKey) {
     root.style.setProperty('--color-primary', variant.primary);
     root.style.setProperty('--color-primary-hover', darkenHex(variant.primary, 15));
     root.style.setProperty('--color-glow', hexToRgba(variant.primary, 0.35));
+    const pr = Number.parseInt(variant.primary.slice(1, 3), 16);
+    const pg = Number.parseInt(variant.primary.slice(3, 5), 16);
+    const pb = Number.parseInt(variant.primary.slice(5, 7), 16);
+    root.style.setProperty('--color-primary-rgb', `${pr}, ${pg}, ${pb}`);
   }
   if (variant.accent1) root.style.setProperty('--accent-1', variant.accent1);
   if (variant.accent2) {

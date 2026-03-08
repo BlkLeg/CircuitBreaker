@@ -25,6 +25,7 @@ import DiscoverySettingsPage from './settings/DiscoverySettingsPage.jsx';
 import AdminUsersPage from './AdminUsersPage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
+import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
 import { useTranslation } from 'react-i18next';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
@@ -1572,6 +1573,12 @@ export default function SettingsPage() {
                 {isAdmin && (
                   <SettingSection title="Database">
                     <DbStatusPanel />
+                  </SettingSection>
+                )}
+
+                {isAdmin && (
+                  <SettingSection title="Host Diagnostics">
+                    <HostStatsPanel />
                   </SettingSection>
                 )}
 

@@ -292,13 +292,18 @@ def register(
 
 
 def bootstrap_status(db: Session) -> BootstrapStatusResponse:
-    user_count = db.query(User).count()
-    cfg = db.query(AppSettings).first()
-    # Use jwt_secret as the bootstrap-completion indicator: it is set during
-    # bootstrap_initialize and is NULL on any uninitialized system, even if
-    # stale user rows exist from a pre-OOBE development database.
-    needs_bootstrap = cfg is None or not bool(cfg.jwt_secret)
-    return BootstrapStatusResponse(needs_bootstrap=needs_bootstrap, user_count=user_count)
+    try:
+        user_count = db.query(User).count()
+        cfg = db.query(AppSettings).first()
+        needs_bootstrap = cfg is None or not bool(cfg.jwt_secret)
+        return BootstrapStatusResponse(needs_bootstrap=needs_bootstrap, user_count=user_count)
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "bootstrap_status check failed (DB likely empty): %s", e
+        )
+        return BootstrapStatusResponse(needs_bootstrap=True, user_count=0)
 
 
 def _derive_display_name(email: str, display_name: str | None) -> str:

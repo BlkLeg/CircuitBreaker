@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { proxmoxApi } from '../../api/client';
 import SettingSection from '../settings/SettingSection';
 import SettingField from '../settings/SettingField';
-import ProxmoxDiscoveryModal from './ProxmoxDiscoveryModal';
 
 function StatusBadge({ status }) {
   const map = {
@@ -44,6 +43,8 @@ export default function ProxmoxIntegrationSection() {
   const [testing, setTesting] = useState(null);
   const [testResult, setTestResult] = useState(null);
   const [discoverTarget, setDiscoverTarget] = useState(null);
+  const [discoverResult, setDiscoverResult] = useState(null);
+  const [discoverError, setDiscoverError] = useState(null);
   const [syncStatus, setSyncStatus] = useState({});
 
   // Form state for add/edit
@@ -134,6 +135,19 @@ export default function ProxmoxIntegrationSection() {
     setTesting(null);
   };
 
+  const handleDiscover = async (id) => {
+    setDiscoverTarget(id);
+    setDiscoverResult(null);
+    setDiscoverError(null);
+    try {
+      const res = await proxmoxApi.discover(id);
+      setDiscoverResult(res.data);
+      await load();
+    } catch (e) {
+      setDiscoverError(e.message || 'Discovery failed');
+    }
+  };
+
   const handleEdit = (c) => {
     setEditId(c.id);
     setForm({
@@ -185,6 +199,7 @@ export default function ProxmoxIntegrationSection() {
         {/* Existing configs */}
         {configs.map((c) => {
           const status = syncStatus[c.id];
+          const isDiscovering = discoverTarget === c.id;
           return (
             <div
               key={c.id}
@@ -193,7 +208,10 @@ export default function ProxmoxIntegrationSection() {
                 borderRadius: 8,
                 marginBottom: 10,
                 background: 'var(--color-bg-elevated, rgba(255,255,255,0.03))',
-                border: '1px solid var(--color-border, rgba(255,255,255,0.06))',
+                border:
+                  isDiscovering && !discoverResult && !discoverError
+                    ? '1px solid var(--color-primary, #fe8019)'
+                    : '1px solid var(--color-border, rgba(255,255,255,0.06))',
               }}
             >
               <div
@@ -212,21 +230,25 @@ export default function ProxmoxIntegrationSection() {
                   <button
                     className="btn btn-sm"
                     onClick={() => handleTest(c.id)}
-                    disabled={testing === c.id}
+                    disabled={testing === c.id || isDiscovering}
                     style={{ fontSize: 11, padding: '2px 10px' }}
                   >
                     {testing === c.id ? 'Testing...' : 'Test'}
                   </button>
                   <button
                     className="btn btn-sm btn-primary"
-                    onClick={() => setDiscoverTarget(c.id)}
+                    onClick={() => handleDiscover(c.id)}
+                    disabled={isDiscovering}
                     style={{ fontSize: 11, padding: '2px 10px' }}
                   >
-                    Discover
+                    {isDiscovering && !discoverResult && !discoverError
+                      ? 'Discovering...'
+                      : 'Discover'}
                   </button>
                   <button
                     className="btn btn-sm"
                     onClick={() => handleEdit(c)}
+                    disabled={isDiscovering}
                     style={{ fontSize: 11, padding: '2px 10px' }}
                   >
                     Edit
@@ -234,6 +256,7 @@ export default function ProxmoxIntegrationSection() {
                   <button
                     className="btn btn-sm btn-danger"
                     onClick={() => handleDelete(c.id)}
+                    disabled={isDiscovering}
                     style={{ fontSize: 11, padding: '2px 10px' }}
                   >
                     Delete
@@ -278,6 +301,119 @@ export default function ProxmoxIntegrationSection() {
                   {testResult.ok
                     ? `Connected - PVE v${testResult.version}${testResult.cluster_name ? ` (${testResult.cluster_name})` : ''}`
                     : `Error: ${testResult.error}`}
+                </div>
+              )}
+
+              {/* Inline Discovery Progress / Results */}
+              {isDiscovering && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    padding: '12px 16px',
+                    borderRadius: 8,
+                    background: 'var(--color-bg, rgba(0,0,0,0.1))',
+                    border: '1px solid var(--color-border)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    {!discoverResult && !discoverError && (
+                      <span className="spinner" style={{ width: 14, height: 14 }} />
+                    )}
+                    <strong style={{ fontSize: 13 }}>
+                      {!discoverResult && !discoverError
+                        ? 'Discovering cluster...'
+                        : discoverResult?.ok
+                          ? 'Discovery Complete'
+                          : 'Discovery Failed'}
+                    </strong>
+                  </div>
+
+                  {!discoverResult && !discoverError && (
+                    <div
+                      style={{
+                        height: 4,
+                        borderRadius: 2,
+                        background: 'var(--color-border)',
+                        overflow: 'hidden',
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: '100%',
+                          width: '40%',
+                          background: 'linear-gradient(90deg, var(--color-primary), #fabd2f)',
+                          animation: 'pulse 1.5s ease-in-out infinite',
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {discoverResult && discoverResult.ok && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                      {[
+                        { label: 'Nodes', value: discoverResult.nodes_imported, color: '#22c55e' },
+                        { label: 'VMs', value: discoverResult.vms_imported, color: '#3b82f6' },
+                        {
+                          label: 'Containers',
+                          value: discoverResult.cts_imported,
+                          color: '#a855f7',
+                        },
+                        {
+                          label: 'Storage',
+                          value: discoverResult.storage_imported || 0,
+                          color: '#f59e0b',
+                        },
+                      ].map(({ label, value, color }) => (
+                        <div
+                          key={label}
+                          style={{
+                            textAlign: 'center',
+                            padding: '8px',
+                            background: 'rgba(255,255,255,0.03)',
+                            borderRadius: 6,
+                          }}
+                        >
+                          <div style={{ fontSize: 18, fontWeight: 'bold', color }}>{value}</div>
+                          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                            {label}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {(discoverError || discoverResult?.errors?.length > 0) && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: '#ef4444',
+                        background: 'rgba(239,68,68,0.08)',
+                        padding: '8px',
+                        borderRadius: 6,
+                        marginTop: 8,
+                        maxHeight: 100,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      {discoverError || discoverResult.errors.join('\\n')}
+                    </div>
+                  )}
+
+                  {(discoverResult || discoverError) && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => {
+                          setDiscoverTarget(null);
+                          setDiscoverResult(null);
+                          setDiscoverError(null);
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -396,17 +532,6 @@ export default function ProxmoxIntegrationSection() {
           </div>
         )}
       </SettingSection>
-
-      {discoverTarget && (
-        <ProxmoxDiscoveryModal
-          integrationId={discoverTarget}
-          onClose={() => {
-            setDiscoverTarget(null);
-            load();
-          }}
-          onComplete={() => load()}
-        />
-      )}
     </>
   );
 }

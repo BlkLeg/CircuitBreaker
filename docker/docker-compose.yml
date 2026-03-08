@@ -88,7 +88,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     # ──────────────────────────────────────────────────────────────────
     # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (NATIVE LINUX DOCKER ONLY)
     #
@@ -152,11 +152,11 @@ services:
       replicas: 2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ps aux | grep app.workers.discovery || exit 1"]
+      test: ["CMD-SHELL", "pgrep -f 'app.workers.discovery' > /dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 30s
 
   frontend:
     build:

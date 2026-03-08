@@ -403,4 +403,8 @@ export const usersApi = {
     }),
 };
 
+export const systemApi = {
+  getStats: () => client.get('/system/stats'),
+};
+
 export default client;

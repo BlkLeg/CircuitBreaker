@@ -33,7 +33,7 @@ export default function NewScanModal({ onClose, onStarted }) {
 
   const [cidr, setCidr] = useState(settings?.discovery_default_cidr || '');
   const [scanTypes, setScanTypes] = useState(
-    isSafeMode ? ['snmp', 'http'] : ['nmap', 'snmp', 'http']
+    isSafeMode ? ['snmp', 'http', 'proxmox'] : ['nmap', 'snmp', 'http', 'proxmox']
   );
   const [nmapArgs, setNmapArgs] = useState(settings?.discovery_nmap_args || '-sV -O --open -T4');
   const [snmpCom, setSnmpCom] = useState('');
@@ -378,7 +378,10 @@ export default function NewScanModal({ onClose, onStarted }) {
                   <div className="cb-field">
                     <span className="cb-label">Scan Types</span>
                     <div className="cb-scan-type-row">
-                      {(isSafeMode ? ['snmp', 'http'] : ['nmap', 'snmp', 'http']).map((type) => (
+                      {(isSafeMode
+                        ? ['snmp', 'http', 'proxmox']
+                        : ['nmap', 'snmp', 'http', 'proxmox']
+                      ).map((type) => (
                         <label key={type} className="cb-scan-type-option">
                           <input
                             type="checkbox"

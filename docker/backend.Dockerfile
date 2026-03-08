@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     libpcap0.8 \
     postgresql-client \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Dependency layer (cached until requirements.txt changes) ---

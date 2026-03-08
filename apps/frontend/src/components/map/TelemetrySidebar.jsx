@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { X, HardDrive, Network, Clock, Server, Container } from 'lucide-react';
 import { telemetryApi } from '../../api/client';
@@ -18,7 +18,7 @@ function BarMeter({ label, value, max, color, unit }) {
       >
         <span>{label}</span>
         <span style={{ fontFamily: 'monospace' }}>
-          {pct}%{unit ? ` (${value}{unit}/{max}{unit})` : ''}
+          {pct}%{unit ? ` (${value}${unit}/${max}${unit})` : ''}
         </span>
       </div>
       <div style={{ width: '100%', height: 5, borderRadius: 3, background: 'var(--color-border)' }}>
@@ -96,6 +96,8 @@ const NODE_TYPE_LABELS = {
 export default function TelemetrySidebar({ node, position, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [adjustedPos, setAdjustedPos] = useState({ x: position?.x ?? 200, y: position?.y ?? 100 });
+  const sidebarRef = useRef(null);
 
   const typeMap = {
     hardware: 'hardware',
@@ -107,6 +109,34 @@ export default function TelemetrySidebar({ node, position, onClose }) {
   };
   const entityType = typeMap[node?.originalType] || null;
   const entityId = node?._refId;
+
+  useLayoutEffect(() => {
+    if (sidebarRef.current && position) {
+      const rect = sidebarRef.current.getBoundingClientRect();
+      const margin = 10;
+      let x = position.x;
+      let y = position.y;
+
+      // Adjust for right edge
+      if (x + rect.width + margin > window.innerWidth) {
+        x = window.innerWidth - rect.width - margin;
+      }
+      // Adjust for bottom edge
+      if (y + rect.height + margin > window.innerHeight) {
+        y = window.innerHeight - rect.height - margin;
+      }
+      // Adjust for left edge
+      if (x < margin) {
+        x = margin;
+      }
+      // Adjust for top edge
+      if (y < margin) {
+        y = margin;
+      }
+
+      setAdjustedPos({ x, y });
+    }
+  }, [position, data]);
 
   useEffect(() => {
     if (!entityType || !entityId) return;
@@ -145,10 +175,11 @@ export default function TelemetrySidebar({ node, position, onClose }) {
 
   return (
     <div
+      ref={sidebarRef}
       style={{
         position: 'absolute',
-        left: position?.x ?? 200,
-        top: position?.y ?? 100,
+        left: adjustedPos.x,
+        top: adjustedPos.y,
         zIndex: 9999,
         width: 260,
         background: 'var(--color-surface)',
@@ -159,6 +190,10 @@ export default function TelemetrySidebar({ node, position, onClose }) {
         fontFamily: 'var(--font-sans, sans-serif)',
         color: 'var(--color-text)',
         pointerEvents: 'auto',
+        opacity:
+          adjustedPos.x === position?.x && adjustedPos.y === position?.y && !sidebarRef.current
+            ? 0
+            : 1,
       }}
       onMouseLeave={onClose}
     >

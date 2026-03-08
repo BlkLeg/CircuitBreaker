@@ -7,7 +7,7 @@ import { useToast } from '../common/Toast';
 import NmapArgsField from './NmapArgsField.jsx';
 import '../../styles/discovery.css';
 
-const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'docker'];
+const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'docker', 'proxmox'];
 
 const CRON_RE = /^(\S+\s+){4,5}\S+$/;
 const CIDR_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/;
