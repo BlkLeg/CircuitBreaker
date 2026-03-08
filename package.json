@@ -19,9 +19,7 @@
     "lint-staged": "^16.3.2"
   },
   "lint-staged": {
-    "*": {
-      "{ts,tsx,py}": "[\"make lint\"]"
-    },
+    "*.{ts,tsx,py}": "make lint",
     "apps/**/tests/**": "echo '🚫 Tests blocked from prod paths' && exit 1"
   }
 }
