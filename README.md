@@ -93,6 +93,36 @@ volumes:
 
 Update: `docker compose pull && docker compose up -d`
 
+After starting the compose stack, install the `cb` CLI tool so you have access to operational commands:
+
+```bash
+make install-cb
+```
+
+***
+
+## cb — Command-Line Tool
+
+`cb` is a small shell utility installed alongside Circuit Breaker. It gives you operational commands without needing to remember Docker flags.
+
+| Command | Description |
+|---------|-------------|
+| `cb status` | Show container / service status |
+| `cb logs [-f]` | Show logs (add `-f` to follow) |
+| `cb restart` | Restart Circuit Breaker |
+| `cb update` | Pull latest image and recreate the container *(Docker mode)* |
+| `cb vault-recover` | Recover an uninitialized vault *(recovery path — not needed during normal setup)* |
+| `cb version` | Show installed version |
+| `cb uninstall` | Remove Circuit Breaker from this system |
+
+**How `cb` is installed:**
+
+- **`install.sh` (one-line install)** — installed automatically.
+- **Docker Compose (from source)** — run `make install-cb` after `docker compose up`.
+- **Manual** — `sudo install -Dm755 ./cb /usr/local/bin/cb` from the repo root.
+
+> **Vault key**: no manual setup needed. The vault key is generated automatically when you complete the first-run setup wizard. `cb vault-recover` only exists for edge cases where the vault ends up uninitialized after a crash or a headless deploy.
+
 ***
 
 ## 🔄 v0.2.0 Migration Notes

@@ -266,10 +266,16 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   esac
 fi
 
-# ─── Config directory cleanup (API token, TLS config, etc.) ──────────────────
+# ─── Config directory cleanup (API token, TLS config, install.conf, etc.) ────
 if [ -d "$CB_CONFIG_DIR" ]; then
   rm -rf "$CB_CONFIG_DIR"
   Show 0 "Removed config directory: $CB_CONFIG_DIR"
+fi
+
+# ─── cb command ──────────────────────────────────────────────────────────────
+if [ -f /usr/local/bin/cb ]; then
+  sudo rm -f /usr/local/bin/cb
+  Show 0 "Removed cb command."
 fi
 
 echo ""

@@ -925,6 +925,54 @@ DESKTOP
 }
 
 ###############################################################################
+# INSTALL CONFIG  (read by the cb command)
+###############################################################################
+
+Save_Install_Config() {
+  mkdir -p "$CB_CONFIG_DIR"
+  chmod 700 "$CB_CONFIG_DIR"
+  # CB_BACKEND_CONTAINER and CB_DATA_DIR are set to their single-container
+  # values here; the compose path writes its own install.conf via make install-cb.
+  cat > "$CB_CONFIG_DIR/install.conf" <<CONFEOF
+# Circuit Breaker — install config (written by install.sh, read by cb)
+CB_MODE=${CB_MODE}
+CB_CONTAINER=${CB_CONTAINER}
+CB_BACKEND_CONTAINER=${CB_CONTAINER}
+CB_VOLUME=${CB_VOLUME}
+CB_PORT=${CB_PORT}
+CB_IMAGE=${CB_IMAGE}
+CB_DATA_DIR=/data
+CONFEOF
+  chmod 600 "$CB_CONFIG_DIR/install.conf"
+  Show 0 "Install config saved to $CB_CONFIG_DIR/install.conf"
+}
+
+###############################################################################
+# CB COMMAND
+###############################################################################
+
+Install_CB_Command() {
+  local dest="/usr/local/bin/cb"
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+
+  if [[ -f "$script_dir/cb" ]]; then
+    sudo install -Dm755 "$script_dir/cb" "$dest"
+    Show 0 "cb command installed from local repo to $dest"
+  else
+    Show 2 "Downloading cb from GitHub..."
+    local url="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/${CB_VERSION}/cb"
+    if curl -fsSL "$url" -o /tmp/cb-cli 2>/dev/null; then
+      sudo install -Dm755 /tmp/cb-cli "$dest"
+      rm -f /tmp/cb-cli
+      Show 0 "cb command downloaded and installed to $dest"
+    else
+      Show 3 "Could not install cb command — skipping. You can install it later from the repo."
+    fi
+  fi
+}
+
+###############################################################################
 # UNINSTALL SCRIPT (written at install time)
 ###############################################################################
 
@@ -1095,6 +1143,7 @@ elif [[ "$INSTALLED_MODE" == "binary" ]]; then
 fi
 
 sudo rm -f /usr/local/bin/uninstall-circuit-breaker
+sudo rm -f /usr/local/bin/cb
 Show 0 "Circuit Breaker uninstalled."
 UNINSTALL_BODY
 
@@ -1170,6 +1219,8 @@ Install_Docker_Mode() {
     Trust_CA
   fi
   Setup_Systemd_Docker
+  Save_Install_Config
+  Install_CB_Command
   Write_Uninstall_Script "docker"
   Welcome_Banner_Docker
 }
@@ -1193,6 +1244,8 @@ Install_Binary_Mode() {
   Setup_Systemd_Binary
   Setup_Desktop
   Wait_For_Ready 8080
+  Save_Install_Config
+  Install_CB_Command
   Write_Uninstall_Script "binary"
   Welcome_Banner_Binary
 }
@@ -1241,9 +1294,14 @@ Welcome_Banner_Docker() {
   echo -e "  ${aCOLOUR[2]}GitHub    : https://github.com/BlkLeg/circuitbreaker"
   echo -e "  ${aCOLOUR[2]}Docs      : https://blkleg.github.io/circuitbreaker${COLOUR_RESET}"
   echo ""
-  echo -e "  To stop      : docker stop $CB_CONTAINER"
-  echo -e "  To start     : docker start $CB_CONTAINER"
-  echo -e "  To uninstall : sudo uninstall-circuit-breaker"
+  echo -e "  ${aCOLOUR[4]}Next step    :${COLOUR_RESET} open the URL above and complete first-run setup"
+  echo -e "  ${aCOLOUR[2]}             The vault key is generated automatically during setup.${COLOUR_RESET}"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}cb command   :${COLOUR_RESET} cb help"
+  echo ""
+  echo -e "  To stop      : cb restart  ${aCOLOUR[2]}(or: docker stop $CB_CONTAINER)${COLOUR_RESET}"
+  echo -e "  To update    : cb update"
+  echo -e "  To uninstall : cb uninstall"
   echo -e "${COLOUR_RESET}"
 }
 
@@ -1273,8 +1331,13 @@ Welcome_Banner_Binary() {
   echo -e "  ${aCOLOUR[2]}GitHub    : https://github.com/BlkLeg/circuitbreaker"
   echo -e "  ${aCOLOUR[2]}Docs      : https://blkleg.github.io/circuitbreaker${COLOUR_RESET}"
   echo ""
-  echo -e "  To manage : systemctl start|stop|restart circuit-breaker"
-  echo -e "  To uninstall : sudo uninstall-circuit-breaker"
+  echo -e "  ${aCOLOUR[4]}Next step    :${COLOUR_RESET} open the URL above and complete first-run setup"
+  echo -e "  ${aCOLOUR[2]}             The vault key is generated automatically during setup.${COLOUR_RESET}"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}cb command   :${COLOUR_RESET} cb help"
+  echo ""
+  echo -e "  To manage    : cb restart / cb logs / cb status"
+  echo -e "  To uninstall : cb uninstall"
   echo -e "${COLOUR_RESET}"
 }
 

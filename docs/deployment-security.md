@@ -40,19 +40,31 @@ Use this profile when more users or broader network access are involved.
 
 ## 3) Secrets Management & Vault
 
-Circuit Breaker leverages an AES-powered secure vault to persist sensitive settings entirely locally without compromising plaintext readability. 
+Circuit Breaker uses a Fernet-based secure vault to encrypt sensitive credentials at rest — entirely local, no third-party key management required.
 
-By defining the `CB_VAULT_KEY` environment variable on deployment, Circuit Breaker can strictly lock:
+The vault protects:
 
-- **SMTP Access Credentials** (Used for user password resets / outbound messaging).
-- **Proxmox API Tokens** (The Secret component of the PVEAuditor token ID used during API cluster scans).
-- **SNMP Community Strings** & **iDRAC/iLO details**.
+- **SMTP credentials** — used for password reset and invite emails.
+- **Proxmox API tokens** — the secret half of the PVEAuditor token used during cluster scans.
+- **SNMP community strings** and **iDRAC/iLO credentials**.
 
-**Vault Best Practices:**
+### Vault key lifecycle
 
-- Treat `CB_VAULT_KEY` like a master root key. 
-- You must generate a highly secure base-64 encoded cryptographic string for `CB_VAULT_KEY`.
-- If you lose or alter the `CB_VAULT_KEY` across restarts, the stored vault secrets in the database become unreadable and any associated integrations (like Proxmox maps or SMTP pipelines) will fail to authenticate until re-entered in Settings.
+**You do not need to generate the vault key manually.** During the first-run setup wizard (OOBE), Circuit Breaker automatically generates a cryptographically secure key, writes it to `/data/.env` inside the data volume, and shows it once so you can back it up.
+
+**If the vault ends up uninitialized** (after a crash, accidental volume deletion, or a headless deploy with no OOBE), use the `cb` CLI to recover:
+
+```bash
+cb vault-recover
+```
+
+See [cb CLI Tool](cb-cli.md#cb-vault-recover) for details.
+
+**Vault best practices:**
+
+- Back up the key shown during OOBE — store it in a password manager or offline secure location.
+- Treat the vault key like a master root credential. Anyone with it can decrypt your stored secrets.
+- If you lose the key and cannot recover it, you will need to re-enter all encrypted secrets (SMTP, Proxmox tokens, SNMP strings) in **Settings** after running `cb vault-recover`.
 
 ---
 

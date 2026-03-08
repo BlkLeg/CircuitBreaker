@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+#
+# cb — Circuit Breaker command-line tool
+#
+# Installed to /usr/local/bin/cb by install.sh  (or: sudo install -Dm755 ./cb /usr/local/bin/cb)
+#
+# Usage: cb <command> [options]
+#
+# Commands:
+#   status        Show service / container status
+#   logs [-f]     Show (or follow) logs
+#   restart       Restart Circuit Breaker
+#   update        Pull latest image and restart  (docker mode only)
+#   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
+#   version       Show installed version
+#   uninstall     Remove Circuit Breaker from this system
+#   help          Show this help
+#
+# Modes (set in ~/.circuit-breaker/install.conf):
+#   docker   — single container deployed by install.sh
+#   compose  — multi-container stack deployed by docker compose
+#   binary   — native binary managed by systemd
+#
+
+set -eo pipefail
+
+# ── Config ────────────────────────────────────────────────────────────────────
+CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
+_CONF="$CB_CONFIG_DIR/install.conf"
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+R='\e[0m'
+G='\e[38;5;154m'
+B='\e[1m'
+GR='\e[90m'
+Y='\e[33m'
+RED='\e[91m'
+LINE=" ${G}─────────────────────────────────────────${R}"
+
+_ok()   { echo -e "${GR}[${R}${G} OK ${R}${GR}]${R} $*"; }
+_info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*"; }
+_warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*"; }
+_fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
+
+# ── Defaults — overridden by install.conf ─────────────────────────────────────
+CB_MODE="docker"
+CB_CONTAINER="circuit-breaker"   # primary/app container (single-container or compose backend)
+CB_VOLUME="circuit-breaker-data"
+CB_PORT="8080"
+CB_IMAGE="ghcr.io/blkleg/circuitbreaker:latest"
+# CB_BACKEND_CONTAINER: container that runs Python/the vault code.
+#   docker  → same as CB_CONTAINER
+#   compose → cb-backend
+CB_BACKEND_CONTAINER=""
+# CB_DATA_DIR: path to the data directory INSIDE the backend container.
+#   docker  → /data
+#   compose → /app/data
+CB_DATA_DIR=""
+
+if [[ -f "$_CONF" ]]; then
+  # shellcheck source=/dev/null
+  source "$_CONF"
+else
+  _warn "Install config not found at $_CONF — using defaults."
+fi
+
+# Apply mode-specific defaults for values not set in install.conf
+if [[ -z "$CB_BACKEND_CONTAINER" ]]; then
+  [[ "$CB_MODE" == "compose" ]] && CB_BACKEND_CONTAINER="cb-backend" || CB_BACKEND_CONTAINER="$CB_CONTAINER"
+fi
+if [[ -z "$CB_DATA_DIR" ]]; then
+  [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
+fi
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+_require_docker() {
+  command -v docker >/dev/null 2>&1 || _fail "Docker is not installed or not in PATH."
+  docker info >/dev/null 2>&1       || _fail "Docker daemon is not running."
+}
+
+_container_running() {
+  local name="${1:-$CB_CONTAINER}"
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"
+}
+
+# Generate a valid Fernet key using the backend container's own Python runtime,
+# guaranteeing compatibility with the running app.
+# Falls back to host python3 stdlib when the container is unavailable.
+_gen_fernet_key() {
+  if [[ "$CB_MODE" == "docker" || "$CB_MODE" == "compose" ]]; then
+    if _container_running "$CB_BACKEND_CONTAINER"; then
+      docker exec "$CB_BACKEND_CONTAINER" python3 \
+        -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+        2>/dev/null && return
+    fi
+  fi
+  command -v python3 >/dev/null 2>&1 \
+    || _fail "python3 is required to generate a vault key. Install it and retry."
+  python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+}
+
+###############################################################################
+# COMMANDS
+###############################################################################
+
+cmd_status() {
+  echo ""
+  echo -e "$LINE"
+  echo -e " ${B}Circuit Breaker — Status${R}"
+  echo -e "$LINE"
+  echo ""
+
+  case "$CB_MODE" in
+    docker)
+      _require_docker
+      if _container_running; then
+        _ok "Container '${CB_CONTAINER}' is running."
+        docker inspect --format \
+          "  Image   : {{.Config.Image}}
+  Started : {{.State.StartedAt}}
+  Status  : {{.State.Status}}" \
+          "$CB_CONTAINER" 2>/dev/null || true
+        echo ""
+        echo -e "  ${GR}Access :${R} http://localhost:${CB_PORT}"
+      else
+        _warn "Container '${CB_CONTAINER}' is not running."
+      fi
+      ;;
+    compose)
+      _require_docker
+      echo -e "  ${GR}Compose stack containers:${R}"
+      echo ""
+      docker ps --filter "name=cb-" \
+        --format "  {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
+        | column -t || true
+      ;;
+    binary)
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl status circuit-breaker --no-pager -l || true
+      else
+        _warn "systemctl not found — cannot query service status."
+      fi
+      ;;
+  esac
+  echo ""
+}
+
+cmd_logs() {
+  local follow=""
+  [[ "${1:-}" == "-f" || "${1:-}" == "--follow" ]] && follow="-f"
+
+  case "$CB_MODE" in
+    docker)
+      _require_docker
+      # shellcheck disable=SC2086
+      docker logs $follow --tail 100 "$CB_CONTAINER"
+      ;;
+    compose)
+      _require_docker
+      # Show backend logs; most relevant for app-level debugging
+      # shellcheck disable=SC2086
+      docker logs $follow --tail 100 "$CB_BACKEND_CONTAINER"
+      ;;
+    binary)
+      command -v journalctl >/dev/null 2>&1 \
+        || _fail "journalctl not found."
+      # shellcheck disable=SC2086
+      journalctl -u circuit-breaker --no-pager $follow -n 100
+      ;;
+  esac
+}
+
+cmd_restart() {
+  case "$CB_MODE" in
+    docker)
+      _require_docker
+      _info "Restarting container '${CB_CONTAINER}'..."
+      docker restart "$CB_CONTAINER"
+      _ok "Restarted."
+      ;;
+    compose)
+      _require_docker
+      _info "Restarting compose stack containers..."
+      for svc in cb-backend cb-frontend cb-caddy; do
+        docker restart "$svc" 2>/dev/null && _ok "Restarted $svc." || _warn "$svc not running — skipped."
+      done
+      ;;
+    binary)
+      _info "Restarting systemd service..."
+      sudo systemctl restart circuit-breaker
+      _ok "Restarted."
+      ;;
+  esac
+}
+
+cmd_update() {
+  case "$CB_MODE" in
+    docker)
+      _require_docker
+      _info "Pulling latest image: ${CB_IMAGE}"
+      docker pull "$CB_IMAGE"
+
+      _info "Recreating container '${CB_CONTAINER}'..."
+      docker stop "$CB_CONTAINER" 2>/dev/null || true
+      docker rm   "$CB_CONTAINER" 2>/dev/null || true
+
+      local env_args=()
+      [[ -f "$CB_CONFIG_DIR/env" ]] && env_args=(--env-file "$CB_CONFIG_DIR/env")
+
+      docker run -d \
+        --name  "$CB_CONTAINER" \
+        "${env_args[@]}" \
+        -p      "${CB_PORT}:8080" \
+        -v      "${CB_VOLUME}:/data" \
+        --security-opt seccomp=unconfined \
+        --restart unless-stopped \
+        "$CB_IMAGE" \
+        || _fail "Failed to start updated container."
+      _ok "Updated and restarted."
+      ;;
+    compose)
+      _fail "'cb update' is not supported for compose installs. Use: docker compose pull && docker compose up -d"
+      ;;
+    binary)
+      _fail "'cb update' is not supported for binary installs. Re-run install.sh to upgrade."
+      ;;
+  esac
+}
+
+# ── vault-recover ─────────────────────────────────────────────────────────────
+# Recovery tool for when the vault is in "ephemeral" state (no key was ever
+# persisted).  Under normal operation this is handled automatically by the OOBE
+# wizard — you should only need this after a crash, a headless deploy, or if
+# the data volume's .env file was accidentally deleted.
+cmd_vault_recover() {
+  echo ""
+  echo -e "$LINE"
+  echo -e " ${B}Vault Recovery${R}"
+  echo -e "$LINE"
+  echo ""
+  echo -e "  ${Y}This command is a recovery tool for an uninitialized vault.${R}"
+  echo -e "  ${GR}Under normal operation the vault key is generated automatically"
+  echo -e "  during the first-run setup wizard (OOBE) — you should not need"
+  echo -e "  this unless the vault is stuck in 'ephemeral' state.${R}"
+  echo ""
+
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running. Start it first."
+
+      # Check for an existing key
+      local existing
+      existing=$(docker exec "$CB_BACKEND_CONTAINER" sh -c \
+        "grep -s '^CB_VAULT_KEY=' '${CB_DATA_DIR}/.env' | cut -d= -f2-" 2>/dev/null || true)
+
+      if [[ -n "$existing" ]]; then
+        _warn "A vault key already exists in ${CB_DATA_DIR}/.env."
+        echo ""
+        echo -e "  ${Y}Overwriting it will break decryption of any already-stored secrets.${R}"
+        printf "  Overwrite anyway? [y/N] "
+        read -r reply < /dev/tty
+        echo ""
+        case "$reply" in
+          [yY][eE][sS]|[yY]) ;;
+          *) _info "Aborted — existing key kept."; return ;;
+        esac
+      fi
+
+      _info "Generating vault key..."
+      local key
+      key=$(_gen_fernet_key)
+
+      # Pass key via env var to avoid shell-quoting surprises
+      docker exec -e "CB_NEW_VAULT_KEY=${key}" "$CB_BACKEND_CONTAINER" sh -c "
+        mkdir -p '${CB_DATA_DIR}'
+        env_file='${CB_DATA_DIR}/.env'
+        if [ -f \"\$env_file\" ] && grep -q '^CB_VAULT_KEY=' \"\$env_file\"; then
+          sed -i 's|^CB_VAULT_KEY=.*|CB_VAULT_KEY='\"\$CB_NEW_VAULT_KEY\"'|' \"\$env_file\"
+        elif [ -f \"\$env_file\" ]; then
+          printf '\nCB_VAULT_KEY=%s\n' \"\$CB_NEW_VAULT_KEY\" >> \"\$env_file\"
+        else
+          printf 'CB_VAULT_KEY=%s\n' \"\$CB_NEW_VAULT_KEY\" > \"\$env_file\"
+        fi
+        chmod 600 \"\$env_file\"
+      "
+
+      _ok "Vault key written to ${CB_DATA_DIR}/.env in container '${CB_BACKEND_CONTAINER}'."
+
+      if [[ "$CB_MODE" == "compose" ]]; then
+        _info "Restarting backend container to apply the key..."
+        docker restart "$CB_BACKEND_CONTAINER"
+      else
+        _info "Restarting container to apply the key..."
+        docker restart "$CB_CONTAINER"
+      fi
+      _ok "Vault recovered. Check 'cb status' to confirm the service is healthy."
+      ;;
+
+    binary)
+      local env_file="/etc/circuit-breaker/env"
+
+      if grep -q "^CB_VAULT_KEY=" "$env_file" 2>/dev/null; then
+        _warn "A vault key already exists in ${env_file}."
+        echo ""
+        echo -e "  ${Y}Overwriting it will break decryption of any already-stored secrets.${R}"
+        printf "  Overwrite anyway? [y/N] "
+        read -r reply < /dev/tty
+        echo ""
+        case "$reply" in
+          [yY][eE][sS]|[yY]) ;;
+          *) _info "Aborted — existing key kept."; return ;;
+        esac
+      fi
+
+      _info "Generating vault key..."
+      local key
+      key=$(_gen_fernet_key)
+
+      if [[ -f "$env_file" ]]; then
+        if grep -q "^CB_VAULT_KEY=" "$env_file"; then
+          sudo sed -i "s|^CB_VAULT_KEY=.*|CB_VAULT_KEY=${key}|" "$env_file"
+        else
+          printf "\nCB_VAULT_KEY=%s\n" "$key" | sudo tee -a "$env_file" >/dev/null
+        fi
+      else
+        printf "CB_VAULT_KEY=%s\n" "$key" | sudo tee "$env_file" >/dev/null
+      fi
+      sudo chmod 640 "$env_file"
+
+      _ok "Vault key written to ${env_file}."
+      _info "Restarting service to apply the key..."
+      sudo systemctl restart circuit-breaker
+      _ok "Vault recovered."
+      ;;
+  esac
+
+  echo ""
+}
+
+cmd_version() {
+  case "$CB_MODE" in
+    docker|compose)
+      _require_docker
+      if _container_running "$CB_BACKEND_CONTAINER"; then
+        docker exec "$CB_BACKEND_CONTAINER" cat /app/VERSION 2>/dev/null \
+          || docker inspect --format '{{.Config.Image}}' "$CB_BACKEND_CONTAINER" 2>/dev/null \
+          || _warn "Could not determine version."
+      else
+        _warn "Container '${CB_BACKEND_CONTAINER}' is not running."
+      fi
+      ;;
+    binary)
+      /usr/local/bin/circuit-breaker --version 2>/dev/null \
+        || cat /etc/circuit-breaker/version 2>/dev/null \
+        || _warn "Version unknown."
+      ;;
+  esac
+}
+
+cmd_uninstall() {
+  if [[ -x /usr/local/bin/uninstall-circuit-breaker ]]; then
+    exec /usr/local/bin/uninstall-circuit-breaker
+  else
+    _fail "Uninstall script not found at /usr/local/bin/uninstall-circuit-breaker"
+  fi
+}
+
+###############################################################################
+# USAGE
+###############################################################################
+
+usage() {
+  echo ""
+  echo -e "  ${B}cb${R} — Circuit Breaker CLI"
+  echo ""
+  echo -e "  ${GR}Usage:${R}  cb <command> [options]"
+  echo ""
+  echo -e "  ${G}Commands:${R}"
+  echo -e "    status              Show container / service status"
+  echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
+  echo -e "    restart             Restart Circuit Breaker"
+  echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
+  echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
+  echo -e "    version             Show installed version"
+  echo -e "    uninstall           Remove Circuit Breaker from this system"
+  echo -e "    help                Show this help"
+  echo ""
+  echo -e "  ${GR}Config : ${_CONF}${R}"
+  echo -e "  ${GR}Mode   : ${CB_MODE}${R}"
+  echo ""
+}
+
+###############################################################################
+# MAIN
+###############################################################################
+
+case "${1:-help}" in
+  status)          cmd_status ;;
+  logs)            cmd_logs "${2:-}" ;;
+  restart)         cmd_restart ;;
+  update)          cmd_update ;;
+  vault-recover)   cmd_vault_recover ;;
+  version)         cmd_version ;;
+  uninstall)       cmd_uninstall ;;
+  help|--help|-h)  usage ;;
+  *) echo -e "\n  Unknown command: ${RED}$1${R}\n"; usage; exit 1 ;;
+esac

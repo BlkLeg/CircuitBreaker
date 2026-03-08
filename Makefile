@@ -172,6 +172,15 @@ compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
 	docker compose down -v
 	@echo "✅ Stack stopped and volumes removed."
 
+install-cb: ## Install the cb CLI tool for this compose stack (writes /usr/local/bin/cb + install.conf)
+	@echo "Installing cb command to /usr/local/bin/cb..."
+	@sudo install -Dm755 cb /usr/local/bin/cb
+	@mkdir -p $(HOME)/.circuit-breaker
+	@chmod 700 $(HOME)/.circuit-breaker
+	@printf '# Circuit Breaker — install config (written by make install-cb)\nCB_MODE=compose\nCB_CONTAINER=cb-backend\nCB_BACKEND_CONTAINER=cb-backend\nCB_DATA_DIR=/app/data\nCB_PORT=443\nCB_IMAGE=\nCB_VOLUME=\n' > $(HOME)/.circuit-breaker/install.conf
+	@chmod 600 $(HOME)/.circuit-breaker/install.conf
+	@echo "✅ cb installed. Run: cb help"
+
 compose-fresh: dev-stop-install ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."
 	docker compose down -v
