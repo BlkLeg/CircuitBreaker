@@ -30,6 +30,8 @@ trap 'echo -e "${COLOUR_RESET}"; exit 1' INT
 # ─── Defaults ────────────────────────────────────────────────────────────────
 CB_MODE="${CB_MODE:-}"
 CB_VERSION="${CB_VERSION:-latest}"
+CB_TAG="${CB_TAG:-latest}"
+CB_INSTALL_DIR="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
 CB_YES="${CB_YES:-0}"
 CB_NO_DESKTOP="${CB_NO_DESKTOP:-0}"
 CB_NO_SYSTEMD="${CB_NO_SYSTEMD:-0}"
@@ -140,7 +142,7 @@ usage() {
 Usage: install.sh [OPTIONS]
 
 Install mode:
-  --mode docker|binary  Choose install mode (skips interactive prompt)
+  --mode docker|compose|binary  Choose install mode (skips interactive prompt)
   --version TAG         Image / binary version tag  (default: latest)
   --yes                 Non-interactive; accept all defaults
 
@@ -1236,6 +1238,11 @@ CB_CA_SYSTEM_NAME="${CB_CA_SYSTEM_NAME}"
 CB_CA_NSS_NAME="${CB_CA_NSS_NAME}"
 CB_CONFIG_DIR="${CB_CONFIG_DIR}"
 DOCKER_VARS
+  elif [[ "$mode" == "compose" ]]; then
+    cat >> "$tmp" <<COMPOSE_VARS
+CB_INSTALL_DIR="${CB_INSTALL_DIR}"
+CB_COMPOSE_FILE="${CB_INSTALL_DIR}/docker-compose.prod.yml"
+COMPOSE_VARS
   elif [[ "$mode" == "binary" ]]; then
     cat >> "$tmp" <<BINARY_VARS
 CB_BINARY_DATA_DIR="${CB_BINARY_DATA_DIR}"
@@ -1327,6 +1334,36 @@ if [[ "$INSTALLED_MODE" == "docker" ]]; then
     fi
   fi
 
+elif [[ "$INSTALLED_MODE" == "compose" ]]; then
+
+  stop_systemd
+
+  Show 2 "Stopping compose stack..."
+  if [[ -f "$CB_COMPOSE_FILE" ]]; then
+    (cd "$(dirname "$CB_COMPOSE_FILE")" && docker compose -f "$(basename "$CB_COMPOSE_FILE")" down) 2>/dev/null || true
+  elif [[ -d "$CB_INSTALL_DIR" ]]; then
+    (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml down) 2>/dev/null || true
+  fi
+  Show 0 "Compose stack stopped."
+
+  if Confirm "Remove Docker volumes (all data)?"; then
+    if [[ -f "$CB_COMPOSE_FILE" ]]; then
+      (cd "$(dirname "$CB_COMPOSE_FILE")" && docker compose -f "$(basename "$CB_COMPOSE_FILE")" down -v) 2>/dev/null || true
+    elif [[ -d "$CB_INSTALL_DIR" ]]; then
+      (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml down -v) 2>/dev/null || true
+    fi
+    Show 0 "Volumes removed."
+  else
+    Show 3 "Volumes kept."
+  fi
+
+  if Confirm "Remove install directory '$CB_INSTALL_DIR' (compose files, .env)?"; then
+    rm -rf "$CB_INSTALL_DIR"
+    Show 0 "Install directory removed."
+  else
+    Show 3 "Install directory kept at $CB_INSTALL_DIR"
+  fi
+
 elif [[ "$INSTALLED_MODE" == "binary" ]]; then
 
   stop_systemd
@@ -1398,8 +1435,8 @@ Prompt_Mode() {
 
   # Non-interactive default
   if [[ "$CB_YES" == "1" ]]; then
-    CB_MODE="docker"
-    Show 0 "Non-interactive mode: defaulting to Docker install."
+    CB_MODE="${CB_MODE:-docker}"
+    Show 0 "Non-interactive mode: defaulting to ${CB_MODE} install."
     return
   fi
 
@@ -1408,19 +1445,21 @@ Prompt_Mode() {
   echo -e " ${aCOLOUR[1]}How would you like to install Circuit Breaker?${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
   echo ""
-  echo -e "  ${aCOLOUR[1]}[1]${COLOUR_RESET} Docker container  ${aCOLOUR[2]}(recommended — no build dependencies required)${COLOUR_RESET}"
-  echo -e "  ${aCOLOUR[1]}[2]${COLOUR_RESET} Native binary     ${aCOLOUR[2]}(systemd service, FHS paths, no Docker required)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[1]${COLOUR_RESET} Docker container  ${aCOLOUR[2]}(single image — minimal)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[2]${COLOUR_RESET} Compose stack    ${aCOLOUR[2]}(full capability — discovery, webhooks, HTTPS)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[3]${COLOUR_RESET} Native binary    ${aCOLOUR[2]}(systemd service, FHS paths, no Docker required)${COLOUR_RESET}"
   echo -e "  ${aCOLOUR[1]}[Q]${COLOUR_RESET} Quit"
   echo ""
-  printf "  Choice [1/2/Q]: "
+  printf "  Choice [1/2/3/Q]: "
   read -r choice < /dev/tty
   echo ""
 
   case "$choice" in
     1)    CB_MODE="docker" ;;
-    2)    CB_MODE="binary" ;;
+    2)    CB_MODE="compose" ;;
+    3)    CB_MODE="binary" ;;
     [qQ]) echo "  Exiting."; exit 0 ;;
-    *)    Show 1 "Invalid choice '$choice'. Re-run and enter 1, 2, or Q." ;;
+    *)    Show 1 "Invalid choice '$choice'. Re-run and enter 1, 2, 3, or Q." ;;
   esac
   Show 0 "Install mode: $CB_MODE"
 }
@@ -1456,6 +1495,167 @@ Install_Docker_Mode() {
   Install_CB_Command
   Write_Uninstall_Script "docker"
   Welcome_Banner_Docker
+}
+
+Install_Compose_Mode() {
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Compose Stack Install (Prebuilt)${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+
+  CB_PORT="80"
+  Check_Docker
+  Check_Compose_Ports
+  mkdir -p "$CB_INSTALL_DIR"
+  CB_CONFIG_DIR="$CB_INSTALL_DIR"
+  chmod 700 "$CB_INSTALL_DIR"
+
+  Show 2 "Downloading compose files..."
+  local base="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main"
+  curl -fsSL "${base}/docker/docker-compose.prod.yml" -o "$CB_INSTALL_DIR/docker-compose.prod.yml" \
+    || Show 1 "Failed to download docker-compose.prod.yml"
+  curl -fsSL "${base}/docker/Caddyfile" -o "$CB_INSTALL_DIR/Caddyfile" \
+    || Show 1 "Failed to download Caddyfile"
+  curl -fsSL "${base}/docker/.env.example" -o "$CB_INSTALL_DIR/.env.example" \
+    || Show 1 "Failed to download .env.example"
+  Show 0 "Compose files downloaded."
+
+  if [[ ! -f "$CB_INSTALL_DIR/.env" ]]; then
+    cp "$CB_INSTALL_DIR/.env.example" "$CB_INSTALL_DIR/.env"
+    Show 0 "Created .env from template."
+  fi
+
+  export CB_TAG
+  Show 2 "Pulling images..."
+  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml pull) \
+    || Show 1 "Failed to pull images."
+  Show 0 "Images pulled."
+
+  Show 2 "Starting compose stack..."
+  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml up -d) \
+    || Show 1 "Failed to start compose stack."
+  Show 0 "Stack started."
+
+  Wait_For_Ready "80" "http" "0"
+  Setup_Systemd_Compose
+  Save_Install_Config_Compose
+  Install_CB_Command
+  Write_Uninstall_Script "compose"
+  Welcome_Banner_Compose
+}
+
+Check_Compose_Ports() {
+  local conflict=0
+  if ss -tlnp 2>/dev/null | grep -q ":80 "; then
+    Show 3 "Port 80 is already in use."
+    conflict=1
+  fi
+  if ss -tlnp 2>/dev/null | grep -q ":443 "; then
+    Show 3 "Port 443 is already in use."
+    conflict=1
+  fi
+  if [[ "$conflict" == "1" ]]; then
+    Show 1 "Compose stack requires ports 80 and 443. Stop the conflicting service or choose a different install mode."
+  fi
+  Show 0 "Ports 80 and 443 are available."
+}
+
+Setup_Systemd_Compose() {
+  if [[ "$CB_NO_SYSTEMD" == "1" ]]; then
+    Show 2 "Skipping systemd setup (--no-systemd)."
+    return
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    Show 3 "systemctl not found — skipping systemd service install."
+    return
+  fi
+
+  Show 2 "Installing systemd service (Compose mode)..."
+  sudo tee /etc/systemd/system/circuit-breaker.service >/dev/null <<UNIT
+[Unit]
+Description=Circuit Breaker (Docker Compose)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=${CB_INSTALL_DIR}
+
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
+ExecReload=/usr/bin/docker compose -f docker-compose.prod.yml pull && /usr/bin/docker compose -f docker-compose.prod.yml up -d
+
+TimeoutStartSec=120
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now circuit-breaker
+  Show 0 "systemd service enabled: circuit-breaker"
+}
+
+Save_Install_Config_Compose() {
+  mkdir -p "$CB_CONFIG_DIR"
+  chmod 700 "$CB_CONFIG_DIR"
+  cat > "$CB_CONFIG_DIR/install.conf" <<CONFEOF
+# Circuit Breaker — install config (compose mode)
+CB_MODE=compose
+CB_CONTAINER=cb-backend
+CB_BACKEND_CONTAINER=cb-backend
+CB_INSTALL_DIR=${CB_INSTALL_DIR}
+CB_COMPOSE_FILE=${CB_INSTALL_DIR}/docker-compose.prod.yml
+CB_PORT=80
+CB_DATA_DIR=/app/data
+CB_IMAGE=ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG}
+CONFEOF
+  chmod 600 "$CB_CONFIG_DIR/install.conf"
+  Show 0 "Install config saved to $CB_CONFIG_DIR/install.conf"
+}
+
+Welcome_Banner_Compose() {
+  local public_ip=""
+  public_ip=$(curl -4 -sf --connect-timeout 4 https://ipinfo.io/ip 2>/dev/null \
+              || curl -4 -sf --connect-timeout 4 https://ifconfig.me  2>/dev/null \
+              || true)
+  if ! [[ "$public_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    public_ip=""
+  fi
+
+  echo ""
+  echo -e "$GREEN_LINE"
+  echo -e " ${aCOLOUR[1]}Circuit Breaker is running!${COLOUR_RESET}"
+  echo -e "$GREEN_LINE"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}Mode    :${COLOUR_RESET} Compose (full stack)"
+  echo -e "  ${aCOLOUR[2]}Install :${COLOUR_RESET} $CB_INSTALL_DIR"
+  echo -e "  ${aCOLOUR[2]}Service :${COLOUR_RESET} systemctl status circuit-breaker"
+  echo ""
+
+  echo -e "$GREEN_BULLET ${aCOLOUR[0]}https://localhost${COLOUR_RESET}  ${aCOLOUR[2]}← HTTPS (trust CA when prompted)${COLOUR_RESET}"
+  if [[ -n "$public_ip" ]]; then
+    echo -e "$GREEN_BULLET https://${public_ip}  ${aCOLOUR[2]}← public / VPS address${COLOUR_RESET}"
+  fi
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r ip_addr; do
+      [[ "$ip_addr" == "$public_ip" ]] && continue
+      echo -e "$GREEN_BULLET https://${ip_addr}"
+    done < <(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+  fi
+  echo ""
+  echo -e "  ${aCOLOUR[4]}Next step    :${COLOUR_RESET} open the URL above and complete first-run setup"
+  echo -e "  ${aCOLOUR[2]}             The vault key is generated automatically during setup.${COLOUR_RESET}"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}cb command   :${COLOUR_RESET} cb help"
+  echo ""
+  echo -e "  To update    : docker compose -f $CB_INSTALL_DIR/docker-compose.prod.yml pull && docker compose up -d"
+  echo -e "  To uninstall : cb uninstall"
+  echo -e "${COLOUR_RESET}"
 }
 
 Install_Binary_Mode() {
@@ -1606,9 +1806,10 @@ main() {
   Prompt_Mode
 
   case "$CB_MODE" in
-    docker) Install_Docker_Mode ;;
-    binary) Install_Binary_Mode ;;
-    *) Show 1 "Unknown install mode: '$CB_MODE'. Use --mode docker or --mode binary." ;;
+    docker)   Install_Docker_Mode ;;
+    compose)  Install_Compose_Mode ;;
+    binary)   Install_Binary_Mode ;;
+    *) Show 1 "Unknown install mode: '$CB_MODE'. Use --mode docker, --mode compose, or --mode binary." ;;
   esac
 }
 

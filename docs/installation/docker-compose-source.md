@@ -23,17 +23,24 @@ cd circuitbreaker
 # 2. Copy the environment file
 cp .env.example .env
 
-# 3. Build images and start all services
-docker compose -f docker/docker-compose.yml up -d --build
+# 3. Build images and start all services (use make for BuildKit + cache optimizations)
+DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up -d --build
 ```
 
-Or using the Makefile shortcut:
+Or using the Makefile shortcut (recommended — enables BuildKit and npm/pip cache mounts):
 
 ```bash
 make compose-up
 ```
 
-The first build takes a few minutes — it compiles the frontend bundle and installs Python dependencies. Subsequent starts are fast.
+The first build takes a few minutes — it compiles the frontend bundle and installs Python dependencies. Subsequent builds are faster thanks to BuildKit cache mounts (pip and npm).
+
+**On a VPS or slow network**, pre-pull base images before the first build:
+
+```bash
+make compose-pull-bases   # caches python, node, nginx, caddy, nats
+make compose-up
+```
 
 ---
 
@@ -135,6 +142,9 @@ make compose-fresh
 
 # Pre-build all images without starting
 make docker-build
+
+# Pre-pull base images (speeds up first build on VPS)
+make compose-pull-bases
 ```
 
 ---

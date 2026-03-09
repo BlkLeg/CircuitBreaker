@@ -121,14 +121,17 @@ def _seed_default_docs(db) -> None:
     if has_docs:
         return
 
-    docs_page_path = _resolve_existing_path(
+    _p = Path(__file__).resolve()
+    _docs_candidates: list[str | Path | None] = [
         os.environ.get("CB_DOCS_SEED_FILE"),
         _share_dir_candidate(_DOCS_SEED_FILENAME),
         _bundle_share_candidate(_DOCS_SEED_FILENAME),
         _meipass_candidate(_DOCS_SEED_FILENAME),
-        Path(__file__).resolve().parents[4] / _DOCS_SEED_FILENAME,
-        Path(__file__).resolve().parents[2] / _DOCS_SEED_FILENAME,
-    )
+        _p.parents[2] / _DOCS_SEED_FILENAME if len(_p.parents) > 2 else None,
+    ]
+    if len(_p.parents) > 4:
+        _docs_candidates.append(_p.parents[4] / _DOCS_SEED_FILENAME)
+    docs_page_path = _resolve_existing_path(*_docs_candidates)
     if docs_page_path is None:
         _logger.warning("Default docs seed file not found in configured resource paths")
         return
@@ -209,15 +212,19 @@ def run_alembic_upgrade():
     from app.db.session import engine
 
     # Resolve alembic.ini relative to this file so it works regardless of CWD.
-    # main.py lives at <root>/src/app/main.py; alembic.ini is at <root>/alembic.ini.
-    alembic_ini_path = _resolve_existing_path(
+    # Docker: main.py at /app/src/app/main.py, alembic.ini at /app/alembic.ini (parent.parent.parent).
+    # Repo: main.py at <root>/apps/backend/src/app/main.py, alembic.ini at <root>/apps/backend/alembic.ini (parents[4]).
+    _p = Path(__file__).resolve()
+    _alembic_candidates: list[str | Path | None] = [
         os.environ.get("CB_ALEMBIC_INI"),
         _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
         _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
         _meipass_candidate("backend", _ALEMBIC_INI_FILENAME),
-        Path(__file__).resolve().parent.parent.parent / _ALEMBIC_INI_FILENAME,
-        Path(__file__).resolve().parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME,
-    )
+        _p.parent.parent.parent / _ALEMBIC_INI_FILENAME,
+    ]
+    if len(_p.parents) > 4:
+        _alembic_candidates.append(_p.parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME)
+    alembic_ini_path = _resolve_existing_path(*_alembic_candidates)
     if alembic_ini_path is None:
         raise FileNotFoundError("Could not locate alembic.ini for migrations")
     _alembic_ini = str(alembic_ini_path)

@@ -12,7 +12,8 @@ nav:
   - Installation:
       - Overview & Methods: installation/index.md
       - Quick Install (Script): installation/quick-install.md
-      - Docker Compose (Prebuilt): installation/docker-compose.md
+      - Docker Compose (Prebuilt Full Stack): installation/docker-compose-prod.md
+      - Docker Compose (Prebuilt Single): installation/docker-compose.md
       - Docker Compose (From Source): installation/docker-compose-source.md
       - Single Docker Container: installation/manual-docker.md
       - First-Run Setup: installation/first-run.md

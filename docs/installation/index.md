@@ -23,7 +23,8 @@ Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker a
 | Method | Best for | HTTPS | Effort |
 |---|---|---|---|
 | [Quick Install (Script)](quick-install.md) | Most Linux users — fastest path | Auto via Caddy | Low |
-| [Docker Compose — Prebuilt](docker-compose.md) | Self-hosters who manage their own Compose files | Auto via Caddy | Low |
+| [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md) | Full capability (discovery, webhooks) — no build | Auto via Caddy | Low |
+| [Docker Compose — Prebuilt Single](docker-compose.md) | Minimal single-container, behind existing proxy | BYO | Low |
 | [Docker Compose — From Source](docker-compose-source.md) | Contributors or custom builds | Auto via Caddy | Medium |
 | [Single Docker Container](manual-docker.md) | Minimal setups, scripting, behind an existing reverse proxy | BYO | Low |
 
@@ -31,11 +32,14 @@ Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker a
 
 ## Which Method Should I Choose?
 
-**I just want to get Circuit Breaker running as fast as possible.**
-→ Use the [Quick Install script](quick-install.md). One command, guided prompts, automatic HTTPS.
+**I just want to get Circuit Breaker running as fast as possible with full capability (discovery, webhooks, HTTPS).**
+→ Use the [Quick Install script](quick-install.md). Choose option 2 (Compose stack). One command, no build, under 60 seconds.
 
-**I already manage services with Docker Compose and want a `docker-compose.yml` I can drop into my stack.**
-→ Use [Docker Compose — Prebuilt](docker-compose.md). No repo clone needed, pull-and-go.
+**I want a full compose stack (backend, workers, Caddy) without building from source.**
+→ Use [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md). Pull-only, zero build.
+
+**I want a minimal single container to drop into my stack.**
+→ Use [Docker Compose — Prebuilt Single](docker-compose.md). No repo clone needed, pull-and-go.
 
 **I want to build Circuit Breaker from source (or contribute to development).**
 → Use [Docker Compose — From Source](docker-compose-source.md). Clones the repo and builds images locally.

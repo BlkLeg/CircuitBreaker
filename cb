@@ -59,6 +59,9 @@ CB_BACKEND_CONTAINER=""
 #   docker  → /data
 #   compose → /app/data
 CB_DATA_DIR=""
+# CB_INSTALL_DIR, CB_COMPOSE_FILE: for compose mode (cb update, uninstall)
+CB_INSTALL_DIR=""
+CB_COMPOSE_FILE=""
 
 if [[ -f "$_CONF" ]]; then
   # shellcheck source=/dev/null
@@ -222,7 +225,17 @@ cmd_update() {
       _ok "Updated and restarted."
       ;;
     compose)
-      _fail "'cb update' is not supported for compose installs. Use: docker compose pull && docker compose up -d"
+      _require_docker
+      local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
+      local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
+      if [[ ! -f "$compose_file" ]]; then
+        _fail "Compose file not found at $compose_file. Set CB_INSTALL_DIR or CB_COMPOSE_FILE in install.conf."
+      fi
+      _info "Pulling latest images..."
+      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" pull)
+      _info "Recreating stack..."
+      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" up -d)
+      _ok "Updated and restarted."
       ;;
     binary)
       _fail "'cb update' is not supported for binary installs. Re-run install.sh to upgrade."

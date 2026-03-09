@@ -90,11 +90,17 @@
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Open: <https://localhost> or <https://circuitbreaker.local> <https://192.168.x.x> (Your host IP)
+Choose **Compose stack** (option 2) for full capability—discovery, webhooks, HTTPS—in under 60 seconds. No build required.
 
-**Overrides**: `CB_PORT=9090 curl ... | bash`
+Open: <https://localhost> or <https://circuitbreaker.local> or <https://192.168.x.x> (your host IP)
 
-**Uninstall**: `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
+**Overrides**: `CB_MODE=compose CB_YES=1 curl ... | bash` (non-interactive compose install)
+
+**Tagged deploy**: `CB_TAG=v1.2.0 curl ... | bash` (pin to a specific release)
+
+**Upgrade**: `cb update` or `docker compose -f ~/.circuit-breaker/docker-compose.prod.yml pull && docker compose up -d`
+
+**Uninstall**: `cb uninstall` or `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
 
 ### Native Packages
 
@@ -114,13 +120,24 @@ For native Linux installs, the installer supports two HTTPS modes:
 
 macOS and Windows native archives are built in CI, but their install path is currently manual rather than `install.sh`.
 
-### Docker Compose
+### Docker Compose (Prebuilt)
+
+Full stack (backend, frontend, workers, Caddy, NATS)—no build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
+# Choose option 2 (Compose stack)
+```
+
+Or run the single-container image (minimal—no discovery workers):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml -o docker-compose.yml && docker compose up -d
 ```
 
-Full `docker-compose.yml`:
+**Build from source** (for development): see [docs/installation/docker-compose-source.md](docs/installation/docker-compose-source.md)
+
+Single-container `docker-compose.yml`:
 
 ```yaml
 services:

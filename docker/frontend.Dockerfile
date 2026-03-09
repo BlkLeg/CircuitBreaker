@@ -4,7 +4,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY apps/frontend/package.json apps/frontend/package-lock.json* ./
-RUN npm ci
+# BuildKit cache mount keeps node_modules cache between builds (avoids re-downloading ~986 packages).
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
 # VERSION must land at /VERSION (one level above WORKDIR /app) so the
 # syncversion script's readFileSync('../VERSION') resolves correctly.

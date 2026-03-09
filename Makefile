@@ -127,7 +127,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh tunnel-up tunnel-down trust-ca preflight dev-stop-install
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh compose-pull-bases tunnel-up tunnel-down trust-ca preflight dev-stop-install
 
 lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
 	@echo "Regenerating apps/backend/requirements.txt from poetry.lock..."
@@ -138,7 +138,7 @@ docker-build: ## Build unified beta image + compose services from local source
 	@echo "Building circuit-breaker:beta (unified image)..."
 	DOCKER_BUILDKIT=1 docker build -t circuit-breaker:beta .
 	@echo "Building compose services (cb-backend, cb-frontend)..."
-	DOCKER_BUILDKIT=1 docker compose build
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build
 	@echo "✅ All images built from local source."
 
 setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx builder is active
@@ -161,11 +161,20 @@ dev-stop-install: ## Stop the install-script-deployed container if running (avoi
 
 compose-up: dev-stop-install ## Rebuild and start docker compose stack (stops install-script container first)
 	@echo "Starting docker-compose stack..."
-	DOCKER_BUILDKIT=1 docker compose up --build -d
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up --build -d
 
 compose-down: ## Stop and remove docker compose stack
 	@echo "Stopping docker-compose stack..."
 	docker compose down
+
+compose-pull-bases: ## Pre-pull base images to speed up first compose build (run before compose-up on fresh VPS)
+	@echo "Pre-pulling base images for compose build..."
+	@docker pull python:3.12-slim-bookworm
+	@docker pull node:20-alpine
+	@docker pull nginxinc/nginx-unprivileged:1.27-alpine
+	@docker pull caddy:2-alpine
+	@docker pull nats:2-alpine
+	@echo "✅ Base images cached. Run 'make compose-up' to build and start."
 
 compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
 	@echo "Stopping stack and removing all volumes..."
@@ -195,7 +204,7 @@ tunnel-down: ## Stop the Cloudflare Tunnel container
 compose-fresh: dev-stop-install ## Wipe all volumes then rebuild and start a clean stack (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."
 	docker compose down -v
-	DOCKER_BUILDKIT=1 docker compose up --build -d
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up --build -d
 	@echo "✅ Fresh stack running — open the app to complete first-run setup."
 	@echo "💡 Run 'make trust-ca' to trust the new Caddy CA for HTTPS."
 
