@@ -58,7 +58,7 @@ jobs:
           fi
           echo "tag=$SAFE_TAG" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "repo=ghcr.io/${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          echo "repo=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Build & Push multi-arch image
         uses: docker/build-push-action@v6
