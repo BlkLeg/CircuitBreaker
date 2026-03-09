@@ -51,9 +51,10 @@ jobs:
 
       - name: Run Docker smoke test
         run: |
-          docker run -d --name circuit-breaker-smoke -p 8080:8080 circuit-breaker:preflight
-          sleep 15
-          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8080/api/v1/health
+          docker run -d --name circuit-breaker-smoke -p 8080:8080 -e HOST=0.0.0.0 circuit-breaker:preflight
+          # Match Dockerfile HEALTHCHECK start-period (45s): entrypoint chown + migrations + uvicorn cold start
+          sleep 45
+          curl --fail --retry 10 --retry-delay 5 http://127.0.0.1:8080/api/v1/health
 
       - name: Cleanup Docker container
         if: always()
