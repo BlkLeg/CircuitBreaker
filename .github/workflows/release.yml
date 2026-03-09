@@ -3,15 +3,15 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
   packages: write
 
 jobs:
-  release:
-    name: Create GitHub Release with Changelog
+  test:
+    name: Test Before Release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,45 +21,111 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
           cache-dependency-path: apps/frontend/package-lock.json
 
-      # ── Verify tests pass before cutting release ──────────────────────
-      - name: Install apps/backend deps
+      - name: Install backend dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -e "./apps/backend[dev]"
 
       - name: Backend tests
-        working-directory: apps/backend
-        run: pytest tests/ -q
+        shell: bash
+        run: |
+          cd apps/backend
+          pytest tests/ -q
 
-      - name: Install apps/frontend deps
-        working-directory: apps/frontend
-        run: npm ci
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          cd apps/frontend
+          npm ci
 
       - name: Frontend tests
-        working-directory: apps/frontend
-        run: npm run test:ci
-
-      # ── Native Linux binary ────────────────────────────────────────────
-      - name: Build native Linux binary
+        shell: bash
         run: |
-          pip install pyinstaller
-          pyinstaller --onefile --noconsole \
-            --name "circuit-breaker-${{ github.ref_name }}-linux-amd64" \
-            apps/backend/src/app/main.py
+          cd apps/frontend
+          npm run test:ci
 
-      # ── GitHub Release ─────────────────────────────────────────────────
+  build-native:
+    name: Native Package (${{ matrix.label }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-amd64
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
+          - os: macos-14
+            label: macos-arm64
+          - os: windows-latest
+            label: windows-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Install backend dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./apps/backend[dev]"
+          pip install pyinstaller
+
+      - name: Build frontend bundle
+        shell: bash
+        run: |
+          cd apps/frontend
+          npm ci
+          npm run build
+
+      - name: Package native release asset
+        shell: bash
+        run: |
+          python scripts/build_native_release.py --version "${{ github.ref_name }}" --clean
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.label }}
+          path: dist/native/*
+
+  release:
+    name: Create GitHub Release
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Display packaged assets
+        shell: bash
+        run: |
+          ls -R release-assets
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            dist/circuit-breaker-${{ github.ref_name }}-linux-amd64
+          files: release-assets/**/*

@@ -24,9 +24,9 @@
 - **Scan Dashboard**: Ad-hoc/recurring profiles. Bulk merge new hosts/services.
 - **Rich Docs & Logs**: Markdown runbooks per entity. Audit trail for all changes.
 
-![Proxmox Map]  
-![Scan Page]  
-![Mobile View]
+![Mobile View](screenshots/new_mobile_layout.jpg)
+
+![Mobile View 2](screenshots/02-mobile.jpg)
 
 ### 🎨 Customizability
 
@@ -44,7 +44,7 @@
 - RBAC roles + scopes (viewer/editor/admin/demo)
 - Fernet secured secrets management
 - Audit logging for non-repudiation
-- JWT 
+- JWT
 
 ### 🔌 Integrations
 
@@ -56,7 +56,31 @@
 - Scans subnet in under 2 minutes (depends on worker count)
 - Loads quickly on low-resource devices like Pi and mini pcs
 
+### Efficient
+
+- Runs in under 500mb of RAM - Pi Ready!
+
 ***
+
+### Multiple Topologies (w/ live animations)
+
+![Concentric Rings](screenshots/01-concentric-rings.png)
+
+![Radial w/ Smooth connections](screenshots/01-heart-diagram.png)
+
+![Radial Bundled](screenshots/radial-bundled.png)
+
+![Subnet Separation](screenshots/01-subnet.png)
+
+### Floating HUD w/ live Telemtry
+
+![Maintenance Status](screenshots/01-hud-maintenance.png)
+
+![HUD w/ Telemetry](screenshots/01-hud-2.png)
+
+### Non-Repudiation Audit Logs
+
+![Audit Log](screenshots/01-secure-logging.png)
 
 ## Quick Start
 
@@ -71,6 +95,24 @@ Open: <https://localhost> or <https://circuitbreaker.local> <https://192.168.x.x
 **Overrides**: `CB_PORT=9090 curl ... | bash`
 
 **Uninstall**: `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
+
+### Native Packages
+
+Native release archives are now standardized across supported platforms:
+
+- Linux `amd64`: `circuit-breaker_<version>_linux_amd64.tar.gz`
+- Linux `arm64`: `circuit-breaker_<version>_linux_arm64.tar.gz`
+- macOS `arm64`: `circuit-breaker_<version>_macos_arm64.tar.gz`
+- Windows `amd64`: `circuit-breaker_<version>_windows_amd64.zip`
+
+The Linux native installer (`install.sh --mode binary`) consumes the same packaged archive format that GitHub Releases publishes, so branch/local packaging and release packaging now use the same artifact contract.
+
+For native Linux installs, the installer supports two HTTPS modes:
+
+- `local`: generate and optionally trust a local CA + server certificate
+- `provided`: copy an existing certificate and key into the managed cert directory
+
+macOS and Windows native archives are built in CI, but their install path is currently manual rather than `install.sh`.
 
 ### Docker Compose
 

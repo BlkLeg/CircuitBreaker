@@ -27,6 +27,9 @@ set -eo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
 _CONF="$CB_CONFIG_DIR/install.conf"
+if [[ ! -f "$_CONF" && -f /etc/circuit-breaker/install.conf ]]; then
+  _CONF="/etc/circuit-breaker/install.conf"
+fi
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 R='\e[0m'

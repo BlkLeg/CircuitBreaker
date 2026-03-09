@@ -54,9 +54,10 @@ data/
 install.sh
 uninstall.sh
 
-# Markdown files (README is kept as it may be useful for context)
+# Markdown files (README and DocsPage needed for native build)
 *.md
 !README.md
+!DocsPage.md
 
 # Tests (not needed in the production image)
 backend/tests/

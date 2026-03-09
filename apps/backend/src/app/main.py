@@ -2,6 +2,7 @@ import logging
 import mimetypes
 import os
 import re
+import sys
 from contextlib import asynccontextmanager
 from datetime import UTC
 from pathlib import Path, PurePosixPath
@@ -98,6 +99,9 @@ class _OAuthScrubFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
 
 _SQLITE_SCHEME = "sqlite:///"
+_DOCS_SEED_FILENAME = "DocsPage.md"
+_ALEMBIC_INI_FILENAME = "alembic.ini"
+_FAVICON_FILENAME = "favicon.ico"
 _logger = logging.getLogger(__name__)
 
 
@@ -117,7 +121,17 @@ def _seed_default_docs(db) -> None:
     if has_docs:
         return
 
-    docs_page_path = Path(__file__).resolve().parents[2] / "DocsPage.md"
+    docs_page_path = _resolve_existing_path(
+        os.environ.get("CB_DOCS_SEED_FILE"),
+        _share_dir_candidate(_DOCS_SEED_FILENAME),
+        _bundle_share_candidate(_DOCS_SEED_FILENAME),
+        _meipass_candidate(_DOCS_SEED_FILENAME),
+        Path(__file__).resolve().parents[4] / _DOCS_SEED_FILENAME,
+        Path(__file__).resolve().parents[2] / _DOCS_SEED_FILENAME,
+    )
+    if docs_page_path is None:
+        _logger.warning("Default docs seed file not found in configured resource paths")
+        return
     if not docs_page_path.exists():
         _logger.warning("Default docs seed file not found at %s", docs_page_path)
         return
@@ -196,7 +210,17 @@ def run_alembic_upgrade():
 
     # Resolve alembic.ini relative to this file so it works regardless of CWD.
     # main.py lives at <root>/src/app/main.py; alembic.ini is at <root>/alembic.ini.
-    _alembic_ini = str(Path(__file__).resolve().parent.parent.parent / "alembic.ini")
+    alembic_ini_path = _resolve_existing_path(
+        os.environ.get("CB_ALEMBIC_INI"),
+        _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
+        _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
+        _meipass_candidate("backend", _ALEMBIC_INI_FILENAME),
+        Path(__file__).resolve().parent.parent.parent / _ALEMBIC_INI_FILENAME,
+        Path(__file__).resolve().parents[4] / "apps" / "backend" / _ALEMBIC_INI_FILENAME,
+    )
+    if alembic_ini_path is None:
+        raise FileNotFoundError("Could not locate alembic.ini for migrations")
+    _alembic_ini = str(alembic_ini_path)
 
     try:
         insp = inspect(engine)
@@ -616,7 +640,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Circuit Breaker",
-    version="0.1.0",
+    version=settings.app_version,
     lifespan=lifespan,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -735,6 +759,30 @@ _STATIC_DIR = Path(__file__).parent.parent / "static"
 _FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 
 
+def _resolve_existing_path(*candidates: str | Path | None) -> Path | None:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.exists():
+            return path
+    return None
+
+
+def _share_dir_candidate(*parts: str) -> Path | None:
+    share_dir = os.environ.get("CB_SHARE_DIR")
+    return Path(share_dir).expanduser().joinpath(*parts) if share_dir else None
+
+
+def _bundle_share_candidate(*parts: str) -> Path:
+    return Path(sys.executable).resolve().parent.joinpath("share", *parts)
+
+
+def _meipass_candidate(*parts: str) -> Path | None:
+    meipass = getattr(sys, "_MEIPASS", None)
+    return Path(meipass).joinpath(*parts) if meipass else None
+
+
 def _get_frontend_dir() -> Path | None:
     # Prefer settings.static_dir which maps to the STATIC_DIR env var.
     # The Dockerfile sets STATIC_DIR=/app/frontend/dist; the default "../frontend/dist"
@@ -776,11 +824,11 @@ app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="bra
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon_file():
-    favicon = _branding_dir_data / "favicon.ico"
+    favicon = _branding_dir_data / _FAVICON_FILENAME
     if favicon.exists():
         return FileResponse(str(favicon), media_type="image/x-icon")
-    if _frontend_dir and (_frontend_dir / "favicon.ico").exists():
-        return FileResponse(str(_frontend_dir / "favicon.ico"), media_type="image/x-icon")
+    if _frontend_dir and (_frontend_dir / _FAVICON_FILENAME).exists():
+        return FileResponse(str(_frontend_dir / _FAVICON_FILENAME), media_type="image/x-icon")
     return Response(status_code=404)
 
 

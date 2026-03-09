@@ -1,5 +1,6 @@
 [Unit]
 Description=Circuit Breaker (Native)
+Documentation=https://github.com/BlkLeg/circuitbreaker
 After=network-online.target
 Wants=network-online.target
 

@@ -275,17 +275,22 @@ preflight: test frontend-build docker-build ## Run pre-commit checks (test, buil
 # ==============================================================================
 # RELEASE & NATIVE BUILDS
 # ==============================================================================
-.PHONY: build-native docker-publish docker-multiarch test-pi-local release-dry-run
+.PHONY: build-native build-native-docker docker-publish docker-multiarch test-pi-local release-dry-run
 
-build-native: ## Build a native binary for the current OS/ARCH using PyInstaller
-	@echo "Building native binary for $(OS_ARCH)..."
+build-native: frontend-build ## Build a packaged native archive for the current OS/ARCH
+	@echo "Building packaged native release for $(OS_ARCH)..."
 	@echo "Ensuring pyinstaller is installed..."
 	@.venv/bin/python -m pip install pyinstaller
-	@echo "Running PyInstaller..."
-	@.venv/bin/pyinstaller --onefile --noconsole \
-		--name "circuit-breaker-$(VERSION)-$(OS_ARCH)" \
-		$(BACKEND_DIR)/src/app/main.py
-	@echo "✅ Native binary created in dist/"
+	@echo "Running native packaging..."
+	@.venv/bin/python scripts/build_native_release.py --clean
+	@echo "✅ Native package(s) created in dist/native/"
+
+build-native-docker: ## Build native archive inside Ubuntu 22.04 container (glibc-compatible for older VMs)
+	@echo "Building native package in Docker (Ubuntu 22.04, glibc 2.35)..."
+	@mkdir -p dist/native
+	@docker build -f docker/Dockerfile.native -t cb-native-build . \
+		&& docker run --rm -v "$(CURDIR)/dist/native:/out" cb-native-build
+	@echo "✅ glibc-compatible native package(s) in dist/native/"
 
 docker-publish: setup-buildx ## Build and push a multi-arch Docker image to DOCKER_REPO
 	@echo "Building and publishing multi-arch image to $(DOCKER_REPO) as $(RELEASE_TAG)..."
@@ -311,6 +316,6 @@ test-pi-local: ## Test the ARM64 Docker image locally using emulation
 	@docker stop cb-pi-test
 
 release-dry-run: build-native ## Run a dry-run of the release process
-	@echo "\nDRY RUN: Would create release with assets in dist/"
-	@ls -l dist
+	@echo "\nDRY RUN: Would create release with assets in dist/native/"
+	@ls -l dist/native
 	@echo "\n✅ Release dry-run complete."

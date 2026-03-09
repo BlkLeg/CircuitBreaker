@@ -1,6 +1,8 @@
 # Getting Started
 
-This guide will walk you through the basic workflow for documenting your infrastructure in Circuit Breaker.
+This guide walks you through the basic workflow for documenting your infrastructure in Circuit Breaker.
+
+> **New installation?** See the [Installation](installation/index.md) section for step-by-step instructions covering the quick install script, Docker Compose, and other methods.
 
 ## First Launch
 

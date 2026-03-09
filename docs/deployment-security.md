@@ -31,6 +31,15 @@ Use this profile when more users or broader network access are involved.
 - Limit external exposure to only required ports.
 - Use secure secret values for protected data handling.
 
+### Native HTTPS modes
+
+For Linux native installs, Circuit Breaker supports two HTTPS paths:
+
+- `local` mode: the installer generates a local CA and a server certificate, stores them under `/etc/circuit-breaker/certs`, and can trust the CA locally so browsers stop warning.
+- `provided` mode: you point the installer at an existing certificate and private key, and it copies them into the managed cert directory for the service to use directly.
+
+Native HTTPS configuration is written to `/etc/circuit-breaker/config.yaml`, while install-derived runtime paths live in `/etc/circuit-breaker/env`.
+
 ### Important environment values
 
 - `CB_API_TOKEN`: protects write operations when configured.
@@ -87,6 +96,18 @@ If you replace named volumes with host folders, back up these locations together
 3. Any branding/icon directories you mounted separately
 
 If you restore `app.db` without the vault key file, encrypted secrets such as Proxmox API tokens and SMTP passwords will no longer be readable.
+
+### Native install persistence
+
+For native Linux installs, the important paths are:
+
+| Path | Stores | Why it matters |
+|---|---|---|
+| `/var/lib/circuit-breaker` | SQLite DB, uploads, runtime data | Core persistent application state |
+| `/etc/circuit-breaker/env` | API token and runtime environment overrides | Needed for service configuration continuity |
+| `/etc/circuit-breaker/config.yaml` | Native runtime config | Holds host/port/data/TLS settings |
+| `/usr/local/share/circuit-breaker` | Frontend bundle, Alembic config, migrations, docs seed, version metadata | Required by packaged native releases |
+| `/etc/circuit-breaker/certs` | Native TLS cert/key files | Required when native HTTPS is enabled |
 
 ---
 

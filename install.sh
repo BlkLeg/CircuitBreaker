@@ -38,6 +38,13 @@ CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_VERSION}}"
 CB_PORT="${CB_PORT:-8080}"
 CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
 CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
+CB_BINARY_DATA_DIR="${CB_BINARY_DATA_DIR:-/var/lib/circuit-breaker}"
+CB_BINARY_LOG_DIR="${CB_BINARY_LOG_DIR:-/var/log/circuit-breaker}"
+CB_BINARY_SHARE_DIR="${CB_BINARY_SHARE_DIR:-/usr/local/share/circuit-breaker}"
+CB_BINARY_CERT_DIR="${CB_BINARY_CERT_DIR:-/etc/circuit-breaker/certs}"
+CB_BINARY_TLS_MODE="${CB_BINARY_TLS_MODE:-off}"
+CB_BINARY_TLS_CERT_FILE="${CB_BINARY_TLS_CERT_FILE:-}"
+CB_BINARY_TLS_KEY_FILE="${CB_BINARY_TLS_KEY_FILE:-}"
 MINIMUM_DOCKER_VERSION=20
 REGION=""
 ARCH=""
@@ -87,6 +94,26 @@ Confirm() {
   case "$reply" in [yY][eE][sS]|[yY]) return 0 ;; *) return 1 ;; esac
 }
 
+Prompt_Input() {
+  local prompt="$1"
+  local default="${2:-}"
+  if [[ "$CB_YES" == "1" ]]; then
+    printf '%s' "$default"
+    return
+  fi
+  if [[ -n "$default" ]]; then
+    printf "  %s [%s] " "$prompt" "$default"
+  else
+    printf "  %s " "$prompt"
+  fi
+  read -r reply < /dev/tty
+  if [[ -z "$reply" ]]; then
+    printf '%s' "$default"
+  else
+    printf '%s' "$reply"
+  fi
+}
+
 # ─── Header ──────────────────────────────────────────────────────────────────
 Print_Header() {
   clear
@@ -128,6 +155,9 @@ Docker mode options:
 Binary mode options:
   --no-desktop          Skip .desktop file and icon install
   --no-systemd          Skip systemd service setup (useful in WSL/containers)
+  --tls-mode MODE       Native HTTPS mode: off, local, or provided
+  --cert-file PATH      Existing TLS certificate path for native installs
+  --key-file PATH       Existing TLS private key path for native installs
 
   --help                Show this help and exit
 
@@ -160,6 +190,9 @@ parse_flags() {
       --container)  CB_CONTAINER="$2"; shift 2 ;;
       --tls)        CB_TLS="1";        shift 1 ;;
       --hostname)   CB_HOSTNAME="$2";  shift 2 ;;
+      --tls-mode)   CB_BINARY_TLS_MODE="$2"; shift 2 ;;
+      --cert-file)  CB_BINARY_TLS_CERT_FILE="$2"; shift 2 ;;
+      --key-file)   CB_BINARY_TLS_KEY_FILE="$2"; shift 2 ;;
       --yes)        CB_YES=1;          shift 1 ;;
       --no-desktop) CB_NO_DESKTOP=1;   shift 1 ;;
       --no-systemd) CB_NO_SYSTEMD=1;   shift 1 ;;
@@ -499,14 +532,14 @@ Wait_For_Caddy_CA() {
 }
 
 Trust_CA() {
-  local cert_file="$CB_CONFIG_DIR/caddy-root-ca.crt"
+  local cert_file="${1:-$CB_CONFIG_DIR/caddy-root-ca.crt}"
 
   echo ""
   echo -e "$GREEN_LINE"
   echo -e " ${aCOLOUR[1]}Root Certificate Trust${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
   echo ""
-  echo -e "  Caddy generated a local Certificate Authority for HTTPS."
+  echo -e "  Circuit Breaker generated a local Certificate Authority for HTTPS."
   echo -e "  To access ${aCOLOUR[0]}https://${CB_HOSTNAME}${COLOUR_RESET} without browser warnings,"
   echo -e "  the CA needs to be trusted by your system and browser."
   echo ""
@@ -637,6 +670,46 @@ ENVEOF
   Show 0 "API master token generated and saved to $env_file"
 }
 
+Upsert_Env_Value() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  if [[ -f "$env_file" ]] && grep -q "^${key}=" "$env_file" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$env_file"
+  fi
+}
+
+Persist_Binary_Runtime_Env() {
+  local env_file="/etc/circuit-breaker/env"
+  sudo touch "$env_file"
+  sudo chown root:circuitbreaker "$env_file"
+  sudo chmod 640 "$env_file"
+
+  local tmp_env
+  tmp_env=$(mktemp)
+  sudo cp "$env_file" "$tmp_env"
+
+  Upsert_Env_Value "$tmp_env" "APP_VERSION" "$(/usr/local/bin/circuit-breaker --version 2>/dev/null | head -1 || echo "$CB_VERSION")"
+  Upsert_Env_Value "$tmp_env" "CB_SHARE_DIR" "$CB_BINARY_SHARE_DIR"
+  Upsert_Env_Value "$tmp_env" "CB_ALEMBIC_INI" "$CB_BINARY_SHARE_DIR/backend/alembic.ini"
+  Upsert_Env_Value "$tmp_env" "CB_DOCS_SEED_FILE" "$CB_BINARY_SHARE_DIR/DocsPage.md"
+  Upsert_Env_Value "$tmp_env" "STATIC_DIR" "$CB_BINARY_SHARE_DIR/frontend"
+  Upsert_Env_Value "$tmp_env" "CB_DATA_DIR" "$CB_BINARY_DATA_DIR"
+  if [[ "$CB_BINARY_TLS_MODE" != "off" && -n "$CB_BINARY_TLS_CERT_FILE" && -n "$CB_BINARY_TLS_KEY_FILE" ]]; then
+    Upsert_Env_Value "$tmp_env" "CB_TLS_ENABLED" "true"
+    Upsert_Env_Value "$tmp_env" "CB_TLS_CERT_FILE" "$CB_BINARY_TLS_CERT_FILE"
+    Upsert_Env_Value "$tmp_env" "CB_TLS_KEY_FILE" "$CB_BINARY_TLS_KEY_FILE"
+  else
+    Upsert_Env_Value "$tmp_env" "CB_TLS_ENABLED" "false"
+  fi
+
+  sudo install -m 640 -o root -g circuitbreaker "$tmp_env" "$env_file"
+  rm -f "$tmp_env"
+  Show 0 "Native runtime environment saved to $env_file"
+}
+
 ###############################################################################
 # DOCKER INSTALL HELPERS
 ###############################################################################
@@ -679,9 +752,13 @@ Pull_And_Run() {
 
 Wait_For_Ready() {
   local port="${1:-$CB_PORT}"
+  local scheme="${2:-http}"
+  local insecure="${3:-0}"
   Show 2 "Waiting for Circuit Breaker to be ready..."
   local tries=0
-  until curl -sf "http://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; do
+  local curl_args=(-sf)
+  [[ "$insecure" == "1" ]] && curl_args+=(-k)
+  until curl "${curl_args[@]}" "${scheme}://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; do
     tries=$((tries + 1))
     if [[ $tries -ge 30 ]]; then
       Show 1 "Health check timed out after $((tries * 2))s."
@@ -755,10 +832,10 @@ Download_Binary() {
     Show 2 "Resolving latest release from GitHub..."
     url=$(curl -fsSL https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest \
           | grep '"browser_download_url"' \
-          | grep "linux-${arch}\.tar\.gz" \
+          | grep "circuit-breaker_.*_linux_${arch}\.tar\.gz" \
           | head -1 | cut -d'"' -f4 || true)
   else
-    url="https://github.com/BlkLeg/CircuitBreaker/releases/download/${CB_VERSION}/circuit-breaker-${CB_VERSION}-linux-${arch}.tar.gz"
+    url="https://github.com/BlkLeg/CircuitBreaker/releases/download/${CB_VERSION}/circuit-breaker_${CB_VERSION}_linux_${arch}.tar.gz"
   fi
 
   if [[ -z "$url" ]]; then
@@ -771,16 +848,27 @@ Download_Binary() {
   tar -xzf "$tmpdir/cb.tar.gz" -C "$tmpdir"
 
   if [[ ! -f "$tmpdir/circuit-breaker" ]]; then
-    # Some tarballs have a subdirectory
-    local found
-    found=$(find "$tmpdir" -name "circuit-breaker" -type f | head -1 || true)
-    [[ -z "$found" ]] && { rm -rf "$tmpdir"; Show 1 "Binary not found in archive."; }
-    cp "$found" "$tmpdir/circuit-breaker"
+    rm -rf "$tmpdir"
+    Show 1 "Binary not found in archive."
+  fi
+  if [[ ! -d "$tmpdir/share" ]]; then
+    rm -rf "$tmpdir"
+    Show 1 "Shared runtime assets not found in archive."
   fi
 
-  sudo install -Dm755 "$tmpdir/circuit-breaker" /usr/local/bin/circuit-breaker
-  rm -rf "$tmpdir"
+  CB_BINARY_TMPDIR="$tmpdir"
+  Show 0 "Native package downloaded and unpacked."
+}
+
+Install_Binary_Bundle() {
+  [[ -n "${CB_BINARY_TMPDIR:-}" && -d "${CB_BINARY_TMPDIR}" ]] \
+    || Show 1 "Binary package was not downloaded correctly."
+
+  sudo install -Dm755 "$CB_BINARY_TMPDIR/circuit-breaker" /usr/local/bin/circuit-breaker
+  sudo install -d -m 755 "$CB_BINARY_SHARE_DIR"
+  sudo cp -a "$CB_BINARY_TMPDIR/share/." "$CB_BINARY_SHARE_DIR/"
   Show 0 "Binary installed to /usr/local/bin/circuit-breaker"
+  Show 0 "Shared runtime assets installed to $CB_BINARY_SHARE_DIR"
 }
 
 Create_User_And_Dirs() {
@@ -790,24 +878,134 @@ Create_User_And_Dirs() {
   else
     Show 0 "System user 'circuitbreaker' already exists."
   fi
-  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker /var/lib/circuit-breaker
-  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker /var/log/circuit-breaker
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker "$CB_BINARY_DATA_DIR"
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker "$CB_BINARY_LOG_DIR"
   sudo install -d -m 755 /etc/circuit-breaker
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker "$CB_BINARY_CERT_DIR"
   Show 0 "Directories created."
+}
+
+Generate_Local_TLS_Certs() {
+  command -v openssl >/dev/null 2>&1 || Show 1 "openssl is required to generate local TLS certificates."
+
+  local cert_dir
+  cert_dir=$(Prompt_Input "Certificate storage directory" "$CB_BINARY_CERT_DIR")
+  [[ -n "$cert_dir" ]] || cert_dir="$CB_BINARY_CERT_DIR"
+  CB_BINARY_CERT_DIR="$cert_dir"
+  CB_HOSTNAME=$(Prompt_Input "Hostname for the local HTTPS certificate" "$CB_HOSTNAME")
+  [[ -n "$CB_HOSTNAME" ]] || CB_HOSTNAME="circuitbreaker.local"
+
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker "$CB_BINARY_CERT_DIR"
+
+  local ca_key="$CB_BINARY_CERT_DIR/circuit-breaker-local-ca.key"
+  local ca_crt="$CB_BINARY_CERT_DIR/circuit-breaker-local-ca.crt"
+  local server_key="$CB_BINARY_CERT_DIR/server.key"
+  local server_csr="$CB_BINARY_CERT_DIR/server.csr"
+  local server_crt="$CB_BINARY_CERT_DIR/server.crt"
+  local ext_file="$CB_BINARY_CERT_DIR/server.ext"
+
+  sudo openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+    -subj "/CN=Circuit Breaker Local CA" \
+    -keyout "$ca_key" -out "$ca_crt" >/dev/null 2>&1
+  sudo openssl req -newkey rsa:2048 -nodes \
+    -subj "/CN=${CB_HOSTNAME}" \
+    -keyout "$server_key" -out "$server_csr" >/dev/null 2>&1
+  sudo tee "$ext_file" >/dev/null <<EOF
+subjectAltName=DNS:${CB_HOSTNAME},IP:127.0.0.1
+extendedKeyUsage=serverAuth
+EOF
+  sudo openssl x509 -req -sha256 -days 825 \
+    -in "$server_csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial \
+    -out "$server_crt" -extfile "$ext_file" >/dev/null 2>&1
+  sudo rm -f "$server_csr" "$ext_file"
+  sudo chown root:circuitbreaker "$server_key" "$server_crt"
+  sudo chmod 600 "$ca_key"
+  sudo chmod 640 "$server_key"
+  sudo chmod 644 "$ca_crt" "$server_crt"
+
+  CB_BINARY_TLS_MODE="local"
+  CB_BINARY_TLS_CERT_FILE="$server_crt"
+  CB_BINARY_TLS_KEY_FILE="$server_key"
+  Show 0 "Local HTTPS certificates generated."
+
+  if Confirm "Trust the generated local Certificate Authority now?" "y"; then
+    Trust_CA "$ca_crt"
+  else
+    Show 3 "Skipping CA trust. Browsers will show a certificate warning."
+  fi
+}
+
+Setup_Provided_TLS_Certs() {
+  local source_cert source_key cert_dir
+  source_cert=$(Prompt_Input "Path to your TLS certificate file" "$CB_BINARY_TLS_CERT_FILE")
+  source_key=$(Prompt_Input "Path to your TLS private key file" "$CB_BINARY_TLS_KEY_FILE")
+  cert_dir=$(Prompt_Input "Certificate storage directory" "$CB_BINARY_CERT_DIR")
+
+  [[ -f "$source_cert" ]] || Show 1 "Certificate file not found: $source_cert"
+  [[ -f "$source_key" ]] || Show 1 "Private key file not found: $source_key"
+  [[ -n "$cert_dir" ]] || cert_dir="$CB_BINARY_CERT_DIR"
+  CB_BINARY_CERT_DIR="$cert_dir"
+
+  sudo install -d -m 750 -o circuitbreaker -g circuitbreaker "$CB_BINARY_CERT_DIR"
+  sudo install -m 640 -o root -g circuitbreaker "$source_cert" "$CB_BINARY_CERT_DIR/server.crt"
+  sudo install -m 640 -o root -g circuitbreaker "$source_key" "$CB_BINARY_CERT_DIR/server.key"
+
+  CB_BINARY_TLS_MODE="provided"
+  CB_BINARY_TLS_CERT_FILE="$CB_BINARY_CERT_DIR/server.crt"
+  CB_BINARY_TLS_KEY_FILE="$CB_BINARY_CERT_DIR/server.key"
+  Show 0 "Provided TLS certificate and key installed."
+}
+
+Configure_Binary_TLS() {
+  if [[ "$CB_BINARY_TLS_MODE" == "off" ]]; then
+    if ! Confirm "Enable HTTPS for the native binary install?"; then
+      Show 2 "Skipping HTTPS for native install."
+      return
+    fi
+    echo ""
+    echo -e "$GREEN_LINE"
+    echo -e " ${aCOLOUR[1]}Native HTTPS Mode${COLOUR_RESET}"
+    echo -e "$GREEN_LINE"
+    echo ""
+    echo -e "  ${aCOLOUR[1]}[1]${COLOUR_RESET} Generate and trust a local HTTPS certificate"
+    echo -e "  ${aCOLOUR[1]}[2]${COLOUR_RESET} Use an existing certificate and private key"
+    echo ""
+    printf "  Choice [1/2]: "
+    read -r tls_choice < /dev/tty
+    case "$tls_choice" in
+      1) CB_BINARY_TLS_MODE="local" ;;
+      2) CB_BINARY_TLS_MODE="provided" ;;
+      *) Show 1 "Invalid HTTPS choice '$tls_choice'." ;;
+    esac
+  fi
+
+  case "$CB_BINARY_TLS_MODE" in
+    off|"") ;;
+    local) Generate_Local_TLS_Certs ;;
+    provided) Setup_Provided_TLS_Certs ;;
+    *) Show 1 "Unsupported native TLS mode '$CB_BINARY_TLS_MODE'. Use off, local, or provided." ;;
+  esac
 }
 
 Generate_Config() {
   local cfg="/etc/circuit-breaker/config.yaml"
   if [[ -f "$cfg" ]]; then
-    Show 0 "Config already exists at $cfg — skipping (idempotent)."
-    return
+    sudo cp "$cfg" "${cfg}.bak"
+    Show 3 "Existing config backed up to ${cfg}.bak before refresh."
   fi
   sudo tee "$cfg" >/dev/null <<CFGEOF
 # Circuit Breaker configuration — generated by install.sh
-port: 8080
-data_dir: /var/lib/circuit-breaker
-log_dir: /var/log/circuit-breaker
-auth_enabled: false
+host: 0.0.0.0
+port: ${CB_PORT}
+data_dir: ${CB_BINARY_DATA_DIR}
+log_dir: ${CB_BINARY_LOG_DIR}
+share_dir: ${CB_BINARY_SHARE_DIR}
+static_dir: ${CB_BINARY_SHARE_DIR}/frontend
+uploads_dir: ${CB_BINARY_DATA_DIR}/uploads
+workers: 1
+tls_enabled: $([[ "$CB_BINARY_TLS_MODE" == "off" || -z "$CB_BINARY_TLS_MODE" ]] && echo "false" || echo "true")
+tls_cert_file: ${CB_BINARY_TLS_CERT_FILE}
+tls_key_file: ${CB_BINARY_TLS_KEY_FILE}
 CFGEOF
   Show 0 "Config written to $cfg"
 }
@@ -823,7 +1021,7 @@ Setup_Systemd_Binary() {
   fi
 
   Show 2 "Installing systemd service (native binary)..."
-  sudo tee /etc/systemd/system/circuit-breaker.service >/dev/null <<'UNIT'
+  sudo tee /etc/systemd/system/circuit-breaker.service >/dev/null <<UNIT
 [Unit]
 Description=Circuit Breaker (Native)
 After=network-online.target
@@ -833,7 +1031,7 @@ Wants=network-online.target
 Type=simple
 User=circuitbreaker
 Group=circuitbreaker
-WorkingDirectory=/var/lib/circuit-breaker
+WorkingDirectory=${CB_BINARY_DATA_DIR}
 EnvironmentFile=-/etc/circuit-breaker/env
 ExecStart=/usr/local/bin/circuit-breaker --config /etc/circuit-breaker/config.yaml
 Restart=on-failure
@@ -866,14 +1064,20 @@ Setup_Desktop() {
   fi
 
   Show 2 "Installing desktop integration..."
+  local desktop_scheme="http"
+  local desktop_host="localhost"
+  if [[ "$CB_MODE" == "binary" && "$CB_BINARY_TLS_MODE" != "off" && -n "$CB_BINARY_TLS_MODE" ]]; then
+    desktop_scheme="https"
+    desktop_host="$CB_HOSTNAME"
+  fi
 
   # Write .desktop file
-  sudo tee /usr/share/applications/circuit-breaker.desktop >/dev/null <<'DESKTOP'
+  sudo tee /usr/share/applications/circuit-breaker.desktop >/dev/null <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Circuit Breaker
 Comment=Homelab topology, documented.
-Exec=xdg-open http://localhost:8080
+Exec=xdg-open ${desktop_scheme}://${desktop_host}:${CB_PORT}
 Icon=circuit-breaker
 Terminal=false
 Categories=Network;System;Utility;
@@ -937,11 +1141,11 @@ Save_Install_Config() {
 # Circuit Breaker — install config (written by install.sh, read by cb)
 CB_MODE=${CB_MODE}
 CB_CONTAINER=${CB_CONTAINER}
-CB_BACKEND_CONTAINER=${CB_CONTAINER}
+CB_BACKEND_CONTAINER=$([[ "$CB_MODE" == "binary" ]] && echo "" || echo "${CB_CONTAINER}")
 CB_VOLUME=${CB_VOLUME}
 CB_PORT=${CB_PORT}
 CB_IMAGE=${CB_IMAGE}
-CB_DATA_DIR=/data
+CB_DATA_DIR=$([[ "$CB_MODE" == "binary" ]] && echo "${CB_BINARY_DATA_DIR}" || echo "/data")
 CONFEOF
   chmod 600 "$CB_CONFIG_DIR/install.conf"
   Show 0 "Install config saved to $CB_CONFIG_DIR/install.conf"
@@ -1032,6 +1236,17 @@ CB_CA_SYSTEM_NAME="${CB_CA_SYSTEM_NAME}"
 CB_CA_NSS_NAME="${CB_CA_NSS_NAME}"
 CB_CONFIG_DIR="${CB_CONFIG_DIR}"
 DOCKER_VARS
+  elif [[ "$mode" == "binary" ]]; then
+    cat >> "$tmp" <<BINARY_VARS
+CB_BINARY_DATA_DIR="${CB_BINARY_DATA_DIR}"
+CB_BINARY_LOG_DIR="${CB_BINARY_LOG_DIR}"
+CB_BINARY_SHARE_DIR="${CB_BINARY_SHARE_DIR}"
+CB_BINARY_CERT_DIR="${CB_BINARY_CERT_DIR}"
+CB_BINARY_TLS_MODE="${CB_BINARY_TLS_MODE}"
+CB_HOSTNAME="${CB_HOSTNAME}"
+CB_CA_SYSTEM_NAME="${CB_CA_SYSTEM_NAME}"
+CB_CA_NSS_NAME="${CB_CA_NSS_NAME}"
+BINARY_VARS
   fi
 
   # Uninstall logic — single-quote heredoc so no expansion happens here
@@ -1119,6 +1334,9 @@ elif [[ "$INSTALLED_MODE" == "binary" ]]; then
   sudo rm -f /usr/local/bin/circuit-breaker
   Show 0 "Binary removed."
 
+  sudo rm -rf "$CB_BINARY_SHARE_DIR"
+  Show 0 "Shared runtime assets removed."
+
   sudo rm -rf /etc/circuit-breaker/
   Show 0 "Config removed."
 
@@ -1128,11 +1346,26 @@ elif [[ "$INSTALLED_MODE" == "binary" ]]; then
   gtk-update-icon-cache /usr/share/icons/hicolor/ 2>/dev/null || true
   Show 0 "Desktop entry and icon removed."
 
-  if Confirm "Remove data (/var/lib/circuit-breaker) and logs (/var/log/circuit-breaker)?"; then
-    sudo rm -rf /var/lib/circuit-breaker /var/log/circuit-breaker
+  if [[ "$CB_BINARY_TLS_MODE" == "local" ]]; then
+    sudo rm -f "/etc/pki/ca-trust/source/anchors/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    sudo rm -f "/usr/local/share/ca-certificates/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    sudo rm -f "/etc/ca-certificates/trust-source/anchors/${CB_CA_SYSTEM_NAME}.crt" 2>/dev/null || true
+    command -v update-ca-trust >/dev/null 2>&1 && sudo update-ca-trust || true
+    command -v update-ca-certificates >/dev/null 2>&1 && sudo update-ca-certificates || true
+    if command -v certutil >/dev/null 2>&1; then
+      certutil -d sql:"$HOME/.pki/nssdb" -D -n "$CB_CA_NSS_NAME" 2>/dev/null || true
+    fi
+    if grep -q "$CB_HOSTNAME" /etc/hosts 2>/dev/null; then
+      sudo sed -i "/$CB_HOSTNAME/d" /etc/hosts
+    fi
+    Show 0 "Local HTTPS trust removed."
+  fi
+
+  if Confirm "Remove data (${CB_BINARY_DATA_DIR}) and logs (${CB_BINARY_LOG_DIR})?"; then
+    sudo rm -rf "$CB_BINARY_DATA_DIR" "$CB_BINARY_LOG_DIR"
     Show 0 "Data and logs removed."
   else
-    Show 3 "Data and logs kept at /var/lib/circuit-breaker and /var/log/circuit-breaker"
+    Show 3 "Data and logs kept at ${CB_BINARY_DATA_DIR} and ${CB_BINARY_LOG_DIR}"
   fi
 
   if id circuitbreaker &>/dev/null; then
@@ -1233,20 +1466,29 @@ Install_Binary_Mode() {
   echo ""
 
   Require_Sudo
+  Find_Free_Port
   Download_Binary
+  Install_Binary_Bundle
   Create_User_And_Dirs
+  Configure_Binary_TLS
 
   # For binary mode, write config + token to /etc/circuit-breaker/
   CB_CONFIG_DIR="/etc/circuit-breaker"
   Generate_Config
   Generate_API_Token
+  Persist_Binary_Runtime_Env
 
   Setup_Systemd_Binary
   Setup_Desktop
-  Wait_For_Ready 8080
+  if [[ "$CB_BINARY_TLS_MODE" == "off" || -z "$CB_BINARY_TLS_MODE" ]]; then
+    Wait_For_Ready "$CB_PORT" "http" "0"
+  else
+    Wait_For_Ready "$CB_PORT" "https" "1"
+  fi
   Save_Install_Config
   Install_CB_Command
   Write_Uninstall_Script "binary"
+  rm -rf "${CB_BINARY_TMPDIR:-}"
   Welcome_Banner_Binary
 }
 
@@ -1308,6 +1550,12 @@ Welcome_Banner_Docker() {
 Welcome_Banner_Binary() {
   local ver
   ver=$(/usr/local/bin/circuit-breaker --version 2>/dev/null | head -1 || echo "$CB_VERSION")
+  local scheme="http"
+  local host="localhost"
+  if [[ "$CB_BINARY_TLS_MODE" != "off" && -n "$CB_BINARY_TLS_MODE" ]]; then
+    scheme="https"
+    host="$CB_HOSTNAME"
+  fi
 
   echo ""
   echo -e "$GREEN_LINE"
@@ -1318,13 +1566,13 @@ Welcome_Banner_Binary() {
   echo -e "  ${aCOLOUR[2]}Version :${COLOUR_RESET} ${ver}"
   echo -e "  ${aCOLOUR[2]}Binary  :${COLOUR_RESET} /usr/local/bin/circuit-breaker"
   echo -e "  ${aCOLOUR[2]}Config  :${COLOUR_RESET} /etc/circuit-breaker/config.yaml"
-  echo -e "  ${aCOLOUR[2]}Data    :${COLOUR_RESET} /var/lib/circuit-breaker"
+  echo -e "  ${aCOLOUR[2]}Data    :${COLOUR_RESET} ${CB_BINARY_DATA_DIR}"
   echo -e "  ${aCOLOUR[2]}Service :${COLOUR_RESET} systemctl status circuit-breaker"
   echo ""
-  echo -e "$GREEN_BULLET ${aCOLOUR[0]}http://localhost:8080${COLOUR_RESET}"
+  echo -e "$GREEN_BULLET ${aCOLOUR[0]}${scheme}://${host}:${CB_PORT}${COLOUR_RESET}"
   if command -v ip >/dev/null 2>&1; then
     while IFS= read -r ip_addr; do
-      echo -e "$GREEN_BULLET http://${ip_addr}:8080"
+      echo -e "$GREEN_BULLET ${scheme}://${ip_addr}:${CB_PORT}"
     done < <(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
   fi
   echo ""

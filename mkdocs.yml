@@ -9,6 +9,16 @@ theme:
 nav:
   - Welcome: index.md
   - Roadmap: roadmap.md
+  - Installation:
+      - Overview & Methods: installation/index.md
+      - Quick Install (Script): installation/quick-install.md
+      - Docker Compose (Prebuilt): installation/docker-compose.md
+      - Docker Compose (From Source): installation/docker-compose-source.md
+      - Single Docker Container: installation/manual-docker.md
+      - First-Run Setup: installation/first-run.md
+      - Configuration Reference: installation/configuration.md
+      - Upgrading: installation/upgrading.md
+      - Uninstalling: installation/uninstalling.md
   - Getting Started: getting-started.md
   - Features:
       - Hardware: hardware.md

@@ -1,22 +1,40 @@
+import os
+import sys
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _read_version_file() -> str:
-    """Read the canonical VERSION file from the repo root.
+def _version_candidates() -> list[Path]:
+    current = Path(__file__).resolve()
+    candidates: list[Path] = []
+    share_dir = os.environ.get("CB_SHARE_DIR")
+    if share_dir:
+        candidates.append(Path(share_dir) / "VERSION")
+    executable_share = Path(sys.executable).resolve().parent / "share" / "VERSION"
+    candidates.append(executable_share)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "VERSION")
+    if len(current.parents) > 5:
+        candidates.append(current.parents[5] / "VERSION")
+    return candidates
 
-    Resolution order:
-      1. Walk up from this file's location to find VERSION at the repo root.
-      2. Fall back to 'unknown' if the file is missing (e.g. editable installs
-         where the working directory layout differs).
-    """
-    # __file__ is backend/src/app/core/config.py → repo root is 5 levels up
-    candidate = Path(__file__).resolve().parent.parent.parent.parent.parent / "VERSION"
-    try:
-        return candidate.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return "unknown"
+
+def resolve_app_version() -> str:
+    """Resolve the app version for source, installed, and PyInstaller runs."""
+    env_version = os.environ.get("APP_VERSION", "").strip()
+    if env_version:
+        return env_version
+
+    for candidate in _version_candidates():
+        try:
+            version = candidate.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            continue
+        if version:
+            return version
+    return "unknown"
 
 
 class Settings(BaseSettings):
@@ -25,7 +43,7 @@ class Settings(BaseSettings):
     app_name: str = "Circuit Breaker"
     # APP_VERSION env var overrides at runtime (set via Docker build arg / compose).
     # Falls back to the repo-root VERSION file for local dev.
-    app_version: str = _read_version_file()
+    app_version: str = resolve_app_version()
     debug: bool = False
     # Developer mode — enables verbose SQL logging, exposes
     # full stack traces in error responses.  NEVER enable in production.
