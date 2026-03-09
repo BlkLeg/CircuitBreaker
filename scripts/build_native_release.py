@@ -105,6 +105,10 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
     build_dir.mkdir(parents=True, exist_ok=True)
     spec_dir.mkdir(parents=True, exist_ok=True)
 
+    hidden_imports = [
+        "aiosqlite",  # SQLAlchemy async SQLite driver (lazy-loaded)
+        "greenlet",   # Used by aiosqlite
+    ]
     run(
         [
             sys.executable,
@@ -120,6 +124,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
             str(spec_dir),
             "--name",
             binary_name(target_os),
+            *[f"--hidden-import={m}" for m in hidden_imports],
             str(BACKEND_ENTRYPOINT),
         ]
     )
@@ -177,7 +182,14 @@ def create_archive(bundle_dir: Path, version: str, target_os: str, target_arch: 
     output_dir.mkdir(parents=True, exist_ok=True)
     archive_path = output_dir / archive_name(version, target_os, target_arch)
     if archive_path.exists():
-        archive_path.unlink()
+        try:
+            archive_path.unlink()
+        except PermissionError as e:
+            raise SystemExit(
+                f"Archive exists and cannot be removed: {archive_path}\n"
+                f"  (possibly created by root). Remove it manually:\n"
+                f"  sudo rm {archive_path}"
+            ) from e
 
     if target_os == "windows":
         with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
