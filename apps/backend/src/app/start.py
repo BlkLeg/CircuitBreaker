@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # Ensure backend/src is on sys.path so 'import app' resolves correctly
 # regardless of WORKDIR or whether the package is installed in site-packages.
@@ -47,7 +48,9 @@ import uvicorn  # noqa: E402
 from app.core.config import resolve_app_version  # noqa: E402
 
 
-def _coerce_value(raw: str) -> object:
+def _coerce_value(raw: str | None) -> object:
+    if raw is None:
+        return ""
     value = raw.strip()
     if not value:
         return ""
@@ -137,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_runtime(args: argparse.Namespace) -> dict[str, object]:
+def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
     config_path = args.config if args.config and Path(args.config).exists() else None
     config = load_native_config(config_path)
 
@@ -158,8 +161,8 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, object]:
     alembic_ini = _get_option(None, "CB_ALEMBIC_INI", config, "alembic_ini", None)
 
     host = str(_get_option(args.host, "HOST", config, "host", "0.0.0.0"))
-    port = int(_get_option(args.port, "PORT", config, "port", 8080))
-    workers = int(_get_option(args.workers, "UVICORN_WORKERS", config, "workers", 1))
+    port = int(str(_get_option(args.port, "PORT", config, "port", 8080)))
+    workers = int(str(_get_option(args.workers, "UVICORN_WORKERS", config, "workers", 1)))
     tls_enabled = bool(_get_option(None, "CB_TLS_ENABLED", config, "tls_enabled", False))
     ssl_certfile = _get_option(args.ssl_certfile, "CB_TLS_CERT_FILE", config, "tls_cert_file", None)
     ssl_keyfile = _get_option(args.ssl_keyfile, "CB_TLS_KEY_FILE", config, "tls_key_file", None)
@@ -188,7 +191,7 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, object]:
     if alembic_ini:
         _set_default_env("CB_ALEMBIC_INI", str(alembic_ini))
 
-    tls: dict[str, str] = {}
+    tls: dict[str, Any] = {}
     if ssl_certfile or ssl_keyfile:
         if not ssl_certfile or not ssl_keyfile:
             raise SystemExit("Both TLS cert and key files are required when HTTPS is enabled.")
