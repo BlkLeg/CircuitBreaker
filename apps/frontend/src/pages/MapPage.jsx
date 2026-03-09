@@ -34,7 +34,7 @@ import DeleteConflictModal from '../components/map/DeleteConflictModal';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
-import Sidebar from '../components/map/Sidebar';
+import Sidebar from '../components/Map/Sidebar';
 import { useToast } from '../components/common/Toast';
 import { X } from 'lucide-react';
 import {
