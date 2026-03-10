@@ -54,8 +54,9 @@ async def notify_email(provider_config, title, message, severity):
         msg["From"] = config.get("from", "circuitbreaker@localhost")
         msg["To"] = config.get("to")
 
-        # blocking call - should ideally run in executor
+        # blocking call - run in executor with timeout to avoid hanging
         loop = asyncio.get_event_loop()
+        _SMTP_TIMEOUT_S = 30.0
 
         def _send():
             with smtplib.SMTP(config.get("smtp_host"), config.get("smtp_port", 587)) as s:
@@ -64,7 +65,7 @@ async def notify_email(provider_config, title, message, severity):
                     s.login(config["user"], config["pass"])
                 s.send_message(msg)
 
-        await loop.run_in_executor(None, _send)
+        await asyncio.wait_for(loop.run_in_executor(None, _send), timeout=_SMTP_TIMEOUT_S)
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
 

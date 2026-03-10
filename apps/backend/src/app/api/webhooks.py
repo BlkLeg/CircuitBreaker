@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
+from app.core.url_validation import reject_ssrf_url
 from app.db.models import WebhookDelivery, WebhookRule
 from app.db.session import get_db
 
@@ -222,6 +223,10 @@ def create_webhook(
     db: Session = Depends(get_db),
     current_user=require_role("editor"),
 ):
+    try:
+        reject_ssrf_url(str(rule_in.url))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     rule = WebhookRule(
         name=rule_in.label.strip(),
         target_url=str(rule_in.url),
@@ -253,6 +258,10 @@ def update_webhook(
     if "label" in updates:
         rule.name = str(updates["label"]).strip()
     if "url" in updates:
+        try:
+            reject_ssrf_url(str(updates["url"]))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         rule.target_url = str(updates["url"])
     if "events_enabled" in updates:
         events = updates["events_enabled"] or []
@@ -296,6 +305,10 @@ async def test_webhook(
         sig = hmac.new(rule.secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
         headers["X-Hub-Signature-256"] = f"sha256={sig}"
 
+    try:
+        reject_ssrf_url(rule.target_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     response = None
     error = None
     try:

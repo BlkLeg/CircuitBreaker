@@ -242,6 +242,7 @@ class TestFirstUserAndAuthFlow:
         token = reg.json()["token"]
         _enable_auth(client, token)
 
+        client.cookies.clear()
         resp = _create_hardware(client, name="ShouldFail")
         assert resp.status_code == 401, f"Expected 401 after enabling auth, got {resp.status_code}"
 
@@ -296,6 +297,7 @@ class TestFirstUserAndAuthFlow:
         token = reg.json()["token"]
         _enable_auth(client, token)
 
+        client.cookies.clear()
         resp = client.get(f"{API}/admin/export")
         assert resp.status_code == 401
 

@@ -28,6 +28,10 @@ def put_settings(
 ):
     """Merge-update app settings. Only supplied fields are changed."""
     result = settings_service.update_settings(db, payload, user_id=user.id)
+    if payload.rate_limit_profile is not None:
+        from app.core.rate_limit import invalidate_rate_limit_profile_cache
+
+        invalidate_rate_limit_profile_cache()
     from app.core.audit import log_audit
 
     log_audit(

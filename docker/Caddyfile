@@ -26,7 +26,9 @@
 
 	# Allow the :443 catch-all to issue IP-SAN certs on demand.
 	# The backend health endpoint acts as the permission gate — if it's reachable
-	# the cert is issued.  This is fine for a private LAN deployment.
+	# the cert is issued. For production, prefer pre-provisioned certs (ACME or
+	# internal) to avoid unbounded issuance; Caddy has no built-in max_certificates
+	# for on_demand_tls — enforce limits in the ask endpoint if needed.
 	on_demand_tls {
 		ask http://backend:8000/api/v1/health
 	}
@@ -70,6 +72,7 @@ http://{$CB_DOMAIN:circuitbreaker.local} {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss:; frame-ancestors 'none'"
 		-Server
 	}
 }
@@ -109,6 +112,7 @@ localhost {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss:; frame-ancestors 'none'"
 		-Server
 	}
 }
@@ -177,6 +181,7 @@ localhost {
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss:; frame-ancestors 'none'"
 		-Server
 	}
 }

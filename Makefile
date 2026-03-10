@@ -53,7 +53,7 @@ frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 # ==============================================================================
 # BUILD & TEST
 # ==============================================================================
-.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build snyk-version snyk-auth snyk-test snyk-monitor
+.PHONY: lint format ci release test test-backend test-frontend test-all test-coverage docs docs-build frontend-build snyk-version snyk-auth snyk-test snyk-monitor security-scan
 
 lint: ## Run backend and frontend linters
 	@cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app --select F
@@ -125,6 +125,10 @@ snyk-test: ## Run Snyk open-source scan for this repository
 
 snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alerts
 	@$(SNYK_BIN) monitor --all-projects --path=$(SNYK_PATH)
+
+security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Hadolint, Checkov, Trivy fs+config, npm audit). Saves CI minutes by catching issues locally.
+	@echo "Starting full security scan..."
+	@bash scripts/security_scan.sh
 
 # ==============================================================================
 # DOCKER & COMPOSE

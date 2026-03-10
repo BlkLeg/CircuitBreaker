@@ -8,6 +8,7 @@ import {
   getDiscoveryStatus,
   getJobLogs,
 } from '../api/discovery.js';
+import { systemApi } from '../api/client.jsx';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 import { useToast } from '../components/common/Toast';
 import logger from '../utils/logger.js';
@@ -48,6 +49,7 @@ export default function DiscoveryPage() {
     netRawCapable: false,
     dockerContainerCount: 0,
   });
+  const [hostStats, setHostStats] = useState(null);
 
   const progressMapRef = useRef({});
   const [progressMap, setProgressMap] = useState({});
@@ -111,6 +113,39 @@ export default function DiscoveryPage() {
         })
       )
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchHostStats = () => {
+      systemApi
+        .getStats()
+        .then((res) => {
+          if (!mounted || !res?.data) return;
+          const mem = res.data.mem;
+          const disk = res.data.disk;
+          const memPercent =
+            mem && typeof mem.total === 'number' && mem.total > 0
+              ? Math.round((mem.used / mem.total) * 100)
+              : null;
+          const diskPercent =
+            disk && typeof disk.percent === 'number' ? Math.round(disk.percent) : null;
+          setHostStats(
+            memPercent != null || diskPercent != null
+              ? { memPercent: memPercent ?? null, diskPercent: diskPercent ?? null }
+              : null
+          );
+        })
+        .catch(() => {
+          if (mounted) setHostStats(null);
+        });
+    };
+    fetchHostStats();
+    const interval = setInterval(fetchHostStats, 30000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // ── WebSocket events ───────────────────────────────────────────────────
@@ -320,6 +355,8 @@ export default function DiscoveryPage() {
         onFilterChange={setFilter}
         jobCounts={jobCounts}
         pendingReviewCount={pendingReviewCount}
+        memoryUsed={hostStats?.memPercent ?? null}
+        storageUsed={hostStats?.diskPercent ?? null}
       />
 
       <div className="discovery-main">{mainContent}</div>

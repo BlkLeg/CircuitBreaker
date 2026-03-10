@@ -54,6 +54,16 @@ Use filters at the top of the page to narrow results:
 
 ---
 
+## Hash chain and verification
+
+Each audit log entry stores a hash of its content and the previous entry’s hash so entries form a chain. Tampering or reordering breaks the chain. Admins can verify the chain with:
+
+- **API:** `GET /api/v1/admin/audit-log/verify-chain` (admin-only). Returns `valid`, `first_failure_id`, `message`, and `checked_count`. Use this for monitoring or compliance checks.
+
+Append-only guarantees depend on your database and backup policy; verification only attests that stored entries are consistent with the hash chain.
+
+---
+
 ## Retention and Clearing
 
 Individual log entries cannot be edited.

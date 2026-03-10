@@ -8,6 +8,7 @@ from datetime import datetime  # noqa: F401 — used by models imported transiti
 from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -41,6 +42,7 @@ from app.api import (
 )
 from app.api import telemetry as telemetry_api
 from app.api.admin import router as admin_router
+from app.api.admin_audit import router as admin_audit_router
 from app.api.admin_db import router as admin_db_router
 from app.api.admin_users import router as admin_users_router
 from app.api.assets import router as assets_router
@@ -73,7 +75,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.rate_limit import limiter
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.db.session import SessionLocal
+from app.db.session import get_session_context
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -252,40 +254,37 @@ async def lifespan(app: FastAPI):
     # ── Phase 7: Vault key init ────────────────────────────────────────────
     # Must run before any scheduler job or service that encrypts/decrypts.
     # Fallback chain: env CB_VAULT_KEY → /data/.env → AppSettings.vault_key
-    _vault_db = SessionLocal()
     try:
-        from app.services import vault_service as _vault_svc
-        from app.services.credential_vault import get_vault as _get_vault
+        with get_session_context() as _vault_db:
+            from app.services import vault_service as _vault_svc
+            from app.services.credential_vault import get_vault as _get_vault
 
-        _vault_key = _vault_svc.load_vault_key(_vault_db)
-        if _vault_key:
-            _get_vault().reinitialize(_vault_key)
-            import os as _os
+            _vault_key = _vault_svc.load_vault_key(_vault_db)
+            if _vault_key:
+                _get_vault().reinitialize(_vault_key)
+                import os as _os
 
-            _os.environ["CB_VAULT_KEY"] = _vault_key
-            _logger.info("Vault initialized from: %s", _vault_svc.get_key_source())
-        else:
-            _logger.warning(
-                "CB_VAULT_KEY not found in environment, %s, or database. "
-                "Vault is uninitialized — encrypted credentials will be unavailable "
-                "until OOBE completes and a vault key is generated.",
-                _vault_svc._DATA_ENV_PATH,
-            )
+                _os.environ["CB_VAULT_KEY"] = _vault_key
+                _logger.info("Vault initialized from: %s", _vault_svc.get_key_source())
+            else:
+                _logger.warning(
+                    "CB_VAULT_KEY not found in environment, %s, or database. "
+                    "Vault is uninitialized — encrypted credentials will be unavailable "
+                    "until OOBE completes and a vault key is generated.",
+                    _vault_svc._DATA_ENV_PATH,
+                )
     except Exception as _ve:  # noqa: BLE001
-        _logger.warning("Vault init failed during startup: %s", _ve)
-    finally:
-        _vault_db.close()
+        _logger.critical("Vault init failed during startup: %s", _ve, exc_info=True)
+        raise SystemExit(1) from _ve
 
     # ── Status page default seed ───────────────────────────────────────────
-    _status_db = SessionLocal()
-    try:
-        from app.services.status_page_service import get_or_create_default_page
+    with get_session_context() as _status_db:
+        try:
+            from app.services.status_page_service import get_or_create_default_page
 
-        get_or_create_default_page(_status_db)
-    except Exception as _se:  # noqa: BLE001
-        _logger.debug("Status page seed skipped or failed: %s", _se)
-    finally:
-        _status_db.close()
+            get_or_create_default_page(_status_db)
+        except Exception as _se:  # noqa: BLE001
+            _logger.debug("Status page seed skipped or failed: %s", _se)
 
     # ── NATS message bus ───────────────────────────────────────────────────
     await nats_client.connect()
@@ -371,6 +370,39 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # Disable expired demo accounts (M-18: demo user expiration enforcement)
+    def _disable_expired_demo_users() -> None:
+        from app.core.time import utcnow
+        from app.db.models import User
+
+        try:
+            with get_session_context() as db:
+                now = utcnow()
+                expired = (
+                    db.query(User)
+                    .filter(
+                        User.role == "demo",
+                        User.demo_expires.isnot(None),
+                        User.demo_expires <= now,
+                        User.is_active.is_(True),
+                    )
+                    .all()
+                )
+                for u in expired:
+                    u.is_active = False
+                if expired:
+                    db.commit()
+                    _logger.info("Disabled %d expired demo user(s)", len(expired))
+        except Exception as exc:
+            _logger.warning("Expired demo user cleanup failed: %s", exc)
+
+    scheduler.add_job(
+        _disable_expired_demo_users,
+        trigger=CronTrigger(hour=4, minute=0),
+        id="disable_expired_demo_users",
+        replace_existing=True,
+    )
+
     # Daily uptime rollup for fast historical uptime reads.
     from app.workers.rollup_worker import run_rollup_job
 
@@ -397,8 +429,7 @@ async def lifespan(app: FastAPI):
 
     from app.services.cve_service import sync_nvd_feed
 
-    cve_db = SessionLocal()
-    try:
+    with get_session_context() as cve_db:
         cve_settings = cve_db.query(models.AppSettings).first()
         if cve_settings and cve_settings.cve_sync_enabled:
             interval_hours = cve_settings.cve_sync_interval_hours or 24
@@ -410,8 +441,6 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=3600,
             )
             _logger.info("CVE sync scheduled every %d hours", interval_hours)
-    finally:
-        cve_db.close()
 
     # IP Pool refresh every hour
     scheduler.add_job(
@@ -423,8 +452,7 @@ async def lifespan(app: FastAPI):
     )
 
     # Load enabled discovery profiles and schedule them
-    sched_db = SessionLocal()
-    try:
+    with get_session_context() as sched_db:
         from app.db.models import DiscoveryProfile
 
         profiles = (
@@ -451,8 +479,6 @@ async def lifespan(app: FastAPI):
                 _logger.info("Scheduled discovery profile %d (%s)", profile.id, profile.name)
             except Exception as exc:
                 _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
-    finally:
-        sched_db.close()
 
     # Uptime monitor — poll all enabled monitors every 30 seconds
     from apscheduler.triggers.interval import IntervalTrigger as _IT
@@ -483,8 +509,7 @@ async def lifespan(app: FastAPI):
     _logger.info("Status page poll scheduled (60s interval).")
 
     # Docker topology sync — only when docker_discovery_enabled
-    docker_db = SessionLocal()
-    try:
+    with get_session_context() as docker_db:
         docker_settings = docker_db.query(models.AppSettings).first()
         if docker_settings and getattr(docker_settings, "docker_discovery_enabled", False):
             interval_mins = getattr(docker_settings, "docker_sync_interval_minutes", 5) or 5
@@ -499,8 +524,6 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=60,
             )
             _logger.info("Docker topology sync scheduled every %d minutes.", interval_mins)
-    finally:
-        docker_db.close()
 
     # ── Proxmox telemetry polling ────────────────────────────────────────
     from app.services.proxmox_service import (
@@ -513,28 +536,15 @@ async def lifespan(app: FastAPI):
     )
 
     async def _proxmox_node_poll():
-        _pdb = SessionLocal()
-        try:
+        with get_session_context() as _pdb:
             await poll_node_telemetry(_pdb)
-        except Exception:
-            _pdb.rollback()
-            raise
-        finally:
-            _pdb.close()
 
     async def _proxmox_vm_poll():
-        _pdb = SessionLocal()
-        try:
+        with get_session_context() as _pdb:
             await poll_vm_telemetry(_pdb)
-        except Exception:
-            _pdb.rollback()
-            raise
-        finally:
-            _pdb.close()
 
     async def _proxmox_full_sync():
-        _pdb = SessionLocal()
-        try:
+        with get_session_context() as _pdb:
             configs = list_integrations(_pdb)
             for cfg in configs:
                 if cfg.auto_sync:
@@ -542,14 +552,8 @@ async def lifespan(app: FastAPI):
                         await discover_and_import(_pdb, cfg)
                     except Exception as exc:
                         _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
-        except Exception:
-            _pdb.rollback()
-            raise
-        finally:
-            _pdb.close()
 
-    pxmx_db = SessionLocal()
-    try:
+    with get_session_context() as pxmx_db:
         from sqlalchemy import func
 
         from app.db.models import IntegrationConfig
@@ -582,14 +586,8 @@ async def lifespan(app: FastAPI):
             _pxmx_rrd_s = int(os.environ.get("PROXMOX_RRD_POLL_SECONDS", "300"))
 
             async def _proxmox_rrd_poll():
-                _pdb = SessionLocal()
-                try:
+                with get_session_context() as _pdb:
                     await poll_rrd_telemetry(_pdb)
-                except Exception:
-                    _pdb.rollback()
-                    raise
-                finally:
-                    _pdb.close()
 
             scheduler.add_job(
                 _proxmox_rrd_poll,
@@ -600,14 +598,8 @@ async def lifespan(app: FastAPI):
             )
 
             async def _proxmox_storage_refresh():
-                _pdb = SessionLocal()
-                try:
+                with get_session_context() as _pdb:
                     await refresh_proxmox_storage(_pdb)
-                except Exception:
-                    _pdb.rollback()
-                    raise
-                finally:
-                    _pdb.close()
 
             scheduler.add_job(
                 _proxmox_storage_refresh,
@@ -638,12 +630,9 @@ async def lifespan(app: FastAPI):
                 _pxmx_rrd_s,
                 sync_interval,
             )
-    finally:
-        pxmx_db.close()
 
     # ── Phase 4: ARP Prober — scheduled subnet sweep ───────────────────────
-    phase4_db = SessionLocal()
-    try:
+    with get_session_context() as phase4_db:
         phase4_settings = phase4_db.query(models.AppSettings).first()
         if phase4_settings and getattr(phase4_settings, "arp_enabled", True):
             prober_interval = getattr(phase4_settings, "prober_interval_minutes", 15) or 15
@@ -658,8 +647,6 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=120,
             )
             _logger.info("ARP prober scheduled every %d minutes.", prober_interval)
-    finally:
-        phase4_db.close()
 
     scheduler.start()
     _logger.info("APScheduler started.")
@@ -667,14 +654,11 @@ async def lifespan(app: FastAPI):
     # ── Phase 4: Always-On Listener (mDNS + SSDP) ─────────────────────────
     from app.services.listener_service import listener_service
 
-    listener_db = SessionLocal()
-    try:
+    with get_session_context() as listener_db:
         listener_settings = listener_db.query(models.AppSettings).first()
         if listener_settings and getattr(listener_settings, "listener_enabled", False):
             asyncio.create_task(listener_service.start(listener_settings))
             _logger.info("Always-on listener started.")
-    finally:
-        listener_db.close()
 
     # ── Webhook and notification workers (skip when running with dedicated worker
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
@@ -750,7 +734,10 @@ async def app_error_handler(request: Request, exc: AppError):
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": str(exc.body)[:500] if exc.body else None},
+        content={
+            "detail": jsonable_encoder(exc.errors()),
+            "body": str(exc.body)[:500] if exc.body else None,
+        },
     )
 
 
@@ -803,6 +790,7 @@ app.include_router(system_router, prefix=f"{_V1}/system", tags=["system"])
 app.include_router(branding_router, prefix=f"{_V1}/branding", tags=["branding"])
 app.include_router(assets_router, prefix=f"{_V1}/assets", tags=["assets"])
 app.include_router(admin_router, prefix=f"{_V1}/admin", tags=["admin"])
+app.include_router(admin_audit_router, prefix=f"{_V1}/admin", tags=["admin-audit"])
 app.include_router(admin_users_router, prefix=f"{_V1}", tags=["admin-users"])
 app.include_router(admin_db_router, prefix=f"{_V1}/admin", tags=["admin-db"])
 app.include_router(security_router, prefix=f"{_V1}/security", tags=["security"])

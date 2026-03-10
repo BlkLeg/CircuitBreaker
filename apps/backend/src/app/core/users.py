@@ -7,7 +7,6 @@ session (db/async_session.py) while the rest of the app stays sync.
 import logging
 import os
 import re
-import secrets
 from collections.abc import AsyncGenerator
 
 from fastapi import Depends, Request
@@ -21,9 +20,8 @@ from app.db.models import User
 
 _logger = logging.getLogger(__name__)
 
-_FALLBACK_SECRET = (
-    os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or secrets.token_hex(32)
-)
+# JWT secret: DB (from OOBE/settings) or CB_JWT_SECRET env only. No vault/API-token or runtime random.
+CB_JWT_SECRET_ENV = "CB_JWT_SECRET"
 
 
 # ---------------------------------------------------------------------------
@@ -202,16 +200,14 @@ def _get_jwt_secret() -> str:
     except Exception:
         pass
 
-    import os
-
-    if stable_fallback := os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN"):
-        return stable_fallback
-    return _FALLBACK_SECRET
+    # Dedicated JWT secret only; no vault/API-token or auto-generation.
+    env_secret = os.environ.get(CB_JWT_SECRET_ENV)
+    if env_secret:
+        return env_secret
+    return ""
 
 
 def get_jwt_strategy() -> JWTStrategy:
-    import os
-
     try:
         from app.db.session import SessionLocal
         from app.services.settings_service import get_or_create_settings
@@ -220,18 +216,12 @@ def get_jwt_strategy() -> JWTStrategy:
         try:
             cfg = get_or_create_settings(db)
             lifetime = cfg.session_timeout_hours * 3600
-
-            fallback = (
-                os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or _FALLBACK_SECRET
-            )
-            secret = cfg.jwt_secret or fallback
+            secret = cfg.jwt_secret or os.environ.get(CB_JWT_SECRET_ENV) or ""
         finally:
             db.close()
     except Exception:
         lifetime = 86400
-        secret = (
-            os.environ.get("CB_VAULT_KEY") or os.environ.get("CB_API_TOKEN") or _FALLBACK_SECRET
-        )
+        secret = os.environ.get(CB_JWT_SECRET_ENV) or ""
 
     return JWTStrategy(secret=secret, lifetime_seconds=lifetime)
 

@@ -284,6 +284,7 @@ def test_scan_endpoint_requires_auth_without_token(client):
         "password": "Secure1234!",
         "theme_preset": "one-dark",
     })
+    client.cookies.clear()
     resp = client.post("/api/v1/discovery/scan", json={
         "cidr": CIDR_LAN,
         "scan_types": ["nmap"],

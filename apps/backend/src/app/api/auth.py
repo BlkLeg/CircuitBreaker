@@ -27,7 +27,13 @@ from sqlalchemy.orm import Session
 from app.core.auth_cookie import auth_response_with_cookie, clear_auth_cookie_response
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
-from app.core.security import _extract_token, create_token, get_optional_user, hash_password
+from app.core.security import (
+    _extract_token,
+    create_token,
+    get_optional_user,
+    hash_api_token,
+    hash_password,
+)
 from app.core.time import utcnow, utcnow_iso
 from app.core.users import auth_backend, fastapi_users
 from app.db.models import APIToken, User
@@ -314,13 +320,6 @@ def force_change_password(
     return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
 
-@router.post("/logout", tags=["auth"], status_code=204)
-@limiter.limit(lambda: get_limit("auth"))
-def logout(request: Request):
-    """Clear the session cookie. No auth required."""
-    return clear_auth_cookie_response()
-
-
 # ---------------------------------------------------------------------------
 # API tokens (machine–machine, admin only, token shown once on create)
 # ---------------------------------------------------------------------------
@@ -356,8 +355,11 @@ def create_api_token(
 ):
     """Create a long-lived API token. The raw token is returned once; store it securely."""
 
+    cfg = get_or_create_settings(db)
+    if not cfg.jwt_secret:
+        raise HTTPException(status_code=503, detail="Auth not configured")
     raw_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    token_hash = hash_api_token(raw_token, cfg.jwt_secret)
     expires_at = None
     if payload.expires_at:
         try:
@@ -497,12 +499,14 @@ def _to_profile(user: User) -> UserProfile:
 
 @router.get("/me", response_model=UserProfile, tags=["auth"])
 def get_me_compat(
+    request: Request,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """Backward-compat endpoint returning the current user's profile."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        detail = "Token invalid or expired" if _extract_token(request) else "Not authenticated"
+        raise HTTPException(status_code=401, detail=detail)
     if user_id == 0:
         return UserProfile(
             id=0,
@@ -519,24 +523,19 @@ def get_me_compat(
 
 
 # ---------------------------------------------------------------------------
-# Backward-compat logout
+# Logout: revoke session and clear cookie
 # ---------------------------------------------------------------------------
 
 
 @router.post("/logout", status_code=204, tags=["auth"])
-def logout_compat(
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """Revoke the caller's active session so session_count stays accurate."""
-    import hashlib
+@limiter.limit(lambda: get_limit("auth"))
+def logout(request: Request, db: Session = Depends(get_db)):
+    """Revoke the caller's session (Bearer or cookie) and clear the session cookie."""
+    from app.db.models import UserSession
 
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        raw_token = auth_header[len("Bearer ") :].strip()
+    raw_token = _extract_token(request)
+    if raw_token:
         token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        from app.db.models import UserSession
-
         session = (
             db.query(UserSession)
             .filter(UserSession.jwt_token_hash == token_hash)
@@ -546,7 +545,10 @@ def logout_compat(
         if session:
             session.revoked = True
             db.commit()
-    return Response(status_code=204)
+            from app.core.security import invalidate_session_cache
+
+            invalidate_session_cache(raw_token)
+    return clear_auth_cookie_response()
 
 
 # ---------------------------------------------------------------------------
@@ -870,7 +872,7 @@ def mfa_activate(
 
 
 @router.post("/mfa/verify", tags=["auth"])
-@limiter.limit(lambda: get_limit("auth"))
+@limiter.limit(lambda: get_limit("mfa_verify"))
 def mfa_verify(
     request: Request,
     payload: MfaVerifyRequest,

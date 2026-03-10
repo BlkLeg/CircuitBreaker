@@ -3,15 +3,23 @@
 Per-key state: closed (normal), open (fail fast), half_open (one trial).
 After failure_threshold failures within failure_window_sec, the circuit opens
 for open_duration_sec, then moves to half_open. One success closes; one failure re-opens.
+
+Breaker instances are stored in a bounded TTL cache so old/unused keys are evicted.
 """
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from cachetools import TTLCache
+
 _logger = logging.getLogger(__name__)
+
+_CB_MAX_ENTRIES = int(os.environ.get("CB_CIRCUIT_BREAKER_MAX_ENTRIES", "500"))
+_CB_TTL_SEC = int(os.environ.get("CB_CIRCUIT_BREAKER_TTL_SEC", "3600"))
 
 T = TypeVar("T")
 
@@ -101,7 +109,7 @@ class CircuitBreaker:
                     self._first_failure_time = now
 
 
-_breakers: dict[str, CircuitBreaker] = {}
+_breakers: TTLCache[str, CircuitBreaker] = TTLCache(maxsize=_CB_MAX_ENTRIES, ttl=_CB_TTL_SEC)
 _breakers_lock = threading.Lock()
 
 

@@ -180,7 +180,7 @@ class AppSettingsRead(BaseModel):
     smtp_last_test_status: str | None = None
     # Advanced Theming
     theme_preset: str = "gruvbox-dark"
-    custom_colors: str | None = Field(default=None, exclude=True)  # raw JSON from ORM
+    custom_colors: dict | str | None = Field(default=None, exclude=True)  # raw JSON from ORM
     theme_colors: Any | None = None  # parsed in model_validator below — flat or {dark,light} dict
     # Flat branding columns — read from ORM but excluded from JSON output (nested via `branding`)
     app_name: str = Field(default="Circuit Breaker", exclude=True)
@@ -188,7 +188,7 @@ class AppSettingsRead(BaseModel):
     login_logo_path: str | None = Field(default=None, exclude=True)
     login_bg_path: str | None = Field(default=None, exclude=True)
     primary_color: str = Field(default="#fe8019", exclude=True)
-    accent_colors: str | None = Field(default='["#fabd2f","#b8bb26"]', exclude=True)
+    accent_colors: list | str | None = Field(default=None, exclude=True)
     # Nested branding object (computed in model_validator)
     branding: BrandingConfig = BrandingConfig()
     created_at: datetime
@@ -224,7 +224,9 @@ class AppSettingsRead(BaseModel):
     @model_validator(mode="after")
     def build_theme_colors(self) -> "AppSettingsRead":
         raw = self.custom_colors
-        if raw:
+        if isinstance(raw, dict):
+            self.theme_colors = raw
+        elif raw:
             try:
                 # Return raw dict as-is — may be flat {primary,…} or structured {dark:{…},light:{…}}
                 self.theme_colors = json.loads(raw)

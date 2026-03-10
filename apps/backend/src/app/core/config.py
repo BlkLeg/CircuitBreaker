@@ -1,7 +1,9 @@
+import json
 import os
 import sys
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,7 +52,22 @@ class Settings(BaseSettings):
     dev_mode: bool = False
     database_url: str = "sqlite:///./data/app.db"
     api_prefix: str = "/api/v1"
-    cors_origins: list[str] = ["*"]
+    # Default same-origin only; set CORS_ORIGINS JSON array for dev (e.g. ["http://localhost:5173"]).
+    cors_origins: list[str] = []
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: object) -> list[str]:
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str) and v.strip():
+            try:
+                parsed = json.loads(v)
+                return list(parsed) if isinstance(parsed, list) else [v]
+            except json.JSONDecodeError:
+                return [o.strip() for o in v.split(",") if o.strip()]
+        return []
+
     # Relative to the backend working directory. Override with STATIC_DIR env var
     # in single-container Docker deployments (e.g. STATIC_DIR=/app/frontend/dist).
     static_dir: str = "../frontend/dist"

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Loader2, MailWarning } from 'lucide-react';
 import { authApi } from '../api/auth.js';
 
@@ -62,8 +62,7 @@ function PasswordStrengthBar({ password }) {
 
 export default function ResetPasswordPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const token = searchParams.get('token') || '';
+  const [token, setToken] = useState('');
   const hasToken = useMemo(() => token.trim().length > 0, [token]);
 
   const [password, setPassword] = useState('');
@@ -94,7 +93,7 @@ export default function ResetPasswordPage() {
     setLoading(true);
     setError('');
     try {
-      await authApi.resetPassword(token, password);
+      await authApi.resetPassword(token.trim(), password);
       setSuccess('Password updated. You can now sign in with your new password.');
       setTimeout(() => {
         navigate('/login', {
@@ -154,37 +153,48 @@ export default function ResetPasswordPage() {
           Choose a new password for your account.
         </p>
 
-        {!hasToken && (
-          <div
-            role="alert"
-            style={{
-              padding: '8px 12px',
-              borderRadius: 6,
-              marginBottom: 16,
-              background: 'var(--color-danger, #fb4934)11',
-              border: '1px solid var(--color-danger, #fb4934)44',
-              color: 'var(--color-danger, #fb4934)',
-              fontSize: 13,
-            }}
-          >
-            This reset link is missing its token. Request a new password reset email or use your
-            vault key instead.
-          </div>
-        )}
-
-        {!hasToken && (
-          <div style={{ marginBottom: 16 }}>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => navigate('/reset-password/vault', { replace: true })}
-            >
-              Reset With Vault Key
-            </button>
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} noValidate>
+          <div style={{ marginBottom: 16 }}>
+            <label
+              htmlFor="rp-token"
+              style={{ display: 'block', marginBottom: 6, fontSize: 13, fontWeight: 500 }}
+            >
+              Reset token (from email)
+            </label>
+            <input
+              id="rp-token"
+              type="text"
+              value={token}
+              onChange={(e) => {
+                setToken(e.target.value);
+                setError('');
+              }}
+              placeholder="Paste the token from your reset email"
+              autoComplete="one-time-code"
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                borderRadius: 8,
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-bg)',
+                color: 'var(--color-text)',
+                fontSize: 14,
+              }}
+            />
+          </div>
+
+          {!hasToken && (
+            <div style={{ marginBottom: 16 }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => navigate('/reset-password/vault', { replace: true })}
+              >
+                Reset With Vault Key
+              </button>
+            </div>
+          )}
+
           <div style={{ marginBottom: 16 }}>
             <label
               htmlFor="rp-password"

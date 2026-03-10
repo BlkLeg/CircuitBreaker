@@ -6,6 +6,7 @@ FastAPI-Users for JWT validation and the CB_API_TOKEN legacy middleware.
 """
 
 import hashlib
+import hmac
 import logging
 import os
 import threading
@@ -23,9 +24,8 @@ from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
 
-# Session validation cache: token_hash -> (user_id, expiry_ts). Reduces DB hits for
-# is_session_revoked + _is_user_accessible when the same token is used within 60s.
-_SESSION_CACHE_TTL_S = 60
+# Session validation cache: token_hash -> (user_id, expiry_ts). TTL 10s so revocation is effective quickly.
+_SESSION_CACHE_TTL_S = 10
 _session_cache: dict[str, tuple[int, float]] = {}
 _session_cache_lock = threading.Lock()
 _session_cache_max_size = 2000
@@ -33,6 +33,11 @@ _session_cache_max_size = 2000
 
 def _hash_token_for_cache(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def hash_api_token(raw_token: str, secret: str) -> str:
+    """HMAC-SHA256(secret, raw_token) for API token storage/lookup. Use same secret (e.g. JWT secret) everywhere."""
+    return hmac.new(secret.encode(), raw_token.encode(), hashlib.sha256).hexdigest()
 
 
 def _session_cache_get(token_hash: str) -> int | None:
@@ -53,7 +58,6 @@ def _session_cache_set(token_hash: str, user_id: int) -> None:
     expiry = now + _SESSION_CACHE_TTL_S
     with _session_cache_lock:
         if len(_session_cache) >= _session_cache_max_size:
-            # Evict oldest half by scanning for lowest expiry (simple strategy)
             to_drop = sorted(_session_cache.items(), key=lambda x: x[1][1])[
                 : _session_cache_max_size // 2
             ]
@@ -116,6 +120,10 @@ def gravatar_hash(email: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Audience for session JWTs; required so password-reset/MFA tokens are not accepted as sessions.
+SESSION_AUDIENCE = "fastapi-users:auth"
+
+
 def create_token(
     user_id: int,
     secret: str,
@@ -128,6 +136,7 @@ def create_token(
     payload = {
         "user_id": user_id,
         "exp": utcnow() + timedelta(hours=timeout_hours or 24),
+        "aud": SESSION_AUDIENCE,
     }
     if role:
         payload["role"] = role
@@ -139,9 +148,9 @@ def create_token(
 
 
 def decode_token(token: str, secret: str) -> int | None:
-    """Decode a legacy JWT and return user_id, or None if invalid/expired."""
+    """Decode a session JWT (with audience) and return user_id, or None if invalid/expired."""
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"], options={"verify_aud": False})
+        payload = jwt.decode(token, secret, algorithms=["HS256"], audience=[SESSION_AUDIENCE])
         return payload.get("user_id")
     except jwt.PyJWTError:
         return None
@@ -224,10 +233,10 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     if is_session_revoked(db, raw_token):
         return None
 
-    # Try FastAPI-Users JWT format first (sub claim, with audience validation)
+    # Session JWT: FastAPI-Users format (sub) or CB session format (user_id), both with audience
     try:
         payload = jwt.decode(
-            raw_token, cfg.jwt_secret, algorithms=["HS256"], audience=["fastapi-users:auth"]
+            raw_token, cfg.jwt_secret, algorithms=["HS256"], audience=[SESSION_AUDIENCE]
         )
         sub = payload.get("sub")
         if sub is not None:
@@ -236,14 +245,6 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
                 _session_cache_set(token_hash, uid)
                 return uid
             return None
-    except (jwt.PyJWTError, ValueError, TypeError):
-        pass
-
-    # Fallback to legacy token format (no audience claim)
-    try:
-        payload = jwt.decode(
-            raw_token, cfg.jwt_secret, algorithms=["HS256"], options={"verify_aud": False}
-        )
         uid_raw = payload.get("user_id")
         if uid_raw is not None:
             uid_int = int(uid_raw)
@@ -254,10 +255,15 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     except (jwt.PyJWTError, ValueError, TypeError):
         pass
 
-    # Static API token (machine–machine): look up by hash
+    # Static API token (machine–machine): look up by HMAC hash
     from app.db.models import APIToken
 
-    api_token_row = db.query(APIToken).filter(APIToken.token_hash == token_hash).first()
+    api_token_hash = hash_api_token(raw_token, cfg.jwt_secret) if cfg.jwt_secret else ""
+    api_token_row = (
+        db.query(APIToken).filter(APIToken.token_hash == api_token_hash).first()
+        if api_token_hash
+        else None
+    )
     if api_token_row:
         if api_token_row.expires_at and api_token_row.expires_at <= utcnow():
             return None

@@ -33,7 +33,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
-from app.core.auth_cookie import token_from_websocket_scope
+from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.rbac import require_role
 from app.core.security import _get_api_token, decode_token
 from app.core.time import utcnow, utcnow_iso
@@ -101,22 +101,23 @@ class TopologyConnectionManager:
             )
             return True
 
-    def disconnect(self, ws: WebSocket) -> None:
-        self._connections.discard(ws)
-        meta = self._meta.pop(ws, None)
-        if meta:
-            ip = meta.get("ip", "unknown")
-            current = self._ip_counts.get(ip, 0)
-            if current <= 1:
-                self._ip_counts.pop(ip, None)
-            else:
-                self._ip_counts[ip] = current - 1
-            logger.info(
-                "Topology WS disconnected (user=%s ip=%s remaining=%d)",
-                meta.get("user_id"),
-                ip,
-                len(self._connections),
-            )
+    async def disconnect(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._connections.discard(ws)
+            meta = self._meta.pop(ws, None)
+            if meta:
+                ip = meta.get("ip", "unknown")
+                current = self._ip_counts.get(ip, 0)
+                if current <= 1:
+                    self._ip_counts.pop(ip, None)
+                else:
+                    self._ip_counts[ip] = current - 1
+                logger.info(
+                    "Topology WS disconnected (user=%s ip=%s remaining=%d)",
+                    meta.get("user_id"),
+                    ip,
+                    len(self._connections),
+                )
 
     async def _flush_buffer(self):
         async with self._batch_lock:
@@ -141,7 +142,15 @@ class TopologyConnectionManager:
         if dead:
             async with self._lock:
                 for ws in dead:
-                    self.disconnect(ws)
+                    self._connections.discard(ws)
+                    meta = self._meta.pop(ws, None)
+                    if meta:
+                        ip = meta.get("ip", "unknown")
+                        current = self._ip_counts.get(ip, 0)
+                        if current <= 1:
+                            self._ip_counts.pop(ip, None)
+                        else:
+                            self._ip_counts[ip] = current - 1
 
     async def broadcast(self, message: dict) -> None:
         async with self._batch_lock:
@@ -201,6 +210,14 @@ async def _ping_loop(ws: WebSocket) -> None:
 @router.websocket("/stream")
 async def topology_stream(websocket: WebSocket) -> None:
     await websocket.accept()
+
+    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+        try:
+            await websocket.send_text(json.dumps({"error": "wss_required"}))
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
 
     client_ip = _extract_client_ip(websocket)
 
@@ -287,12 +304,12 @@ async def topology_stream(websocket: WebSocket) -> None:
             pass
         finally:
             ping_task.cancel()
-            topology_ws_manager.disconnect(websocket)
+            await topology_ws_manager.disconnect(websocket)
 
     except Exception as exc:
         logger.error("Topology WS unhandled error (ip=%s): %s", client_ip, exc)
         try:
-            topology_ws_manager.disconnect(websocket)
+            await topology_ws_manager.disconnect(websocket)
             await websocket.close(code=1011)
         except Exception:
             pass

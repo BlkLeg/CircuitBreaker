@@ -71,22 +71,23 @@ class ConnectionManager:
             )
             return True
 
-    def disconnect(self, ws: WebSocket) -> None:
-        self._connections.discard(ws)
-        meta = self._meta.pop(ws, None)
-        if meta:
-            ip = meta.get("ip", "unknown")
-            current = self._ip_counts.get(ip, 0)
-            if current <= 1:
-                self._ip_counts.pop(ip, None)
-            else:
-                self._ip_counts[ip] = current - 1
-            logger.info(
-                "WS disconnected (user=%s ip=%s remaining=%d)",
-                meta.get("user_id"),
-                ip,
-                len(self._connections),
-            )
+    async def disconnect(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._connections.discard(ws)
+            meta = self._meta.pop(ws, None)
+            if meta:
+                ip = meta.get("ip", "unknown")
+                current = self._ip_counts.get(ip, 0)
+                if current <= 1:
+                    self._ip_counts.pop(ip, None)
+                else:
+                    self._ip_counts[ip] = current - 1
+                logger.info(
+                    "WS disconnected (user=%s ip=%s remaining=%d)",
+                    meta.get("user_id"),
+                    ip,
+                    len(self._connections),
+                )
 
     async def broadcast(self, message: dict) -> None:
         """Send message to all connected clients. Remove dead connections silently."""

@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from app.core.nats_client import nats_client
+from app.core.url_validation import reject_ssrf_url
 from app.db.models import WebhookDelivery, WebhookRule
 from app.db.session import SessionLocal
 
@@ -100,6 +101,12 @@ async def _dispatch_with_retries(
     body_bytes: bytes,
     body_text: str,
 ) -> None:
+    try:
+        reject_ssrf_url(rule.target_url)
+    except ValueError as e:
+        logger.warning("Webhook SSRF rejected for rule %s: %s", rule.id, e)
+        _write_delivery(rule.id, subject, body_text, None, e, None)
+        return
     headers = _build_headers(rule, body_bytes)
     retry_count = max(0, min(int(rule.retries or 0), len(_RETRY_BACKOFF_S)))
     max_attempts = retry_count + 1

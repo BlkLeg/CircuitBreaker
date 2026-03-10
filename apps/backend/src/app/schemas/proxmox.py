@@ -4,23 +4,42 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+from app.core.url_validation import reject_ssrf_url_proxmox
 
 # ── Config CRUD ──────────────────────────────────────────────────────────────
 
 
 class ProxmoxConfigCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    config_url: str = Field(..., min_length=1)
+    config_url: HttpUrl | str = Field(..., min_length=1)
     api_token: str = Field(..., min_length=1)
     auto_sync: bool = True
     sync_interval_s: int = Field(default=300, ge=30, le=86400)
-    verify_ssl: bool = False
+    verify_ssl: bool = True
+
+    @field_validator("config_url")
+    @classmethod
+    def validate_config_url(cls, v: HttpUrl | str) -> str:
+        url_str = str(v).strip().rstrip("/")
+        reject_ssrf_url_proxmox(url_str)
+        return url_str
 
 
 class ProxmoxConfigUpdate(BaseModel):
     name: str | None = None
-    config_url: str | None = None
+    config_url: HttpUrl | str | None = None
+
+    @field_validator("config_url")
+    @classmethod
+    def validate_config_url(cls, v: HttpUrl | str | None) -> str | None:
+        if v is None:
+            return None
+        url_str = str(v).strip().rstrip("/")
+        reject_ssrf_url_proxmox(url_str)
+        return url_str
+
     api_token: str | None = None
     auto_sync: bool | None = None
     sync_interval_s: int | None = Field(default=None, ge=30, le=86400)

@@ -46,6 +46,7 @@
 - Fernet secured secrets management
 - Audit logging for non-repudiation
 - JWT
+- WebSockets over WSS in production; optional `CB_WS_REQUIRE_WSS` to reject plain-WS (see [Deployment & Security](docs/deployment-security.md#4-websockets-wss))
 
 ### 🔌 Integrations
 
@@ -260,6 +261,8 @@ Copy `docker/.env.example` to `docker/.env` and set as needed:
 | `CB_DB_PASSWORD` | `breaker` | PostgreSQL password (only used with `--profile pg`). |
 | `DB_POOL_SIZE` | `10` | PostgreSQL connection pool size. On Raspberry Pi or low-memory hosts, set to `3`–`5` to reduce memory. |
 | `DB_MAX_OVERFLOW` | `10` | Extra connections allowed beyond the pool. On Pi, set to `2`–`3`. |
+| `NATS_AUTH_TOKEN` | _(empty)_ | Optional. When set, NATS server and backend/workers use token auth. See [Deployment & Security](docs/deployment-security.md). |
+| `NATS_TLS` | _(empty)_ | Optional. Set to `true` to connect to NATS over TLS. Server must be configured for TLS separately. |
 
 ### Persistence Layout
 
@@ -351,6 +354,20 @@ By default, discovery uses nmap TCP/ICMP and works without elevated privileges. 
 
 **Security note:** `NET_RAW` + `NET_ADMIN` allow the container to craft and send arbitrary raw packets. Only enable this on trusted, isolated homelab networks.
 
+### Docker socket (Docker-aware discovery)
+
+The Docker socket is **not** mounted by default. To enable Docker-aware discovery (container/network enumeration), use the optional override so the backend can read the socket read-only:
+
+```bash
+# Development
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.docker-socket.yml up -d
+
+# Production (prebuilt images)
+docker compose -f docker/docker-compose.prod.yml -f docker/docker-compose.docker-socket.yml up -d
+```
+
+Then enable "Docker Container Discovery" in **Settings → Discovery**. See [docs/discovery.md](docs/discovery.md).
+
 When `network_mode: host` is active, IPv6 sysctls cannot be set per-container (they share the host namespace). To disable IPv6 on the host instead:
 ```bash
 sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
@@ -365,6 +382,36 @@ git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
 docker build -t circuit-breaker .
 docker run -p 127.0.0.1:8080:8080 -v cb-data:/data circuit-breaker
 ```
+
+***
+
+## Troubleshooting
+
+### Poetry install: DBusErrorResponse / SecretServiceNotAvailableException
+
+If `poetry install` (or `poetry lock && poetry install`) in `apps/backend` fails with `DBusErrorResponse` or `SecretServiceNotAvailableException` (e.g. "Remote peer disconnected" in `secretstorage`), Poetry is trying to use the system keyring (Secret Service over D-Bus), which can be unavailable in headless or locked-session environments.
+
+- **Project fix**: This repo disables keyring for the backend via [`apps/backend/poetry.toml`](apps/backend/poetry.toml) (`keyring.enabled = false`). Ensure you run Poetry from the backend directory: `cd apps/backend && poetry install`.
+- **Global fallback**: Run once: `poetry config keyring.enabled false`.
+- **Per-invocation**: `PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring poetry install`.
+
+In CI, either rely on the project `poetry.toml` or set `POETRY_KEYRING_ENABLED=false` (or the env var above) so installs do not touch the keyring.
+
+### Backend venv: use a stable Python (3.11–3.13)
+
+The backend supports Python `>=3.11,<4`. If you are on Python 3.14 (or another very new interpreter) and see install or runtime issues, use a stable 3.11–3.13 interpreter for the Poetry venv:
+
+```bash
+cd apps/backend
+poetry env use python3.12   # or python3.11 / python3.13
+poetry install
+```
+
+A `.python-version` file in `apps/backend` is set to `3.12` for pyenv users so the default interpreter in that directory is a stable version.
+
+### Security and lint (local + CI)
+
+Run the full security and lint suite locally to catch issues before pushing (saves CI minutes): `make security-scan`. This runs Bandit, Semgrep, Gitleaks, ESLint (with security plugin), Hadolint, Checkov, Trivy (filesystem + config), and npm audit. The same tools run in CI via [`.github/workflows/security.yml`](.github/workflows/security.yml). For editor support, install the recommended VS Code extensions from `.vscode/extensions.json` (ESLint, Ruff, Mypy, Hadolint, Trivy, Checkov, Semgrep).
 
 ***
 

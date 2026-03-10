@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
+from app.core.validation import validate_snmp_community
 from app.db.models import Hardware, HardwareMonitor, ScanResult, UptimeEvent
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,10 @@ def probe_snmp(
     ip: str, community: str = "public", timeout: float = 2.0
 ) -> tuple[bool, float | None]:
     """SNMP sysUpTime GET. Returns (reachable, latency_ms)."""
+    try:
+        community = validate_snmp_community(community)
+    except ValueError:
+        return False, None
     try:
         from pysnmp.hlapi import (
             CommunityData,

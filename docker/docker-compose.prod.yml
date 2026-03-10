@@ -17,17 +17,27 @@ networks:
   cb_net:
     name: circuitbreaker
     driver: bridge
+  cb_frontend:
+    name: circuitbreaker_frontend
+    driver: bridge
+  cb_backend:
+    name: circuitbreaker_backend
+    driver: bridge
+  cb_workers:
+    name: circuitbreaker_workers
+    driver: bridge
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: cb-postgres
     restart: unless-stopped
-    networks: [cb_net]
+    networks: [cb_net, cb_backend, cb_workers]
     environment:
       - POSTGRES_DB=circuitbreaker
       - POSTGRES_USER=breaker
-      - POSTGRES_PASSWORD=${CB_DB_PASSWORD:-breaker}
+      # Required: set CB_DB_PASSWORD (no default).
+      - POSTGRES_PASSWORD=${CB_DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -41,8 +51,10 @@ services:
     image: nats:2-alpine
     container_name: cb-nats
     restart: unless-stopped
-    networks: [cb_net]
-    command: ["--jetstream", "-m", "8222"]
+    networks: [cb_net, cb_backend, cb_workers]
+    command: ["sh", "-c", "exec nats-server --jetstream -m 8222 ${NATS_AUTH_TOKEN:+--auth \"$NATS_AUTH_TOKEN\"}"]
+    environment:
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
     expose:
       - "4222"
       - "8222"
@@ -52,7 +64,7 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: cb-caddy
-    networks: [cb_net]
+    networks: [cb_net, cb_frontend, cb_backend]
     ports:
       - "80:80"
       - "443:443"
@@ -71,23 +83,29 @@ services:
   backend:
     image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
     container_name: cb-backend
-    networks: [cb_net]
+    networks: [cb_net, cb_backend]
     volumes:
       - backend-data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Docker socket is opt-in. To enable: use -f docker-compose.prod.yml -f docker-compose.docker-socket.yml
     depends_on:
       postgres:
         condition: service_healthy
       nats:
         condition: service_started
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
       - CB_VAULT_KEY=${CB_VAULT_KEY:-}
       - DISCOVERY_MODE=safe
       - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+      - CB_WS_REQUIRE_WSS=${CB_WS_REQUIRE_WSS:-}
+      - CB_API_TOKEN=${CB_API_TOKEN:-}
     restart: unless-stopped
     stop_grace_period: 15s
     healthcheck:
@@ -100,7 +118,7 @@ services:
   worker:
     image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
     command: ["python", "-m", "app.workers.discovery"]
-    networks: [cb_net]
+    networks: [cb_net, cb_workers]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -109,10 +127,14 @@ services:
       nats:
         condition: service_started
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - DISCOVERY_MODE=full
       - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
       - NATS_KV_SYNC=true
     deploy:
       replicas: 2
@@ -128,7 +150,7 @@ services:
   webhook-worker:
     image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
     command: ["python", "-m", "app.workers.webhook_worker"]
-    networks: [cb_net]
+    networks: [cb_net, cb_workers]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -137,9 +159,13 @@ services:
       nats:
         condition: service_started
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
     restart: unless-stopped
     stop_grace_period: 10s
     healthcheck:
@@ -152,7 +178,7 @@ services:
   notification-worker:
     image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
     command: ["python", "-m", "app.workers.notification_worker"]
-    networks: [cb_net]
+    networks: [cb_net, cb_workers]
     volumes:
       - backend-data:/app/data
     depends_on:
@@ -161,9 +187,13 @@ services:
       nats:
         condition: service_started
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
     restart: unless-stopped
     stop_grace_period: 10s
     healthcheck:
@@ -178,7 +208,7 @@ services:
     expose:
       - "8080"
     container_name: cb-frontend
-    networks: [cb_net]
+    networks: [cb_net, cb_frontend]
     depends_on:
       backend:
         condition: service_healthy
@@ -188,7 +218,7 @@ services:
     profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     container_name: cb-cloudflared
-    networks: [cb_net]
+    networks: [cb_net, cb_frontend]
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     env_file:
       - path: ./.env

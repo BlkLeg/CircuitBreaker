@@ -1,5 +1,7 @@
 """HttpOnly session cookie for auth (zero token leakage to JS)."""
 
+import os
+
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
@@ -59,3 +61,16 @@ def token_from_websocket_scope(scope: dict) -> str | None:
                     return part[len(COOKIE_NAME) + 1 :].strip()
             return None
     return None
+
+
+def is_websocket_secure(scope: dict) -> bool:
+    """True if the WebSocket handshake is considered secure (e.g. X-Forwarded-Proto: https)."""
+    for name, value in scope.get("headers", []):
+        if name == b"x-forwarded-proto":
+            return value.decode("latin-1").strip().lower() == "https"
+    return scope.get("type") == "websocket" and (scope.get("scheme") or "ws") == "wss"
+
+
+def ws_require_wss() -> bool:
+    """True when CB_WS_REQUIRE_WSS is set so non-WSS connections must be rejected."""
+    return os.environ.get("CB_WS_REQUIRE_WSS", "").strip().lower() in ("1", "true", "yes")

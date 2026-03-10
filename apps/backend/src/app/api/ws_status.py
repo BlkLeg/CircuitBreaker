@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from app.core.auth_cookie import is_websocket_secure, ws_require_wss
 from app.core.time import utcnow_iso
 from app.core.ws_manager import ConnectionManager
 
@@ -65,6 +66,15 @@ def _extract_client_ip(websocket: WebSocket) -> str:
 async def status_stream(websocket: WebSocket) -> None:
     """Accept one status stream client; expect JWT in first message."""
     await websocket.accept()
+
+    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+        try:
+            await websocket.send_text(json.dumps({"error": "wss_required"}))
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
+
     client_ip = _extract_client_ip(websocket)
 
     try:
@@ -145,7 +155,7 @@ async def status_stream(websocket: WebSocket) -> None:
             await ping_task
         except asyncio.CancelledError:
             pass
-        status_ws_manager.disconnect(websocket)
+        await status_ws_manager.disconnect(websocket)
         try:
             await websocket.close(code=1011)
         except Exception:

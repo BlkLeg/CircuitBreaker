@@ -7,6 +7,7 @@ import { useCapabilities } from '../hooks/useCapabilities.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTimezone } from '../context/TimezoneContext.jsx';
 import { useToast } from '../components/common/Toast';
+import { syncDocker } from '../api/discovery.js';
 
 // Components
 import IconLibraryManager from '../components/settings/IconLibraryManager';
@@ -221,6 +222,7 @@ export default function SettingsPage() {
   const [showFirstUserDialog, setShowFirstUserDialog] = useState(false);
   const [clearLabOpen, setClearLabOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [dockerScanning, setDockerScanning] = useState(false);
 
   // SMTP state
   const [smtpForm, setSmtpForm] = useState(null);
@@ -1139,6 +1141,30 @@ export default function SettingsPage() {
                       />
                       <span className="toggle-switch-track" />
                     </label>
+                  </SettingField>
+
+                  <SettingField
+                    label="Discover"
+                    hint="Run an immediate Docker topology sync. Containers and networks will appear on the map."
+                  >
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={!caps?.docker?.available || dockerScanning}
+                      onClick={async () => {
+                        setDockerScanning(true);
+                        try {
+                          await syncDocker();
+                          toast.success('Docker scan started.');
+                        } catch (err) {
+                          toast.error(err?.message || 'Docker scan failed.');
+                        } finally {
+                          setDockerScanning(false);
+                        }
+                      }}
+                    >
+                      {dockerScanning ? 'Discovering…' : 'Discover'}
+                    </button>
                   </SettingField>
 
                   <SettingField

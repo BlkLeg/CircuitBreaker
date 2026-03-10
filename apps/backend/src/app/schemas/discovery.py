@@ -8,7 +8,7 @@ class DiscoveryProfileCreate(BaseModel):
     cidr: str | None = None
     vlan_ids: list[int] = []
     scan_types: list[str] = ["nmap"]
-    nmap_arguments: str | None = None
+    nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None  # plaintext input only; never in output
     snmp_version: str = "2c"
     snmp_port: int = 161
@@ -24,7 +24,7 @@ class DiscoveryProfileUpdate(BaseModel):
     cidr: str | None = None
     vlan_ids: list[int] | None = None
     scan_types: list[str] | None = None
-    nmap_arguments: str | None = None
+    nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None
     snmp_version: str | None = None
     snmp_port: int | None = None
@@ -160,7 +160,7 @@ class AdHocScanRequest(BaseModel):
     cidr: str | None = None
     vlan_ids: list[int] = []
     scan_types: list[str] = ["nmap"]
-    nmap_arguments: str | None = None
+    nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None
     label: str | None = None
 

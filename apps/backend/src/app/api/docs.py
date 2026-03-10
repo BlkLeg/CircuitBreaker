@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import require_write_auth
+from app.core.upload_validation import verify_image_magic_bytes
 from app.db.session import get_db
 from app.schemas.docs import Doc, DocCreate, DocEntityLink, DocUpdate, EntityDocAttach
 from app.services import docs_service
@@ -206,6 +207,8 @@ async def upload_doc_image(
     data = await file.read()
     if len(data) > _MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="Image must be ≤ 5 MB")
+    if not verify_image_magic_bytes(data, file.content_type):
+        raise HTTPException(status_code=400, detail="Image content does not match declared type.")
 
     # Determine extension
     ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}

@@ -41,7 +41,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
-from app.core.auth_cookie import token_from_websocket_scope
+from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.rbac import require_role
 from app.core.security import _get_api_token, decode_token
 from app.core.time import utcnow, utcnow_iso
@@ -95,6 +95,14 @@ async def _ping_loop(ws: WebSocket) -> None:
 async def discovery_stream(websocket: WebSocket) -> None:
     # Always accept first — token auth follows as the first message.
     await websocket.accept()
+
+    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+        try:
+            await websocket.send_text(json.dumps({"error": "wss_required"}))
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
 
     client_ip = _extract_client_ip(websocket)
     _warn_if_insecure(websocket)
@@ -185,12 +193,12 @@ async def discovery_stream(websocket: WebSocket) -> None:
             pass
         finally:
             ping_task.cancel()
-            ws_manager.disconnect(websocket)
+            await ws_manager.disconnect(websocket)
 
     except Exception as e:
         logger.error("WS unhandled error (ip=%s): %s", client_ip, e)
         try:
-            ws_manager.disconnect(websocket)
+            await ws_manager.disconnect(websocket)
             await websocket.close(code=1011)
         except Exception:
             pass

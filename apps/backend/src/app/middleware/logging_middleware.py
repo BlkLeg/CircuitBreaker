@@ -240,7 +240,7 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
 
             user_id: int | None = None
 
-            # 2. FastAPI-Users JWT (sub + aud)
+            # 2. Session JWT (FastAPI-Users sub or CB user_id, both with audience)
             try:
                 payload = pyjwt.decode(
                     token,
@@ -251,23 +251,12 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
                 sub = payload.get("sub")
                 if sub is not None:
                     user_id = int(sub)
-            except (pyjwt.PyJWTError, ValueError, TypeError):
-                pass
-
-            # 3. Legacy JWT (user_id, no audience)
-            if user_id is None:
-                try:
-                    payload = pyjwt.decode(
-                        token,
-                        cfg.jwt_secret,
-                        algorithms=["HS256"],
-                        options={"verify_aud": False},
-                    )
+                else:
                     uid = payload.get("user_id")
                     if uid is not None:
                         user_id = uid
-                except (pyjwt.PyJWTError, ValueError, TypeError):
-                    pass
+            except (pyjwt.PyJWTError, ValueError, TypeError):
+                pass
 
             if not user_id:
                 return "anonymous", None, None, None

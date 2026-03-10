@@ -8,7 +8,9 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
+from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
+from app.core.validation import validate_snmp_community
 from app.core.ws_manager import ws_manager
 from app.db.models import Hardware, Network, ScanJob, ScanLog, ScanResult, Service
 from app.db.session import SessionLocal
@@ -38,35 +40,55 @@ def resolve_vlans_to_cidrs(db: Session, vlan_ids: list[int]) -> tuple[list[str],
 
 def _match_ip_to_network(db: Session, ip: str) -> tuple[int | None, int | None]:
     """Match an IP address to the most specific network in the DB.
-    Returns (network_id, vlan_id).
+    Returns (network_id, vlan_id). Uses PostgreSQL INET when available for a single query.
     """
     import ipaddress
 
     try:
-        ip_obj = ipaddress.ip_address(ip)
+        ipaddress.ip_address(ip)
     except ValueError:
         return None, None
 
-    # Fetch all networks with CIDRs
+    # PostgreSQL: single query with inet >> containment, longest prefix first
+    if db.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        try:
+            row = db.execute(
+                text(
+                    """
+                    SELECT id, vlan_id FROM networks
+                    WHERE cidr IS NOT NULL AND cidr != ''
+                      AND inet(:ip) << inet(cidr)
+                    ORDER BY masklen(inet(cidr)) DESC
+                    LIMIT 1
+                    """
+                ),
+                {"ip": ip},
+            ).fetchone()
+            if row:
+                return int(row[0]), int(row[1]) if row[1] is not None else None
+            return None, None
+        except Exception:
+            pass  # Fall back to Python loop on invalid cidr or other error
+
+    # Fallback: fetch all networks and match in Python (e.g. non-PostgreSQL or query error)
     from sqlalchemy import select as _select
 
     nets = db.scalars(_select(Network).where(Network.cidr != None)).all()  # noqa: E711
-
     best_match = None
     max_prefixlen = -1
-
+    ip_obj = ipaddress.ip_address(ip)
     for net in nets:
         if net.cidr is None:
             continue
         try:
             net_obj = ipaddress.ip_network(net.cidr, strict=False)
-            if ip_obj in net_obj:
-                if net_obj.prefixlen > max_prefixlen:
-                    max_prefixlen = net_obj.prefixlen
-                    best_match = net
+            if ip_obj in net_obj and net_obj.prefixlen > max_prefixlen:
+                max_prefixlen = net_obj.prefixlen
+                best_match = net
         except ValueError:
             continue
-
     if best_match:
         return best_match.id, best_match.vlan_id
     return None, None
@@ -181,9 +203,13 @@ async def _emit_result_processed_event(db: Session, result_id: int, status: str)
         logger.warning("Failed to emit result_processed event for result %d: %s", result_id, exc)
 
 
+_MAX_CIDR_PREFIXLEN = 12  # Allow at most /12 (e.g. 1M addresses for IPv4)
+_MAX_CIDR_ADDRESSES = 1_048_576  # 1M addresses max per CIDR
+
+
 def _validate_cidr(cidr: str) -> str:
     """Validate and normalise a CIDR string.
-    Raises ValueError with a clear message on any invalid input or /0.
+    Raises ValueError with a clear message on any invalid input, /0, or too-large range.
     Never passes unvalidated strings to nmap or any subprocess.
     Returns the normalised CIDR string on success.
     The sentinel value 'docker' is allowed for docker-socket-only scans.
@@ -196,8 +222,21 @@ def _validate_cidr(cidr: str) -> str:
         net = ipaddress.ip_network(cidr, strict=False)
         if net.prefixlen == 0:
             raise ValueError("Prefix length /0 is not allowed")
+        if net.num_addresses > _MAX_CIDR_ADDRESSES:
+            raise ValueError(
+                f"CIDR too large (max {_MAX_CIDR_ADDRESSES} addresses). Use a smaller range (e.g. /24)."
+            )
+        if net.version == 4 and net.prefixlen < _MAX_CIDR_PREFIXLEN:
+            raise ValueError(f"IPv4 CIDR must be /{_MAX_CIDR_PREFIXLEN} or smaller (e.g. /24).")
         return str(net)
     except ValueError as exc:
+        if (
+            "not a valid" in str(exc)
+            or "Prefix" in str(exc)
+            or "CIDR" in str(exc)
+            or "addresses" in str(exc)
+        ):
+            raise
         raise ValueError(f"'{cidr}' is not a valid CIDR range. Example: '192.168.1.0/24'") from exc
 
 
@@ -310,14 +349,23 @@ def create_scan_job(
     if not cidrs and effective_scan_types != ["docker"]:
         raise ValueError("At least one CIDR range or VLAN must be targeted for scan.")
 
+    # Concurrent scan limit (global)
+    _MAX_CONCURRENT_SCANS = 2
+    running = db.query(ScanJob).filter(ScanJob.status.in_(["queued", "running"])).count()
+    if running >= _MAX_CONCURRENT_SCANS:
+        raise ValueError(
+            f"Too many scans in progress (max {_MAX_CONCURRENT_SCANS}). Wait for one to finish."
+        )
+
     # De-duplicate and sort CIDRs
     final_cidrs = sorted(set(cidrs))
     target_cidr_str = ",".join(final_cidrs) if final_cidrs else None
 
-    # B12: encode ad-hoc nmap override into the label field
+    # B12: encode ad-hoc nmap override into the label field (validated for injection)
     stored_label = label
     if nmap_arguments:
-        stored_label = f"{_NMAP_OVERRIDE_PREFIX}{nmap_arguments}"
+        safe_nmap = validate_nmap_arguments(nmap_arguments)
+        stored_label = f"{_NMAP_OVERRIDE_PREFIX}{safe_nmap}"
 
     job = ScanJob(
         profile_id=profile_id,
@@ -374,6 +422,7 @@ def _sanitise_nmap_args_for_unpriv(args: str) -> str:
 
     -O (OS detection) and -sS/-sA/-sN etc. (raw SYN/ACK scans) need
     CAP_NET_RAW.  Replace with -sT (connect scan) to keep discovery working.
+    Caller must pass already-validated (allowlisted) args.
     """
     import shlex
 
@@ -392,11 +441,12 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
         logger.error("python-nmap is not installed. Unable to run scan.")
         return {}
 
+    safe_args = validate_nmap_arguments(args)
     privileged = _has_raw_socket_privilege()
-    effective_args = args if privileged else _sanitise_nmap_args_for_unpriv(args)
-    if not privileged and effective_args != args:
+    effective_args = safe_args if privileged else _sanitise_nmap_args_for_unpriv(safe_args)
+    if not privileged and effective_args != safe_args:
         logger.warning(
-            "Running unprivileged — nmap args adjusted from '%s' to '%s'", args, effective_args
+            "Running unprivileged — nmap args adjusted from '%s' to '%s'", safe_args, effective_args
         )
 
     nm = nmap.PortScanner()
@@ -468,6 +518,11 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
 
 async def _run_snmp_probe(ip: str, community: str, version: str = "2c", port: int = 161) -> dict:
     if not community or not _SNMP_AVAILABLE:
+        return {}
+    try:
+        community = validate_snmp_community(community)
+    except ValueError:
+        logger.warning("Invalid SNMP community string, skipping probe")
         return {}
 
     logger.info(f"Running SNMP probe for {ip}")

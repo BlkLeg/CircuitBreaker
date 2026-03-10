@@ -16,6 +16,7 @@ from app.core.rate_limit import get_limit, limiter
 from app.core.time import utcnow_iso
 from app.db.models import AppSettings, OAuthState, User
 from app.db.session import get_db
+from app.services.credential_vault import get_vault
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
 
@@ -193,6 +194,25 @@ def _pop_state_or_400(db: Session, state: str, provider_filter):
     return oauth_state
 
 
+def _get_user_oauth_tokens(user: User) -> dict | None:
+    """Return decrypted OAuth tokens for user, or None. Handles both encrypted and legacy plaintext."""
+    raw = user.oauth_tokens
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except (TypeError, ValueError):
+        pass
+    try:
+        vault = get_vault()
+        plain = vault.decrypt(raw)
+        return json.loads(plain)
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+
 def _upsert_oauth_user(
     db: Session,
     email: str,
@@ -221,7 +241,12 @@ def _upsert_oauth_user(
     else:
         assert user is not None
         user.provider = provider
-        user.oauth_tokens = json.dumps(oauth_tokens)
+        try:
+            vault = get_vault()
+            user.oauth_tokens = vault.encrypt(json.dumps(oauth_tokens))
+        except RuntimeError:
+            # Vault not initialized; do not store tokens in plaintext
+            user.oauth_tokens = None
         # Always refresh the avatar so it stays current
         if avatar_url:
             user.profile_photo = avatar_url
@@ -238,9 +263,11 @@ def _issue_jwt_and_redirect(
     from app.core.auth_cookie import set_auth_cookie_on_response
     from app.services.auth_service import _make_token
     from app.services.settings_service import get_or_create_settings
+    from app.services.user_service import record_session
 
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
+    record_session(db, user, request, token, cfg)
     response = RedirectResponse(url=f"{base_url}/?oauth_token={token}", status_code=302)
     set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
     return response
@@ -263,6 +290,7 @@ def _bootstrap_redirect_or_none(
     from app.core.auth_cookie import set_auth_cookie_on_response
     from app.services.auth_service import _make_token
     from app.services.settings_service import get_or_create_settings
+    from app.services.user_service import record_session
 
     cfg = get_or_create_settings(db)
     # Bootstrap is already done — let the normal login flow take over.
@@ -273,6 +301,7 @@ def _bootstrap_redirect_or_none(
         cfg.jwt_secret = _secrets_mod.token_hex(32)
         db.commit()
     token = _make_token(user, cfg)
+    record_session(db, user, request, token, cfg)
     response = RedirectResponse(
         url=f"{base_url}/oobe?oauth_token={token}&bootstrap=1&provider={provider_name}",
         status_code=302,

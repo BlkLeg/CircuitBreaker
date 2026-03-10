@@ -1,5 +1,7 @@
 import subprocess
 
+from app.core.validation import validate_snmp_community
+
 APC_OIDS = {
     "battery_capacity": "1.3.6.1.4.1.318.1.1.1.2.2.1.0",
     "battery_runtime_min": "1.3.6.1.4.1.318.1.1.1.2.2.3.0",
@@ -16,8 +18,9 @@ APC_OIDS = {
 
 def _snmp_get_one(host: str, community: str, oid: str) -> str | None:
     try:
+        safe_community = validate_snmp_community(community)
         r = subprocess.run(
-            ["snmpget", "-v2c", "-c", community, "-Oqv", host, oid],
+            ["snmpget", "-v2c", "-c", safe_community, "-Oqv", host, oid],
             capture_output=True,
             text=True,
             timeout=3,

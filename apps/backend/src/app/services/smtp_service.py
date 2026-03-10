@@ -256,14 +256,14 @@ class SmtpService:
         await smtp.quit()
 
     async def send_password_reset(self, to_email: str, token: str, base_url: str) -> None:
-        """Send a password-reset email with a clickable reset link."""
+        """Send a password-reset email. Link has no token (token in body only, submitted via POST)."""
         app_name, primary_color, logo_path = self._branding()
-        reset_url = f"{base_url}/reset-password?token={token}"
+        reset_url = f"{base_url}/reset-password"
         smtp = await self._connect()
         msg = self._build_message(
             to_email,
             f"Password reset — {app_name}",
-            _reset_html(app_name, primary_color, logo_path is not None, reset_url),
+            _reset_html(app_name, primary_color, logo_path is not None, reset_url, token),
             logo_path=logo_path,
         )
         await smtp.send_message(msg, sender=self.cfg.smtp_from_email)
@@ -355,9 +355,16 @@ def _invite_html(
     )
 
 
-def _reset_html(app_name: str, primary_color: str, has_logo: bool, reset_url: str) -> str:
+def _reset_html(
+    app_name: str, primary_color: str, has_logo: bool, reset_url: str, reset_token: str = ""
+) -> str:
     header = _header_block(app_name, primary_color, has_logo)
     btn = _s_btn(primary_color)
+    token_block = (
+        f'    <p style="{_S_P}">Enter this token in the reset form: <code style="background:#3c3836;padding:4px 8px;border-radius:4px;word-break:break-all">{reset_token}</code></p>'
+        if reset_token
+        else ""
+    )
     return (
         f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>'
         f'<body style="margin:0;padding:0;background:#1d2021">'
@@ -367,9 +374,9 @@ def _reset_html(app_name: str, primary_color: str, has_logo: bool, reset_url: st
         f'    <p style="{_S_P}">Hi there,</p>'
         f'    <p style="{_S_P}">A password reset was requested for your'
         f"    <strong>{app_name}</strong> account.</p>"
-        f'    <p style="{_S_P}">Click the button below to choose a new password.'
-        f"    This link expires in&nbsp;1&nbsp;hour.</p>"
+        f'    <p style="{_S_P}">Click the button below to open the reset page, then enter the token from this email and your new password. This token expires in 1 hour.</p>'
         f'    <a href="{reset_url}" style="{btn}">Reset Password &rarr;</a>'
+        f"{token_block}"
         f'    <hr style="{_S_HR}">'
         f'    <p style="{_S_SMALL}">If you didn&rsquo;t request this, you can safely'
         f"    ignore this email &mdash; your password has not been changed.</p>"

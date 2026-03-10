@@ -1,6 +1,7 @@
 import json
 import logging
 
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -29,7 +30,18 @@ def get_profile(db: Session, profile_id: int) -> DiscoveryProfile:
     return profile
 
 
+def _validate_cron(cron_expr: str | None) -> None:
+    """Raise ValueError if schedule_cron is non-empty and invalid."""
+    if not cron_expr or not cron_expr.strip():
+        return
+    try:
+        CronTrigger.from_crontab(cron_expr.strip())
+    except Exception as e:
+        raise ValueError(f"Invalid cron expression: {e}") from e
+
+
 def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> DiscoveryProfile:
+    _validate_cron(payload.schedule_cron)
     vault = _get_vault()
     encrypted_community = None
 
@@ -83,6 +95,8 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
 def update_profile(
     db: Session, profile_id: int, payload: DiscoveryProfileUpdate, actor: str
 ) -> DiscoveryProfile:
+    if getattr(payload, "schedule_cron", None) is not None:
+        _validate_cron(payload.schedule_cron)
     profile = get_profile(db, profile_id)
     vault = _get_vault()
     old_cron = profile.schedule_cron

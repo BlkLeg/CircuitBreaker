@@ -350,11 +350,14 @@ def unlock_user_endpoint(
 
 @router.post("/users/{user_id}/masquerade", response_model=MasqueradeResponse)
 def masquerade_user(
+    request: Request,
     user_id: int,
     db: Session = Depends(get_db),
     user: User = require_role("admin"),
 ):
     """Issue a short-lived masquerade token (admin login-as)."""
+    from app.core.audit import log_audit
+
     cfg = get_or_create_settings(db)
     if not getattr(cfg, "masquerade_enabled", True):
         raise HTTPException(status_code=403, detail="Masquerade is disabled")
@@ -369,6 +372,16 @@ def masquerade_user(
         cfg.jwt_secret,  # type: ignore[arg-type]
         timeout_hours=15 / 60,  # type: ignore[arg-type]  # 15 minutes as fraction of hour
     )
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="admin_masquerade",
+        resource=f"user:{target.id}",
+        status="ok",
+        details=f"Admin masquerade as user_id={target.id} ({target.email or target.display_name or 'unknown'})",
+    )
+    db.commit()
     return MasqueradeResponse(
         token=token,
         target_user_id=target.id,

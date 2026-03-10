@@ -25,7 +25,7 @@ Circuit Breaker allows you to balance discovery depth against network safety and
 
 - **Safe Mode (Default):** Performs ICMP pings (using user-space methods) and TCP connect scans on common ports (22, 80, 443, 8080, 8443). Safe mode operates entirely within standard Docker environments without requiring elevated capabilities like `NET_RAW`.
 - **Full Mode:** Utilizes comprehensive port scanning, ARP requests, and Scapy methodologies for deeper inspection, including MAC address resolution. This mode requires Docker elevated permissions (`NET_RAW`, `NET_ADMIN`) and usually host network mode.
-- **Docker-Aware Discovery:** If the host's Docker socket (`/var/run/docker.sock`) is mounted read-only into the Circuit Breaker container, the discovery pipeline can directly read container configurations. This automatically populates Docker network modes (bridges, overlays) and maps container services to external exposed ports.
+- **Docker-Aware Discovery:** Docker-aware discovery is **opt-in** for security. By default the Docker socket is not mounted. To enable it, run Compose with the Docker socket override: `docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up -d` (or with `docker-compose.prod.yml` for production). With the socket mounted read-only, the discovery pipeline can read container configurations and populate Docker network modes (bridges, overlays) and map container services to exposed ports. Enable "Docker Container Discovery" in Settings → Discovery.
 
 ### 2) Create a scan profile
 

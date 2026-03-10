@@ -45,6 +45,14 @@ Native HTTPS configuration is written to `/etc/circuit-breaker/config.yaml`, whi
 - `CB_API_TOKEN`: protects write operations when configured.
 - `CB_VAULT_KEY`: secures sensitive stored credentials.
 
+### NATS authentication and TLS (optional)
+
+NATS is used for discovery, webhooks, and notifications. By default it runs without auth. To enable:
+
+- **Token auth:** Set `NATS_AUTH_TOKEN` in the environment for the **nats** service and for **backend** and all **worker** services (same value). The Compose files pass this through; the NATS server will require the token and the Python client will send it.
+- **User/password:** Set `NATS_USER` and `NATS_PASSWORD` for backend and workers. The NATS server must be configured for user auth (e.g. via a custom config file or override command); the client will embed credentials in the connection URL.
+- **TLS:** Set `NATS_TLS=true` for backend and workers so they connect with `tls://` and TLS enabled. The NATS server must be configured for TLS (certificates and `--tls` / config); document cert paths and mount them into the server container as needed.
+
 ---
 
 ## 3) Secrets Management & Vault
@@ -111,7 +119,31 @@ For native Linux installs, the important paths are:
 
 ---
 
-## 4) Practical Security Habits
+## 4) WebSockets (WSS)
+
+Discovery, topology, and status dashboards use WebSockets for live updates. In production you must use **WSS** (WebSocket over HTTPS) so the auth token is not sent in the clear.
+
+- **Use HTTPS:** With Caddy (or another reverse proxy) in front, connect to `wss://your-domain/...` so the WebSocket is tunneled over TLS. Plain `ws://` is only suitable for local development.
+- **Cookie-based auth:** When the app is served from the same origin, the session cookie (`cb_session`) is sent automatically with the WebSocket handshake. Prefer this over sending the token as the first message so the token is never visible in client code.
+- **Strict WSS only:** Set `CB_WS_REQUIRE_WSS=true` in the backend environment to reject any WebSocket connection that is not considered secure (e.g. when `X-Forwarded-Proto` is not `https`). Use this when the app is exposed and you want to forbid plain-WS access.
+
+---
+
+## 5) Network segmentation (Docker Compose)
+
+The Compose files define segmented networks in addition to the default `cb_net`:
+
+| Network        | Services                                                                 | Purpose |
+|----------------|---------------------------------------------------------------------------|---------|
+| `cb_frontend`  | Caddy, frontend, cloudflared (tunnel)                                    | Edge and UI; Caddy proxies to frontend and backend. |
+| `cb_backend`   | Caddy, backend, postgres, nats                                            | API and data; backend talks only to postgres and nats. |
+| `cb_workers`   | discovery worker, webhook-worker, notification-worker, postgres, nats     | Background jobs; workers cannot reach backend or frontend directly. |
+
+All services remain on `cb_net` as well so connectivity is unchanged. Segmentation limits lateral movement: a compromised worker can reach only postgres and NATS, not the backend API or frontend.
+
+---
+
+## 6) Practical Security Habits
 
 - Rotate tokens on a regular schedule.
 - Avoid sharing admin credentials.
@@ -121,7 +153,7 @@ For native Linux installs, the important paths are:
 
 ---
 
-## 4) Before You Go Live
+## 7) Before You Go Live
 
 - Confirm authentication behavior matches your policy.
 - Confirm token and secret values are set and persisted.

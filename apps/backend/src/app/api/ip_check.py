@@ -1,9 +1,10 @@
 """Read-only IP conflict check endpoint — powers real-time inline validation."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.rate_limit import get_limit, limiter
 from app.db.session import get_db
 from app.services.ip_reservation import check_ip_conflict
 
@@ -25,7 +26,8 @@ class IpCheckRequest(BaseModel):
 
 
 @router.post("/ip-check")
-def check_ip(payload: IpCheckRequest, db: Session = Depends(get_db)):
+@limiter.limit(lambda: get_limit("ip_check"))
+def check_ip(request: Request, payload: IpCheckRequest, db: Session = Depends(get_db)):
     """Return any conflicts for the given IP address + optional port bindings.
 
     An empty ``conflicts`` list means the IP (and all port bindings) are available.

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from app.core.nats_client import nats_client
+from app.core.nmap_args import validate_nmap_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,12 @@ _JOB_TIMEOUT_S = 600  # 10 minutes max per discovery job
 async def _process_job_inner(msg) -> None:
     data = json.loads(msg.data.decode())
     cidr = data.get("target_cidr")
-    nmap_args = data.get("nmap_args", "-T4 -F")
+    raw_nmap = data.get("nmap_args", "-T4 -F")
+    try:
+        nmap_args = validate_nmap_arguments(raw_nmap)
+    except ValueError as e:
+        logger.warning("Invalid nmap_args in job, using default: %s", e)
+        nmap_args = "-T4 -F"
     logger.info("Processing discovery job for %s", cidr)
 
     ips = await _run_masscan(cidr)

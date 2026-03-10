@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
+import DOMPurify from 'dompurify';
 import {
   X,
   ExternalLink,
@@ -131,7 +132,9 @@ function DocRow({ doc, expanded, onToggle }) {
             borderRadius: 6,
           }}
           dangerouslySetInnerHTML={{
-            __html: loading ? '<em>Loading…</em>' : bodyHtml || '<em>No content</em>',
+            __html: DOMPurify.sanitize(
+              loading ? '<em>Loading…</em>' : bodyHtml || '<em>No content</em>'
+            ),
           }}
         />
       )}

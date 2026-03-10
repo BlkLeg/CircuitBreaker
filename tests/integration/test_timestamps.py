@@ -70,39 +70,3 @@ def test_log_response_includes_elapsed_seconds(client):
 
 # ── Backfill behaviour ────────────────────────────────────────────────────────
 
-def test_backfill_just_now_rows(db):
-    """Log rows with an unparseable timestamp get the epoch sentinel UTC timestamp."""
-    db.execute(text(
-        "INSERT INTO logs (action, category, level, timestamp, created_at_utc)"
-        " VALUES ('test', 'system', 'info', 'just now', NULL)"
-    ))
-    db.commit()
-
-    from app.main import _backfill_log_timestamps
-    _backfill_log_timestamps(db)
-
-    row = db.execute(text(
-        "SELECT created_at_utc FROM logs WHERE action='test' AND category='system'"
-    )).fetchone()
-    assert row is not None
-    assert row[0] == "1970-01-01T00:00:00+00:00"
-
-
-def test_backfill_parseable_timestamp_rows(db):
-    """Log rows with a parseable timestamp get a valid UTC ISO timestamp."""
-    db.execute(text(
-        "INSERT INTO logs (action, category, level, timestamp, created_at_utc)"
-        " VALUES ('test2', 'system', 'info', '2026-01-15 12:00:00', NULL)"
-    ))
-    db.commit()
-
-    from app.main import _backfill_log_timestamps
-    _backfill_log_timestamps(db)
-
-    row = db.execute(text(
-        "SELECT created_at_utc FROM logs WHERE action='test2' AND category='system'"
-    )).fetchone()
-    assert row is not None
-    assert row[0] is not None
-    parsed = datetime.fromisoformat(row[0])
-    assert parsed.tzinfo is not None

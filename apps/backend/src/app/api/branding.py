@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.rbac import require_role
 from app.core.time import utcnow
+from app.core.upload_validation import SUFFIX_TO_MIME, verify_image_magic_bytes
 from app.db.session import get_db
 from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
@@ -68,6 +69,9 @@ async def upload_favicon(
     data = await file.read()
     if len(data) > _MAX_FAVICON_BYTES:
         raise HTTPException(status_code=400, detail="Favicon must be ≤ 512 KB")
+    mime = SUFFIX_TO_MIME.get(suffix, "image/x-icon" if suffix == ".ico" else "image/png")
+    if not verify_image_magic_bytes(data, mime):
+        raise HTTPException(status_code=400, detail="Favicon content does not match file type.")
 
     _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
     dest = _BRANDING_DIR / "favicon.ico"
@@ -101,6 +105,12 @@ async def upload_login_logo(
     data = await file.read()
     if len(data) > _MAX_LOGO_BYTES:
         raise HTTPException(status_code=400, detail="Login logo must be ≤ 2 MB")
+    if suffix != ".svg":
+        mime = SUFFIX_TO_MIME.get(suffix, "image/png")
+        if not verify_image_magic_bytes(data, mime, allow_svg=True):
+            raise HTTPException(
+                status_code=400, detail="Login logo content does not match file type."
+            )
 
     _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
     dest = _BRANDING_DIR / f"login-logo{suffix}"
@@ -138,6 +148,11 @@ async def upload_login_bg(
     data = await file.read()
     if len(data) > _MAX_BG_BYTES:
         raise HTTPException(status_code=400, detail="Login background must be ≤ 5 MB")
+    mime = SUFFIX_TO_MIME.get(suffix, "image/jpeg")
+    if not verify_image_magic_bytes(data, mime):
+        raise HTTPException(
+            status_code=400, detail="Login background content does not match file type."
+        )
 
     _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
 

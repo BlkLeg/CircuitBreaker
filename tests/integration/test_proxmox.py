@@ -95,7 +95,7 @@ def test_create_proxmox_config(client, monkeypatch):
     _mock_vault(monkeypatch)
     r = client.post("/api/v1/integrations/proxmox", json={
         "name": "Test PVE",
-        "config_url": "https://pve.local:8006",
+        "config_url": "https://8.8.8.8:8006",
         "api_token": "root@pam!cbtoken=secret123",
         "auto_sync": True,
         "sync_interval_s": 300,
@@ -113,7 +113,7 @@ def test_get_proxmox_config(client, monkeypatch):
     _mock_vault(monkeypatch)
     create = client.post("/api/v1/integrations/proxmox", json={
         "name": "My Cluster",
-        "config_url": "https://pve.local:8006",
+        "config_url": "https://8.8.8.8:8006",
         "api_token": "user@pam!tok=val",
     })
     cid = create.json()["id"]
@@ -127,7 +127,7 @@ def test_update_proxmox_config(client, monkeypatch):
     _mock_vault(monkeypatch)
     create = client.post("/api/v1/integrations/proxmox", json={
         "name": "Old Name",
-        "config_url": "https://pve.local:8006",
+        "config_url": "https://8.8.8.8:8006",
         "api_token": "user@pam!tok=val",
     })
     cid = create.json()["id"]
@@ -141,7 +141,7 @@ def test_delete_proxmox_config(client, monkeypatch):
     _mock_vault(monkeypatch)
     create = client.post("/api/v1/integrations/proxmox", json={
         "name": "ToDelete",
-        "config_url": "https://pve.local:8006",
+        "config_url": "https://8.8.8.8:8006",
         "api_token": "user@pam!tok=val",
     })
     cid = create.json()["id"]
@@ -157,7 +157,7 @@ def test_get_proxmox_status(client, monkeypatch):
     _mock_vault(monkeypatch)
     create = client.post("/api/v1/integrations/proxmox", json={
         "name": "Status Test",
-        "config_url": "https://pve.local:8006",
+        "config_url": "https://8.8.8.8:8006",
         "api_token": "user@pam!tok=val",
     })
     cid = create.json()["id"]

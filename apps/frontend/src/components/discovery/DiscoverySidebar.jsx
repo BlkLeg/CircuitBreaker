@@ -10,10 +10,12 @@ export default function DiscoverySidebar({
   onFilterChange,
   jobCounts,
   pendingReviewCount,
-  networkLoad = 0,
-  storageUsed = 0,
+  memoryUsed = null,
+  storageUsed = null,
   listenerEnabled = false,
 }) {
+  const memPct = memoryUsed == null ? null : Math.min(100, Math.max(0, memoryUsed));
+  const diskPct = storageUsed == null ? null : Math.min(100, Math.max(0, storageUsed));
   return (
     <aside className="discovery-sidebar">
       <button
@@ -96,23 +98,23 @@ export default function DiscoverySidebar({
 
       <div className="sidebar-footer">
         <div className="sidebar-stat">
-          <span className="sidebar-stat-label">Network Load</span>
-          <span className="sidebar-stat-value">{networkLoad}%</span>
+          <span className="sidebar-stat-label">Memory</span>
+          <span className="sidebar-stat-value">{memPct == null ? '—' : `${memPct}%`}</span>
         </div>
         <div className="sidebar-stat-bar">
           <div
             className="sidebar-stat-bar-fill sidebar-stat-bar-blue"
-            style={{ width: `${networkLoad}%` }}
+            style={{ width: `${memPct == null ? 0 : memPct}%` }}
           />
         </div>
         <div className="sidebar-stat">
-          <span className="sidebar-stat-label">Storage</span>
-          <span className="sidebar-stat-value">{storageUsed}%</span>
+          <span className="sidebar-stat-label">Disk</span>
+          <span className="sidebar-stat-value">{diskPct == null ? '—' : `${diskPct}%`}</span>
         </div>
         <div className="sidebar-stat-bar">
           <div
-            className={`sidebar-stat-bar-fill ${storageUsed > 80 ? 'sidebar-stat-bar-amber' : 'sidebar-stat-bar-blue'}`}
-            style={{ width: `${storageUsed}%` }}
+            className={`sidebar-stat-bar-fill ${diskPct == null || diskPct <= 80 ? 'sidebar-stat-bar-blue' : 'sidebar-stat-bar-amber'}`}
+            style={{ width: `${diskPct == null ? 0 : diskPct}%` }}
           />
         </div>
       </div>
@@ -125,7 +127,7 @@ DiscoverySidebar.propTypes = {
   onFilterChange: PropTypes.func.isRequired,
   jobCounts: PropTypes.object.isRequired,
   pendingReviewCount: PropTypes.number,
-  networkLoad: PropTypes.number,
+  memoryUsed: PropTypes.number,
   storageUsed: PropTypes.number,
   listenerEnabled: PropTypes.bool,
 };

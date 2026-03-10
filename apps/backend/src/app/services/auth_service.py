@@ -1,5 +1,6 @@
 """Auth business logic: register, login, profile management."""
 
+import hashlib
 import json
 import logging
 import re
@@ -852,15 +853,25 @@ async def update_profile(
         except Exception:
             _logger.warning("Pillow resize failed; saving original photo as-is")
 
+        # Reject path traversal in client filename
+        if profile_photo.filename and (
+            "/" in profile_photo.filename or ".." in profile_photo.filename
+        ):
+            raise HTTPException(status_code=400, detail="Invalid profile photo filename")
+
         # Delete old photo
         if user.profile_photo:
             old_path = _PROFILES_DIR / user.profile_photo
             old_path.unlink(missing_ok=True)
 
         ext = "jpg" if profile_photo.content_type == "image/jpeg" else "png"
-        filename = f"{user.id}-{profile_photo.filename or 'photo.' + ext}"
+        safe_suffix = hashlib.sha256(data).hexdigest()[:12]
+        filename = f"{user.id}-{safe_suffix}.{ext}"
         _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-        ((_PROFILES_DIR) / filename).write_bytes(data)
+        out_path = (_PROFILES_DIR / filename).resolve()
+        if not str(out_path).startswith(str(_PROFILES_DIR.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid profile photo path")
+        out_path.write_bytes(data)
         user.profile_photo = filename
         changed_fields.append("profile_photo")
 

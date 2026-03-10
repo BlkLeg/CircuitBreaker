@@ -128,10 +128,13 @@ def test_settings_put_requires_auth(client):
         json={"auth_enabled": True},
         headers=_auth_header(token),
     )
+    print("FIRST PUT RESP:", resp.json())
     assert resp.status_code == 200
 
     # Now unauthenticated PUT should be blocked
+    client.cookies.clear()
     resp = client.put("/api/v1/settings", json={"theme": "light"})
+    print("SECOND PUT RESP:", resp.status_code, resp.json())
     assert resp.status_code == 401
 
 
@@ -144,6 +147,7 @@ def test_settings_reset_requires_auth(client):
         headers=_auth_header(token),
     )
     # Unauthenticated reset should be blocked
+    client.cookies.clear()
     resp = client.post("/api/v1/settings/reset")
     assert resp.status_code == 401
 
@@ -160,6 +164,7 @@ def test_logs_delete_requires_auth(client):
         json={"auth_enabled": True},
         headers=_auth_header(token),
     )
+    client.cookies.clear()
     resp = client.delete("/api/v1/logs")
     assert resp.status_code == 401
 
@@ -426,6 +431,7 @@ class TestProfile:
             json={"auth_enabled": True},
             headers=_auth_header(token),
         )
+        client.cookies.clear()
         resp = client.get("/api/v1/auth/me")
         assert resp.status_code == 401
 
@@ -588,6 +594,7 @@ def test_delete_me_unauthenticated(client):
         json={"auth_enabled": True},
         headers=_auth_header(token),
     )
+    client.cookies.clear()
     resp = client.delete("/api/v1/auth/me")
     assert resp.status_code == 401
 

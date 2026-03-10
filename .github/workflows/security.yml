@@ -66,3 +66,101 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-fs-results.sarif
+
+  trivy-config:
+    name: Trivy Config / IaC Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config-results.sarif
+      - name: Upload Trivy config results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-config-results.sarif
+
+  semgrep:
+    name: Semgrep (SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep
+        run: semgrep scan --config p/default --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/ docker/ || true
+      - name: Upload Semgrep results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Bandit
+        run: pip install bandit
+      - name: Run Bandit
+        run: bandit -r apps/backend/src/ -f sarif -o bandit-results.sarif || true
+      - name: Upload Bandit results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-results.sarif
+
+  gitleaks:
+    name: Gitleaks (Secret Scanning)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  checkov:
+    name: Checkov (IaC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Checkov
+        run: pip install checkov
+      - name: Run Checkov
+        run: checkov -d docker/ -d . --skip-path apps/ --skip-path node_modules/ --output sarif --output-file-path checkov-results.sarif --quiet
+      - name: Upload Checkov results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  hadolint:
+    name: Hadolint (Dockerfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Hadolint
+        run: |
+          for f in Dockerfile docker/backend.Dockerfile docker/frontend.Dockerfile docker/Dockerfile.prod docker/Dockerfile.native; do
+            [ -f "$f" ] && docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint hadolint "$f"
+          done

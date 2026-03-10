@@ -17,7 +17,7 @@ TEST_DB_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -32,7 +32,7 @@ from app.db import models  # noqa: F401 E402 — register models with metadata
 from app.main import app  # noqa: E402
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def db_engine():
     if TEST_DB_URL.startswith("sqlite"):
         engine = create_engine(
@@ -41,7 +41,11 @@ def db_engine():
             poolclass=StaticPool,
         )
     else:
+        # Provide larger pool size for async tests running concurrently
+        os.environ["DB_POOL_SIZE"] = "20"
         engine = create_engine(TEST_DB_URL, pool_pre_ping=True)
+        
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)
@@ -50,6 +54,18 @@ def db_engine():
 
 @pytest.fixture(scope="function")
 def db(db_engine):
+    with db_engine.connect() as conn:
+        if TEST_DB_URL.startswith("sqlite"):
+            # Fallback for SQLite (unsupported, but keeping code paths alive)
+            for table in reversed(Base.metadata.sorted_tables):
+                conn.execute(table.delete())
+        else:
+            # Fast clear of all data between tests using Postgres native cascade
+            tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+            if tables:
+                conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE;"))
+        conn.commit()
+
     Session = sessionmaker(bind=db_engine)
     session = Session()
     try:

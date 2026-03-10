@@ -164,7 +164,10 @@ def create_profile(
     db: Session = Depends(get_db),
 ):
     actor = _get_actor(db, user.id)
-    return discovery_profiles_service.create_profile(db, payload, actor)
+    try:
+        return discovery_profiles_service.create_profile(db, payload, actor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.patch("/profiles/{profile_id}", response_model=DiscoveryProfileOut)
@@ -175,7 +178,10 @@ def update_profile(
     db: Session = Depends(get_db),
 ):
     actor = _get_actor(db, user.id)
-    return discovery_profiles_service.update_profile(db, profile_id, payload, actor)
+    try:
+        return discovery_profiles_service.update_profile(db, profile_id, payload, actor)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.delete("/profiles/{profile_id}", status_code=204)
@@ -249,6 +255,9 @@ async def run_adhoc_scan(
         )
     except ValueError as exc:
         _logger.warning("Ad-hoc scan request rejected: %s", exc)
+        msg = str(exc)
+        if "Too many scans" in msg:
+            raise HTTPException(status_code=429, detail=msg) from None
         raise HTTPException(status_code=422, detail="Invalid scan request parameters.") from None
     log_audit(
         db,

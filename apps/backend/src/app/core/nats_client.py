@@ -15,6 +15,10 @@ from typing import Any
 _logger = logging.getLogger(__name__)
 
 NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
+NATS_AUTH_TOKEN = os.getenv("NATS_AUTH_TOKEN", "").strip()
+NATS_USER = os.getenv("NATS_USER", "").strip()
+NATS_PASSWORD = os.getenv("NATS_PASSWORD", "").strip()
+NATS_TLS = os.getenv("NATS_TLS", "").strip().lower() in ("1", "true", "yes")
 
 
 class NATSClient:
@@ -62,14 +66,32 @@ class NATSClient:
             async def _on_error(exc: Exception) -> None:
                 _logger.error("NATS error: %s", exc)
 
-            self._nc = await nats.connect(
-                self._url,
+            connect_url = self._url
+            if NATS_TLS and connect_url.startswith("nats://"):
+                connect_url = "tls://" + connect_url[7:]
+
+            connect_kw: dict[str, Any] = dict(
                 connect_timeout=3,
                 max_reconnect_attempts=60,
                 reconnect_time_wait=5,
                 disconnected_cb=_on_disconnected,
                 reconnected_cb=_on_reconnected,
                 error_cb=_on_error,
+            )
+            if NATS_AUTH_TOKEN:
+                connect_kw["token"] = NATS_AUTH_TOKEN
+            elif NATS_USER and NATS_PASSWORD:
+                from urllib.parse import quote_plus, urlparse
+
+                parsed = urlparse(connect_url)
+                netloc = f"{quote_plus(NATS_USER)}:{quote_plus(NATS_PASSWORD)}@{parsed.hostname or 'localhost'}:{parsed.port or 4222}"
+                connect_url = f"{parsed.scheme}://{netloc}"
+            if NATS_TLS:
+                connect_kw["tls"] = True
+
+            self._nc = await nats.connect(
+                connect_url,
+                **connect_kw,
             )
             self._js = self._nc.jetstream()
             self._connected = True
@@ -112,6 +134,12 @@ class NATSClient:
             data = payload
 
         if not self._connected or not self._nc:
+            if len(self._publish_buffer) >= self._publish_buffer.maxlen:
+                _logger.warning(
+                    "NATS publish buffer full (maxlen=%d), dropping oldest message for subject %s",
+                    self._publish_buffer.maxlen,
+                    subject,
+                )
             self._publish_buffer.append((subject, data))
             _logger.debug(
                 "NATS not connected — buffered message to %s (%d buffered)",
