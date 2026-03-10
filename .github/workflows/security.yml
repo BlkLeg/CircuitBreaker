@@ -42,7 +42,7 @@ jobs:
         with:
           args: --all-projects --sarif-file-output=snyk-results.sarif
       - name: Upload Snyk results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: snyk-results.sarif
@@ -62,7 +62,7 @@ jobs:
           output: trivy-fs-results.sarif
           severity: 'CRITICAL,HIGH'
       - name: Upload Trivy filesystem results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-fs-results.sarif
@@ -80,7 +80,7 @@ jobs:
           format: sarif
           output: trivy-config-results.sarif
       - name: Upload Trivy config results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-config-results.sarif
@@ -99,7 +99,7 @@ jobs:
       - name: Run Semgrep
         run: semgrep scan --config p/default --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/ docker/ || true
       - name: Upload Semgrep results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('semgrep.sarif') != ''
         with:
           sarif_file: semgrep.sarif
@@ -118,8 +118,8 @@ jobs:
       - name: Run Bandit
         run: bandit -r apps/backend/src/ -f sarif -o bandit-results.sarif || true
       - name: Upload Bandit results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('bandit-results.sarif') != ''
         with:
           sarif_file: bandit-results.sarif
 
@@ -147,9 +147,9 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
       - name: Run Checkov
-        run: checkov -d docker/ -d . --skip-path apps/ --skip-path node_modules/ --output sarif --output-file-path checkov-results.sarif --quiet
+        run: checkov -d docker/ -d . --skip-path apps/ --skip-path node_modules/ --skip-path site/ --output sarif --output-file-path checkov-results.sarif --quiet
       - name: Upload Checkov results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: checkov-results.sarif

@@ -5,11 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Image tag to push (e.g. v0.1.5)'
-        required: false
-        default: 'dev'
 
 permissions:
   contents: read
@@ -42,7 +37,7 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ]; then
             RAW_TAG="${{ github.ref_name }}"
           else
-            RAW_TAG="${{ github.event.inputs.tag }}"
+            RAW_TAG="dev"
           fi
           SAFE_TAG=$(printf '%s' "$RAW_TAG" | tr -cd '[:alnum:]_.-')
           if [ -z "$SAFE_TAG" ]; then

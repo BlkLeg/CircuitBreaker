@@ -102,6 +102,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health', timeout=4)" || exit 1
 
+# checkov:skip=CKV_DOCKER_3: Process runs as breaker26 via gosu in entrypoint; root needed for volume chown.
 # Container starts as root so that the entrypoint can fix /data volume ownership at runtime,
 # then drops to breaker26 (UID 1000) via gosu before execing the app.
 # tini as PID 1 ensures SIGTERM is forwarded to uvicorn and zombie processes are reaped.

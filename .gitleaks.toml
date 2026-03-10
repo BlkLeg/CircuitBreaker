@@ -3,8 +3,6 @@
 [extend]
 useDefault = true
 
-[[allowlist]]
+[allowlist]
 description = "Alembic migration revision IDs (hex hashes) are not API keys"
-paths = [
-    '''apps/backend/migrations/.*\.py'''
-]
+paths = ['apps/backend/migrations/.*\\.py']

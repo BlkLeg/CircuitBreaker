@@ -422,7 +422,8 @@ Install_Docker() {
 Check_Docker() {
   if command -v docker >/dev/null 2>&1; then
     local ver major
-    ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "0.0.0")
+    ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null)
+    [[ -z "$ver" || "$ver" == "0.0.0" ]] && ver=$(docker version --format '{{.Client.Version}}' 2>/dev/null || echo "0.0.0")
     major="${ver%%.*}"
     if [[ "$major" -lt "$MINIMUM_DOCKER_VERSION" ]]; then
       Show 1 "Docker $ver is too old (minimum required: $MINIMUM_DOCKER_VERSION). Please upgrade Docker and re-run."

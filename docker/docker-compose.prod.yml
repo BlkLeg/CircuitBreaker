@@ -11,6 +11,7 @@
 # CB_TAG must match the tag used when publishing (e.g. make docker-publish-prod TAG=v0.2.0 → use CB_TAG=v0.2.0, not 0.2.0).
 #
 # Requires: Caddyfile and .env in the same directory as this file.
+# Caddyfile must be a regular file (not a directory); bind-mounting a directory fails.
 name: circuitbreaker
 
 networks:

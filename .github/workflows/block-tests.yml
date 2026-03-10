@@ -1,5 +1,7 @@
 name: Block Tests in Prod Paths
 on: [pull_request]
+permissions:
+  contents: read
 jobs:
   check-prod:
     runs-on: ubuntu-latest
