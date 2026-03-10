@@ -167,7 +167,7 @@ function AppRoutes() {
   const branding = settings?.branding;
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
-  const [bootstrapError, setBootstrapError] = useState('');
+  const [bootstrapError, setBootstrapError] = useState(null);
   const [retryCountdown, setRetryCountdown] = useState(3);
   const [isRetrying, setIsRetrying] = useState(false);
   const checkInFlightRef = useRef(false);
@@ -184,13 +184,19 @@ function AppRoutes() {
       .bootstrapStatus()
       .then((res) => {
         setNeedsBootstrap(Boolean(res.data?.needs_bootstrap));
-        setBootstrapError('');
+        setBootstrapError(null);
         setRetryCountdown(3);
       })
       .catch((err) => {
         const message = err?.message || 'Failed to determine setup state.';
+        const status = err?.response?.status;
+        const isStartup =
+          status === 502 ||
+          status === 503 ||
+          status === 504 ||
+          message.toLowerCase().includes('network error');
         console.error('Bootstrap status check failed:', message);
-        setBootstrapError(message);
+        setBootstrapError({ message, isStartup });
       })
       .finally(() => {
         checkInFlightRef.current = false;
@@ -227,6 +233,58 @@ function AppRoutes() {
   }
 
   if (bootstrapError) {
+    if (bootstrapError.isStartup) {
+      return (
+        <div className="login-root">
+          <div className="setup-check-shell" role="alert" aria-live="polite">
+            <img
+              src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
+              alt={branding?.app_name ?? 'Circuit Breaker'}
+              className="setup-check-logo"
+            />
+            <div
+              className="login-card setup-check-card"
+              style={{
+                textAlign: 'center',
+                minHeight: 250,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <div
+                className="spinner"
+                style={{
+                  margin: '0 auto 24px',
+                  width: 48,
+                  height: 48,
+                  border: '4px solid rgba(255,255,255,0.1)',
+                  borderLeftColor: '#32b89e',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }}
+              ></div>
+              <h2 className="login-card-title" style={{ marginBottom: 8 }}>
+                Circuit Breaker is starting up...
+              </h2>
+              <p className="login-card-subtitle" style={{ margin: 0 }}>
+                The server is warming up. This may take a moment.
+              </p>
+              <div
+                className="setup-check-status"
+                aria-live="polite"
+                style={{ marginTop: 24, fontSize: '0.9rem', color: '#a0a0a0' }}
+              >
+                {isRetrying ? 'Checking connection…' : `Checking again in ${retryCountdown}s`}
+              </div>
+            </div>
+          </div>
+          <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
+        </div>
+      );
+    }
+
     return (
       <div className="login-root">
         <div className="setup-check-shell" role="alert" aria-live="polite">
@@ -241,7 +299,7 @@ function AppRoutes() {
               Circuit Breaker could not determine whether first-run setup is required.
             </p>
             <div className="login-error-banner" style={{ marginBottom: 16 }}>
-              {bootstrapError}
+              {bootstrapError.message}
             </div>
             {(isRetrying || retryCountdown < 3) && (
               <p className="login-card-subtitle" style={{ marginBottom: 8, fontSize: '0.9rem' }}>

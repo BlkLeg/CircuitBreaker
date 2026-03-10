@@ -33,7 +33,7 @@ services:
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:80/api/v1/health"]
-      interval: 15s
+      interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 90s
+      retries: 5
+      start_period: 60s

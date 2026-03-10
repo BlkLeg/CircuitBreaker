@@ -88,7 +88,8 @@ function _connect() {
     if (_intentionalClose) return;
     if (_retryTimer) return;
 
-    const delay = Math.min(BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, _attempt), BACKOFF_MAX);
+    const baseDelay = Math.min(BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, _attempt), BACKOFF_MAX);
+    const delay = baseDelay * (0.5 + Math.random() * 0.5); // Add jitter (50% to 100% of base)
     _attempt += 1;
     _retryTimer = setTimeout(_connect, delay);
   };

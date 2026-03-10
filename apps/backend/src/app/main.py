@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
 
 from app.api import (
     auth,
@@ -75,7 +76,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.rate_limit import limiter
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
-from app.db.session import get_session_context
+from app.db.session import engine, get_session_context
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -833,6 +834,14 @@ app.include_router(topologies_router, prefix=f"{_V1}/topologies", tags=["topolog
 
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "warming_up", "version": "v0.2.0", "db": "unavailable"},
+        )
     return {"status": "ok", "version": "v0.2.0", "db": "postgresql"}
 
 

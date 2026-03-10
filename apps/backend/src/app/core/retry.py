@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Callable
 
 _logger = logging.getLogger(__name__)
@@ -31,7 +32,8 @@ async def run_sync_with_retry[T](
         except Exception as e:
             last = e
             if attempt < max_attempts - 1:
-                delay = base_delay_s * (2**attempt)
+                base_delay = base_delay_s * (2**attempt)
+                delay = base_delay * (0.5 + random.random() * 0.5)
                 _logger.debug(
                     "%s attempt %s/%s failed, retrying in %.1fs: %s",
                     log_context,

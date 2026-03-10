@@ -19,6 +19,7 @@ OS_ARCH       := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m
 DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.git$$//' | sed 's/^/ghcr.io\//' | tr '[:upper:]' '[:lower:]')
 SNYK_BIN      ?= $(CURDIR)/.tools/snyk
 SNYK_PATH     ?= $(CURDIR)
+COMPOSE_FILE  ?= docker/docker-compose.yml
 
 # ==============================================================================
 # CORE TARGETS
@@ -144,7 +145,7 @@ lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
 
 compose-build: ## Build mono image only (no up). Use before compose-up to force rebuild.
 	@echo "Building mono image..."
-	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build circuitbreaker
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose -f $(COMPOSE_FILE) build circuitbreaker
 	@echo "✅ Mono image built. Run 'make compose-up' to start."
 
 setup-buildx: ## Register QEMU binfmt handlers and ensure a multi-arch buildx builder is active
@@ -167,15 +168,15 @@ dev-stop-install: ## Stop the install-script-deployed container if running (avoi
 
 compose-up: dev-stop-install ## Build (if needed) and start mono container
 	@echo "Starting docker-compose stack..."
-	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up --build -d
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose -f $(COMPOSE_FILE) up --build -d
 
 compose-down: ## Stop docker compose stack (data kept)
 	@echo "Stopping docker-compose stack..."
-	docker compose down
+	docker compose -f $(COMPOSE_FILE) down
 
 compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
 	@echo "Stopping stack and removing all volumes..."
-	docker compose down -v
+	docker compose -f $(COMPOSE_FILE) down -v
 	@echo "✅ Stack stopped and volumes removed."
 
 install-cb: ## Install the cb CLI for the mono stack (container name: circuitbreaker)
@@ -190,23 +191,23 @@ install-cb: ## Install the cb CLI for the mono stack (container name: circuitbre
 tunnel-up: ## Start the Cloudflare Tunnel container (requires CLOUDFLARE_TUNNEL_TOKEN in .env)
 	@echo "Starting Cloudflare Tunnel..."
 	@docker rm -f cb-cloudflared >/dev/null 2>&1 || true
-	docker compose --profile tunnel up -d --no-deps --force-recreate cloudflared
+	docker compose -f $(COMPOSE_FILE) --profile tunnel up -d --no-deps --force-recreate cloudflared
 	@echo "✅ Tunnel container started. Check logs: docker logs cb-cloudflared -f"
 
 tunnel-down: ## Stop the Cloudflare Tunnel container
 	@echo "Stopping Cloudflare Tunnel..."
-	docker compose --profile tunnel stop cloudflared
+	docker compose -f $(COMPOSE_FILE) --profile tunnel stop cloudflared
 	@echo "✅ Tunnel stopped."
 
 compose-fresh: dev-stop-install ## Wipe volumes, rebuild mono image, and start (triggers OOBE)
 	@echo "Wiping volumes and starting fresh stack..."
-	docker compose down -v
-	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up --build -d
+	docker compose -f $(COMPOSE_FILE) down -v
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose -f $(COMPOSE_FILE) up --build -d
 	@echo "✅ Fresh stack running — open the app to complete first-run setup."
 
 preflight: test frontend-build ## Run tests, build frontend, build mono image
 	@echo "Building mono image..."
-	@DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build circuitbreaker
+	@DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose -f $(COMPOSE_FILE) build circuitbreaker
 	@echo "\n✅ Preflight checks completed."
 	@echo "See PRE_PKG.md for manual matrix/signoff steps."
 

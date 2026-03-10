@@ -194,7 +194,8 @@ export function useTopologyStream() {
       if (retryTimerRef.current) return;
 
       const attempt = attemptRef.current;
-      const delay = Math.min(BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, attempt), BACKOFF_MAX);
+      const baseDelay = Math.min(BACKOFF_BASE * Math.pow(BACKOFF_MULTIPLIER, attempt), BACKOFF_MAX);
+      const delay = baseDelay * (0.5 + Math.random() * 0.5); // Add jitter (50% to 100% of base)
       attemptRef.current = attempt + 1;
       retryTimerRef.current = setTimeout(connect, delay);
     };

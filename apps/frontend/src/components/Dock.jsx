@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { NavLink, useLocation } from 'react-router-dom';
