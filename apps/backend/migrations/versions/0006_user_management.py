@@ -110,9 +110,9 @@ def upgrade() -> None:
     updated_user_cols = {c["name"] for c in inspector.get_columns("users")}
     _admin_parts = []
     if "is_admin" in updated_user_cols:
-        _admin_parts.append("is_admin = 1")
+        _admin_parts.append("is_admin = TRUE")
     if "is_superuser" in updated_user_cols:
-        _admin_parts.append("is_superuser = 1")
+        _admin_parts.append("is_superuser = TRUE")
     if _admin_parts:
         op.execute(f"UPDATE users SET role = 'admin' WHERE {' OR '.join(_admin_parts)}")  # noqa: S608
 

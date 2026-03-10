@@ -28,10 +28,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cargo \
     && rm -rf /var/lib/apt/lists/*
 
-# Dependency layer from pinned requirements.txt (generated from poetry.lock)
-COPY apps/backend/requirements.txt ./requirements.txt
+# Dependency layer from pinned requirements.txt + PostgreSQL drivers (mono image uses Postgres)
+COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 120 --retries 5 -r requirements.txt
+    pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-pg.txt
 
 # App layer
 COPY VERSION /VERSION
@@ -67,12 +67,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     netcat-traditional \
     iproute2 \
-    && rm -rf /var/lib/apt/lists/*
+    openssl \
+    tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/local/bin/python3 /usr/bin/python
 
 # Copy Python deps and app from builder
 COPY --from=backend-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=backend-builder /usr/local/bin /usr/local/bin
 COPY --from=backend-builder /app/backend/src ./src
+COPY apps/backend/alembic.ini ./alembic.ini
+COPY apps/backend/migrations ./migrations
 
 # Copy built frontend assets from frontend builder
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
@@ -80,17 +85,22 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Mono-specific configs and init scripts
 COPY docker/supervisord.mono.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/nginx.mono.conf /etc/nginx/nginx.conf
-COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh /docker/
+COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh docker/run-postgres-if-embedded.sh /docker/
 RUN chmod +x /docker/*.sh
 
-# Runtime directories and non-root user
-RUN mkdir -p /app /data /data/uploads /data/tls /var/log/circuitbreaker \
+# Runtime directories: /data/run/postgresql for socket/lock (breaker-owned); symlink so Postgres finds it
+RUN mkdir -p /app /data /data/uploads /data/tls /data/run/postgresql /var/log/circuitbreaker \
+    && chmod 1777 /data/run/postgresql \
+    && rm -rf /var/run/postgresql \
+    && ln -s /data/run/postgresql /var/run/postgresql \
     && groupadd -g 1000 breaker \
     && useradd -u 1000 -g 1000 --no-create-home --shell /sbin/nologin breaker \
     && chown -R breaker:breaker /app /data /var/log/circuitbreaker
 
 # Environment defaults for mono image (CB_DB_URL set at runtime in entrypoint from CB_DB_PASSWORD)
 ENV PYTHONPATH=/app/backend/src \
+    CB_ALEMBIC_INI=/app/backend/alembic.ini \
+    ALEMBIC_CONFIG=/app/backend/alembic.ini \
     STATIC_DIR=/app/frontend/dist \
     CB_DATA_DIR=/data \
     UPLOADS_DIR=/data/uploads \
@@ -100,7 +110,6 @@ VOLUME ["/data"]
 
 EXPOSE 80 443
 
-USER breaker
-
-ENTRYPOINT ["/bin/bash", "/docker/entrypoint-mono.sh"]
+# tini as PID1 (reaps zombies, forwards signals). Entrypoint runs as root to chown /data, then exec supervisord.
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/docker/entrypoint-mono.sh"]
 

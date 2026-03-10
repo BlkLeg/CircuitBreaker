@@ -21,13 +21,15 @@ mkdir -p "${PGDATA}"
 echo "${CB_DB_PASSWORD}" > "${DATA_DIR}/.pg_pass"
 chmod 600 "${DATA_DIR}/.pg_pass"
 
-initdb -D "${PGDATA}" --username=breaker --pwfile="${DATA_DIR}/.pg_pass"
+# Debian postgresql package installs binaries under /usr/lib/postgresql/15/bin (not in PATH)
+/usr/lib/postgresql/15/bin/initdb -D "${PGDATA}" --username=breaker --pwfile="${DATA_DIR}/.pg_pass"
 rm -f "${DATA_DIR}/.pg_pass"
 
 cat > "${CONF_FILE}" <<EOF
 data_directory = '${PGDATA}'
 hba_file = '${PGDATA}/pg_hba.conf'
 ident_file = '${PGDATA}/pg_ident.conf'
+unix_socket_directories = '${DATA_DIR}/run/postgresql'
 listen_addresses = '127.0.0.1'
 port = 5432
 max_connections = 100

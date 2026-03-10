@@ -1,0 +1,1 @@
+/usr/lib/postgresql/15/bin/postgres "-D" "/data/pgdata" "-p" "5432" "-c" "unix_socket_directories=/data/run/postgresql" "-c" "config_file=/data/postgresql.conf"

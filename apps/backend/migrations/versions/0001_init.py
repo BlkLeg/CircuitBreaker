@@ -1,15 +1,16 @@
-"""init
+"""Bootstrap the initial PostgreSQL schema for fresh installs.
 
 Revision ID: abd204157b2c
 Revises:
 Create Date: 2026-03-06 20:51:48.197114
-
 """
 
 from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+
+from app.db.models import Base
 
 # revision identifiers, used by Alembic.
 revision: str = "abd204157b2c"
@@ -18,883 +19,178 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+_EXCLUDED_TABLES = {
+    "api_tokens",
+    "credentials",
+    "daily_uptime_stats",
+    "integration_configs",
+    "listener_events",
+    "notification_routes",
+    "notification_sinks",
+    "oauth_states",
+    "status_groups",
+    "status_history",
+    "status_pages",
+    "team_members",
+    "teams",
+    "telemetry_timeseries",
+    "topologies",
+    "topology_edges",
+    "topology_nodes",
+    "user_invites",
+    "user_sessions",
+    "webhook_deliveries",
+    "webhook_rules",
+}
+
+_EXCLUDED_COLUMNS: dict[str, set[str]] = {
+    "app_settings": {
+        "arp_enabled",
+        "deep_dive_max_parallel",
+        "listener_enabled",
+        "mdns_enabled",
+        "prober_interval_minutes",
+        "scan_aggressiveness",
+        "self_cluster_enabled",
+        "ssdp_enabled",
+        "tcp_probe_enabled",
+    },
+    "compute_units": {
+        "integration_config_id",
+        "proxmox_config",
+        "proxmox_status",
+        "proxmox_type",
+        "proxmox_vmid",
+    },
+    "discovery_profiles": {"vlan_ids"},
+    "external_nodes": {"team_id"},
+    "hardware": {"integration_config_id", "proxmox_node_name", "team_id"},
+    "hardware_cluster_members": {"member_type", "service_id"},
+    "hardware_clusters": {"integration_config_id", "team_id", "type"},
+    "logs": {"log_hash", "previous_hash", "role_at_time", "session_id"},
+    "networks": {"team_id"},
+    "scan_jobs": {"network_ids", "source_type", "team_id", "vlan_ids"},
+    "scan_results": {"banner", "network_id", "os_accuracy", "source_type", "vlan_id"},
+    "services": {"docker_labels", "team_id"},
+    "storage": {"integration_config_id", "proxmox_storage_name"},
+    "tags": {"color"},
+    "users": {
+        "backup_codes",
+        "demo_expires",
+        "force_password_change",
+        "invited_by",
+        "locked_until",
+        "login_attempts",
+        "masquerade_target",
+        "mfa_enabled",
+        "oauth_tokens",
+        "provider",
+        "role",
+        "scopes",
+        "totp_secret",
+    },
+}
+
+_NULLABLE_OVERRIDES: dict[str, dict[str, bool]] = {
+    "hardware_cluster_members": {"hardware_id": False},
+}
+
+
+def _copy_server_default(column: sa.Column) -> object | None:
+    if column.server_default is None:
+        return None
+    return column.server_default.arg
+
+
+def _should_copy_fk(source_table: str, fk: sa.ForeignKey) -> bool:
+    target_table, target_column = fk.target_fullname.split(".", 1)
+    if target_table in _EXCLUDED_TABLES:
+        return False
+    if target_column in _EXCLUDED_COLUMNS.get(target_table, set()):
+        return False
+    return source_table != "hardware_cluster_members"
+
+
+def _copy_column(table_name: str, column: sa.Column) -> sa.Column:
+    fk_args = []
+    for fk in column.foreign_keys:
+        if _should_copy_fk(table_name, fk):
+            fk_args.append(sa.ForeignKey(fk.target_fullname, ondelete=fk.ondelete))
+
+    return sa.Column(
+        column.name,
+        column.type,
+        *fk_args,
+        primary_key=column.primary_key,
+        nullable=_NULLABLE_OVERRIDES.get(table_name, {}).get(column.name, column.nullable),
+        unique=column.unique,
+        # Re-create indexes from table.indexes below so index=True columns do not
+        # produce duplicate named indexes during metadata.create_all().
+        index=False,
+        server_default=_copy_server_default(column),
+        comment=column.comment,
+    )
+
+
+def _build_bootstrap_metadata() -> sa.MetaData:
+    bootstrap_metadata = sa.MetaData(naming_convention=Base.metadata.naming_convention)
+    included_tables = {
+        table_name for table_name in Base.metadata.tables if table_name not in _EXCLUDED_TABLES
+    }
+
+    for table in Base.metadata.tables.values():
+        if table.name not in included_tables:
+            continue
+
+        excluded_columns = _EXCLUDED_COLUMNS.get(table.name, set())
+        copied_columns = [
+            _copy_column(table.name, column)
+            for column in table.columns
+            if column.name not in excluded_columns
+        ]
+        new_table = sa.Table(table.name, bootstrap_metadata, *copied_columns)
+
+        for constraint in table.constraints:
+            if not isinstance(constraint, sa.UniqueConstraint):
+                continue
+            column_names = [column.name for column in constraint.columns]
+            if len(column_names) <= 1:
+                continue
+            if any(name in excluded_columns for name in column_names):
+                continue
+            new_table.append_constraint(sa.UniqueConstraint(*column_names, name=constraint.name))
+
+        for index in table.indexes:
+            column_names = [column.name for column in index.columns]
+            if any(name in excluded_columns for name in column_names):
+                continue
+            sa.Index(index.name, *(new_table.c[name] for name in column_names), unique=index.unique)
+
+    return bootstrap_metadata
+
+
 def upgrade() -> None:
-    """Upgrade schema."""
-    # ### commands auto generated by Alembic - please adjust! ###
-    op.create_table(
-        "cve_entries",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("cve_id", sa.String(), nullable=False),
-        sa.Column("vendor", sa.String(), nullable=True),
-        sa.Column("product", sa.String(), nullable=True),
-        sa.Column("version_start", sa.String(), nullable=True),
-        sa.Column("version_end", sa.String(), nullable=True),
-        sa.Column("severity", sa.String(), nullable=True),
-        sa.Column("cvss_score", sa.Float(), nullable=True),
-        sa.Column("summary", sa.Text(), nullable=True),
-        sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(op.f("ix_cve_entries_cve_id"), "cve_entries", ["cve_id"], unique=True)
-    op.create_index(op.f("ix_cve_entries_product"), "cve_entries", ["product"], unique=False)
-    op.create_index(op.f("ix_cve_entries_vendor"), "cve_entries", ["vendor"], unique=False)
-    op.create_table(
-        "live_metrics",
-        sa.Column("ip", sa.String(), nullable=False),
-        sa.Column("node_id", sa.String(), nullable=True),
-        sa.Column("node_type", sa.String(), nullable=True),
-        sa.Column("last_seen", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("status", sa.String(), nullable=True),
-        sa.Column("assigned_to", sa.String(), nullable=True),
-        sa.Column("subnet", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("ip"),
-    )
-    op.create_table(
-        "scan_logs",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("scan_job_id", sa.Integer(), nullable=False),
-        sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("level", sa.String(), nullable=False),
-        sa.Column("phase", sa.String(), nullable=True),
-        sa.Column("message", sa.Text(), nullable=False),
-        sa.Column("details", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.String(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["scan_job_id"],
-            ["scan_jobs.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(op.f("ix_scan_logs_timestamp"), "scan_logs", ["timestamp"], unique=False)
-    op.create_table(
-        "hardware_connections",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("source_hardware_id", sa.Integer(), nullable=False),
-        sa.Column("target_hardware_id", sa.Integer(), nullable=False),
-        sa.Column("connection_type", sa.String(), nullable=True),
-        sa.Column("bandwidth_mbps", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["source_hardware_id"],
-            ["hardware.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["target_hardware_id"],
-            ["hardware.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("source_hardware_id", "target_hardware_id"),
-    )
-    op.create_table(
-        "hardware_monitors",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("hardware_id", sa.Integer(), nullable=False),
-        sa.Column("enabled", sa.Boolean(), nullable=False),
-        sa.Column("interval_secs", sa.Integer(), nullable=False),
-        sa.Column("probe_methods", sa.Text(), nullable=False),
-        sa.Column("last_status", sa.String(), nullable=False),
-        sa.Column("last_checked_at", sa.String(), nullable=True),
-        sa.Column("latency_ms", sa.Float(), nullable=True),
-        sa.Column("consecutive_failures", sa.Integer(), nullable=False),
-        sa.Column("uptime_pct_24h", sa.Float(), nullable=True),
-        sa.Column("created_at", sa.String(), nullable=False),
-        sa.Column("updated_at", sa.String(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["hardware_id"],
-            ["hardware.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        op.f("ix_hardware_monitors_hardware_id"), "hardware_monitors", ["hardware_id"], unique=True
-    )
-    op.create_table(
-        "uptime_events",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("hardware_id", sa.Integer(), nullable=False),
-        sa.Column("status", sa.String(), nullable=False),
-        sa.Column("latency_ms", sa.Float(), nullable=True),
-        sa.Column("probe_method", sa.String(), nullable=True),
-        sa.Column("checked_at", sa.String(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["hardware_id"],
-            ["hardware.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index(
-        op.f("ix_uptime_events_hardware_id"), "uptime_events", ["hardware_id"], unique=False
-    )
-    op.create_table(
-        "network_peers",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("network_a_id", sa.Integer(), nullable=False),
-        sa.Column("network_b_id", sa.Integer(), nullable=False),
-        sa.Column("relation", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["network_a_id"],
-            ["networks.id"],
-        ),
-        sa.ForeignKeyConstraint(
-            ["network_b_id"],
-            ["networks.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("network_a_id", "network_b_id"),
-    )
-    op.add_column("app_settings", sa.Column("show_header_widgets", sa.Boolean(), nullable=False))
-    op.add_column("app_settings", sa.Column("show_time_widget", sa.Boolean(), nullable=False))
-    op.add_column("app_settings", sa.Column("show_weather_widget", sa.Boolean(), nullable=False))
-    op.add_column("app_settings", sa.Column("weather_location", sa.String(), nullable=False))
-    op.add_column("app_settings", sa.Column("registration_open", sa.Boolean(), nullable=False))
-    op.add_column("app_settings", sa.Column("rate_limit_profile", sa.String(), nullable=False))
-    op.add_column("app_settings", sa.Column("dev_mode", sa.Boolean(), nullable=False))
-    op.add_column(
-        "app_settings", sa.Column("audit_log_retention_days", sa.Integer(), nullable=False)
-    )
-    op.add_column("app_settings", sa.Column("audit_log_hide_ip", sa.Boolean(), nullable=False))
-    op.add_column("app_settings", sa.Column("login_bg_path", sa.Text(), nullable=True))
-    op.add_column("app_settings", sa.Column("language", sa.String(), nullable=False))
-    op.add_column("app_settings", sa.Column("discovery_mode", sa.String(), nullable=False))
-    op.add_column(
-        "app_settings", sa.Column("docker_discovery_enabled", sa.Boolean(), nullable=False)
-    )
-    op.add_column("app_settings", sa.Column("docker_socket_path", sa.String(), nullable=False))
-    op.add_column(
-        "app_settings", sa.Column("docker_sync_interval_minutes", sa.Integer(), nullable=False)
-    )
-    op.add_column("app_settings", sa.Column("graph_default_layout", sa.String(), nullable=False))
-    op.add_column("app_settings", sa.Column("cve_sync_enabled", sa.Boolean(), nullable=False))
-    op.add_column(
-        "app_settings", sa.Column("cve_sync_interval_hours", sa.Integer(), nullable=False)
-    )
-    op.add_column("app_settings", sa.Column("cve_last_sync_at", sa.String(), nullable=True))
-    op.add_column(
-        "app_settings", sa.Column("realtime_notifications_enabled", sa.Boolean(), nullable=False)
-    )
-    op.add_column("app_settings", sa.Column("realtime_transport", sa.String(), nullable=False))
-    op.alter_column(
-        "app_settings",
-        "timezone",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=False,
-        existing_server_default=sa.text("'UTC'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_enabled",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_auto_merge",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_default_cidr",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_nmap_args",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("'-sV -O --open -T4'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_snmp_community",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_schedule_cron",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_http_probe",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("1"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_retention_days",
-        existing_type=sa.INTEGER(),
-        nullable=False,
-        existing_server_default=sa.text("(30)"),
-    )
-    op.alter_column(
-        "app_settings",
-        "scan_ack_accepted",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "ui_font",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("'inter'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "ui_font_size",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("'medium'"),
-    )
-    op.add_column("compute_networks", sa.Column("connection_type", sa.String(), nullable=True))
-    op.add_column("compute_networks", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
-    op.add_column("compute_units", sa.Column("download_speed_mbps", sa.Integer(), nullable=True))
-    op.add_column("compute_units", sa.Column("upload_speed_mbps", sa.Integer(), nullable=True))
-    op.add_column("compute_units", sa.Column("status_override", sa.String(), nullable=True))
-    op.alter_column(
-        "compute_units",
-        "status",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.drop_column("compute_units", "discovered_at")
-    op.drop_column("compute_units", "source")
-    op.drop_column("compute_units", "mac_address")
-    op.drop_column("compute_units", "last_seen")
-    op.add_column(
-        "discovery_profiles", sa.Column("docker_network_types", sa.String(), nullable=False)
-    )
-    op.add_column("discovery_profiles", sa.Column("docker_port_scan", sa.Integer(), nullable=False))
-    op.add_column(
-        "discovery_profiles", sa.Column("docker_socket_path", sa.String(), nullable=False)
-    )
-    op.alter_column(
-        "docs",
-        "category",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "docs",
-        "pinned",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "docs",
-        "icon",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.add_column(
-        "external_node_networks", sa.Column("connection_type", sa.String(), nullable=True)
-    )
-    op.add_column(
-        "external_node_networks", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True)
-    )
-    op.add_column("hardware", sa.Column("custom_icon", sa.String(), nullable=True))
-    op.add_column("hardware", sa.Column("status_override", sa.String(), nullable=True))
-    op.alter_column(
-        "hardware",
-        "vendor_catalog_key",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "model_catalog_key",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "telemetry_status",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.alter_column(
-        "hardware",
-        "telemetry_last_polled",
-        existing_type=sa.TIMESTAMP(),
-        type_=sa.DateTime(timezone=True),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "mac_address",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "status",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.alter_column(
-        "hardware", "last_seen", existing_type=sa.TEXT(), type_=sa.String(), existing_nullable=True
-    )
-    op.alter_column(
-        "hardware",
-        "discovered_at",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "source",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'manual'"),
-    )
-    op.alter_column(
-        "hardware", "os_version", existing_type=sa.TEXT(), type_=sa.String(), existing_nullable=True
-    )
-    op.alter_column(
-        "hardware",
-        "software_platform",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-        existing_server_default=sa.text("(NULL)"),
-    )
-    op.drop_index(
-        op.f("idx_hardware_mac"),
-        table_name="hardware",
-        sqlite_where=sa.text("mac_address IS NOT NULL AND mac_address != ''"),
-    )
-    op.add_column("hardware_clusters", sa.Column("icon_slug", sa.String(), nullable=True))
-    op.add_column("hardware_networks", sa.Column("connection_type", sa.String(), nullable=True))
-    op.add_column("hardware_networks", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
-    op.alter_column(
-        "logs", "created_at_utc", existing_type=sa.TEXT(), type_=sa.String(), existing_nullable=True
-    )
-    op.alter_column(
-        "logs",
-        "actor_name",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=True,
-        existing_server_default=sa.text("'admin'"),
-    )
-    op.alter_column(
-        "logs", "entity_name", existing_type=sa.TEXT(), type_=sa.String(), existing_nullable=True
-    )
-    op.alter_column(
-        "logs",
-        "severity",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=True,
-        existing_server_default=sa.text("'info'"),
-    )
-    op.add_column("networks", sa.Column("docker_network_id", sa.String(), nullable=True))
-    op.add_column("networks", sa.Column("docker_driver", sa.String(), nullable=True))
-    op.add_column(
-        "networks", sa.Column("is_docker_network", sa.Boolean(), server_default="0", nullable=False)
-    )
-    op.create_unique_constraint(None, "networks", ["docker_network_id"])
-    op.alter_column(
-        "scan_jobs",
-        "progress_phase",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("'queued'"),
-    )
-    op.alter_column(
-        "scan_jobs",
-        "progress_message",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        nullable=False,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "scan_results",
-        "conflicts_json",
-        existing_type=sa.TEXT(),
-        type_=sa.String(),
-        existing_nullable=True,
-    )
-    op.drop_index(op.f("idx_scan_results_ip"), table_name="scan_results")
-    op.drop_index(op.f("idx_scan_results_job"), table_name="scan_results")
-    op.drop_index(op.f("idx_scan_results_merge"), table_name="scan_results")
-    op.add_column("service_dependencies", sa.Column("connection_type", sa.String(), nullable=True))
-    op.add_column("service_dependencies", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
-    op.add_column(
-        "service_external_nodes", sa.Column("connection_type", sa.String(), nullable=True)
-    )
-    op.add_column(
-        "service_external_nodes", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True)
-    )
-    op.add_column("service_misc", sa.Column("connection_type", sa.String(), nullable=True))
-    op.add_column("service_misc", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
-    op.add_column("service_storage", sa.Column("connection_type", sa.String(), nullable=True))
-    op.add_column("service_storage", sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
-    op.add_column("services", sa.Column("custom_icon", sa.String(), nullable=True))
-    op.add_column("services", sa.Column("docker_container_id", sa.String(), nullable=True))
-    op.add_column("services", sa.Column("docker_image", sa.String(), nullable=True))
-    op.add_column(
-        "services",
-        sa.Column("is_docker_container", sa.Boolean(), server_default="0", nullable=False),
-    )
-    op.alter_column(
-        "services",
-        "ip_mode",
-        existing_type=sa.TEXT(),
-        nullable=False,
-        existing_server_default=sa.text("'explicit'"),
-    )
-    op.alter_column(
-        "services",
-        "ip_conflict",
-        existing_type=sa.INTEGER(),
-        type_=sa.Boolean(),
-        nullable=False,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "services",
-        "ip_conflict_json",
-        existing_type=sa.TEXT(),
-        nullable=False,
-        existing_server_default=sa.text("'[]'"),
-    )
-    op.create_unique_constraint(None, "services", ["docker_container_id"])
-    op.drop_column("services", "banner")
-    op.drop_column("services", "source")
-    op.drop_column("services", "service_version")
-    op.add_column("user_icons", sa.Column("user_id", sa.Integer(), nullable=True))
-    op.add_column("user_icons", sa.Column("filename", sa.String(), nullable=True))
-    op.add_column("user_icons", sa.Column("original_name", sa.String(), nullable=True))
-    op.add_column("user_icons", sa.Column("mime_type", sa.String(), nullable=True))
-    op.add_column("user_icons", sa.Column("size_bytes", sa.Integer(), nullable=True))
-    op.add_column("user_icons", sa.Column("hash", sa.String(), nullable=True))
-    op.add_column("user_icons", sa.Column("uploaded_at", sa.DateTime(timezone=True), nullable=True))
-    op.create_unique_constraint(None, "user_icons", ["hash"])
-    op.add_column("users", sa.Column("hashed_password", sa.Text(), nullable=False))
-    op.add_column("users", sa.Column("language", sa.Text(), nullable=False))
-    op.add_column("users", sa.Column("is_active", sa.Boolean(), nullable=False))
-    op.add_column("users", sa.Column("is_superuser", sa.Boolean(), nullable=False))
-    op.add_column("users", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
-    op.drop_column("users", "password_hash")
-    # ### end Alembic commands ###
+    """Create the baseline schema expected by later incremental revisions."""
+    bind = op.get_bind()
+    _build_bootstrap_metadata().create_all(bind=bind, checkfirst=True)
+
+    # Alembic creates alembic_version(version_num VARCHAR(32)) before any migration
+    # runs.  Widen it so long revision IDs (> 32 chars) can be stamped.
+    try:
+        bind.execute(
+            sa.text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    # ### commands auto generated by Alembic - please adjust! ###
-    op.add_column("users", sa.Column("password_hash", sa.TEXT(), nullable=False))
-    op.drop_column("users", "updated_at")
-    op.drop_column("users", "is_superuser")
-    op.drop_column("users", "is_active")
-    op.drop_column("users", "language")
-    op.drop_column("users", "hashed_password")
-    op.drop_constraint(None, "user_icons", type_="unique")
-    op.drop_column("user_icons", "uploaded_at")
-    op.drop_column("user_icons", "hash")
-    op.drop_column("user_icons", "size_bytes")
-    op.drop_column("user_icons", "mime_type")
-    op.drop_column("user_icons", "original_name")
-    op.drop_column("user_icons", "filename")
-    op.drop_column("user_icons", "user_id")
-    op.add_column("services", sa.Column("service_version", sa.TEXT(), nullable=True))
-    op.add_column(
-        "services",
-        sa.Column("source", sa.TEXT(), server_default=sa.text("'manual'"), nullable=True),
-    )
-    op.add_column("services", sa.Column("banner", sa.TEXT(), nullable=True))
-    op.drop_constraint(None, "services", type_="unique")
-    op.alter_column(
-        "services",
-        "ip_conflict_json",
-        existing_type=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'[]'"),
-    )
-    op.alter_column(
-        "services",
-        "ip_conflict",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "services",
-        "ip_mode",
-        existing_type=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'explicit'"),
-    )
-    op.drop_column("services", "is_docker_container")
-    op.drop_column("services", "docker_image")
-    op.drop_column("services", "docker_container_id")
-    op.drop_column("services", "custom_icon")
-    op.drop_column("service_storage", "bandwidth_mbps")
-    op.drop_column("service_storage", "connection_type")
-    op.drop_column("service_misc", "bandwidth_mbps")
-    op.drop_column("service_misc", "connection_type")
-    op.drop_column("service_external_nodes", "bandwidth_mbps")
-    op.drop_column("service_external_nodes", "connection_type")
-    op.drop_column("service_dependencies", "bandwidth_mbps")
-    op.drop_column("service_dependencies", "connection_type")
-    op.create_index(op.f("idx_scan_results_merge"), "scan_results", ["merge_status"], unique=False)
-    op.create_index(op.f("idx_scan_results_job"), "scan_results", ["scan_job_id"], unique=False)
-    op.create_index(op.f("idx_scan_results_ip"), "scan_results", ["ip_address"], unique=False)
-    op.alter_column(
-        "scan_results",
-        "conflicts_json",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "scan_jobs",
-        "progress_message",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "scan_jobs",
-        "progress_phase",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'queued'"),
-    )
-    op.drop_constraint(None, "networks", type_="unique")
-    op.drop_column("networks", "is_docker_network")
-    op.drop_column("networks", "docker_driver")
-    op.drop_column("networks", "docker_network_id")
-    op.alter_column(
-        "logs",
-        "severity",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=False,
-        existing_server_default=sa.text("'info'"),
-    )
-    op.alter_column(
-        "logs", "entity_name", existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=True
-    )
-    op.alter_column(
-        "logs",
-        "actor_name",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=False,
-        existing_server_default=sa.text("'admin'"),
-    )
-    op.alter_column(
-        "logs", "created_at_utc", existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=True
-    )
-    op.drop_column("hardware_networks", "bandwidth_mbps")
-    op.drop_column("hardware_networks", "connection_type")
-    op.drop_column("hardware_clusters", "icon_slug")
-    op.create_index(
-        op.f("idx_hardware_mac"),
-        "hardware",
-        ["mac_address"],
-        unique=1,
-        sqlite_where=sa.text("mac_address IS NOT NULL AND mac_address != ''"),
-    )
-    op.alter_column(
-        "hardware",
-        "software_platform",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-        existing_server_default=sa.text("(NULL)"),
-    )
-    op.alter_column(
-        "hardware", "os_version", existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=True
-    )
-    op.alter_column(
-        "hardware",
-        "source",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'manual'"),
-    )
-    op.alter_column(
-        "hardware",
-        "discovered_at",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware", "last_seen", existing_type=sa.String(), type_=sa.TEXT(), existing_nullable=True
-    )
-    op.alter_column(
-        "hardware",
-        "status",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.alter_column(
-        "hardware",
-        "mac_address",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "telemetry_last_polled",
-        existing_type=sa.DateTime(timezone=True),
-        type_=sa.TIMESTAMP(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "telemetry_status",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.alter_column(
-        "hardware",
-        "model_catalog_key",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-    )
-    op.alter_column(
-        "hardware",
-        "vendor_catalog_key",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-    )
-    op.drop_column("hardware", "status_override")
-    op.drop_column("hardware", "custom_icon")
-    op.drop_column("external_node_networks", "bandwidth_mbps")
-    op.drop_column("external_node_networks", "connection_type")
-    op.alter_column(
-        "docs",
-        "icon",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "docs",
-        "pinned",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "docs",
-        "category",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.drop_column("discovery_profiles", "docker_socket_path")
-    op.drop_column("discovery_profiles", "docker_port_scan")
-    op.drop_column("discovery_profiles", "docker_network_types")
-    op.add_column("compute_units", sa.Column("last_seen", sa.TEXT(), nullable=True))
-    op.add_column("compute_units", sa.Column("mac_address", sa.TEXT(), nullable=True))
-    op.add_column(
-        "compute_units",
-        sa.Column("source", sa.TEXT(), server_default=sa.text("'manual'"), nullable=True),
-    )
-    op.add_column("compute_units", sa.Column("discovered_at", sa.TEXT(), nullable=True))
-    op.alter_column(
-        "compute_units",
-        "status",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=True,
-        existing_server_default=sa.text("'unknown'"),
-    )
-    op.drop_column("compute_units", "status_override")
-    op.drop_column("compute_units", "upload_speed_mbps")
-    op.drop_column("compute_units", "download_speed_mbps")
-    op.drop_column("compute_networks", "bandwidth_mbps")
-    op.drop_column("compute_networks", "connection_type")
-    op.alter_column(
-        "app_settings",
-        "ui_font_size",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'medium'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "ui_font",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'inter'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "scan_ack_accepted",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_retention_days",
-        existing_type=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("(30)"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_http_probe",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("1"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_schedule_cron",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_snmp_community",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_nmap_args",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("'-sV -O --open -T4'"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_default_cidr",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        nullable=True,
-        existing_server_default=sa.text("('')"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_auto_merge",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "discovery_enabled",
-        existing_type=sa.Boolean(),
-        type_=sa.INTEGER(),
-        nullable=True,
-        existing_server_default=sa.text("0"),
-    )
-    op.alter_column(
-        "app_settings",
-        "timezone",
-        existing_type=sa.String(),
-        type_=sa.TEXT(),
-        existing_nullable=False,
-        existing_server_default=sa.text("'UTC'"),
-    )
-    op.drop_column("app_settings", "realtime_transport")
-    op.drop_column("app_settings", "realtime_notifications_enabled")
-    op.drop_column("app_settings", "cve_last_sync_at")
-    op.drop_column("app_settings", "cve_sync_interval_hours")
-    op.drop_column("app_settings", "cve_sync_enabled")
-    op.drop_column("app_settings", "graph_default_layout")
-    op.drop_column("app_settings", "docker_sync_interval_minutes")
-    op.drop_column("app_settings", "docker_socket_path")
-    op.drop_column("app_settings", "docker_discovery_enabled")
-    op.drop_column("app_settings", "discovery_mode")
-    op.drop_column("app_settings", "language")
-    op.drop_column("app_settings", "login_bg_path")
-    op.drop_column("app_settings", "audit_log_hide_ip")
-    op.drop_column("app_settings", "audit_log_retention_days")
-    op.drop_column("app_settings", "dev_mode")
-    op.drop_column("app_settings", "rate_limit_profile")
-    op.drop_column("app_settings", "registration_open")
-    op.drop_column("app_settings", "weather_location")
-    op.drop_column("app_settings", "show_weather_widget")
-    op.drop_column("app_settings", "show_time_widget")
-    op.drop_column("app_settings", "show_header_widgets")
-    op.drop_table("network_peers")
-    op.drop_index(op.f("ix_uptime_events_hardware_id"), table_name="uptime_events")
-    op.drop_table("uptime_events")
-    op.drop_index(op.f("ix_hardware_monitors_hardware_id"), table_name="hardware_monitors")
-    op.drop_table("hardware_monitors")
-    op.drop_table("hardware_connections")
-    op.drop_index(op.f("ix_scan_logs_timestamp"), table_name="scan_logs")
-    op.drop_table("scan_logs")
-    op.drop_table("live_metrics")
-    op.drop_index(op.f("ix_cve_entries_vendor"), table_name="cve_entries")
-    op.drop_index(op.f("ix_cve_entries_product"), table_name="cve_entries")
-    op.drop_index(op.f("ix_cve_entries_cve_id"), table_name="cve_entries")
-    op.drop_table("cve_entries")
-    # ### end Alembic commands ###
+    """Drop the bootstrap tables in reverse dependency order."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    bootstrap_metadata = _build_bootstrap_metadata()
+
+    for table in reversed(bootstrap_metadata.sorted_tables):
+        if table.name in existing_tables:
+            table.drop(bind=bind, checkfirst=True)

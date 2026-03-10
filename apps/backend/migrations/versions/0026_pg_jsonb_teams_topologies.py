@@ -73,31 +73,59 @@ _TEAM_FK_TABLES: list[str] = [
 
 
 def _cast_column_to_jsonb(bind, table: str, column: str) -> None:
-    """CAST a text column to jsonb if it exists and isn't already jsonb."""
+    """CAST a text column to jsonb if it exists and isn't already jsonb.
+
+    Drops the column's server default before altering the type (PostgreSQL
+    cannot automatically cast a TEXT default expression to jsonb), then
+    restores a jsonb-typed default for the common empty-array/object cases.
+    """
     try:
         bind.execute(
             sa.text(
                 f"""
                 DO $$
+                DECLARE
+                    v_default text;
                 BEGIN
-                    -- Skip if column is already jsonb
-                    IF EXISTS (
+                    -- Skip if column doesn't exist or is already jsonb
+                    IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_name = '{table}'
                           AND column_name = '{column}'
                           AND data_type != 'jsonb'
                     ) THEN
-                        ALTER TABLE {table}
-                            ALTER COLUMN {column} TYPE jsonb
-                            USING COALESCE(
-                                CASE
-                                    WHEN {column} IS NULL THEN NULL
-                                    WHEN TRIM({column}) = '' THEN NULL
-                                    ELSE {column}::jsonb
-                                END,
-                                NULL
-                            );
+                        RETURN;
                     END IF;
+
+                    -- Capture current server default (may be NULL)
+                    SELECT column_default INTO v_default
+                    FROM information_schema.columns
+                    WHERE table_name = '{table}' AND column_name = '{column}';
+
+                    -- Drop default so PostgreSQL can change the column type
+                    IF v_default IS NOT NULL THEN
+                        ALTER TABLE {table} ALTER COLUMN {column} DROP DEFAULT;
+                    END IF;
+
+                    -- Cast the column
+                    ALTER TABLE {table}
+                        ALTER COLUMN {column} TYPE jsonb
+                        USING COALESCE(
+                            CASE
+                                WHEN {column} IS NULL THEN NULL
+                                WHEN TRIM({column}::text) = '' THEN NULL
+                                ELSE {column}::text::jsonb
+                            END,
+                            NULL
+                        );
+
+                    -- Restore a jsonb-typed default for common JSON literals
+                    IF v_default LIKE '''[]%' THEN
+                        ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT '[]'::jsonb;
+                    ELSIF v_default LIKE '''{{}}%' THEN
+                        ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT '{{}}'::jsonb;
+                    END IF;
+
                 EXCEPTION WHEN others THEN
                     RAISE WARNING 'Could not cast {table}.{column} to jsonb: %', SQLERRM;
                 END $$;
@@ -124,13 +152,13 @@ def upgrade() -> None:
     if "hardware" in existing_tables:
         bind.execute(
             sa.text(
-                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_hw_telemetry_data_gin "
+                "CREATE INDEX IF NOT EXISTS idx_hw_telemetry_data_gin "
                 "ON hardware USING GIN(telemetry_data) WHERE telemetry_data IS NOT NULL;"
             )
         )
         bind.execute(
             sa.text(
-                "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_hw_telemetry_cfg_gin "
+                "CREATE INDEX IF NOT EXISTS idx_hw_telemetry_cfg_gin "
                 "ON hardware USING GIN(telemetry_config) WHERE telemetry_config IS NOT NULL;"
             )
         )

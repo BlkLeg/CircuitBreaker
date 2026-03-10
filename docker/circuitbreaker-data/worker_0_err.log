@@ -1,0 +1,69 @@
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started
+INFO:app.workers:SIGTERM received, shutting down gracefully...
+WARNING:app.core.nats_client:NATS disconnected from nats://127.0.0.1:4222
+INFO:app.workers:Worker shutdown complete
+INFO:__main__:Starting worker type discovery
+INFO:app.core.nats_client:NATS KV bucket dashboard_cache created
+INFO:app.core.nats_client:NATS connected to nats://127.0.0.1:4222
+INFO:app.workers.discovery:Discovery worker subscribed to discovery.jobs
+INFO:app.workers.discovery:Discovery worker started

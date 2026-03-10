@@ -1,6 +1,7 @@
 # Circuit Breaker — single-container deployment
 #
-# One image: Postgres + NATS + backend + workers + nginx. No build.
+# One image: Postgres + NATS + backend + workers + nginx.
+# From repo root, `docker compose up --build -d` builds from Dockerfile.mono and runs it.
 #
 # Usage (from repo root):
 #   docker compose up -d
@@ -15,6 +16,9 @@ name: circuitbreaker
 
 services:
   circuitbreaker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.mono
     image: ghcr.io/blkleg/circuitbreaker:mono-${CB_TAG:-latest}
     container_name: circuitbreaker
     restart: unless-stopped

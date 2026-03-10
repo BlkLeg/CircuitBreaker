@@ -11,6 +11,7 @@ Adds indexes that become important as scan data grows:
 
 from __future__ import annotations
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "f1a2b3c4d5e6"
@@ -20,16 +21,38 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index("ix_scan_results_scan_job_id", "scan_results", ["scan_job_id"], unique=False)
-    op.create_index("ix_scan_results_state", "scan_results", ["state"], unique=False)
-    op.create_index("ix_scan_results_created_at", "scan_results", ["created_at"], unique=False)
-    op.create_index("ix_scan_jobs_status", "scan_jobs", ["status"], unique=False)
-    op.create_index("ix_scan_jobs_created_at", "scan_jobs", ["created_at"], unique=False)
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing = {i["name"] for i in insp.get_indexes("scan_results")} | {
+        i["name"] for i in insp.get_indexes("scan_jobs")
+    }
+
+    to_create = [
+        ("ix_scan_results_scan_job_id", "scan_results", ["scan_job_id"]),
+        ("ix_scan_results_state", "scan_results", ["state"]),
+        ("ix_scan_results_created_at", "scan_results", ["created_at"]),
+        ("ix_scan_jobs_status", "scan_jobs", ["status"]),
+        ("ix_scan_jobs_created_at", "scan_jobs", ["created_at"]),
+    ]
+    for name, table, cols in to_create:
+        if name not in existing:
+            op.create_index(name, table, cols, unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_scan_jobs_created_at", table_name="scan_jobs")
-    op.drop_index("ix_scan_jobs_status", table_name="scan_jobs")
-    op.drop_index("ix_scan_results_created_at", table_name="scan_results")
-    op.drop_index("ix_scan_results_state", table_name="scan_results")
-    op.drop_index("ix_scan_results_scan_job_id", table_name="scan_results")
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing = {i["name"] for i in insp.get_indexes("scan_results")} | {
+        i["name"] for i in insp.get_indexes("scan_jobs")
+    }
+
+    to_drop = [
+        ("ix_scan_jobs_created_at", "scan_jobs"),
+        ("ix_scan_jobs_status", "scan_jobs"),
+        ("ix_scan_results_created_at", "scan_results"),
+        ("ix_scan_results_state", "scan_results"),
+        ("ix_scan_results_scan_job_id", "scan_results"),
+    ]
+    for name, table in to_drop:
+        if name in existing:
+            op.drop_index(name, table_name=table)

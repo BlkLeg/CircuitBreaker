@@ -193,10 +193,11 @@ def run_alembic_upgrade():
     from app.db.session import engine
 
     # Resolve alembic.ini relative to this file so it works regardless of CWD.
-    # Docker: main.py at /app/src/app/main.py, alembic.ini at /app/alembic.ini (parent.parent.parent).  # noqa: E501
-    # Repo: main.py at <root>/apps/backend/src/app/main.py, alembic.ini at <root>/apps/backend/alembic.ini (parents[4]).  # noqa: E501
+    # Mono/backend Docker: main.py at /app/backend/src/app/main.py and alembic.ini at /app/backend/alembic.ini.
+    # Repo: main.py at <root>/apps/backend/src/app/main.py and alembic.ini at <root>/apps/backend/alembic.ini.
     _p = Path(__file__).resolve()
     _alembic_candidates: list[str | Path | None] = [
+        os.environ.get("ALEMBIC_CONFIG"),
         os.environ.get("CB_ALEMBIC_INI"),
         _share_dir_candidate("backend", _ALEMBIC_INI_FILENAME),
         _bundle_share_candidate("backend", _ALEMBIC_INI_FILENAME),
@@ -214,17 +215,6 @@ def run_alembic_upgrade():
         insp = inspect(engine)
         table_names = set(insp.get_table_names())
 
-        if not table_names or "alembic_version" not in table_names and "users" not in table_names:
-            # Completely fresh database: create all tables directly, then stamp.
-            # This bypasses the incremental migration scripts (which were written as
-            # diffs against the old SQLite schema and would fail on an empty DB).
-            from app.db.models import Base
-
-            Base.metadata.create_all(engine)
-            alembic_cfg = Config(_alembic_ini)
-            command.stamp(alembic_cfg, "head")
-            return
-
         if "users" in table_names and "alembic_version" not in table_names:
             # Old DB with no alembic tracking: stamp to the revision just before
             # 0017 (webhooks/oauth) so upgrade() will run 0017+ and add any
@@ -232,24 +222,49 @@ def run_alembic_upgrade():
             # make upgrade a no-op and leave the schema outdated.
             alembic_cfg = Config(_alembic_ini)
             command.stamp(alembic_cfg, "a3b4c5d6e7fc")  # 0015_proxmox_storage
-    except Exception:
-        pass
+    except Exception as e:
+        logging.exception("Migration pre-check failed: %s", e)
+        raise
 
     alembic_cfg = Config(_alembic_ini)
     command.upgrade(alembic_cfg, "head")
+
+
+def _assert_required_schema() -> None:
+    from sqlalchemy import inspect
+
+    from app.db.session import engine
+
+    try:
+        existing_tables = set(inspect(engine).get_table_names())
+    except Exception as exc:  # noqa: BLE001
+        _logger.critical("Database schema check failed before startup: %s", exc, exc_info=True)
+        raise SystemExit(1) from exc
+
+    required_tables = {"app_settings", "status_pages", "webhook_rules"}
+    missing_tables = sorted(required_tables - existing_tables)
+    if missing_tables:
+        _logger.critical(
+            "Database schema is missing required tables (%s). "
+            "Alembic migrations did not run successfully.",
+            ", ".join(missing_tables),
+        )
+        raise SystemExit(1)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run startup and shutdown tasks.
 
-    Migrations are run by start.py before workers spawn; do not run them here
+    Migrations are run by the process entrypoint before workers spawn; do not run them here
     to avoid concurrent Alembic execution from multiple workers (crashes).
     """
     import asyncio
 
     from app.core.nats_client import nats_client
     from app.services import discovery_service
+
+    _assert_required_schema()
 
     # ── Phase 7: Vault key init ────────────────────────────────────────────
     # Must run before any scheduler job or service that encrypts/decrypts.

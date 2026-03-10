@@ -1,5 +1,6 @@
 from logging.config import fileConfig
 
+import sqlalchemy as sa
 from alembic import context
 
 from app.db.models import Base
@@ -38,6 +39,27 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _widen_alembic_version_column(connection: sa.engine.Connection) -> None:
+    """Widen version_num to VARCHAR(64) if it is still the SQLite-era VARCHAR(32).
+
+    Alembic creates alembic_version before any migration runs.  Long revision
+    IDs (e.g. '0016_webhook_deliveries_oauth_states', 36 chars) overflow the
+    default column and cause a StringDataRightTruncation error at stamp time.
+    """
+    insp = sa.inspect(connection)
+    if not insp.has_table("alembic_version"):
+        return
+    cols = {c["name"]: c for c in insp.get_columns("alembic_version")}
+    col = cols.get("version_num")
+    if col is None:
+        return
+    length = getattr(col.get("type"), "length", None)
+    if length is not None and length < 64:
+        connection.execute(
+            sa.text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)")
+        )
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     connectable = engine
@@ -46,6 +68,7 @@ def run_migrations_online() -> None:
         context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
+            _widen_alembic_version_column(connection)
             context.run_migrations()
 
 
