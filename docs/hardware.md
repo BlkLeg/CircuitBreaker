@@ -9,7 +9,9 @@ Hardware is the physical layer of your environment: servers, switches, firewalls
 1. Open **Hardware**.
 2. Select **Add Hardware**.
 3. Enter device details and save.
+### Proxmox Clusters
 
+When leveraging the **Proxmox Integration** from the Settings menu, Proxmox host nodes discovered organically via the virtualization API are automatically populated into the Hardware index as `Hypervisor` roles. Their attached telemetry (CPU utilization, memory usage) will immediately stream directly via the backend poller.
 ---
 
 ### Device Catalog Smart Search

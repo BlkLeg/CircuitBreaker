@@ -31,6 +31,15 @@ Use this profile when more users or broader network access are involved.
 - Limit external exposure to only required ports.
 - Use secure secret values for protected data handling.
 
+### Native HTTPS modes
+
+For Linux native installs, Circuit Breaker supports two HTTPS paths:
+
+- `local` mode: the installer generates a local CA and a server certificate, stores them under `/etc/circuit-breaker/certs`, and can trust the CA locally so browsers stop warning.
+- `provided` mode: you point the installer at an existing certificate and private key, and it copies them into the managed cert directory for the service to use directly.
+
+Native HTTPS configuration is written to `/etc/circuit-breaker/config.yaml`, while install-derived runtime paths live in `/etc/circuit-breaker/env`.
+
 ### Important environment values
 
 - `CB_API_TOKEN`: protects write operations when configured.
@@ -38,7 +47,71 @@ Use this profile when more users or broader network access are involved.
 
 ---
 
-## 3) Practical Security Habits
+## 3) Secrets Management & Vault
+
+Circuit Breaker uses a Fernet-based secure vault to encrypt sensitive credentials at rest — entirely local, no third-party key management required.
+
+The vault protects:
+
+- **SMTP credentials** — used for password reset and invite emails.
+- **Proxmox API tokens** — the secret half of the PVEAuditor token used during cluster scans.
+- **SNMP community strings** and **iDRAC/iLO credentials**.
+
+### Vault key lifecycle
+
+**You do not need to generate the vault key manually.** During the first-run setup wizard (OOBE), Circuit Breaker automatically generates a cryptographically secure key, writes it to `/app/data/.env` inside the backend data volume, and shows it once so you can back it up.
+
+**If the vault ends up uninitialized** (after a crash, accidental volume deletion, or a headless deploy with no OOBE), use the `cb` CLI to recover:
+
+```bash
+cb vault-recover
+```
+
+See [cb CLI Tool](cb-cli.md#cb-vault-recover) for details.
+
+**Vault best practices:**
+
+- Back up the key shown during OOBE — store it in a password manager or offline secure location.
+- Treat the vault key like a master root credential. Anyone with it can decrypt your stored secrets.
+- If you lose the key and cannot recover it, you will need to re-enter all encrypted secrets (SMTP, Proxmox tokens, SNMP strings) in **Settings** after running `cb vault-recover`.
+
+### What must be persisted
+
+For Docker Compose installs, persistence is split across a few mounts:
+
+| Mount | Stores | Why it matters |
+|---|---|---|
+| `backend-data` → `/app/data` | `app.db`, vault key file, encrypted-secret metadata, uploads runtime data | Required for users, settings, scans, Proxmox config, SMTP config, and vault continuity |
+| `../data/uploads/icons` → `/app/data/uploads/icons` | Uploaded icons | Needed only if you use custom icons |
+| `../data/uploads/branding` → `/app/data/uploads/branding` | Branding assets | Needed only if you customize logos/backgrounds |
+| `caddy_data` | Caddy local CA / ACME state | Prevents HTTPS trust/cert state from being regenerated every restart |
+| `caddy_config` | Caddy autosave/config state | Usually low-risk, but keep with `caddy_data` for clean restores |
+| `nats_data` | JetStream state | Keeps worker messaging state durable |
+| `postgres_data` | PostgreSQL data | Only relevant when using the optional PostgreSQL profile |
+
+If you replace named volumes with host folders, back up these locations together:
+
+1. The backend data directory (`/app/data`)
+2. The Caddy data directory
+3. Any branding/icon directories you mounted separately
+
+If you restore `app.db` without the vault key file, encrypted secrets such as Proxmox API tokens and SMTP passwords will no longer be readable.
+
+### Native install persistence
+
+For native Linux installs, the important paths are:
+
+| Path | Stores | Why it matters |
+|---|---|---|
+| `/var/lib/circuit-breaker` | SQLite DB, uploads, runtime data | Core persistent application state |
+| `/etc/circuit-breaker/env` | API token and runtime environment overrides | Needed for service configuration continuity |
+| `/etc/circuit-breaker/config.yaml` | Native runtime config | Holds host/port/data/TLS settings |
+| `/usr/local/share/circuit-breaker` | Frontend bundle, Alembic config, migrations, docs seed, version metadata | Required by packaged native releases |
+| `/etc/circuit-breaker/certs` | Native TLS cert/key files | Required when native HTTPS is enabled |
+
+---
+
+## 4) Practical Security Habits
 
 - Rotate tokens on a regular schedule.
 - Avoid sharing admin credentials.

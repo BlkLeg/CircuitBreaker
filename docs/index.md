@@ -31,6 +31,8 @@ To see how to begin adding these components, proceed to [Getting Started](gettin
 
 - **[Auto-Discovery (Beta)](discovery.md):** Scan selected network ranges, review results, then merge approved items into your inventory.
 - **[Settings](settings.md):** Control language, timezone, appearance, map defaults, and system behavior.
+- **[Authentication & Access](auth-access.md):** Local auth, OAuth/OIDC, MFA, invites, and recovery workflows.
+- **[Webhooks & Notifications](integrations-webhooks-notifications.md):** Route events to external tools and manage delivery.
 - **[Backup & Restore](backup-restore.md):** Export your inventory snapshot and restore when needed.
 - **[Deployment & Security](deployment-security.md):** Choose a quick lab setup or a hardened setup.
 

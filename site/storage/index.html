@@ -60,6 +60,10 @@
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Storage</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#adding-storage">Adding Storage</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#virtualized-proxmox-storage">Virtualized &amp; Proxmox Storage</a>
+    </li>
+        </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#linking-storage">Linking Storage</a>
     </li>
@@ -102,6 +106,8 @@
               </ul>
               <p class="caption"><span class="caption-text">Updates</span></p>
               <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0.2.0-overview/">v0.2.0 Overview</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
@@ -150,6 +156,8 @@
 <li><strong>Type</strong></li>
 <li><strong>Capacity</strong></li>
 </ul>
+<h3 id="virtualized-proxmox-storage">Virtualized &amp; Proxmox Storage<a class="headerlink" href="#virtualized-proxmox-storage" title="Permanent link">&para;</a></h3>
+<p>Storage entries can also be created dynamically. If a <strong>Proxmox Cluster</strong> is integrated within Settings, Circuit Breaker will detect and populate virtualized storage pools (ZFS, directory mounts, logical LVM block devices) directly as distinct infrastructure nodes on the Map. Every node automatically establishes ownership lines to their backing hardware host.</p>
 <hr />
 <h2 id="linking-storage">Linking Storage<a class="headerlink" href="#linking-storage" title="Permanent link">&para;</a></h2>
 <p>Connect storage in two ways:</p>

@@ -23,6 +23,17 @@ Recommended fields:
 
 ---
 
+## Proxmox Workloads & Clusters
+
+If you configure a **Proxmox API Integration** within Settings, Circuit Breaker bridges the virtual-to-physical gap effortlessly. QEMU and LXC workloads discovered across the API are automatically mapped downward structurally to their respective host Hardware nodes.
+
+Features unlocked during Proxmox Discovery include:
+
+- **Per-VM & Container Pulse Stats:** Inline rendering of VM CPU/memory/disk performance dynamically syncing directly to the front-end map.
+- **Run State Inference:** A transparent green/red halo indicating the live `running` or `stopped` condition of the workload directly over its topology icon.
+
+---
+
 ## Why Compute Mapping Matters
 
 With compute mapped correctly, you can quickly answer:

@@ -1,263 +1,380 @@
 # Circuit Breaker
 
+
 ![Circuit Breaker Logo](screenshots/cb_night-full.png)
 
-**Circuit Breaker** is a self-hosted homelab visualization platform that lets you document,
-map, and understand your infrastructure — hardware, services, networks, and everything
-in between — through an interactive topology map and rack simulator.
+**Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, clusters—with interactive topology, live telemetry, and auto-discovery. **Now PostgreSQL-powered for scalability!**
 
-> **⚠️ Beta Security Notice**
-> Circuit Breaker has not yet undergone a full security audit. Run it on a trusted local
-> network or private intranet only. **Do not expose it directly to the public internet**
-> until a production release is available. Take appropriate precautions to secure the
-> application and protect your data.
+> **⚠️ Beta Security Notice**  
+> Not fully audited. Run on trusted LAN only. Do not expose publicly until v1.0.
 
-📖 **[User Guide](https://blkleg.github.io/CircuitBreaker)** — get up to speed quickly
+📖 **[User Guide](https://blkleg.github.io/CircuitBreaker)**
 
----
+🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
 
-## Features
+***
 
-- **Interactive topology map** — visualize your infrastructure with multiple pre-built
-  layouts including cluster-centric and top-down styles. Rearrange nodes freely and save
-  your preferred layout across sessions.
-- **Rack simulator** — model your physical rack in a drag-and-drop interface with
-  U-height-aware placement and hardware binding.
-- **Hardware & service inventory** — track physical devices, VMs, containers, networks,
-  and services with a clean, searchable interface.
-- **Vendor device catalog** — typeahead search across Dell, HPE, Ubiquiti, APC, Synology,
-  MikroTik, Raspberry Pi, and more — with auto-filled specs and rack heights.
-- **Telemetry integration** — connect iDRAC, iLO, APC UPS, CyberPower, and generic SNMP
-  devices to surface live health badges directly on the topology map.
-- **Markdown documentation** — write linked, linkable runbooks and notes attached to any
-  entity in your lab.
-- **Rich theming** — 8+ built-in theme presets with live preview to keep the dashboard
-  readable in any environment.
-- **Gravatar support** — account profiles pull from Gravatar for a familiar feel.
+## 🚀 Standout Features (v0.2.0-beta)
 
----
+- **Auto-Discovery Engine**: Scan LAN with nmap/SNMP/ARP. Auto-pop Proxmox VMs, TrueNAS pools, UniFi APs. Review & merge into topology!
+- **Live Telemetry**: iDRAC/iLO/APC UPS/SNMP badges update via WebSockets. Health rings (green=healthy, red=critical).
+- **Proxmox Integration**: One-click cluster import—nodes, VMs, health metrics visualized instantly!
+- **Interactive Topology**: Hierarchical/cluster layouts. Drag/save positions. New mobile-responsive HUD!
+- **3D Rack Simulator**: U-height drag-drop, cable mgmt, front/rear views, power modeling.
+- **Vendor Catalog**: 100+ devices (Dell/HPE/Ubiquiti/Synology). Freeform always works.
+- **Scan Dashboard**: Ad-hoc/recurring profiles. Bulk merge new hosts/services.
+- **Rich Docs & Logs**: Markdown runbooks per entity. Audit trail for all changes.
 
-## Screenshots
+![Mobile View](screenshots/new_mobile_layout.jpg)
 
-### Login Screen
+![Mobile View 2](screenshots/02-mobile.jpg)
 
-![Login Screen](screenshots/01-Login.png)
+### 🎨 Customizability
 
-### Speed-centric connections (w/ live animations)
+- Branding
+- Logos
+- Favicons
+- Login background
+- Map names
 
-![Speed-centric Connections](screenshots/speed-connection.png)
-The lowest node speed dictates the overall speed of the animation to mimic real-world effects.
+### 🔒 Security
 
-1. Various connection types with their own animations/colors.
-2. Bandwidth slider dictates animation speed.
-3. State management
+- Built-in HTTPS
+- OAuth/OIDC - GitHub, Google, generic OIDC providers
+- MFA
+- RBAC roles + scopes (viewer/editor/admin/demo)
+- Fernet secured secrets management
+- Audit logging for non-repudiation
+- JWT
 
-### Custom Layout Example
+### 🔌 Integrations
 
-![Custom Layout Example](screenshots/New%20Map.png)
+- Webhooks and notification routing for Slack, Discord, and custom endpoints
 
-### Hardware Inventory Page
+### ⚡ Speed
 
-![Hardware Inventory Page](screenshots/01-hardware-page.png)
+- Scans and maps Proxmox topology in under 60 seconds
+- Scans subnet in under 2 minutes (depends on worker count)
+- Loads quickly on low-resource devices like Pi and mini pcs
 
-### Top-Down Topology Layout
+### Efficient
 
-![Top-Down Topology Layout](screenshots/01-top-down.png)
+- Runs in under 500mb of RAM - Pi Ready!
 
-### Mobile Friendly Layout
+***
 
-![Mobile Layout](screenshots/new_mobile_layout.jpg)
----
+### Multiple Topologies (w/ live animations)
+
+![Concentric Rings](screenshots/01-concentric-rings.png)
+
+![Radial w/ Smooth connections](screenshots/01-heart-diagram.png)
+
+![Radial Bundled](screenshots/radial-bundled.png)
+
+![Subnet Separation](screenshots/01-subnet.png)
+
+### Floating HUD w/ live Telemtry
+
+![Maintenance Status](screenshots/01-hud-maintenance.png)
+
+![HUD w/ Telemetry](screenshots/01-hud-2.png)
+
+### Non-Repudiation Audit Logs
+
+![Audit Log](screenshots/01-secure-logging.png)
 
 ## Quick Start
 
-### Option A — One-line install *(recommended)*
-
-Requires Linux and Docker. The script will offer to install Docker if it isn't found.
+### One-line Install (Recommended)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Then open: [http://localhost:8080](http://localhost:8080)
+Choose **Compose stack** (option 2) for full capability—discovery, webhooks, HTTPS—in under 60 seconds. No build required.
 
-The installer pulls the pre-built image from GHCR, starts the container, and prints every
-LAN address it is reachable on.
+Open: <https://localhost> or <https://circuitbreaker.local> or <https://192.168.x.x> (your host IP)
 
-**Environment variable overrides:**
+**Overrides**: `CB_MODE=compose CB_YES=1 curl ... | bash` (non-interactive compose install)
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `CB_PORT` | `8080` | Host port to expose |
-| `CB_VOLUME` | `circuit-breaker-data` | Docker volume name or host path |
-| `CB_IMAGE` | `ghcr.io/blkleg/circuitbreaker:latest` | Docker image to pull |
-| `CB_CONTAINER` | `circuit-breaker` | Container name |
+**Tagged deploy**: `CB_TAG=v1.2.0 curl ... | bash` (pin to a specific release)
+
+**Upgrade**: `cb update` or `docker compose -f ~/.circuit-breaker/docker-compose.prod.yml pull && docker compose -f ~/.circuit-breaker/docker-compose.prod.yml up -d`
+
+**Uninstall**: `cb uninstall` or `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
+
+### Native Packages
+
+> **In testing:** Native (PyInstaller) builds are still in testing. Prefer Docker or the one-line install for production use.
+
+Native release archives are standardized across supported platforms:
+
+- Linux `amd64`: `circuit-breaker_<version>_linux_amd64.tar.gz`
+- Linux `arm64`: `circuit-breaker_<version>_linux_arm64.tar.gz`
+- macOS `arm64`: `circuit-breaker_<version>_macos_arm64.tar.gz`
+- Windows `amd64`: `circuit-breaker_<version>_windows_amd64.zip`
+
+The Linux native installer (`install.sh --mode binary`) consumes the same packaged archive format that GitHub Releases publishes, so branch/local packaging and release packaging now use the same artifact contract.
+
+For native Linux installs, the installer supports two HTTPS modes:
+
+- `local`: generate and optionally trust a local CA + server certificate
+- `provided`: copy an existing certificate and key into the managed cert directory
+
+macOS and Windows native archives are built in CI, but their install path is currently manual rather than `install.sh`.
+
+### Docker Compose (Prebuilt)
+
+**Single source of truth for production Docker:** [`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml). The one-line install (option 2) downloads this file and uses it for the full stack (Caddy, backend, frontend, workers, NATS, Postgres). It expects **two** images: `ghcr.io/blkleg/circuitbreaker:backend-<tag>` and `:frontend-<tag>`. To build and push both for a version (e.g. `v0.2.0-2-beta`):
 
 ```bash
-# Example: run on port 9090
-CB_PORT=9090 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
+make setup-buildx
+make docker-publish-prod TAG=v0.2.0-2-beta
 ```
 
-**To uninstall:**
+Then run with `CB_TAG=v0.2.0-2-beta docker compose -f docker-compose.prod.yml up -d`. Manual runs and upgrades should use the same compose file:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash
+# Recommended: use the installer (it downloads docker-compose.prod.yml for you)
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
+# Choose option 2 (Compose stack)
 ```
 
----
-
-### Option B — Docker Compose *(no clone required)*
-
-**Download and run in one command:**
+Manual run from repo (same file the installer uses):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml \
-  -o docker-compose.yml && docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prod.yml -o docker-compose.prod.yml
+# Place Caddyfile and .env alongside (see docker/.env.example), then:
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-**Or paste this into your own `docker-compose.yml`:**
+Single-container image only (minimal—no discovery workers):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml -o docker-compose.yml && docker compose up -d
+```
+
+**Build from source** (for development): see [docs/installation/docker-compose-source.md](docs/installation/docker-compose-source.md)
+
+Single-container `docker-compose.yml`:
 
 ```yaml
 services:
   circuit-breaker:
-    image: ghcr.io/blkleg/circuitbreaker:latest
-    container_name: circuit-breaker
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-    ports:
-      # Bind to 127.0.0.1 for local-only access (recommended during beta).
-      # Change to "8080:8080" to expose on all interfaces (only if behind a firewall).
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - circuit-breaker-data:/data
-    environment:
-      - DATABASE_URL=sqlite:////data/app.db
-      - UPLOADS_DIR=/data/uploads
+    image: ghcr.io/blkleg/circuitbreaker:v0.2.0-beta  # Or :latest
+    ports: ["127.0.0.1:8080:8080"]
+    volumes: [circuit-breaker-data:/data]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
 volumes:
   circuit-breaker-data:
-    # Named volume — data persists across restarts and updates.
-    # To inspect: docker volume inspect circuit-breaker-data
 ```
 
-Open: [http://localhost:8080](http://localhost:8080)
+Update: `docker compose pull && docker compose up -d`
 
-To update: `docker compose pull && docker compose up -d`
+After starting the compose stack, install the `cb` CLI tool so you have access to operational commands:
 
----
+```bash
+make install-cb
+```
 
-### Option C — Build from source *(single image)*
+***
+
+## cb — Command-Line Tool
+
+`cb` is a small shell utility installed alongside Circuit Breaker. It gives you operational commands without needing to remember Docker flags.
+
+| Command | Description |
+|---------|-------------|
+| `cb status` | Show container / service status |
+| `cb logs [-f]` | Show logs (add `-f` to follow) |
+| `cb restart` | Restart Circuit Breaker |
+| `cb update` | Pull latest image and recreate the container *(Docker mode)* |
+| `cb vault-recover` | Recover an uninitialized vault *(recovery path — not needed during normal setup)* |
+| `cb version` | Show installed version |
+| `cb uninstall` | Remove Circuit Breaker from this system |
+
+**How `cb` is installed:**
+
+- **`install.sh` (one-line install)** — installed automatically.
+- **Docker Compose (from source)** — run `make install-cb` after `docker compose up`.
+- **Manual** — `sudo install -Dm755 ./cb /usr/local/bin/cb` from the repo root.
+
+> **Vault key**: no manual setup needed. The vault key is generated automatically when you complete the first-run setup wizard. `cb vault-recover` only exists for edge cases where the vault ends up uninitialized after a crash or a headless deploy.
+
+***
+
+## 🔄 v0.2.0 Migration Notes
+
+**PostgreSQL Upgrade for Scale!**  
+SQLite → PostgreSQL default (`DATABASE_URL=postgresql://...`). Handles 10k+ nodes effortlessly.  
+
+**Breaking Changes (One-time)**:
+
+- Backup `/data/app.db` (SQLite).  
+- Set `DATABASE_URL` in env/compose. Init: auto-migrates schemas.  
+- Data preserved via Alembic migrations. Test on staging first!  
+
+Why? Explosive growth—Proxmox scans add 100s of VMs. PG scales infinitely.
+
+***
+
+## Docker Compose — Production Stack
+
+For **production (prebuilt images)**, use **[`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml)** — the same file the [one-line install](#one-line-install-recommended) uses. The full stack includes:
+
+| Service | Role |
+|---------|------|
+| `caddy` | Reverse proxy — automatic HTTPS via local self-signed cert (`.local`) or ACME (public domain) |
+| `backend` | FastAPI app + Alembic migrations |
+| `frontend` | nginx serving the built React app |
+| `worker` | Discovery worker (2 replicas) |
+| `webhook-worker` | Webhook dispatch worker |
+| `notification-worker` | Alert / notification worker |
+| `nats` | Message bus (JetStream) |
+| `postgres` _(optional)_ | PostgreSQL — only starts with `--profile pg` |
+
+### Quick start
+
+**Prebuilt (recommended):** use the [installer](#one-line-install-recommended) or run `docker/docker-compose.prod.yml` as in the Quick Start section.
+
+**Build from source:**
 
 ```bash
 git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
-docker build -t circuit-breaker:beta .
+docker compose -f docker/docker-compose.yml up -d
+```
 
-# Local-only access (recommended):
-docker run --rm -p 127.0.0.1:8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
+Access at `https://circuitbreaker.local` (default domain). See **Caddy HTTPS** below if your browser shows a certificate warning.
 
-# Expose on all interfaces (only if behind a firewall):
-docker run --rm -p 8080:8080 -v circuit-breaker-data:/data circuit-breaker:beta
+### Environment variables
+
+Copy `docker/.env.example` to `docker/.env` and set as needed:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `CB_DOMAIN` | `circuitbreaker.local` | Domain Caddy listens on. Use a public FQDN for automatic ACME certs. |
+| `CB_TLS_EMAIL` | _(empty)_ | Required for Let's Encrypt on public domains. |
+| `CB_LOCAL_CERTS` | `local_certs` | Set to empty string to use ACME on a public domain. |
+| `CB_DB_URL` | SQLite | Override to `postgresql://breaker:pass@postgres:5432/circuitbreaker` to use the optional PG service. |
+| `CB_VAULT_KEY` | _(auto)_ | Fernet key for secret encryption. Auto-generated during OOBE; persisted to `/data/.env` in the volume. |
+| `CB_DB_PASSWORD` | `breaker` | PostgreSQL password (only used with `--profile pg`). |
+| `DB_POOL_SIZE` | `10` | PostgreSQL connection pool size. On Raspberry Pi or low-memory hosts, set to `3`–`5` to reduce memory. |
+| `DB_MAX_OVERFLOW` | `10` | Extra connections allowed beyond the pool. On Pi, set to `2`–`3`. |
+
+### Persistence Layout
+
+The source `docker/docker-compose.yml` uses a mix of **named volumes** (managed by Docker) and **bind mounts** (specific host folders). These are the important ones:
+
+| Mount | Type | Container path | What it stores | Notes |
+|------|------|----------------|----------------|-------|
+| `backend-data` | Named volume | `/app/data` | SQLite DB, vault key file, encrypted credentials metadata, generated runtime data | This is the most important persistence mount |
+| `../data/uploads/icons` | Bind mount | `/app/data/uploads/icons` | Custom uploaded icons | Lets you inspect/back up icons directly on the host |
+| `../data/uploads/branding` | Bind mount | `/app/data/uploads/branding` | Branding assets, login background, logos | Safe to back up independently |
+| `caddy_data` | Named volume | `/data` in `cb-caddy` | Local CA, certificates, ACME state | Required for HTTPS continuity across restarts |
+| `caddy_config` | Named volume | `/config` in `cb-caddy` | Caddy autosave/config state | Usually leave this alone |
+| `nats_data` | Named volume | `/data/nats` | NATS / JetStream state | Needed for durable worker messaging |
+| `postgres_data` | Named volume | `/var/lib/postgresql/data` | PostgreSQL data | Only used when `--profile pg` is enabled |
+
+Important paths inside the backend data volume:
+
+- `/app/data/app.db`: default SQLite database
+- `/app/data/.env`: persisted `CB_VAULT_KEY` written during OOBE
+- `/app/data/uploads/`: runtime uploads and derived assets
+
+Example: mount specific host folders instead of Docker-managed named volumes
+
+```yaml
+services:
+  backend:
+    volumes:
+      - ./data/backend:/app/data
+      - ./data/icons:/app/data/uploads/icons
+      - ./data/branding:/app/data/uploads/branding
+
+  caddy:
+    volumes:
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+
+  nats:
+    volumes:
+      - ./data/nats:/data/nats
+```
+
+If you switch to host folders, keep those directories backed up together. The most critical pair is the backend data directory and the Caddy data directory.
+
+### Caddy HTTPS — CA Certificate
+
+Caddy issues a self-signed CA for `.local` / LAN domains.
+Browsers won't trust it until you install the CA certificate.
+
+**Download the cert** (available over HTTP before redirecting):
+
+```
+http://circuitbreaker.local/caddy-root-ca.crt
+```
+
+Or click the **Download CA Certificate** button shown in the first-run OOBE wizard.
+
+**Install instructions:**
+
+| OS | Steps |
+|----|-------|
+| **macOS** | Double-click `caddy-root-ca.crt` → Keychain Access → select *Always Trust* |
+| **Windows** | Double-click → *Install Certificate* → *Local Machine* → *Trusted Root Certification Authorities* |
+| **Linux (Debian/Ubuntu)** | `sudo cp caddy-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates` |
+| **Firefox** | Settings → Privacy & Security → Certificates → *Import* |
+| **Chrome/Edge** | Uses the OS trust store (macOS/Windows). On Linux: Settings → Security → *Manage Certificates* |
+
+For a **public domain**, set `CB_DOMAIN=myserver.example.com` and `CB_TLS_EMAIL=admin@example.com`. Caddy will provision a trusted Let's Encrypt certificate automatically — no manual cert installation needed.
+
+### ARP Scan / Full Discovery
+
+By default, discovery uses nmap TCP/ICMP and works without elevated privileges. To enable ARP scanning (faster, more reliable on LAN):
+
+> **Native Linux Docker only — not supported on Docker Desktop (macOS / Docker Desktop for Linux).**
+> `network_mode: host` is required so the container can reach your LAN directly. Docker Desktop runs containers inside a VM, so host mode accesses the VM's network, not your LAN, and breaks the nginx → backend proxy.
+
+1. In `docker/docker-compose.yml`, uncomment under the `backend` service:
+   ```yaml
+   cap_add:
+     - NET_RAW
+     - NET_ADMIN
+   network_mode: "host"
+   ```
+2. Uncomment under the `frontend` service:
+   ```yaml
+   extra_hosts:
+     - "backend:host-gateway"
+   ```
+3. Restart: `docker compose -f docker/docker-compose.yml up -d`
+
+**Security note:** `NET_RAW` + `NET_ADMIN` allow the container to craft and send arbitrary raw packets. Only enable this on trusted, isolated homelab networks.
+
+When `network_mode: host` is active, IPv6 sysctls cannot be set per-container (they share the host namespace). To disable IPv6 on the host instead:
+```bash
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
 ```
 
 ---
 
-### Option D — Build from source *(Docker Compose)*
+## Build from Source
 
 ```bash
 git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
-docker compose -f docker/docker-compose.yml up -d --build
+docker build -t circuit-breaker .
+docker run -p 127.0.0.1:8080:8080 -v cb-data:/data circuit-breaker
 ```
 
-> For local-only access, change `"8080:8080"` to `"127.0.0.1:8080:8080"` in
-> `docker/docker-compose.yml` before starting.
-
----
-
-### First Run & Data Reset
-
-On a fresh database, Circuit Breaker opens a setup wizard to create the initial admin
-account and configure your preferences.
-
-**To reset to a clean state:**
-
-```bash
-# Options A, B, or C
-docker volume rm -f circuit-breaker-data
-
-# Option D (Compose stack)
-docker compose -f docker/docker-compose.yml down -v
-```
-
----
+***
 
 ## Documentation
 
-- [Architecture & Overview](docs/OVERVIEW.md)
-- [Project Roadmap](docs/ROADMAP.md)
-- [Beta Pre-Flight Checklist](PRE_PKG.md)
+- [Overview](docs/OVERVIEW.md)
+- [Roadmap](docs/ROADMAP.md) – v0.3.0: VLANs, mobile polish.
 
-**Build docs locally with Zensical:**
+## Community
 
-```bash
-source .venv/bin/activate
-make docs-build
-make docs
-```
+Join [Discord](https://discord.gg/SBdBRfmD) for support/showcase. Follow [@TryHostingCB](https://x.com/TryHostingCB).
 
----
-
-## Background
-
-Circuit Breaker grew out of frustration with existing IPAM and documentation tools.
-NetBox was the first stop — powerful, but complex to navigate quickly and entirely without
-a visual representation of the lab. That gap was the spark.
-
-The goal was always something simpler: drop in a device, draw some lines, understand
-your lab at a glance. Everything else is built on top of that principle.
-
----
-
-## How It Was Built
-
-Circuit Breaker was designed deliberately rather than thrown together. Development began
-with a full week of planning in Notion — mapping out features, workflows, and data models
-before a single line of code was written. From there, each feature was built and tested
-in isolated phases; nothing significant was shipped in a single unreviewed pass.
-
-Code quality is actively monitored using **Dependabot**, **SonarQube**, and **Snyk**.
-All critical and high-severity vulnerabilities were resolved before the beta
-release. As the project approaches v1, the focus will increasingly shift to stability,
-maintainability, and low cognitive complexity throughout the codebase.
-
-> The `dev` branch is unstable and not recommended for general use.
-
----
-
-## A Few Commitments
-
-1. **Circuit Breaker will always be free.** No paid contributors, no paywalled features.
-   Donations are welcome but never expected.
-2. **During the beta, please limit bug reports to functional and security issues.** The
-   codebase is still being optimized — keeping reports focused avoids duplicate effort
-   and helps things move faster.
-
----
-
-## Support the Project
-
-If Circuit Breaker saves you time or headaches, consider buying a coffee.
-
-**Cash App:** `$blkleg`
-
-A Discord community is coming soon. Thanks for checking out the project — I hope it
-makes your homelab a little easier to understand. 🖥️
+**Star on GitHub** ⭐ Questions? #support! 🖥️

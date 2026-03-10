@@ -1,0 +1,21 @@
+# Root-level docker-compose.yml — delegates to the canonical stack definition.
+#
+# This file exists so that `docker compose up` works from the repo root, which
+# is the standard developer expectation.  The actual service definitions live in
+# docker/docker-compose.yml to keep Docker-specific files co-located with the
+# Dockerfiles and nginx config.
+#
+# Docker Compose v2.20+ include syntax:
+#   https://docs.docker.com/compose/multiple-compose-files/include/
+#
+# Usage (from repo root):
+#   docker compose up -d          # start stack
+#   docker compose down           # stop stack
+#   docker compose down -v        # stop + wipe volumes
+#   docker compose build          # rebuild images
+#
+# Or via make:
+#   make compose-up
+#   make compose-down
+include:
+  - path: docker/docker-compose.yml

@@ -69,17 +69,27 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#discovery-workflow">Discovery Workflow</a>
         <ul>
-    <li class="toctree-l3"><a class="reference internal" href="#1-create-a-scan-profile">1) Create a scan profile</a>
+    <li class="toctree-l3"><a class="reference internal" href="#1-choose-a-discovery-mode">1) Choose a Discovery Mode</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#2-run-an-ad-hoc-scan">2) Run an ad-hoc scan</a>
+    <li class="toctree-l3"><a class="reference internal" href="#2-create-a-scan-profile">2) Create a scan profile</a>
     </li>
-    <li class="toctree-l3"><a class="reference internal" href="#3-review-findings">3) Review findings</a>
+    <li class="toctree-l3"><a class="reference internal" href="#3-run-an-ad-hoc-scan">3) Run an ad-hoc scan</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#4-review-findings">4) Review findings</a>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#4-track-progress-and-history">4) Track progress and history</a>
     </li>
         </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#safety-and-good-practice">Safety and Good Practice</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#arp-scanning-and-docker-desktop">ARP Scanning and Docker Desktop</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#default-behavior-docker-desktop-and-all-platforms">Default behavior (Docker Desktop and all platforms)</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#enabling-arp-scanning-native-linux-docker-only">Enabling ARP scanning (native Linux Docker only)</a>
+    </li>
+        </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#troubleshooting-basics">Troubleshooting Basics</a>
     </li>
@@ -114,6 +124,8 @@
               </ul>
               <p class="caption"><span class="caption-text">Updates</span></p>
               <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0.2.0-overview/">v0.2.0 Overview</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
@@ -161,16 +173,23 @@
 <p>Nothing is added automatically without your approval.</p>
 <hr />
 <h2 id="discovery-workflow">Discovery Workflow<a class="headerlink" href="#discovery-workflow" title="Permanent link">&para;</a></h2>
-<h3 id="1-create-a-scan-profile">1) Create a scan profile<a class="headerlink" href="#1-create-a-scan-profile" title="Permanent link">&para;</a></h3>
+<h3 id="1-choose-a-discovery-mode">1) Choose a Discovery Mode<a class="headerlink" href="#1-choose-a-discovery-mode" title="Permanent link">&para;</a></h3>
+<p>Circuit Breaker allows you to balance discovery depth against network safety and isolation requirements:</p>
+<ul>
+<li><strong>Safe Mode (Default):</strong> Performs ICMP pings (using user-space methods) and TCP connect scans on common ports (22, 80, 443, 8080, 8443). Safe mode operates entirely within standard Docker environments without requiring elevated capabilities like <code>NET_RAW</code>.</li>
+<li><strong>Full Mode:</strong> Utilizes comprehensive port scanning, ARP requests, and Scapy methodologies for deeper inspection, including MAC address resolution. This mode requires Docker elevated permissions (<code>NET_RAW</code>, <code>NET_ADMIN</code>) and usually host network mode.</li>
+<li><strong>Docker-Aware Discovery:</strong> If the host's Docker socket (<code>/var/run/docker.sock</code>) is mounted read-only into the Circuit Breaker container, the discovery pipeline can directly read container configurations. This automatically populates Docker network modes (bridges, overlays) and maps container services to external exposed ports.</li>
+</ul>
+<h3 id="2-create-a-scan-profile">2) Create a scan profile<a class="headerlink" href="#2-create-a-scan-profile" title="Permanent link">&para;</a></h3>
 <p>Use <strong>Scan Profiles</strong> when you want a repeatable scan target.</p>
 <p>A profile typically includes:</p>
 <ul>
 <li>A name</li>
 <li>Target range (CIDR)</li>
-<li>Scan method settings</li>
+<li>Scan method settings (Safe vs. Full)</li>
 <li>Schedule options</li>
 </ul>
-<h3 id="2-run-an-ad-hoc-scan">2) Run an ad-hoc scan<a class="headerlink" href="#2-run-an-ad-hoc-scan" title="Permanent link">&para;</a></h3>
+<h3 id="3-run-an-ad-hoc-scan">3) Run an ad-hoc scan<a class="headerlink" href="#3-run-an-ad-hoc-scan" title="Permanent link">&para;</a></h3>
 <p>Use <strong>Ad-hoc Scan</strong> for one-time checks.</p>
 <p>This is useful after changes like:</p>
 <ul>
@@ -178,7 +197,7 @@
 <li>Device migration</li>
 <li>Service move</li>
 </ul>
-<h3 id="3-review-findings">3) Review findings<a class="headerlink" href="#3-review-findings" title="Permanent link">&para;</a></h3>
+<h3 id="4-review-findings">4) Review findings<a class="headerlink" href="#4-review-findings" title="Permanent link">&para;</a></h3>
 <p>Open the <strong>Review Queue</strong> to inspect discovered items before import.</p>
 <p>You can:</p>
 <ul>
@@ -198,12 +217,51 @@
 </ul>
 <p>If your environment has strict network controls, coordinate scanning windows before first use.</p>
 <hr />
+<h2 id="arp-scanning-and-docker-desktop">ARP Scanning and Docker Desktop<a class="headerlink" href="#arp-scanning-and-docker-desktop" title="Permanent link">&para;</a></h2>
+<p>Circuit Breaker supports an ARP scan phase that resolves MAC addresses and improves host detection reliability on local subnets. This phase requires elevated Linux capabilities (<code>NET_RAW</code>, <code>NET_ADMIN</code>) and the container must run with <code>network_mode: host</code> to reach your LAN directly.</p>
+<p><strong>This configuration is incompatible with Docker Desktop</strong> (macOS or Docker Desktop for Linux). Docker Desktop runs all containers inside a lightweight VM, so <code>network_mode: host</code> attaches the container to the VM's network rather than your actual LAN. It also breaks the nginx → backend proxy that the frontend relies on, resulting in a 502 error on every page load.</p>
+<h3 id="default-behavior-docker-desktop-and-all-platforms">Default behavior (Docker Desktop and all platforms)<a class="headerlink" href="#default-behavior-docker-desktop-and-all-platforms" title="Permanent link">&para;</a></h3>
+<p>ARP scanning is disabled by default. Circuit Breaker automatically falls back to nmap TCP/ICMP host detection, which:</p>
+<ul>
+<li>Works on all platforms and Docker environments.</li>
+<li>Finds hosts and open ports without MAC address resolution.</li>
+<li>Does not require any special Linux capabilities.</li>
+</ul>
+<p>All other scan phases (nmap, SNMP, HTTP probing) are fully functional.</p>
+<h3 id="enabling-arp-scanning-native-linux-docker-only">Enabling ARP scanning (native Linux Docker only)<a class="headerlink" href="#enabling-arp-scanning-native-linux-docker-only" title="Permanent link">&para;</a></h3>
+<p>If you are running native Docker on Linux (not Docker Desktop), you can enable the ARP scan phase for MAC address resolution and more reliable LAN discovery:</p>
+<ol>
+<li>Open <code>docker/docker-compose.yml</code>.</li>
+<li>In the <code>backend</code> service, uncomment the <code>cap_add</code> and <code>network_mode</code> blocks:
+   ```yaml
+   cap_add:<ul>
+<li>NET_RAW</li>
+<li>NET_ADMIN
+   network_mode: "host"
+   ```</li>
+</ul>
+</li>
+<li>In the <code>frontend</code> service, uncomment the <code>extra_hosts</code> block:
+   ```yaml
+   extra_hosts:<ul>
+<li>"backend:host-gateway"
+   ```</li>
+</ul>
+</li>
+<li>Run <code>make compose-up</code> to rebuild and restart the stack.</li>
+</ol>
+<blockquote>
+<p><strong>Security note:</strong> <code>NET_RAW</code> and <code>NET_ADMIN</code> allow the container to craft and send arbitrary raw network packets. Only enable this on trusted, isolated homelab networks.</p>
+<p><strong>Docker Desktop users:</strong> A workaround for enabling ARP scanning under Docker Desktop is being investigated. Track progress in the project issue tracker.</p>
+</blockquote>
+<hr />
 <h2 id="troubleshooting-basics">Troubleshooting Basics<a class="headerlink" href="#troubleshooting-basics" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>No results:</strong> verify target range and network reachability.</li>
 <li><strong>Too many results:</strong> narrow CIDR scope and use more specific profiles.</li>
 <li><strong>Scan failed:</strong> retry once, then check permissions and environment constraints.</li>
 <li><strong>Unexpected matches:</strong> keep findings in queue and merge only confirmed assets.</li>
+<li><strong>502 error on page load:</strong> this is caused by <code>network_mode: host</code> being enabled while running Docker Desktop. Comment out the <code>cap_add</code>, <code>network_mode</code>, and <code>extra_hosts</code> blocks in <code>docker/docker-compose.yml</code> and run <code>make compose-up</code> again.</li>
 </ul>
 <hr />
 <h2 id="related-guides">Related Guides<a class="headerlink" href="#related-guides" title="Permanent link">&para;</a></h2>

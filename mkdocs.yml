@@ -9,6 +9,17 @@ theme:
 nav:
   - Welcome: index.md
   - Roadmap: roadmap.md
+  - Installation:
+      - Overview & Methods: installation/index.md
+      - Quick Install (Script): installation/quick-install.md
+      - Docker Compose (Prebuilt Full Stack): installation/docker-compose-prod.md
+      - Docker Compose (Prebuilt Single): installation/docker-compose.md
+      - Docker Compose (From Source): installation/docker-compose-source.md
+      - Single Docker Container: installation/manual-docker.md
+      - First-Run Setup: installation/first-run.md
+      - Configuration Reference: installation/configuration.md
+      - Upgrading: installation/upgrading.md
+      - Uninstalling: installation/uninstalling.md
   - Getting Started: getting-started.md
   - Features:
       - Hardware: hardware.md
@@ -18,17 +29,22 @@ nav:
       - Services: services.md
       - Auto-Discovery (Beta): discovery.md
       - Settings: settings.md
+      - Authentication & Access: auth-access.md
+      - Webhooks & Notifications: integrations-webhooks-notifications.md
       - Topology Map: topology-map.md
       - Audit Log: audit-log.md
       - Notes & Runbooks: notes.md
   - Operations:
       - Deployment & Security: deployment-security.md
+      - Remote Access & Tunnels: remote-access.md
+      - cb CLI Tool: cb-cli.md
       - Backup & Restore: backup-restore.md
   - Reference:
       - Architecture Overview: overview.md
       - Metrics: metrics.md
       - Cross-Browser Audit: cross-browser-audit.md
   - Updates:
+      - v0.2.0 Overview: updates/v0.2.0-overview.md
       - v0.1.4 Release Notes: updates/v0-1-4_release.md
       - v0.1.4 Docs SOT: updates/v0-1-4_docs_sot.md
       - v0.1.2 Patch Notes: updates/v0-1-2_patch.md

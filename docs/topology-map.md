@@ -26,9 +26,14 @@ It combines inventory, dependencies, status, and editing tools in one place.
 
 ### Layout and view
 
-- Switch between **Dagre**, **Force**, **Tree**, and **Manual/Saved** layouts.
+- Switch between traditional automated structures like **Dagre**, **Force**, and **Tree**.
+- For advanced architectural needs, use the new intelligent layouts:
+    - **Network-First Hierarchical**: Orders networks at the top, cascading down to hypervisors, compute nodes, and then services.
+    - **Radial and Concentric**: Radiates service-centric views outwards—perfect for microservice and Docker service visualizations.
+    - **Layered VLAN/Segment view**: Arranges components left-to-right (WAN, DMZ, LAN, Management, etc).
+    - **Circular Cluster**: Designed specifically to showcase Proxmox virtualization pools or Docker overlays.
 - Use **Cloud View** to simplify large mixed maps.
-- Save current placement with **Save Positions**.
+- Save current placement with **Save Positions** (all customized options, including groupings and layouts, adhere to this state when reloaded).
 - Use **Refresh** to reload current data.
 
 ### Legend and navigation
@@ -83,13 +88,14 @@ Right-click empty map space to create a new node at that position.
 
 ---
 
-## Side Panel Details
+## Side Panel Details and Live Pulse Telemetry
 
 Selecting a node opens details such as:
 
 - Related nodes and relationship direction
 - Key system details for that entity
 - Effective status and source status signals
+- **Live Pulse Metrics**: Host, VM, LXC, and service nodes stream inline metrics directly on hover via Pulse cards (e.g., showing CPU, memory, disk, and network stats updated live from backend poller jobs, like Proxmox). This keeps telemetry centralized without needing external dashboards.
 - Uplink speed controls where supported
 - Quick jump to full entity page
 

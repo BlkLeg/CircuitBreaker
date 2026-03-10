@@ -3,14 +3,16 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
-  release:
+  test:
+    name: Test Before Release
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,70 +21,49 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-
-      - name: Backend Test
-        run: |
-          python -m pip install --upgrade pip
-          pip install poetry
-          poetry -C backend install
-          pip install -e "./backend[dev]"
-          pytest tests/
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/frontend/package-lock.json
 
-      - name: Frontend Build
-        run: |
-          cd frontend
-          npm ci
-          npm run build
-          npm run test
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve safe tag
-        id: vars
+      - name: Install backend dependencies
         shell: bash
-        env:
-          RAW_TAG: ${{ github.ref_name }}
         run: |
-          SAFE_TAG=$(printf '%s' "$RAW_TAG" | tr -cd '[:alnum:]_.-')
-          if [ -z "$SAFE_TAG" ]; then
-            echo "Resolved tag is empty after sanitization" >&2
-            exit 1
-          fi
-          printf 'tag=%s\n' "$SAFE_TAG" >> "$GITHUB_OUTPUT"
+          python -m pip install --upgrade pip
+          pip install -e "./apps/backend[dev]"
 
-      - name: Docker Build & Push
-        uses: docker/build-push-action@v5
+      - name: Backend tests
+        shell: bash
+        run: |
+          cd apps/backend
+          pytest tests/ -q
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          cd apps/frontend
+          npm ci
+
+      - name: Frontend tests
+        shell: bash
+        run: |
+          cd apps/frontend
+          npm run test:ci
+
+  release:
+    name: Create GitHub Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ghcr.io/blkleg/circuitbreaker:${{ steps.vars.outputs.tag }}
-            ghcr.io/blkleg/circuitbreaker:latest
-            ghcr.io/blkleg/circuitbreaker:v0.1.4
+          fetch-depth: 0
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-

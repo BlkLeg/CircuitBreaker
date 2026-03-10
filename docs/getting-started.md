@@ -1,13 +1,17 @@
 # Getting Started
 
-This guide will walk you through the basic workflow for documenting your infrastructure in Circuit Breaker.
+This guide walks you through the basic workflow for documenting your infrastructure in Circuit Breaker.
+
+> **New installation?** See the [Installation](installation/index.md) section for step-by-step instructions covering the quick install script, Docker Compose, and other methods.
 
 ## First Launch
 
 On first launch, Circuit Breaker runs a short setup wizard. You'll be asked to:
 
-- Set a username and password
+- Create your first admin account (local email/password **or OAuth/OIDC sign-up**)
 - **Choose your timezone** — all timestamps across the app (logs, telemetry readings, entity records) display in your local time. You can change this anytime from **Settings → General**.
+- Optionally configure SMTP and your external URL for password reset/invite links
+- Back up your vault key during the final setup step if shown
 
 ---
 

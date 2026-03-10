@@ -1,95 +1,249 @@
+name: circuitbreaker
+
+networks:
+  cb_net:
+    name: circuitbreaker
+    driver: bridge
+
 services:
+  postgres:
+    # PostgreSQL 16 — always-on as of v0.2.0 (SQLite removed).
+    image: postgres:16-alpine
+    container_name: cb-postgres
+    restart: unless-stopped
+    networks: [cb_net]
+    environment:
+      - POSTGRES_DB=circuitbreaker
+      - POSTGRES_USER=breaker
+      - POSTGRES_PASSWORD=${CB_DB_PASSWORD:-breaker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'breaker', '-d', 'circuitbreaker']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nats:
+    image: nats:2-alpine
+    container_name: cb-nats
+    restart: unless-stopped
+    networks: [cb_net]
+    # JetStream enabled for optional durable message streams.
+    # Management HTTP on port 8222 — not exposed externally by default.
+    command: ['--jetstream', '-m', '8222']
+    expose:
+      - '4222'
+      - '8222'
+    volumes:
+      - nats_data:/data/nats
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: cb-caddy
+    networks: [cb_net]
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    environment:
+      # Domain Caddy listens on. Set to a public FQDN for automatic ACME certs.
+      - CB_DOMAIN=${CB_DOMAIN:-circuitbreaker.local}
+      # Email for ACME / Let's Encrypt — required for public domains. A placeholder
+      # is used by default (ignored when local_certs is active).
+      - CB_TLS_EMAIL=${CB_TLS_EMAIL:-admin@circuitbreaker.local}
+      # "local_certs" for .local/LAN domains (default); empty string for ACME/Let's Encrypt.
+      - CB_LOCAL_CERTS=${CB_LOCAL_CERTS:-local_certs}
+    restart: unless-stopped
+
   backend:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
     container_name: cb-backend
-    env_file:
-      - ../backend/.env
+    networks: [cb_net]
     volumes:
       - backend-data:/app/data
       - ../data/uploads/icons:/app/data/uploads/icons
       - ../data/uploads/branding:/app/data/uploads/branding
+      # Docker socket for container auto-discovery (read-only).
+      # Requires "Docker Container Discovery" enabled in Settings → Discovery.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=sqlite:////app/data/app.db
+      # PostgreSQL is required as of v0.2.0; set CB_DB_PASSWORD to override the default.
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
-      # Optional: set a persistent Fernet key for the telemetry credential vault.
-      # If unset, an ephemeral key is generated each restart (credentials lost on restart).
-      # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      - CB_VAULT_KEY=
+      # Auto-generated during OOBE and persisted to /data/.env in the volume.
+      # Pre-seed with CB_VAULT_KEY=<key> in docker/.env to skip generation.
+      - CB_VAULT_KEY=${CB_VAULT_KEY:-}
+      - DISCOVERY_MODE=safe
+      - NATS_URL=nats://nats:4222
+      # Dedicated worker containers run webhook/discovery/notification; backend runs API only.
+      - CB_RUN_INPROCESS_WORKERS=false
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/v1/health']
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    # ──────────────────────────────────────────────────────────────────
-    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (NATIVE LINUX DOCKER ONLY)
-    #
-    # ⚠️  DOCKER DESKTOP INCOMPATIBILITY (macOS / Docker Desktop for Linux)
-    #
-    # The ARP scan phase requires two things to work correctly:
-    #   1. NET_RAW / NET_ADMIN Linux capabilities (to send raw packets)
-    #   2. network_mode: "host" so the container can reach your LAN
-    #
-    # However, network_mode: "host" is NOT compatible with Docker Desktop
-    # (macOS or the Docker Desktop for Linux app), because Docker Desktop
-    # runs all containers inside a lightweight VM. In that environment,
-    # "host" mode grants access to the VM's network, not your actual LAN,
-    # and it breaks the nginx → backend proxy used by the frontend.
-    #
-    # CURRENT STATUS: ARP scanning is disabled by default so that the
-    # default `make compose-up` works on both Docker Desktop and native
-    # Linux Docker. nmap TCP/ICMP host detection is used as a fallback
-    # and works without any special capabilities or network mode.
-    #
-    # TO ENABLE ARP SCANNING (native Linux Docker only — not Docker Desktop):
-    #   1. Uncomment the `cap_add` and `network_mode` blocks below.
-    #   2. Also uncomment the `extra_hosts` block in the `frontend` service.
-    #   3. Run: make compose-up
-    #
-    # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
-    # container the ability to craft and send arbitrary raw packets.
-    # Only enable this on trusted, isolated homelab networks.
-    #
-    # For full documentation see:
-    # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
-    # ──────────────────────────────────────────────────────────────────
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+    # ARP scanning (native Linux Docker only) — uncomment to enable full discovery mode.
+    # See README.md → "ARP Scan / Full Discovery" for setup instructions and caveats.
     # cap_add:
     #   - NET_RAW
     #   - NET_ADMIN
     # network_mode: "host"
-    # NOTE: when network_mode: "host" is enabled, sysctls for net.ipv6.*
-    # are not allowed because the container shares the host's network
-    # namespace. To disable IPv6, set it on the host directly:
-    #   sudo sysctl -w net.ipv6.conf.all.disable_ipv6=0
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.discovery']
+    networks: [cb_net]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DATA_DIR=/app/data
+      - DISCOVERY_MODE=full
+      - NATS_URL=nats://nats:4222
+      - NATS_KV_SYNC=true
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  webhook-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.webhook_worker']
+    networks: [cb_net]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  notification-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.notification_worker']
+    networks: [cb_net]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
 
   frontend:
     build:
       context: ..
       dockerfile: docker/frontend.Dockerfile
-    ports:
-      - "8080:8080"
+    expose:
+      - '8080'
     container_name: cb-frontend
+    networks: [cb_net]
     depends_on:
       backend:
         condition: service_healthy
-    # ──────────────────────────────────────────────────────────────────
-    # NOTE: The extra_hosts block below is only needed when the backend
-    # is running with network_mode: "host" (native Linux Docker + ARP
-    # scanning enabled). In that configuration the backend is NOT on the
-    # Docker bridge network, so nginx must resolve "backend" to the host
-    # gateway IP instead.
-    #
-    # Leave this commented out for the default (Docker Desktop compatible)
-    # setup. Only uncomment it alongside the cap_add / network_mode blocks
-    # in the backend service above.
-    # ──────────────────────────────────────────────────────────────────
+    # Required only when backend uses network_mode: "host" (ARP scanning).
     # extra_hosts:
     #   - "backend:host-gateway"
     restart: unless-stopped
 
+  cloudflared:
+    profiles: ['tunnel']
+    image: cloudflare/cloudflared:latest
+    container_name: cb-cloudflared
+    networks: [cb_net]
+    # Routes Cloudflare edge traffic → Caddy (which handles all routing).
+    # Configure the tunnel origin in the Cloudflare Zero Trust dashboard to:
+    #   http://caddy:80
+    #
+    # The token is read from CLOUDFLARE_TUNNEL_TOKEN in the root .env file.
+    # When running this compose file directly from docker/ (not via the root
+    # docker-compose.yml or make), use:
+    #   docker compose --env-file ../.env --profile tunnel up -d
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
 volumes:
+  postgres_data:
   backend-data:
+  caddy_data:
+  caddy_config:
+  nats_data:

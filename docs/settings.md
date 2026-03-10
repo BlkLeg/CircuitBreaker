@@ -30,10 +30,23 @@ The Settings area lets you control how Circuit Breaker looks, behaves, and prote
 
 - Authentication on/off
 - Session timeout
+- Concurrent sessions
+- Login lockout thresholds / durations
+- Password Resets (available when SMTP is enabled)
+- OAuth/OIDC provider configuration
+- MFA enrollment and recovery workflows
 
-### Discovery behavior
+### Email Notifications & SMTP
+
+- Outbound Email Server Configuration (Host, Port, User, TLS/SSL)
+- Enables password reset flows for users locked out of their accounts.
+
+### Integrations
 
 - Discovery-specific options from the Discovery settings area
+- Webhooks (event routing + test delivery)
+- Notification sinks and routing rules
+- OAuth/OIDC provider credentials and callback URLs
 
 ### System actions
 
@@ -63,6 +76,20 @@ Use branding options to apply your preferred app name and visual identity.
 ### Enable authentication
 
 Turn on authentication when you want login protection and controlled sessions.
+
+### Configure OAuth / OIDC sign-in
+
+1. Open **Settings → Security / OAuth**.
+2. Enable a provider (GitHub, Google, or OIDC).
+3. Enter client credentials and copy the shown callback URL into your provider app.
+4. Save settings and test login from the login page.
+
+### Configure webhooks and notifications
+
+1. Open **Settings → Webhooks** (or **Notifications**).
+2. Add a webhook endpoint label + URL, then choose per-group event toggles (Proxmox, Telemetry, Discovery, and more).
+3. Use **Enable all critical** for fast onboarding, or toggle each event independently per webhook card.
+4. Run **Test webhook** (`test.ping`) and review per-webhook delivery history (status + response time + retries).
 
 ### Adjust session timeout
 

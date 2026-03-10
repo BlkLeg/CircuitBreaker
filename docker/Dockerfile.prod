@@ -1,0 +1,17 @@
+FROM python:3.12-alpine AS backend
+WORKDIR /app
+COPY apps/backend/src ./src
+COPY apps/backend/requirements.txt ./
+RUN pip install -r requirements.txt
+
+FROM node:20-alpine AS frontend
+WORKDIR /app
+COPY apps/frontend ./
+RUN npm ci --prod && npm run build
+
+FROM python:3.12-alpine
+WORKDIR /app
+COPY --from=backend /app /app
+COPY --from=frontend /app/dist /app/static
+EXPOSE 8080
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]

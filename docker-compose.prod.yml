@@ -1,0 +1,10 @@
+# Root-level docker-compose.prod.yml — prebuilt images, no build.
+#
+# Usage (from repo root):
+#   docker compose -f docker-compose.prod.yml up -d
+#   CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml pull && docker compose up -d
+#
+# Requires docker/Caddyfile and .env (copy from docker/.env.example).
+include:
+  - path: docker/docker-compose.prod.yml

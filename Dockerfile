@@ -2,11 +2,11 @@
 FROM node:20.19.0-alpine3.21 AS frontend-builder
 WORKDIR /app/frontend
 # Install dependencies
-COPY frontend/package.json frontend/package-lock.json ./
+COPY apps/frontend/package.json apps/frontend/package-lock.json ./
 RUN npm ci
-# Copy source and build — syncversion reads ../VERSION to stamp the bundle
-COPY VERSION ../VERSION
-COPY frontend/ ./
+# Copy source and build — syncversion reads ../../VERSION to stamp the bundle
+COPY VERSION /VERSION
+COPY apps/frontend/ ./
 RUN npm run build
 
 # Stage 2: Python dependency builder — includes gcc and build tools, excluded from runtime.
@@ -19,6 +19,7 @@ WORKDIR /app/backend
 # exercised on ARM where source builds are necessary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    g++ \
     libjpeg-dev \
     zlib1g-dev \
     libffi-dev \
@@ -30,44 +31,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # requirements.txt is generated from poetry.lock via: python3 scripts/gen_requirements.py
 # Using a pinned file instead of resolving from pyproject.toml avoids PyPI read timeouts
 # and makes the build fully deterministic.
-COPY backend/requirements.txt ./requirements.txt
+COPY apps/backend/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 5 -r requirements.txt
 
 # --- App layer (invalidated only when source changes) ---
-COPY VERSION ../VERSION
-COPY backend/pyproject.toml ./
-COPY backend/app ./app
+COPY VERSION /VERSION
+COPY apps/backend/pyproject.toml ./
+COPY apps/backend/src ./src
 RUN pip install --no-cache-dir --no-deps .
 
 # Stage 3: Runtime image — build tools stripped; final image only carries what runs.
 FROM python:3.12.9-slim-bookworm
 WORKDIR /app/backend
 
-# Runtime-only deps: tini (init), wget (healthcheck), gosu (privilege drop).
+# Runtime-only deps: tini (init), gosu (privilege drop).
 # snmp / ipmitool: used by telemetry integration clients (SNMP polling, IPMI).
 # No gcc — all compilation was done in python-builder above.
+# wget and net-tools excluded: health check uses Python stdlib; ifconfig/netstat unused.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
-    wget \
     gosu \
     snmp \
     ipmitool \
     nmap \
-    net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Pull compiled packages and app code from the builder stage.
 COPY --from=python-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-builder /usr/local/bin /usr/local/bin
-COPY --from=python-builder /app/backend/app ./app
+COPY --from=python-builder /app/backend/src ./src
 
 # Copy built frontend assets from Stage 1
 # Placed in /app/frontend/dist so FastAPI can serve them as static files
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # Environment variables
-ENV PYTHONPATH=/app/backend
+ENV PYTHONPATH=/app/backend/src
 ENV STATIC_DIR=/app/frontend/dist
 ENV DATABASE_URL=sqlite:////data/app.db
 ENV UPLOADS_DIR=/data/uploads
@@ -96,11 +96,11 @@ RUN chmod +x /entrypoint.sh
 # Expose port (default 8080)
 EXPOSE 8080
 
-# Health check — wget is available in this image (installed above).
+# Health check — uses Python stdlib (no wget/curl needed in the image).
 # start-period=45s: covers the entrypoint chown + Python/uvicorn cold start on Pi 4 SD card
 # (chown on a populated /data + uvicorn import chain can exceed 15s on arm64 slow storage).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health', timeout=4)" || exit 1
 
 # Container starts as root so that the entrypoint can fix /data volume ownership at runtime,
 # then drops to breaker26 (UID 1000) via gosu before execing the app.
@@ -108,4 +108,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
 # start.py is used instead of raw uvicorn to retain the AF_UNIX socketpair monkeypatch
 # required for LXC/Proxmox container environments.
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
-CMD ["python", "app/start.py"]
+CMD ["python", "src/app/start.py"]

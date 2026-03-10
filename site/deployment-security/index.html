@@ -88,7 +88,9 @@
     </li>
         </ul>
     </li>
-    <li class="toctree-l2"><a class="reference internal" href="#3-practical-security-habits">3) Practical Security Habits</a>
+    <li class="toctree-l2"><a class="reference internal" href="#3-secrets-management-vault">3) Secrets Management &amp; Vault</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#4-practical-security-habits">4) Practical Security Habits</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#4-before-you-go-live">4) Before You Go Live</a>
     </li>
@@ -110,6 +112,8 @@
               </ul>
               <p class="caption"><span class="caption-text">Updates</span></p>
               <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../updates/v0.2.0-overview/">v0.2.0 Overview</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_release/">v0.1.4 Release Notes</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../updates/v0-1-4_docs_sot/">v0.1.4 Docs SOT</a>
@@ -173,7 +177,22 @@
 <li><code>CB_VAULT_KEY</code>: secures sensitive stored credentials.</li>
 </ul>
 <hr />
-<h2 id="3-practical-security-habits">3) Practical Security Habits<a class="headerlink" href="#3-practical-security-habits" title="Permanent link">&para;</a></h2>
+<h2 id="3-secrets-management-vault">3) Secrets Management &amp; Vault<a class="headerlink" href="#3-secrets-management-vault" title="Permanent link">&para;</a></h2>
+<p>Circuit Breaker leverages an AES-powered secure vault to persist sensitive settings entirely locally without compromising plaintext readability. </p>
+<p>By defining the <code>CB_VAULT_KEY</code> environment variable on deployment, Circuit Breaker can strictly lock:</p>
+<ul>
+<li><strong>SMTP Access Credentials</strong> (Used for user password resets / outbound messaging).</li>
+<li><strong>Proxmox API Tokens</strong> (The Secret component of the PVEAuditor token ID used during API cluster scans).</li>
+<li><strong>SNMP Community Strings</strong> &amp; <strong>iDRAC/iLO details</strong>.</li>
+</ul>
+<p><strong>Vault Best Practices:</strong></p>
+<ul>
+<li>Treat <code>CB_VAULT_KEY</code> like a master root key. </li>
+<li>You must generate a highly secure base-64 encoded cryptographic string for <code>CB_VAULT_KEY</code>.</li>
+<li>If you lose or alter the <code>CB_VAULT_KEY</code> across restarts, the stored vault secrets in the database become unreadable and any associated integrations (like Proxmox maps or SMTP pipelines) will fail to authenticate until re-entered in Settings.</li>
+</ul>
+<hr />
+<h2 id="4-practical-security-habits">4) Practical Security Habits<a class="headerlink" href="#4-practical-security-habits" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Rotate tokens on a regular schedule.</li>
 <li>Avoid sharing admin credentials.</li>
