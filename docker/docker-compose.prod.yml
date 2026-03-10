@@ -7,7 +7,8 @@
 #   and does not fall back to the source compose file (which has build: and no image to pull).
 #
 # To pin a version: CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
-# To upgrade:      docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
+# To upgrade:      CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml pull && ... up -d
+# CB_TAG must match the tag used when publishing (e.g. make docker-publish-prod TAG=v0.2.0 → use CB_TAG=v0.2.0, not 0.2.0).
 #
 # Requires: Caddyfile and .env in the same directory as this file.
 name: circuitbreaker
