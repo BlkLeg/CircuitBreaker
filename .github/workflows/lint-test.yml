@@ -34,7 +34,22 @@ jobs:
   apps/backend-test:
     name: Backend Tests (pytest)
     runs-on: ubuntu-latest
-    if: false  # Disabled: integration tests require Postgres; re-enable when CI DB is set up
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: breaker
+          POSTGRES_PASSWORD: breaker
+          POSTGRES_DB: circuitbreaker_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U breaker -d circuitbreaker_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CB_TEST_DB_URL: postgresql://breaker:breaker@localhost:5432/circuitbreaker_test
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -47,7 +62,7 @@ jobs:
           pip install -e "./apps/backend[dev]"
       - name: Run tests with coverage
         working-directory: apps/backend
-        run: pytest tests/ --cov=src/app --cov-report=xml -v
+        run: PYTHONPATH=src pytest ../../tests/integration tests/ --cov=src/app --cov-report=xml -v
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: always()
