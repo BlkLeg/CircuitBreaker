@@ -1,0 +1,285 @@
+name: circuitbreaker
+
+networks:
+  # Single network (default): all services. Use when segmentation is not needed.
+  cb_net:
+    name: circuitbreaker
+    driver: bridge
+  # Segmented networks (opt-in via profile or override). When used, attach services per segment.
+  cb_frontend:
+    name: circuitbreaker_frontend
+    driver: bridge
+  cb_backend:
+    name: circuitbreaker_backend
+    driver: bridge
+  cb_workers:
+    name: circuitbreaker_workers
+    driver: bridge
+
+services:
+  postgres:
+    # PostgreSQL 16 — always-on as of v0.2.0 (SQLite removed).
+    image: postgres:16-alpine
+    container_name: cb-postgres
+    restart: unless-stopped
+    networks: [cb_net, cb_backend, cb_workers]
+    environment:
+      - POSTGRES_DB=circuitbreaker
+      - POSTGRES_USER=breaker
+      # Required: set CB_DB_PASSWORD in docker/.env or export (no default).
+      - POSTGRES_PASSWORD=${CB_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'breaker', '-d', 'circuitbreaker']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nats:
+    image: nats:2-alpine
+    container_name: cb-nats
+    restart: unless-stopped
+    networks: [cb_net, cb_backend, cb_workers]
+    # JetStream enabled for optional durable message streams.
+    # Management HTTP on port 8222 — not exposed externally by default.
+    # Optional auth: set NATS_AUTH_TOKEN in env to require token auth; backend/workers need the same token.
+    command: ["sh", "-c", "exec nats-server --jetstream -m 8222 ${NATS_AUTH_TOKEN:+--auth \"$NATS_AUTH_TOKEN\"}"]
+    environment:
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+    expose:
+      - '4222'
+      - '8222'
+    volumes:
+      - nats_data:/data/nats
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: cb-caddy
+    networks: [cb_net, cb_frontend, cb_backend]
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    environment:
+      # Domain Caddy listens on. Set to a public FQDN for automatic ACME certs.
+      - CB_DOMAIN=${CB_DOMAIN:-circuitbreaker.local}
+      # Email for ACME / Let's Encrypt — required for public domains. A placeholder
+      # is used by default (ignored when local_certs is active).
+      - CB_TLS_EMAIL=${CB_TLS_EMAIL:-admin@circuitbreaker.local}
+      # "local_certs" for .local/LAN domains (default); empty string for ACME/Let's Encrypt.
+      - CB_LOCAL_CERTS=${CB_LOCAL_CERTS:-local_certs}
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: cb-backend
+    networks: [cb_net, cb_backend]
+    volumes:
+      - backend-data:/app/data
+      - ../data/uploads/icons:/app/data/uploads/icons
+      - ../data/uploads/branding:/app/data/uploads/branding
+      # Docker socket is opt-in for security. To enable Docker-aware discovery, use:
+      #   docker compose -f docker-compose.yml -f docker-compose.docker-socket.yml up -d
+      # See README and docs/discovery.md.
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      # Required: set CB_DB_URL=postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker (and CB_DB_PASSWORD for postgres service).
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - UPLOADS_DIR=/app/data/uploads
+      - DEBUG=false
+      # Auto-generated during OOBE and persisted to /data/.env in the volume.
+      # Pre-seed with CB_VAULT_KEY=<key> in docker/.env to skip generation.
+      - CB_VAULT_KEY=${CB_VAULT_KEY:-}
+      - DISCOVERY_MODE=safe
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+      - CB_WS_REQUIRE_WSS=${CB_WS_REQUIRE_WSS:-}
+      - CB_API_TOKEN=${CB_API_TOKEN:-}
+      # Dedicated worker containers run webhook/discovery/notification; backend runs API only.
+      - CB_RUN_INPROCESS_WORKERS=false
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/v1/health']
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
+    # ARP scanning (native Linux Docker only) — uncomment to enable full discovery mode.
+    # See README.md → "ARP Scan / Full Discovery" for setup instructions and caveats.
+    # cap_add:
+    #   - NET_RAW
+    #   - NET_ADMIN
+    # network_mode: "host"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.discovery']
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      # Required: set CB_DB_URL in docker/.env (e.g. postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker).
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - DISCOVERY_MODE=full
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+      - NATS_KV_SYNC=true
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  webhook-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.webhook_worker']
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      # Required: set CB_DB_URL in docker/.env.
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  notification-worker:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    command: ['python', '-m', 'app.workers.notification_worker']
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      # Required: set CB_DB_URL in docker/.env.
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    expose:
+      - '8080'
+    container_name: cb-frontend
+    networks: [cb_net, cb_frontend]
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Required only when backend uses network_mode: "host" (ARP scanning).
+    # extra_hosts:
+    #   - "backend:host-gateway"
+    restart: unless-stopped
+
+  cloudflared:
+    profiles: ['tunnel']
+    image: cloudflare/cloudflared:latest
+    container_name: cb-cloudflared
+    networks: [cb_net, cb_frontend]
+    # Routes Cloudflare edge traffic → Caddy (which handles all routing).
+    # Configure the tunnel origin in the Cloudflare Zero Trust dashboard to:
+    #   http://caddy:80
+    #
+    # The token is read from CLOUDFLARE_TUNNEL_TOKEN in the root .env file.
+    # When running this compose file directly from docker/ (not via the root
+    # docker-compose.yml or make), use:
+    #   docker compose --env-file ../.env --profile tunnel up -d
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - path: ../.env
+        required: false
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  backend-data:
+  caddy_data:
+  caddy_config:
+  nats_data:

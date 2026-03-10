@@ -133,7 +133,7 @@ security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Had
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh compose-pull-bases tunnel-up tunnel-down trust-ca preflight dev-stop-install db-migrate db-migrate-local db-postgres-up db-seed-default-team
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh compose-pull-bases tunnel-up tunnel-down trust-ca preflight dev-stop-install db-migrate db-migrate-local db-postgres-up db-seed-default-team test-mono-e2e docker-mono docker-mono-release
 
 db-migrate: ## Run Alembic migrations to head (requires running postgres container)
 	@echo "Running Alembic migrations..."
@@ -372,6 +372,33 @@ docker-publish-prod: setup-buildx ## Build and push backend + frontend images (f
 		-f docker/frontend.Dockerfile \
 		-t $(DOCKER_REPO):frontend-$(TAG) -t $(DOCKER_REPO):frontend-latest --push .
 	@echo "Done. Run: CB_TAG=$(TAG) docker compose -f docker/docker-compose.prod.yml up -d"
+
+docker-mono: setup-buildx ## Build and push mono image (no E2E; use docker-mono-release to test before push)
+	$(if $(TAG),,$(error TAG is required, e.g. make docker-mono TAG=v0.2.0))
+	@echo "Building and pushing mono image as $(DOCKER_REPO):mono-$(TAG) and :mono-latest..."
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
+		-f Dockerfile.mono \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(DOCKER_REPO):mono-$(TAG) -t $(DOCKER_REPO):mono-latest --push .
+	@echo "Done. Pull with: $(DOCKER_REPO):mono-$(TAG)"
+
+docker-mono-release: setup-buildx ## Build mono, run E2E test, then push (recommended for releases)
+	$(if $(TAG),,$(error TAG is required, e.g. make docker-mono-release TAG=v0.2.0))
+	@echo "Step 1/3: Building mono image for current platform (E2E test)..."
+	docker build -f Dockerfile.mono \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(DOCKER_REPO):mono-$(TAG) .
+	@echo "Step 2/3: Running E2E test..."
+	@CB_MONO_IMAGE="$(DOCKER_REPO):mono-$(TAG)" ./scripts/test-mono-e2e.sh
+	@echo "Step 3/3: E2E passed. Pushing multi-arch..."
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
+		-f Dockerfile.mono \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(DOCKER_REPO):mono-$(TAG) -t $(DOCKER_REPO):mono-latest --push .
+	@echo "Done. Pull with: $(DOCKER_REPO):mono-$(TAG)"
+
+test-mono-e2e: ## Run E2E test for mono container (starts container, health + frontend check, teardown)
+	@./scripts/test-mono-e2e.sh
 
 test-pi-local: ## Test the ARM64 Docker image locally using emulation
 	@echo "Testing ARM64 image $(RELEASE_TAG)..."

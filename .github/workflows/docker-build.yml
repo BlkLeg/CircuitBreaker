@@ -69,3 +69,28 @@ jobs:
             ${{ steps.vars.outputs.repo }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build mono image (amd64 for E2E)
+        run: |
+          docker build -f Dockerfile.mono \
+            --build-arg APP_VERSION=${{ steps.vars.outputs.tag }} \
+            -t ${{ steps.vars.outputs.repo }}:mono-${{ steps.vars.outputs.tag }} .
+
+      - name: E2E test mono image
+        run: |
+          CB_MONO_IMAGE=${{ steps.vars.outputs.repo }}:mono-${{ steps.vars.outputs.tag }} ./scripts/test-mono-e2e.sh
+
+      - name: Build & Push mono multi-arch (after E2E pass)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mono
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          build-args: |
+            APP_VERSION=${{ steps.vars.outputs.tag }}
+          tags: |
+            ${{ steps.vars.outputs.repo }}:mono-${{ steps.vars.outputs.tag }}
+            ${{ steps.vars.outputs.repo }}:mono-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

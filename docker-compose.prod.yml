@@ -1,10 +1,6 @@
-# Root-level docker-compose.prod.yml — prebuilt images, no build.
+# Root-level docker-compose.prod.yml — same as main stack.
 #
-# Usage (from repo root):
-#   docker compose -f docker-compose.prod.yml up -d
-#   CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
-#   docker compose -f docker-compose.prod.yml pull && docker compose up -d
-#
-# Requires docker/Caddyfile and .env (copy from docker/.env.example).
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# Required: CB_DB_PASSWORD, CB_VAULT_KEY (export or .env).
 include:
-  - path: docker/docker-compose.prod.yml
+  - path: docker/docker-compose.yml

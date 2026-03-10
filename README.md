@@ -157,6 +157,55 @@ Single-container image only (minimal—no discovery workers):
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml -o docker-compose.yml && docker compose up -d
 ```
 
+### Mono Image (Single Container, Postgres + NATS + Workers)
+
+For a self-contained, single-container deployment that bundles PostgreSQL, NATS JetStream, the backend API, workers, and the frontend behind nginx, use the **mono** image:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install-mono.sh | \
+  CB_TAG=v0.2.0 CB_DB_PASSWORD='strongpass123' \
+  CB_VAULT_KEY="$(openssl rand -base64 32)" bash
+```
+
+This starts:
+
+- `ghcr.io/blkleg/circuitbreaker:mono-v0.2.0`
+- Ports: `80` (HTTP) and optionally `443` (HTTPS, when `CB_ENABLE_TLS=1` and certs are mounted)
+- Volume: `./circuitbreaker-data:/data`
+
+To run manually:
+
+```bash
+docker run -d --name circuitbreaker \
+  -p 8080:80 \
+  -v "$(pwd)/circuitbreaker-data:/data" \
+  -e CB_DB_PASSWORD=strongpass123 \
+  -e CB_VAULT_KEY="$(openssl rand -base64 32)" \
+  ghcr.io/blkleg/circuitbreaker:mono-v0.2.0
+```
+
+TLS is terminated inside the container by nginx. Mount your certificates into `/data/tls`:
+
+```bash
+mkdir -p circuitbreaker-data/tls
+cp fullchain.pem circuitbreaker-data/tls/fullchain.pem
+cp privkey.pem circuitbreaker-data/tls/privkey.pem
+
+CB_ENABLE_TLS=1 CB_DB_PASSWORD=... CB_VAULT_KEY=... \
+docker run -d --name circuitbreaker \
+  -p 80:80 -p 443:443 \
+  -v "$(pwd)/circuitbreaker-data:/data" \
+  ghcr.io/blkleg/circuitbreaker:mono-v0.2.0
+```
+
+For advanced ARP discovery on native Linux Docker, you can add:
+
+```bash
+--cap-add NET_RAW --cap-add NET_ADMIN --network host
+```
+
+to the `docker run` command (trusted homelab networks only). See [docs/discovery.md](docs/discovery.md#arp-scanning-and-docker-desktop) for details.
+
 **Build from source** (for development): see [docs/installation/docker-compose-source.md](docs/installation/docker-compose-source.md)
 
 Single-container `docker-compose.yml`:

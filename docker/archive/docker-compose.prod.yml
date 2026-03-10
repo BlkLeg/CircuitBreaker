@@ -1,0 +1,236 @@
+# Circuit Breaker — Prebuilt multi-image compose (zero build)
+#
+# Uses GHCR images. No clone or local build required.
+# Quick start: curl install.sh | bash (with CB_MODE=compose)
+#
+# From this directory (docker/): always pass -f so Compose uses these image: refs
+#   and does not fall back to the source compose file (which has build: and no image to pull).
+#
+# To pin a version: CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
+# To upgrade:      CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml pull && ... up -d
+# CB_TAG must match the tag used when publishing (e.g. make docker-publish-prod TAG=v0.2.0 → use CB_TAG=v0.2.0, not 0.2.0).
+#
+# Requires: Caddyfile and .env in the same directory as this file.
+# Caddyfile must be a regular file (not a directory); bind-mounting a directory fails.
+name: circuitbreaker
+
+networks:
+  cb_net:
+    name: circuitbreaker
+    driver: bridge
+  cb_frontend:
+    name: circuitbreaker_frontend
+    driver: bridge
+  cb_backend:
+    name: circuitbreaker_backend
+    driver: bridge
+  cb_workers:
+    name: circuitbreaker_workers
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cb-postgres
+    restart: unless-stopped
+    networks: [cb_net, cb_backend, cb_workers]
+    environment:
+      - POSTGRES_DB=circuitbreaker
+      - POSTGRES_USER=breaker
+      # Required: set CB_DB_PASSWORD (no default).
+      - POSTGRES_PASSWORD=${CB_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "breaker", "-d", "circuitbreaker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nats:
+    image: nats:2-alpine
+    container_name: cb-nats
+    restart: unless-stopped
+    networks: [cb_net, cb_backend, cb_workers]
+    command: ["sh", "-c", "exec nats-server --jetstream -m 8222 ${NATS_AUTH_TOKEN:+--auth \"$NATS_AUTH_TOKEN\"}"]
+    environment:
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+    expose:
+      - "4222"
+      - "8222"
+    volumes:
+      - nats_data:/data/nats
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: cb-caddy
+    networks: [cb_net, cb_frontend, cb_backend]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    environment:
+      - CB_DOMAIN=${CB_DOMAIN:-circuitbreaker.local}
+      - CB_TLS_EMAIL=${CB_TLS_EMAIL:-admin@circuitbreaker.local}
+      - CB_LOCAL_CERTS=${CB_LOCAL_CERTS:-local_certs}
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
+    container_name: cb-backend
+    networks: [cb_net, cb_backend]
+    volumes:
+      - backend-data:/app/data
+      # Docker socket is opt-in. To enable: use -f docker-compose.prod.yml -f docker-compose.docker-socket.yml
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - UPLOADS_DIR=/app/data/uploads
+      - DEBUG=false
+      - CB_VAULT_KEY=${CB_VAULT_KEY:-}
+      - DISCOVERY_MODE=safe
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+      - CB_WS_REQUIRE_WSS=${CB_WS_REQUIRE_WSS:-}
+      - CB_API_TOKEN=${CB_API_TOKEN:-}
+    restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
+    command: ["python", "-m", "app.workers.discovery"]
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - DISCOVERY_MODE=full
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+      - NATS_KV_SYNC=true
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  webhook-worker:
+    image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
+    command: ["python", "-m", "app.workers.webhook_worker"]
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  notification-worker:
+    image: ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG:-latest}
+    command: ["python", "-m", "app.workers.notification_worker"]
+    networks: [cb_net, cb_workers]
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    environment:
+      - CB_DB_URL=${CB_DB_URL}
+      - CB_DATA_DIR=/app/data
+      - NATS_URL=nats://nats:4222
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - NATS_USER=${NATS_USER:-}
+      - NATS_PASSWORD=${NATS_PASSWORD:-}
+      - NATS_TLS=${NATS_TLS:-}
+    restart: unless-stopped
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  frontend:
+    image: ghcr.io/blkleg/circuitbreaker:frontend-${CB_TAG:-latest}
+    expose:
+      - "8080"
+    container_name: cb-frontend
+    networks: [cb_net, cb_frontend]
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  cloudflared:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    container_name: cb-cloudflared
+    networks: [cb_net, cb_frontend]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    env_file:
+      - path: ./.env
+        required: false
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  backend-data:
+  caddy_data:
+  caddy_config:
+  nats_data:

@@ -1,0 +1,79 @@
+# Circuit Breaker — Pre-built image Docker Compose
+#
+# This file uses the published image from GHCR.
+# No clone or local build required.
+#
+# Quick start (no clone needed):
+#
+#   curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml \
+#     -o docker-compose.yml && docker compose up -d
+#
+# Then open: http://localhost:8080
+#
+# To update to the latest release:
+#   docker compose pull && docker compose up -d
+#
+# To stop:
+#   docker compose down
+#
+# To uninstall (including data):
+#   docker compose down -v
+
+services:
+  circuit-breaker:
+    image: ghcr.io/blkleg/circuitbreaker:latest
+    container_name: circuit-breaker
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Binds to all interfaces so the app is reachable from the host's public IP,
+      # a Cloudflare tunnel, or any reverse proxy. Secure with a host firewall.
+      # To restrict to loopback only (behind a local reverse proxy): "127.0.0.1:8080:8080"
+      - "8080:8080"
+    volumes:
+      - circuit-breaker-data:/data
+    environment:
+      - DATABASE_URL=sqlite:////data/app.db
+      - UPLOADS_DIR=/data/uploads
+      # Optional: set a persistent Fernet key for the telemetry credential vault.
+      # If unset, an ephemeral key is generated each restart (credentials lost on restart).
+      # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - CB_VAULT_KEY=
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    # ──────────────────────────────────────────────────────────────────
+    # AUTO-DISCOVERY: ARP SCAN CAPABILITIES (OPTIONAL)
+    #
+    # The ARP scan phase requires elevated Linux capabilities to send
+    # raw network packets. This enables MAC address resolution and
+    # more reliable local subnet host detection.
+    #
+    # SECURITY TRADE-OFF: Granting NET_RAW and NET_ADMIN gives the
+    # container the ability to craft and send arbitrary raw packets.
+    # Only enable this on trusted, isolated homelab networks.
+    #
+    # If left commented out, Circuit Breaker will automatically skip
+    # the ARP phase and fall back to nmap TCP/ICMP host detection.
+    # All other scan phases (nmap, SNMP, HTTP) work without these caps.
+    #
+    # To enable ARP scanning, uncomment the section below:
+    # cap_add:
+    #   - NET_RAW
+    #   - NET_ADMIN
+    #
+    # For full documentation see:
+    # https://blkleg.github.io/CircuitBreaker/discovery#arp-capabilities
+    # ──────────────────────────────────────────────────────────────────
+
+volumes:
+  circuit-breaker-data:
+    # Named volume — data persists across container restarts and updates.
+    # To inspect: docker volume inspect circuit-breaker-data
