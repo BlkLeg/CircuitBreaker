@@ -9,6 +9,7 @@ Probe cascade (tried in order, host considered "up" if ANY succeeds):
 
 import json
 import logging
+import os
 import socket
 import subprocess
 import time
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 _HTTP_PROBE_PORTS = [80, 443, 8080, 8443]
 _TCP_FALLBACK_PORTS = [22, 80, 443, 8080]
+
+# When False, HTTP probe skips TLS verification (insecure; homelab self-signed only).
+_VERIFY_TLS = os.environ.get("CB_MONITOR_VERIFY_TLS", "true").lower() in ("1", "true", "yes")
+_TLS_WARNING_LOGGED = False
 
 
 # ── Probe methods ─────────────────────────────────────────────────────────────
@@ -92,8 +97,15 @@ def probe_http(
         url = f"{scheme}://{ip}:{port}/"
         try:
             t0 = time.monotonic()
-            # Intentionally skip TLS verification for self-signed certs common in homelabs.
-            with httpx.Client(verify=False, timeout=timeout) as client:  # noqa: S501
+            verify_tls = _VERIFY_TLS
+            if not verify_tls:
+                global _TLS_WARNING_LOGGED
+                if not _TLS_WARNING_LOGGED:
+                    _TLS_WARNING_LOGGED = True
+                    logger.warning(
+                        "CB_MONITOR_VERIFY_TLS=false: TLS verification disabled for monitor HTTP probe (insecure; homelab self-signed only)"
+                    )
+            with httpx.Client(verify=verify_tls, timeout=timeout) as client:
                 resp = client.head(url)
             latency = (time.monotonic() - t0) * 1000
             if resp.status_code < 600:

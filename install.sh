@@ -74,6 +74,64 @@ aCOLOUR=(
 GREEN_LINE=" ${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
 GREEN_BULLET=" ${aCOLOUR[0]}-${COLOUR_RESET}"
 
+# ─── Download command (curl or wget) ──────────────────────────────────────────
+# Production install requires downloads; prefer curl, fall back to wget (e.g. minimal Ubuntu).
+if command -v curl >/dev/null 2>&1; then
+  CB_FETCH="curl"
+  CB_FETCH_STDOUT=()  # curl -fsSL URL
+  CB_FETCH_FILE=()    # curl -fsSL URL -o FILE
+  CB_FETCH_CHECK=()   # curl -sf URL -o /dev/null (for health)
+elif command -v wget >/dev/null 2>&1; then
+  CB_FETCH="wget"
+  CB_FETCH_STDOUT=("wget" "-qO-")
+  CB_FETCH_FILE=("wget" "-qO")
+  CB_FETCH_CHECK=("wget" "-q" "--spider")
+else
+  echo "Circuit Breaker install requires curl or wget. Install one (e.g. sudo apt-get install -y curl) and try again." >&2
+  exit 1
+fi
+
+# Download URL to stdout (for piping) or to a file. Usage: cb_fetch <url> [output_file] [insecure] [timeout_sec]
+# If output_file is omitted, prints to stdout. insecure=1 skips TLS verify. timeout_sec optional (e.g. 3).
+cb_fetch() {
+  local url="$1"
+  local out="$2"
+  local insecure="${3:-0}"
+  local timeout="${4:-}"
+  if [[ "$CB_FETCH" == "curl" ]]; then
+    local curl_args=(-fsSL)
+    [[ "$insecure" == "1" ]] && curl_args+=(-k)
+    [[ -n "$timeout" ]] && curl_args+=(--connect-timeout "$timeout")
+    if [[ -n "$out" ]]; then
+      curl "${curl_args[@]}" "$url" -o "$out"
+    else
+      curl "${curl_args[@]}" "$url"
+    fi
+  else
+    local wget_args=(-q)
+    [[ "$insecure" == "1" ]] && wget_args+=(--no-check-certificate)
+    [[ -n "$timeout" ]] && wget_args+=(--timeout="$timeout")
+    if [[ -n "$out" ]]; then
+      wget "${wget_args[@]}" -O "$out" "$url"
+    else
+      wget "${wget_args[@]}" -O - "$url"
+    fi
+  fi
+}
+
+# Probe URL (exit 0 if reachable). Usage: cb_fetch_ok <url> [insecure]
+cb_fetch_ok() {
+  local url="$1"
+  local insecure="${2:-0}"
+  if [[ "$CB_FETCH" == "curl" ]]; then
+    local curl_args=(-sf)
+    [[ "$insecure" == "1" ]] && curl_args+=(-k)
+    curl "${curl_args[@]}" "$url" >/dev/null 2>&1
+  else
+    wget -q --spider "${url}" 2>/dev/null
+  fi
+}
+
 # ─── Status helpers ───────────────────────────────────────────────────────────
 Show() {
   case $1 in
@@ -211,9 +269,9 @@ parse_flags() {
 # 0. Detect download region (for Docker mirror selection)
 Get_Region() {
   Show 2 "Detecting region..."
-  REGION=$(curl --connect-timeout 3 -sf https://ipconfig.io/country_code 2>/dev/null || true)
+  REGION=$(cb_fetch "https://ipconfig.io/country_code" "" 0 3 2>/dev/null || true)
   if [[ -z "$REGION" ]]; then
-    REGION=$(curl --connect-timeout 3 -sf https://ifconfig.io/country_code 2>/dev/null || true)
+    REGION=$(cb_fetch "https://ifconfig.io/country_code" "" 0 3 2>/dev/null || true)
   fi
   # Discard any response that isn't a valid 2-letter country code
   if ! [[ "$REGION" =~ ^[A-Z]{2}$ ]]; then
@@ -346,9 +404,9 @@ Check_Docker_Daemon() {
 Install_Docker() {
   Show 2 "Installing Docker via https://get.docker.com ..."
   if [[ "$REGION" == "CN" ]]; then
-    curl -fsSL https://get.docker.com | sudo bash -s docker --mirror Aliyun
+    cb_fetch "https://get.docker.com" "" 0 | sudo bash -s docker --mirror Aliyun
   else
-    curl -fsSL https://get.docker.com | sudo bash
+    cb_fetch "https://get.docker.com" "" 0 | sudo bash
   fi
   sudo systemctl enable docker 2>/dev/null || true
   sudo systemctl start  docker 2>/dev/null || true
@@ -758,9 +816,7 @@ Wait_For_Ready() {
   local insecure="${3:-0}"
   Show 2 "Waiting for Circuit Breaker to be ready..."
   local tries=0
-  local curl_args=(-sf)
-  [[ "$insecure" == "1" ]] && curl_args+=(-k)
-  until curl "${curl_args[@]}" "${scheme}://127.0.0.1:${port}/api/v1/health" >/dev/null 2>&1; do
+  until cb_fetch_ok "${scheme}://127.0.0.1:${port}/api/v1/health" "$insecure"; do
     tries=$((tries + 1))
     if [[ $tries -ge 30 ]]; then
       Show 1 "Health check timed out after $((tries * 2))s."
@@ -832,7 +888,7 @@ Download_Binary() {
 
   if [[ "$CB_VERSION" == "latest" ]]; then
     Show 2 "Resolving latest release from GitHub..."
-    url=$(curl -fsSL https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest \
+    url=$(cb_fetch "https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest" "" 0 \
           | grep '"browser_download_url"' \
           | grep "circuit-breaker_.*_linux_${arch}\.tar\.gz" \
           | head -1 | cut -d'"' -f4 || true)
@@ -846,7 +902,7 @@ Download_Binary() {
   fi
 
   Show 2 "Downloading: $url"
-  curl -fsSL "$url" -o "$tmpdir/cb.tar.gz" || { rm -rf "$tmpdir"; Show 1 "Download failed."; }
+  cb_fetch "$url" "$tmpdir/cb.tar.gz" 0 || { rm -rf "$tmpdir"; Show 1 "Download failed."; }
   tar -xzf "$tmpdir/cb.tar.gz" -C "$tmpdir"
 
   if [[ ! -f "$tmpdir/circuit-breaker" ]]; then
@@ -1111,7 +1167,7 @@ DESKTOP
     # Download from GitHub
     Show 2 "Downloading app icon from GitHub..."
     local icon_url="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/frontend/public/android-chrome-512x512.png"
-    if curl -fsSL "$icon_url" -o /tmp/cb-icon.png 2>/dev/null; then
+    if cb_fetch "$icon_url" /tmp/cb-icon.png 0 2>/dev/null; then
       sudo install -Dm644 /tmp/cb-icon.png "$icon_dest"
       rm -f /tmp/cb-icon.png
       Show 0 "Icon installed."
@@ -1168,7 +1224,7 @@ Install_CB_Command() {
   else
     Show 2 "Downloading cb from GitHub..."
     local url="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/${CB_VERSION}/cb"
-    if curl -fsSL "$url" -o /tmp/cb-cli 2>/dev/null; then
+    if cb_fetch "$url" /tmp/cb-cli 0 2>/dev/null; then
       sudo install -Dm755 /tmp/cb-cli "$dest"
       rm -f /tmp/cb-cli
       Show 0 "cb command downloaded and installed to $dest"
@@ -1514,11 +1570,11 @@ Install_Compose_Mode() {
   Show 2 "Downloading compose files..."
   # Single source of truth for production Docker: docker/docker-compose.prod.yml (see README)
   local base="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main"
-  curl -fsSL "${base}/docker/docker-compose.prod.yml" -o "$CB_INSTALL_DIR/docker-compose.prod.yml" \
+  cb_fetch "${base}/docker/docker-compose.prod.yml" "$CB_INSTALL_DIR/docker-compose.prod.yml" 0 \
     || Show 1 "Failed to download docker-compose.prod.yml"
-  curl -fsSL "${base}/docker/Caddyfile" -o "$CB_INSTALL_DIR/Caddyfile" \
+  cb_fetch "${base}/docker/Caddyfile" "$CB_INSTALL_DIR/Caddyfile" 0 \
     || Show 1 "Failed to download Caddyfile"
-  curl -fsSL "${base}/docker/.env.example" -o "$CB_INSTALL_DIR/.env.example" \
+  cb_fetch "${base}/docker/.env.example" "$CB_INSTALL_DIR/.env.example" 0 \
     || Show 1 "Failed to download .env.example"
   Show 0 "Compose files downloaded."
 
@@ -1621,9 +1677,10 @@ CONFEOF
 
 Welcome_Banner_Compose() {
   local public_ip=""
-  public_ip=$(curl -4 -sf --connect-timeout 4 https://ipinfo.io/ip 2>/dev/null \
-              || curl -4 -sf --connect-timeout 4 https://ifconfig.me  2>/dev/null \
-              || true)
+  public_ip=$(cb_fetch "https://ipinfo.io/ip" "" 0 4 2>/dev/null | tr -d '\n' || true)
+  if [[ -z "$public_ip" ]]; then
+    public_ip=$(cb_fetch "https://ifconfig.me" "" 0 4 2>/dev/null | tr -d '\n' || true)
+  fi
   if ! [[ "$public_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     public_ip=""
   fi
@@ -1699,9 +1756,10 @@ Install_Binary_Mode() {
 
 Welcome_Banner_Docker() {
   local public_ip=""
-  public_ip=$(curl -4 -sf --connect-timeout 4 https://ipinfo.io/ip 2>/dev/null \
-              || curl -4 -sf --connect-timeout 4 https://ifconfig.me  2>/dev/null \
-              || true)
+  public_ip=$(cb_fetch "https://ipinfo.io/ip" "" 0 4 2>/dev/null | tr -d '\n' || true)
+  if [[ -z "$public_ip" ]]; then
+    public_ip=$(cb_fetch "https://ifconfig.me" "" 0 4 2>/dev/null | tr -d '\n' || true)
+  fi
   if ! [[ "$public_ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
     public_ip=""
   fi

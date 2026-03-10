@@ -82,6 +82,7 @@ function OOBEWizardPage({ onCompleted }) {
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const photoFileRef = useRef(null);
+  const [avatarLoadError, setAvatarLoadError] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // Vault key ceremony state — populated when bootstrap returns vault_key_warning: true
@@ -111,6 +112,11 @@ function OOBEWizardPage({ onCompleted }) {
   const [oauthSetupClientSecret, setOauthSetupClientSecret] = useState('');
   const [oauthSetupDiscoveryUrl, setOauthSetupDiscoveryUrl] = useState('');
   const [oauthSetupSaving, setOauthSetupSaving] = useState(false);
+
+  // Reset avatar error when email, photo, or step changes so Gravatar/photo can retry.
+  useEffect(() => {
+    setAvatarLoadError(false);
+  }, [email, photoPreview, step]);
 
   const languages = [
     { value: 'en', label: 'English' },
@@ -1175,11 +1181,18 @@ function OOBEWizardPage({ onCompleted }) {
                             onClick={() => photoFileRef.current?.click()}
                             title="Upload profile photo (optional)"
                           >
-                            <img
-                              src={sanitizeImageSrc(photoPreview || gravatarPreview)}
-                              alt="Avatar preview"
-                              className="oobe-avatar"
-                            />
+                            {avatarLoadError ? (
+                              <div className="oobe-avatar oobe-avatar-fallback" aria-hidden="true">
+                                {(displayName || email)[0]?.toUpperCase() || '?'}
+                              </div>
+                            ) : (
+                              <img
+                                src={sanitizeImageSrc(photoPreview || gravatarPreview)}
+                                alt="Avatar preview"
+                                className="oobe-avatar"
+                                onError={() => setAvatarLoadError(true)}
+                              />
+                            )}
                             <span className="oobe-avatar-overlay" aria-hidden="true">
                               📷
                             </span>
@@ -1848,11 +1861,18 @@ function OOBEWizardPage({ onCompleted }) {
                 <p className="login-card-subtitle">Review and complete setup.</p>
 
                 <div className="oobe-summary">
-                  <img
-                    src={sanitizeImageSrc(photoPreview || gravatarPreview)}
-                    alt="Avatar preview"
-                    className="oobe-avatar"
-                  />
+                  {avatarLoadError ? (
+                    <div className="oobe-avatar oobe-avatar-fallback" aria-hidden="true">
+                      {(displayName || email)[0]?.toUpperCase() || '?'}
+                    </div>
+                  ) : (
+                    <img
+                      src={sanitizeImageSrc(photoPreview || gravatarPreview)}
+                      alt="Avatar preview"
+                      className="oobe-avatar"
+                      onError={() => setAvatarLoadError(true)}
+                    />
+                  )}
                   <div className="oobe-summary-details">
                     <div className="oobe-summary-email">{email}</div>
                     <div>

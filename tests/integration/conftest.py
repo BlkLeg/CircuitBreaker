@@ -5,13 +5,14 @@ os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
 # v0.2.0: app.db.session requires CB_DB_URL to be postgresql:// at import time.
 # Schema uses JSONB (PostgreSQL-only), so tests need a real Postgres or are skipped.
+# Default below is for local/test DB only; do not use in production. Set CB_TEST_DB_URL for CI.
 os.environ["CB_DB_URL"] = (
     os.environ.get("CB_TEST_DB_URL")
     or os.environ.get("CB_DB_URL")
     or "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 )
 
-# Test DB URL for fixtures. Schema uses JSONB (PostgreSQL-only), so default is Postgres.
+# Test DB URL for fixtures (local/test only; must not contain production secrets).
 _TEST_DB_URL_DEFAULT = "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 TEST_DB_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or _TEST_DB_URL_DEFAULT
 

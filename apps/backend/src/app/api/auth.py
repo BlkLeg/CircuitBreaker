@@ -15,6 +15,7 @@ Mounts:
 
 import hashlib
 import json
+import logging
 import secrets
 from datetime import timedelta
 
@@ -48,6 +49,7 @@ from app.schemas.auth import (
 )
 from app.services.settings_service import get_or_create_settings
 
+_logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 
@@ -469,13 +471,20 @@ def vault_reset_password(
 
 
 def _to_profile(user: User) -> UserProfile:
-    if user.profile_photo and user.profile_photo.startswith(("http://", "https://")):
-        photo_url = user.profile_photo
-    elif user.profile_photo:
-        photo_url = f"/uploads/profiles/{user.profile_photo}"
+    profile_photo = getattr(user, "profile_photo", None)
+    if (
+        profile_photo
+        and isinstance(profile_photo, str)
+        and profile_photo.startswith(("http://", "https://"))
+    ):
+        photo_url = profile_photo
+    elif profile_photo:
+        photo_url = f"/uploads/profiles/{profile_photo}"
     else:
         photo_url = None
-    role = getattr(user, "role", None) or ("admin" if user.is_admin else "viewer")
+    role = getattr(user, "role", None) or (
+        "admin" if getattr(user, "is_admin", False) else "viewer"
+    )
     try:
         scopes = json.loads(getattr(user, "scopes", "[]") or "[]")
         if not isinstance(scopes, list):
@@ -484,12 +493,12 @@ def _to_profile(user: User) -> UserProfile:
         scopes = []
     return UserProfile(
         id=user.id,
-        email=user.email,
-        display_name=user.display_name,
-        gravatar_hash=user.gravatar_hash,
-        is_admin=user.is_admin,
-        is_superuser=user.is_superuser,
-        language=user.language or "en",
+        email=getattr(user, "email", "") or "",
+        display_name=getattr(user, "display_name", None),
+        gravatar_hash=getattr(user, "gravatar_hash", None),
+        is_admin=getattr(user, "is_admin", False),
+        is_superuser=getattr(user, "is_superuser", False),
+        language=getattr(user, "language", None) or "en",
         profile_photo_url=photo_url,
         mfa_enabled=bool(getattr(user, "mfa_enabled", False)),
         role=role,
@@ -519,7 +528,11 @@ def get_me_compat(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    return _to_profile(user)
+    try:
+        return _to_profile(user)
+    except Exception as e:
+        _logger.exception("auth/me: failed to build profile for user_id=%s: %s", user_id, e)
+        raise HTTPException(status_code=500, detail="Failed to load profile") from e
 
 
 # ---------------------------------------------------------------------------

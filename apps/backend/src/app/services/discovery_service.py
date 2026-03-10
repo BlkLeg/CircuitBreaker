@@ -69,8 +69,12 @@ def _match_ip_to_network(db: Session, ip: str) -> tuple[int | None, int | None]:
             if row:
                 return int(row[0]), int(row[1]) if row[1] is not None else None
             return None, None
-        except Exception:
-            pass  # Fall back to Python loop on invalid cidr or other error
+        except Exception as e:
+            logger.debug(
+                "Discovery: IP-to-network query failed, falling back to Python loop: %s",
+                e,
+                exc_info=True,
+            )
 
     # Fallback: fetch all networks and match in Python (e.g. non-PostgreSQL or query error)
     from sqlalchemy import select as _select
@@ -277,8 +281,8 @@ async def _update_job_progress(
                 if elapsed > 0:
                     total_est = elapsed / (clamped / 100.0)
                     payload["eta_seconds"] = int(max(0, total_est - elapsed))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discovery: ETA calculation failed: %s", e, exc_info=True)
     if processed is not None:
         payload["processed"] = processed
     if total is not None:
@@ -567,13 +571,13 @@ async def _run_banner_grab(ip: str, ports: list[int], timeout: float = 2.0) -> d
                 writer.close()
                 try:
                     await writer.wait_closed()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Discovery: writer wait_closed: %s", e, exc_info=True)
                 text = data.decode(errors="replace").strip()[:256]
                 if text:
                     banners[port] = text
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discovery: banner probe %s:%s failed: %s", ip, port, e, exc_info=True)
 
     await asyncio.gather(*[_probe(p) for p in ports[:20]])
     return banners
@@ -588,8 +592,8 @@ async def _run_vendor_lookup(mac: str) -> str | None:
             r = await client.get(f"https://api.macvendors.com/{mac}")
             if r.status_code == 200:
                 return r.text.strip()[:100]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Discovery: MAC vendor lookup failed: %s", e, exc_info=True)
     return None
 
 
@@ -1027,8 +1031,10 @@ async def run_scan_job(job_id: int):
                     try:
                         async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
                             await client.get(f"http://{ip}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(
+                            "Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True
+                        )
 
             # Deep Dive: TCP banner grab + MAC vendor lookup
             banner_text: str | None = None
@@ -1371,8 +1377,8 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
                         )
                         db.add(svc)
                 db.commit()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Discovery: auto-merge service creation failed: %s", e, exc_info=True)
 
         result.matched_entity_type = "hardware"
         result.matched_entity_id = hw.id
@@ -1426,8 +1432,13 @@ async def _run_profile_job_async(profile_id: int):
         if profile.vlan_ids:
             try:
                 vlan_ids = json.loads(profile.vlan_ids)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "Discovery: vlan_ids parse failed for profile %s: %s",
+                    profile.id,
+                    e,
+                    exc_info=True,
+                )
 
         job = create_scan_job(
             db,
@@ -1591,8 +1602,8 @@ def merge_scan_result(
                 asyncio.create_task(_emit_result_processed_event(db, result.id, "reject"))
             else:
                 asyncio.run(_emit_result_processed_event(db, result.id, "reject"))
-        except Exception:
-            pass  # Don't fail the operation if WebSocket emission fails
+        except Exception as e:
+            logger.debug("Discovery: WebSocket emit reject failed: %s", e, exc_info=True)
 
         return {"rejected": True}
 
@@ -1653,8 +1664,10 @@ def merge_scan_result(
                         asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
                     else:
                         asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception:
-                    pass  # Don't fail the operation if WebSocket emission fails
+                except Exception as e:
+                    logger.debug(
+                        "Discovery: WebSocket emit accept (updated) failed: %s", e, exc_info=True
+                    )
 
                 return {"updated": True}
 
@@ -1724,8 +1737,10 @@ def merge_scan_result(
                         asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
                     else:
                         asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception:
-                    pass  # Don't fail the operation if WebSocket emission fails
+                except Exception as e:
+                    logger.debug(
+                        "Discovery: WebSocket emit accept (new host) failed: %s", e, exc_info=True
+                    )
 
                 return {
                     "entity_type": "hardware",

@@ -22,7 +22,7 @@ if not db_url.startswith("postgresql"):
     raise RuntimeError(
         f"CB_DB_URL must start with 'postgresql://' (got: {db_url!r}). "
         "SQLite is no longer supported as of v0.2.0. "
-        "Set CB_DB_URL=postgresql://breaker:breaker@postgres:5432/circuitbreaker"
+        "Set CB_DB_URL=postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker"
     )
 
 # Pool defaults suit mid-range servers; tune via env vars on constrained hosts.

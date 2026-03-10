@@ -58,6 +58,7 @@ export default function ProxmoxIntegrationSection() {
   });
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -82,14 +83,18 @@ export default function ProxmoxIntegrationSection() {
   }, [load]);
 
   const handleSave = async () => {
+    setSaveError(null);
     setSaving(true);
     try {
+      const payload = { ...form };
+      if (payload.config_url && !payload.config_url.includes('://')) {
+        payload.config_url = 'https://' + payload.config_url;
+      }
       if (editId) {
-        const payload = { ...form };
         if (!payload.api_token) delete payload.api_token;
         await proxmoxApi.update(editId, payload);
       } else {
-        await proxmoxApi.create(form);
+        await proxmoxApi.create(payload);
       }
       setShowAdd(false);
       setEditId(null);
@@ -102,8 +107,15 @@ export default function ProxmoxIntegrationSection() {
         verify_ssl: false,
       });
       await load();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      const msg =
+        Array.isArray(detail) && detail.length
+          ? detail[0].msg || detail.map((d) => d.msg).join('; ')
+          : typeof detail === 'string'
+            ? detail
+            : e.message || 'Save failed';
+      setSaveError(msg);
     }
     setSaving(false);
   };
@@ -172,6 +184,7 @@ export default function ProxmoxIntegrationSection() {
             className="btn btn-sm btn-primary"
             onClick={() => {
               setEditId(null);
+              setSaveError(null);
               setForm({
                 name: '',
                 config_url: '',
@@ -511,6 +524,21 @@ export default function ProxmoxIntegrationSection() {
               </label>
             </SettingField>
 
+            {saveError && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: '#ef4444',
+                  background: 'rgba(239,68,68,0.08)',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  marginTop: 12,
+                }}
+              >
+                {saveError}
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
               <button
                 className="btn btn-sm btn-primary"
@@ -524,6 +552,7 @@ export default function ProxmoxIntegrationSection() {
                 onClick={() => {
                   setShowAdd(false);
                   setEditId(null);
+                  setSaveError(null);
                 }}
               >
                 Cancel

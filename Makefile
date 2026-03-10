@@ -359,14 +359,18 @@ docker-multiarch: setup-buildx ## Build and push a multi-arch Docker image (requ
 		-t $(DOCKER_REPO):$(RELEASE_TAG) --push .
 
 # For docker-compose.prod.yml: expects backend-<tag> and frontend-<tag>. Use TAG=v0.2.0-2-beta etc.
+# Also pushes backend-latest and frontend-latest so the production install script (default CB_TAG=latest) gets the current UI.
 docker-publish-prod: setup-buildx ## Build and push backend + frontend images (for docker-compose.prod.yml)
 	$(if $(TAG),,$(error TAG is required, e.g. make docker-publish-prod TAG=v0.2.0-2-beta))
-	@echo "Building and pushing backend and frontend as $(DOCKER_REPO):backend-$(TAG) and :frontend-$(TAG)..."
+	@echo "Building and pushing backend as $(DOCKER_REPO):backend-$(TAG) and :backend-latest..."
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
 		--build-arg APP_VERSION=$(VERSION) \
-		-f docker/backend.Dockerfile -t $(DOCKER_REPO):backend-$(TAG) --push .
+		-f docker/backend.Dockerfile \
+		-t $(DOCKER_REPO):backend-$(TAG) -t $(DOCKER_REPO):backend-latest --push .
+	@echo "Building and pushing frontend as $(DOCKER_REPO):frontend-$(TAG) and :frontend-latest..."
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
-		-f docker/frontend.Dockerfile -t $(DOCKER_REPO):frontend-$(TAG) --push .
+		-f docker/frontend.Dockerfile \
+		-t $(DOCKER_REPO):frontend-$(TAG) -t $(DOCKER_REPO):frontend-latest --push .
 	@echo "Done. Run: CB_TAG=$(TAG) docker compose -f docker/docker-compose.prod.yml up -d"
 
 test-pi-local: ## Test the ARM64 Docker image locally using emulation

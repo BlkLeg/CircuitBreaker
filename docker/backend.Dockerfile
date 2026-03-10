@@ -69,5 +69,9 @@ ENV PORT=8000
 
 EXPOSE 8000
 
+# Process runs as breaker26 via entrypoint.sh (gosu); root needed for volume chown at startup.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "src/app/start.py"]

@@ -53,6 +53,16 @@ NATS is used for discovery, webhooks, and notifications. By default it runs with
 - **User/password:** Set `NATS_USER` and `NATS_PASSWORD` for backend and workers. The NATS server must be configured for user auth (e.g. via a custom config file or override command); the client will embed credentials in the connection URL.
 - **TLS:** Set `NATS_TLS=true` for backend and workers so they connect with `tls://` and TLS enabled. The NATS server must be configured for TLS (certificates and `--tls` / config); document cert paths and mount them into the server container as needed.
 
+### Content-Security-Policy
+
+When the app is served behind Caddy or another reverse proxy, the proxy’s CSP is what the browser applies. To allow the first-run wizard, map UI, and weather widget to work correctly, the proxy’s CSP must allow the same origins as the backend:
+
+- **Gravatar** — `https://www.gravatar.com` (img-src) for profile avatars.
+- **Google Fonts** — `https://fonts.googleapis.com` (style-src) and `https://fonts.gstatic.com` (font-src) for the font picker.
+- **Open-Meteo** — `https://geocoding-api.open-meteo.com` and `https://api.open-meteo.com` (connect-src) for the weather widget.
+
+The backend’s `SecurityHeadersMiddleware` ([apps/backend/src/app/middleware/security_headers.py](../apps/backend/src/app/middleware/security_headers.py)) and the Caddyfile ([docker/Caddyfile](../docker/Caddyfile)) are the source of truth for the exact directive string. Keep them in sync so that Gravatar, fonts, and weather load when the app is accessed via the reverse proxy (e.g. https://localhost or a Caddy domain).
+
 ---
 
 ## 3) Secrets Management & Vault
@@ -143,7 +153,13 @@ All services remain on `cb_net` as well so connectivity is unchanged. Segmentati
 
 ---
 
-## 6) Practical Security Habits
+## 6) Secret scanning (Gitleaks)
+
+The repo includes a `.gitleaks.toml` allowlist so that Alembic migration revision IDs (hex strings like `b4a9c1d2e8f0` in `down_revision`) are not reported as API keys. Those revision hashes are not secrets — they are version identifiers for the migration chain.
+
+---
+
+## 7) Practical Security Habits
 
 - Rotate tokens on a regular schedule.
 - Avoid sharing admin credentials.
@@ -153,7 +169,7 @@ All services remain on `cb_net` as well so connectivity is unchanged. Segmentati
 
 ---
 
-## 7) Before You Go Live
+## 8) Before You Go Live
 
 - Confirm authentication behavior matches your policy.
 - Confirm token and secret values are set and persisted.

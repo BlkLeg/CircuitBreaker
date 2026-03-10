@@ -13,11 +13,14 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastapi import Request
     from sqlalchemy.orm import Session
+
+_logger = logging.getLogger(__name__)
 
 
 def log_audit(
@@ -64,8 +67,10 @@ def log_audit(
                 if u:
                     actor_email = u.email
                     actor_name = u.display_name or u.email
-            except Exception:
-                pass
+            except Exception as e:
+                _logger.debug(
+                    "Audit: could not resolve actor for user_id=%s: %s", user_id, e, exc_info=True
+                )
 
         # Check the global hide-IP setting.
         redact_ip = False
@@ -74,8 +79,8 @@ def log_audit(
 
             cfg = get_or_create_settings(db)
             redact_ip = getattr(cfg, "audit_log_hide_ip", False)
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.debug("Audit: could not load hide-IP setting: %s", e, exc_info=True)
 
         now = utcnow()
         entry = Log(
@@ -95,6 +100,6 @@ def log_audit(
         )
         db.add(entry)
         db.commit()
-    except Exception:
+    except Exception as e:
         # Audit logging must never crash the request it decorates.
-        pass
+        _logger.debug("Audit log write failed: %s", e, exc_info=True)

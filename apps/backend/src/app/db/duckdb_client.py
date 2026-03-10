@@ -9,6 +9,7 @@ returns ``False`` and ``query()`` routes through the primary SQLite engine.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import text
@@ -16,6 +17,15 @@ from sqlalchemy import text
 from app.db.db_client import get_engine
 
 _logger = logging.getLogger(__name__)
+
+# Safe SQL identifier: letter or underscore, then alphanumeric or underscore only.
+_TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_table_name(table: str) -> None:
+    """Raise ValueError if table is not a safe SQL identifier (prevents SQL injection)."""
+    if not _TABLE_NAME_RE.match(table):
+        raise ValueError(f"Invalid table name: {table!r}; must match [a-zA-Z_][a-zA-Z0-9_]*")
 
 
 def is_available() -> bool:
@@ -49,7 +59,9 @@ def ingest_csv(path: str, table: str) -> int:
 
     Returns the number of rows inserted.  Raises ``RuntimeError`` when DuckDB
     is unavailable — callers should check :func:`is_available` first.
+    Raises ``ValueError`` if *table* is not a safe SQL identifier.
     """
+    _validate_table_name(table)
     if not is_available():
         raise RuntimeError("DuckDB is not available; cannot ingest CSV")
     engine = get_engine("analytics")

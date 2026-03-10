@@ -1658,6 +1658,13 @@ export default function SettingsPage() {
             {/* ── System Tab ─────────────────────────── */}
             {activeTab === 'system' && (
               <div className="settings-sections-grid">
+                <SettingSection title="About">
+                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
+                    App version: <strong>{import.meta.env.VITE_APP_VERSION || 'dev'}</strong>
+                    {' — '}
+                    Use this when reporting issues or confirming you are on the latest release.
+                  </p>
+                </SettingSection>
                 <SettingSection title="Data Management">
                   <SettingField
                     label="Full Backup"

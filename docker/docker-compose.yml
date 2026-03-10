@@ -142,7 +142,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      # Required: set CB_DB_URL in docker/.env (e.g. postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker).
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - DISCOVERY_MODE=full
       - NATS_URL=nats://nats:4222
@@ -181,7 +182,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      # Required: set CB_DB_URL in docker/.env.
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
@@ -216,7 +218,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
+      # Required: set CB_DB_URL in docker/.env.
+      - CB_DB_URL=${CB_DB_URL}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}

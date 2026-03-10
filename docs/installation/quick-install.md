@@ -8,7 +8,10 @@ The quickest way to install Circuit Breaker on a Linux host. A single command pu
 
 - Linux (amd64, arm64, or arm/v7)
 - **Docker Engine 20+** must already be installed ([install Docker](https://docs.docker.com/engine/install/))
-- `curl` or `wget`
+- **curl or wget** — the install script uses one of these for all downloads. If neither is installed (e.g. on a minimal Ubuntu server), install one before running the script:
+  ```bash
+  sudo apt-get update && sudo apt-get install -y curl   # or: apt-get install -y wget
+  ```
 - `sudo` or root access (for systemd service and CA certificate installation)
 
 ---

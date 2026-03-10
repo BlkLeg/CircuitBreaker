@@ -13,5 +13,12 @@ FROM python:3.12-alpine
 WORKDIR /app
 COPY --from=backend /app /app
 COPY --from=frontend /app/dist /app/static
+# Non-root user and wget for HEALTHCHECK.
+RUN apk add --no-cache wget \
+    && addgroup -g 2626 -S app && adduser -u 2626 -S -G app -s /sbin/nologin app \
+    && chown -R app:app /app
+USER app
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget -q -O /dev/null http://localhost:8080/api/v1/health || exit 1
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]

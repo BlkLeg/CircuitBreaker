@@ -17,6 +17,16 @@ Nothing is added automatically without your approval.
 
 ---
 
+## Discovery UI (current)
+
+The Discovery page has a **left sidebar** with: **New Scan**, **All Scans**, **Proxmox VE**, **Scan Profiles**, **Review Queue**, and **History**. The "New Scan" view shows scan mode cards (Safe / Full / Docker), **TARGET SCOPE** (Single CIDR or VLANs), **SCAN TYPES** (e.g. SNMP, HTTP), and Start Scan / Cancel.
+
+If you see a different layout (e.g. bottom nav only, "• Ad-hoc Scan" title, NMAP SCAN PROFILE dropdown, PROGRESS / LIVE RESULTS), you are on an outdated frontend. Re-pull the Compose images with a current tag (e.g. `CB_TAG=v0.2.0 docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d` in your install directory) and hard-refresh the browser (Ctrl+Shift+R). See the [README Troubleshooting](../README.md#troubleshooting) section ("Old Discovery UI").
+
+**Scan reports 0 hosts:** This can happen if the scanner cannot reach the target network (e.g. the backend runs in a Docker bridge and the target is 192.168.1.0/24 on the host LAN). Use host networking for the discovery worker if you need to scan the host’s LAN, or ensure the scanner has a route to the target CIDR.
+
+---
+
 ## Discovery Workflow
 
 ### 1) Choose a Discovery Mode

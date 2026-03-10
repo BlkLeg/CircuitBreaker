@@ -35,10 +35,17 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 3. Gitleaks (Secret Scanning)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Gitleaks..."
+# Use .gitleaks.toml allowlist when present (e.g. to ignore Alembic revision IDs in migrations).
+GITLEAKS_CONFIG=""
+[ -f .gitleaks.toml ] && GITLEAKS_CONFIG="--config .gitleaks.toml"
 if command -v gitleaks > /dev/null 2>&1; then
-    gitleaks detect --no-git --source . --report-path /dev/stdout 2>&1 >> "$REPORT_FILE" || true
+    gitleaks detect --no-git --source . $GITLEAKS_CONFIG --report-path /dev/stdout 2>&1 >> "$REPORT_FILE" || true
 elif command -v docker > /dev/null 2>&1; then
-    docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest detect --source="/repo" -v 2>&1 >> "$REPORT_FILE" || true
+    if [ -f .gitleaks.toml ]; then
+        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest detect --source="/repo" --config="/repo/.gitleaks.toml" -v 2>&1 >> "$REPORT_FILE" || true
+    else
+        docker run --rm -v "$(pwd):/repo" ghcr.io/gitleaks/gitleaks:latest detect --source="/repo" -v 2>&1 >> "$REPORT_FILE" || true
+    fi
 else
     echo "gitleaks and Docker not found, skipping." >> "$REPORT_FILE"
 fi

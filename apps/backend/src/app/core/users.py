@@ -158,9 +158,8 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
                 _logger.info("Password reset email sent to %s", user.email)
             else:
                 _logger.info(
-                    "Password reset token for %s (SMTP not configured): %s",
+                    "Password reset token generated for %s (SMTP not configured); deliver token via alternate channel.",
                     user.email,
-                    token,
                 )
         except Exception as exc:
             _logger.warning("Failed to send password reset email to %s: %s", user.email, exc)

@@ -88,6 +88,8 @@
 
 ### One-line Install (Recommended)
 
+The install script requires **curl or wget** on the host (e.g. Ubuntu: `sudo apt-get install -y curl` or `wget`).
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
@@ -412,6 +414,19 @@ A `.python-version` file in `apps/backend` is set to `3.12` for pyenv users so t
 ### Security and lint (local + CI)
 
 Run the full security and lint suite locally to catch issues before pushing (saves CI minutes): `make security-scan`. This runs Bandit, Semgrep, Gitleaks, ESLint (with security plugin), Hadolint, Checkov, Trivy (filesystem + config), and npm audit. The same tools run in CI via [`.github/workflows/security.yml`](.github/workflows/security.yml). For editor support, install the recommended VS Code extensions from `.vscode/extensions.json` (ESLint, Ruff, Mypy, Hadolint, Trivy, Checkov, Semgrep).
+
+### Old Discovery UI (bottom nav, "Ad-hoc Scan", PROGRESS/LIVE RESULTS)
+
+The current Discovery UI has a **left sidebar** (New Scan, All Scans, Proxmox VE, Scan Profiles, Review Queue, History) and a "New Scan" page with Safe/Full/Docker mode cards and TARGET SCOPE. If you see an older layout (bottom nav only, "• Ad-hoc Scan" title, NMAP SCAN PROFILE dropdown, Launch Scan, PROGRESS/LIVE RESULTS), the frontend image in use is outdated.
+
+- **Compose install:** In your install directory (e.g. `~/.circuit-breaker`), re-pull with an explicit current tag and restart, then hard-refresh the browser (Ctrl+Shift+R or Cmd+Shift+R):
+
+  ```bash
+  CB_TAG=v0.2.0 docker compose -f docker-compose.prod.yml pull
+  docker compose -f docker-compose.prod.yml up -d
+  ```
+
+  Use the tag that matches your release (e.g. `v0.2.0` or the version shown in Settings). After each release, `frontend-latest` and `backend-latest` are updated, so future installs with the default script will get the current UI.
 
 ***
 

@@ -48,8 +48,10 @@ def _entity_status(db, group: StatusGroup) -> tuple[list[str], float, list[dict]
                     data = json.loads(hw.telemetry_data)
                     if isinstance(data, dict):
                         metrics.append({"type": "hardware", "id": hid, "data": data})
-                except Exception:
-                    pass
+                except Exception as e:
+                    _logger.debug(
+                        "Status worker: parse telemetry_data for hw %s: %s", hid, e, exc_info=True
+                    )
             # Daily uptime for this hardware
             today = utcnow().date().isoformat()
             row = db.execute(

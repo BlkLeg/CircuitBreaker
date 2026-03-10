@@ -19,9 +19,10 @@ RUN npm run build
 # Use the official unprivileged nginx image — binds on 8080, no root required
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 
-# Create the breaker26 user that matches the rest of the stack
+# Create the breaker26 user that matches the rest of the stack; wget for HEALTHCHECK
 USER root
-RUN addgroup -S breaker26 && adduser -S -G breaker26 -H -s /sbin/nologin breaker26
+RUN addgroup -S breaker26 && adduser -S -G breaker26 -H -s /sbin/nologin breaker26 \
+    && apk add --no-cache wget
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
@@ -30,5 +31,8 @@ RUN chown -R breaker26:breaker26 /usr/share/nginx/html
 USER breaker26
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

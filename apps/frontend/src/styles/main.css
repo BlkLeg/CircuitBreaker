@@ -2993,6 +2993,18 @@ body {
   height: 192px;
   border-radius: 50%;
   border: 1px solid var(--color-border);
+  object-fit: cover;
+  object-position: center;
+}
+
+.oobe-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-elevated, rgba(255, 255, 255, 0.06));
+  color: var(--color-text-muted);
+  font-size: 4rem;
+  font-weight: 600;
 }
 
 .oobe-avatar-status {
@@ -3053,6 +3065,10 @@ body {
   width: 72px;
   height: 72px;
   flex-shrink: 0;
+}
+
+.oobe-summary .oobe-avatar-fallback {
+  font-size: 1.5rem;
 }
 
 /* Text column must be constrained so nothing escapes the card */

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -11,6 +12,7 @@ from app.services import settings_service
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["settings"])
+_logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=AppSettingsRead)
@@ -115,8 +117,8 @@ def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=requir
                     cfg["client_secret"]
                 )
                 existing[provider_name].pop("client_secret", None)
-            except Exception:
-                pass  # Vault not available, keep plain for now
+            except Exception as e:
+                _logger.debug("OAuth vault encrypt failed (keeping plain): %s", e, exc_info=True)
     settings.oauth_providers = json.dumps(existing)
     if "oidc_providers" in payload:
         oidc_raw = payload["oidc_providers"]
@@ -145,8 +147,8 @@ def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=requir
 
                     entry["client_secret_enc"] = get_vault().encrypt(entry["client_secret"])
                     entry.pop("client_secret", None)
-                except Exception:
-                    pass  # Keep plaintext if vault unavailable
+                except Exception as e:
+                    _logger.debug("OIDC vault encrypt failed (keeping plain): %s", e, exc_info=True)
             elif not entry.get("client_secret"):
                 # No new secret — preserve existing encrypted value if present
                 entry.pop("client_secret", None)

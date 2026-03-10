@@ -1,0 +1,10 @@
+# Extend default Gitleaks rules; allowlist Alembic migration revision IDs (hex hashes).
+# Revision IDs like b4a9c1d2e8f0 in down_revision are not secrets.
+[extend]
+useDefault = true
+
+[[allowlist]]
+description = "Alembic migration revision IDs (hex hashes) are not API keys"
+paths = [
+    '''apps/backend/migrations/.*\.py'''
+]

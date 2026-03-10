@@ -136,7 +136,8 @@ class TopologyConnectionManager:
         for ws in snapshot:
             try:
                 await ws.send_text(payload)
-            except Exception:
+            except Exception as e:
+                logger.debug("Topology WS send failed: %s", e, exc_info=True)
                 dead.append(ws)
 
         if dead:
@@ -215,8 +216,8 @@ async def topology_stream(websocket: WebSocket) -> None:
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Topology WS wss_required close failed: %s", e, exc_info=True)
         return
 
     client_ip = _extract_client_ip(websocket)
@@ -232,8 +233,8 @@ async def topology_stream(websocket: WebSocket) -> None:
                 try:
                     await websocket.send_text(json.dumps({"error": "auth_timeout"}))
                     await websocket.close(code=1008)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Topology WS auth_timeout close failed: %s", e, exc_info=True)
                 return
             except WebSocketDisconnect:
                 return
@@ -270,8 +271,8 @@ async def topology_stream(websocket: WebSocket) -> None:
             try:
                 await websocket.send_text(json.dumps({"error": "unauthorized"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Topology WS unauthorized close failed: %s", e, exc_info=True)
             return
 
         # ── Connection cap check ────────────────────────────────────────────
@@ -282,8 +283,8 @@ async def topology_stream(websocket: WebSocket) -> None:
             try:
                 await websocket.send_text(json.dumps({"error": "connection_limit_exceeded"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Topology WS limit close failed: %s", e, exc_info=True)
             return
 
         await websocket.send_text(json.dumps({"status": "connected"}))
@@ -298,8 +299,8 @@ async def topology_stream(websocket: WebSocket) -> None:
                     msg = json.loads(raw)
                     if isinstance(msg, dict) and msg.get("type") == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Topology WS ping parse/send failed: %s", e, exc_info=True)
         except WebSocketDisconnect:
             pass
         finally:
@@ -311,8 +312,8 @@ async def topology_stream(websocket: WebSocket) -> None:
         try:
             await topology_ws_manager.disconnect(websocket)
             await websocket.close(code=1011)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Topology WS error cleanup close failed: %s", e, exc_info=True)
 
 
 @router.get("/ws/status")

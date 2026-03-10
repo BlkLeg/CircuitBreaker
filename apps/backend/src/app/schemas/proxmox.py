@@ -23,6 +23,8 @@ class ProxmoxConfigCreate(BaseModel):
     @classmethod
     def validate_config_url(cls, v: HttpUrl | str) -> str:
         url_str = str(v).strip().rstrip("/")
+        if url_str and "://" not in url_str:
+            url_str = "https://" + url_str
         reject_ssrf_url_proxmox(url_str)
         return url_str
 
@@ -37,6 +39,8 @@ class ProxmoxConfigUpdate(BaseModel):
         if v is None:
             return None
         url_str = str(v).strip().rstrip("/")
+        if url_str and "://" not in url_str:
+            url_str = "https://" + url_str
         reject_ssrf_url_proxmox(url_str)
         return url_str
 

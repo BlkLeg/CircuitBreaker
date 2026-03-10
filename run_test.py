@@ -1,4 +1,5 @@
 import os
+# Local/test DB URL only; do not use in production.
 os.environ["CB_TEST_DB_URL"] = "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 
 import pytest
