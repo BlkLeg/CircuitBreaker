@@ -1433,7 +1433,10 @@ export default function SettingsPage() {
                       </label>
                     </SettingField>
 
-                    <SettingField label="Host" hint="SMTP server hostname.">
+                    <SettingField
+                      label="Host"
+                      hint="SMTP server hostname. If Circuit Breaker runs in Docker and your SMTP server is on the host, use host.docker.internal or the host's IP instead of localhost."
+                    >
                       <input
                         className="form-control"
                         type="text"

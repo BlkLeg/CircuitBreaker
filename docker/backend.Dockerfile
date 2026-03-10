@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev \
     libjpeg-dev \
     zlib1g-dev \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./

@@ -1512,6 +1512,7 @@ Install_Compose_Mode() {
   chmod 700 "$CB_INSTALL_DIR"
 
   Show 2 "Downloading compose files..."
+  # Single source of truth for production Docker: docker/docker-compose.prod.yml (see README)
   local base="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main"
   curl -fsSL "${base}/docker/docker-compose.prod.yml" -o "$CB_INSTALL_DIR/docker-compose.prod.yml" \
     || Show 1 "Failed to download docker-compose.prod.yml"

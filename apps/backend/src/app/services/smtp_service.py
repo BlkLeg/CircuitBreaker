@@ -28,6 +28,11 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+
+class SmtpPasswordUnavailableError(Exception):
+    """Raised when the SMTP password cannot be decrypted (e.g. vault key changed)."""
+
+
 # Baked into the backend image by backend.Dockerfile — always available.
 _DEFAULT_LOGO = Path("/app/default-logo.png")
 
@@ -111,16 +116,19 @@ class SmtpService:
     # ------------------------------------------------------------------
 
     def _password(self) -> str:
-        if self.cfg.smtp_password_enc:
-            try:
-                return get_vault().decrypt(self.cfg.smtp_password_enc)
-            except Exception as exc:
-                _log.warning(
-                    "Failed to decrypt SMTP password (CB_VAULT_KEY may have changed "
-                    "since the password was saved — re-save it in Settings): %s",
-                    exc,
-                )
-        return ""
+        if not self.cfg.smtp_password_enc:
+            return ""
+        try:
+            return get_vault().decrypt(self.cfg.smtp_password_enc)
+        except Exception as exc:
+            _log.warning(
+                "Failed to decrypt SMTP password (CB_VAULT_KEY may have changed "
+                "since the password was saved — re-save it in Settings): %s",
+                exc,
+            )
+            raise SmtpPasswordUnavailableError(
+                "SMTP password could not be decrypted. Re-save the SMTP password in Settings."
+            ) from exc
 
     async def _connect(self) -> aiosmtplib.SMTP:
         smtp_lib = _require_aiosmtplib()
@@ -197,9 +205,16 @@ class SmtpService:
             smtp = await self._connect()
             await smtp.quit()
             return {"status": "ok", "message": "Connection successful"}
+        except SmtpPasswordUnavailableError as exc:
+            return {"status": "error", "message": str(exc)}
         except Exception as exc:
             _log.warning("SMTP test failed: %s", exc)
-            return {"status": "error", "message": str(exc)}
+            msg = str(exc)
+            if "localhost" in (getattr(self.cfg, "smtp_host", "") or "").lower():
+                msg += (
+                    " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
+                )
+            return {"status": "error", "message": msg}
 
     async def send_test_email(self, to_email: str, base_url: str | None = None) -> dict:
         """Send a simple test message to verify end-to-end delivery."""
@@ -215,9 +230,16 @@ class SmtpService:
             await smtp.send_message(msg, sender=self.cfg.smtp_from_email)
             await smtp.quit()
             return {"status": "ok", "message": f"Test email sent to {to_email}"}
+        except SmtpPasswordUnavailableError as exc:
+            return {"status": "error", "message": str(exc)}
         except Exception as exc:
             _log.warning("SMTP test email failed: %s", exc)
-            return {"status": "error", "message": str(exc)}
+            msg = str(exc)
+            if "localhost" in (getattr(self.cfg, "smtp_host", "") or "").lower():
+                msg += (
+                    " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
+                )
+            return {"status": "error", "message": msg}
 
     async def send_invite(self, to_email: str, token: str, invited_by: str, base_url: str) -> None:
         """Send an invite email with a clickable accept link."""

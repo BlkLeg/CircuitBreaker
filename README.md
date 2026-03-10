@@ -98,13 +98,15 @@ Open: <https://localhost> or <https://circuitbreaker.local> or <https://192.168.
 
 **Tagged deploy**: `CB_TAG=v1.2.0 curl ... | bash` (pin to a specific release)
 
-**Upgrade**: `cb update` or `docker compose -f ~/.circuit-breaker/docker-compose.prod.yml pull && docker compose up -d`
+**Upgrade**: `cb update` or `docker compose -f ~/.circuit-breaker/docker-compose.prod.yml pull && docker compose -f ~/.circuit-breaker/docker-compose.prod.yml up -d`
 
 **Uninstall**: `cb uninstall` or `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
 
 ### Native Packages
 
-Native release archives are now standardized across supported platforms:
+> **In testing:** Native (PyInstaller) builds are still in testing. Prefer Docker or the one-line install for production use.
+
+Native release archives are standardized across supported platforms:
 
 - Linux `amd64`: `circuit-breaker_<version>_linux_amd64.tar.gz`
 - Linux `arm64`: `circuit-breaker_<version>_linux_arm64.tar.gz`
@@ -122,14 +124,30 @@ macOS and Windows native archives are built in CI, but their install path is cur
 
 ### Docker Compose (Prebuilt)
 
-Full stack (backend, frontend, workers, Caddy, NATS)—no build:
+**Single source of truth for production Docker:** [`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml). The one-line install (option 2) downloads this file and uses it for the full stack (Caddy, backend, frontend, workers, NATS, Postgres). It expects **two** images: `ghcr.io/blkleg/circuitbreaker:backend-<tag>` and `:frontend-<tag>`. To build and push both for a version (e.g. `v0.2.0-2-beta`):
 
 ```bash
+make setup-buildx
+make docker-publish-prod TAG=v0.2.0-2-beta
+```
+
+Then run with `CB_TAG=v0.2.0-2-beta docker compose -f docker-compose.prod.yml up -d`. Manual runs and upgrades should use the same compose file:
+
+```bash
+# Recommended: use the installer (it downloads docker-compose.prod.yml for you)
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 # Choose option 2 (Compose stack)
 ```
 
-Or run the single-container image (minimal—no discovery workers):
+Manual run from repo (same file the installer uses):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prod.yml -o docker-compose.prod.yml
+# Place Caddyfile and .env alongside (see docker/.env.example), then:
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Single-container image only (minimal—no discovery workers):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml -o docker-compose.yml && docker compose up -d
@@ -201,7 +219,7 @@ Why? Explosive growth—Proxmox scans add 100s of VMs. PG scales infinitely.
 
 ## Docker Compose — Production Stack
 
-The full stack (`docker/docker-compose.yml`) includes:
+For **production (prebuilt images)**, use **[`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml)** — the same file the [one-line install](#one-line-install-recommended) uses. The full stack includes:
 
 | Service | Role |
 |---------|------|
@@ -216,8 +234,11 @@ The full stack (`docker/docker-compose.yml`) includes:
 
 ### Quick start
 
+**Prebuilt (recommended):** use the [installer](#one-line-install-recommended) or run `docker/docker-compose.prod.yml` as in the Quick Start section.
+
+**Build from source:**
+
 ```bash
-# Clone and start (builds from source):
 git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
 docker compose -f docker/docker-compose.yml up -d
 ```

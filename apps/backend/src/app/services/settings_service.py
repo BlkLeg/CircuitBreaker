@@ -121,9 +121,17 @@ def update_settings(
             # Encrypt plaintext password before storing; empty string clears it
             from app.services.credential_vault import get_vault
 
-            vault = get_vault()
             if value:
-                row.smtp_password_enc = vault.encrypt(value)
+                try:
+                    vault = get_vault()
+                    row.smtp_password_enc = vault.encrypt(value)
+                except RuntimeError as e:
+                    if "not initialized" in str(e).lower():
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Vault is not initialized. Complete the first-run setup so SMTP password can be stored securely.",
+                        ) from e
+                    raise
             # If value is None we leave smtp_password_enc untouched so
             # callers can omit the field to keep the existing password.
             continue
