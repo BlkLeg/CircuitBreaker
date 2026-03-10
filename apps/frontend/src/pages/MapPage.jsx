@@ -383,12 +383,17 @@ function MapInternal() {
 
   // Context menu state (node)
   const [contextMenu, setContextMenu] = useState(null); // { x, y, node } | null
+  const contextMenuOpenRef = useRef(false);
 
   // Sidebar bounding rect — kept in a ref (not state) so updates don't trigger re-renders.
   // The ContextMenu reads this ref on each position recalculation to avoid overlapping the panel.
   const sidebarBoundsRef = useRef(null);
+  const telemetrySidebarBoundsRef = useRef(null);
   const handleSidebarBoundsChange = useCallback((rect) => {
     sidebarBoundsRef.current = rect;
+  }, []);
+  const handleTelemetrySidebarBoundsChange = useCallback((rect) => {
+    telemetrySidebarBoundsRef.current = rect;
   }, []);
   const [createNodeModal, setCreateNodeModal] = useState({ isOpen: false, position: null });
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -453,6 +458,7 @@ function MapInternal() {
       if (e.key === 'Escape') {
         clearBoundaryPointerListeners();
         clearLabelPointerListeners();
+        contextMenuOpenRef.current = false;
         setContextMenu(null);
         setEdgeMenu(null);
         setPendingConnection(null);
@@ -823,9 +829,10 @@ function MapInternal() {
   // ── Node interactions ──────────────────────────────────────────────────────
 
   const handleNodeMouseEnter = useCallback((event, node) => {
+    if (contextMenuOpenRef.current) return;
     if (telemetrySidebarTimerRef.current) clearTimeout(telemetrySidebarTimerRef.current);
     telemetrySidebarTimerRef.current = setTimeout(() => {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || contextMenuOpenRef.current) return;
       setTelemetrySidebarPos({ x: event.clientX + 20, y: event.clientY - 30 });
       setTelemetrySidebarNode(node);
     }, 400);
@@ -842,6 +849,7 @@ function MapInternal() {
     (event) => {
       event.preventDefault();
       if (!canMapEdit) return;
+      contextMenuOpenRef.current = false;
       setContextMenu(null);
       setCreateNodeModal({
         isOpen: true,
@@ -1328,11 +1336,21 @@ function MapInternal() {
     (event, node) => {
       event.preventDefault();
       if (!canMapEdit) return;
+      if (telemetrySidebarTimerRef.current) {
+        clearTimeout(telemetrySidebarTimerRef.current);
+        telemetrySidebarTimerRef.current = null;
+      }
       setTelemetrySidebarNode(null);
+      contextMenuOpenRef.current = true;
       setContextMenu({ x: event.clientX, y: event.clientY, node });
     },
     [canMapEdit]
   );
+
+  const handleContextMenuClose = useCallback(() => {
+    contextMenuOpenRef.current = false;
+    setContextMenu(null);
+  }, []);
 
   const handleNodeClick = useCallback((event, node) => {
     setTelemetrySidebarNode(null);
@@ -1340,6 +1358,7 @@ function MapInternal() {
   }, []);
 
   const handlePaneClick = useCallback(() => {
+    contextMenuOpenRef.current = false;
     setContextMenu(null);
     setTelemetrySidebarNode(null);
     setBoundaryMenu(null);
@@ -3590,18 +3609,20 @@ function MapInternal() {
                 node={telemetrySidebarNode}
                 position={telemetrySidebarPos}
                 onClose={() => setTelemetrySidebarNode(null)}
+                onBoundsChange={handleTelemetrySidebarBoundsChange}
               />
             )}
 
-            {/* Node context menu — avoidRectRef prevents it from covering the floating sidebar panel */}
+            {/* Node context menu — avoid rects prevent collision with sidebar and hover box */}
             {contextMenu && canMapEdit && (
               <ContextMenu
                 position={{ x: contextMenu.x, y: contextMenu.y }}
                 node={contextMenu.node}
                 nodes={nodes}
-                onClose={() => setContextMenu(null)}
+                onClose={handleContextMenuClose}
                 onAction={handleContextAction}
                 avoidRectRef={sidebarBoundsRef}
+                avoidRectRef2={telemetrySidebarBoundsRef}
               />
             )}
 

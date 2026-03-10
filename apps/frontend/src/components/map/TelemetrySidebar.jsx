@@ -102,7 +102,7 @@ const NODE_TYPE_LABELS = {
   docker_container: 'Container',
 };
 
-export default function TelemetrySidebar({ node, position, onClose }) {
+export default function TelemetrySidebar({ node, position, onClose, onBoundsChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [clusterOverview, setClusterOverview] = useState(null);
@@ -149,6 +149,29 @@ export default function TelemetrySidebar({ node, position, onClose }) {
       setAdjustedPos({ x, y });
     }
   }, [position, data]);
+
+  // Report bounds so the context menu can shift away and avoid overlapping this hover box
+  useLayoutEffect(() => {
+    if (!onBoundsChange) return;
+    const el = sidebarRef.current;
+    if (!el) return;
+    const rafId = requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      onBoundsChange({
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
+      });
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [adjustedPos, data, onBoundsChange]);
+
+  useEffect(() => {
+    return () => onBoundsChange?.(null);
+  }, [onBoundsChange]);
 
   useEffect(() => {
     if (!entityType || !entityId) return;
@@ -919,4 +942,5 @@ TelemetrySidebar.propTypes = {
   node: PropTypes.object,
   position: PropTypes.shape({ x: PropTypes.number, y: PropTypes.number }),
   onClose: PropTypes.func.isRequired,
+  onBoundsChange: PropTypes.func,
 };

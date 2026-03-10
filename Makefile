@@ -131,7 +131,7 @@ security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Had
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock setup-buildx compose-build compose-up compose-down compose-clean compose-fresh tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-release install-cb
+.PHONY: lock setup-buildx compose-build compose-up compose-down compose-clean compose-fresh compose-up-local tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-local docker-mono-release install-cb
 
 db-seed-default-team: ## Seed Default Team (id=1) in mono container; run after compose-up
 	@echo "Seeding Default Team..."
@@ -245,6 +245,19 @@ docker-mono: setup-buildx ## Build and push mono image (no E2E; use docker-mono-
 		--build-arg APP_VERSION=$(VERSION) \
 		-t $(DOCKER_REPO):mono-$(TAG) -t $(DOCKER_REPO):mono-latest --push .
 	@echo "Done. Pull with: $(DOCKER_REPO):mono-$(TAG)"
+
+docker-mono-local: ## Build mono image for current platform only (no push). Run with: CB_TAG=local docker compose up -d --no-build
+	@echo "Building local production mono image as $(DOCKER_REPO):mono-local..."
+	docker build -f Dockerfile.mono \
+		--build-arg APP_VERSION=$(VERSION) \
+		-t $(DOCKER_REPO):mono-local .
+	@echo "✅ Image built. Start stack with: make compose-up-local"
+	@echo "   Or: CB_TAG=local docker compose -f $(COMPOSE_FILE) up -d --no-build"
+
+compose-up-local: dev-stop-install docker-mono-local ## Build local mono image and start stack (no GHCR push)
+	@echo "Starting stack with local image $(DOCKER_REPO):mono-local..."
+	CB_TAG=local docker compose -f $(COMPOSE_FILE) up -d --no-build
+	@echo "✅ Stack running. Open the app (e.g. http://localhost) — use .env for CB_DB_PASSWORD and CB_VAULT_KEY."
 
 docker-mono-release: setup-buildx ## Build mono, run E2E test, then push (recommended for releases)
 	$(if $(TAG),,$(error TAG is required, e.g. make docker-mono-release TAG=v0.2.0))

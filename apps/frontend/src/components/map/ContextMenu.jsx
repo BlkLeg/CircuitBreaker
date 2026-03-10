@@ -200,7 +200,15 @@ ShapePickerPanel.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectRef }) {
+function ContextMenu({
+  position,
+  node,
+  nodes = [],
+  onClose,
+  onAction,
+  avoidRectRef,
+  avoidRectRef2,
+}) {
   const menuRef = useRef(null);
   const [activeSubmenu, setActiveSubmenu] = useState(null);
   const [menuPosition, setMenuPosition] = useState({ x: -9999, y: -9999 });
@@ -231,9 +239,9 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
       let clampedX = Math.min(Math.max(flipX, MENU_PADDING), maxX);
       let clampedY = Math.min(Math.max(flipY, MENU_PADDING), maxY);
 
-      // Shift away from the floating sidebar panel if they would overlap
-      const avoidRect = avoidRectRef?.current;
-      if (avoidRect) {
+      // Shift away from floating panels (sidebar and hover box) so context menu and hover box don't collide
+      const avoidRects = [avoidRectRef?.current, avoidRectRef2?.current].filter(Boolean);
+      for (const avoidRect of avoidRects) {
         const shifted = shiftAwayFrom(
           { x: clampedX, y: clampedY },
           rect.width,
@@ -267,7 +275,7 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
       window.removeEventListener('resize', positionMenu);
       window.removeEventListener('scroll', positionMenu, true);
     };
-  }, [node, position.x, position.y, avoidRectRef]);
+  }, [node, position.x, position.y, avoidRectRef, avoidRectRef2]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -339,8 +347,8 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
   return (
     <div
       ref={menuRef}
-      style={{ top: menuPosition.y, left: menuPosition.x }}
-      className="context-menu tw-fixed tw-z-50 tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
+      style={{ top: menuPosition.y, left: menuPosition.x, zIndex: 10000 }}
+      className="context-menu tw-fixed tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
     >
       <div className="tw-px-4 tw-py-3 tw-border-b tw-border-cb-border tw-bg-cb-secondary tw-rounded-t-lg">
         <div className="tw-font-mono tw-font-bold tw-text-cb-text tw-text-sm">
@@ -752,6 +760,7 @@ ContextMenu.propTypes = {
   onAction: PropTypes.func.isRequired,
   /** Ref whose `.current` holds { left, top, right, bottom } of the panel to avoid */
   avoidRectRef: PropTypes.shape({ current: PropTypes.object }),
+  avoidRectRef2: PropTypes.shape({ current: PropTypes.object }),
 };
 
 export default ContextMenu;
