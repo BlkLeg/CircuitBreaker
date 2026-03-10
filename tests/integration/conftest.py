@@ -3,8 +3,11 @@ import os
 # Force NATS to fail fast in tests (unreachable port) so lifespan doesn't hang
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
-# v0.2.0: PG-specific tests require CB_TEST_DB_URL to be set.
-# Default stays sqlite:///:memory: so existing tests run without Docker.
+# v0.2.0: app.db.session requires CB_DB_URL to be postgresql:// at import time.
+# Override so conftest can load even when .env has sqlite; tests use db_engine fixture.
+os.environ["CB_DB_URL"] = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
+
+# Test DB URL for fixtures: in-memory sqlite when unset, or CB_TEST_DB_URL for real PG.
 # Example: CB_TEST_DB_URL=postgresql://breaker:breaker@localhost:5432/circuitbreaker_test
 _CB_TEST_DB_URL = os.environ.get("CB_TEST_DB_URL")
 
