@@ -1,5 +1,6 @@
 # Circuit Breaker
 
+
 ![Circuit Breaker Logo](screenshots/cb_night-full.png)
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, clusters—with interactive topology, live telemetry, and auto-discovery. **Now PostgreSQL-powered for scalability!**
