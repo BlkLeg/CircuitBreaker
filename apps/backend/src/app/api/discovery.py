@@ -126,7 +126,7 @@ async def get_discovery_status(db: Session = Depends(get_db)):
 
     from app.core.nats_client import nats_client
 
-    cache_key = "discovery_status:default"
+    cache_key = "discovery_status.default"
 
     if nats_client.is_connected:
         try:

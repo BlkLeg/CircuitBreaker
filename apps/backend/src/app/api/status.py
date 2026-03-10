@@ -203,7 +203,7 @@ async def get_dashboard_v2(
     """Dashboard v2: groups with entity count, metrics, history series, and global summary. Cached 300s."""
     from app.core.nats_client import nats_client
 
-    cache_key = f"dashboard_v2:{group_id or 'all'}:{range_param}:{limit}"
+    cache_key = f"dashboard_v2.{group_id or 'all'}.{range_param}.{limit}"
 
     if nats_client.is_connected:
         try:

@@ -158,6 +158,9 @@ def _normalize_webhook_body(subject: str, payload_obj: dict) -> tuple[bytes, str
 
 async def process_event(msg):
     subject = msg.subject
+    # Skip JetStream internal subjects (e.g. $JS.API.STREAM.INFO.KV_dashboard_cache)
+    if subject.startswith("$JS."):
+        return
     payload_bytes = msg.data
     try:
         payload_obj = json.loads(payload_bytes.decode())

@@ -210,7 +210,7 @@ async def get_cluster_overview(
 
     from app.core.nats_client import nats_client
 
-    cache_key = f"proxmox_overview:{integration_id}"
+    cache_key = f"proxmox_overview.{integration_id}"
 
     if nats_client.is_connected:
         try:
