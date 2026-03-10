@@ -742,20 +742,51 @@ export default function Sidebar({
                         gap: 8,
                       }}
                     >
-                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-                        Enabled
+                      <span
+                        style={{
+                          fontSize: 12,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            background:
+                              node.data.monitor_enabled === false
+                                ? 'var(--color-text-muted)'
+                                : 'var(--color-online)',
+                          }}
+                          title={
+                            node.data.monitor_enabled === false ? 'Monitoring off' : 'Monitoring on'
+                          }
+                        />
+                        <span style={{ color: 'var(--color-text-muted)' }}>
+                          {node.data.monitor_enabled === false ? 'Off' : 'On'}
+                        </span>
                       </span>
                       <button
                         type="button"
                         onClick={() => onMonitorAction('monitor_toggle')}
                         style={{
-                          padding: '2px 8px',
+                          padding: '4px 10px',
                           fontSize: 12,
                           borderRadius: 4,
                           border: '1px solid var(--color-border)',
-                          background: 'var(--color-bg)',
-                          color: 'var(--color-text)',
+                          background:
+                            node.data.monitor_enabled === false
+                              ? 'var(--color-primary)'
+                              : 'var(--color-bg)',
+                          color:
+                            node.data.monitor_enabled === false
+                              ? 'var(--color-bg)'
+                              : 'var(--color-text)',
                           cursor: 'pointer',
+                          fontWeight: 500,
                         }}
                       >
                         {node.data.monitor_enabled === false ? 'Enable' : 'Disable'}

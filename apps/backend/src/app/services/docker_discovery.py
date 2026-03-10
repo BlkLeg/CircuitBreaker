@@ -284,8 +284,8 @@ def _normalise_status(docker_status: str) -> str:
     return mapping.get(docker_status.lower(), "unknown")
 
 
-def run_docker_sync_job() -> None:
-    """APScheduler entry point — loads settings from DB before syncing."""
+def _run_docker_sync_job_impl() -> None:
+    """Load settings and run Docker topology sync (called under advisory lock)."""
     from app.db.models import AppSettings
     from app.db.session import SessionLocal as _SL
 
@@ -311,3 +311,10 @@ def run_docker_sync_job() -> None:
             _logger.exception("Self-cluster auto-create failed after docker sync.")
         finally:
             cluster_db.close()
+
+
+def run_docker_sync_job() -> None:
+    """APScheduler entry point. Single-run via advisory lock."""
+    from app.core.job_lock import run_with_advisory_lock
+
+    run_with_advisory_lock("docker_topology_sync", job_fn=_run_docker_sync_job_impl)

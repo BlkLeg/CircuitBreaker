@@ -1,19 +1,32 @@
 import client from './client';
+import { hashPasswordForAuth } from '../utils/passwordHash';
 
 export const authApi = {
   bootstrapStatus: () => client.get('/bootstrap/status'),
-  bootstrapInitialize: (payload) => client.post('/bootstrap/initialize', payload),
+  bootstrapInitialize: async (payload) => {
+    const p = { ...payload };
+    if (p.password != null && p.password !== '') {
+      p.password_hash = await hashPasswordForAuth(p.password);
+      delete p.password;
+    }
+    return client.post('/bootstrap/initialize', p);
+  },
   bootstrapInitializeOAuth: (payload) => client.post('/bootstrap/initialize-oauth', payload),
-  register: (email, password, displayName) => {
-    const body = { email, password };
+  register: async (email, password, displayName) => {
+    const password_hash = await hashPasswordForAuth(password);
+    const body = { email, password_hash };
     if (displayName) body.display_name = displayName;
     return client.post('/auth/register', body);
   },
   /**
    * Primary JSON login — returns {token, user} on success or
    * {requires_change: true, change_token: "..."} when force_password_change is set.
+   * Sends password_hash only (password never in payload).
    */
-  login: (email, password) => client.post('/auth/login', { email, password }),
+  login: async (email, password) => {
+    const password_hash = await hashPasswordForAuth(password);
+    return client.post('/auth/login', { email, password_hash });
+  },
   me: () => client.get('/auth/me'),
   meWithToken: (token) => client.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } }),
   updateProfile: (formData, tokenOverride) => {
@@ -22,22 +35,33 @@ export const authApi = {
   },
   forgotPassword: (email) => client.post('/auth/forgot-password', { email }),
   resetPassword: (token, password) => client.post('/auth/reset-password', { token, password }),
-  vaultReset: (email, vaultKey, newPassword) =>
-    client.post('/auth/vault-reset', {
+  vaultReset: async (email, vaultKey, newPassword) => {
+    const new_password_hash = await hashPasswordForAuth(newPassword);
+    return client.post('/auth/vault-reset', {
       email,
       vault_key: vaultKey,
-      new_password: newPassword,
-    }),
-  acceptInvite: (payload) => client.post('/auth/accept-invite', payload),
+      new_password_hash,
+    });
+  },
+  acceptInvite: async (payload) => {
+    const p = { ...payload };
+    if (p.password != null && p.password !== '') {
+      p.password_hash = await hashPasswordForAuth(p.password);
+      delete p.password;
+    }
+    return client.post('/auth/accept-invite', p);
+  },
   /**
    * Redeem a force-change token and set a new password.
-   * Returns {token, user} on success.
+   * Returns {token, user} on success. Sends new_password_hash only.
    */
-  forceChangePassword: (changeToken, newPassword) =>
-    client.post('/auth/force-change-password', {
+  forceChangePassword: async (changeToken, newPassword) => {
+    const new_password_hash = await hashPasswordForAuth(newPassword);
+    return client.post('/auth/force-change-password', {
       change_token: changeToken,
-      new_password: newPassword,
-    }),
+      new_password_hash,
+    });
+  },
   getOAuthProviders: () => client.get('/auth/oauth/providers'),
 
   // ── MFA / TOTP ──────────────────────────────────────────────────────────
@@ -57,4 +81,12 @@ export const authApi = {
   mfaDisable: (code) => client.post('/auth/mfa/disable', { code }),
   /** Regenerate backup codes after re-verifying with a TOTP or current backup code. */
   mfaRegenerateBackupCodes: (code) => client.post('/auth/mfa/backup-codes/regenerate', { code }),
+
+  /** Create API token (admin). Returns { token, id, label, expires_at } — token shown once. */
+  createApiToken: (label, expiresAt) =>
+    client.post('/auth/api-token', { label: label || null, expires_at: expiresAt || null }),
+  /** List API tokens created by current user (admin). */
+  listApiTokens: () => client.get('/auth/api-tokens'),
+  /** Revoke an API token by id (admin). */
+  revokeApiToken: (id) => client.delete(`/auth/api-tokens/${id}`),
 };

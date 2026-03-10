@@ -17,6 +17,10 @@ import {
   Pin,
   PinOff,
   Radio,
+  Check,
+  CircleDot,
+  FileText,
+  ExternalLink,
 } from 'lucide-react';
 import { NODE_SHAPES } from './CustomNode';
 
@@ -383,6 +387,37 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
           Update Status
         </button>
 
+        {node.data?.docs?.length > 0 && (
+          <>
+            <div className="tw-my-1 tw-border-t tw-border-cb-border" />
+            <div className="tw-px-4 tw-py-1.5 tw-text-xs tw-font-semibold tw-text-cb-text-muted tw-uppercase tw-tracking-wider">
+              Documents
+            </div>
+            {node.data.docs.slice(0, 8).map((doc) => (
+              <a
+                key={doc.id}
+                href={`/docs?id=${doc.id}`}
+                onClick={() => onClose()}
+                className={`${menuRowClass} tw-no-underline tw-block`}
+                title={doc.title || 'Open document'}
+              >
+                <FileText className={iconClass} />
+                <span className="tw-truncate tw-flex-1">
+                  {(doc.title || 'Untitled').length > 24
+                    ? `${(doc.title || 'Untitled').slice(0, 24)}…`
+                    : doc.title || 'Untitled'}
+                </span>
+                <ExternalLink className="tw-w-3.5 tw-h-3.5 tw-text-cb-text-muted tw-flex-shrink-0" />
+              </a>
+            ))}
+            {node.data.docs.length > 8 && (
+              <div className="tw-px-4 tw-py-1 tw-text-xs tw-text-cb-text-muted">
+                +{node.data.docs.length - 8} more in sidebar
+              </div>
+            )}
+          </>
+        )}
+
         {isComputeNode && (
           <>
             <button
@@ -482,9 +517,30 @@ function ContextMenu({ position, node, nodes = [], onClose, onAction, avoidRectR
                     onClose();
                   }}
                   className={menuRowClass}
+                  title={
+                    node.data.monitor_enabled === false ? 'Monitoring is off' : 'Monitoring is on'
+                  }
                 >
                   <Radio className={iconClass} />
-                  {node.data.monitor_enabled === false ? 'Enable Monitoring' : 'Disable Monitoring'}
+                  <span className="tw-flex tw-items-center tw-gap-2 tw-flex-1">
+                    {node.data.monitor_enabled === false
+                      ? 'Enable Monitoring'
+                      : 'Disable Monitoring'}
+                    <span
+                      className={
+                        node.data.monitor_enabled === false
+                          ? 'tw-text-cb-text-muted tw-text-xs'
+                          : 'tw-text-cb-online tw-flex tw-items-center tw-gap-1 tw-text-xs'
+                      }
+                    >
+                      {node.data.monitor_enabled === false ? (
+                        <CircleDot className="tw-w-3.5 tw-h-3.5" />
+                      ) : (
+                        <Check className="tw-w-3.5 tw-h-3.5" />
+                      )}
+                      {node.data.monitor_enabled === false ? 'Off' : 'On'}
+                    </span>
+                  </span>
                 </button>
                 <button
                   onClick={() => {

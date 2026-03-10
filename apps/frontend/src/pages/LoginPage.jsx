@@ -149,7 +149,12 @@ function LoginPage() {
         setUseBackup(false);
         return;
       }
-      const { token, user: userData } = res.data;
+      const token = res.data?.token;
+      const userData = res.data?.user;
+      if (!token || !userData) {
+        setError('Invalid login response. Please try again.');
+        return;
+      }
       login(token, userData);
       navigate('/map', { replace: true });
     } catch (err) {

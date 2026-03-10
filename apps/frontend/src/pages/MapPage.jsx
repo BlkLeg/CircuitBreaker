@@ -56,6 +56,7 @@ export { MapEdgeCallbacksContext, MapViewOptionsContext };
 
 import {
   getDagreLayout,
+  getDagreViewportOptions,
   getForceLayout,
   getTreeLayout,
   getHierarchicalNetworkLayout,
@@ -70,6 +71,7 @@ import MapToolbar from '../components/MapToolbar';
 // ~100 KB of sigma/graphology parsing until the user explicitly enables WebGL mode.
 const SigmaMap = React.lazy(() => import('../components/map/SigmaMap'));
 import { groupNodesIntoCloud, restoreFromCloudView } from '../utils/cloudView';
+import { viewportFit } from '../utils/viewportFit';
 
 // ── Extracted modules ────────────────────────────────────────────────────────
 import {
@@ -277,10 +279,27 @@ function MapInternal() {
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
 
+  // Kiosk mode: guard timeouts/async so we never update state after unmount
+  const isMountedRef = useRef(true);
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    isMountedRef.current = true;
+    unmountedRef.current = false;
+    return () => {
+      isMountedRef.current = false;
+      unmountedRef.current = true;
+      if (telemetrySidebarTimerRef.current) {
+        clearTimeout(telemetrySidebarTimerRef.current);
+        telemetrySidebarTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Pending discoveries badge + real-time telemetry/monitor polling
   const { pendingDiscoveries } = useMapRealTimeUpdates({
     setNodes,
     nodesRef,
+    unmountedRef,
   });
 
   // Live topology sync: node moves, cable add/remove, status changes from other clients
@@ -619,6 +638,8 @@ function MapInternal() {
     batchPlacedCountRef,
     saveLayoutRef,
     hasRestoredViewport,
+    unmountedRef,
+    containerRef: flowContainerRef,
     fitView,
     setViewport,
     cloudViewEnabled,
@@ -637,14 +658,40 @@ function MapInternal() {
 
   // Handle Cloud View Toggle independent of fetch
   useEffect(() => {
+    let t;
     if (cloudViewEnabled) {
       setNodes((nds) => groupNodesIntoCloud(nds));
-      setTimeout(() => fitView({ duration: 800, padding: 0.2 }), 100);
+      t = setTimeout(() => {
+        if (isMountedRef.current) viewportFit(fitView);
+      }, 100);
     } else {
       setNodes((nds) => restoreFromCloudView(nds));
-      setTimeout(() => fitView({ duration: 800, padding: 0.2 }), 100);
+      t = setTimeout(() => {
+        if (isMountedRef.current) viewportFit(fitView);
+      }, 100);
     }
+    return () => {
+      if (t) clearTimeout(t);
+    };
   }, [cloudViewEnabled, setNodes, fitView]);
+
+  // Kiosk: debounced refit on resize so the graph stays readable after window/layout changes
+  useEffect(() => {
+    let debounceTimer;
+    const onResize = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (isMountedRef.current && typeof fitView === 'function') {
+          viewportFit(fitView, { duration: 400 });
+        }
+      }, 300);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      clearTimeout(debounceTimer);
+    };
+  }, [fitView]);
 
   const applyLayout = useCallback(
     (engine) => {
@@ -658,6 +705,9 @@ function MapInternal() {
 
       const baseNodes = cloudViewEnabled ? restoreFromCloudView(nodes) : [...nodes];
 
+      // All layout engines (dagre, force, tree, hierarchical_network, radial,
+      // circular_cluster, grid_rack, concentric, elk_layered) go through
+      // _applyResult, so they all get the same viewport-fit rules.
       const _applyResult = (layout) => {
         if (layout) {
           let finalNodes = layout.nodes;
@@ -666,7 +716,9 @@ function MapInternal() {
           }
           setNodes(finalNodes);
           setEdges(applyEdgeSides(finalNodes, layout.edges, edgeOverridesRef.current));
-          setTimeout(() => fitView({ duration: 800, padding: 0.2 }), 10);
+          setTimeout(() => {
+            if (isMountedRef.current) viewportFit(fitView);
+          }, 10);
         }
         setLayoutEngine(engine);
         dirtyRef.current = true;
@@ -675,16 +727,27 @@ function MapInternal() {
         settingsApi.update({ graph_default_layout: engine }).catch(() => {});
       };
 
+      const viewportWidth = flowContainerRef.current?.getBoundingClientRect?.()?.width;
+      const dagreOptions = getDagreViewportOptions(viewportWidth);
+
       if (engine === 'elk_layered') {
         getElkLayeredLayout(baseNodes, edges)
-          .then(_applyResult)
-          .catch(() => _applyResult(getDagreLayout(baseNodes, edges, 'LR')));
+          .then((layout) => {
+            if (isMountedRef.current) _applyResult(layout);
+          })
+          .catch(() => {
+            if (isMountedRef.current)
+              _applyResult(getDagreLayout(baseNodes, edges, 'LR', dagreOptions));
+          });
         return;
       }
 
       setTimeout(() => {
+        if (!isMountedRef.current) return;
         let layout;
-        if (engine === 'dagre') layout = getDagreLayout(baseNodes, edges, 'TB');
+        if (engine === 'dagre') layout = getDagreLayout(baseNodes, edges, 'TB', dagreOptions);
+        else if (engine === 'dagre_lr')
+          layout = getDagreLayout(baseNodes, edges, 'LR', dagreOptions);
         else if (engine === 'force') layout = getForceLayout(baseNodes, edges);
         else if (engine === 'tree') layout = getTreeLayout(baseNodes, edges);
         else if (engine === 'hierarchical_network')
@@ -762,6 +825,7 @@ function MapInternal() {
   const handleNodeMouseEnter = useCallback((event, node) => {
     if (telemetrySidebarTimerRef.current) clearTimeout(telemetrySidebarTimerRef.current);
     telemetrySidebarTimerRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return;
       setTelemetrySidebarPos({ x: event.clientX + 20, y: event.clientY - 30 });
       setTelemetrySidebarNode(node);
     }, 400);
@@ -1392,6 +1456,7 @@ function MapInternal() {
             colorKey: preset.key,
             flowBBox: bbox,
             shape,
+            behindNodes: boundary.behindNodes ?? false,
           };
         })
         .filter(Boolean),
@@ -1514,6 +1579,7 @@ function MapInternal() {
           fillOpacity: DEFAULT_BOUNDARY_FILL_OPACITY,
           shape: zonePreset?.shape || 'rectangle',
           zoneType: zonePreset?.key || null,
+          behindNodes: false,
         },
       ]);
       dirtyRef.current = true;
@@ -1575,6 +1641,20 @@ function MapInternal() {
 
   const updateBoundaryShape = useCallback((boundaryId, shapeKey) => {
     setBoundaries((prev) => prev.map((b) => (b.id === boundaryId ? { ...b, shape: shapeKey } : b)));
+    dirtyRef.current = true;
+  }, []);
+
+  const sendBoundaryToBack = useCallback((boundaryId) => {
+    setBoundaries((prev) =>
+      prev.map((b) => (b.id === boundaryId ? { ...b, behindNodes: true } : b))
+    );
+    dirtyRef.current = true;
+  }, []);
+
+  const sendBoundaryToFront = useCallback((boundaryId) => {
+    setBoundaries((prev) =>
+      prev.map((b) => (b.id === boundaryId ? { ...b, behindNodes: false } : b))
+    );
     dirtyRef.current = true;
   }, []);
 
@@ -2610,73 +2690,98 @@ function MapInternal() {
             ref={flowContainerRef}
             style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}
           >
-            {boundaryRenderData.length > 0 && (
+            {/* Boundaries sent "to back" — behind nodes so nodes can be clicked */}
+            {boundaryRenderData.some((b) => b.behindNodes) && (
+              <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}>
+                <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
+                  {boundaryRenderData
+                    .filter((b) => b.behindNodes)
+                    .map((boundary) => (
+                      <g key={boundary.id}>
+                        <path
+                          d={boundary.path}
+                          fill={boundary.fill}
+                          stroke={boundary.stroke}
+                          strokeWidth={2}
+                          strokeDasharray="8 6"
+                          vectorEffect="non-scaling-stroke"
+                          style={{ pointerEvents: 'none' }}
+                        />
+                      </g>
+                    ))}
+                </svg>
+              </div>
+            )}
+
+            {boundaryRenderData.some((b) => !b.behindNodes) && (
               <div style={{ position: 'absolute', inset: 0, zIndex: 9, pointerEvents: 'none' }}>
                 <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
-                  {boundaryRenderData.map((boundary) => (
-                    <g key={boundary.id}>
-                      <path
-                        d={boundary.path}
-                        fill={boundary.fill}
-                        stroke={boundary.stroke}
-                        strokeWidth={selectedBoundaryId === boundary.id ? 3 : 2}
-                        strokeDasharray={selectedBoundaryId === boundary.id ? 'none' : '8 6'}
-                        vectorEffect="non-scaling-stroke"
-                        style={{
-                          pointerEvents: 'visiblePainted',
-                          cursor: selectedBoundaryId === boundary.id ? 'grab' : 'pointer',
-                        }}
-                        onPointerDown={(e) => startBoundaryDrag(e, boundary.id)}
-                        onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
-                      />
-                      {selectedBoundaryId === boundary.id &&
-                        (() => {
-                          const { flowBBox } = boundary;
-                          const corners = [
-                            {
-                              key: 'nw',
-                              fx: flowBBox.minX,
-                              fy: flowBBox.minY,
-                              cursor: 'nwse-resize',
-                            },
-                            {
-                              key: 'ne',
-                              fx: flowBBox.maxX,
-                              fy: flowBBox.minY,
-                              cursor: 'nesw-resize',
-                            },
-                            {
-                              key: 'sw',
-                              fx: flowBBox.minX,
-                              fy: flowBBox.maxY,
-                              cursor: 'nesw-resize',
-                            },
-                            {
-                              key: 'se',
-                              fx: flowBBox.maxX,
-                              fy: flowBBox.maxY,
-                              cursor: 'nwse-resize',
-                            },
-                          ];
-                          return corners.map((c) => {
-                            const sp = flowToScreenPoint({ x: c.fx, y: c.fy }, viewport);
-                            return (
-                              <circle
-                                key={c.key}
-                                cx={sp.x}
-                                cy={sp.y}
-                                r={6}
-                                fill={boundary.stroke}
-                                stroke="var(--color-bg)"
-                                strokeWidth={2}
-                                style={{ pointerEvents: 'auto', cursor: c.cursor }}
-                                onPointerDown={(e) => startBoundaryResize(e, boundary.id, c.key)}
-                              />
-                            );
-                          });
-                        })()}
-                    </g>
-                  ))}
+                  {boundaryRenderData
+                    .filter((b) => !b.behindNodes)
+                    .map((boundary) => (
+                      <g key={boundary.id}>
+                        <path
+                          d={boundary.path}
+                          fill={boundary.fill}
+                          stroke={boundary.stroke}
+                          strokeWidth={selectedBoundaryId === boundary.id ? 3 : 2}
+                          strokeDasharray={selectedBoundaryId === boundary.id ? 'none' : '8 6'}
+                          vectorEffect="non-scaling-stroke"
+                          style={{
+                            pointerEvents: 'visiblePainted',
+                            cursor: selectedBoundaryId === boundary.id ? 'grab' : 'pointer',
+                          }}
+                          onPointerDown={(e) => startBoundaryDrag(e, boundary.id)}
+                          onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
+                        />
+                        {selectedBoundaryId === boundary.id &&
+                          (() => {
+                            const { flowBBox } = boundary;
+                            const corners = [
+                              {
+                                key: 'nw',
+                                fx: flowBBox.minX,
+                                fy: flowBBox.minY,
+                                cursor: 'nwse-resize',
+                              },
+                              {
+                                key: 'ne',
+                                fx: flowBBox.maxX,
+                                fy: flowBBox.minY,
+                                cursor: 'nesw-resize',
+                              },
+                              {
+                                key: 'sw',
+                                fx: flowBBox.minX,
+                                fy: flowBBox.maxY,
+                                cursor: 'nesw-resize',
+                              },
+                              {
+                                key: 'se',
+                                fx: flowBBox.maxX,
+                                fy: flowBBox.maxY,
+                                cursor: 'nwse-resize',
+                              },
+                            ];
+                            return corners.map((c) => {
+                              const sp = flowToScreenPoint({ x: c.fx, y: c.fy }, viewport);
+                              return (
+                                <circle
+                                  key={c.key}
+                                  cx={sp.x}
+                                  cy={sp.y}
+                                  r={6}
+                                  fill={boundary.stroke}
+                                  stroke="var(--color-bg)"
+                                  strokeWidth={2}
+                                  style={{ pointerEvents: 'auto', cursor: c.cursor }}
+                                  onPointerDown={(e) => startBoundaryResize(e, boundary.id, c.key)}
+                                />
+                              );
+                            });
+                          })()}
+                      </g>
+                    ))}
                 </svg>
               </div>
             )}
@@ -3208,6 +3313,7 @@ function MapInternal() {
                 }}
                 fitView
                 minZoom={0.1}
+                maxZoom={2.5}
                 panOnDrag={!boundaryDrawMode && !lineDrawMode}
                 panOnScroll={!boundaryDrawMode && !lineDrawMode}
                 zoomOnScroll={!boundaryDrawMode && !lineDrawMode}
@@ -3510,6 +3616,8 @@ function MapInternal() {
                     presets={BOUNDARY_PRESETS}
                     onRename={beginBoundaryRename}
                     onChangeColor={updateBoundaryColor}
+                    onSendToBack={sendBoundaryToBack}
+                    onSendToFront={sendBoundaryToFront}
                     onDelete={deleteBoundary}
                     onClose={() => setBoundaryMenu(null)}
                   />

@@ -36,10 +36,9 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import mitt from 'mitt';
+import { useAuth } from '../context/AuthContext.jsx';
 
 export const topologyEmitter = mitt();
-
-const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY ?? 'cb_token';
 
 const BACKOFF_BASE = 2000;
 const BACKOFF_MAX = 30000;
@@ -55,6 +54,7 @@ function getWsUrl() {
 }
 
 export function useTopologyStream() {
+  const { user, token } = useAuth();
   const [connected, setConnected] = useState(false);
 
   const wsRef = useRef(null);
@@ -80,9 +80,7 @@ export function useTopologyStream() {
       return;
     }
 
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (!token) {
-      // No token — reconnect will be attempted on visibility change or next call
+    if (!user && !token) {
       return;
     }
 
@@ -90,7 +88,9 @@ export function useTopologyStream() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      ws.send(token);
+      if (token && token !== 'cookie' && token.length > 10) {
+        ws.send(token);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -202,7 +202,7 @@ export function useTopologyStream() {
     ws.onerror = () => {
       ws.close();
     };
-  }, [clearRetry]);
+  }, [clearRetry, user, token]);
 
   useEffect(() => {
     connect();

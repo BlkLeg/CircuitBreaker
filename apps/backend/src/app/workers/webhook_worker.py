@@ -97,10 +97,10 @@ async def _dispatch_with_retries(
     client: httpx.AsyncClient,
     rule: WebhookRule,
     subject: str,
-    payload_bytes: bytes,
-    payload_text: str,
+    body_bytes: bytes,
+    body_text: str,
 ) -> None:
-    headers = _build_headers(rule, payload_bytes)
+    headers = _build_headers(rule, body_bytes)
     retry_count = max(0, min(int(rule.retries or 0), len(_RETRY_BACKOFF_S)))
     max_attempts = retry_count + 1
     for attempt in range(max_attempts):
@@ -110,7 +110,7 @@ async def _dispatch_with_retries(
         try:
             resp = await client.post(
                 rule.target_url,
-                content=payload_bytes,
+                content=body_bytes,
                 headers=headers,
                 timeout=10.0,
             )
@@ -123,7 +123,7 @@ async def _dispatch_with_retries(
                 attempt + 1,
                 max_attempts,
             )
-            _write_delivery(rule.id, subject, payload_text, resp, None, elapsed_ms)
+            _write_delivery(rule.id, subject, body_text, resp, None, elapsed_ms)
             if resp.status_code < 400:
                 break
         except Exception as exc:
@@ -136,12 +136,24 @@ async def _dispatch_with_retries(
                 max_attempts,
                 exc,
             )
-            _write_delivery(rule.id, subject, payload_text, None, error, elapsed_ms)
+            _write_delivery(rule.id, subject, body_text, None, error, elapsed_ms)
 
         if attempt < max_attempts - 1:
             await asyncio.sleep(_RETRY_BACKOFF_S[attempt])
         # Best-effort send rate cap (~10 req/sec) per worker.
         await asyncio.sleep(0.1)
+
+
+def _normalize_webhook_body(subject: str, payload_obj: dict) -> tuple[bytes, str]:
+    """Build a consistent webhook body: event, timestamp, source, data."""
+    body = {
+        "event": subject,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source": "circuitbreaker",
+        "data": payload_obj,
+    }
+    text = json.dumps(body)
+    return text.encode("utf-8"), text
 
 
 async def process_event(msg):
@@ -152,7 +164,7 @@ async def process_event(msg):
     except json.JSONDecodeError:
         logger.error("Failed to decode message on %s", subject)
         return
-    payload_text = json.dumps(payload_obj)
+    body_bytes, body_text = _normalize_webhook_body(subject, payload_obj)
 
     with SessionLocal() as db:
         rules = db.query(WebhookRule).filter(WebhookRule.enabled == True).all()  # noqa: E712
@@ -167,10 +179,10 @@ async def process_event(msg):
 
     async with httpx.AsyncClient() as client:
         for rule in active_rules:
-            await _dispatch_with_retries(client, rule, subject, payload_bytes, payload_text)
+            await _dispatch_with_retries(client, rule, subject, body_bytes, body_text)
 
 
-async def run_worker():
+async def run_worker(shutdown_event: asyncio.Event = None):
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()
@@ -184,13 +196,22 @@ async def run_worker():
     logger.info("Webhook worker started and listening on all events")
     _touch_healthy()
 
-    while True:
-        await asyncio.sleep(30)
+    while not (shutdown_event and shutdown_event.is_set()):
+        try:
+            if shutdown_event:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=30.0)
+            else:
+                await asyncio.sleep(30)
+        except TimeoutError:
+            pass
+
         _touch_healthy()
         if not nats_client.is_connected:
             logger.warning("Webhook worker: NATS not connected — waiting for auto-reconnect")
 
 
 if __name__ == "__main__":
+    from app.workers import run_with_graceful_shutdown
+
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_worker())
+    asyncio.run(run_with_graceful_shutdown(run_worker))

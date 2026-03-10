@@ -10,7 +10,6 @@ from app.core.config import settings
 def cleanup_old_icons(db: Session) -> int:
     """Delete user icons that have not been referenced for 30 days.
 
-    This is a lightweight placeholder worker function intended for APScheduler wiring.
     Returns the number of files removed.
     """
     cutoff = datetime.now(UTC) - timedelta(days=30)

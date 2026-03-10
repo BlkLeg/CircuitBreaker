@@ -3,8 +3,11 @@
 # Uses GHCR images. No clone or local build required.
 # Quick start: curl install.sh | bash (with CB_MODE=compose)
 #
+# From this directory (docker/): always pass -f so Compose uses these image: refs
+#   and does not fall back to the source compose file (which has build: and no image to pull).
+#
 # To pin a version: CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
-# To upgrade: docker compose -f docker-compose.prod.yml pull && docker compose up -d
+# To upgrade:      docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
 #
 # Requires: Caddyfile and .env in the same directory as this file.
 name: circuitbreaker
@@ -16,7 +19,6 @@ networks:
 
 services:
   postgres:
-    profiles: ["pg"]
     image: postgres:16-alpine
     container_name: cb-postgres
     restart: unless-stopped
@@ -73,10 +75,12 @@ services:
       - backend-data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_started
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
@@ -84,10 +88,11 @@ services:
       - DISCOVERY_MODE=safe
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
+    stop_grace_period: 15s
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
 
@@ -98,10 +103,12 @@ services:
     volumes:
       - backend-data:/app/data
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_started
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - DISCOVERY_MODE=full
       - NATS_URL=nats://nats:4222
@@ -109,6 +116,7 @@ services:
     deploy:
       replicas: 2
     restart: unless-stopped
+    stop_grace_period: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s
@@ -123,13 +131,16 @@ services:
     volumes:
       - backend-data:/app/data
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_started
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
+    stop_grace_period: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s
@@ -144,13 +155,16 @@ services:
     volumes:
       - backend-data:/app/data
     depends_on:
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_started
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
+    stop_grace_period: 10s
     healthcheck:
       test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
       interval: 30s

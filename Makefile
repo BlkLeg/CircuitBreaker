@@ -74,8 +74,8 @@ hooks: ## Install git pre-commit hooks (Husky + lint-staged)
 
 ci: lint test typecheck ## Run linting, tests, and type checks
 
-release: ## Build and push v0.1.4 multi-arch image
-	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.1.4 --push .
+release: ## Build and push v0.2.0 multi-arch image
+	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.2.0 --push .
 
 test: ## Run backend tests
 	@echo "Running backend tests..."
@@ -127,7 +127,29 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 # ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh compose-pull-bases tunnel-up tunnel-down trust-ca preflight dev-stop-install
+.PHONY: lock docker-build setup-buildx compose-up compose-down compose-clean compose-fresh compose-pull-bases tunnel-up tunnel-down trust-ca preflight dev-stop-install db-migrate db-migrate-local db-postgres-up db-seed-default-team
+
+db-migrate: ## Run Alembic migrations to head (requires running postgres container)
+	@echo "Running Alembic migrations..."
+	docker exec cb-backend alembic upgrade head
+	@echo "✅ Migrations applied."
+
+db-postgres-up: ## Start Postgres in Docker with port 5432 exposed (for local migrations / dev). Run from repo root.
+	@echo "Starting Postgres (port 5432 exposed)..."
+	docker compose -f docker-compose.yml -f docker/docker-compose.dev-db.yml up -d postgres
+	@echo "Waiting for Postgres to be ready..."
+	@until docker exec cb-postgres pg_isready -U breaker -d circuitbreaker 2>/dev/null; do sleep 1; done
+	@echo "✅ Postgres is ready. Run 'make db-migrate-local' to apply migrations."
+
+db-migrate-local: ## Run Alembic migrations via backend container (run 'make db-postgres-up' first; builds backend image if needed)
+	@echo "Running Alembic migrations (in backend container)..."
+	DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml -f docker/docker-compose.dev-db.yml run --rm backend alembic upgrade head
+	@echo "✅ Migrations applied."
+
+db-seed-default-team: ## Seed Default Team (id=1) and assign all existing data to it
+	@echo "Seeding Default Team..."
+	docker exec cb-backend python -m app.scripts.seed_default_team
+	@echo "✅ Default Team seeded."
 
 lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
 	@echo "Regenerating apps/backend/requirements.txt from poetry.lock..."
@@ -162,6 +184,20 @@ dev-stop-install: ## Stop the install-script-deployed container if running (avoi
 compose-up: dev-stop-install ## Rebuild and start docker compose stack (stops install-script container first)
 	@echo "Starting docker-compose stack..."
 	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose up --build -d
+
+compose-rebuild-frontend: ## Force rebuild frontend image (no cache) and recreate container — use after changing frontend code
+	@echo "Rebuilding frontend image (no cache)..."
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --no-cache frontend
+	@echo "Recreating frontend container..."
+	docker compose up -d --force-recreate frontend
+	@echo "✅ Frontend rebuilt. Hard-refresh the browser (Ctrl+Shift+R / Cmd+Shift+R) to avoid cached assets."
+
+compose-rebuild-backend: ## Force rebuild backend image (no cache) and recreate container — use after changing backend code (e.g. new API routes)
+	@echo "Rebuilding backend image (no cache)..."
+	DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --no-cache backend
+	@echo "Recreating backend container..."
+	docker compose up -d --force-recreate backend
+	@echo "✅ Backend rebuilt. Status and other new API routes will be available."
 
 compose-down: ## Stop and remove docker compose stack
 	@echo "Stopping docker-compose stack..."

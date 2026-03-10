@@ -1,5 +1,5 @@
 from fastapi_users import schemas
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 # ---------------------------------------------------------------------------
 # FastAPI-Users schemas
@@ -26,23 +26,54 @@ class UserUpdate(schemas.BaseUserUpdate):
 # ---------------------------------------------------------------------------
 # Legacy schemas (kept for backward compat with bootstrap & frontend)
 # ---------------------------------------------------------------------------
+# Password pre-hash (zero browser leakage): client sends password_hash
+# (SHA256(password + salt) hex); server accepts password_hash or legacy password.
+# Exactly-one validators ensure one credential form per request.
+# ---------------------------------------------------------------------------
 
 
 class RegisterRequest(BaseModel):
     email: str
-    password: str
+    password: str | None = None
+    password_hash: str | None = None
     display_name: str | None = None
+
+    @model_validator(mode="after")
+    def require_password_or_hash(self):
+        if not self.password and not self.password_hash:
+            raise ValueError("Either password or password_hash is required")
+        if self.password and self.password_hash:
+            raise ValueError("Provide only one of password or password_hash")
+        return self
 
 
 class LoginRequest(BaseModel):
     email: str
-    password: str
+    password: str | None = None
+    password_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_password_or_hash(self):
+        if not self.password and not self.password_hash:
+            raise ValueError("Either password or password_hash is required")
+        if self.password and self.password_hash:
+            raise ValueError("Provide only one of password or password_hash")
+        return self
 
 
 class VaultResetRequest(BaseModel):
     email: str
     vault_key: str
-    new_password: str
+    new_password: str | None = None
+    new_password_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_new_password_or_hash(self):
+        if not self.new_password and not self.new_password_hash:
+            raise ValueError("Either new_password or new_password_hash is required")
+        if self.new_password and self.new_password_hash:
+            raise ValueError("Provide only one of new_password or new_password_hash")
+        return self
 
 
 class UserProfile(BaseModel):
@@ -72,7 +103,8 @@ class BootstrapStatusResponse(BaseModel):
 
 class BootstrapInitializeRequest(BaseModel):
     email: str
-    password: str
+    password: str | None = None
+    password_hash: str | None = None
     display_name: str | None = None
     theme_preset: str
     api_base_url: str | None = None
@@ -90,6 +122,14 @@ class BootstrapInitializeRequest(BaseModel):
     smtp_from_email: str | None = None
     smtp_from_name: str | None = "Circuit Breaker"
     smtp_tls: bool | None = True
+
+    @model_validator(mode="after")
+    def require_password_or_hash(self):
+        if not self.password and not self.password_hash:
+            raise ValueError("Either password or password_hash is required")
+        if self.password and self.password_hash:
+            raise ValueError("Provide only one of password or password_hash")
+        return self
 
 
 class BootstrapThemeResponse(BaseModel):

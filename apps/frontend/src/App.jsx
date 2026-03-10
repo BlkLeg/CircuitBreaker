@@ -243,6 +243,11 @@ function AppRoutes() {
             <div className="login-error-banner" style={{ marginBottom: 16 }}>
               {bootstrapError}
             </div>
+            {(isRetrying || retryCountdown < 3) && (
+              <p className="login-card-subtitle" style={{ marginBottom: 8, fontSize: '0.9rem' }}>
+                The server may still be starting. Retrying…
+              </p>
+            )}
             <div className="setup-check-status" aria-live="polite">
               {isRetrying ? 'Retrying setup check…' : `Auto-retry in ${retryCountdown}s`}
             </div>
@@ -273,9 +278,11 @@ function AppRoutes() {
       <React.Suspense fallback={<div className="login-root" />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
           <Route path="/invite/accept" element={<InviteAcceptPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/reset-password/vault" element={<VaultResetPage />} />
+          <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
           <Route path="*" element={<NavigateToLogin />} />
         </Routes>
       </React.Suspense>

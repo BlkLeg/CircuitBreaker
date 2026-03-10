@@ -11,25 +11,30 @@ import { applyTelemetryUpdate, applyMonitorUpdates } from '../utils/mapDataUtils
  *  - monitor status polling (every 60 s)
  *  - discovery result badge via discoveryEmitter
  *
- * @param {{ setNodes: Function, nodesRef: object }} params
+ * @param {{ setNodes: Function, nodesRef: object, unmountedRef?: { current: boolean } }} params
  * @returns {{ pendingDiscoveries: number, setPendingDiscoveries: Function }}
  */
-export function useMapRealTimeUpdates({ setNodes, nodesRef }) {
+export function useMapRealTimeUpdates({ setNodes, nodesRef, unmountedRef }) {
   const [pendingDiscoveries, setPendingDiscoveries] = useState(0);
 
   // Pending discoveries badge
   useEffect(() => {
     getPendingResults({ limit: 1 })
-      .then((r) => setPendingDiscoveries(r.data?.total ?? 0))
+      .then((r) => {
+        if (!unmountedRef?.current) setPendingDiscoveries(r.data?.total ?? 0);
+      })
       .catch(() => {});
-    const onAdded = () => setPendingDiscoveries((c) => c + 1);
+    const onAdded = () => {
+      if (!unmountedRef?.current) setPendingDiscoveries((c) => c + 1);
+    };
     discoveryEmitter.on('result:added', onAdded);
     return () => discoveryEmitter.off('result:added', onAdded);
-  }, []);
+  }, [unmountedRef]);
 
   // Telemetry polling — refresh every 60 s for hardware nodes with active telemetry
   useEffect(() => {
     const interval = setInterval(() => {
+      if (unmountedRef?.current) return;
       const liveHwNodes = nodesRef.current.filter(
         (n) =>
           n.originalType === 'hardware' &&
@@ -39,20 +44,24 @@ export function useMapRealTimeUpdates({ setNodes, nodesRef }) {
       liveHwNodes.forEach(async (n) => {
         try {
           const res = await telemetryApi.get(n._refId);
-          setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
+          if (!unmountedRef?.current) {
+            setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
+          }
         } catch {
           /* silent — connection may be unavailable */
         }
       });
     }, 60_000);
     return () => clearInterval(interval);
-  }, [setNodes, nodesRef]);
+  }, [setNodes, nodesRef, unmountedRef]);
 
   // Monitor polling — refresh every 60 s so node latency badges and sidebar stay live
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
+        if (unmountedRef?.current) return;
         const res = await listMonitors();
+        if (unmountedRef?.current) return;
         const monitors = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
         setNodes((prev) =>
           applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, monitors)
@@ -62,7 +71,7 @@ export function useMapRealTimeUpdates({ setNodes, nodesRef }) {
       }
     }, 60_000);
     return () => clearInterval(interval);
-  }, [setNodes, nodesRef]);
+  }, [setNodes, nodesRef, unmountedRef]);
 
   return { pendingDiscoveries, setPendingDiscoveries };
 }

@@ -10,6 +10,7 @@ const LAYOUTS = [
   { id: 'hierarchical_network', label: 'Network Hierarchy', group: 'Advanced' },
   { id: 'radial', label: 'Radial Services', group: 'Advanced' },
   { id: 'elk_layered', label: 'VLAN Flow', group: 'Advanced' },
+  { id: 'dagre_lr', label: 'Dagre (VLAN / LR)', group: 'Advanced' },
   { id: 'circular_cluster', label: 'Docker Clusters', group: 'Advanced' },
   { id: 'grid_rack', label: 'Rack Grid', group: 'Advanced' },
   { id: 'concentric', label: 'Concentric Rings', group: 'Advanced' },

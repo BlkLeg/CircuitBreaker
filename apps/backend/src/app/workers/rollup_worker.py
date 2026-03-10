@@ -7,7 +7,7 @@ for efficient 24h uptime reporting.
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import DailyUptimeStats, HardwareMonitor, UptimeEvent
@@ -28,48 +28,57 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
         iso_start = dt_start.isoformat()
         iso_end = dt_end.isoformat()
 
-        # Count total events and up events for the day
-        total_events = (
-            db.scalar(
-                select(func.count())
-                .select_from(UptimeEvent)
+        # Fetch exact events to compute real time differences
+        events = db.scalars(
+            select(UptimeEvent)
+            .where(
+                UptimeEvent.hardware_id == monitor.hardware_id,
+                UptimeEvent.checked_at >= iso_start,
+                UptimeEvent.checked_at < iso_end,
+            )
+            .order_by(UptimeEvent.checked_at.asc())
+        ).all()
+
+        total_minutes = 24 * 60
+        uptime_minutes = 0.0
+
+        if not events:
+            # If no events today, use the last known status from the monitor
+            if monitor.last_status == "up":
+                uptime_minutes = float(total_minutes)
+        else:
+            # Fetch the latest event before dt_start to know initial state
+            prev_event = db.scalars(
+                select(UptimeEvent)
                 .where(
                     UptimeEvent.hardware_id == monitor.hardware_id,
-                    UptimeEvent.checked_at >= iso_start,
-                    UptimeEvent.checked_at < iso_end,
+                    UptimeEvent.checked_at < iso_start,
                 )
-            )
-            or 0
-        )
+                .order_by(UptimeEvent.checked_at.desc())
+                .limit(1)
+            ).first()
 
-        up_events = (
-            db.scalar(
-                select(func.count())
-                .select_from(UptimeEvent)
-                .where(
-                    UptimeEvent.hardware_id == monitor.hardware_id,
-                    UptimeEvent.checked_at >= iso_start,
-                    UptimeEvent.checked_at < iso_end,
-                    UptimeEvent.status == "up",
-                )
-            )
-            or 0
-        )
+            current_status = prev_event.status if prev_event else "down"
+            current_time = dt_start
 
-        # Assuming events roughly correspond to intervals.
-        # This is an approximation since we changed to state-event logging,
-        # so for daily stats, we might calculate total minutes from exact transitions later.
-        # For now, we seed the rollup with basic counts
-        # (This logic can be refined to calculate exact durations between state transitions)
-        # Assuming interval_secs determines the original frequency if events were continuous:
-        mins_per_event = monitor.interval_secs / 60.0
+            for e in events:
+                event_time = datetime.fromisoformat(e.checked_at.replace("Z", "+00:00"))
+                duration_mins = (event_time - current_time).total_seconds() / 60.0
 
-        total_minutes = int(total_events * mins_per_event)
-        uptime_minutes = int(up_events * mins_per_event)
+                if current_status == "up":
+                    uptime_minutes += duration_mins
 
-        # For state transition logic, a better approach is to find time difference
-        # between UP and DOWN events. If the current model is just beginning to use transition logic,
-        # we will placeholder this as a direct summation and refine it as the events settle.
+                current_time = event_time
+                current_status = e.status
+
+            # Add the rest of the day until dt_end or now (if target_date is today)
+            end_of_period = min(dt_end, datetime.now(UTC))
+            if current_time < end_of_period:
+                duration_mins = (end_of_period - current_time).total_seconds() / 60.0
+                if current_status == "up":
+                    uptime_minutes += duration_mins
+
+        uptime_minutes = int(uptime_minutes)
 
         stat = db.scalar(
             select(DailyUptimeStats).where(
@@ -94,21 +103,25 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
     db.commit()
 
 
-def run_rollup_job() -> None:
-    """APScheduler-compatible wrapper — opens its own DB session."""
+def _run_rollup_job_impl() -> None:
+    """Inner rollup logic (called under advisory lock)."""
     db = SessionLocal()
     try:
-        # Target yesterday to finalize rollups, or today for incremental
         target_date = datetime.now(UTC).strftime("%Y-%m-%d")
         calculate_daily_rollups(db, target_date)
-
-        # Also run for yesterday to ensure completed day is accurate
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
         calculate_daily_rollups(db, yesterday)
     except Exception as exc:
         logger.error("run_rollup_job failed: %s", exc)
     finally:
         db.close()
+
+
+def run_rollup_job() -> None:
+    """APScheduler-compatible wrapper. Single-run via advisory lock."""
+    from app.core.job_lock import run_with_advisory_lock
+
+    run_with_advisory_lock("daily_uptime_rollup", job_fn=_run_rollup_job_impl)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { sanitizeImageSrc } from '../../utils/validation.js';
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const TABS = ['profile', 'sessions', 'password', 'security'];
+const TABS = ['profile', 'sessions', 'password', 'security', 'apiTokens'];
 
 function avatarUrl(user) {
   if (user?.profile_photo_url) return user.profile_photo_url;
@@ -45,6 +45,12 @@ function ProfileModal({ isOpen, onClose }) {
   const [mfaBackupCodesCopied, setMfaBackupCodesCopied] = useState(false);
   const [mfaDisableMode, setMfaDisableMode] = useState(false);
   const [mfaRegenerateMode, setMfaRegenerateMode] = useState(false);
+  // API tokens tab (admin only)
+  const [apiTokens, setApiTokens] = useState([]);
+  const [apiTokensLoading, setApiTokensLoading] = useState(false);
+  const [apiTokenNewLabel, setApiTokenNewLabel] = useState('');
+  const [apiTokenCreating, setApiTokenCreating] = useState(false);
+  const [apiTokenOneTime, setApiTokenOneTime] = useState(null); // { token, id, label } — shown once, never stored
 
   const fetchSessions = useCallback(async () => {
     setSessionsLoading(true);
@@ -60,6 +66,14 @@ function ProfileModal({ isOpen, onClose }) {
 
   useEffect(() => {
     if (isOpen && activeTab === 'sessions') fetchSessions();
+    if (isOpen && activeTab === 'apiTokens' && user?.is_admin) {
+      setApiTokensLoading(true);
+      authApi
+        .listApiTokens()
+        .then((res) => setApiTokens(res.data || []))
+        .catch(() => setApiTokens([]))
+        .finally(() => setApiTokensLoading(false));
+    }
     if (isOpen && activeTab === 'security') {
       // Seed MFA status from the user object (mfa_enabled field)
       setMfaStatus(user?.mfa_enabled ?? false);
@@ -307,7 +321,7 @@ function ProfileModal({ isOpen, onClose }) {
             borderBottom: '1px solid var(--color-border)',
           }}
         >
-          {TABS.map((t) => (
+          {TABS.filter((t) => t !== 'apiTokens' || user?.is_admin).map((t) => (
             <button
               key={t}
               type="button"
@@ -325,7 +339,7 @@ function ProfileModal({ isOpen, onClose }) {
                 textTransform: 'capitalize',
               }}
             >
-              {t}
+              {t === 'apiTokens' ? 'API tokens' : t}
             </button>
           ))}
         </div>
@@ -932,6 +946,159 @@ function ProfileModal({ isOpen, onClose }) {
                   </button>
                 </div>
               </form>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'apiTokens' && user?.is_admin && (
+          <div>
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 12 }}>
+              Long-lived Bearer tokens for scripts and CI. Create one and copy it — it won&apos;t be
+              shown again.
+            </p>
+            {apiTokenOneTime ? (
+              <div
+                style={{
+                  padding: 12,
+                  background: 'var(--color-bg-elevated)',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-border)',
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, marginBottom: 6, fontWeight: 600 }}>
+                  Copy this token now — it won&apos;t be shown again
+                </div>
+                <code
+                  style={{
+                    display: 'block',
+                    wordBreak: 'break-all',
+                    fontSize: 11,
+                    padding: 8,
+                    background: 'var(--color-bg)',
+                    borderRadius: 4,
+                    marginBottom: 8,
+                  }}
+                >
+                  {apiTokenOneTime.token}
+                </code>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    navigator.clipboard.writeText(apiTokenOneTime.token);
+                  }}
+                >
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  style={{ marginLeft: 8 }}
+                  onClick={() => setApiTokenOneTime(null)}
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <>
+                {error && (
+                  <p style={{ color: 'var(--color-danger)', fontSize: 13, marginBottom: 8 }}>
+                    {error}
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+                  <input
+                    type="text"
+                    placeholder="Label (optional)"
+                    value={apiTokenNewLabel}
+                    onChange={(e) => setApiTokenNewLabel(e.target.value)}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-border)',
+                      fontSize: 13,
+                      width: 180,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={apiTokenCreating}
+                    onClick={async () => {
+                      setApiTokenCreating(true);
+                      setError('');
+                      try {
+                        const res = await authApi.createApiToken(
+                          apiTokenNewLabel.trim() || null,
+                          null
+                        );
+                        setApiTokenOneTime({
+                          token: res.data.token,
+                          id: res.data.id,
+                          label: res.data.label,
+                        });
+                        setApiTokenNewLabel('');
+                        const list = await authApi.listApiTokens();
+                        setApiTokens(list.data || []);
+                      } catch (err) {
+                        setError(err.message || 'Failed to create token');
+                      } finally {
+                        setApiTokenCreating(false);
+                      }
+                    }}
+                  >
+                    {apiTokenCreating ? 'Creating…' : 'Create API token'}
+                  </button>
+                </div>
+                {apiTokensLoading ? (
+                  <p style={{ color: 'var(--color-text-muted)', marginTop: 12 }}>Loading…</p>
+                ) : (
+                  <ul style={{ listStyle: 'none', padding: 0, margin: '12px 0 0' }}>
+                    {apiTokens.map((t) => (
+                      <li
+                        key={t.id}
+                        style={{
+                          padding: 10,
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 6,
+                          marginBottom: 8,
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <div style={{ fontSize: 13 }}>
+                          <span>{t.label || `Token #${t.id}`}</span>
+                          <div style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>
+                            Created {t.created_at}
+                            {t.expires_at ? ` · Expires ${t.expires_at}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={async () => {
+                            try {
+                              await authApi.revokeApiToken(t.id);
+                              setApiTokens((prev) => prev.filter((x) => x.id !== t.id));
+                            } catch {
+                              /* revoke failed, list will refresh on next open */
+                            }
+                          }}
+                        >
+                          Revoke
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {apiTokens.length === 0 && !apiTokensLoading && !apiTokenOneTime && (
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: 13, marginTop: 12 }}>
+                    No API tokens yet.
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}

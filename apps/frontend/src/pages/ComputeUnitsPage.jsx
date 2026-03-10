@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { computeUnitsApi, hardwareApi, environmentsApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { computeUnitsApi, hardwareApi, environmentsApi, tagsApi } from '../api/client';
 import ComputeDetail from '../components/details/ComputeDetail';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import { OS_OPTIONS, getOsOption } from '../icons/osOptions';
@@ -111,7 +112,6 @@ const COLUMNS = [
       ),
   },
   { key: 'environment_name', label: 'Env', render: (v, row) => v ?? row.environment ?? '—' },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 function ComputeUnitsPage() {
@@ -130,6 +130,8 @@ function ComputeUnitsPage() {
   const [envFilter, setEnvFilter] = useState('');
   const [hwFilter, setHwFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   // Icon picker state (lives outside EntityForm since it's a modal)
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -168,6 +170,81 @@ function ComputeUnitsPage() {
       .then((r) => setEnvironmentsList(r.data))
       .catch(() => {});
   }, []);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS_WITH_TAGS = useMemo(
+    () => [
+      ...COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await computeUnitsApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [allTags, fetchData, fetchTags]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      const payload = { [columnKey]: value };
+      if (columnKey === 'memory_mb' || columnKey === 'cpu_cores' || columnKey === 'disk_gb') {
+        payload[columnKey] = value === '' ? null : Number(value);
+      }
+      await computeUnitsApi.update(row.id, payload);
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} compute unit(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await computeUnitsApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   // Build fields dynamically so icon slug state can be passed in
   const buildFields = (currentIconSlug) => [
@@ -341,7 +418,7 @@ function ComputeUnitsPage() {
         <p>Loading...</p>
       ) : (
         <EntityTable
-          columns={COLUMNS}
+          columns={COLUMNS_WITH_TAGS}
           data={items}
           onEdit={(row) => {
             setEditTarget(row);
@@ -349,6 +426,12 @@ function ComputeUnitsPage() {
           }}
           onDelete={handleDelete}
           onRowClick={(row) => setDetailTarget(row)}
+          editableColumns={['name']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
         />
       )}
 

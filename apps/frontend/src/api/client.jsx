@@ -1,7 +1,7 @@
 import axios from 'axios';
 import logger from '../utils/logger';
+import { hashPasswordForAuth } from '../utils/passwordHash';
 
-const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
 const AUTH_ROUTE_PREFIXES = [
   '/auth/login',
   '/auth/forgot-password',
@@ -9,41 +9,27 @@ const AUTH_ROUTE_PREFIXES = [
   '/auth/vault-reset',
 ];
 
-function getBearerTokenFromHeaders(headers) {
-  const authHeader = headers?.Authorization || headers?.authorization;
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice('Bearer '.length).trim();
-  }
-  return null;
-}
-
 function isSessionExpiryCandidate(error) {
   if (error.response?.status !== 401) return false;
-
-  const requestToken = getBearerTokenFromHeaders(error.config?.headers);
-  const currentToken = localStorage.getItem(TOKEN_KEY);
   const url = error.config?.url || '';
-
-  if (!requestToken || !currentToken) return false;
-  if (requestToken !== currentToken) return false;
   if (AUTH_ROUTE_PREFIXES.some((prefix) => url.includes(prefix))) return false;
-
   return true;
 }
 
 const client = axios.create({
   baseURL: '/api/v1',
   headers: { 'Content-Type': 'application/json' },
+  timeout: 20000,
+  withCredentials: true,
 });
 
-// Attach JWT from localStorage on every request.
-// For FormData payloads, remove the 'Content-Type: application/json' instance
-// default so the browser can set the correct 'multipart/form-data; boundary=...'
-// header automatically. This applies to every multipart upload in the app.
+// Session is sent via httpOnly cookie (cb_session). Do not attach token from storage.
+// Strip any accidental plaintext password from payloads (defense in depth).
 client.interceptors.request.use((config) => {
-  const token = localStorage.getItem(TOKEN_KEY);
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  if (config.data && typeof config.data === 'object' && 'password' in config.data) {
+    const rest = { ...config.data };
+    delete rest.password;
+    config.data = rest;
   }
   if (config.data instanceof FormData) {
     delete config.headers['Content-Type'];
@@ -68,7 +54,7 @@ client.interceptors.response.use(
     // currently stored bearer token. This avoids stale in-flight 401s
     // clearing a freshly issued token after logout/re-login.
     if (isSessionExpiryCandidate(error)) {
-      localStorage.removeItem(TOKEN_KEY);
+      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
       window.dispatchEvent(new CustomEvent('cb:session-expired'));
     }
 
@@ -296,7 +282,8 @@ export const adminUsersApi = {
   createUser: (data) => client.post('/admin/users', data),
   createLocalUser: (data) => client.post('/admin/users/local', data),
   updateUser: (id, data) => client.patch(`/admin/users/${id}`, data),
-  deleteUser: (id) => client.delete(`/admin/users/${id}`),
+  deleteUser: (id, permanent = false) =>
+    client.delete(`/admin/users/${id}`, { params: permanent ? { permanent: true } : {} }),
   unlockUser: (id) => client.post(`/admin/users/${id}/unlock`),
   masquerade: (id) => client.post(`/admin/users/${id}/masquerade`),
   getUserActions: (id, params) => client.get(`/admin/user-actions/${id}`, { params }),
@@ -364,6 +351,11 @@ export const environmentsApi = {
   remove: (id) => client.delete(`/environments/${id}`),
 };
 
+export const tagsApi = {
+  list: () => client.get('/tags'),
+  update: (id, payload) => client.patch(`/tags/${id}`, payload),
+};
+
 export const ipCheckApi = {
   check: (payload) => client.post('/ip-check', payload),
 };
@@ -388,6 +380,10 @@ export const proxmoxApi = {
   test: (id) => client.post(`/integrations/proxmox/${id}/test`),
   discover: (id) => client.post(`/integrations/proxmox/${id}/discover`),
   status: (id) => client.get(`/integrations/proxmox/${id}/status`),
+  clusterOverview: (integrationId) =>
+    client.get('/integrations/proxmox/cluster-overview', {
+      params: { integration_id: integrationId },
+    }),
   vmAction: (id, node, vmType, vmid, action) =>
     client.post(`/integrations/proxmox/${id}/nodes/${node}/${vmType}/${vmid}/action`, { action }),
 };
@@ -396,11 +392,16 @@ export const usersApi = {
   listSessions: () => client.get('/users/me/sessions'),
   revokeSession: (id) => client.delete(`/users/me/sessions/${id}`),
   revokeAllOtherSessions: () => client.delete('/users/me/sessions'),
-  changePassword: (currentPassword, newPassword) =>
-    client.patch('/users/me/password', {
-      current_password: currentPassword,
-      new_password: newPassword,
-    }),
+  changePassword: async (currentPassword, newPassword) => {
+    const [current_password_hash, new_password_hash] = await Promise.all([
+      hashPasswordForAuth(currentPassword),
+      hashPasswordForAuth(newPassword),
+    ]);
+    return client.patch('/users/me/password', {
+      current_password_hash,
+      new_password_hash,
+    });
+  },
 };
 
 export const systemApi = {

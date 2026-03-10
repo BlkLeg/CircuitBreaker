@@ -44,6 +44,7 @@ class NATSClient:
 
             async def _on_reconnected() -> None:
                 self._connected = True
+                self._js = self._nc.jetstream()
                 _logger.info(
                     "NATS reconnected to %s — resubscribing %d subjects",
                     self._url,
@@ -55,6 +56,7 @@ class NATSClient:
                         _logger.debug("Resubscribed to %s", subject)
                     except Exception as exc:
                         _logger.error("Resubscribe failed for %s: %s", subject, exc)
+                await self._ensure_kv_bucket()
                 await self._flush_publish_buffer()
 
             async def _on_error(exc: Exception) -> None:
@@ -71,6 +73,7 @@ class NATSClient:
             )
             self._js = self._nc.jetstream()
             self._connected = True
+            await self._ensure_kv_bucket()
             _logger.info("NATS connected to %s", self._url)
         except Exception as exc:
             self._connected = False
@@ -142,6 +145,20 @@ class NATSClient:
         except Exception as exc:
             _logger.warning("NATS subscribe to %s failed: %s", subject, exc)
             return None
+
+    async def _ensure_kv_bucket(self) -> None:
+        """Create the dashboard_cache KV bucket if it does not exist."""
+        if not self._connected or not self._js:
+            return
+        try:
+            await self._js.create_key_value(bucket="dashboard_cache")
+            _logger.info("NATS KV bucket dashboard_cache created")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
+                _logger.debug("NATS KV bucket dashboard_cache already exists")
+            else:
+                _logger.warning("NATS KV bucket dashboard_cache ensure failed: %s", exc)
 
     async def kv_put(self, bucket: str, key: str, value: dict | str | bytes) -> None:
         if not self._connected or not self._js:

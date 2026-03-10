@@ -1,6 +1,18 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.time import utcnow
@@ -24,6 +36,7 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Doc(Base):
@@ -112,9 +125,9 @@ class Hardware(Base):
     # v0.1.2: rack positioning
     u_height: Mapped[int | None] = mapped_column(Integer)
     rack_unit: Mapped[int | None] = mapped_column(Integer)
-    # v0.1.2: telemetry (JSON stored as Text for SQLite compatibility)
-    telemetry_config: Mapped[str | None] = mapped_column(Text)
-    telemetry_data: Mapped[str | None] = mapped_column(Text)
+    # v0.1.2: telemetry (JSONB as of v0.2.0)
+    telemetry_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    telemetry_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     telemetry_status: Mapped[str | None] = mapped_column(String, default="unknown")
     telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # v0.1.4: environment registry
@@ -134,12 +147,12 @@ class Hardware(Base):
     discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
     os_version: Mapped[str | None] = mapped_column(String, nullable=True)
-    # v0.1.7: Networking (Router/AP) hardware extensions
-    wifi_standards: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
-    wifi_bands: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+    # v0.1.7: Networking (Router/AP) hardware extensions — JSONB as of v0.2.0
+    wifi_standards: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    wifi_bands: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     max_tx_power_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     port_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    port_map_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array
+    port_map_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     software_platform: Mapped[str | None] = mapped_column(String, nullable=True)
     download_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     upload_speed_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -147,6 +160,10 @@ class Hardware(Base):
     proxmox_node_name: Mapped[str | None] = mapped_column(String, nullable=True)
     integration_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("integration_configs.id"), nullable=True
+    )
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -198,9 +215,9 @@ class HardwareMonitor(Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     interval_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
-    # JSON array: ["icmp","tcp","http","snmp"]
-    probe_methods: Mapped[str] = mapped_column(
-        Text, nullable=False, default='["icmp","tcp","http"]'
+    # JSON array: ["icmp","tcp","http","snmp"] — JSONB as of v0.2.0
+    probe_methods: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=lambda: ["icmp", "tcp", "http"]
     )
     last_status: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
     last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -279,11 +296,11 @@ class ComputeUnit(Base):
     status: Mapped[str | None] = mapped_column(String, nullable=True, default="unknown")
     status_override: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     notes: Mapped[str | None] = mapped_column(Text)
-    # v0.2.0: Proxmox integration
+    # v0.2.0: Proxmox integration (JSONB)
     proxmox_vmid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proxmox_type: Mapped[str | None] = mapped_column(String, nullable=True)  # "qemu" | "lxc"
-    proxmox_config: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
-    proxmox_status: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    proxmox_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    proxmox_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     integration_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("integration_configs.id"), nullable=True
     )
@@ -366,15 +383,19 @@ class Service(Base):
     )
     status: Mapped[str | None] = mapped_column(String)  # running | stopped | degraded | maintenance
     ip_address: Mapped[str | None] = mapped_column(String)
-    # IP conflict classification (host-chain-aware)
+    # IP conflict classification (host-chain-aware) — JSONB as of v0.2.0
     ip_mode: Mapped[str] = mapped_column(Text, default="explicit", server_default="explicit")
     ip_conflict: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    ip_conflict_json: Mapped[str] = mapped_column(Text, default="[]", server_default="[]")
-    # Docker container metadata
+    ip_conflict_json: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    # Docker container metadata — labels JSONB as of v0.2.0
     docker_container_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     docker_image: Mapped[str | None] = mapped_column(String, nullable=True)
-    docker_labels: Mapped[str | None] = mapped_column(Text, nullable=True)
+    docker_labels: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_docker_container: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -488,6 +509,10 @@ class Network(Base):
     docker_network_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     docker_driver: Mapped[str | None] = mapped_column(String, nullable=True)
     is_docker_network: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -611,6 +636,10 @@ class HardwareCluster(Base):
     integration_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("integration_configs.id"), nullable=True
     )
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -699,6 +728,10 @@ class ExternalNode(Base):
     icon_slug: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)  # 'prod', 'lab', 'shared'
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -770,7 +803,9 @@ class GraphLayout(Base):
         String, unique=True, nullable=False
     )  # e.g. "default", "user-1-custom"
     context: Mapped[str | None] = mapped_column(String)  # e.g. "topology"
-    layout_data: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string
+    layout_data: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # JSONB as of v0.2.0; deprecated — use Topology model
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
@@ -815,14 +850,14 @@ class AppSettings(Base):
     login_logo_path: Mapped[str | None] = mapped_column(Text)
     login_bg_path: Mapped[str | None] = mapped_column(Text)
     primary_color: Mapped[str] = mapped_column(String, nullable=False, default="#fe8019")
-    accent_colors: Mapped[str | None] = mapped_column(
-        Text, default='["#fabd2f","#b8bb26"]'
-    )  # JSON array
+    accent_colors: Mapped[list | None] = mapped_column(
+        JSONB, default=lambda: ["#fabd2f", "#b8bb26"]
+    )  # JSONB as of v0.2.0
     # Advanced Theming
     theme_preset: Mapped[str] = mapped_column(String, nullable=False, default="gruvbox-dark")
-    custom_colors: Mapped[str | None] = mapped_column(
-        Text
-    )  # JSON: {primary,secondary,accent1,accent2,background,surface}
+    custom_colors: Mapped[dict | None] = mapped_column(
+        JSONB
+    )  # JSONB: {primary,secondary,accent1,accent2,background,surface}
     # External nodes
     show_external_nodes_on_map: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Timezone preference (IANA name, e.g. "America/Denver")
@@ -849,6 +884,7 @@ class AppSettings(Base):
     docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
     map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
+    map_default_filters: Mapped[dict | None] = mapped_column(JSONB)  # JSONB as of v0.2.0
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
     ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
@@ -871,11 +907,11 @@ class AppSettings(Base):
     mdns_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     ssdp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # Feature 8: Federated Auth
-    oauth_providers: Mapped[str | None] = mapped_column(
-        Text
-    )  # JSON: {"github": {...}, "google": {...}}
-    oidc_providers: Mapped[str | None] = mapped_column(Text)  # JSON array of OIDC providers
+    # Feature 8: Federated Auth — JSONB as of v0.2.0
+    oauth_providers: Mapped[dict | None] = mapped_column(
+        JSONB
+    )  # JSONB: {"github": {...}, "google": {...}}
+    oidc_providers: Mapped[list | None] = mapped_column(JSONB)  # JSONB array of OIDC providers
     arp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tcp_probe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # v0.2.0: Self-aware cluster
@@ -950,7 +986,11 @@ class IntegrationConfig(Base):
     sync_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String, nullable=True)
-    extra_config: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    extra_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1017,6 +1057,10 @@ class ScanJob(Base):
     progress_phase: Mapped[str] = mapped_column(String, default="queued")
     progress_message: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # v0.2.0: multi-tenancy
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     profile: Mapped["DiscoveryProfile | None"] = relationship(
         "DiscoveryProfile", back_populates="jobs"
@@ -1035,13 +1079,17 @@ class ScanResult(Base):
     ip_address: Mapped[str] = mapped_column(String, nullable=False)
     mac_address: Mapped[str | None] = mapped_column(String, nullable=True)
     hostname: Mapped[str | None] = mapped_column(String, nullable=True)
-    open_ports_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    open_ports_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     os_family: Mapped[str | None] = mapped_column(String, nullable=True)
     os_vendor: Mapped[str | None] = mapped_column(String, nullable=True)
     snmp_sys_name: Mapped[str | None] = mapped_column(String, nullable=True)
     snmp_sys_descr: Mapped[str | None] = mapped_column(String, nullable=True)
-    snmp_interfaces_json: Mapped[str | None] = mapped_column(String, nullable=True)
-    snmp_storage_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    snmp_interfaces_json: Mapped[list | None] = mapped_column(
+        JSONB, nullable=True
+    )  # JSONB as of v0.2.0
+    snmp_storage_json: Mapped[list | None] = mapped_column(
+        JSONB, nullable=True
+    )  # JSONB as of v0.2.0
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     network_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("networks.id"), nullable=True
@@ -1055,7 +1103,7 @@ class ScanResult(Base):
         String, default="nmap"
     )  # nmap|arp|listener|prober|deep_dive|docker
     state: Mapped[str] = mapped_column(String, default="new", index=True)
-    conflicts_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    conflicts_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     matched_entity_type: Mapped[str | None] = mapped_column(String, nullable=True)
     matched_entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     merge_status: Mapped[str] = mapped_column(String, default="pending")
@@ -1097,9 +1145,9 @@ class ListenerEvent(Base):
     name: Mapped[str | None] = mapped_column(String, nullable=True)  # advertised service name
     ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
     port: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    properties_json: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )  # TXT records / SSDP headers
+    properties_json: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )  # TXT records / SSDP headers — JSONB as of v0.2.0
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
@@ -1196,6 +1244,25 @@ class UserInvite(Base):
     email_sent_at: Mapped[str | None] = mapped_column(String)
     email_status: Mapped[str] = mapped_column(String, nullable=False, default="not_sent")
     email_error: Mapped[str | None] = mapped_column(Text)
+
+
+# ── API Tokens (machine–machine, server-generated, never stored plaintext) ────
+
+
+class APIToken(Base):
+    """Long-lived Bearer tokens for scripts/CI. Only token_hash is stored."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 # ── Audit Logs ────────────────────────────────────────────────────────────────
@@ -1333,8 +1400,10 @@ class WebhookRule(Base):
     secret: Mapped[str | None] = mapped_column(String, nullable=True)  # Used for HMAC signing
     # Backward-compat field; superseded by events_enabled for v1 webhook UI.
     topics: Mapped[str] = mapped_column(String, nullable=False, default="*")
-    events_enabled: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
-    headers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    events_enabled: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # JSONB as of v0.2.0
+    headers_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -1349,9 +1418,9 @@ class NotificationSink(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider_type: Mapped[str] = mapped_column(String, nullable=False)  # 'slack', 'email', 'teams'
-    provider_config: Mapped[str] = mapped_column(
-        Text, nullable=False
-    )  # JSON blob (encrypted if needed, or simply stored)
+    provider_config: Mapped[dict] = mapped_column(
+        JSONB, nullable=False
+    )  # JSONB (encrypted if needed) — v0.2.0
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -1392,3 +1461,151 @@ class OAuthState(Base):
     state: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+# ── Status Page ──────────────────────────────────────────────────────────────
+
+
+class StatusPage(Base):
+    __tablename__ = "status_pages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    config: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    groups: Mapped[list["StatusGroup"]] = relationship(
+        "StatusGroup", back_populates="status_page", cascade="all, delete-orphan"
+    )
+
+
+class StatusGroup(Base):
+    __tablename__ = "status_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status_page_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("status_pages.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    nodes: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
+    services: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    status_page: Mapped["StatusPage"] = relationship("StatusPage", back_populates="groups")
+    history: Mapped[list["StatusHistory"]] = relationship(
+        "StatusHistory", back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class StatusHistory(Base):
+    __tablename__ = "status_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("status_groups.id", ondelete="CASCADE"), nullable=False
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    overall_status: Mapped[str] = mapped_column(String, nullable=False)  # up/down/degraded/unknown
+    uptime_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_ping: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
+    raw_telemetry: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
+
+    group: Mapped["StatusGroup"] = relationship("StatusGroup", back_populates="history")
+
+
+# ── Teams (Multi-Tenancy) ─────────────────────────────────────────────────────
+
+
+team_members = Table(
+    "team_members",
+    Base.metadata,
+    Column("team_id", Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("team_role", String(20), nullable=False, default="member"),  # admin|member|viewer
+)
+
+
+class Team(Base):
+    __tablename__ = "teams"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    members: Mapped[list["User"]] = relationship("User", secondary=team_members, backref="teams")
+
+
+# ── Explicit Topologies ────────────────────────────────────────────────────────
+
+
+class Topology(Base):
+    __tablename__ = "topologies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    nodes: Mapped[list["TopologyNode"]] = relationship(
+        "TopologyNode", cascade="all, delete-orphan", back_populates="topology"
+    )
+    edges: Mapped[list["TopologyEdge"]] = relationship(
+        "TopologyEdge", cascade="all, delete-orphan", back_populates="topology"
+    )
+
+
+class TopologyNode(Base):
+    __tablename__ = "topology_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topology_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("topologies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # hardware|service|network|external_node
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    extra: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # freeform positioning data
+
+    topology: Mapped["Topology"] = relationship("Topology", back_populates="nodes")
+
+
+class TopologyEdge(Base):
+    __tablename__ = "topology_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    topology_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("topologies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_node_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("topology_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    target_node_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("topology_nodes.id", ondelete="CASCADE"), nullable=False
+    )
+    edge_type: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default="ethernet"
+    )  # ethernet|vpn|fiber|wifi|…
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    topology: Mapped["Topology"] = relationship("Topology", back_populates="edges")

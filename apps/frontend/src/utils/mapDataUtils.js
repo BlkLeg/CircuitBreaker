@@ -104,6 +104,15 @@ export function buildNodeStatusDetails(node) {
   };
 }
 
+/**
+ * Proxmox cluster = many hypervisors + VMs. Used for kiosk-style centering on hypervisor nodes.
+ */
+export function proxmoxClusterDetected(nodes) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return false;
+  const hypervisorCount = nodes.filter((n) => n.data?.role === 'hypervisor').length;
+  return hypervisorCount > 5;
+}
+
 export function getNodeRank(node) {
   const type = node.originalType || node.data?.originalType;
   switch (type) {

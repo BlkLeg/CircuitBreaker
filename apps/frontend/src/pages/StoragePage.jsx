@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { storageApi, hardwareApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { storageApi, hardwareApi, tagsApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import StorageDetail from '../components/details/StorageDetail';
@@ -19,7 +20,6 @@ const COLUMNS = [
   { key: 'path', label: 'Path' },
   { key: 'protocol', label: 'Protocol' },
   { key: 'hardware_name', label: 'Hardware' },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 function StoragePage() {
@@ -35,6 +35,8 @@ function StoragePage() {
   const [tagFilter, setTagFilter] = useState('');
   const [kindFilter, setKindFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -59,6 +61,81 @@ function StoragePage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS_WITH_TAGS = useMemo(
+    () => [
+      ...COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await storageApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [allTags, fetchData, fetchTags]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      const payload = { [columnKey]: value };
+      if (columnKey === 'capacity_gb' || columnKey === 'used_gb') {
+        payload[columnKey] = value === '' ? null : Number(value);
+      }
+      await storageApi.update(row.id, payload);
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} storage entry(ies)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await storageApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   const fields = [
     { name: 'name', label: 'Name', required: true },
@@ -173,7 +250,7 @@ function StoragePage() {
         <p>Loading...</p>
       ) : (
         <EntityTable
-          columns={COLUMNS}
+          columns={COLUMNS_WITH_TAGS}
           data={items}
           onEdit={(row) => {
             setEditTarget(row);
@@ -181,6 +258,12 @@ function StoragePage() {
           }}
           onDelete={handleDelete}
           onRowClick={(row) => setDetailTarget(row)}
+          editableColumns={['name', 'path', 'protocol', 'capacity_gb', 'used_gb']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
         />
       )}
 

@@ -1,7 +1,16 @@
 import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import PropTypes from 'prop-types';
-import { X, HardDrive, Network, Clock, Server, Container } from 'lucide-react';
-import { telemetryApi } from '../../api/client';
+import {
+  X,
+  HardDrive,
+  Network,
+  Clock,
+  Server,
+  Container,
+  CheckCircle,
+  AlertCircle,
+} from 'lucide-react';
+import { telemetryApi, proxmoxApi } from '../../api/client';
 
 function BarMeter({ label, value, max, color, unit }) {
   const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
@@ -96,8 +105,11 @@ const NODE_TYPE_LABELS = {
 export default function TelemetrySidebar({ node, position, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [clusterOverview, setClusterOverview] = useState(null);
   const [adjustedPos, setAdjustedPos] = useState({ x: position?.x ?? 200, y: position?.y ?? 100 });
   const sidebarRef = useRef(null);
+
+  const integrationId = node?.data?.integration_config_id ?? null;
 
   const typeMap = {
     hardware: 'hardware',
@@ -157,6 +169,25 @@ export default function TelemetrySidebar({ node, position, onClose }) {
       cancelled = true;
     };
   }, [entityType, entityId]);
+
+  useEffect(() => {
+    if (!integrationId) {
+      setClusterOverview(null);
+      return;
+    }
+    let cancelled = false;
+    proxmoxApi
+      .clusterOverview(integrationId)
+      .then((res) => {
+        if (!cancelled) setClusterOverview(res.data);
+      })
+      .catch(() => {
+        if (!cancelled) setClusterOverview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [integrationId]);
 
   if (!node) return null;
 
@@ -546,6 +577,152 @@ export default function TelemetrySidebar({ node, position, onClose }) {
             </div>
           )}
         </>
+      )}
+
+      {clusterOverview && (
+        <div
+          style={{
+            marginTop: 10,
+            paddingTop: 10,
+            borderTop: '1px solid var(--color-border)',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: 'var(--color-text-muted)',
+              marginBottom: 6,
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+          >
+            Proxmox cluster
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--color-text)', marginBottom: 4 }}>
+            {clusterOverview.cluster?.name || '—'}
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              alignItems: 'center',
+              fontSize: 11,
+              color: 'var(--color-text-secondary)',
+              marginBottom: 6,
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {clusterOverview.cluster?.quorum ? (
+                <CheckCircle size={12} style={{ color: '#22c55e' }} />
+              ) : (
+                <AlertCircle size={12} style={{ color: '#ef4444' }} />
+              )}
+              Quorum {clusterOverview.cluster?.quorum ? 'OK' : 'Fail'}
+            </span>
+            <span>
+              Nodes {clusterOverview.cluster?.nodes_online ?? 0} /{' '}
+              {clusterOverview.cluster?.nodes_total ?? 0}
+            </span>
+            <span>
+              Guests {clusterOverview.cluster?.vms ?? 0} VM / {clusterOverview.cluster?.lxcs ?? 0}{' '}
+              LXC
+            </span>
+            {clusterOverview.cluster?.uptime && (
+              <span>
+                <Clock size={11} style={{ verticalAlign: -1, marginRight: 2 }} />
+                {clusterOverview.cluster.uptime}
+              </span>
+            )}
+          </div>
+          {clusterOverview.problems?.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: 'var(--color-text-muted)',
+                  marginBottom: 3,
+                  fontWeight: 600,
+                }}
+              >
+                Problems
+              </div>
+              {clusterOverview.problems.slice(0, 3).map((p, i) => (
+                <div
+                  key={i}
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--color-text-secondary)',
+                    marginBottom: 2,
+                    paddingLeft: 6,
+                    borderLeft: `2px solid ${p.severity === 'high' ? '#ef4444' : p.severity === 'warning' ? '#f59e0b' : 'var(--color-border)'}`,
+                  }}
+                >
+                  {p.host}: {p.problem}
+                </div>
+              ))}
+            </div>
+          )}
+          {clusterOverview.storage?.length > 0 && (
+            <div>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: 'var(--color-text-muted)',
+                  marginBottom: 3,
+                  fontWeight: 600,
+                }}
+              >
+                Storage
+              </div>
+              {clusterOverview.storage.slice(0, 4).map((s, i) => {
+                const total = s.total_gb ?? 0;
+                const used = s.used_gb ?? 0;
+                const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+                return (
+                  <div key={i} style={{ marginBottom: 3 }}>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: 'var(--color-text-secondary)',
+                        marginBottom: 1,
+                      }}
+                    >
+                      {s.name}
+                    </div>
+                    <div
+                      style={{
+                        width: '100%',
+                        height: 4,
+                        borderRadius: 2,
+                        background: 'var(--color-border)',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${pct}%`,
+                          height: '100%',
+                          borderRadius: 2,
+                          background: meterColor(pct),
+                        }}
+                      />
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        color: 'var(--color-text-muted)',
+                        fontFamily: 'monospace',
+                      }}
+                    >
+                      {used.toFixed(0)} / {total.toFixed(0)} GB ({pct}%)
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {!loading && data && entityType === 'storage' && (

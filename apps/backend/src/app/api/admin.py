@@ -142,7 +142,7 @@ def _doc_to_dict(r: models.Doc) -> dict:
 
 
 def _tag_to_dict(r: models.Tag) -> dict:
-    return {"id": r.id, "name": r.name}
+    return {"id": r.id, "name": r.name, "color": r.color}
 
 
 def _entity_tag_to_dict(r: models.EntityTag) -> dict:

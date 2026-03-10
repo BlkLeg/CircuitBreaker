@@ -22,6 +22,7 @@
   --color-text: #ebdbb2;
   --color-text-muted: #a89984;
   --color-online: #b8bb26;
+  --color-success: #b8bb26;
   --color-glow: rgba(var(--color-primary-rgb), 0.35);
   --font: system-ui, -apple-system, sans-serif;
   --font-size-base: 16px;

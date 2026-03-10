@@ -1,13 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
+import TagsCell from '../components/TagsCell';
 import {
   servicesApi,
   computeUnitsApi,
   hardwareApi,
   categoriesApi,
   environmentsApi,
+  tagsApi,
 } from '../api/client';
 import ServiceDetail from '../components/details/ServiceDetail';
 import FormModal from '../components/common/FormModal';
@@ -118,7 +120,6 @@ const COLUMNS = [
         ? `${r.ports[0].port}/${r.ports[0].protocol || 'tcp'}`
         : '-',
   },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 function ServicesPage() {
@@ -142,6 +143,8 @@ function ServicesPage() {
   const [envFilter, setEnvFilter] = useState('');
   const [filterConflicts, setFilterConflicts] = useState(false);
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -201,6 +204,77 @@ function ServicesPage() {
       .then((r) => setEnvironmentsList(r.data))
       .catch(() => {});
   }, []);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS_WITH_TAGS = useMemo(
+    () => [
+      ...COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await servicesApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [allTags, fetchData, fetchTags]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      await servicesApi.update(row.id, { [columnKey]: value });
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} service(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await servicesApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   // Build combined "Runs On" options: hardware first (direct), then compute units (grouped label).
   const runsOnOptions = [
@@ -381,7 +455,7 @@ function ServicesPage() {
       )}
 
       <EntityTable
-        columns={COLUMNS}
+        columns={COLUMNS_WITH_TAGS}
         data={filterConflicts ? items.filter((s) => s.ip_conflict) : items}
         onEdit={(row) => {
           setEditTarget(row);
@@ -389,6 +463,12 @@ function ServicesPage() {
         }}
         onDelete={handleDelete}
         onRowClick={(row) => setDetailTarget(row)}
+        editableColumns={['name', 'slug', 'url']}
+        onCellSave={handleCellSave}
+        selectable
+        selectedIds={selectedIds}
+        onSelectionChange={setSelectedIds}
+        bulkActions={bulkActions}
       />
 
       <ServiceDetail

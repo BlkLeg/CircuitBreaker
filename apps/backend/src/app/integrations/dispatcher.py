@@ -4,6 +4,10 @@ from app.integrations.ilo import ILOClient
 from app.integrations.snmp_generic import SNMPGenericClient
 from app.services.credential_vault import CredentialVault
 
+# Reuse ILO/IDRAC clients per (profile, host, username) to avoid connection pool exhaustion.
+_HW_CLIENT_CACHE_MAX = 64
+_hw_client_cache: dict[tuple[str, str, str], object] = {}
+
 PROFILE_MAP = {
     "idrac6": IDRACClient,
     "idrac7": IDRACClient,
@@ -50,7 +54,13 @@ def poll_hardware(hardware, vault: CredentialVault) -> dict:
 
     try:
         if profile in ("ilo4", "ilo5", "ilo6"):
-            client = ClientClass(host, config.get("username"), password)
+            cache_key = (profile, host, config.get("username") or "")
+            client = _hw_client_cache.get(cache_key)
+            if client is None:
+                client = ClientClass(host, config.get("username"), password)
+                if len(_hw_client_cache) >= _HW_CLIENT_CACHE_MAX:
+                    _hw_client_cache.clear()
+                _hw_client_cache[cache_key] = client
         elif profile in ("apc_ups", "cyberpower_ups"):
             client = ClientClass(host, config.get("snmp_community", "public"))
         elif profile in ("snmp_generic", "ipmi_generic"):

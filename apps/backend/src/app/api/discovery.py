@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
@@ -27,62 +27,125 @@ from app.schemas.discovery import (
 )
 from app.services import discovery_profiles_service, discovery_service
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
-from app.services.discovery_safe import docker_discover, is_docker_socket_available
+from app.services.discovery_safe import is_docker_socket_available
 from app.services.discovery_service import _has_raw_socket_privilege
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
 
+_DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 router = APIRouter(tags=["discovery"])
 
 
 def _get_actor(db: Session, user_id: int) -> str:
+    """Return display name for audit/triggered_by; sync so it can be used in DB commits."""
     if user_id == 0:
         return "api-token"
     u = db.query(User).filter(User.id == user_id).first()
     return (u.display_name or u.email) if u else "unknown"
 
 
-@router.get("/status", response_model=DiscoveryStatusOut)
-def get_discovery_status(db: Session = Depends(get_db)):
+def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
     settings = get_or_create_settings(db)
+    discovery_enabled = getattr(settings, "discovery_enabled", False)
+    scan_ack_accepted = getattr(settings, "scan_ack_accepted", False)
+    discovery_mode = getattr(settings, "discovery_mode", "safe")
 
-    pending_count = db.scalar(select(func.count()).where(ScanResult.merge_status == "pending")) or 0
-    active_jobs = db.scalars(select(ScanJob).where(ScanJob.status.in_(["queued", "running"]))).all()
+    pending_results = db.query(ScanResult).filter(ScanResult.merge_status == "pending").count()
 
-    last_scan = db.scalar(select(func.max(ScanJob.started_at)))
+    active_jobs_q = (
+        db.query(ScanJob)
+        .filter(ScanJob.status.in_(["queued", "running"]))
+        .order_by(ScanJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    active_jobs = [ScanJobOut.model_validate(j) for j in active_jobs_q]
 
-    # Simple check for next scheduled run time
+    last_completed = (
+        db.query(ScanJob)
+        .filter(ScanJob.status == "completed")
+        .order_by(ScanJob.completed_at.desc())
+        .first()
+    )
+    last_scan = (
+        last_completed.completed_at if last_completed and last_completed.completed_at else None
+    )
+
     next_scheduled = None
-    scheduler = get_scheduler()
-    if scheduler.running:
-        job_times = []
-        for j in scheduler.get_jobs():
-            if j.id.startswith("discovery_profile_") and j.next_run_time:
-                job_times.append(j.next_run_time)
-        if job_times:
-            next_scheduled = min(job_times).isoformat()
+    try:
+        scheduler = get_scheduler()
+        earliest = None
+        for job in scheduler.get_jobs():
+            if job.id and job.id.startswith("discovery_profile_"):
+                nrt = getattr(job, "next_run_time", None)
+                if nrt is not None and (earliest is None or nrt < earliest):
+                    earliest = nrt
+        if earliest is not None:
+            next_scheduled = (
+                earliest.isoformat() if hasattr(earliest, "isoformat") else str(earliest)
+            )
+    except Exception:
+        pass
 
-    configured_mode = getattr(settings, "discovery_mode", "safe")
-    net_raw = _has_raw_socket_privilege()
-    effective_mode = configured_mode if (configured_mode == "safe" or net_raw) else "safe"
-    docker_sock = is_docker_socket_available()
-    docker_enabled = getattr(settings, "docker_discovery_enabled", False)
-    docker_count = len(docker_discover()) if (docker_enabled and docker_sock) else 0
+    net_raw_capable = _has_raw_socket_privilege()
+    effective_mode = (
+        "safe" if (discovery_mode == "full" and not net_raw_capable) else discovery_mode
+    )
+
+    socket_path = getattr(settings, "docker_socket_path", None) or _DEFAULT_DOCKER_SOCKET
+    docker_available = is_docker_socket_available(socket_path)
+
+    docker_container_count = 0
+    if docker_available:
+        try:
+            from app.services.docker_discovery import get_docker_status
+
+            docker_container_count = get_docker_status(socket_path).get("container_count", 0)
+        except Exception:
+            pass
 
     return DiscoveryStatusOut(
-        discovery_enabled=settings.discovery_enabled,
-        scan_ack_accepted=settings.scan_ack_accepted,
-        pending_results=pending_count,
-        active_jobs=[ScanJobOut.model_validate(j) for j in active_jobs],
+        discovery_enabled=discovery_enabled,
+        scan_ack_accepted=scan_ack_accepted,
+        pending_results=pending_results,
+        active_jobs=active_jobs,
         last_scan=last_scan,
         next_scheduled=next_scheduled,
-        discovery_mode=configured_mode,
+        discovery_mode=discovery_mode,
         effective_mode=effective_mode,
-        net_raw_capable=net_raw,
-        docker_available=docker_sock,
-        docker_container_count=docker_count,
+        net_raw_capable=net_raw_capable,
+        docker_available=docker_available,
+        docker_container_count=docker_container_count,
     )
+
+
+@router.get("/status", response_model=DiscoveryStatusOut)
+async def get_discovery_status(db: Session = Depends(get_db)):
+    import json
+
+    from app.core.nats_client import nats_client
+
+    cache_key = "discovery_status:default"
+
+    if nats_client.is_connected:
+        try:
+            cached_data = await nats_client.kv_get("dashboard_cache", cache_key)
+            if cached_data:
+                payload = json.loads(cached_data)
+                return DiscoveryStatusOut.model_validate(payload)
+        except Exception:
+            pass
+
+    out = _compute_discovery_status(db)
+
+    if nats_client.is_connected:
+        try:
+            await nats_client.kv_put("dashboard_cache", cache_key, json.dumps(out.model_dump()))
+        except Exception:
+            pass
+
+    return out
 
 
 # --- Profiles ---

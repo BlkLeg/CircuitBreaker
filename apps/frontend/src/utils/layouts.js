@@ -11,12 +11,32 @@ import {
 import { stratify, tree } from 'd3-hierarchy';
 
 // --- Dagre Layout (Hierarchical) ---
-export const getDagreLayout = (nodes, edges, direction = 'TB') => {
+
+/** Build viewport-aware Dagre options from container width (optional). */
+export function getDagreViewportOptions(viewportWidth) {
+  if (viewportWidth == null || viewportWidth <= 0) return null;
+  return {
+    rankSep: viewportWidth > 1200 ? 100 : 60,
+    nodeSep: Math.max(10, viewportWidth * 0.02),
+    edgeSep: 10,
+  };
+}
+
+/**
+ * @param {object} [options] - Optional viewport-aware spacing (rankSep, nodeSep in px).
+ */
+export const getDagreLayout = (nodes, edges, direction = 'TB', options = null) => {
   const dagreGraph = new dagre.graphlib.Graph();
   dagreGraph.setDefaultEdgeLabel(() => ({}));
 
   const isHorizontal = direction === 'LR';
-  dagreGraph.setGraph({ rankdir: direction });
+  const graphOpts = { rankdir: direction };
+  if (options) {
+    if (options.rankSep != null) graphOpts.ranksep = options.rankSep;
+    if (options.nodeSep != null) graphOpts.nodesep = options.nodeSep;
+    if (options.edgeSep != null) graphOpts.edgesep = options.edgeSep;
+  }
+  dagreGraph.setGraph(graphOpts);
 
   nodes.forEach((node) => {
     dagreGraph.setNode(node.id, { width: 150, height: 100 });

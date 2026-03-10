@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from app.core.auth_cookie import auth_response_with_cookie
 from app.core.rate_limit import get_limit, limiter
 from app.db.session import get_db
 from app.schemas.auth import (
@@ -30,11 +31,14 @@ def initialize_bootstrap(
     db: Annotated[Session, Depends(get_db)],
 ):
     cfg = get_or_create_settings(db)
-    return auth_service.bootstrap_initialize(
+    password_or_hash = (
+        payload.password_hash if payload.password_hash is not None else payload.password
+    )
+    result = auth_service.bootstrap_initialize(
         db=db,
         cfg=cfg,
         email=payload.email,
-        password=payload.password,
+        password_or_hash=password_or_hash,
         theme_preset=payload.theme_preset,
         display_name=payload.display_name,
         api_base_url=payload.api_base_url,
@@ -53,6 +57,8 @@ def initialize_bootstrap(
         smtp_from_name=payload.smtp_from_name,
         smtp_tls=payload.smtp_tls,
     )
+    body = result.model_dump()
+    return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
 
 @router.post("/initialize-oauth", response_model=BootstrapInitializeResponse)

@@ -12,13 +12,21 @@ from typing import Any
 
 import urllib3
 
+from app.core.retry import run_sync_with_retry
+
 urllib3.disable_warnings()
 
 _logger = logging.getLogger(__name__)
 
+# Limit concurrent API calls per host so we never exceed the underlying
+# requests.Session pool (default 10). Proxmoxer does not expose a larger pool.
+PROXMOX_MAX_CONCURRENT = 8
+
 
 class ProxmoxIntegration:
-    """Thin async wrapper around the proxmoxer ProxmoxAPI."""
+    """Thin async wrapper around the proxmoxer ProxmoxAPI.
+    Uses a semaphore to cap concurrent requests per host and avoid
+    urllib3 'Connection pool is full' errors."""
 
     def __init__(
         self,
@@ -39,6 +47,7 @@ class ProxmoxIntegration:
             verify_ssl=verify_ssl,
             timeout=15,
         )
+        self._semaphore = asyncio.Semaphore(PROXMOX_MAX_CONCURRENT)
 
     # ── helpers ────────────────────────────────────────────────────────────
 
@@ -74,7 +83,8 @@ class ProxmoxIntegration:
                 "cluster_name": cluster_name,
             }
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def discover_cluster(self) -> dict:
         """Fetch full cluster resource inventory."""
@@ -87,25 +97,39 @@ class ProxmoxIntegration:
                 cluster_status = []
             return {"cluster_status": cluster_status, "resources": resources}
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
+
+    async def get_cluster_status(self) -> list[dict]:
+        """Return cluster/status list (quorate, nodes, name, master per node/cluster).
+        PVEAuditor can read this; used for cluster overview dashboard."""
+
+        def _sync() -> list:
+            return self._px.get("cluster/status")
+
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_status(self, node: str) -> dict:
         def _sync() -> dict:
             return self._px.get(f"nodes/{node}/status")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_vm_config(self, node: str, vmid: int, vm_type: str = "qemu") -> dict:
         def _sync() -> dict:
             return self._px.get(f"nodes/{node}/{vm_type}/{vmid}/config")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_vm_status(self, node: str, vmid: int, vm_type: str = "qemu") -> dict:
         def _sync() -> dict:
             return self._px.get(f"nodes/{node}/{vm_type}/{vmid}/status/current")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_permissions(self) -> dict:
         """Return the effective permissions for the current token."""
@@ -113,7 +137,8 @@ class ProxmoxIntegration:
         def _sync() -> dict:
             return self._px.get("access/permissions")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_vms(self, node: str, vm_type: str = "qemu") -> list[dict]:
         """List VMs or LXCs on a specific node (fallback for limited tokens)."""
@@ -121,7 +146,8 @@ class ProxmoxIntegration:
         def _sync() -> list[dict]:
             return self._px.get(f"nodes/{node}/{vm_type}")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_storage(self, node: str) -> list[dict]:
         """List storage pools on a specific node."""
@@ -129,19 +155,22 @@ class ProxmoxIntegration:
         def _sync() -> list[dict]:
             return self._px.get(f"nodes/{node}/storage")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_networks(self, node: str) -> list[dict]:
         def _sync() -> list[dict]:
             return self._px.get(f"nodes/{node}/network")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await asyncio.to_thread(_sync)
 
     async def get_node_rrddata(self, node: str, timeframe: str = "hour") -> list[dict]:
         def _sync() -> list[dict]:
             return self._px.get(f"nodes/{node}/rrddata", timeframe=timeframe)
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     # ── VM/CT actions ─────────────────────────────────────────────────────
 
@@ -151,7 +180,8 @@ class ProxmoxIntegration:
         def _sync() -> str:
             return self._px.post(f"nodes/{node}/{vm_type}/{vmid}/status/{action}")
 
-        return await asyncio.to_thread(_sync)
+        async with self._semaphore:
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
 
 def build_client_from_token(

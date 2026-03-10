@@ -7,10 +7,7 @@ networks:
 
 services:
   postgres:
-    # Optional PostgreSQL service — only starts when the "pg" profile is active.
-    # Default deployment uses SQLite (DATABASE_URL=sqlite:///.../app.db).
-    # To use PostgreSQL: docker compose --profile pg up
-    profiles: ["pg"]
+    # PostgreSQL 16 — always-on as of v0.2.0 (SQLite removed).
     image: postgres:16-alpine
     container_name: cb-postgres
     restart: unless-stopped
@@ -22,7 +19,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "breaker", "-d", "circuitbreaker"]
+      test: ['CMD', 'pg_isready', '-U', 'breaker', '-d', 'circuitbreaker']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -35,10 +32,10 @@ services:
     networks: [cb_net]
     # JetStream enabled for optional durable message streams.
     # Management HTTP on port 8222 — not exposed externally by default.
-    command: ["--jetstream", "-m", "8222"]
+    command: ['--jetstream', '-m', '8222']
     expose:
-      - "4222"
-      - "8222"
+      - '4222'
+      - '8222'
     volumes:
       - nats_data:/data/nats
 
@@ -47,8 +44,8 @@ services:
     container_name: cb-caddy
     networks: [cb_net]
     ports:
-      - "80:80"
-      - "443:443"
+      - '80:80'
+      - '443:443'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -81,9 +78,11 @@ services:
     depends_on:
       nats:
         condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      # SQLite by default; set CB_DB_URL for PostgreSQL (see README.md).
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      # PostgreSQL is required as of v0.2.0; set CB_DB_PASSWORD to override the default.
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - UPLOADS_DIR=/app/data/uploads
       - DEBUG=false
@@ -92,13 +91,15 @@ services:
       - CB_VAULT_KEY=${CB_VAULT_KEY:-}
       - DISCOVERY_MODE=safe
       - NATS_URL=nats://nats:4222
+      # Dedicated worker containers run webhook/discovery/notification; backend runs API only.
+      - CB_RUN_INPROCESS_WORKERS=false
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/api/v1/health']
       interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 45s
     # ARP scanning (native Linux Docker only) — uncomment to enable full discovery mode.
     # See README.md → "ARP Scan / Full Discovery" for setup instructions and caveats.
     # cap_add:
@@ -110,15 +111,17 @@ services:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
-    command: ["python", "-m", "app.workers.discovery"]
+    command: ['python', '-m', 'app.workers.discovery']
     networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
       nats:
         condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - DISCOVERY_MODE=full
       - NATS_URL=nats://nats:4222
@@ -127,7 +130,13 @@ services:
       replicas: 2
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -137,20 +146,28 @@ services:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
-    command: ["python", "-m", "app.workers.webhook_worker"]
+    command: ['python', '-m', 'app.workers.webhook_worker']
     networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
       nats:
         condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -160,20 +177,28 @@ services:
     build:
       context: ..
       dockerfile: docker/backend.Dockerfile
-    command: ["python", "-m", "app.workers.notification_worker"]
+    command: ['python', '-m', 'app.workers.notification_worker']
     networks: [cb_net]
     volumes:
       - backend-data:/app/data
     depends_on:
       nats:
         condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=${CB_DB_URL:-sqlite:////app/data/app.db}
+      - CB_DB_URL=${CB_DB_URL:-postgresql://breaker:breaker@postgres:5432/circuitbreaker}
       - CB_DATA_DIR=/app/data
       - NATS_URL=nats://nats:4222
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)"]
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import os,time; f='/tmp/worker.healthy'; raise SystemExit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f)<120 else 1)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -184,7 +209,7 @@ services:
       context: ..
       dockerfile: docker/frontend.Dockerfile
     expose:
-      - "8080"
+      - '8080'
     container_name: cb-frontend
     networks: [cb_net]
     depends_on:
@@ -196,7 +221,7 @@ services:
     restart: unless-stopped
 
   cloudflared:
-    profiles: ["tunnel"]
+    profiles: ['tunnel']
     image: cloudflare/cloudflared:latest
     container_name: cb-cloudflared
     networks: [cb_net]

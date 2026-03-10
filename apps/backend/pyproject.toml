@@ -123,3 +123,9 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "--cov=./src/app --cov-report=xml --cov-report=term-missing"
+
+[tool.poetry]
+name = "circuit-breaker-backend"
+version = "0.2.0"
+description = "Circuit Breaker Backend"
+authors = ["Admin <admin@example.com>"]

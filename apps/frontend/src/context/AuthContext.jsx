@@ -2,8 +2,6 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 
-const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY;
-
 export const AuthContext = createContext({
   isAuthenticated: false,
   authReady: false,
@@ -22,16 +20,16 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+  const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [authEnabled, setAuthEnabled] = useState(false);
   const [settingsReady, setSettingsReady] = useState(false);
-  // If no token exists on mount, /me won't be called so meReady starts true immediately.
-  const [meReady, setMeReady] = useState(() => !localStorage.getItem(TOKEN_KEY));
+  const [meReady, setMeReady] = useState(false);
   const authReady = settingsReady && meReady;
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const pendingActionRef = useRef(null);
+  const loginJustSucceededAtRef = useRef(0);
   const navigate = useNavigate();
 
   // Sync authEnabled from backend on mount (before SettingsPage loads)
@@ -43,10 +41,32 @@ export function AuthProvider({ children }) {
       .finally(() => setSettingsReady(true));
   }, []);
 
+  // Validate session on mount via cookie (httpOnly); sets meReady when done
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/v1/auth/me', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((u) => {
+        if (cancelled) return;
+        setUser(u);
+        setToken('cookie');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setUser(null);
+        setToken(null);
+      })
+      .finally(() => {
+        if (!cancelled) setMeReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Handle session expiry signalled by the axios interceptor (401 on any request)
   useEffect(() => {
     const handler = () => {
-      // Interceptor already cleared localStorage; reset React state and prompt re-login
       setToken(null);
       setUser(null);
       setAuthModalOpen(true);
@@ -55,50 +75,12 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('cb:session-expired', handler);
   }, []);
 
-  // Validate token on mount and whenever it changes; sets meReady when done
-  useEffect(() => {
-    if (!token) {
-      setMeReady(true);
-      return;
-    }
-    let cancelled = false;
-    const tokenAtRequestStart = token;
-
-    fetch('/api/v1/auth/me', {
-      headers: { Authorization: `Bearer ${tokenAtRequestStart}` },
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((u) => {
-        if (cancelled) return;
-        if (localStorage.getItem(TOKEN_KEY) !== tokenAtRequestStart) return;
-        setUser(u);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        if (localStorage.getItem(TOKEN_KEY) !== tokenAtRequestStart) return;
-        localStorage.removeItem(TOKEN_KEY);
-        setToken(null);
-        setUser(null);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        const currentToken = localStorage.getItem(TOKEN_KEY);
-        if (currentToken === tokenAtRequestStart || !currentToken) {
-          setMeReady(true);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
   const login = useCallback((newToken, newUser) => {
-    localStorage.setItem(TOKEN_KEY, newToken);
-    setToken(newToken);
+    if (!newUser) return;
+    loginJustSucceededAtRef.current = Date.now();
+    setToken(newToken ?? 'cookie');
     setUser(newUser);
     setAuthModalOpen(false);
-    // Retry any pending action
     if (pendingActionRef.current) {
       pendingActionRef.current();
       pendingActionRef.current = null;
@@ -106,18 +88,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(() => {
-    if (token) {
-      fetch('/api/v1/auth/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      }).catch(() => {});
-    }
-    localStorage.removeItem(TOKEN_KEY);
+    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     setToken(null);
     setUser(null);
     setProfileModalOpen(false);
     navigate('/login');
-  }, [token, navigate]);
+  }, [navigate]);
 
   const openAuthModal = useCallback((pendingAction) => {
     if (pendingAction) pendingActionRef.current = pendingAction;

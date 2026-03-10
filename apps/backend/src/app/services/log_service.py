@@ -63,6 +63,23 @@ def sanitise_diff(obj):
     return obj
 
 
+def _sanitise_log_string(value: str | None) -> str | None:
+    """Sanitise a string that may be JSON (e.g. request/response body) before persisting.
+    Credentials and secrets are never written to the audit log."""
+    if not value:
+        return value
+    try:
+        data = json.loads(value)
+        sanitised = sanitise_diff(data)
+        return json.dumps(sanitised) if sanitised is not None else None
+    except (json.JSONDecodeError, TypeError):
+        # Non-JSON string: redact if it could contain credentials
+        lower = value.lower()
+        if any(r in lower for r in ("password", "secret", "token=", "credential")):
+            return "***REDACTED***"
+    return value
+
+
 def write_log(
     db,
     action: str,
@@ -102,6 +119,11 @@ def write_log(
         # Sanitise diff before persisting
         sanitised_diff = sanitise_diff(diff)
         diff_str = json.dumps(sanitised_diff) if sanitised_diff is not None else None
+
+        # Never persist raw request/response bodies that might contain credentials
+        safe_details = _sanitise_log_string(details)
+        safe_old_value = _sanitise_log_string(old_value)
+        safe_new_value = _sanitise_log_string(new_value)
 
         # Map severity → legacy level if not provided separately
         effective_level = level if level is not None else severity
@@ -155,11 +177,11 @@ def write_log(
                 actor_gravatar_hash=actor_gravatar_hash,
                 entity_type=entity_type,
                 entity_id=entity_id,
-                old_value=old_value,
-                new_value=new_value,
+                old_value=safe_old_value,
+                new_value=safe_new_value,
                 user_agent=user_agent,
                 ip_address=ip_address,
-                details=details,
+                details=safe_details,
                 status_code=status_code,
                 # Structured audit fields (Feature 6)
                 actor_id=actor_id,

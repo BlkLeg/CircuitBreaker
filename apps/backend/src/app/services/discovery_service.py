@@ -1387,18 +1387,25 @@ async def _run_profile_job_async(profile_id: int):
         db.close()
 
 
-def run_scan_job_by_profile(profile_id: int):
-    """Entry point for APScheduler to kick off a profile scan."""
-    # B4: dispatch onto the app's main event loop so WS broadcasts work
+def _run_scan_job_by_profile_impl(profile_id: int) -> None:
+    """Inner implementation for APScheduler profile scan (called under advisory lock)."""
     if _main_loop and _main_loop.is_running():
         asyncio.run_coroutine_threadsafe(_run_profile_job_async(profile_id), _main_loop)
     else:
-        # Fallback for tests / CLI — creates a new loop in this thread
         asyncio.run(_run_profile_job_async(profile_id))
 
 
-def purge_old_scan_results():
-    """Daily cron job to purge old scan results and jobs."""
+def run_scan_job_by_profile(profile_id: int) -> None:
+    """Entry point for APScheduler to kick off a profile scan. Single-run via advisory lock."""
+    from app.core.job_lock import run_with_advisory_lock
+
+    run_with_advisory_lock(
+        "discovery_profile", profile_id, job_fn=lambda: _run_scan_job_by_profile_impl(profile_id)
+    )
+
+
+def _purge_old_scan_results_impl() -> None:
+    """Daily cron job body: purge old scan results and jobs (called under advisory lock)."""
     db = SessionLocal()
     try:
         settings = get_or_create_settings(db)
@@ -1407,19 +1414,16 @@ def purge_old_scan_results():
             return
 
         logger.info(f"Purging discovery results older than {retention_days} days.")
-        # We compute the cutoff in python, then execute standard SQL deletion.
         from datetime import timedelta
 
         cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
         cutoff_iso = cutoff_date.isoformat() + "Z"
 
-        # Delete old results
         result_count = (
             db.query(ScanResult)
             .filter(ScanResult.created_at < cutoff_iso)
             .delete(synchronize_session=False)
         )
-        # Delete old jobs
         job_count = (
             db.query(ScanJob)
             .filter(ScanJob.created_at < cutoff_iso)
@@ -1432,6 +1436,13 @@ def purge_old_scan_results():
         logger.error(f"Purger error: {e}")
     finally:
         db.close()
+
+
+def purge_old_scan_results() -> None:
+    """Daily cron job to purge old scan results and jobs. Single-run via advisory lock."""
+    from app.core.job_lock import run_with_advisory_lock
+
+    run_with_advisory_lock("discovery_purge", job_fn=_purge_old_scan_results_impl)
 
 
 def _build_ports_list(open_ports_json: str | None) -> list:
@@ -1936,16 +1947,27 @@ def refresh_ip_pool():
     """
     db = SessionLocal()
     try:
+        from concurrent.futures import ThreadPoolExecutor
         from datetime import datetime, timedelta
 
         from app.db.models import LiveMetric
+        from app.services.discovery_safe import _ping_host
 
-        # This is a stub for the full implementation of refresh_ip_pool
-        # that handles Ping/ARP to verify host status
         metrics = db.query(LiveMetric).all()
         now = datetime.now(UTC)
 
-        for metric in metrics:
+        def check_metric(metric: LiveMetric) -> tuple[LiveMetric, bool]:
+            if not metric.ip:
+                return metric, False
+            # Ping with a short timeout to prevent long hangs
+            is_up = _ping_host(metric.ip, timeout=1.0)
+            return metric, is_up
+
+        # Use ThreadPoolExecutor for concurrent pings
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            results = list(executor.map(check_metric, metrics))
+
+        for metric, _is_up in results:
             if metric.last_seen and (now - metric.last_seen) > timedelta(days=1):
                 metric.status = "offline"
 

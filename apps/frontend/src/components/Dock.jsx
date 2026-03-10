@@ -38,14 +38,14 @@ export const NAV_MAP = {
 };
 
 export const DEFAULT_ORDER = [
+  '/discovery',
   '/map',
   '/hardware',
   '/compute-units',
   '/services',
+  '/storage',
   '/networks',
   '/external-nodes',
-  '/storage',
-  '/discovery',
   '/docs',
   '/logs',
   '/settings',

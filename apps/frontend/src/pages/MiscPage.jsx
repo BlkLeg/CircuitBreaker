@@ -1,20 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { miscApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { miscApi, tagsApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { validateDuplicateName } from '../utils/validation';
 
-const COLUMNS = [
+const BASE_COLUMNS = [
   { key: 'id', label: 'ID' },
   { key: 'name', label: 'Name' },
   { key: 'kind', label: 'Kind' },
   { key: 'url', label: 'URL' },
   { key: 'description', label: 'Description' },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 const FIELDS = [
@@ -45,6 +45,8 @@ function MiscPage() {
   const [tagFilter, setTagFilter] = useState('');
   const [kindFilter, setKindFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -65,6 +67,77 @@ function MiscPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS = useMemo(
+    () => [
+      ...BASE_COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await miscApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [allTags, fetchData, fetchTags]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      await miscApi.update(row.id, { [columnKey]: value });
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} misc item(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await miscApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   const handleSubmit = async (values) => {
     try {
@@ -149,6 +222,12 @@ function MiscPage() {
             setShowForm(true);
           }}
           onDelete={handleDelete}
+          editableColumns={['name', 'kind', 'url', 'description']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
         />
       )}
 

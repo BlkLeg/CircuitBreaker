@@ -4,7 +4,7 @@ import os
 import re
 import sys
 from contextlib import asynccontextmanager
-from datetime import UTC
+from datetime import datetime  # noqa: F401 — used by models imported transitively
 from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, HTTPException, Request
@@ -36,6 +36,9 @@ from app.api import (
     storage,
 )
 from app.api import rack as rack_api
+from app.api import (
+    tags as tags_api,
+)
 from app.api import telemetry as telemetry_api
 from app.api.admin import router as admin_router
 from app.api.admin_db import router as admin_db_router
@@ -53,11 +56,15 @@ from app.api.notifications import router as notifications_router
 from app.api.proxmox import router as proxmox_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
+from app.api.status import router as status_router
 from app.api.system import router as system_router
 from app.api.timezones import router as timezones_router
+from app.api.topologies import router as topologies_router
 from app.api.vault import router as vault_router
 from app.api.webhooks import router as webhooks_router
 from app.api.ws_discovery import router as ws_discovery_router
+from app.api.ws_status import router as ws_status_router
+from app.api.ws_status import set_status_main_loop
 from app.api.ws_topology import router as ws_topology_router
 from app.core import (
     compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
@@ -98,7 +105,6 @@ class _OAuthScrubFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
 
-_SQLITE_SCHEME = "sqlite:///"
 _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
 _FAVICON_FILENAME = "favicon.ico"
@@ -165,41 +171,14 @@ def _seed_default_docs(db) -> None:
 
 
 def _get_columns(conn, table: str) -> list[str]:
-    """Return the column names for a SQLite table."""
-    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]  # noqa: S608
+    """Return the column names for a table (PostgreSQL version)."""
+    from sqlalchemy import text  # local import — text only needed here
 
-
-def _backfill_log_timestamps(db) -> None:
-    """Backfill created_at_utc for log rows that still have NULL in that column.
-
-    Reads from the `timestamp` DateTime column (set at insert time by write_log)
-    and converts it to a UTC ISO-8601 string.  Rows where `timestamp` is None
-    or cannot be parsed receive the epoch sentinel "1970-01-01T00:00:00+00:00".
-
-    Accepts either an ORM Session (test fixtures) or a raw SQLite connection
-    (migration path).
-    """
-    from datetime import datetime
-
-    from sqlalchemy import text
-
-    _EPOCH = "1970-01-01T00:00:00+00:00"
-    rows = db.execute(
-        text("SELECT id, timestamp FROM logs WHERE created_at_utc IS NULL")
-    ).fetchall()
-    for log_id, ts in rows:
-        val = _EPOCH
-        if ts:
-            try:
-                dt = datetime.fromisoformat(str(ts))
-                val = dt.isoformat() if dt.tzinfo else dt.replace(tzinfo=UTC).isoformat()
-            except (ValueError, TypeError):
-                pass
-        db.execute(
-            text("UPDATE logs SET created_at_utc = :val WHERE id = :id"),
-            {"val": val, "id": log_id},
-        )
-    db.commit()
+    result = conn.execute(
+        text("SELECT column_name FROM information_schema.columns WHERE table_name = :t"),
+        {"t": table},
+    )
+    return [r[0] for r in result]
 
 
 def run_alembic_upgrade():
@@ -212,8 +191,8 @@ def run_alembic_upgrade():
     from app.db.session import engine
 
     # Resolve alembic.ini relative to this file so it works regardless of CWD.
-    # Docker: main.py at /app/src/app/main.py, alembic.ini at /app/alembic.ini (parent.parent.parent).
-    # Repo: main.py at <root>/apps/backend/src/app/main.py, alembic.ini at <root>/apps/backend/alembic.ini (parents[4]).
+    # Docker: main.py at /app/src/app/main.py, alembic.ini at /app/alembic.ini (parent.parent.parent).  # noqa: E501
+    # Repo: main.py at <root>/apps/backend/src/app/main.py, alembic.ini at <root>/apps/backend/alembic.ini (parents[4]).  # noqa: E501
     _p = Path(__file__).resolve()
     _alembic_candidates: list[str | Path | None] = [
         os.environ.get("CB_ALEMBIC_INI"),
@@ -297,6 +276,17 @@ async def lifespan(app: FastAPI):
     finally:
         _vault_db.close()
 
+    # ── Status page default seed ───────────────────────────────────────────
+    _status_db = SessionLocal()
+    try:
+        from app.services.status_page_service import get_or_create_default_page
+
+        get_or_create_default_page(_status_db)
+    except Exception as _se:  # noqa: BLE001
+        _logger.debug("Status page seed skipped or failed: %s", _se)
+    finally:
+        _status_db.close()
+
     # ── NATS message bus ───────────────────────────────────────────────────
     await nats_client.connect()
     _logger.info("NATS initialised (connected=%s)", nats_client.is_connected)
@@ -351,6 +341,7 @@ async def lifespan(app: FastAPI):
     # ── Register main event loop for APScheduler WS broadcasts ───────────
     loop = asyncio.get_running_loop()
     discovery_service.set_main_loop(loop)
+    set_status_main_loop(loop)
 
     # ── APScheduler — scheduled discovery jobs ────────────────────────────
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -478,6 +469,19 @@ async def lifespan(app: FastAPI):
     )
     _logger.info("Uptime monitor scheduled (%ds interval).", _monitor_interval)
 
+    # Status page polling — every 60s
+    from app.workers.status_worker import run_status_poll_job
+
+    scheduler.add_job(
+        run_status_poll_job,
+        trigger=_IT(minutes=1),
+        id="status_page_poll",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=120,
+    )
+    _logger.info("Status page poll scheduled (60s interval).")
+
     # Docker topology sync — only when docker_discovery_enabled
     docker_db = SessionLocal()
     try:
@@ -503,13 +507,18 @@ async def lifespan(app: FastAPI):
         discover_and_import,
         list_integrations,
         poll_node_telemetry,
+        poll_rrd_telemetry,
         poll_vm_telemetry,
+        refresh_proxmox_storage,
     )
 
     async def _proxmox_node_poll():
         _pdb = SessionLocal()
         try:
             await poll_node_telemetry(_pdb)
+        except Exception:
+            _pdb.rollback()
+            raise
         finally:
             _pdb.close()
 
@@ -517,6 +526,9 @@ async def lifespan(app: FastAPI):
         _pdb = SessionLocal()
         try:
             await poll_vm_telemetry(_pdb)
+        except Exception:
+            _pdb.rollback()
+            raise
         finally:
             _pdb.close()
 
@@ -530,6 +542,9 @@ async def lifespan(app: FastAPI):
                         await discover_and_import(_pdb, cfg)
                     except Exception as exc:
                         _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
+        except Exception:
+            _pdb.rollback()
+            raise
         finally:
             _pdb.close()
 
@@ -564,6 +579,43 @@ async def lifespan(app: FastAPI):
                 replace_existing=True,
                 max_instances=1,
             )
+            _pxmx_rrd_s = int(os.environ.get("PROXMOX_RRD_POLL_SECONDS", "300"))
+
+            async def _proxmox_rrd_poll():
+                _pdb = SessionLocal()
+                try:
+                    await poll_rrd_telemetry(_pdb)
+                except Exception:
+                    _pdb.rollback()
+                    raise
+                finally:
+                    _pdb.close()
+
+            scheduler.add_job(
+                _proxmox_rrd_poll,
+                trigger=_IT(seconds=_pxmx_rrd_s),
+                id="proxmox_rrd_telemetry",
+                replace_existing=True,
+                max_instances=1,
+            )
+
+            async def _proxmox_storage_refresh():
+                _pdb = SessionLocal()
+                try:
+                    await refresh_proxmox_storage(_pdb)
+                except Exception:
+                    _pdb.rollback()
+                    raise
+                finally:
+                    _pdb.close()
+
+            scheduler.add_job(
+                _proxmox_storage_refresh,
+                trigger=_IT(seconds=300),
+                id="proxmox_storage_refresh",
+                replace_existing=True,
+                max_instances=1,
+            )
             sync_interval = (
                 pxmx_db.query(func.min(IntegrationConfig.sync_interval_s))
                 .filter(
@@ -582,7 +634,8 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=120,
             )
             _logger.info(
-                "Proxmox scheduled: telemetry (nodes 30s, VMs 120s), full sync every %ds.",
+                "Proxmox scheduled: telemetry (nodes 30s, VMs 120s, RRD %ds), full sync every %ds.",
+                _pxmx_rrd_s,
                 sync_interval,
             )
     finally:
@@ -623,20 +676,36 @@ async def lifespan(app: FastAPI):
     finally:
         listener_db.close()
 
-    # ── Webhook and notification workers ──────────────────────────────────
-    from app.workers import discovery as discovery_worker
-    from app.workers import notification_worker, webhook_worker
+    # ── Webhook and notification workers (skip when running with dedicated worker
+    # containers, e.g. Docker Compose) ───────────────────────────────────────────
+    _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
+    if _run_inprocess_workers:
+        from app.workers import discovery as discovery_worker
+        from app.workers import notification_worker, webhook_worker
 
-    asyncio.create_task(webhook_worker.run_worker())
-    asyncio.create_task(notification_worker.run_worker())
-    asyncio.create_task(discovery_worker.run_worker())
-    _logger.info("Webhook, notification, and discovery workers started.")
+        asyncio.create_task(webhook_worker.run_worker())
+        asyncio.create_task(notification_worker.run_worker())
+        asyncio.create_task(discovery_worker.run_worker())
+        _logger.info("Webhook, notification, and discovery workers started (in-process).")
+    else:
+        _logger.info(
+            "CB_RUN_INPROCESS_WORKERS=false — webhook/notification/discovery workers "
+            "must run as separate containers."
+        )
 
     yield  # ── app is running ──
 
     await listener_service.stop()
-    scheduler.shutdown(wait=False)
-    _logger.info("APScheduler stopped.")
+
+    async def shutdown_scheduler():
+        scheduler.shutdown(wait=True)
+        await asyncio.sleep(1)
+
+    try:
+        await asyncio.wait_for(shutdown_scheduler(), timeout=10.0)
+        _logger.info("Scheduler shutdown complete")
+    except TimeoutError:
+        _logger.warning("Scheduler shutdown timed out after 10s")
 
     # ── Graceful NATS disconnect ───────────────────────────────────────────
     await nats_client.disconnect()
@@ -741,15 +810,19 @@ app.include_router(vault_router, prefix=f"{_V1}", tags=["vault"])
 app.include_router(metrics_router, prefix=f"{_V1}/metrics", tags=["metrics"])
 app.include_router(timezones_router, prefix=f"{_V1}/timezones", tags=["timezones"])
 app.include_router(rack_api.router, prefix=f"{_V1}/racks", tags=["racks"])
+app.include_router(tags_api.router, prefix=f"{_V1}/tags", tags=["tags"])
 
 app.include_router(capabilities_router, prefix=f"{_V1}/capabilities", tags=["capabilities"])
 app.include_router(cve_router, prefix=f"{_V1}/cve", tags=["cve"])
 app.include_router(monitor_router, prefix=f"{_V1}/monitors", tags=["monitors"])
 app.include_router(events_router, prefix=f"{_V1}/events", tags=["events"])
 app.include_router(webhooks_router, prefix=f"{_V1}/webhooks", tags=["webhooks"])
+app.include_router(status_router, prefix=f"{_V1}/status", tags=["status"])
+app.include_router(ws_status_router, prefix=f"{_V1}/status", tags=["status-ws"])
 app.include_router(notifications_router, prefix=f"{_V1}/notifications", tags=["notifications"])
 app.include_router(auth_oauth.router, prefix=f"{_V1}", tags=["oauth"])
 app.include_router(proxmox_router, prefix=f"{_V1}/integrations/proxmox", tags=["proxmox"])
+app.include_router(topologies_router, prefix=f"{_V1}/topologies", tags=["topologies"])
 
 
 # ── Health check ───────────────────────────────────────────────────────────
@@ -757,7 +830,7 @@ app.include_router(proxmox_router, prefix=f"{_V1}/integrations/proxmox", tags=["
 
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "v0.2.0", "db": "postgresql"}
 
 
 # ── Static files & SPA fallback ────────────────────────────────────────────
@@ -827,6 +900,18 @@ _branding_dir_data.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
 app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
 app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
+
+
+async def _static_cache_middleware(request: Request, call_next):
+    """Add Cache-Control for static uploads so browsers cache icons and branding."""
+    response = await call_next(request)
+    path = request.scope.get("path", "")
+    if path.startswith(("/uploads/", "/user-icons/", "/branding/")) and response.status_code == 200:
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    return response
+
+
+app.middleware("http")(_static_cache_middleware)
 
 
 @app.get("/favicon.ico", include_in_schema=False)

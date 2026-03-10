@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
-from app.core.security import create_token
+from app.core.security import client_hash_password, create_token, hash_password
 from app.db.models import Log, User, UserInvite, UserSession
 from app.db.session import get_db
 from app.services.settings_service import get_or_create_settings
@@ -203,9 +203,10 @@ def create_local_user(
     When generate_password=True a secure temp password is returned once in the
     response and never stored in plaintext or logs.  The account is flagged
     force_password_change=True so the user is required to set a new password on
-    first login.
+    first login. Passwords are stored as bcrypt(client_hash(plain)) so login
+    with the frontend (which sends password_hash only) works.
     """
-    from app.core.security import gravatar_hash, hash_password
+    from app.core.security import gravatar_hash
     from app.core.time import utcnow_iso
     from app.db.models import Log
     from app.services.auth_service import _validate_password
@@ -218,14 +219,16 @@ def create_local_user(
 
     if payload.generate_password:
         temp_password: str | None = _generate_temp_password()
-        hashed = hash_password(temp_password)  # type: ignore[arg-type]
+        client_hash = client_hash_password(temp_password)
+        hashed = hash_password(client_hash)
     else:
         if not payload.manual_password:
             raise HTTPException(
                 status_code=400, detail="manual_password is required when generate_password=False"
             )
         _validate_password(payload.manual_password)
-        hashed = hash_password(payload.manual_password)
+        client_hash = client_hash_password(payload.manual_password)
+        hashed = hash_password(client_hash)
         temp_password = None  # never expose manual passwords
 
     cfg = get_or_create_settings(db)
@@ -308,15 +311,26 @@ def update_user(
 @router.delete("/users/{user_id}", status_code=204)
 def delete_user(
     user_id: int,
+    permanent: bool = Query(False, description="If true, remove the user entirely (hard delete)."),
     db: Session = Depends(get_db),
     user: User = require_role("admin"),
 ):
-    """Soft-delete user (is_active=False)."""
+    """Soft-delete user (is_active=False) or, when permanent=true, remove the user entirely."""
     target = db.get(User, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target.id == 0:
         raise HTTPException(status_code=403, detail="Cannot delete service account")
+    if permanent:
+        from app.services.auth_service import delete_user_permanent
+
+        delete_user_permanent(
+            db,
+            user_id,
+            actor_id=user.id,
+            actor_name=user.display_name or user.email,
+        )
+        return
     target.is_active = False
     db.commit()
 

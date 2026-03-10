@@ -1,5 +1,8 @@
 """Auth endpoints: FastAPI-Users routers plus backward-compat legacy routes.
 
+API tokens (machine–machine): POST /auth/api-token, GET /auth/api-tokens,
+DELETE /auth/api-tokens/:id. Admin only; token shown once on create.
+
 Mounts:
   /api/v1/auth/jwt              — login, logout (FastAPI-Users OAuth2 format)
   /api/v1/auth                  — register, forgot-password, reset-password
@@ -10,6 +13,7 @@ Mounts:
   /api/v1/auth/me/avatar        — profile photo + display_name update (custom)
 """
 
+import hashlib
 import json
 import secrets
 from datetime import timedelta
@@ -17,14 +21,16 @@ from datetime import timedelta
 import jwt as _jwt
 import pyotp
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
+from app.core.auth_cookie import auth_response_with_cookie, clear_auth_cookie_response
 from app.core.rate_limit import get_limit, limiter
-from app.core.security import create_token, get_optional_user, hash_password
+from app.core.rbac import require_role
+from app.core.security import _extract_token, create_token, get_optional_user, hash_password
 from app.core.time import utcnow, utcnow_iso
 from app.core.users import auth_backend, fastapi_users
-from app.db.models import User
+from app.db.models import APIToken, User
 from app.db.session import get_db
 from app.schemas.auth import (
     LoginRequest,
@@ -58,8 +64,17 @@ user_me_router = APIRouter(tags=["users"])
 
 class AcceptInviteRequest(BaseModel):
     token: str
-    password: str
+    password: str | None = None
+    password_hash: str | None = None
     display_name: str | None = None
+
+    @model_validator(mode="after")
+    def require_password_or_hash(self):
+        if not self.password and not self.password_hash:
+            raise ValueError("Either password or password_hash is required")
+        if self.password and self.password_hash:
+            raise ValueError("Provide only one of password or password_hash")
+        return self
 
 
 class DemoAuthResponse(BaseModel):
@@ -81,10 +96,14 @@ def accept_invite_endpoint(
     from app.services.settings_service import get_or_create_settings
     from app.services.user_service import accept_invite as svc_accept_invite
 
-    user = svc_accept_invite(db, payload.token, payload.password, payload.display_name)
+    password_or_hash = (
+        payload.password_hash if payload.password_hash is not None else payload.password
+    )
+    user = svc_accept_invite(db, payload.token, password_or_hash, payload.display_name)
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
-    return AuthResponse(token=token, user=_to_profile(user))
+    body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
+    return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
 
 @router.post("/register", tags=["auth"])
@@ -100,7 +119,12 @@ def register_user(
     cfg = get_or_create_settings(db)
     if not getattr(cfg, "registration_open", True):
         raise HTTPException(status_code=403, detail="Registration is currently closed")
-    return svc_register(db, payload.email, payload.password, cfg, payload.display_name)
+    password_or_hash = (
+        payload.password_hash if payload.password_hash is not None else payload.password
+    )
+    result = svc_register(db, payload.email, password_or_hash, cfg, payload.display_name)
+    body = result.model_dump()
+    return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
 
 @router.post("/demo", response_model=DemoAuthResponse, tags=["auth"])
@@ -141,9 +165,10 @@ def create_demo_session(
         scopes=["read:*"],
         demo_expires=expires_at.isoformat(),
     )
-    return DemoAuthResponse(
+    body = DemoAuthResponse(
         token=token, user=_to_profile(demo_user), expires_at=expires_at.isoformat()
-    )
+    ).model_dump()
+    return auth_response_with_cookie(request, token, body, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -172,12 +197,16 @@ def login_compat(
     cfg = get_or_create_settings(db)
     ip = request.client.host if request.client else None
 
+    password_or_hash = (
+        payload.password_hash if payload.password_hash is not None else payload.password
+    )
+
     # Early check for force_password_change before creating a full session.
     email_norm = payload.email.strip().lower()
     user = db.query(User).filter(User.email == email_norm).first()
     if (
         user
-        and verify_password(payload.password, user.hashed_password)
+        and verify_password(password_or_hash, user.hashed_password)
         and getattr(user, "force_password_change", False)
     ):
         reset_login_attempts(db, user)
@@ -197,7 +226,7 @@ def login_compat(
     if user and getattr(user, "mfa_enabled", False):
         from app.core.security import verify_password as _vp
 
-        if _vp(payload.password, user.hashed_password):
+        if _vp(password_or_hash, user.hashed_password):
             from app.services.user_service import reset_login_attempts as _rla
 
             _rla(db, user)
@@ -212,12 +241,23 @@ def login_compat(
             )
             return {"requires_mfa": True, "mfa_token": mfa_token}
 
-    return svc_login(db, payload.email, payload.password, cfg, ip, request=request)
+    result = svc_login(db, payload.email, password_or_hash, cfg, ip, request=request)
+    body = result.model_dump()
+    return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
 
 class ForceChangePasswordRequest(BaseModel):
     change_token: str
-    new_password: str
+    new_password: str | None = None
+    new_password_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_new_password_or_hash(self):
+        if not self.new_password and not self.new_password_hash:
+            raise ValueError("Either new_password or new_password_hash is required")
+        if self.new_password and self.new_password_hash:
+            raise ValueError("Provide only one of new_password or new_password_hash")
+        return self
 
 
 @router.post("/force-change-password", tags=["auth"])
@@ -260,14 +300,138 @@ def force_change_password(
     from app.services.auth_service import _make_token, _to_profile
     from app.services.user_service import record_session
 
+    new_password_or_hash = (
+        payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
+    )
     reset_local_user_password(
-        db, user, payload.new_password, source="force_change", update_last_login=True
+        db, user, new_password_or_hash, source="force_change", update_last_login=True
     )
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
     from app.schemas.auth import AuthResponse
 
-    return AuthResponse(token=token, user=_to_profile(user))
+    body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
+    return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
+
+
+@router.post("/logout", tags=["auth"], status_code=204)
+@limiter.limit(lambda: get_limit("auth"))
+def logout(request: Request):
+    """Clear the session cookie. No auth required."""
+    return clear_auth_cookie_response()
+
+
+# ---------------------------------------------------------------------------
+# API tokens (machine–machine, admin only, token shown once on create)
+# ---------------------------------------------------------------------------
+
+
+class CreateAPITokenRequest(BaseModel):
+    label: str | None = None
+    expires_at: str | None = None  # ISO datetime or None for no expiry
+
+
+class APITokenItem(BaseModel):
+    id: int
+    label: str | None
+    created_at: str
+    expires_at: str | None
+    last_used_at: str | None
+
+
+class CreateAPITokenResponse(BaseModel):
+    token: str
+    id: int
+    label: str | None
+    expires_at: str | None
+
+
+@router.post("/api-token", response_model=CreateAPITokenResponse, tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def create_api_token(
+    request: Request,
+    payload: CreateAPITokenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = require_role("admin"),
+):
+    """Create a long-lived API token. The raw token is returned once; store it securely."""
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = None
+    if payload.expires_at:
+        try:
+            from datetime import datetime
+
+            expires_at = datetime.fromisoformat(payload.expires_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError) as err:
+            raise HTTPException(
+                status_code=400, detail="expires_at must be ISO 8601 datetime"
+            ) from err
+    api_token = APIToken(
+        token_hash=token_hash,
+        label=payload.label,
+        created_by=current_user.id,
+        expires_at=expires_at,
+    )
+    db.add(api_token)
+    db.commit()
+    db.refresh(api_token)
+    return CreateAPITokenResponse(
+        token=raw_token,
+        id=api_token.id,
+        label=api_token.label,
+        expires_at=payload.expires_at,
+    )
+
+
+@router.get("/api-tokens", response_model=list[APITokenItem], tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def list_api_tokens(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = require_role("admin"),
+):
+    """List API tokens created by the current user (admin)."""
+    tokens = (
+        db.query(APIToken)
+        .filter(APIToken.created_by == current_user.id)
+        .order_by(APIToken.created_at.desc())
+        .all()
+    )
+    return [
+        APITokenItem(
+            id=t.id,
+            label=t.label,
+            created_at=t.created_at.isoformat() if t.created_at else "",
+            expires_at=t.expires_at.isoformat() if t.expires_at else None,
+            last_used_at=t.last_used_at.isoformat() if t.last_used_at else None,
+        )
+        for t in tokens
+    ]
+
+
+@router.delete("/api-tokens/{token_id}", status_code=204, tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def revoke_api_token(
+    request: Request,
+    token_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = require_role("admin"),
+):
+    """Revoke an API token. Only the creating admin can revoke their tokens."""
+    api_token = (
+        db.query(APIToken)
+        .filter(
+            APIToken.id == token_id,
+            APIToken.created_by == current_user.id,
+        )
+        .first()
+    )
+    if not api_token:
+        raise HTTPException(status_code=404, detail="API token not found")
+    db.delete(api_token)
+    db.commit()
 
 
 @router.post("/vault-reset", tags=["auth"])
@@ -282,14 +446,19 @@ def vault_reset_password(
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
         raise HTTPException(status_code=503, detail="Auth not configured")
-    return svc_vault_reset_password(
+    new_password_or_hash = (
+        payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
+    )
+    result = svc_vault_reset_password(
         db,
         payload.email,
         payload.vault_key,
-        payload.new_password,
+        new_password_or_hash,
         cfg,
         request=request,
     )
+    body = result.model_dump()
+    return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -421,8 +590,22 @@ class SessionItem(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+    current_password: str | None = None
+    current_password_hash: str | None = None
+    new_password: str | None = None
+    new_password_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_passwords_or_hashes(self):
+        if not self.current_password and not self.current_password_hash:
+            raise ValueError("Either current_password or current_password_hash is required")
+        if self.current_password and self.current_password_hash:
+            raise ValueError("Provide only one of current_password or current_password_hash")
+        if not self.new_password and not self.new_password_hash:
+            raise ValueError("Either new_password or new_password_hash is required")
+        if self.new_password and self.new_password_hash:
+            raise ValueError("Provide only one of new_password or new_password_hash")
+        return self
 
 
 @user_me_router.get("/me/sessions", response_model=list[SessionItem])
@@ -490,8 +673,7 @@ def revoke_all_other_sessions(
         return
     from app.services.user_service import _hash_token, revoke_all_sessions
 
-    auth_header = request.headers.get("Authorization", "")
-    token = auth_header[len("Bearer ") :] if auth_header.startswith("Bearer ") else None
+    token = _extract_token(request)
     except_hash = _hash_token(token) if token else None
     revoke_all_sessions(db, user_id, except_token_hash=except_hash)
 
@@ -510,17 +692,26 @@ def change_password(
     if user_id == 0:
         raise HTTPException(status_code=403, detail="Service account has no password")
     from app.core.security import verify_password
-    from app.services.auth_service import _validate_password
+    from app.services.auth_service import _is_client_hash, _validate_password
 
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
-    if not verify_password(payload.current_password, user.hashed_password):
+    current_or_hash = (
+        payload.current_password_hash
+        if payload.current_password_hash is not None
+        else payload.current_password
+    )
+    if not verify_password(current_or_hash, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    _validate_password(payload.new_password)
+    new_or_hash = (
+        payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
+    )
+    if not _is_client_hash(new_or_hash):
+        _validate_password(new_or_hash)
     from app.core.security import hash_password
 
-    user.hashed_password = hash_password(payload.new_password)
+    user.hashed_password = hash_password(new_or_hash)
     db.commit()
 
 
@@ -664,9 +855,9 @@ def mfa_activate(
     db.commit()
 
     token = _make_token(user, cfg)
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        revoke_token_session(db, auth_header[len("Bearer ") :].strip())
+    current_token = _extract_token(request)
+    if current_token:
+        revoke_token_session(db, current_token.strip())
     record_session(db, user, request, token, cfg)
     from app.core.audit import log_audit
 
@@ -674,7 +865,8 @@ def mfa_activate(
 
     from app.schemas.auth import AuthResponse
 
-    return AuthResponse(token=token, user=_to_profile(user), backup_codes=raw_codes)
+    body = AuthResponse(token=token, user=_to_profile(user), backup_codes=raw_codes).model_dump()
+    return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
 
 @router.post("/mfa/verify", tags=["auth"])
@@ -725,7 +917,8 @@ def mfa_verify(
             record_session(db, user, request, token, cfg)
             from app.schemas.auth import AuthResponse
 
-            return AuthResponse(token=token, user=_to_profile(user))
+            body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
+            return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
     # Try backup codes
     if user.backup_codes:
@@ -741,7 +934,8 @@ def mfa_verify(
                 record_session(db, user, request, token, cfg)
                 from app.schemas.auth import AuthResponse
 
-                return AuthResponse(token=token, user=_to_profile(user))
+                body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
+                return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
     raise HTTPException(status_code=401, detail="Invalid or expired MFA code")
 

@@ -1026,6 +1026,7 @@ export default function SettingsPage() {
                       <option value="hierarchical_network">Network Hierarchy</option>
                       <option value="radial">Radial Services</option>
                       <option value="elk_layered">VLAN Flow (ELK)</option>
+                      <option value="dagre_lr">Dagre (VLAN / LR)</option>
                       <option value="circular_cluster">Docker Clusters</option>
                       <option value="grid_rack">Rack Grid</option>
                       <option value="concentric">Concentric Rings</option>

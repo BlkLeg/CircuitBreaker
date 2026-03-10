@@ -100,6 +100,13 @@ def _make_token(user: User, cfg: AppSettings) -> str:
     )
 
 
+def _is_client_hash(value: str) -> bool:
+    """True if value looks like a client-side SHA256 hex (64 hex chars)."""
+    if len(value) != 64:
+        return False
+    return all(c in "0123456789abcdef" for c in value.lower())
+
+
 def _validate_password(password: str) -> None:
     """Enforce complexity rules matching the frontend RULES array."""
     errors = []
@@ -160,7 +167,7 @@ def _normalise_smtp_bootstrap_payload(
 def reset_local_user_password(
     db: Session,
     user: User,
-    new_password: str,
+    new_password_or_hash: str,
     *,
     source: str,
     update_last_login: bool = False,
@@ -173,13 +180,17 @@ def reset_local_user_password(
             status_code=400, detail="Password reset is unavailable for this account"
         )
 
-    if len(new_password) > _MAX_PASSWORD_LEN:
+    if len(new_password_or_hash) > _MAX_PASSWORD_LEN:
         raise HTTPException(status_code=400, detail="Password is too long")
-    _validate_password(new_password)
+    if _is_client_hash(new_password_or_hash):
+        # Client sent SHA256(password+salt) hex; store bcrypt of that hash.
+        pass
+    else:
+        _validate_password(new_password_or_hash)
 
     revoke_all_sessions(db, user.id)
 
-    user.hashed_password = hash_password(new_password)
+    user.hashed_password = hash_password(new_password_or_hash)
     user.force_password_change = False
     user.login_attempts = 0
     user.locked_until = None
@@ -207,7 +218,7 @@ def vault_reset_password(
     db: Session,
     email: str,
     vault_key: str,
-    new_password: str,
+    new_password_or_hash: str,
     cfg: AppSettings,
     *,
     request=None,
@@ -255,7 +266,7 @@ def vault_reset_password(
         raise generic_error
 
     reset_local_user_password(
-        db, user, new_password, source="vault_key", update_last_login=auto_login
+        db, user, new_password_or_hash, source="vault_key", update_last_login=auto_login
     )
 
     if not auto_login:
@@ -269,7 +280,7 @@ def vault_reset_password(
 def register(
     db: Session,
     email: str,
-    password: str,
+    password_or_hash: str,
     cfg: AppSettings,
     display_name: str | None = None,
 ) -> AuthResponse:
@@ -281,16 +292,19 @@ def register(
 
     if len(email) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Invalid email address")
-    if len(password) > _MAX_PASSWORD_LEN:
+    if len(password_or_hash) > _MAX_PASSWORD_LEN:
         raise HTTPException(status_code=400, detail="Password is too long")
-    _validate_password(password)
+    if _is_client_hash(password_or_hash):
+        pass
+    else:
+        _validate_password(password_or_hash)
 
     is_first_user = db.query(User).count() == 0
 
     now = utcnow_iso()
     user = User(
         email=email.strip().lower(),
-        hashed_password=hash_password(password),
+        hashed_password=hash_password(password_or_hash),
         gravatar_hash=gravatar_hash(email),
         display_name=display_name.strip()
         if display_name and display_name.strip()
@@ -400,7 +414,7 @@ def bootstrap_initialize(
     db: Session,
     cfg: AppSettings,
     email: str,
-    password: str,
+    password_or_hash: str,
     theme_preset: str,
     display_name: str | None = None,
     api_base_url: str | None = None,
@@ -423,9 +437,12 @@ def bootstrap_initialize(
     public_base_url = (api_base_url or "").strip() or None
     if len(email_norm) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(email_norm):
         raise HTTPException(status_code=400, detail="Invalid email address")
-    if len(password) > _MAX_PASSWORD_LEN:
+    if len(password_or_hash) > _MAX_PASSWORD_LEN:
         raise HTTPException(status_code=400, detail="Password is too long")
-    _validate_password(password)
+    if _is_client_hash(password_or_hash):
+        pass
+    else:
+        _validate_password(password_or_hash)
     smtp_bootstrap = _normalise_smtp_bootstrap_payload(
         smtp_enabled=smtp_enabled,
         smtp_host=smtp_host,
@@ -459,7 +476,7 @@ def bootstrap_initialize(
     now = utcnow_iso()
     user = User(
         email=email_norm,
-        hashed_password=hash_password(password),
+        hashed_password=hash_password(password_or_hash),
         gravatar_hash=gravatar_hash(email_norm),
         display_name=_derive_display_name(email_norm, display_name),
         language=language or "en",
@@ -734,7 +751,7 @@ def bootstrap_initialize_oauth(
 def login(
     db: Session,
     email: str,
-    password: str,
+    password_or_hash: str,
     cfg: AppSettings,
     ip_address: str | None = None,
     request=None,
@@ -743,7 +760,7 @@ def login(
     from app.services.user_service import record_failed_login, record_session, reset_login_attempts
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
-    if not user or not verify_password(password, user.hashed_password):
+    if not user or not verify_password(password_or_hash, user.hashed_password):
         if user:
             record_failed_login(db, user, cfg)
         write_log(
@@ -897,4 +914,36 @@ def delete_account(db: Session, user_id: int) -> None:
         category="auth",
         actor_name=actor_name,
         actor_id=user_id,
+    )
+
+
+def delete_user_permanent(db: Session, user_id: int, *, actor_id: int, actor_name: str) -> None:
+    """Permanently remove a user (admin only). Cleans profile photo and deletes the user row."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    target_email = user.email
+    target_name = user.display_name or user.email
+
+    if user.profile_photo:
+        photo_path = _PROFILES_DIR / user.profile_photo
+        photo_path.unlink(missing_ok=True)
+
+    db.delete(user)
+    db.commit()
+
+    from app.services.log_service import write_log
+
+    write_log(
+        db=None,
+        action="user_removed_permanent",
+        entity_type="user",
+        entity_id=user_id,
+        entity_name=target_name,
+        severity="info",
+        category="admin",
+        actor_name=actor_name,
+        actor_id=actor_id,
+        details=json.dumps({"email": target_email}),
     )

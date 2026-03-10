@@ -64,7 +64,7 @@ def test_webhooks_rbac_viewer_cannot_post_editor_can():
         return active_user_id["value"]
 
     app = FastAPI()
-    app.include_router(webhooks_router, prefix="/api/v1")
+    app.include_router(webhooks_router, prefix="/api/v1/webhooks")
     app.dependency_overrides[get_db] = _db_override
     app.dependency_overrides[get_optional_user] = _user_override
     client = TestClient(app)

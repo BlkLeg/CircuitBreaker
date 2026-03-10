@@ -1,4 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
 export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComplete }) {
   const [phase, setPhase] = useState('starting');
@@ -6,13 +12,22 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
   const [percent, setPercent] = useState(0);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [completedInSeconds, setCompletedInSeconds] = useState(null);
+  const startTimeRef = useRef(null);
 
   useEffect(() => {
     const run = async () => {
+      startTimeRef.current = Date.now();
+      setCompletedInSeconds(null);
+      setElapsedSeconds(0);
       try {
         const { proxmoxApi } = await import('../../api/client');
         const res = await proxmoxApi.discover(integrationId);
         const data = res.data;
+        setCompletedInSeconds(
+          startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : null
+        );
         setResult(data);
         setPhase('done');
         setPercent(100);
@@ -23,6 +38,9 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         );
         if (onComplete) onComplete(data);
       } catch (e) {
+        setCompletedInSeconds(
+          startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : null
+        );
         setError(e.message || 'Discovery failed');
         setPhase('error');
       }
@@ -31,6 +49,17 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [integrationId]);
+
+  // Timer: update elapsed every second while scanning
+  useEffect(() => {
+    if (phase !== 'starting') return;
+    const interval = setInterval(() => {
+      if (startTimeRef.current) {
+        setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [phase]);
 
   return (
     <div
@@ -79,6 +108,15 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
 
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 16px' }}>
           {message}
+        </p>
+
+        {/* Timer */}
+        <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: '0 0 12px' }}>
+          {phase === 'starting'
+            ? `Elapsed: ${formatDuration(elapsedSeconds)}`
+            : completedInSeconds != null
+              ? `Completed in ${formatDuration(completedInSeconds)}`
+              : null}
         </p>
 
         {/* Progress bar */}

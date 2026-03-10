@@ -12,6 +12,7 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 - Audit history with filters and search.
 - Auto-Discovery (Beta) with review-before-merge workflow.
 - Backup export and restore import.
+- **Status Page (v2)**: Zabbix-density dashboard at `/status` with group cards, Plotly charts (uptime, events), events table, live WebSocket updates, and configurable groups via Settings.
 
 ---
 
@@ -44,6 +45,7 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 ### Health and Alerts
 
+- Status Page v2: Zabbix-density dashboard, events API, status WebSocket, dashboard cache (v0.2.0).
 - Broader health status integrations.
 - More alert and notification options.
 

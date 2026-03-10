@@ -150,7 +150,7 @@ async def process_alert(msg):
                 await notify_email(provider_config, title, message, severity)
 
 
-async def run_worker():
+async def run_worker(shutdown_event: asyncio.Event = None):
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()
@@ -164,13 +164,22 @@ async def run_worker():
     logger.info("Notification worker started and listening on alert.>")
     _touch_healthy()
 
-    while True:
-        await asyncio.sleep(30)
+    while not (shutdown_event and shutdown_event.is_set()):
+        try:
+            if shutdown_event:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=30.0)
+            else:
+                await asyncio.sleep(30)
+        except TimeoutError:
+            pass
+
         _touch_healthy()
         if not nats_client.is_connected:
             logger.warning("Notification worker: NATS not connected — waiting for auto-reconnect")
 
 
 if __name__ == "__main__":
+    from app.workers import run_with_graceful_shutdown
+
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_worker())
+    asyncio.run(run_with_graceful_shutdown(run_worker))

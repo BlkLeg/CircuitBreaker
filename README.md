@@ -236,6 +236,8 @@ Copy `docker/.env.example` to `docker/.env` and set as needed:
 | `CB_DB_URL` | SQLite | Override to `postgresql://breaker:pass@postgres:5432/circuitbreaker` to use the optional PG service. |
 | `CB_VAULT_KEY` | _(auto)_ | Fernet key for secret encryption. Auto-generated during OOBE; persisted to `/data/.env` in the volume. |
 | `CB_DB_PASSWORD` | `breaker` | PostgreSQL password (only used with `--profile pg`). |
+| `DB_POOL_SIZE` | `10` | PostgreSQL connection pool size. On Raspberry Pi or low-memory hosts, set to `3`–`5` to reduce memory. |
+| `DB_MAX_OVERFLOW` | `10` | Extra connections allowed beyond the pool. On Pi, set to `2`–`3`. |
 
 ### Persistence Layout
 

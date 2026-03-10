@@ -3,6 +3,11 @@ import os
 # Force NATS to fail fast in tests (unreachable port) so lifespan doesn't hang
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
+# v0.2.0: PG-specific tests require CB_TEST_DB_URL to be set.
+# Default stays sqlite:///:memory: so existing tests run without Docker.
+# Example: CB_TEST_DB_URL=postgresql://breaker:breaker@localhost:5432/circuitbreaker_test
+_CB_TEST_DB_URL = os.environ.get("CB_TEST_DB_URL")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -19,7 +24,7 @@ limiter.enabled = False  # Disable rate-limiting during tests
 from app.db import models  # noqa: F401 E402 — register models with metadata
 from app.main import app  # noqa: E402
 
-TEST_DB_URL = "sqlite:///:memory:"
+TEST_DB_URL = _CB_TEST_DB_URL or "sqlite:///:memory:"
 
 
 @pytest.fixture(scope="function")

@@ -342,6 +342,7 @@ def run_all_monitors(db: Session) -> None:
         try:
             run_monitor(db, monitor)
         except Exception as exc:
+            db.rollback()
             logger.warning("Monitor check failed for hardware_id=%s: %s", monitor.hardware_id, exc)
 
 
@@ -353,7 +354,9 @@ def run_all_monitors_job() -> None:
     try:
         run_all_monitors(db)
     except Exception as exc:
+        db.rollback()
         logger.error("run_all_monitors_job failed: %s", exc)
+        raise
     finally:
         db.close()
 

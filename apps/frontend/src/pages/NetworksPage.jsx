@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { networksApi, hardwareApi, computeUnitsApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { networksApi, hardwareApi, computeUnitsApi, tagsApi } from '../api/client';
 import NetworkDetail from '../components/details/NetworkDetail';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
@@ -25,24 +26,17 @@ function NetworksPage() {
   const [vlanFilter, setVlanFilter] = useState('');
   const [hwFilter, setHwFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
-  const COLUMNS = useMemo(
-    () => [
-      { key: 'id', label: 'ID' },
-      { key: 'name', label: 'Name' },
-      { key: 'cidr', label: 'CIDR' },
-      { key: 'vlan_id', label: 'VLAN' },
-      { key: 'gateway', label: 'Gateway IP' },
-      {
-        key: 'gateway_hardware_id',
-        label: 'Gateway Hardware',
-        render: (v) => hardware.find((h) => h.id === v)?.name ?? '—',
-      },
-      { key: 'description', label: 'Description' },
-      { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
-    ],
-    [hardware]
-  );
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
 
   const FIELDS = useMemo(
     () => [
@@ -92,6 +86,80 @@ function NetworksPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS = useMemo(
+    () => [
+      { key: 'id', label: 'ID' },
+      { key: 'name', label: 'Name' },
+      { key: 'cidr', label: 'CIDR' },
+      { key: 'vlan_id', label: 'VLAN' },
+      { key: 'gateway', label: 'Gateway IP' },
+      {
+        key: 'gateway_hardware_id',
+        label: 'Gateway Hardware',
+        render: (v) => hardware.find((h) => h.id === v)?.name ?? '—',
+      },
+      { key: 'description', label: 'Description' },
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await networksApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [hardware, allTags, fetchData, fetchTags]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      const payload = { [columnKey]: value };
+      if (columnKey === 'vlan_id') payload[columnKey] = value === '' ? null : Number(value);
+      await networksApi.update(row.id, payload);
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} network(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await networksApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   // We can only pre-filter if we have member data, which NetworkDetail fetches lazily.
   // For now, display all networks but show a "filtered by hardware" chip to
@@ -205,6 +273,12 @@ function NetworksPage() {
           }}
           onDelete={handleDelete}
           onRowClick={(row) => setDetailTarget(row)}
+          editableColumns={['name', 'cidr', 'gateway', 'description']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
         />
       )}
 

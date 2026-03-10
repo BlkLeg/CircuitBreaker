@@ -13,10 +13,15 @@ import {
   parseLayoutData,
   resolveNonOverlappingPosition,
 } from '../utils/mapGeometryUtils';
-import { getNodeRank, groupDockerIntoBoundaries } from '../utils/mapDataUtils';
+import {
+  getNodeRank,
+  groupDockerIntoBoundaries,
+  proxmoxClusterDetected,
+} from '../utils/mapDataUtils';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
-import { getDagreLayout } from '../utils/layouts';
+import { getDagreLayout, getDagreViewportOptions } from '../utils/layouts';
 import { groupNodesIntoCloud } from '../utils/cloudView';
+import { VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 
 /**
  * Encapsulates the graph data-loading logic (fetchData, autoPlaceNew, drain
@@ -49,6 +54,8 @@ export function useMapDataLoad({
   batchPlacedCountRef,
   saveLayoutRef,
   hasRestoredViewport,
+  unmountedRef,
+  containerRef,
   // ReactFlow callbacks
   fitView,
   setViewport,
@@ -295,6 +302,7 @@ export function useMapDataLoad({
           color: boundary.color || null,
           fillOpacity: boundary.fillOpacity ?? null,
           shape: boundary.shape || 'rectangle',
+          behindNodes: boundary.behindNodes ?? false,
         }));
 
       const dockerAutoBoundaries = groupDockerIntoBoundaries(
@@ -316,6 +324,7 @@ export function useMapDataLoad({
           }))
       );
 
+      let nodesForProxmox = null;
       if (savedNodePositions) {
         const mergedNodes = rawNodesWithClusterHints.map((n) => {
           const shapeData = savedNodeShapes[n.id]
@@ -339,7 +348,9 @@ export function useMapDataLoad({
         setEdges(applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides));
         setLayoutEngine('manual');
       } else {
-        const layout = getDagreLayout(rawNodesWithClusterHints, rawE, 'TB');
+        const viewportWidth = containerRef?.current?.getBoundingClientRect?.()?.width;
+        const dagreOptions = getDagreViewportOptions(viewportWidth);
+        const layout = getDagreLayout(rawNodesWithClusterHints, rawE, 'TB', dagreOptions);
         let initialNodes = layout.nodes;
         if (cloudViewEnabled) {
           initialNodes = groupNodesIntoCloud(initialNodes);
@@ -347,19 +358,42 @@ export function useMapDataLoad({
         setNodes(initialNodes);
         setEdges(applyEdgeSides(initialNodes, layout.edges, {}));
         setLayoutEngine(settings?.graph_default_layout || 'dagre');
+        nodesForProxmox = initialNodes;
       }
 
       setTimeout(() => {
+        if (unmountedRef?.current) return;
         const saved = localStorage.getItem('cb_map_viewport');
         if (saved && !hasRestoredViewport.current) {
           try {
             setViewport(JSON.parse(saved));
             hasRestoredViewport.current = true;
           } catch {
-            fitView({ padding: isMobile ? 0.35 : 0.2 });
+            fitView({
+              ...VIEWPORT_FIT_DEFAULTS,
+              padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
+            });
           }
         } else {
-          fitView({ padding: isMobile ? 0.35 : 0.2 });
+          fitView({
+            ...VIEWPORT_FIT_DEFAULTS,
+            padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
+          });
+          if (nodesForProxmox && proxmoxClusterDetected(nodesForProxmox)) {
+            const hypervisorNodes = nodesForProxmox.filter((n) => n.data?.role === 'hypervisor');
+            if (hypervisorNodes.length > 0) {
+              setTimeout(() => {
+                if (unmountedRef?.current) return;
+                fitView({
+                  nodes: hypervisorNodes,
+                  padding: 0.15,
+                  duration: 1200,
+                  minZoom: VIEWPORT_FIT_DEFAULTS.minZoom,
+                  maxZoom: VIEWPORT_FIT_DEFAULTS.maxZoom,
+                });
+              }, 900);
+            }
+          }
         }
       }, 50);
     } catch (err) {
@@ -368,6 +402,8 @@ export function useMapDataLoad({
       setLoading(false);
     }
   }, [
+    containerRef,
+    unmountedRef,
     envFilter,
     includeTypes,
     fitView,

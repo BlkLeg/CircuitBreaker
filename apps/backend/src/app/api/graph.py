@@ -1,10 +1,12 @@
+import hashlib
 import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.security import require_write_auth
@@ -904,21 +906,46 @@ def build_topology_graph(
     return {"nodes": nodes, "edges": edges}
 
 
+def _topology_etag(
+    db: Session,
+    environment: str | None,
+    environment_id: int | None,
+    rack_id: int | None,
+    include: str,
+) -> str:
+    """Lightweight version string for topology (for ETag / If-None-Match)."""
+    parts = [f"env={environment}", f"eid={environment_id}", f"rack={rack_id}", f"inc={include}"]
+    for model in (Hardware, ComputeUnit, Service, Network, Storage):
+        try:
+            row = db.execute(select(func.max(model.updated_at))).scalar_one_or_none()
+            parts.append(f"{model.__tablename__}={row!s}")
+        except Exception:
+            parts.append(f"{model.__tablename__}=none")
+    h = hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+    return h
+
+
 @router.get("/topology")
 def get_topology(
+    request: Request,
     environment: str | None = Query(None),
     environment_id: int | None = Query(None),
     rack_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     db: Session = Depends(get_db),
 ):
-    return build_topology_graph(
+    etag = _topology_etag(db, environment, environment_id, rack_id, include)
+    if_none_match = (request.headers.get("if-none-match") or "").strip().strip('"')
+    if if_none_match and if_none_match == etag:
+        return Response(status_code=304)
+    data = build_topology_graph(
         db=db,
         environment=environment,
         environment_id=environment_id,
         rack_id=rack_id,
         include=include,
     )
+    return JSONResponse(content=data, headers={"ETag": f'"{etag}"'})
 
 
 @router.get("/layout")

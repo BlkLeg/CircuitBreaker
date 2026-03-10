@@ -231,14 +231,19 @@ def _upsert_oauth_user(
     return user, is_new
 
 
-def _issue_jwt_and_redirect(user: User, base_url: str, db: Session) -> RedirectResponse:
+def _issue_jwt_and_redirect(
+    user: User, base_url: str, db: Session, request: Request
+) -> RedirectResponse:
     """Issue a CB JWT for the user and redirect to frontend with token."""
+    from app.core.auth_cookie import set_auth_cookie_on_response
     from app.services.auth_service import _make_token
     from app.services.settings_service import get_or_create_settings
 
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
-    return RedirectResponse(url=f"{base_url}/?oauth_token={token}", status_code=302)
+    response = RedirectResponse(url=f"{base_url}/?oauth_token={token}", status_code=302)
+    set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
+    return response
 
 
 def _bootstrap_redirect_or_none(
@@ -246,6 +251,7 @@ def _bootstrap_redirect_or_none(
     base_url: str,
     provider_name: str,
     db: Session,
+    request: Request,
 ) -> RedirectResponse | None:
     """Redirect to OOBE bootstrap flow whenever setup hasn't been completed yet.
 
@@ -254,6 +260,7 @@ def _bootstrap_redirect_or_none(
     """
     import secrets as _secrets_mod
 
+    from app.core.auth_cookie import set_auth_cookie_on_response
     from app.services.auth_service import _make_token
     from app.services.settings_service import get_or_create_settings
 
@@ -266,10 +273,12 @@ def _bootstrap_redirect_or_none(
         cfg.jwt_secret = _secrets_mod.token_hex(32)
         db.commit()
     token = _make_token(user, cfg)
-    return RedirectResponse(
+    response = RedirectResponse(
         url=f"{base_url}/oobe?oauth_token={token}&bootstrap=1&provider={provider_name}",
         status_code=302,
     )
+    set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
+    return response
 
 
 def _client_secret(cfg: dict) -> str:
@@ -372,10 +381,10 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
         {"access_token": access_token},
         avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db)
+    return _issue_jwt_and_redirect(user, base_url, db, request)
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +463,10 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
         {"access_token": access_token},
         avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db)
+    return _issue_jwt_and_redirect(user, base_url, db, request)
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +569,7 @@ async def oidc_callback(
         {"access_token": access_token},
         avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
     if bootstrap_redir:
         return bootstrap_redir
-    return _issue_jwt_and_redirect(user, base_url, db)
+    return _issue_jwt_and_redirect(user, base_url, db, request)

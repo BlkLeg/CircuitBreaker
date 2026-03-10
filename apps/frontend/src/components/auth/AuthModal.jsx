@@ -105,12 +105,22 @@ function AuthModal({ isOpen, onClose }) {
           navigate('/auth/change-password', { state: { change_token: res.data.change_token } });
           return;
         }
-        const { token, user: userData } = res.data;
+        const token = res.data?.token;
+        const userData = res.data?.user;
+        if (!token || !userData) {
+          setError('Invalid login response. Please try again.');
+          return;
+        }
         login(token, userData);
       } else {
         await authApi.register(email, password, displayName || undefined);
         const loginRes = await authApi.login(email, password);
-        const { token, user: registeredUser } = loginRes.data;
+        const token = loginRes.data?.token;
+        const registeredUser = loginRes.data?.user;
+        if (!token || !registeredUser) {
+          setError('Account created but login failed. Please sign in.');
+          return;
+        }
         if (photoFile) {
           try {
             const fd = new FormData();

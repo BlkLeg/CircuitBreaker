@@ -14,7 +14,7 @@ from app.core.rbac import require_role
 from app.db.models import WebhookDelivery, WebhookRule
 from app.db.session import get_db
 
-router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+router = APIRouter(tags=["webhooks"])
 
 _NOT_FOUND = "Webhook not found"
 _MASK = "********"

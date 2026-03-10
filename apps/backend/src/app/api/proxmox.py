@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.schemas.proxmox import (
     ProxmoxActionRequest,
     ProxmoxActionResponse,
+    ProxmoxClusterOverviewResponse,
     ProxmoxConfigCreate,
     ProxmoxConfigOut,
     ProxmoxConfigUpdate,
@@ -196,6 +197,43 @@ async def discover_proxmox_cluster(
         details=f"nodes={result['nodes_imported']} vms={result['vms_imported']} cts={result['cts_imported']}",
     )
     return result
+
+
+@router.get("/cluster-overview", response_model=ProxmoxClusterOverviewResponse)
+async def get_cluster_overview(
+    integration_id: int = Query(..., description="Proxmox integration ID"),
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
+):
+    """Return cluster overview for dashboard: cluster info, problems, time-series, storage. Cached 90s."""
+    import json
+
+    from app.core.nats_client import nats_client
+
+    cache_key = f"proxmox_overview:{integration_id}"
+
+    if nats_client.is_connected:
+        try:
+            cached_data = await nats_client.kv_get("dashboard_cache", cache_key)
+            if cached_data:
+                payload = json.loads(cached_data)
+                return ProxmoxClusterOverviewResponse(**payload)
+        except Exception:
+            pass
+
+    config = proxmox_service.get_integration(db, integration_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+    payload = await proxmox_service.get_cluster_overview(db, integration_id)
+
+    if nats_client.is_connected:
+        try:
+            await nats_client.kv_put("dashboard_cache", cache_key, json.dumps(payload))
+        except Exception:
+            pass
+
+    return ProxmoxClusterOverviewResponse(**payload)
 
 
 @router.get("/{integration_id}/status", response_model=ProxmoxSyncStatus)

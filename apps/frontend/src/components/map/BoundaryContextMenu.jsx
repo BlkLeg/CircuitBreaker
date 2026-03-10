@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Edit, Trash2 } from 'lucide-react';
+import { Edit, Trash2, ArrowDownToLine, ArrowUpFromLine } from 'lucide-react';
 
 function BoundaryContextMenu({
   position,
@@ -8,6 +8,8 @@ function BoundaryContextMenu({
   presets,
   onRename,
   onChangeColor,
+  onSendToBack,
+  onSendToFront,
   onDelete,
   onClose,
 }) {
@@ -72,6 +74,35 @@ function BoundaryContextMenu({
           Rename
         </button>
 
+        {onSendToBack && onSendToFront && (
+          <>
+            <button
+              onClick={() => {
+                onSendToBack(boundary.id);
+                onClose();
+              }}
+              className={rowBase}
+              title="Send boundary behind nodes so you can click nodes inside it"
+              style={{ opacity: boundary.behindNodes ? 0.6 : 1 }}
+            >
+              <ArrowDownToLine className={iconCls} />
+              Send to back
+            </button>
+            <button
+              onClick={() => {
+                onSendToFront(boundary.id);
+                onClose();
+              }}
+              className={rowBase}
+              title="Bring boundary in front of nodes"
+              style={{ opacity: boundary.behindNodes ? 1 : 0.6 }}
+            >
+              <ArrowUpFromLine className={iconCls} />
+              Send to front
+            </button>
+          </>
+        )}
+
         <div className="tw-px-4 tw-py-2">
           <div className="tw-text-xs tw-text-cb-text tw-mb-2 tw-uppercase tw-tracking-wider">
             Color
@@ -132,10 +163,13 @@ BoundaryContextMenu.propTypes = {
     id: PropTypes.string.isRequired,
     name: PropTypes.string.isRequired,
     colorKey: PropTypes.string,
+    behindNodes: PropTypes.bool,
   }),
   presets: PropTypes.array.isRequired,
   onRename: PropTypes.func.isRequired,
   onChangeColor: PropTypes.func.isRequired,
+  onSendToBack: PropTypes.func,
+  onSendToFront: PropTypes.func,
   onDelete: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };

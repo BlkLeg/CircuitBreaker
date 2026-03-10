@@ -1,3 +1,10 @@
+"""Settings persistence and defaults.
+
+SECRETS: Never log or expose jwt_secret, vault_key, CB_VAULT_KEY, or any
+value from AppSettings that holds credentials. Use log_service.sanitise_diff
+for any payload that might contain these.
+"""
+
 import json
 import secrets
 import zoneinfo

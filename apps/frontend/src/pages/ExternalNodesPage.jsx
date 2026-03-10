@@ -3,7 +3,8 @@ import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
 import { IconImg } from '../components/common/IconPickerModal';
-import { externalNodesApi, networksApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { externalNodesApi, networksApi, tagsApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import Drawer from '../components/common/Drawer';
@@ -59,6 +60,8 @@ function ExternalNodesPage() {
   const [kindFilter, setKindFilter] = useState('');
   const [envFilter, setEnvFilter] = useState('');
   const [formApiErrors, setFormApiErrors] = useState({});
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   const envOptions = useMemo(
     () => settings?.environments || ['prod', 'staging', 'dev'],
@@ -79,7 +82,6 @@ function ExternalNodesPage() {
       { key: 'region', label: 'Region' },
       { key: 'ip_address', label: 'IP Address' },
       { key: 'environment', label: 'Environment' },
-      { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
       { key: 'networks_count', label: 'Networks' },
       { key: 'services_count', label: 'Services' },
     ],
@@ -146,6 +148,77 @@ function ExternalNodesPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  const COLUMNS_WITH_TAGS = useMemo(
+    () => [
+      ...COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await externalNodesApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [allTags, fetchData, fetchTags, COLUMNS]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      await externalNodesApi.update(row.id, { [columnKey]: value });
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
+
+  const bulkActions = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} external node(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await externalNodesApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
 
   const fetchDetail = useCallback(
     async (node) => {
@@ -298,7 +371,7 @@ function ExternalNodesPage() {
         <p>Loading...</p>
       ) : (
         <EntityTable
-          columns={COLUMNS}
+          columns={COLUMNS_WITH_TAGS}
           data={items}
           onEdit={(row) => {
             setEditTarget(row);
@@ -306,6 +379,12 @@ function ExternalNodesPage() {
           }}
           onDelete={handleDelete}
           onRowClick={openDetail}
+          editableColumns={['name', 'provider', 'kind', 'region', 'ip_address', 'environment']}
+          onCellSave={handleCellSave}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
         />
       )}
 

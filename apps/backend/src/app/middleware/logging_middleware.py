@@ -14,9 +14,10 @@ from app.db.session import SessionLocal
 
 _logger = logging.getLogger(__name__)
 
-# Paths that should never be logged (read-only or internal)
+# Paths that should never be logged (read-only, internal, or contain credentials)
+# Auth paths must never have request/response bodies captured — they contain passwords.
 _SKIP_PATHS = re.compile(
-    r"/(logs|health|openapi\.json|swagger|redoc|user-icons|icons|assets|bootstrap)",
+    r"/(logs|health|openapi\.json|swagger|redoc|user-icons|icons|assets|bootstrap|auth)",
     re.IGNORECASE,
 )
 

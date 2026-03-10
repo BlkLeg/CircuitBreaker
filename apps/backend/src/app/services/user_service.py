@@ -10,7 +10,7 @@ from fastapi import HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.security import gravatar_hash, hash_password
+from app.core.security import gravatar_hash, hash_password, invalidate_session_cache
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import AppSettings, User, UserInvite, UserSession
 
@@ -87,6 +87,7 @@ def revoke_session(db: Session, session_id: int, user_id: int) -> bool:
         return False
     session.revoked = True
     db.commit()
+    invalidate_session_cache(None)
     return True
 
 
@@ -105,6 +106,8 @@ def revoke_all_sessions(db: Session, user_id: int, except_token_hash: str | None
         s.revoked = True
         revoked += 1
     db.commit()
+    if revoked:
+        invalidate_session_cache(None)
     return revoked
 
 
@@ -123,6 +126,7 @@ def revoke_token_session(db: Session, token: str | None) -> bool:
         return False
     session.revoked = True
     db.commit()
+    invalidate_session_cache(token)
     return True
 
 
@@ -254,9 +258,12 @@ def accept_invite(
         db.commit()
         raise HTTPException(status_code=400, detail="Invite has expired")
 
-    from app.services.auth_service import _validate_password
+    from app.services.auth_service import _is_client_hash, _validate_password
 
-    _validate_password(password)
+    if _is_client_hash(password):
+        pass
+    else:
+        _validate_password(password)
 
     now = utcnow_iso()
     user = User(

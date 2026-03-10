@@ -21,7 +21,7 @@ import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 
 const ROLE_COLORS = {
-  admin: 'var(--color-danger)',
+  admin: '#3b82f6',
   editor: 'var(--color-primary)',
   viewer: 'var(--color-text-muted)',
 };
@@ -213,6 +213,17 @@ export default function AdminUsersPage({ embedded = false }) {
     }
   };
 
+  const handleRemovePermanent = async (u) => {
+    setConfirmAction(null);
+    try {
+      await adminUsersApi.deleteUser(u.id, true);
+      toast.success(`${u.email} removed`);
+      fetchData();
+    } catch (err) {
+      toast.error(err?.message || 'Failed to remove user');
+    }
+  };
+
   const handleRevokeInvite = async (inv) => {
     try {
       await adminUsersApi.updateInvite(inv.id, { action: 'revoked' });
@@ -331,34 +342,22 @@ export default function AdminUsersPage({ embedded = false }) {
         <p style={{ color: 'var(--color-text-muted)' }}>Loading...</p>
       ) : (
         <>
-          <div
-            style={{
-              background: 'var(--color-surface)',
-              borderRadius: 8,
-              border: '1px solid var(--color-border)',
-              overflow: 'hidden',
-            }}
-          >
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div className="table-wrapper">
+            <table className="entity-table">
               <thead>
-                <tr
-                  style={{
-                    background: 'var(--color-bg)',
-                    borderBottom: '1px solid var(--color-border)',
-                  }}
-                >
-                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>User</th>
-                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Role</th>
-                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Status</th>
-                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Last Login</th>
-                  <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Sessions</th>
-                  <th style={{ padding: 12, textAlign: 'right', fontWeight: 600 }}>Actions</th>
+                <tr>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Last Login</th>
+                  <th>Sessions</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {users.map((u) => (
-                  <tr key={u.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                    <td style={{ padding: 12 }}>
+                  <tr key={u.id}>
+                    <td data-label="User">
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <UserAvatar u={u} size={28} />
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -391,33 +390,49 @@ export default function AdminUsersPage({ embedded = false }) {
                         </div>
                       </div>
                     </td>
-                    <td style={{ padding: 12 }}>
+                    <td data-label="Role">
                       <RoleBadge role={u.role} />
                     </td>
-                    <td style={{ padding: 12 }}>
+                    <td data-label="Status">
                       {u.locked_until ? (
-                        <span style={{ color: 'var(--color-danger)' }}>Locked</span>
-                      ) : u.is_active ? (
                         <span
                           style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            color: 'var(--color-success)',
+                            display: 'inline-block',
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '50%',
+                            background: 'var(--color-danger)',
+                            boxShadow: '0 0 8px var(--color-danger)',
                           }}
-                        >
-                          <span
-                            className="status-indicator--online"
-                            style={{ width: '8px', height: '8px', borderRadius: '50%' }}
-                            aria-hidden="true"
-                          />
-                          Active
-                        </span>
+                          title="Locked"
+                        />
+                      ) : u.is_active ? (
+                        <span
+                          className="status-indicator--online"
+                          style={{
+                            display: 'inline-block',
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '50%',
+                            background: 'var(--color-success, var(--color-online, #b8bb26))',
+                            boxShadow: '0 0 8px var(--color-success, var(--color-online, #b8bb26))',
+                          }}
+                          title="Active"
+                        />
                       ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>Inactive</span>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: '10px',
+                            height: '10px',
+                            borderRadius: '50%',
+                            background: 'var(--color-text-muted)',
+                          }}
+                          title="Inactive"
+                        />
                       )}
                     </td>
-                    <td style={{ padding: 12, color: 'var(--color-text-muted)', fontSize: 13 }}>
+                    <td data-label="Last Login">
                       {u.last_login
                         ? new Date(u.last_login).toLocaleString(undefined, {
                             year: 'numeric',
@@ -428,8 +443,8 @@ export default function AdminUsersPage({ embedded = false }) {
                           })
                         : '—'}
                     </td>
-                    <td style={{ padding: 12 }}>{u.session_count ?? 0}</td>
-                    <td style={{ padding: 12, textAlign: 'right' }}>
+                    <td data-label="Sessions">{u.session_count ?? 0}</td>
+                    <td className="action-cell" data-label="Actions">
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                         {u.locked_until && (
                           <button
@@ -451,6 +466,16 @@ export default function AdminUsersPage({ embedded = false }) {
                             <Trash2 size={16} />
                           </button>
                         )}
+                        {u.id !== user?.id && !u.is_active && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setConfirmAction({ type: 'remove', user: u })}
+                            title="Remove user permanently"
+                          >
+                            <Trash2 size={16} style={{ opacity: 0.8 }} />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-ghost"
@@ -470,40 +495,28 @@ export default function AdminUsersPage({ embedded = false }) {
           {invites.length > 0 && (
             <div style={{ marginTop: 24 }}>
               <h2 style={{ fontSize: 18, marginBottom: 12 }}>Pending Invites</h2>
-              <div
-                style={{
-                  background: 'var(--color-surface)',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-border)',
-                  overflow: 'hidden',
-                }}
-              >
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <div className="table-wrapper">
+                <table className="entity-table">
                   <thead>
-                    <tr
-                      style={{
-                        background: 'var(--color-bg)',
-                        borderBottom: '1px solid var(--color-border)',
-                      }}
-                    >
-                      <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Email</th>
-                      <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Role</th>
-                      <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Expires</th>
-                      <th style={{ padding: 12, textAlign: 'left', fontWeight: 600 }}>Email</th>
-                      <th style={{ padding: 12, textAlign: 'right', fontWeight: 600 }}>Actions</th>
+                    <tr>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Expires</th>
+                      <th>Email</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {invites.map((inv) => (
-                      <tr key={inv.id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                        <td style={{ padding: 12 }}>{inv.email}</td>
-                        <td style={{ padding: 12 }}>
+                      <tr key={inv.id}>
+                        <td data-label="Email">{inv.email}</td>
+                        <td data-label="Role">
                           <RoleBadge role={inv.role} />
                         </td>
-                        <td style={{ padding: 12, color: 'var(--color-text-muted)', fontSize: 13 }}>
+                        <td data-label="Expires">
                           {inv.expires ? new Date(inv.expires).toLocaleString() : '—'}
                         </td>
-                        <td style={{ padding: 12 }}>
+                        <td data-label="Email Status">
                           {inv.email_status === 'sent' ? (
                             <span
                               title="Invite email delivered"
@@ -558,7 +571,7 @@ export default function AdminUsersPage({ embedded = false }) {
                             </span>
                           )}
                         </td>
-                        <td style={{ padding: 12, textAlign: 'right' }}>
+                        <td className="action-cell" data-label="Actions">
                           <button
                             type="button"
                             className="btn btn-ghost"
@@ -734,6 +747,15 @@ export default function AdminUsersPage({ embedded = false }) {
           title="Deactivate user?"
           message={`Deactivate ${confirmAction.user?.email}? They will no longer be able to log in.`}
           onConfirm={() => handleDelete(confirmAction.user)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction?.type === 'remove' && (
+        <ConfirmDialog
+          open
+          title="Remove user permanently?"
+          message={`Remove ${confirmAction.user?.email}? This cannot be undone. All their data (sessions, invites they created, etc.) will be removed.`}
+          onConfirm={() => handleRemovePermanent(confirmAction.user)}
           onCancel={() => setConfirmAction(null)}
         />
       )}

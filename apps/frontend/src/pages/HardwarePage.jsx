@@ -2,7 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { hardwareApi, clustersApi, computeUnitsApi } from '../api/client';
+import TagsCell from '../components/TagsCell';
+import { hardwareApi, clustersApi, computeUnitsApi, tagsApi } from '../api/client';
 import HardwareDetail from '../components/details/HardwareDetail';
 import ClusterDetail from '../components/details/ClusterDetail';
 import { VENDORS } from '../config/vendors';
@@ -92,7 +93,6 @@ const TAIL_COLUMNS = [
   { key: 'cpu', label: 'CPU' },
   { key: 'memory_gb', label: 'Memory (GB)' },
   { key: 'location', label: 'Location' },
-  { key: 'tags', label: 'Tags', render: (v) => (v || []).join(', ') },
 ];
 
 const CLUSTER_COLUMNS = [
@@ -138,6 +138,10 @@ function HardwarePage() {
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
+
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [clusterSelectedIds, setClusterSelectedIds] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   const buildFields = (currentIconSlug) => [
     {
@@ -232,38 +236,6 @@ function HardwarePage() {
     { name: 'tags', label: 'Tags (comma-separated)', type: 'tags' },
   ];
 
-  const COLUMNS = useMemo(
-    () => [
-      ...BASE_COLUMNS,
-      {
-        key: 'vendor',
-        label: 'Vendor',
-        render: (v, row) => {
-          if (!v && !row?.vendor_icon_slug) return null;
-          if (vendorIconMode === 'none' && !row?.vendor_icon_slug) return <span>{v}</span>;
-          // Prefer custom icon slug over the static vendor map
-          if (row?.vendor_icon_slug) {
-            return (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <IconImg slug={row.vendor_icon_slug} size={16} />
-                {v ? (getVendorIcon(v)?.label ?? v) : ''}
-              </span>
-            );
-          }
-          const info = getVendorIcon(v);
-          return (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <img src={info.path} alt={info.label} style={{ width: 16, height: 16 }} />
-              {info.label}
-            </span>
-          );
-        },
-      },
-      ...TAIL_COLUMNS,
-    ],
-    [vendorIconMode]
-  );
-
   // ── Hardware state ──────────────────────────────────────────────────────
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -311,13 +283,145 @@ function HardwarePage() {
     }
   }, [toast]);
 
+  const fetchTags = useCallback(async () => {
+    try {
+      const res = await tagsApi.list();
+      setAllTags(res.data || []);
+    } catch {
+      setAllTags([]);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   useEffect(() => {
+    fetchTags();
+  }, [fetchTags]);
+
+  useEffect(() => {
     if (activeTab === 'clusters') fetchClusters();
   }, [activeTab, fetchClusters]);
+
+  const COLUMNS = useMemo(
+    () => [
+      ...BASE_COLUMNS,
+      {
+        key: 'vendor',
+        label: 'Vendor',
+        render: (v, row) => {
+          if (!v && !row?.vendor_icon_slug) return null;
+          if (vendorIconMode === 'none' && !row?.vendor_icon_slug) return <span>{v}</span>;
+          if (row?.vendor_icon_slug) {
+            return (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <IconImg slug={row.vendor_icon_slug} size={16} />
+                {v ? (getVendorIcon(v)?.label ?? v) : ''}
+              </span>
+            );
+          }
+          const info = getVendorIcon(v);
+          return (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <img src={info.path} alt={info.label} style={{ width: 16, height: 16 }} />
+              {info.label}
+            </span>
+          );
+        },
+      },
+      ...TAIL_COLUMNS,
+      {
+        key: 'tags',
+        label: 'Tags',
+        render: (v, row) => (
+          <TagsCell
+            tags={v || []}
+            allTags={allTags}
+            onTagsChange={async (names) => {
+              await hardwareApi.update(row.id, { tags: names });
+              fetchData();
+            }}
+            onTagColorChange={async (id, color) => {
+              await tagsApi.update(id, { color });
+              fetchTags();
+            }}
+          />
+        ),
+      },
+    ],
+    [vendorIconMode, allTags, fetchData, fetchTags]
+  );
+
+  const HARDWARE_EDITABLE = [
+    'name',
+    'location',
+    'model',
+    'cpu',
+    'memory_gb',
+    'ip_address',
+    'wan_uplink',
+  ];
+  const HARDWARE_BULK_ACTIONS = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} hardware node(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await hardwareApi.delete(id);
+              toast.success('Deleted.');
+              setSelectedIds([]);
+              fetchData();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchData]
+  );
+  const CLUSTER_BULK_ACTIONS = useMemo(
+    () => [
+      {
+        label: 'Delete selected',
+        danger: true,
+        onClick: (ids) => {
+          setConfirmState({
+            open: true,
+            message: `Delete ${ids.length} cluster(s)?`,
+            onConfirm: async () => {
+              setConfirmState((s) => ({ ...s, open: false }));
+              for (const id of ids) await clustersApi.delete(id);
+              toast.success('Deleted.');
+              setClusterSelectedIds([]);
+              fetchClusters();
+            },
+          });
+        },
+      },
+    ],
+    [toast, fetchClusters]
+  );
+
+  const handleCellSave = useCallback(
+    async (row, columnKey, value) => {
+      if (value == null) return;
+      const payload = {};
+      if (columnKey === 'memory_gb') {
+        payload[columnKey] = value === '' ? null : Number(value);
+      } else {
+        payload[columnKey] = value;
+      }
+      await hardwareApi.update(row.id, payload);
+      toast.success('Saved.');
+      fetchData();
+    },
+    [toast, fetchData]
+  );
 
   const handleSubmit = async (values) => {
     try {
@@ -485,6 +589,12 @@ function HardwarePage() {
               }}
               onDelete={handleDelete}
               onRowClick={(row) => setDetailTarget(row)}
+              editableColumns={HARDWARE_EDITABLE}
+              onCellSave={handleCellSave}
+              selectable
+              selectedIds={selectedIds}
+              onSelectionChange={setSelectedIds}
+              bulkActions={HARDWARE_BULK_ACTIONS}
             />
           )}
         </>
@@ -511,6 +621,17 @@ function HardwarePage() {
               }}
               onDelete={(id) => handleClusterDelete(id)}
               onRowClick={(row) => setClusterDetail(row)}
+              editableColumns={['name', 'location']}
+              onCellSave={async (row, columnKey, value) => {
+                if (value == null) return;
+                await clustersApi.update(row.id, { [columnKey]: value });
+                toast.success('Saved.');
+                fetchClusters();
+              }}
+              selectable
+              selectedIds={clusterSelectedIds}
+              onSelectionChange={setClusterSelectedIds}
+              bulkActions={CLUSTER_BULK_ACTIONS}
             />
           )}
         </>

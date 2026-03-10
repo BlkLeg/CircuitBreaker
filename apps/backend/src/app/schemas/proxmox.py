@@ -94,3 +94,49 @@ class ProxmoxActionResponse(BaseModel):
     ok: bool
     upid: str | None = None
     error: str | None = None
+
+
+# ── Cluster overview (dashboard) ──────────────────────────────────────────────
+
+
+class ProxmoxClusterOverviewCluster(BaseModel):
+    name: str = ""
+    quorum: bool = False
+    nodes_online: int = 0
+    nodes_total: int = 0
+    vms: int = 0
+    lxcs: int = 0
+    uptime: str = ""
+
+
+class ProxmoxClusterOverviewProblem(BaseModel):
+    time: str = ""
+    severity: str = "info"
+    host: str = ""
+    problem: str = ""
+    status: str = "PROBLEM"
+
+
+class ProxmoxClusterOverviewStorage(BaseModel):
+    name: str
+    used_gb: float | None = None
+    total_gb: float | None = None
+    content: str = ""
+
+
+class ProxmoxClusterOverviewTimeSeries(BaseModel):
+    """Per-node time-series for charts. Keys are node names."""
+
+    cpu: dict[str, list[dict[str, float | str]]] = {}  # node -> [{time, value}, ...]
+    memory: dict[str, list[dict[str, float | str]]] = {}
+    network_in: dict[str, list[dict[str, float | str]]] = {}
+    network_out: dict[str, list[dict[str, float | str]]] = {}
+
+
+class ProxmoxClusterOverviewResponse(BaseModel):
+    cluster: ProxmoxClusterOverviewCluster
+    problems: list[ProxmoxClusterOverviewProblem] = []
+    time_series: ProxmoxClusterOverviewTimeSeries = Field(
+        default_factory=ProxmoxClusterOverviewTimeSeries
+    )
+    storage: list[ProxmoxClusterOverviewStorage] = []

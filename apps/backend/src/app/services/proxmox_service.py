@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
+import threading
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -23,6 +26,7 @@ from app.db.models import (
     HardwareCluster,
     HardwareClusterMember,
     IntegrationConfig,
+    StatusGroup,
     Storage,
     TelemetryTimeseries,
 )
@@ -31,12 +35,24 @@ from app.services.credential_vault import get_vault
 
 _logger = logging.getLogger(__name__)
 
+# Reuse one Proxmox client per integration to avoid urllib3 connection pool exhaustion
+# (many clients to the same host each create a pool; one client per host reuses connections).
+_proxmox_client_cache: dict[int, ProxmoxIntegration] = {}
+_proxmox_client_cache_lock = threading.Lock()
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _invalidate_proxmox_client_cache(config_id: int) -> None:
+    """Remove cached client when config is updated or deleted."""
+    with _proxmox_client_cache_lock:
+        _proxmox_client_cache.pop(config_id, None)
 
 
 def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
-    """Build a ProxmoxIntegration from a persisted IntegrationConfig."""
+    """Build or return cached ProxmoxIntegration for this integration (one per config to avoid pool exhaustion)."""
+    config_id = config.id
+    with _proxmox_client_cache_lock:
+        if config_id in _proxmox_client_cache:
+            return _proxmox_client_cache[config_id]
     vault = get_vault()
     cred = db.get(Credential, config.credential_id)
     if not cred:
@@ -45,7 +61,10 @@ def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
     token = vault.decrypt(cred.encrypted_value)
     extra = json.loads(config.extra_config) if config.extra_config else {}
     verify_ssl = extra.get("verify_ssl", False)
-    return build_client_from_token(config.config_url, token, verify_ssl=verify_ssl)
+    client = build_client_from_token(config.config_url, token, verify_ssl=verify_ssl)
+    with _proxmox_client_cache_lock:
+        _proxmox_client_cache[config_id] = client
+    return client
 
 
 async def _check_token_privsep(client: ProxmoxIntegration) -> str:
@@ -157,10 +176,12 @@ def update_integration(
 
     db.commit()
     db.refresh(config)
+    _invalidate_proxmox_client_cache(config.id)
     return config
 
 
 def delete_integration(db: Session, config: IntegrationConfig) -> None:
+    _invalidate_proxmox_client_cache(config.id)
     if config.credential_id:
         cred = db.get(Credential, config.credential_id)
         if cred:
@@ -740,6 +761,63 @@ def get_sync_status(db: Session, config: IntegrationConfig) -> dict:
     }
 
 
+# ── Storage refresh (used/total for cluster overview) ──────────────────────────
+
+
+async def refresh_proxmox_storage(db: Session) -> None:
+    """Update used_gb/capacity_gb for all Proxmox Storage rows from PVE nodes.
+    Lighter than full sync; run on a schedule so cluster overview has fresh storage data."""
+    configs = (
+        db.query(IntegrationConfig)
+        .filter(
+            IntegrationConfig.type == "proxmox",
+            IntegrationConfig.auto_sync.is_(True),
+        )
+        .all()
+    )
+    for config in configs:
+        try:
+            client = _get_client(db, config)
+            nodes = (
+                db.query(Hardware)
+                .filter(
+                    Hardware.integration_config_id == config.id,
+                    Hardware.proxmox_node_name.isnot(None),
+                )
+                .all()
+            )
+            for hw in nodes:
+                try:
+                    storage_list = await client.get_node_storage(hw.proxmox_node_name)
+                except Exception as e:
+                    _logger.debug("Storage refresh failed for node %s: %s", hw.proxmox_node_name, e)
+                    continue
+                for st_data in storage_list:
+                    name = st_data.get("storage", "")
+                    if not name:
+                        continue
+                    total_bytes = st_data.get("total", 0)
+                    used_bytes = st_data.get("used", 0)
+                    existing = (
+                        db.query(Storage)
+                        .filter(
+                            Storage.proxmox_storage_name == name,
+                            Storage.hardware_id == hw.id,
+                            Storage.integration_config_id == config.id,
+                        )
+                        .first()
+                    )
+                    if existing:
+                        existing.capacity_gb = (
+                            round(total_bytes / (1024**3)) if total_bytes else None
+                        )
+                        existing.used_gb = round(used_bytes / (1024**3)) if used_bytes else None
+            db.commit()
+        except Exception as e:
+            _logger.warning("Storage refresh failed for integration %d: %s", config.id, e)
+            db.rollback()
+
+
 # ── Telemetry polling ────────────────────────────────────────────────────────
 
 
@@ -754,13 +832,22 @@ async def poll_node_telemetry(db: Session) -> None:
         .all()
     )
 
+    from app.core.circuit_breaker import get_breaker
+
     for config in configs:
+        config_id = config.id
+        breaker = get_breaker(f"proxmox:{config_id}:poll")
+        if breaker.is_open():
+            _logger.debug(
+                "Proxmox integration %d circuit open — skipping telemetry poll", config_id
+            )
+            continue
         try:
             client = _get_client(db, config)
             nodes = (
                 db.query(Hardware)
                 .filter(
-                    Hardware.integration_config_id == config.id,
+                    Hardware.integration_config_id == config_id,
                     Hardware.proxmox_node_name.isnot(None),
                 )
                 .all()
@@ -782,11 +869,22 @@ async def poll_node_telemetry(db: Session) -> None:
                 hw, status = result  # type: ignore[misc]
                 try:
                     cpu_pct = round(status.get("cpu", 0) * 100, 1)
+                    # PVE can return memory as nested (memory.used/total) or top-level (mem, maxmem)
                     mem = status.get("memory", {})
-                    mem_used = mem.get("used", 0)
-                    mem_total = mem.get("total", 0)
+                    mem_used = mem.get("used") or status.get("mem", 0)
+                    mem_total = mem.get("total") or status.get("maxmem", 0)
                     load = status.get("loadavg", [0, 0, 0])
                     rootfs = status.get("rootfs", {})
+                    root_used = rootfs.get("used") if isinstance(rootfs, dict) else 0
+                    root_total = rootfs.get("total") if isinstance(rootfs, dict) else 0
+                    if not root_used and "root" in status:
+                        root_used = status.get("root", 0)
+                    if not root_total and "maxroot" in status:
+                        root_total = status.get("maxroot", 0)
+                    netin = status.get("netin", 0)
+                    netout = status.get("netout", 0)
+                    swap_used = status.get("swap", 0)
+                    maxswap = status.get("maxswap", 0)
 
                     telemetry = json.dumps(
                         {
@@ -796,9 +894,13 @@ async def poll_node_telemetry(db: Session) -> None:
                             "load_1m": load[0] if load else 0,
                             "load_5m": load[1] if len(load) > 1 else 0,
                             "load_15m": load[2] if len(load) > 2 else 0,
-                            "disk_used_gb": round(rootfs.get("used", 0) / (1024**3), 1),
-                            "disk_total_gb": round(rootfs.get("total", 0) / (1024**3), 1),
+                            "disk_used_gb": round((root_used or 0) / (1024**3), 1),
+                            "disk_total_gb": round((root_total or 0) / (1024**3), 1),
                             "uptime_s": status.get("uptime", 0),
+                            "netin": netin,
+                            "netout": netout,
+                            "swap_gb": round(swap_used / (1024**3), 1) if swap_used else 0,
+                            "maxswap_gb": round(maxswap / (1024**3), 1) if maxswap else 0,
                         }
                     )
 
@@ -815,6 +917,8 @@ async def poll_node_telemetry(db: Session) -> None:
                     for metric_name, value in [
                         ("cpu_pct", cpu_pct),
                         ("mem_used_gb", round(mem_used / (1024**3), 1) if mem_used else 0),
+                        ("netin", netin),
+                        ("netout", netout),
                     ]:
                         db.add(
                             TelemetryTimeseries(
@@ -840,8 +944,121 @@ async def poll_node_telemetry(db: Session) -> None:
                     _logger.debug("Telemetry apply failed for node %s: %s", hw.proxmox_node_name, e)
 
             db.commit()
+            breaker.record_success()
         except Exception as e:
-            _logger.warning("Telemetry poll failed for integration %d: %s", config.id, e)
+            breaker.record_failure()
+            _logger.warning("Telemetry poll failed for integration %d: %s", config_id, e)
+
+
+async def poll_rrd_telemetry(db: Session) -> None:
+    """Poll RRD data for each Proxmox node and store in TelemetryTimeseries (source=proxmox_rrd).
+    Provides time-series for CPU, memory, disk, network, io_delay for cluster overview charts."""
+    configs = (
+        db.query(IntegrationConfig)
+        .filter(
+            IntegrationConfig.type == "proxmox",
+            IntegrationConfig.auto_sync.is_(True),
+        )
+        .all()
+    )
+    for config in configs:
+        try:
+            client = _get_client(db, config)
+            nodes = (
+                db.query(Hardware)
+                .filter(
+                    Hardware.integration_config_id == config.id,
+                    Hardware.proxmox_node_name.isnot(None),
+                )
+                .all()
+            )
+            for hw in nodes:
+                node = hw.proxmox_node_name
+                if not node:
+                    continue
+                try:
+                    raw = await client.get_node_rrddata(node, timeframe="hour")
+                except Exception as e:
+                    _logger.debug("RRD poll failed for node %s: %s", node, e)
+                    continue
+                if not isinstance(raw, list):
+                    continue
+                # PVE returns list of dicts: time (unix), cpu, mem, maxmem, diskread, diskwrite, netin, netout, etc.
+                for point in raw:
+                    if not isinstance(point, dict):
+                        continue
+                    ts_unix = point.get("time")
+                    if ts_unix is None:
+                        continue
+                    try:
+                        ts = datetime.datetime.fromtimestamp(int(ts_unix), tz=datetime.UTC)
+                    except (ValueError, TypeError, OSError):
+                        continue
+                    # Store metrics that are present (float or int)
+                    metrics_to_store = [
+                        (
+                            "rrd_cpu",
+                            point.get("cpu"),
+                            lambda v: float(v) * 100 if v is not None else None,
+                        ),
+                        (
+                            "rrd_memused",
+                            point.get("mem"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_memtotal",
+                            point.get("maxmem"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_netin",
+                            point.get("netin"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_netout",
+                            point.get("netout"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_diskread",
+                            point.get("diskread"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_diskwrite",
+                            point.get("diskwrite"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_io_delay",
+                            point.get("io_delay"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                        (
+                            "rrd_zfs_arc_size",
+                            point.get("zfs_arc_size"),
+                            lambda v: float(v) if v is not None else None,
+                        ),
+                    ]
+                    for metric_name, raw_val, normalize in metrics_to_store:
+                        val = normalize(raw_val)
+                        if val is not None:
+                            db.add(
+                                TelemetryTimeseries(
+                                    entity_type="hardware",
+                                    entity_id=hw.id,
+                                    metric=metric_name,
+                                    value=val,
+                                    source="proxmox_rrd",
+                                    ts=ts,
+                                )
+                            )
+            db.commit()
+        except Exception as e:
+            _logger.warning("RRD telemetry poll failed for integration %d: %s", config.id, e)
+            db.rollback()
 
 
 async def poll_vm_telemetry(db: Session) -> None:
@@ -856,12 +1073,13 @@ async def poll_vm_telemetry(db: Session) -> None:
     )
 
     for config in configs:
+        config_id = config.id
         try:
             client = _get_client(db, config)
             compute_units = (
                 db.query(ComputeUnit)
                 .filter(
-                    ComputeUnit.integration_config_id == config.id,
+                    ComputeUnit.integration_config_id == config_id,
                     ComputeUnit.proxmox_vmid.isnot(None),
                 )
                 .all()
@@ -872,7 +1090,7 @@ async def poll_vm_telemetry(db: Session) -> None:
                 hw.id: hw
                 for hw in db.query(Hardware)
                 .filter(
-                    Hardware.integration_config_id == config.id,
+                    Hardware.integration_config_id == config_id,
                 )
                 .all()
             }
@@ -952,7 +1170,231 @@ async def poll_vm_telemetry(db: Session) -> None:
 
             db.commit()
         except Exception as e:
-            _logger.warning("VM telemetry poll failed for integration %d: %s", config.id, e)
+            _logger.warning("VM telemetry poll failed for integration %d: %s", config_id, e)
+
+
+# ── Cluster overview (dashboard API) ──────────────────────────────────────────
+
+
+async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, Any]:
+    """Build cluster overview payload for Proxmox dashboard: cluster info, problems, time-series, storage.
+    Uses live PVE API for cluster status and DB for telemetry/storage/events."""
+    from sqlalchemy import select
+
+    from app.services import status_page_service as svc_status
+
+    config = db.get(IntegrationConfig, integration_id)
+    if not config or config.type != "proxmox":
+        return {
+            "cluster": {
+                "name": "",
+                "quorum": False,
+                "nodes_online": 0,
+                "nodes_total": 0,
+                "vms": 0,
+                "lxcs": 0,
+                "uptime": "",
+            },
+            "problems": [],
+            "time_series": {"cpu": {}, "memory": {}, "network_in": {}, "network_out": {}},
+            "storage": [],
+        }
+
+    try:
+        client = _get_client(db, config)
+    except Exception as e:
+        _logger.warning("Cluster overview: no client for integration %d: %s", integration_id, e)
+        return {
+            "cluster": {
+                "name": "",
+                "quorum": False,
+                "nodes_online": 0,
+                "nodes_total": 0,
+                "vms": 0,
+                "lxcs": 0,
+                "uptime": "",
+            },
+            "problems": [],
+            "time_series": {"cpu": {}, "memory": {}, "network_in": {}, "network_out": {}},
+            "storage": [],
+        }
+
+    nodes = (
+        db.query(Hardware)
+        .filter(
+            Hardware.integration_config_id == integration_id,
+            Hardware.proxmox_node_name.isnot(None),
+        )
+        .all()
+    )
+    node_ids = [hw.id for hw in nodes]
+    node_id_to_name = {hw.id: (hw.proxmox_node_name or f"hw-{hw.id}") for hw in nodes}
+
+    # Cluster status from PVE (with circuit breaker to avoid overwhelming a down host)
+    cluster_name = config.cluster_name or ""
+    quorum = False
+    nodes_online = 0
+    nodes_total = 0
+    try:
+        from app.core.circuit_breaker import call_with_circuit_breaker
+
+        cs_list = await call_with_circuit_breaker(
+            f"proxmox:{integration_id}:cluster",
+            lambda: client.get_cluster_status(),
+            fallback=[],
+        )
+        for item in cs_list or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "cluster":
+                cluster_name = item.get("name") or cluster_name
+                quorum = bool(item.get("quorum", 0))
+            elif item.get("type") == "node":
+                nodes_total += 1
+                if str(item.get("status", "")).lower() == "online":
+                    nodes_online += 1
+    except Exception as e:
+        _logger.debug("Cluster status fetch failed: %s", e)
+
+    vms = (
+        db.query(ComputeUnit)
+        .filter(
+            ComputeUnit.integration_config_id == integration_id,
+            ComputeUnit.proxmox_type == "qemu",
+        )
+        .count()
+    )
+    lxcs = (
+        db.query(ComputeUnit)
+        .filter(
+            ComputeUnit.integration_config_id == integration_id,
+            ComputeUnit.proxmox_type == "lxc",
+        )
+        .count()
+    )
+
+    uptime_str = ""
+    if nodes:
+        try:
+            td = json.loads(nodes[0].telemetry_data or "{}") if nodes[0].telemetry_data else {}
+            uptime_s = td.get("uptime_s", 0)
+            if uptime_s:
+                d = int(uptime_s) // 86400
+                h = (int(uptime_s) % 86400) // 3600
+                m = (int(uptime_s) % 3600) // 60
+                uptime_str = f"{d}d {h}h {m}m"
+        except Exception:
+            pass
+
+    # Time-series from TelemetryTimeseries (last 24h)
+    since_ts = utcnow() - timedelta(hours=24)
+    rows = (
+        db.execute(
+            select(TelemetryTimeseries)
+            .where(
+                TelemetryTimeseries.entity_type == "hardware",
+                TelemetryTimeseries.entity_id.in_(node_ids),
+                TelemetryTimeseries.ts >= since_ts,
+                TelemetryTimeseries.metric.in_(
+                    [
+                        "cpu_pct",
+                        "mem_used_gb",
+                        "netin",
+                        "netout",
+                        "rrd_cpu",
+                        "rrd_memused",
+                        "rrd_netin",
+                        "rrd_netout",
+                    ]
+                ),
+            )
+            .order_by(TelemetryTimeseries.ts.asc())
+        )
+        .scalars()
+        .all()
+    )
+    cpu_series: dict[str, list[dict[str, float | str]]] = {}
+    mem_series: dict[str, list[dict[str, float | str]]] = {}
+    netin_series: dict[str, list[dict[str, float | str]]] = {}
+    netout_series: dict[str, list[dict[str, float | str]]] = {}
+    for r in rows:
+        node_name = node_id_to_name.get(r.entity_id, f"hw-{r.entity_id}")
+        ts_str = r.ts.isoformat() if r.ts else ""
+        point = {"time": ts_str, "value": r.value}
+        if r.metric in ("cpu_pct", "rrd_cpu"):
+            cpu_series.setdefault(node_name, []).append(point)
+        elif r.metric in ("mem_used_gb", "rrd_memused"):
+            mem_series.setdefault(node_name, []).append(point)
+        elif r.metric in ("netin", "rrd_netin"):
+            netin_series.setdefault(node_name, []).append(point)
+        elif r.metric in ("netout", "rrd_netout"):
+            netout_series.setdefault(node_name, []).append(point)
+
+    # Storage
+    storage_rows = db.query(Storage).filter(Storage.integration_config_id == integration_id).all()
+    storage_list = []
+    for st in storage_rows:
+        content = (st.notes or "").replace("content: ", "") if st.notes else ""
+        storage_list.append(
+            {
+                "name": st.name or "",
+                "used_gb": float(st.used_gb) if st.used_gb is not None else None,
+                "total_gb": float(st.capacity_gb) if st.capacity_gb is not None else None,
+                "content": content,
+            }
+        )
+
+    # Problems: events from status groups that contain any of our nodes
+    problems_list: list[dict[str, str]] = []
+    seen_problems: set[tuple[str, str]] = set()
+    try:
+        all_groups = list(db.execute(select(StatusGroup)).scalars().all())
+        for g in all_groups:
+            hw_ids, _, _ = svc_status.resolve_group_entity_ids(g)
+            if not any(hid in node_ids for hid in hw_ids):
+                continue
+            events = svc_status.list_events_for_group(db, g.id, since_param="7d", limit=50)
+            for e in events:
+                ts = e.get("ts") or e.get("timestamp", "")
+                msg = e.get("message", "")
+                key = (str(ts), msg)
+                if key in seen_problems:
+                    continue
+                seen_problems.add(key)
+                severity = e.get("severity", "info")
+                problems_list.append(
+                    {
+                        "time": ts[:19] if isinstance(ts, str) and len(ts) > 19 else str(ts),
+                        "severity": severity.title(),
+                        "host": "",  # could resolve from event if we store host
+                        "problem": msg,
+                        "status": "RESOLVED" if severity == "info" else "PROBLEM",
+                    }
+                )
+        problems_list.sort(key=lambda x: x.get("time", ""), reverse=True)
+        problems_list = problems_list[:100]
+    except Exception as e:
+        _logger.debug("Problems aggregation failed: %s", e)
+
+    return {
+        "cluster": {
+            "name": cluster_name,
+            "quorum": quorum,
+            "nodes_online": nodes_online,
+            "nodes_total": nodes_total,
+            "vms": vms,
+            "lxcs": lxcs,
+            "uptime": uptime_str,
+        },
+        "problems": problems_list,
+        "time_series": {
+            "cpu": cpu_series,
+            "memory": mem_series,
+            "network_in": netin_series,
+            "network_out": netout_series,
+        },
+        "storage": storage_list,
+    }
 
 
 # ── VM Actions ───────────────────────────────────────────────────────────────

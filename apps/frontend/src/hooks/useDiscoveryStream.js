@@ -30,11 +30,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import mitt from 'mitt';
 import { getDiscoveryStatus } from '../api/discovery.js';
+import { useAuth } from '../context/AuthContext.jsx';
 
 // Module-level emitter — survives React re-renders and component unmounts
 export const discoveryEmitter = mitt();
-
-const TOKEN_KEY = import.meta.env.VITE_TOKEN_STORAGE_KEY ?? 'cb_token';
 
 const BACKOFF_BASE = 2000; // 2 seconds
 const BACKOFF_MAX = 30000; // 30 seconds
@@ -51,6 +50,7 @@ function getWsUrl() {
 }
 
 export function useDiscoveryStream({ authEnabled = true } = {}) {
+  const { user, token } = useAuth();
   const [connected, setConnected] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
 
@@ -87,9 +87,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       return;
     }
 
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (!token && authEnabled) {
-      // Auth is enabled but no token yet — wait for login
+    if (authEnabled && !user && !token) {
       return;
     }
 
@@ -97,8 +95,12 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Send empty string when auth is disabled; backend accepts it in that mode
-      ws.send(token ?? '');
+      if (token && token !== 'cookie' && token.length > 10) {
+        ws.send(token);
+      } else if (!authEnabled) {
+        ws.send('');
+      }
+      // When auth enabled and cookie: no first message; backend uses cookie
     };
 
     ws.onmessage = (event) => {
@@ -225,7 +227,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       // onclose fires after onerror — reconnect logic lives there
       ws.close();
     };
-  }, [clearRetry, authEnabled]);
+  }, [clearRetry, authEnabled, user, token]);
 
   // Mount: connect and set up visibility listener
   useEffect(() => {

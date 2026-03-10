@@ -66,6 +66,7 @@ export function useMapMutations({
             color: boundary.color || DEFAULT_BOUNDARY_COLOR,
             fillOpacity: boundary.fillOpacity ?? DEFAULT_BOUNDARY_FILL_OPACITY,
             shape: boundary.shape || 'rectangle',
+            behindNodes: boundary.behindNodes ?? false,
           })),
         labels: (labelsOverride ?? mapLabelsRef.current).map((label, index) =>
           normalizeMapLabel(label, index)

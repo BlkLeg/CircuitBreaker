@@ -112,7 +112,7 @@ async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
         return False
 
 
-async def run_worker():
+async def run_worker(shutdown_event: asyncio.Event = None):
     # Retry connecting to NATS with backoff — exiting would cause a Docker restart loop.
     backoff = 2
     while not nats_client.is_connected:
@@ -130,8 +130,15 @@ async def run_worker():
 
     # Watchdog: re-subscribe via JetStream after NATS reconnects
     was_connected = True
-    while True:
-        await asyncio.sleep(10)
+    while not (shutdown_event and shutdown_event.is_set()):
+        try:
+            if shutdown_event:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=10.0)
+            else:
+                await asyncio.sleep(10)
+        except TimeoutError:
+            pass
+
         _touch_healthy()
         now_connected = nats_client.is_connected
         if was_connected and not now_connected:
@@ -145,5 +152,7 @@ async def run_worker():
 
 
 if __name__ == "__main__":
+    from app.workers import run_with_graceful_shutdown
+
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_worker())
+    asyncio.run(run_with_graceful_shutdown(run_worker))

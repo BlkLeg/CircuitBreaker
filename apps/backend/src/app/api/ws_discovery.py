@@ -41,6 +41,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
+from app.core.auth_cookie import token_from_websocket_scope
 from app.core.rbac import require_role
 from app.core.security import _get_api_token, decode_token
 from app.core.time import utcnow, utcnow_iso
@@ -99,19 +100,21 @@ async def discovery_stream(websocket: WebSocket) -> None:
     _warn_if_insecure(websocket)
 
     try:
-        # ── Auth phase ──────────────────────────────────────────────────────
-        try:
-            raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-        except TimeoutError:
-            logger.warning("WS auth timeout (ip=%s)", client_ip)
+        # ── Auth phase: cookie (httpOnly) or first message (legacy token) ─────
+        raw_token = token_from_websocket_scope(websocket.scope)
+        if not raw_token:
             try:
-                await websocket.send_text(json.dumps({"error": "auth_timeout"}))
-                await websocket.close(code=1008)
-            except Exception:
-                pass
-            return
-        except WebSocketDisconnect:
-            return
+                raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+            except TimeoutError:
+                logger.warning("WS auth timeout (ip=%s)", client_ip)
+                try:
+                    await websocket.send_text(json.dumps({"error": "auth_timeout"}))
+                    await websocket.close(code=1008)
+                except Exception:
+                    pass
+                return
+            except WebSocketDisconnect:
+                return
 
         authenticated = False
         user_id: int | None = None
