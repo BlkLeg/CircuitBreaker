@@ -29,6 +29,7 @@ WORKDIR /app
 
 # Runtime-only system packages — no compiler toolchain.
 # gosu: used by entrypoint to run app as non-root (breaker26).
+# checkov:skip=CKV_DOCKER_3: Process runs as breaker26 via gosu in entrypoint; root needed for volume chown at startup.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \

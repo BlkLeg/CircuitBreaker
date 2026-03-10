@@ -66,6 +66,7 @@ def ingest_csv(path: str, table: str) -> int:
         raise RuntimeError("DuckDB is not available; cannot ingest CSV")
     engine = get_engine("analytics")
     with engine.connect() as conn:
+        # table name is validated above as a safe identifier; dynamic SQL below is not user-controlled.
         conn.execute(
             text(
                 f"CREATE TABLE IF NOT EXISTS {table} AS SELECT * FROM read_csv_auto(:path) LIMIT 0"

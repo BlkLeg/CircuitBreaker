@@ -25,6 +25,12 @@ from sqlalchemy.engine import Engine
 
 _logger = logging.getLogger(__name__)
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+_TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _is_safe_identifier(name: str) -> bool:
+    """Return True if *name* is a safe SQL identifier (prevents SQL injection)."""
+    return bool(_TABLE_NAME_RE.match(name))
 
 
 def run_migrations(engine: Engine) -> None:
@@ -51,6 +57,15 @@ def run_migrations(engine: Engine) -> None:
                         table_name = match.group(1)
                         column_name = match.group(2)
 
+                        if not _is_safe_identifier(table_name):
+                            _logger.warning(
+                                "Skipping PRAGMA table_info() for unsafe table name %r in migration %s",
+                                table_name,
+                                sql_file.name,
+                            )
+                            continue
+
+                        # table_name is validated above as a safe identifier; PRAGMA call is not user-controlled.
                         cols = [
                             row[1]
                             for row in conn.execute(

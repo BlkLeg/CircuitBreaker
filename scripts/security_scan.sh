@@ -65,7 +65,7 @@ for f in Dockerfile docker/backend.Dockerfile docker/frontend.Dockerfile docker/
     if command -v hadolint > /dev/null 2>&1; then
         hadolint "$f" >> "$REPORT_FILE" 2>&1 || true
     elif command -v docker > /dev/null 2>&1; then
-        docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint < "$f" >> "$REPORT_FILE" 2>&1 || true
+        docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint hadolint "$f" >> "$REPORT_FILE" 2>&1 || true
     fi
 done
 if ! grep -q 'hadolint\|DL' "$REPORT_FILE" 2>/dev/null; then
@@ -86,7 +86,7 @@ echo "## 7. Trivy (Filesystem)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy filesystem..."
 if command -v docker > /dev/null 2>&1; then
-    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs . --no-progress >> "$REPORT_FILE" 2>&1 || true
+    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs . >> "$REPORT_FILE" 2>&1 || true
 else
     echo "Docker not found, skipping Trivy fs." >> "$REPORT_FILE"
 fi
@@ -96,7 +96,7 @@ echo "## 8. Trivy (Config / IaC)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy config..."
 if command -v docker > /dev/null 2>&1; then
-    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config /workspace --no-progress >> "$REPORT_FILE" 2>&1 || true
+    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config /workspace >> "$REPORT_FILE" 2>&1 || true
 else
     echo "Docker not found, skipping Trivy config." >> "$REPORT_FILE"
 fi

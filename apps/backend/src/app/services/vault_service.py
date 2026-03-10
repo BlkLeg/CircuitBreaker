@@ -67,7 +67,10 @@ def is_vault_key_valid(db: Session, candidate: str) -> bool:
             if hmac.compare_digest(_sha256(candidate_norm), cfg.vault_key_hash):
                 return True
     except Exception as exc:  # noqa: BLE001
-        _logger.warning("Could not verify vault key against database hash: %s", exc)
+        _logger.warning(
+            "Could not verify vault key against database hash (reason: %s)",
+            type(exc).__name__,
+        )
 
     active_key = load_vault_key(db)
     return bool(active_key) and hmac.compare_digest(candidate_norm, active_key)  # type: ignore[type-var]
@@ -104,7 +107,11 @@ def load_vault_key(db: Session) -> str | None:
                     _key_source = str(_DATA_ENV_PATH)
                     return file_key
         except OSError as exc:
-            _logger.warning("Could not read vault key from %s: %s", _DATA_ENV_PATH, exc)
+            _logger.warning(
+                "Could not read vault key from %s (reason: %s)",
+                _DATA_ENV_PATH,
+                type(exc).__name__,
+            )
 
     # 3. AppSettings.vault_key in DB (fallback when env/file absent or unwritable)
     try:
@@ -117,7 +124,10 @@ def load_vault_key(db: Session) -> str | None:
                 _key_source = "database"
                 return db_key
     except Exception as exc:  # noqa: BLE001
-        _logger.warning("Could not read vault key from database: %s", exc)
+        _logger.warning(
+            "Could not read vault key from database (reason: %s)",
+            type(exc).__name__,
+        )
 
     _key_source = "none"
     return None
@@ -152,7 +162,9 @@ def write_vault_key_to_env(key: str) -> None:
         _logger.info("Vault key written to %s", _DATA_ENV_PATH)
     except OSError as exc:
         _logger.warning(
-            "Could not write vault key to %s: %s — storing in DB only.", _DATA_ENV_PATH, exc
+            "Could not write vault key to %s (reason: %s) — storing in DB only.",
+            _DATA_ENV_PATH,
+            type(exc).__name__,
         )
 
 
@@ -203,7 +215,10 @@ def rotate_vault_key(db: Session) -> None:
         try:
             cfg.smtp_password_enc = _reencrypt(cfg.smtp_password_enc)
         except Exception as exc:
-            _logger.warning("Could not re-encrypt SMTP password during rotation: %s", exc)
+            _logger.warning(
+                "Could not re-encrypt SMTP password during rotation (reason: %s)",
+                type(exc).__name__,
+            )
 
     # Re-encrypt DiscoveryProfile.snmp_community_encrypted
     profiles = (
@@ -216,7 +231,9 @@ def rotate_vault_key(db: Session) -> None:
             profile.snmp_community_encrypted = _reencrypt(profile.snmp_community_encrypted)  # type: ignore[arg-type]
         except Exception as exc:
             _logger.warning(
-                "Could not re-encrypt SNMP community for profile %d: %s", profile.id, exc
+                "Could not re-encrypt SNMP community for profile %d (reason: %s)",
+                profile.id,
+                type(exc).__name__,
             )
 
     # Re-encrypt credentials table
@@ -225,7 +242,11 @@ def rotate_vault_key(db: Session) -> None:
         try:
             cred.encrypted_value = _reencrypt(cred.encrypted_value)
         except Exception as exc:
-            _logger.warning("Could not re-encrypt credential %d during rotation: %s", cred.id, exc)
+            _logger.warning(
+                "Could not re-encrypt credential %d during rotation (reason: %s)",
+                cred.id,
+                type(exc).__name__,
+            )
 
     db.flush()
 

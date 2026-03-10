@@ -105,7 +105,7 @@ def test_create_proxmox_config(client, monkeypatch):
     data = r.json()
     assert data["name"] == "Test PVE"
     assert data["type"] == "proxmox"
-    assert data["config_url"] == "https://pve.local:8006"
+    assert data["config_url"] == "https://8.8.8.8:8006"
     assert "api_token" not in data  # token must not leak
 
 

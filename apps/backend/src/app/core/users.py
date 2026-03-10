@@ -162,7 +162,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
                     user.email,
                 )
         except Exception as exc:
-            _logger.warning("Failed to send password reset email to %s: %s", user.email, exc)
+            _logger.warning(
+                "Failed to send password reset email to %s (reason: %s)",
+                user.email,
+                type(exc).__name__,
+            )
         finally:
             db.close()
 
