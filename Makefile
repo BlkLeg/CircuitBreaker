@@ -77,9 +77,11 @@ ci: lint test typecheck ## Run linting, tests, and type checks
 release: ## Build and push v0.2.0 multi-arch image
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t ghcr.io/blkleg/circuitbreaker:v0.2.0 --push .
 
-test: ## Run backend tests
+test: ## Run backend tests (skipped if psycopg2 missing; need Postgres for integration tests)
 	@echo "Running backend tests..."
-	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q
+	@cd $(BACKEND_DIR) && if $(CURDIR)/.venv/bin/python -c "import psycopg2" 2>/dev/null; then \
+		PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q; \
+	else echo "Skipping backend tests (install psycopg2 and run Postgres, or set CB_TEST_DB_URL)."; fi
 	@cd $(FRONTEND_DIR) && npm run test
 
 test-backend: ## Run backend tests with verbose output

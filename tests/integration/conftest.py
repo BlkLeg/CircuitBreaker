@@ -4,12 +4,16 @@ import os
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
 # v0.2.0: app.db.session requires CB_DB_URL to be postgresql:// at import time.
-# Override so conftest can load even when .env has sqlite; tests use db_engine fixture.
-os.environ["CB_DB_URL"] = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
+# Schema uses JSONB (PostgreSQL-only), so tests need a real Postgres or are skipped.
+os.environ["CB_DB_URL"] = (
+    os.environ.get("CB_TEST_DB_URL")
+    or os.environ.get("CB_DB_URL")
+    or "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
+)
 
-# Test DB URL for fixtures: in-memory sqlite when unset, or CB_TEST_DB_URL for real PG.
-# Example: CB_TEST_DB_URL=postgresql://breaker:breaker@localhost:5432/circuitbreaker_test
-_CB_TEST_DB_URL = os.environ.get("CB_TEST_DB_URL")
+# Test DB URL for fixtures. Schema uses JSONB (PostgreSQL-only), so default is Postgres.
+_TEST_DB_URL_DEFAULT = "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
+TEST_DB_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or _TEST_DB_URL_DEFAULT
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,16 +31,17 @@ limiter.enabled = False  # Disable rate-limiting during tests
 from app.db import models  # noqa: F401 E402 — register models with metadata
 from app.main import app  # noqa: E402
 
-TEST_DB_URL = _CB_TEST_DB_URL or "sqlite:///:memory:"
-
 
 @pytest.fixture(scope="function")
 def db_engine():
-    engine = create_engine(
-        TEST_DB_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    if TEST_DB_URL.startswith("sqlite"):
+        engine = create_engine(
+            TEST_DB_URL,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+    else:
+        engine = create_engine(TEST_DB_URL, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)
