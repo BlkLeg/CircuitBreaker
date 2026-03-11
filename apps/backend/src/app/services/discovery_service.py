@@ -733,12 +733,12 @@ async def run_scan_job(job_id: int):
                 if container.get("type") == "network_topology":
                     continue
 
-                container_ip = container.get("ip")
-                if not container_ip:
-                    continue
+                container_ip = container.get("ip") or None
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                net_id, v_id = _match_ip_to_network(db, container_ip)
+                net_id, v_id = (
+                    _match_ip_to_network(db, container_ip) if container_ip else (None, None)
+                )
 
                 # Enhanced raw data with network and port information
                 raw_data = {
@@ -755,7 +755,6 @@ async def run_scan_job(job_id: int):
                     "env_vars": container.get("env_vars", [])[:10],  # Limit to first 10 env vars
                     "mounts": container.get("mounts", []),
                 }
-                net_id, v_id = _match_ip_to_network(db, container_ip)
                 docker_res = ScanResult(
                     scan_job_id=job.id,
                     ip_address=container_ip,
@@ -776,7 +775,11 @@ async def run_scan_job(job_id: int):
                     merge_status="pending",
                     created_at=utcnow_iso(),
                 )
-                matched_hw = db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
+                matched_hw = (
+                    db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
+                    if container_ip
+                    else None
+                )
                 if matched_hw:
                     docker_res.matched_entity_type = "hardware"
                     docker_res.matched_entity_id = matched_hw.id
@@ -1170,12 +1173,12 @@ async def run_scan_job(job_id: int):
             for container in docker_discover(
                 docker_socket_path, docker_network_types, docker_port_scan
             ):
-                container_ip = container.get("ip")
-                if not container_ip:
-                    continue
+                container_ip = container.get("ip") or None
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                net_id, v_id = _match_ip_to_network(db, container_ip)
+                net_id, v_id = (
+                    _match_ip_to_network(db, container_ip) if container_ip else (None, None)
+                )
                 docker_res = ScanResult(
                     scan_job_id=job.id,
                     ip_address=container_ip,
@@ -1196,7 +1199,11 @@ async def run_scan_job(job_id: int):
                     merge_status="pending",
                     created_at=utcnow_iso(),
                 )
-                matched_hw = db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
+                matched_hw = (
+                    db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
+                    if container_ip
+                    else None
+                )
                 if matched_hw:
                     docker_res.matched_entity_type = "hardware"
                     docker_res.matched_entity_id = matched_hw.id

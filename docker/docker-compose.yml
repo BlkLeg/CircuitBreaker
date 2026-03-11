@@ -8,9 +8,14 @@
 #   CB_TAG=v0.2.0 docker compose -f docker/docker-compose.yml up -d
 #
 # Required env: CB_DB_PASSWORD, CB_VAULT_KEY (or set in .env / -e).
-# Optional: CB_DATA_DIR, CB_PORT_HTTP, CB_PORT_HTTPS, CB_TAG, NATS_AUTH_TOKEN, CB_ENABLE_TLS
+# Optional: CB_DATA_DIR, CB_DB_URL, CB_PORT_HTTP, CB_PORT_HTTPS, CB_TAG, NATS_AUTH_TOKEN, CB_ENABLE_TLS
 #
 # Data: bind mount ./circuitbreaker-data (or CB_DATA_DIR) to /data.
+#
+# External Postgres (CB_DB_URL): If you set CB_DB_URL to a host other than 127.0.0.1/localhost,
+# users and sessions live only in that database. CB_DATA_DIR and compose-clean do NOT touch it.
+# For a full reset with external Postgres you must drop/recreate the circuitbreaker database
+# (or use embedded Postgres by leaving CB_DB_URL unset or set to ...@127.0.0.1:5432/...).
 
 name: circuitbreaker
 
@@ -27,6 +32,7 @@ services:
       - "${CB_PORT_HTTPS:-443}:443"
     volumes:
       - "${CB_DATA_DIR:-./circuitbreaker-data}:/data"
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - CB_DB_PASSWORD=${CB_DB_PASSWORD:?Set CB_DB_PASSWORD}
       - CB_VAULT_KEY=${CB_VAULT_KEY:?Set CB_VAULT_KEY}

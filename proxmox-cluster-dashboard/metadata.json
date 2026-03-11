@@ -1,5 +1,0 @@
-{
-  "name": "Proxmox Cluster Dashboard",
-  "description": "Zabbix-style status page for Proxmox node and cluster data using Recharts and Plotly.",
-  "requestFramePermissions": []
-}

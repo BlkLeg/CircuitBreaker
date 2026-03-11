@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- Map used for localEdits; merged keys from buildDefaultEdits */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Check, Layers, Map, RefreshCw, Server, X } from 'lucide-react';
@@ -208,7 +209,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [localEdits, setLocalEdits] = useState({});
+  const [localEdits, setLocalEdits] = useState(() => new Map());
   const [drawerResult, setDrawerResult] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [iconPickerRowId, setIconPickerRowId] = useState(null);
@@ -216,6 +217,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
   const [groupPrompt, setGroupPrompt] = useState(null);
   // Synchronous lock — prevents double-click race before React re-renders the disabled state
   const opLock = useRef(false);
+  const [sourceFilter, setSourceFilter] = useState('all'); // 'all' | 'docker' | 'network'
 
   const load = useCallback(() => {
     setLoading(true);
@@ -227,24 +229,27 @@ export default function ReviewQueuePanel({ onCountChange }) {
         setTotal(count);
         onCountChange?.(count);
         setLocalEdits((prev) => {
-          const next = { ...prev };
+          const next = new Map(prev);
           for (const r of items) {
-            if (next[r.id]) {
+            const existing = next.get(r.id);
+            if (existing) {
               // Back-fill any missing defaults without clobbering user edits
               const defaults = buildDefaultEdits(r);
+              const merged = { ...existing };
               for (const [k, v] of Object.entries(defaults)) {
-                if (next[r.id][k] === undefined) {
-                  next[r.id][k] = v;
-                }
+                if (merged[k] === undefined) merged[k] = v;
               }
+              next.set(r.id, merged);
             } else {
-              next[r.id] = buildDefaultEdits(r);
+              next.set(r.id, buildDefaultEdits(r));
             }
           }
           return next;
         });
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Failed to fetch pending discovery results:', err);
+      })
       .finally(() => setLoading(false));
   }, [onCountChange]);
 
@@ -283,7 +288,12 @@ export default function ReviewQueuePanel({ onCountChange }) {
   );
 
   const setEdit = (id, field, value) => {
-    setLocalEdits((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+    setLocalEdits((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(id) || {};
+      next.set(id, { ...cur, [field]: value });
+      return next;
+    });
   };
 
   // ── Accept helpers ────────────────────────────────────────────────────────
@@ -347,7 +357,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
 
   const handleAccept = async (result) => {
     if (!_beginOp()) return;
-    const edits = localEdits[result.id] || {};
+    const edits = localEdits.get(result.id) || {};
     try {
       const outcome = await _mergeOne(
         result.id,
@@ -393,7 +403,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
     const snapshots = [...ids].map((id) => ({
       id,
       result: results.find((r) => r.id === id),
-      edits: localEdits[id] || {},
+      edits: localEdits.get(id) || {},
     }));
 
     // Fire all merge requests concurrently; allSettled never rejects
@@ -503,11 +513,18 @@ export default function ReviewQueuePanel({ onCountChange }) {
     }
   };
 
-  const allSelected = results.length > 0 && selectedIds.size === results.length;
+  const displayResults =
+    sourceFilter === 'docker'
+      ? results.filter(isDockerResult)
+      : sourceFilter === 'network'
+        ? results.filter((r) => !isDockerResult(r))
+        : results;
+
+  const allSelected = displayResults.length > 0 && selectedIds.size === displayResults.length;
   const someSelected = selectedIds.size > 0;
 
   const toggleSelectAll = () => {
-    setSelectedIds(allSelected ? new Set() : new Set(results.map((r) => r.id)));
+    setSelectedIds(allSelected ? new Set() : new Set(displayResults.map((r) => r.id)));
   };
 
   const toggleSelect = (id) => {
@@ -528,7 +545,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
   }
 
   const iconPickerResult =
-    iconPickerRowId === null ? null : results.find((r) => r.id === iconPickerRowId);
+    iconPickerRowId === null ? null : displayResults.find((r) => r.id === iconPickerRowId);
 
   return (
     <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -536,13 +553,43 @@ export default function ReviewQueuePanel({ onCountChange }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Review Queue</h2>
         <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{total} pending</span>
-        <button
-          type="button"
-          className="scan-toolbar-btn"
-          title="Refresh"
-          onClick={load}
-          style={{ marginLeft: 'auto' }}
-        >
+
+        {/* Source filter chips */}
+        <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+          {[
+            { key: 'all', label: 'All' },
+            { key: 'docker', label: 'Docker', icon: '/icons/vendors/docker.svg' },
+            { key: 'network', label: 'Network' },
+          ].map(({ key, label, icon }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setSourceFilter(key)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '2px 8px',
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: 4,
+                border: `1px solid ${sourceFilter === key ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                background:
+                  sourceFilter === key
+                    ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)'
+                    : 'transparent',
+                color: sourceFilter === key ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                cursor: 'pointer',
+              }}
+            >
+              {icon && <img src={icon} width={12} height={12} alt="" />}
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1 }} />
+        <button type="button" className="scan-toolbar-btn" title="Refresh" onClick={load}>
           <RefreshCw size={14} />
         </button>
         <button
@@ -643,8 +690,8 @@ export default function ReviewQueuePanel({ onCountChange }) {
           type="button"
           className="btn btn-secondary"
           style={{ fontSize: 11, padding: '4px 10px' }}
-          disabled={submitting || results.length === 0}
-          onClick={() => handleBulkAccept(new Set(results.map((r) => r.id)))}
+          disabled={submitting || displayResults.length === 0}
+          onClick={() => handleBulkAccept(new Set(displayResults.map((r) => r.id)))}
         >
           Accept All
         </button>
@@ -652,15 +699,15 @@ export default function ReviewQueuePanel({ onCountChange }) {
           type="button"
           className="btn btn-danger"
           style={{ fontSize: 11, padding: '4px 10px' }}
-          disabled={submitting || results.length === 0}
-          onClick={() => handleBulkReject(new Set(results.map((r) => r.id)))}
+          disabled={submitting || displayResults.length === 0}
+          onClick={() => handleBulkReject(new Set(displayResults.map((r) => r.id)))}
         >
           Reject All
         </button>
       </div>
 
       {/* Table */}
-      {results.length === 0 ? (
+      {displayResults.length === 0 ? (
         <p
           style={{
             color: 'var(--color-text-muted)',
@@ -688,12 +735,13 @@ export default function ReviewQueuePanel({ onCountChange }) {
                 <th>Role</th>
                 <th title="Enable uptime ping monitor after accept">Monitor</th>
                 <th>State</th>
+                <th>Source</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {results.map((r) => {
-                const edits = localEdits[r.id] || {};
+              {displayResults.map((r) => {
+                const edits = localEdits.get(r.id) || {};
                 const docker = isDockerResult(r);
                 const hostname = edits.hostname ?? (r.hostname || r.snmp_sys_name || '');
                 const role = edits.role ?? (docker ? 'lxc' : 'server');
@@ -801,6 +849,36 @@ export default function ReviewQueuePanel({ onCountChange }) {
                       <StatePill state={r.state} />
                     </td>
 
+                    <td>
+                      {docker ? (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 11,
+                            color: 'var(--color-text-muted)',
+                          }}
+                        >
+                          <img src="/icons/vendors/docker.svg" width={14} height={14} alt="" />
+                          Docker
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            fontSize: 11,
+                            color: 'var(--color-text-muted)',
+                          }}
+                        >
+                          <Server size={14} />
+                          Network
+                        </span>
+                      )}
+                    </td>
+
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 4 }}>
                         <button
@@ -834,7 +912,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
       {/* Icon picker modal */}
       {iconPickerResult && (
         <IconPickerModal
-          currentSlug={localEdits[iconPickerResult.id]?.iconSlug ?? null}
+          currentSlug={localEdits.get(iconPickerResult.id)?.iconSlug ?? null}
           onSelect={(slug) => {
             setEdit(iconPickerResult.id, 'iconSlug', slug);
           }}

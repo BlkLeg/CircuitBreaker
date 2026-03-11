@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal node/type keys */
 import { useCallback } from 'react';
 import { graphApi } from '../api/client';
 import {
@@ -19,7 +20,7 @@ import {
   proxmoxClusterDetected,
 } from '../utils/mapDataUtils';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
-import { getDagreLayout, getDagreViewportOptions } from '../utils/layouts';
+import { getDagreLayout, getDagreViewportOptions, getRadialLayout } from '../utils/layouts';
 import { groupNodesIntoCloud } from '../utils/cloudView';
 import { VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 
@@ -247,6 +248,24 @@ export function useMapDataLoad({
         data: { ...node.data, isClusterMember: clusterMembers.has(node.id) },
       }));
 
+      const uplinkOverrides = settings?.graph_uplink_overrides ?? {};
+      const rawNodesWithOverrides = rawNodesWithClusterHints.map((node) => {
+        const mbps = uplinkOverrides[node.id];
+        if (mbps != null && Number.isFinite(Number(mbps))) {
+          const val = Number(mbps);
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              uplinkSpeed: val,
+              upload_speed_mbps: val,
+              download_speed_mbps: val,
+            },
+          };
+        }
+        return node;
+      });
+
       let savedNodePositions = null;
       let savedEdgeOverrides = {};
       let savedBoundaries = [];
@@ -279,8 +298,8 @@ export function useMapDataLoad({
           setLastSaved(layoutRes.data.updated_at);
           break;
         }
-      } catch {
-        /* no saved layout */
+      } catch (err) {
+        console.error('Layout parse/fetch failed:', err);
       }
 
       setEdgeMode(savedEdgeMode || 'smoothstep');
@@ -306,7 +325,7 @@ export function useMapDataLoad({
         }));
 
       const dockerAutoBoundaries = groupDockerIntoBoundaries(
-        rawNodesWithClusterHints,
+        rawNodesWithOverrides,
         rawE,
         normalizedSavedBoundaries
       );
@@ -326,7 +345,7 @@ export function useMapDataLoad({
 
       let nodesForProxmox = null;
       if (savedNodePositions) {
-        const mergedNodes = rawNodesWithClusterHints.map((n) => {
+        const mergedNodes = rawNodesWithOverrides.map((n) => {
           const shapeData = savedNodeShapes[n.id]
             ? { ...n.data, nodeShape: savedNodeShapes[n.id] }
             : n.data;
@@ -349,15 +368,22 @@ export function useMapDataLoad({
         setLayoutEngine('manual');
       } else {
         const viewportWidth = containerRef?.current?.getBoundingClientRect?.()?.width;
-        const dagreOptions = getDagreViewportOptions(viewportWidth);
-        const layout = getDagreLayout(rawNodesWithClusterHints, rawE, 'TB', dagreOptions);
+        const isProxmox = proxmoxClusterDetected(rawNodesWithOverrides);
+        const layout = isProxmox
+          ? getRadialLayout(rawNodesWithOverrides, rawE)
+          : getDagreLayout(
+              rawNodesWithOverrides,
+              rawE,
+              'TB',
+              getDagreViewportOptions(viewportWidth)
+            );
         let initialNodes = layout.nodes;
         if (cloudViewEnabled) {
           initialNodes = groupNodesIntoCloud(initialNodes);
         }
         setNodes(initialNodes);
         setEdges(applyEdgeSides(initialNodes, layout.edges, {}));
-        setLayoutEngine(settings?.graph_default_layout || 'dagre');
+        setLayoutEngine(isProxmox ? 'radial' : settings?.graph_default_layout || 'dagre');
         nodesForProxmox = initialNodes;
       }
 
@@ -368,7 +394,8 @@ export function useMapDataLoad({
           try {
             setViewport(JSON.parse(saved));
             hasRestoredViewport.current = true;
-          } catch {
+          } catch (err) {
+            console.error('Failed to parse saved viewport:', err);
             fitView({
               ...VIEWPORT_FIT_DEFAULTS,
               padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
@@ -411,6 +438,7 @@ export function useMapDataLoad({
     isMobile,
     showLabels,
     cloudViewEnabled,
+    settings?.graph_uplink_overrides,
     setEdges,
     setNodes,
     setViewport,

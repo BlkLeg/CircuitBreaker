@@ -16,13 +16,14 @@ from sqlalchemy.orm import Session
 from app.core.rbac import ROLE_DEFAULT_SCOPES
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
-from app.db.models import AppSettings, Log, User
+from app.db.models import AppSettings, Log, Onboarding, User
 from app.schemas.auth import (
     AuthResponse,
     BootstrapInitializeOAuthRequest,
     BootstrapInitializeResponse,
     BootstrapStatusResponse,
     BootstrapThemeResponse,
+    OnboardingStepResponse,
     UserProfile,
 )
 
@@ -589,6 +590,8 @@ def bootstrap_initialize(
         except Exception as settings_exc:  # noqa: BLE001
             _logger.warning("Bootstrap settings setup during OOBE failed: %s", settings_exc)
 
+    _set_onboarding_step(db, "finish")
+
     return BootstrapInitializeResponse(
         token=token,
         user=_to_profile(user),
@@ -740,6 +743,8 @@ def bootstrap_initialize_oauth(
         except Exception as settings_exc:  # noqa: BLE001
             _logger.warning("OAuth bootstrap settings setup failed: %s", settings_exc)
 
+    _set_onboarding_step(db, "finish")
+
     return BootstrapInitializeResponse(
         token=token,
         user=_to_profile(user),
@@ -747,6 +752,54 @@ def bootstrap_initialize_oauth(
         vault_key=vault_key_plaintext,
         vault_key_warning=vault_key_plaintext is not None,
     )
+
+
+def get_onboarding_or_fallback(db: Session) -> OnboardingStepResponse:
+    """Return current and previous onboarding step; defaults to start/start if no row."""
+    try:
+        row = db.get(Onboarding, 1)
+        if row:
+            return OnboardingStepResponse(
+                current_step=row.step,
+                previous_step=row.previous_step,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    return OnboardingStepResponse(current_step="start", previous_step="start")
+
+
+def set_onboarding_step(db: Session, step: str) -> OnboardingStepResponse:
+    """Set onboarding step (and previous_step to current). Returns new state."""
+    from app.schemas.auth import ONBOARDING_STEPS
+
+    if step not in ONBOARDING_STEPS:
+        raise HTTPException(status_code=400, detail=f"Invalid step: {step!r}")
+    row = db.get(Onboarding, 1)
+    if not row:
+        row = Onboarding(id=1, step="start", previous_step="start")
+        db.add(row)
+    previous = row.step
+    row.previous_step = previous
+    row.step = step
+    db.commit()
+    db.refresh(row)
+    return OnboardingStepResponse(current_step=row.step, previous_step=row.previous_step)
+
+
+def _set_onboarding_step(db: Session, step: str) -> None:
+    """Internal: set step without raising (e.g. after bootstrap)."""
+    try:
+        row = db.get(Onboarding, 1)
+        if row:
+            row.previous_step = row.step
+            row.step = step
+            db.commit()
+        else:
+            row = Onboarding(id=1, step=step, previous_step="summary")
+            db.add(row)
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 def login(

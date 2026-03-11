@@ -1,5 +1,7 @@
+/* eslint-disable security/detect-object-injection -- internal enum/column keys */
 import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
+import { SkeletonTable } from '../components/common/SkeletonTable';
 import { useNavigate } from 'react-router-dom';
 import {
   UserPlus,
@@ -339,7 +341,7 @@ export default function AdminUsersPage({ embedded = false }) {
       )}
 
       {loading ? (
-        <p style={{ color: 'var(--color-text-muted)' }}>Loading...</p>
+        <SkeletonTable cols={5} />
       ) : (
         <>
           <div className="table-wrapper">

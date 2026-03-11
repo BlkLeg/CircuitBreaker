@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Navigate } from 'react-router-dom';
+import { SkeletonTable } from '../components/common/SkeletonTable';
 import { ArrowLeft } from 'lucide-react';
 import { adminUsersApi } from '../api/client';
 import { useToast } from '../components/common/Toast';
@@ -94,7 +95,7 @@ export default function UserActionsPage() {
       </div>
 
       {loading ? (
-        <p style={{ color: 'var(--color-text-muted)' }}>Loading...</p>
+        <SkeletonTable cols={4} />
       ) : (
         <div
           style={{

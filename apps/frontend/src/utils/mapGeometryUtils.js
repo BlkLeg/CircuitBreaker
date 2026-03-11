@@ -50,6 +50,34 @@ export function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = 
 }
 
 /**
+ * Apply overrides/sides for a single edge. Use for targeted updates so only one edge object changes.
+ *
+ * @param {Node[]} nodesArr - current nodes with positions
+ * @param {Edge} edge - the edge to update
+ * @param {Object} overrides - edgeId → { source_side, target_side, control_point }
+ * @returns {Edge} - updated edge with sourceHandle, targetHandle, data.controlPoint
+ */
+export function applyEdgeSidesForEdge(nodesArr, edge, overrides = {}) {
+  const posMap = Object.fromEntries(nodesArr.map((n) => [n.id, n.position]));
+  const override = overrides[edge.id];
+  const src = posMap[edge.source] ?? { x: 0, y: 0 };
+  const tgt = posMap[edge.target] ?? { x: 0, y: 0 };
+  const { sourceSide, targetSide } = override
+    ? { sourceSide: override.source_side, targetSide: override.target_side }
+    : computeSide(src, tgt);
+
+  return {
+    ...edge,
+    sourceHandle: `s-${sourceSide}`,
+    targetHandle: `t-${targetSide}`,
+    data: {
+      ...edge.data,
+      controlPoint: override?.control_point ?? edge.data?.controlPoint ?? null,
+    },
+  };
+}
+
+/**
  * Parse the stored layout JSON — handles both the new format
  *   { nodes: {...}, edges: {...} }
  * and the legacy format
@@ -138,6 +166,7 @@ export function convexHull(points) {
 
   const upper = [];
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    /* eslint-disable-next-line security/detect-object-injection -- index in own array */
     const point = sorted[i];
     while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop();
     upper.push(point);

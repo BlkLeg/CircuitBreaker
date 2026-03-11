@@ -101,6 +101,27 @@ class BootstrapStatusResponse(BaseModel):
     user_count: int
 
 
+# Onboarding (OOBE) step state — public API, no auth required
+ONBOARDING_STEPS = frozenset(
+    {"start", "account", "theme", "regional", "email", "summary", "finish"}
+)
+
+
+class OnboardingStepResponse(BaseModel):
+    current_step: str
+    previous_step: str
+
+
+class OnboardingStepUpdateRequest(BaseModel):
+    step: str
+
+    @model_validator(mode="after")
+    def step_must_be_valid(self):
+        if self.step not in ONBOARDING_STEPS:
+            raise ValueError(f"step must be one of {sorted(ONBOARDING_STEPS)}")
+        return self
+
+
 class BootstrapInitializeRequest(BaseModel):
     email: str
     password: str | None = None

@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import PropTypes from 'prop-types';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -9,33 +10,48 @@ let _nextId = 0;
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
-  const timers = useRef({});
+  const timers = useRef(new Map()); // id → timeoutId
+  const fingerprints = useRef(new Map()); // id → "variant:message"
 
   const dismiss = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
-    if (timers.current[id]) {
-      clearTimeout(timers.current[id]);
-      delete timers.current[id];
+    fingerprints.current.delete(id);
+    const timeoutId = timers.current.get(id);
+    if (timeoutId != null) {
+      clearTimeout(timeoutId);
+      timers.current.delete(id);
     }
   }, []);
 
   const addToast = useCallback(
     (message, variant = 'info') => {
+      const fingerprint = `${variant}:${message}`;
+      // Suppress duplicate toasts that are already visible
+      for (const fp of fingerprints.current.values()) {
+        if (fp === fingerprint) return null;
+      }
       const id = ++_nextId;
       const duration = variant === 'error' ? 8000 : 5000;
+      fingerprints.current.set(id, fingerprint);
       setToasts((prev) => [...prev, { id, message, variant }]);
-      timers.current[id] = setTimeout(() => dismiss(id), duration);
+      timers.current.set(
+        id,
+        setTimeout(() => dismiss(id), duration)
+      );
       return id;
     },
     [dismiss]
   );
 
-  const toast = {
-    success: (msg) => addToast(msg, 'success'),
-    error: (msg) => addToast(msg, 'error'),
-    warn: (msg) => addToast(msg, 'warn'),
-    info: (msg) => addToast(msg, 'info'),
-  };
+  const toast = useMemo(
+    () => ({
+      success: (msg) => addToast(msg, 'success'),
+      error: (msg) => addToast(msg, 'error'),
+      warn: (msg) => addToast(msg, 'warn'),
+      info: (msg) => addToast(msg, 'info'),
+    }),
+    [addToast]
+  );
 
   return (
     <ToastContext.Provider value={toast}>
@@ -45,6 +61,10 @@ export function ToastProvider({ children }) {
   );
 }
 
+ToastProvider.propTypes = {
+  children: PropTypes.node.isRequired,
+};
+
 export function useToast() {
   const ctx = useContext(ToastContext);
   if (!ctx) throw new Error('useToast must be used inside <ToastProvider>');
@@ -53,12 +73,18 @@ export function useToast() {
 
 // ── Toast Stack UI ────────────────────────────────────────────────────────────
 
-const VARIANT_STYLES = {
-  success: { bg: 'var(--color-surface)', border: '#2ecc71', icon: '\u2713', color: '#2ecc71' },
-  error: { bg: 'var(--color-surface)', border: '#e74c3c', icon: '\u2715', color: '#e74c3c' },
-  warn: { bg: 'var(--color-surface)', border: '#f39c12', icon: '\u26a0', color: '#f39c12' },
-  info: { bg: 'var(--color-surface)', border: '#3498db', icon: '\u2139', color: '#3498db' },
-};
+const VARIANT_STYLES = new Map([
+  ['success', { bg: 'var(--color-surface)', border: '#2ecc71', icon: '\u2713', color: '#2ecc71' }],
+  ['error', { bg: 'var(--color-surface)', border: '#e74c3c', icon: '\u2715', color: '#e74c3c' }],
+  ['warn', { bg: 'var(--color-surface)', border: '#f39c12', icon: '\u26a0', color: '#f39c12' }],
+  ['info', { bg: 'var(--color-surface)', border: '#3498db', icon: '\u2139', color: '#3498db' }],
+]);
+
+const toastShape = PropTypes.shape({
+  id: PropTypes.number.isRequired,
+  message: PropTypes.string.isRequired,
+  variant: PropTypes.oneOf(['success', 'error', 'warn', 'info']).isRequired,
+});
 
 function ToastStack({ toasts, onDismiss }) {
   return (
@@ -82,8 +108,13 @@ function ToastStack({ toasts, onDismiss }) {
   );
 }
 
+ToastStack.propTypes = {
+  toasts: PropTypes.arrayOf(toastShape).isRequired,
+  onDismiss: PropTypes.func.isRequired,
+};
+
 function ToastItem({ toast, onDismiss }) {
-  const s = VARIANT_STYLES[toast.variant] || VARIANT_STYLES.info;
+  const s = VARIANT_STYLES.get(toast.variant) ?? VARIANT_STYLES.get('info');
 
   return (
     <div
@@ -136,5 +167,10 @@ function ToastItem({ toast, onDismiss }) {
     </div>
   );
 }
+
+ToastItem.propTypes = {
+  toast: toastShape.isRequired,
+  onDismiss: PropTypes.func.isRequired,
+};
 
 export default ToastProvider;

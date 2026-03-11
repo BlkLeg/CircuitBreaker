@@ -152,6 +152,9 @@ export const CONNECTION_STYLES = {
   },
 };
 
+/** Map version for safe lookup by connection type (avoids object injection). */
+export const CONNECTION_STYLES_MAP = new Map(Object.entries(CONNECTION_STYLES));
+
 // ── Device role → Lucide icon name mapping ──────────────────────────────────
 
 export const ICON_TYPES = {

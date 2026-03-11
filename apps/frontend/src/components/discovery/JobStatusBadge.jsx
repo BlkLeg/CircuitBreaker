@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- status key lookup */
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Loader2, CheckCircle2, XCircle, MinusCircle, Clock, PauseCircle } from 'lucide-react';

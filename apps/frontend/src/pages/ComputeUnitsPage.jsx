@@ -1,4 +1,6 @@
+/* eslint-disable security/detect-object-injection -- internal column/type keys */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { SkeletonTable } from '../components/common/SkeletonTable';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
@@ -168,14 +170,17 @@ function ComputeUnitsPage() {
     environmentsApi
       .list()
       .then((r) => setEnvironmentsList(r.data))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to fetch environments list:', err);
+      });
   }, []);
 
   const fetchTags = useCallback(async () => {
     try {
       const res = await tagsApi.list();
       setAllTags(res.data || []);
-    } catch {
+    } catch (err) {
+      console.error('Compute units tags load failed:', err);
       setAllTags([]);
     }
   }, []);
@@ -415,7 +420,7 @@ function ComputeUnitsPage() {
       )}
 
       {loading ? (
-        <p>Loading...</p>
+        <SkeletonTable cols={5} />
       ) : (
         <EntityTable
           columns={COLUMNS_WITH_TAGS}

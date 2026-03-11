@@ -14,6 +14,8 @@ const LAYOUTS = [
   { id: 'circular_cluster', label: 'Docker Clusters', group: 'Advanced' },
   { id: 'grid_rack', label: 'Rack Grid', group: 'Advanced' },
   { id: 'concentric', label: 'Concentric Rings', group: 'Advanced' },
+  { id: 'cortex', label: 'Cortex (compact hierarchy)', group: 'Advanced' },
+  { id: 'mindmap', label: 'Mindmap (root-centered)', group: 'Advanced' },
 ];
 
 const PRESETS = [

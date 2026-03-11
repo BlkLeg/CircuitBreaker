@@ -143,6 +143,7 @@ class AppSettingsRead(BaseModel):
     docker_sync_interval_minutes: int = 5
     graph_default_layout: str = "dagre"
     map_title: str = "Topology"
+    graph_uplink_overrides: dict = {}  # nodeId -> Mbps for non-hardware nodes
     # Font preferences
     ui_font: str = "inter"
     ui_font_size: str = "medium"
@@ -233,6 +234,15 @@ class AppSettingsRead(BaseModel):
             except Exception:
                 pass
         return self
+
+    @field_validator("graph_uplink_overrides", mode="before")
+    @classmethod
+    def default_uplink_overrides(cls, v: Any) -> dict:
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return v
+        return {}
 
     @field_validator("environments", mode="before")
     @classmethod
@@ -359,6 +369,7 @@ class AppSettingsUpdate(BaseModel):
     docker_sync_interval_minutes: int | None = None
     graph_default_layout: str | None = None
     map_title: str | None = None
+    graph_uplink_overrides: dict | None = None
     # Font preferences
     ui_font: str | None = None
     ui_font_size: str | None = None

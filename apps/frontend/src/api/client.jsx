@@ -1,5 +1,6 @@
 import axios from 'axios';
 import logger from '../utils/logger';
+import { safeSet } from '../utils/safeAccess';
 import { hashPasswordForAuth } from '../utils/passwordHash';
 
 const AUTH_ROUTE_PREFIXES = [
@@ -14,6 +15,29 @@ function isSessionExpiryCandidate(error) {
   const url = error.config?.url || '';
   if (AUTH_ROUTE_PREFIXES.some((prefix) => url.includes(prefix))) return false;
   return true;
+}
+
+function buildUserMessage(status, data, error) {
+  if (status >= 500) {
+    logger.error(`API ${status}:`, data);
+    return 'A server error occurred. Please try again or contact support.';
+  }
+  const detail = data?.detail;
+  const message = Array.isArray(detail)
+    ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
+    : detail || error.message;
+  logger.error(`API ${status}:`, message);
+  return message;
+}
+
+function extractFieldErrors(status, data) {
+  if (status !== 422 || !Array.isArray(data?.detail)) return null;
+  const fieldErrors = {};
+  data.detail.forEach((e) => {
+    const fieldName = e.field ?? (Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : null);
+    if (fieldName && e.msg) safeSet(fieldErrors, String(fieldName), e.msg);
+  });
+  return Object.keys(fieldErrors).length > 0 ? fieldErrors : null;
 }
 
 const client = axios.create({
@@ -42,13 +66,34 @@ client.interceptors.request.use((config) => {
 
 client.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config || {};
+    const method = (config.method || 'get').toLowerCase();
+    const isSafeMethod = ['get', 'head', 'options'].includes(method);
+    const isRetryableStatus = !error.response || error.response.status >= 500;
+
+    // Auto-retry safe methods on network errors or 5xx (up to 3 times, exponential backoff)
+    if (isSafeMethod && isRetryableStatus && (config._retryCount ?? 0) < 3) {
+      config._retryCount = (config._retryCount ?? 0) + 1;
+      const delay = Math.min(500 * Math.pow(2, config._retryCount - 1), 4000);
+      await new Promise((r) => setTimeout(r, delay));
+      return client(config);
+    }
+
+    // Single auto-retry for 429 after retry-after delay (before surfacing to user)
+    if (error.response?.status === 429 && !config._retried429) {
+      const retryAfter = Number.parseInt(error.response.headers?.['retry-after'] || '5', 10);
+      config._retried429 = true;
+      await new Promise((r) => setTimeout(r, retryAfter * 1000));
+      return client(config);
+    }
+
     // Network / timeout — backend unreachable
     if (!error.response) {
       const networkErr = new Error('Cannot reach the server. Check your network connection.');
       networkErr.isNetworkError = true;
       logger.error('Network error:', error.message);
-      return Promise.reject(networkErr);
+      throw networkErr;
     }
 
     const { status, data } = error.response;
@@ -57,8 +102,10 @@ client.interceptors.response.use(
     // currently stored bearer token. This avoids stale in-flight 401s
     // clearing a freshly issued token after logout/re-login.
     if (isSessionExpiryCandidate(error)) {
-      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
-      window.dispatchEvent(new CustomEvent('cb:session-expired'));
+      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch((err) => {
+        console.debug('Server logout failed (expected if session expired):', err);
+      });
+      globalThis.dispatchEvent(new CustomEvent('cb:session-expired'));
     }
 
     // Rate limited — surface retry-after info
@@ -70,48 +117,19 @@ client.interceptors.response.use(
       const rateLimitErr = new Error(msg);
       rateLimitErr.statusCode = 429;
       rateLimitErr.isRateLimited = true;
-      return Promise.reject(rateLimitErr);
+      throw rateLimitErr;
     }
 
-    // Build a user-facing message
-    let message;
-    // Server errors — don't expose raw detail
-    if (status >= 500) {
-      message = 'A server error occurred. Please try again or contact support.';
-      logger.error(`API ${status}:`, data);
-    } else {
-      // 4xx — surface the API's error detail
-      const detail = data?.detail;
-      if (Array.isArray(detail)) {
-        // Pydantic validation_error: array of { field, msg } (our custom schema)
-        // or FastAPI's default [ { loc, msg, type } ]
-        message = detail.map((e) => e.msg || JSON.stringify(e)).join('; ');
-      } else {
-        message = detail || error.message;
-      }
-      logger.error(`API ${status}:`, message);
-    }
-
+    const message = buildUserMessage(status, data, error);
     const err = new Error(message);
     err.statusCode = status;
+    err.errorCode = data?.error_code ?? null;
+    err.response = error.response;
 
-    // Attach per-field errors for 422 Unprocessable Entity
-    // Our custom validation_error schema: detail is [{ field, msg }]
-    if (status === 422 && Array.isArray(data?.detail)) {
-      const fieldErrors = {};
-      data.detail.forEach((e) => {
-        // Support both our schema { field, msg } and FastAPI default { loc: [...], msg }
-        const fieldName = e.field ?? (Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : null);
-        if (fieldName && e.msg) {
-          fieldErrors[fieldName] = e.msg;
-        }
-      });
-      if (Object.keys(fieldErrors).length > 0) {
-        err.fieldErrors = fieldErrors;
-      }
-    }
+    const fieldErrors = extractFieldErrors(status, data);
+    if (fieldErrors) err.fieldErrors = fieldErrors;
 
-    return Promise.reject(err);
+    throw err;
   }
 );
 
@@ -385,7 +403,7 @@ export const proxmoxApi = {
   status: (id) => client.get(`/integrations/proxmox/${id}/status`),
   clusterOverview: (integrationId) =>
     client.get('/integrations/proxmox/cluster-overview', {
-      params: { integration_id: integrationId },
+      params: { integration_id: integrationId != null ? Number(integrationId) : undefined },
     }),
   vmAction: (id, node, vmType, vmid, action) =>
     client.post(`/integrations/proxmox/${id}/nodes/${node}/${vmType}/${vmid}/action`, { action }),

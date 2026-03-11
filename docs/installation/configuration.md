@@ -105,6 +105,15 @@ This generates a fresh key and re-initializes the vault. All previously encrypte
 
 **Backup priority:** At minimum, back up the volume containing `app.db` and `.env` (the vault key file). If you restore `app.db` without the matching vault key, all encrypted credentials become unreadable. See [Backup & Restore](../backup-restore.md).
 
+### Data directory vs database (full reset)
+
+When **CB_DB_URL** points to an external host (e.g. `postgresql://...@postgres:5432/circuitbreaker`), **users and sessions live only in that database**. The **CB_DATA_DIR** bind mount (and any target that wipes it, e.g. `make compose-clean`) does **not** touch that database. Changing or wiping CB_DATA_DIR will not log you out or remove your account; the app will still use the same Postgres and the same identity.
+
+**Full reset with external Postgres** requires one of:
+
+- **Drop and recreate the database** that CB_DB_URL points to. From the repo root you can run `make compose-down` then `make compose-reset-db` (requires `psql` and CB_DB_URL in `.env`). Or manually: connect to the `postgres` database and run `DROP DATABASE circuitbreaker;` then `CREATE DATABASE circuitbreaker;`, then restart the app so migrations run.
+- **Use embedded Postgres** so the DB lives under CB_DATA_DIR: leave CB_DB_URL unset or set it to `postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker`. Then wiping CB_DATA_DIR (e.g. `make compose-clean`) also removes the database and gives you a fresh identity.
+
 ---
 
 ## TLS / HTTPS

@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- profileMap is Map */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import PropTypes from 'prop-types';
@@ -199,7 +200,7 @@ export default function ScanDetailPanel({
     ? (progressPct ?? (job.status === 'completed' || job.status === 'done' ? 100 : 0))
     : 0;
   const profileName = job
-    ? (job.profile_id && profileMap[job.profile_id]) || job.label || 'Ad-hoc'
+    ? (job.profile_id && profileMap?.get(job.profile_id)) || job.label || 'Ad-hoc'
     : '—';
 
   // Prefer detailed DB-backed logs; fall back to lightweight progress-event logs

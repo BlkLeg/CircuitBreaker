@@ -363,9 +363,9 @@ def import_backup(
     back completely.
     """
     data = payload.data
-    if payload.wipe_before_import:
-        _wipe_entities(db)
     try:
+        if payload.wipe_before_import:
+            _wipe_entities(db)
         _restore_entities(db, data)
         db.commit()
     except Exception as exc:
@@ -380,7 +380,11 @@ def import_backup(
 
 
 def _wipe_entities_keep_docs(db: Session) -> None:
-    """Delete all entity rows except docs and doc-attachment links."""
+    """Delete all entity rows except docs and doc-attachment links.
+
+    Order must satisfy FKs: child tables (e.g. HardwareMonitor, HardwareConnection)
+    before parents (Hardware).
+    """
     for model_cls in [
         models.HardwareClusterMember,
         models.HardwareCluster,
@@ -392,6 +396,11 @@ def _wipe_entities_keep_docs(db: Session) -> None:
         models.ServiceDependency,
         models.HardwareNetwork,
         models.ComputeNetwork,
+        models.HardwareConnection,
+        models.HardwareMonitor,
+        models.UptimeEvent,
+        models.DailyUptimeStats,
+        models.TelemetryTimeseries,
         models.EntityTag,
         models.EntityDoc,
         models.Service,

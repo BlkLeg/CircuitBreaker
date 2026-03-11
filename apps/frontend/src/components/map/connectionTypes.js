@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- connection type lookups */
 export const CANONICAL_CONNECTION_TYPES = [
   'ethernet',
   'wireless',

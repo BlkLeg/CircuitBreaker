@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,6 +11,8 @@ from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
 from app.services import clusters_service, hardware_service
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["hardware"])
 
@@ -261,16 +264,19 @@ async def create_hardware_connection(
     from app.core.nats_client import nats_client
     from app.core.subjects import TOPOLOGY_CABLE_ADDED, topology_cable_payload
 
-    await nats_client.publish(
-        TOPOLOGY_CABLE_ADDED,
-        topology_cable_payload(
-            f"hw-{hardware_id}",
-            f"hw-{payload.target_hardware_id}",
-            connection_type=conn.get("connection_type", "ethernet")
-            if isinstance(conn, dict)
-            else "ethernet",
-        ),
-    )
+    try:
+        await nats_client.publish(
+            TOPOLOGY_CABLE_ADDED,
+            topology_cable_payload(
+                f"hw-{hardware_id}",
+                f"hw-{payload.target_hardware_id}",
+                connection_type=conn.get("connection_type", "ethernet")
+                if isinstance(conn, dict)
+                else "ethernet",
+            ),
+        )
+    except Exception:
+        _logger.warning("NATS publish failed for hardware event", exc_info=True)
     return conn
 
 
@@ -294,11 +300,14 @@ async def delete_hardware_connection(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    await nats_client.publish(
-        TOPOLOGY_CABLE_REMOVED,
-        {
-            "source_id": f"hw-{removed['source_hardware_id']}",
-            "target_id": f"hw-{removed['target_hardware_id']}",
-            "connection_id": connection_id,
-        },
-    )
+    try:
+        await nats_client.publish(
+            TOPOLOGY_CABLE_REMOVED,
+            {
+                "source_id": f"hw-{removed['source_hardware_id']}",
+                "target_id": f"hw-{removed['target_hardware_id']}",
+                "connection_id": connection_id,
+            },
+        )
+    except Exception:
+        _logger.warning("NATS publish failed for hardware event", exc_info=True)

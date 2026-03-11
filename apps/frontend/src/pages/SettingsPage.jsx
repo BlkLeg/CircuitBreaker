@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useEffect, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import { useSearchParams } from 'react-router-dom';
@@ -88,7 +89,9 @@ function CveSecuritySection({ form, set }) {
     cveApi
       .status()
       .then((r) => setCveStatus(r.data))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('CVE status load failed:', err);
+      });
   }, []);
 
   const handleSync = async () => {
@@ -99,10 +102,13 @@ function CveSecuritySection({ form, set }) {
         cveApi
           .status()
           .then((r) => setCveStatus(r.data))
-          .catch(() => {});
+          .catch((err) => {
+            console.error('CVE status refresh failed:', err);
+          });
         setSyncing(false);
       }, 2000);
-    } catch {
+    } catch (err) {
+      console.error('CVE sync trigger failed:', err);
       setSyncing(false);
     }
   };

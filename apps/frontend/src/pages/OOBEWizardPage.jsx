@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- step/variant keys; Map used for id-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -16,7 +17,7 @@ import {
   Lock,
   ExternalLink,
 } from 'lucide-react';
-import { authApi } from '../api/auth.js';
+import { authApi, OOBE_STEP_NAMES } from '../api/auth.js';
 import apiClient from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
@@ -57,6 +58,7 @@ function OOBEWizardPage({ onCompleted }) {
   const branding = settings?.branding;
 
   const [step, setStep] = useState(1);
+  const [, setOnboardingLoaded] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -181,6 +183,23 @@ function OOBEWizardPage({ onCompleted }) {
     if (photoFileRef.current) photoFileRef.current.value = '';
   };
 
+  // Load persisted onboarding step from backend (Homarr-style resume).
+  useEffect(() => {
+    authApi
+      .getOnboardingStep()
+      .then((res) => {
+        const current = res.data?.current_step;
+        if (current && OOBE_STEP_NAMES.includes(current)) {
+          const num = OOBE_STEP_NAMES.indexOf(current) + 1;
+          setStep(num);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch onboarding step:', err);
+      })
+      .finally(() => setOnboardingLoaded(true));
+  }, []);
+
   // Force the default theme on mount so the OOBE always starts with the
   // correct visual regardless of what SettingsContext loaded from the API.
   useEffect(() => {
@@ -206,8 +225,8 @@ function OOBEWizardPage({ onCompleted }) {
       if (saved.selectedFontSize) setSelectedFontSize(saved.selectedFontSize);
       if (saved.weatherLocation) setWeatherLocation(saved.weatherLocation);
       if (saved.externalAppUrl) setExternalAppUrl(saved.externalAppUrl);
-    } catch {
-      // Ignore parse errors — defaults are fine
+    } catch (err) {
+      console.warn('OOBE state restore failed (defaults used):', err);
     }
     sessionStorage.removeItem('oobe_state');
 
@@ -229,12 +248,17 @@ function OOBEWizardPage({ onCompleted }) {
           setPhotoPreview(user.profile_photo_url);
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('Failed to fetch OAuth profile during OOBE:', err);
+      });
 
     // Clean token from URL without triggering a re-render loop
     globalThis.history.replaceState({}, '', '/oobe');
     // Skip account creation step — go straight to theme
     setStep(3);
+    authApi.setOnboardingStep('theme').catch((err) => {
+      console.warn('Failed to persist onboarding step (theme):', err);
+    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -287,7 +311,8 @@ function OOBEWizardPage({ onCompleted }) {
       }));
       setLocationResults(results);
       setLocationDropdownOpen(results.length > 0);
-    } catch {
+    } catch (err) {
+      console.warn('OOBE location search failed:', err);
       setLocationResults([]);
     } finally {
       setLocationSearching(false);
@@ -346,6 +371,15 @@ function OOBEWizardPage({ onCompleted }) {
     return null;
   };
 
+  const persistStep = (nextStepNum) => {
+    const name = OOBE_STEP_NAMES[nextStepNum - 1];
+    if (name) {
+      authApi.setOnboardingStep(name).catch((err) => {
+        console.warn('Failed to persist onboarding step:', err);
+      });
+    }
+  };
+
   const goNext = () => {
     if (step === 2 && !oauthBootstrapToken && !accountValid) {
       setError('Please fix account validation errors before continuing.');
@@ -359,12 +393,22 @@ function OOBEWizardPage({ onCompleted }) {
       }
     }
     setError('');
-    setStep((value) => Math.min(6, value + 1));
+    const next = Math.min(6, step + 1);
+    setStep(next);
+    persistStep(next);
   };
 
   const goBack = () => {
     setError('');
-    setStep((value) => Math.max(1, value - 1));
+    const prev = Math.max(1, step - 1);
+    setStep(prev);
+    persistStep(prev);
+  };
+
+  const goBackToStart = () => {
+    setError('');
+    setStep(1);
+    persistStep(1);
   };
 
   const applyFontInstant = (fontId, fontSizeId) => {
@@ -433,7 +477,8 @@ function OOBEWizardPage({ onCompleted }) {
           },
         });
       }
-    } catch {
+    } catch (err) {
+      console.error('OOBE OAuth provider save failed:', err);
       setError('Failed to save OAuth provider settings. Please try again.');
       setOauthSetupSaving(false);
       return;
@@ -521,8 +566,8 @@ function OOBEWizardPage({ onCompleted }) {
           fd.append('profile_photo', photoFile);
           const photoRes = await authApi.updateProfile(fd, token);
           user = photoRes.data;
-        } catch {
-          // Photo upload failed — account was still created successfully
+        } catch (err) {
+          console.warn('OOBE profile photo upload failed (account created):', err);
         }
       }
 
@@ -564,8 +609,8 @@ function OOBEWizardPage({ onCompleted }) {
       await navigator.clipboard.writeText(vaultKey);
       setVaultKeyCopied(true);
       setTimeout(() => setVaultKeyCopied(false), 2500);
-    } catch {
-      // Fallback: select the textarea text
+    } catch (err) {
+      console.warn('Clipboard write failed, user can manually select:', err);
     }
   };
 
@@ -886,7 +931,14 @@ function OOBEWizardPage({ onCompleted }) {
           className={`oobe-step3-row${step === 2 || step === 3 || step === 4 ? ' oobe-step3-row--active' : ''}`}
         >
           <div className="login-card oobe-card">
-            <div className="oobe-progress">Step {step}/6</div>
+            <div className="oobe-progress-row">
+              <div className="oobe-progress">Step {step}/6</div>
+              {step > 1 && (
+                <button type="button" className="oobe-back-to-start" onClick={goBackToStart}>
+                  Back to start
+                </button>
+              )}
+            </div>
 
             {step === 1 && (
               <>
@@ -1134,7 +1186,9 @@ function OOBEWizardPage({ onCompleted }) {
                                   oauthSetupProvider === 'oidc'
                                     ? `${globalThis.location.origin}/api/v1/auth/oauth/oidc/oidc/callback`
                                     : `${globalThis.location.origin}/api/v1/auth/oauth/${oauthSetupProvider}/callback`;
-                                navigator.clipboard.writeText(uri).catch(() => {});
+                                navigator.clipboard.writeText(uri).catch((err) => {
+                                  console.warn('Clipboard write failed:', err);
+                                });
                               }}
                             >
                               <Copy size={13} />

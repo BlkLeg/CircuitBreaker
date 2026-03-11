@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- vendor slug lookups */
 export const VENDOR_ICON_MAP = {
   amd: { label: 'AMD', path: '/icons/vendors/amd-dark.svg' },
   intel: { label: 'Intel', path: '/icons/vendors/intel.svg' },

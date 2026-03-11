@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal node/status keys */
 import React, { memo } from 'react';
 import PropTypes from 'prop-types';
 import { Handle, Position, useStore } from 'reactflow';

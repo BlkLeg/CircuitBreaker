@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import PropTypes from 'prop-types';
 import MarkdownViewer from '../components/MarkdownViewer';

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
@@ -96,6 +97,67 @@ def list_proxmox_configs(db: Session = Depends(get_db), current_user=require_rol
     return [_config_out(c) for c in configs]
 
 
+@router.get("/cluster-overview", response_model=ProxmoxClusterOverviewResponse)
+async def get_cluster_overview(
+    integration_id: int = Query(..., description="Proxmox integration ID"),
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
+):
+    """Return cluster overview for dashboard: cluster info, problems, time-series, storage. Cached 90s."""
+    import json
+
+    from app.core.nats_client import nats_client
+
+    cache_key = f"proxmox_overview.{integration_id}"
+
+    def _make_response(payload):
+        try:
+            return ProxmoxClusterOverviewResponse.model_validate(payload)
+        except ValidationError as e:
+            _logger.warning(
+                "Proxmox cluster-overview response validation failed for integration_id=%s: %s",
+                integration_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Cluster overview data could not be validated.",
+            ) from e
+
+    if nats_client.is_connected:
+        try:
+            cached_data = await nats_client.kv_get("dashboard_cache", cache_key)
+            if cached_data:
+                payload = json.loads(cached_data)
+                _logger.debug(
+                    "Proxmox cluster-overview cache hit for integration_id=%s", integration_id
+                )
+                return _make_response(payload)
+        except (ValidationError, HTTPException):
+            raise
+        except Exception as exc:
+            _logger.debug("Proxmox cluster-overview cache read failed: %s", exc)
+
+    config = proxmox_service.get_integration(db, integration_id)
+    if not config:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+
+    payload = await proxmox_service.get_cluster_overview(db, integration_id)
+
+    if nats_client.is_connected:
+        try:
+            validated = _make_response(payload)
+            await nats_client.kv_put(
+                "dashboard_cache", cache_key, json.dumps(validated.model_dump(mode="json"))
+            )
+        except (ValidationError, HTTPException):
+            raise
+        except Exception as exc:
+            _logger.debug("Proxmox cluster-overview cache write failed: %s", exc)
+
+    return _make_response(payload)
+
+
 @router.get("/{integration_id}", response_model=ProxmoxConfigOut)
 def get_proxmox_config(
     integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
@@ -166,8 +228,11 @@ async def test_proxmox_connection(
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    result = await proxmox_service.test_connection(db, config)
-    return result
+    try:
+        result = await proxmox_service.test_connection(db, config)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{integration_id}/discover", response_model=ProxmoxDiscoverResponse)
@@ -180,7 +245,10 @@ async def discover_proxmox_cluster(
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
-    result = await proxmox_service.discover_and_import(db, config)
+    try:
+        result = await proxmox_service.discover_and_import(db, config)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     actor_name = "system"
     if current_user:
@@ -197,43 +265,6 @@ async def discover_proxmox_cluster(
         details=f"nodes={result['nodes_imported']} vms={result['vms_imported']} cts={result['cts_imported']}",
     )
     return result
-
-
-@router.get("/cluster-overview", response_model=ProxmoxClusterOverviewResponse)
-async def get_cluster_overview(
-    integration_id: int = Query(..., description="Proxmox integration ID"),
-    db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
-    """Return cluster overview for dashboard: cluster info, problems, time-series, storage. Cached 90s."""
-    import json
-
-    from app.core.nats_client import nats_client
-
-    cache_key = f"proxmox_overview.{integration_id}"
-
-    if nats_client.is_connected:
-        try:
-            cached_data = await nats_client.kv_get("dashboard_cache", cache_key)
-            if cached_data:
-                payload = json.loads(cached_data)
-                return ProxmoxClusterOverviewResponse(**payload)
-        except Exception:
-            pass
-
-    config = proxmox_service.get_integration(db, integration_id)
-    if not config:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
-
-    payload = await proxmox_service.get_cluster_overview(db, integration_id)
-
-    if nats_client.is_connected:
-        try:
-            await nats_client.kv_put("dashboard_cache", cache_key, json.dumps(payload))
-        except Exception:
-            pass
-
-    return ProxmoxClusterOverviewResponse(**payload)
 
 
 @router.get("/{integration_id}/status", response_model=ProxmoxSyncStatus)

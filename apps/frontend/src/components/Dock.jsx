@@ -57,11 +57,17 @@ const MAX_SCALE = 1.7; // peak scale on direct hover
 const SIGMA = 80; // gaussian falloff radius in px (how wide the wave is)
 const ICON_SIZE = 22; // icon size passed to lucide
 
+/* ── Auto-hide constants ─────────────────────────────────────────────── */
+const DOCK_TRIGGER_ZONE_PX = 100; // show dock when mouse within this many px of bottom
+const DOCK_HIDE_DELAY_MS = 500;
+
 function gaussian(dist) {
   return 1 + (MAX_SCALE - 1) * Math.exp(-(dist * dist) / (2 * SIGMA * SIGMA));
 }
 
-function Dock({ pendingCount = 0 }) {
+const WS_STATUS_COLORS = { connected: '#2ecc71', connecting: '#f59e0b', disconnected: '#e74c3c' };
+
+function Dock({ pendingCount = 0, wsStatus = 'connected' }) {
   const { t } = useTranslation('common');
   const isMobile = useIsMobile();
   const { user } = useAuth();
@@ -76,6 +82,10 @@ function Dock({ pendingCount = 0 }) {
   const [scales, setScales] = useState([]); // per-item scale values
   // localOrder is set optimistically during a drag; cleared after save
   const [localOrder, setLocalOrder] = useState(null);
+
+  // Auto-hide: dock visible when mouse is near bottom or over the dock
+  const [dockVisible, setDockVisible] = useState(true);
+  const hideDockTimeoutRef = useRef(null);
 
   /* ── Order resolution ────────────────────────────────────────────── */
   const savedOrder =
@@ -142,6 +152,61 @@ function Dock({ pendingCount = 0 }) {
     setScales((prev) => prev.map(() => 1));
   }, []);
 
+  /* ── Auto-hide: show when mouse near bottom or over dock; hide after delay when away ── */
+  const scheduleHideDock = useCallback(() => {
+    if (hideDockTimeoutRef.current) return;
+    hideDockTimeoutRef.current = setTimeout(() => {
+      hideDockTimeoutRef.current = null;
+      setDockVisible(false);
+    }, DOCK_HIDE_DELAY_MS);
+  }, []);
+
+  const showDock = useCallback(() => {
+    if (hideDockTimeoutRef.current) {
+      clearTimeout(hideDockTimeoutRef.current);
+      hideDockTimeoutRef.current = null;
+    }
+    setDockVisible(true);
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      const inTriggerZone = e.clientY >= window.innerHeight - DOCK_TRIGGER_ZONE_PX;
+      const overDock =
+        navRef.current &&
+        (() => {
+          const r = navRef.current.getBoundingClientRect();
+          return (
+            e.clientX >= r.left &&
+            e.clientX <= r.right &&
+            e.clientY >= r.top &&
+            e.clientY <= r.bottom
+          );
+        })();
+      if (inTriggerZone || overDock) showDock();
+      else scheduleHideDock();
+    };
+    document.addEventListener('mousemove', onMouseMove, { passive: true });
+    return () => document.removeEventListener('mousemove', onMouseMove);
+  }, [showDock, scheduleHideDock]);
+
+  useEffect(() => {
+    return () => {
+      if (hideDockTimeoutRef.current) {
+        clearTimeout(hideDockTimeoutRef.current);
+        hideDockTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  const handleDockMouseEnter = useCallback(() => {
+    showDock();
+  }, [showDock]);
+
+  const handleDockMouseLeave = useCallback(() => {
+    scheduleHideDock();
+  }, [scheduleHideDock]);
+
   /* ── Exit edit mode on Escape / outside click ────────────────────── */
   useEffect(() => {
     if (!editMode) return;
@@ -200,9 +265,13 @@ function Dock({ pendingCount = 0 }) {
     <nav
       aria-label="Main Navigation"
       ref={navRef}
-      className="dock"
+      className={['dock', !dockVisible && 'dock--autohide-hidden'].filter(Boolean).join(' ')}
       onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      onMouseEnter={handleDockMouseEnter}
+      onMouseLeave={(e) => {
+        handleMouseLeave(e);
+        handleDockMouseLeave();
+      }}
       onDoubleClick={() => setEditMode((m) => !m)}
     >
       {navItems.map(({ path, icon: Icon, label }, idx) => (
@@ -252,6 +321,21 @@ function Dock({ pendingCount = 0 }) {
                 {pendingCount > 99 ? '99+' : pendingCount}
               </span>
             )}
+            {path === '/discovery' && wsStatus !== 'connected' && (
+              <span
+                title={wsStatus === 'connecting' ? 'Reconnecting…' : 'Disconnected'}
+                style={{
+                  position: 'absolute',
+                  bottom: -3,
+                  right: -3,
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: WS_STATUS_COLORS[wsStatus] ?? WS_STATUS_COLORS.disconnected,
+                  border: '1px solid var(--color-bg, #111)',
+                }}
+              />
+            )}
           </span>
 
           {/* Active indicator dot */}
@@ -288,6 +372,7 @@ function Dock({ pendingCount = 0 }) {
 
 Dock.propTypes = {
   pendingCount: PropTypes.number,
+  wsStatus: PropTypes.oneOf(['connected', 'connecting', 'disconnected']),
 };
 
 export default Dock;

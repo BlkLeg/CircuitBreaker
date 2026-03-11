@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Trash2 } from 'lucide-react';

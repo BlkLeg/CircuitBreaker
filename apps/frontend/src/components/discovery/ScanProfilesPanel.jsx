@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { Play, Edit2, Trash2, Zap, Search, Shield, Clock, Calendar } from 'lucide-react';
@@ -40,7 +41,9 @@ export default function ScanProfilesPanel({ onSaved }) {
   const load = useCallback(() => {
     getProfiles()
       .then((r) => setProfiles(r.data || []))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to load scan profiles:', err);
+      });
   }, []);
 
   useEffect(() => {

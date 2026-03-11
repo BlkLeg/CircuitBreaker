@@ -169,7 +169,11 @@ async def upload_icon(
 
     db_icon = UserIcon(slug=slug, name=name, category=category)
     db.add(db_icon)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
 
     return {
         "slug": slug,

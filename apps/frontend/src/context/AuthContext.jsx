@@ -37,7 +37,9 @@ export function AuthProvider({ children }) {
     fetch('/api/v1/settings')
       .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((s) => setAuthEnabled(s.auth_enabled ?? false))
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Settings fetch failed during auth init:', err);
+      })
       .finally(() => setSettingsReady(true));
   }, []);
 
@@ -88,7 +90,9 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(() => {
-    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch((err) => {
+      console.warn('Server-side logout failed (session will expire):', err);
+    });
     setToken(null);
     setUser(null);
     setProfileModalOpen(false);

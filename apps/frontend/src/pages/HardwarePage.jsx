@@ -1,10 +1,16 @@
+/* eslint-disable security/detect-object-injection -- internal role/column keys */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { SkeletonTable } from '../components/common/SkeletonTable';
+import { createApiCache } from '../utils/apiCache';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
 import TagsCell from '../components/TagsCell';
 import { hardwareApi, clustersApi, computeUnitsApi, tagsApi } from '../api/client';
 import HardwareDetail from '../components/details/HardwareDetail';
+
+// 15-second TTL cache for the cluster list — refreshed on tab switch, invalidated after mutations
+const cachedClusterList = createApiCache(() => clustersApi.list(), 15_000);
 import ClusterDetail from '../components/details/ClusterDetail';
 import { VENDORS } from '../config/vendors';
 import { HARDWARE_ROLES, HARDWARE_ROLE_LABELS } from '../config/hardwareRoles';
@@ -208,6 +214,18 @@ function HardwarePage() {
       label: 'WAN / Uplink',
       hint: 'e.g. ISP — 1Gbps fiber, or upstream interface name',
     },
+    {
+      name: 'upload_speed_mbps',
+      label: 'Upload speed (Mbps)',
+      type: 'number',
+      hint: 'Used for map link bandwidth and telemetry (e.g. 1000 for 1 Gbps).',
+    },
+    {
+      name: 'download_speed_mbps',
+      label: 'Download speed (Mbps)',
+      type: 'number',
+      hint: 'Used for map link bandwidth and telemetry (e.g. 1000 for 1 Gbps).',
+    },
     { name: 'cpu_brand', label: 'CPU Brand', type: 'cpu-select', options: CPU_BRANDS },
     { name: 'cpu', label: 'CPU' },
     { name: 'memory_gb', label: 'Memory (GB)', type: 'number' },
@@ -274,7 +292,7 @@ function HardwarePage() {
   const fetchClusters = useCallback(async () => {
     setClustersLoading(true);
     try {
-      const res = await clustersApi.list();
+      const res = await cachedClusterList();
       setClusters(res.data);
     } catch (err) {
       toast.error(err.message);
@@ -398,6 +416,7 @@ function HardwarePage() {
               for (const id of ids) await clustersApi.delete(id);
               toast.success('Deleted.');
               setClusterSelectedIds([]);
+              cachedClusterList.invalidate();
               fetchClusters();
             },
           });
@@ -481,6 +500,7 @@ function HardwarePage() {
       setShowClusterForm(false);
       setEditCluster(null);
       setClusterFormErrors({});
+      cachedClusterList.invalidate();
       fetchClusters();
     } catch (err) {
       if (err.fieldErrors) {
@@ -500,6 +520,7 @@ function HardwarePage() {
         try {
           await clustersApi.delete(id);
           toast.success('Cluster deleted.');
+          cachedClusterList.invalidate();
           fetchClusters();
         } catch (err) {
           toast.error(err.message);
@@ -578,7 +599,7 @@ function HardwarePage() {
           )}
 
           {loading ? (
-            <p>Loading...</p>
+            <SkeletonTable cols={7} />
           ) : (
             <EntityTable
               columns={COLUMNS}
@@ -610,7 +631,7 @@ function HardwarePage() {
             </div>
           )}
           {clustersLoading ? (
-            <p>Loading...</p>
+            <SkeletonTable cols={4} />
           ) : (
             <EntityTable
               columns={CLUSTER_COLUMNS}
@@ -626,6 +647,7 @@ function HardwarePage() {
                 if (value == null) return;
                 await clustersApi.update(row.id, { [columnKey]: value });
                 toast.success('Saved.');
+                cachedClusterList.invalidate();
                 fetchClusters();
               }}
               selectable

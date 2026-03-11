@@ -20,6 +20,16 @@ DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.g
 SNYK_BIN      ?= $(CURDIR)/.tools/snyk
 SNYK_PATH     ?= $(CURDIR)
 COMPOSE_FILE  ?= docker/docker-compose.yml
+# Default data dir for compose-clean when .env is not present
+CB_DATA_DIR   ?= ./circuitbreaker-data
+# Local Postgres for development (make postgres-up, make migrate, make postgres-down)
+POSTGRES_DEV_NAME   ?= cb-postgres-dev
+POSTGRES_DEV_PORT   ?= 5432
+POSTGRES_DEV_USER   ?= breaker
+POSTGRES_DEV_DB     ?= circuitbreaker
+POSTGRES_DEV_PASS   ?= breaker
+POSTGRES_DEV_IMAGE  ?= postgres:16-alpine
+CB_DB_URL_DEV       ?= postgresql://$(POSTGRES_DEV_USER):$(POSTGRES_DEV_PASS)@localhost:$(POSTGRES_DEV_PORT)/$(POSTGRES_DEV_DB)
 
 # ==============================================================================
 # CORE TARGETS
@@ -129,9 +139,41 @@ security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Had
 	@bash scripts/security_scan.sh
 
 # ==============================================================================
+# LOCAL POSTGRES (dev)
+# ==============================================================================
+.PHONY: postgres-up postgres-down migrate
+
+postgres-up: ## Start a local Postgres container for development (port $(POSTGRES_DEV_PORT))
+	@if docker inspect $(POSTGRES_DEV_NAME) >/dev/null 2>&1; then \
+		echo "Postgres container '$(POSTGRES_DEV_NAME)' already exists. Start with: docker start $(POSTGRES_DEV_NAME)"; \
+		docker start $(POSTGRES_DEV_NAME) 2>/dev/null || true; \
+	else \
+		echo "Starting Postgres at localhost:$(POSTGRES_DEV_PORT) (user=$(POSTGRES_DEV_USER), db=$(POSTGRES_DEV_DB))..."; \
+		docker run -d --name $(POSTGRES_DEV_NAME) -p $(POSTGRES_DEV_PORT):5432 \
+			-e POSTGRES_USER=$(POSTGRES_DEV_USER) \
+			-e POSTGRES_PASSWORD=$(POSTGRES_DEV_PASS) \
+			-e POSTGRES_DB=$(POSTGRES_DEV_DB) \
+			$(POSTGRES_DEV_IMAGE); \
+		echo "✅ Postgres running. Run 'make migrate' then set CB_DB_URL=$(CB_DB_URL_DEV)' for the backend."; \
+	fi
+
+postgres-down: ## Stop and remove the local Postgres container
+	@if docker inspect $(POSTGRES_DEV_NAME) >/dev/null 2>&1; then \
+		docker stop $(POSTGRES_DEV_NAME) && docker rm $(POSTGRES_DEV_NAME); \
+		echo "✅ Postgres container stopped and removed."; \
+	else \
+		echo "No container '$(POSTGRES_DEV_NAME)' found."; \
+	fi
+
+migrate: ## Run Alembic migrations (requires Postgres; set CB_DB_URL or use after make postgres-up)
+	@echo "Running migrations..."
+	@cd $(BACKEND_DIR) && CB_DB_URL="$${CB_DB_URL:-$(CB_DB_URL_DEV)}" PYTHONPATH=src $(CURDIR)/.venv/bin/alembic upgrade head
+	@echo "✅ Migrations complete."
+
+# ==============================================================================
 # DOCKER & COMPOSE
 # ==============================================================================
-.PHONY: lock setup-buildx compose-build compose-up compose-down compose-clean compose-fresh compose-up-local tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-local docker-mono-release install-cb
+.PHONY: lock setup-buildx compose-build compose-up compose-down compose-clean compose-reset-db compose-fresh compose-up-local tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-local docker-mono-release install-cb
 
 db-seed-default-team: ## Seed Default Team (id=1) in mono container; run after compose-up
 	@echo "Seeding Default Team..."
@@ -174,10 +216,44 @@ compose-down: ## Stop docker compose stack (data kept)
 	@echo "Stopping docker-compose stack..."
 	docker compose -f $(COMPOSE_FILE) down
 
-compose-clean: ## Stop stack and remove all volumes (wipes database & uploads)
+compose-clean: ## Stop stack, remove volumes, and wipe data dir (full reset; data is lost)
 	@echo "Stopping stack and removing all volumes..."
 	docker compose -f $(COMPOSE_FILE) down -v
-	@echo "✅ Stack stopped and volumes removed."
+	@DATA_DIR=""; \
+	if [ -f .env ]; then \
+	  DATA_DIR=$$(grep -E '^CB_DATA_DIR=' .env 2>/dev/null | sed 's/^CB_DATA_DIR=//' | tr -d '"' | tr -d "'" | tr -d '\n\r' | head -1); \
+	fi; \
+	if [ -z "$$DATA_DIR" ]; then DATA_DIR="$(CB_DATA_DIR)"; fi; \
+	echo "Wiping data directory: $$DATA_DIR"; \
+	rm -rf "$$DATA_DIR"; \
+	DB_URL=""; \
+	if [ -f .env ]; then \
+	  DB_URL=$$(grep -E '^CB_DB_URL=' .env 2>/dev/null | sed 's/^CB_DB_URL=//' | tr -d '"' | tr -d "'" | tr -d '\n\r' | head -1); \
+	fi; \
+	if [ -n "$$DB_URL" ]; then \
+	  DB_HOST=$$(echo "$$DB_URL" | sed -n 's/.*@\([^:/]*\).*/\1/p'); \
+	  if [ -n "$$DB_HOST" ] && [ "$$DB_HOST" != "localhost" ] && [ "$$DB_HOST" != "127.0.0.1" ]; then \
+	    echo ""; \
+	    echo "⚠️  CB_DB_URL points to external host '$$DB_HOST'. Users and sessions live in that database."; \
+	    echo "   This wipe did NOT touch that database. To fully reset (new account / OOBE), drop and"; \
+	    echo "   recreate the circuitbreaker database, or see docs/installation/configuration.md."; \
+	    echo ""; \
+	  fi; \
+	fi; \
+	echo "✅ Stack stopped, volumes removed, and data directory wiped."; \
+	echo ""; \
+	echo "To fully log out and see the setup wizard again, clear the 'cb_session' cookie for this site in your browser (DevTools → Application → Cookies), or use a private/incognito window."
+
+compose-reset-db: ## Drop and recreate the Circuit Breaker DB (for external Postgres full reset). Requires psql and CB_DB_URL in .env. Run compose-down first.
+	@if [ ! -f .env ]; then echo "No .env file. Set CB_DB_URL and run again."; exit 1; fi; \
+	DB_URL=$$(grep -E '^CB_DB_URL=' .env 2>/dev/null | sed 's/^CB_DB_URL=//' | tr -d '"' | tr -d "'" | tr -d '\n\r' | head -1); \
+	if [ -z "$$DB_URL" ]; then echo "CB_DB_URL not set in .env."; exit 1; fi; \
+	DB_NAME=$$(echo "$$DB_URL" | sed -n 's|.*/\([^/?]*\)$$|\1|p'); \
+	ADMIN_URL=$$(echo "$$DB_URL" | sed "s|/[^/?]*$$|/postgres|"); \
+	echo "Dropping and recreating database '$$DB_NAME' (ensure stack is stopped: make compose-down)."; \
+	psql "$$ADMIN_URL" -v ON_ERROR_STOP=1 -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$$DB_NAME' AND pid <> pg_backend_pid();" 2>/dev/null || true; \
+	psql "$$ADMIN_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$$DB_NAME\";" -c "CREATE DATABASE \"$$DB_NAME\";"; \
+	echo "✅ Database $$DB_NAME reset. Run 'make compose-up' and clear the cb_session cookie for a full OOBE."
 
 install-cb: ## Install the cb CLI for the mono stack (container name: circuitbreaker)
 	@echo "Installing cb command to /usr/local/bin/cb..."
@@ -257,6 +333,7 @@ docker-mono-local: ## Build mono image for current platform only (no push). Run 
 compose-up-local: dev-stop-install docker-mono-local ## Build local mono image and start stack (no GHCR push)
 	@echo "Starting stack with local image $(DOCKER_REPO):mono-local..."
 	CB_TAG=local docker compose -f $(COMPOSE_FILE) up -d --no-build
+	CB_DATA_DIR=$(CB_DATA_DIR) docker compose -f $(COMPOSE_FILE) up -d --no-build
 	@echo "✅ Stack running. Open the app (e.g. http://localhost) — use .env for CB_DB_PASSWORD and CB_VAULT_KEY."
 
 docker-mono-release: setup-buildx ## Build mono, run E2E test, then push (recommended for releases)

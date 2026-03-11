@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,10 +25,12 @@ from app.schemas.discovery import (
     ScanLogOut,
     ScanResultOut,
 )
+from app.schemas.proxmox import ProxmoxDiscoverRunOut
 from app.services import discovery_profiles_service, discovery_service
 from app.services.bulk_suggest import get_vendor_catalog, suggest_bulk_actions
 from app.services.discovery_safe import is_docker_socket_available
 from app.services.discovery_service import _has_raw_socket_privilege
+from app.services.proxmox_service import get_proxmox_discover_run, list_proxmox_discover_runs
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
@@ -86,7 +88,7 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
                 earliest.isoformat() if hasattr(earliest, "isoformat") else str(earliest)
             )
     except Exception:
-        pass
+        _logger.debug("Non-critical check failed in _compute_discovery_status", exc_info=True)
 
     net_raw_capable = _has_raw_socket_privilege()
     effective_mode = (
@@ -103,7 +105,7 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
 
             docker_container_count = get_docker_status(socket_path).get("container_count", 0)
         except Exception:
-            pass
+            _logger.debug("Non-critical check failed in _compute_discovery_status", exc_info=True)
 
     return DiscoveryStatusOut(
         discovery_enabled=discovery_enabled,
@@ -122,30 +124,8 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
 
 @router.get("/status", response_model=DiscoveryStatusOut)
 async def get_discovery_status(db: Session = Depends(get_db)):
-    import json
-
-    from app.core.nats_client import nats_client
-
-    cache_key = "discovery_status.default"
-
-    if nats_client.is_connected:
-        try:
-            cached_data = await nats_client.kv_get("dashboard_cache", cache_key)
-            if cached_data:
-                payload = json.loads(cached_data)
-                return DiscoveryStatusOut.model_validate(payload)
-        except Exception:
-            pass
-
-    out = _compute_discovery_status(db)
-
-    if nats_client.is_connected:
-        try:
-            await nats_client.kv_put("dashboard_cache", cache_key, json.dumps(out.model_dump()))
-        except Exception:
-            pass
-
-    return out
+    # Always compute fresh so docker_available reflects current socket (e.g. after compose up).
+    return _compute_discovery_status(db)
 
 
 # --- Profiles ---
@@ -214,7 +194,7 @@ async def run_profile_scan(
         try:
             vlan_ids = json.loads(profile.vlan_ids)
         except Exception:
-            pass
+            _logger.warning("Malformed VLAN JSON in profile %s: %s", profile.id, profile.vlan_ids)
 
     job = discovery_service.create_scan_job(
         db,
@@ -226,7 +206,11 @@ async def run_profile_scan(
     )
 
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
-    asyncio.create_task(discovery_service.run_scan_job(job.id))
+    try:
+        asyncio.create_task(discovery_service.run_scan_job(job.id))
+    except Exception as exc:
+        _logger.exception("Failed to schedule scan job %s", job.id)
+        raise HTTPException(status_code=500, detail="Failed to start scan.") from exc
     return job
 
 
@@ -259,16 +243,34 @@ async def run_adhoc_scan(
         if "Too many scans" in msg:
             raise HTTPException(status_code=429, detail=msg) from None
         raise HTTPException(status_code=422, detail="Invalid scan request parameters.") from None
-    log_audit(
-        db,
-        request,
-        user_id=user_id,
-        action="scan_triggered",
-        resource=f"scan_job:{job.id}",
-        status="ok",
-    )
-    # B2: async def — asyncio.create_task schedules on the running event loop
-    asyncio.create_task(discovery_service.run_scan_job(job.id))
+    except Exception as exc:
+        _logger.exception("Ad-hoc scan failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while starting the scan.",
+        ) from exc
+
+    try:
+        log_audit(
+            db,
+            request,
+            user_id=user_id,
+            action="scan_triggered",
+            resource=f"scan_job:{job.id}",
+            status="ok",
+        )
+    except Exception as audit_exc:
+        _logger.warning("Audit log failed for scan_triggered (job %s): %s", job.id, audit_exc)
+
+    try:
+        asyncio.create_task(discovery_service.run_scan_job(job.id))
+    except Exception as task_exc:
+        _logger.exception("Failed to schedule scan job %s: %s", job.id, task_exc)
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while starting the scan.",
+        ) from task_exc
+
     return job
 
 
@@ -322,6 +324,31 @@ async def cancel_job(
         )
     )
     return {"cancelled": True}
+
+
+@router.get("/proxmox-runs", response_model=list[ProxmoxDiscoverRunOut])
+def list_proxmox_runs(
+    integration_id: int | None = Query(None, description="Filter by Proxmox integration ID"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
+):
+    """List Proxmox discovery runs (history), most recent first."""
+    runs = list_proxmox_discover_runs(db, integration_id=integration_id, limit=limit)
+    return [ProxmoxDiscoverRunOut.model_validate(r) for r in runs]
+
+
+@router.get("/proxmox-runs/{run_id}", response_model=ProxmoxDiscoverRunOut)
+def get_proxmox_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user=require_role("admin"),
+):
+    """Get a single Proxmox discovery run by id."""
+    run = get_proxmox_discover_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Proxmox discover run not found")
+    return ProxmoxDiscoverRunOut.model_validate(run)
 
 
 @router.get("/jobs/{job_id}/results", response_model=list[ScanResultOut])

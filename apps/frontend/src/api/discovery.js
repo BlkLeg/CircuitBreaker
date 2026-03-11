@@ -14,6 +14,8 @@ export const getJobResults = (jobId, params) =>
   client.get(`/discovery/jobs/${jobId}/results`, { params });
 export const getJobLogs = (jobId, params) =>
   client.get(`/discovery/jobs/${jobId}/logs`, { params });
+export const getProxmoxRuns = (params) => client.get('/discovery/proxmox-runs', { params });
+export const getProxmoxRun = (id) => client.get(`/discovery/proxmox-runs/${id}`);
 export const getResult = (id) => client.get(`/discovery/results/${id}`);
 export const mergeResult = (id, data) => client.post(`/discovery/results/${id}/merge`, data);
 export const bulkMerge = (data) => client.post('/discovery/results/bulk-merge', data);

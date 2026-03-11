@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
@@ -19,6 +20,7 @@ from app.db.session import get_db
 from app.services.credential_vault import get_vault
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
+_logger = logging.getLogger(__name__)
 
 _INVALID_STATE = "Invalid OAuth state"
 _STATE_EXPIRED = "OAuth state expired. Please try signing in again."
@@ -150,7 +152,11 @@ def _ensure_provider_enabled(
             settings.oidc_providers = json.dumps(updated_items)
 
     if changed:
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            _logger.warning("Failed to commit provider enable flag", exc_info=True)
+            # Non-critical — don't block login
 
 
 def _get_app_base_url(db: Session, request: Request | None = None) -> str:
@@ -250,7 +256,13 @@ def _upsert_oauth_user(
         # Always refresh the avatar so it stays current
         if avatar_url:
             user.profile_photo = avatar_url
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        _logger.exception("OAuth user upsert commit failed")
+        raise HTTPException(
+            status_code=502, detail="Authentication failed. Please try again."
+        ) from None
     db.refresh(user)
     assert user is not None
     return user, is_new

@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import { Trash2, Play, ChevronDown, ChevronUp, Plus } from 'lucide-react';
@@ -92,7 +93,9 @@ function DeliveryLog({ ruleId, onClose }) {
     api
       .get(`/webhooks/${ruleId}/deliveries`)
       .then((r) => setDeliveries(r.data))
-      .catch(() => {})
+      .catch((err) => {
+        console.error('Failed to fetch webhook delivery log:', err);
+      })
       .finally(() => setLoading(false));
   }, [ruleId]);
 
@@ -189,7 +192,8 @@ function WebhookRow({ webhook, onDelete, onToggle }) {
     setEventsEnabled(nextEvents);
     try {
       await api.patch(`/webhooks/${webhook.id}`, { events_enabled: nextEvents });
-    } catch {
+    } catch (err) {
+      console.error('Webhook event toggle save failed:', err);
       setEventsEnabled(webhook.events_enabled || []);
     } finally {
       setSaving(false);
@@ -418,8 +422,8 @@ export default function WebhooksManager() {
           _eventGroups: groups,
         }))
       );
-    } catch {
-      /* silent */
+    } catch (err) {
+      console.error('Webhooks list load failed:', err);
     }
   }, []);
 
@@ -458,8 +462,8 @@ export default function WebhooksManager() {
     try {
       await api.delete(`/webhooks/${id}`);
       load();
-    } catch {
-      /* silent */
+    } catch (err) {
+      console.error('Webhook delete failed:', err);
     }
   };
 
@@ -469,8 +473,8 @@ export default function WebhooksManager() {
     try {
       await api.patch(`/webhooks/${id}`, { enabled: !row.enabled });
       load();
-    } catch {
-      /* silent */
+    } catch (err) {
+      console.error('Webhook toggle failed:', err);
     }
   };
 

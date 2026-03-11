@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal/ReactFlow keys; Map used for id-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactFlow, {
@@ -65,6 +66,9 @@ import {
   getCircularClusterLayout,
   getGridRackLayout,
   getConcentricLayout,
+  getCortexLayout,
+  getMindmapLayout,
+  scaleAndCenterToViewport,
 } from '../utils/layouts';
 import MapToolbar from '../components/MapToolbar';
 // Sigma (WebGL renderer) is only used when useSigma=true; lazy-load to defer
@@ -96,6 +100,7 @@ import {
 } from '../components/map/mapConstants';
 import {
   applyEdgeSides,
+  applyEdgeSidesForEdge,
   computeBoundaryPolygon,
   boundaryFlowRect,
   nodeCenterInFlow,
@@ -158,7 +163,7 @@ function MapInternal() {
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
   const viewport = useViewport();
   const hasRestoredViewport = useRef(false);
-  const { settings } = useSettings();
+  const { settings, reloadSettings } = useSettings();
   const { user } = useAuth();
   const { caps } = useCapabilities();
   const toast = useToast();
@@ -169,7 +174,12 @@ function MapInternal() {
   const bgGridColor = isLight ? '#c8d4e0' : '#1a2035';
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
+  // Ignore 'remove' from React Flow so edges are only deleted via explicit Delete in CustomEdge
+  const onEdgesChange = useCallback(
+    (changes) => onEdgesChangeBase(changes.filter((c) => c.type !== 'remove')),
+    [onEdgesChangeBase]
+  );
 
   const outerMapRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -255,6 +265,8 @@ function MapInternal() {
   const labelPointerMoveRef = useRef(null);
   const labelPointerUpRef = useRef(null);
   const labelMenuRef = useRef(null);
+  const layoutEngineRef = useRef(layoutEngine);
+  const applyLayoutRef = useRef(() => {});
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -511,6 +523,10 @@ function MapInternal() {
 
   // Selected node side panel
   const [selectedNode, setSelectedNode] = useState(null);
+  const selectedNodeRef = useRef(null);
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
 
   // Debounce tag filter
   const tagDebounceRef = useRef(null);
@@ -521,7 +537,9 @@ function MapInternal() {
     environmentsApi
       .list()
       .then((r) => setEnvironmentsList(r.data))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Environments list load failed:', err);
+      });
   }, []);
 
   // Settings initialization (run once after settings load)
@@ -699,6 +717,8 @@ function MapInternal() {
     };
   }, [fitView]);
 
+  layoutEngineRef.current = layoutEngine;
+
   const applyLayout = useCallback(
     (engine) => {
       setLoading(true);
@@ -711,37 +731,48 @@ function MapInternal() {
 
       const baseNodes = cloudViewEnabled ? restoreFromCloudView(nodes) : [...nodes];
 
-      // All layout engines (dagre, force, tree, hierarchical_network, radial,
-      // circular_cluster, grid_rack, concentric, elk_layered) go through
-      // _applyResult, so they all get the same viewport-fit rules.
+      const rect = flowContainerRef.current?.getBoundingClientRect?.();
+      const viewport = rect ? { width: rect.width, height: rect.height } : null;
+
+      // Viewport normalizer for bounded layouts only; Force/Radial/Concentric keep their own behavior.
+      const skipNormalizer = ['force', 'radial', 'concentric'].includes(engine);
       const _applyResult = (layout) => {
         if (layout) {
           let finalNodes = layout.nodes;
+          if (viewport && finalNodes.length > 0 && !skipNormalizer) {
+            finalNodes = scaleAndCenterToViewport(finalNodes, viewport);
+          }
           if (cloudViewEnabled) {
             finalNodes = groupNodesIntoCloud(finalNodes);
           }
           setNodes(finalNodes);
           setEdges(applyEdgeSides(finalNodes, layout.edges, edgeOverridesRef.current));
           setTimeout(() => {
-            if (isMountedRef.current) viewportFit(fitView);
+            if (isMountedRef.current) viewportFit(fitView, { duration: 400 });
           }, 10);
         }
         setLayoutEngine(engine);
         dirtyRef.current = true;
         setLoading(false);
-        // Persist the layout choice so it's the default next time the map opens.
-        settingsApi.update({ graph_default_layout: engine }).catch(() => {});
+        settingsApi.update({ graph_default_layout: engine }).catch((err) => {
+          console.warn('Failed to save default layout preference:', err);
+        });
       };
 
-      const viewportWidth = flowContainerRef.current?.getBoundingClientRect?.()?.width;
-      const dagreOptions = getDagreViewportOptions(viewportWidth);
+      const layoutSpacing = nodeSpacing ?? 1;
+      const dagreOptions = getDagreViewportOptions(
+        viewport?.width ?? rect?.width,
+        viewport,
+        layoutSpacing
+      );
 
       if (engine === 'elk_layered') {
         getElkLayeredLayout(baseNodes, edges)
           .then((layout) => {
             if (isMountedRef.current) _applyResult(layout);
           })
-          .catch(() => {
+          .catch((err) => {
+            console.error('Async layout computation failed:', err);
             if (isMountedRef.current)
               _applyResult(getDagreLayout(baseNodes, edges, 'LR', dagreOptions));
           });
@@ -755,18 +786,47 @@ function MapInternal() {
         else if (engine === 'dagre_lr')
           layout = getDagreLayout(baseNodes, edges, 'LR', dagreOptions);
         else if (engine === 'force') layout = getForceLayout(baseNodes, edges);
-        else if (engine === 'tree') layout = getTreeLayout(baseNodes, edges);
+        else if (engine === 'tree')
+          layout = getTreeLayout(baseNodes, edges, viewport, layoutSpacing);
         else if (engine === 'hierarchical_network')
-          layout = getHierarchicalNetworkLayout(baseNodes, edges);
+          layout = getHierarchicalNetworkLayout(baseNodes, edges, layoutSpacing);
         else if (engine === 'radial') layout = getRadialLayout(baseNodes, edges);
-        else if (engine === 'circular_cluster') layout = getCircularClusterLayout(baseNodes, edges);
-        else if (engine === 'grid_rack') layout = getGridRackLayout(baseNodes, edges);
+        else if (engine === 'circular_cluster')
+          layout = getCircularClusterLayout(baseNodes, edges, layoutSpacing);
+        else if (engine === 'grid_rack')
+          layout = getGridRackLayout(baseNodes, edges, layoutSpacing);
         else if (engine === 'concentric') layout = getConcentricLayout(baseNodes, edges);
+        else if (engine === 'cortex')
+          layout = getCortexLayout(baseNodes, edges, viewport, layoutSpacing);
+        else if (engine === 'mindmap')
+          layout = getMindmapLayout(baseNodes, edges, viewport, layoutSpacing);
         _applyResult(layout);
       }, 50);
     },
-    [nodes, edges, setNodes, setEdges, fitView, cloudViewEnabled]
+    [nodes, edges, setNodes, setEdges, fitView, cloudViewEnabled, nodeSpacing]
   );
+
+  applyLayoutRef.current = applyLayout;
+
+  // Re-apply current layout when map container is resized (e.g. sidebar toggled)
+  useEffect(() => {
+    const el = flowContainerRef.current;
+    if (!el) return;
+    let debounceTimer;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (isMountedRef.current && layoutEngineRef.current !== 'manual') {
+          applyLayoutRef.current(layoutEngineRef.current);
+        }
+      }, 200);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      clearTimeout(debounceTimer);
+    };
+  }, []);
 
   // Apply a layout preset when Group By changes (declared after applyLayout to avoid TDZ)
   useEffect(() => {
@@ -830,9 +890,11 @@ function MapInternal() {
 
   const handleNodeMouseEnter = useCallback((event, node) => {
     if (contextMenuOpenRef.current) return;
+    // Don't show hover telemetry when the main (click) Sidebar is open — avoids overlap
+    if (selectedNodeRef.current) return;
     if (telemetrySidebarTimerRef.current) clearTimeout(telemetrySidebarTimerRef.current);
     telemetrySidebarTimerRef.current = setTimeout(() => {
-      if (!isMountedRef.current || contextMenuOpenRef.current) return;
+      if (!isMountedRef.current || contextMenuOpenRef.current || selectedNodeRef.current) return;
       setTelemetrySidebarPos({ x: event.clientX + 20, y: event.clientY - 30 });
       setTelemetrySidebarNode(node);
     }, 400);
@@ -1401,15 +1463,24 @@ function MapInternal() {
         if (refreshed) setSelectedNode(refreshed);
       }
 
-      // Persist to DB for hardware nodes so the value survives page refresh
       const targetNode = updatedNodes.find((node) => node.id === nodeId);
       if (targetNode?.originalType === 'hardware' && targetNode._refId) {
         hardwareApi
           .update(targetNode._refId, { upload_speed_mbps: value, download_speed_mbps: value })
-          .catch(() => {});
+          .catch((err) => {
+            console.warn('Failed to save hardware uplink speed:', err);
+          });
+      } else {
+        const overrides = { ...(settings?.graph_uplink_overrides ?? {}), [nodeId]: value };
+        settingsApi
+          .update({ graph_uplink_overrides: overrides })
+          .then(() => reloadSettings())
+          .catch((err) => {
+            console.warn('Failed to save uplink override preference:', err);
+          });
       }
     },
-    [selectedNode?.id, setEdges, setNodes]
+    [selectedNode?.id, setEdges, setNodes, settings?.graph_uplink_overrides, reloadSettings]
   );
 
   const selectedNodeAnchor = useMemo(() => {
@@ -2106,7 +2177,9 @@ function MapInternal() {
       }
       edgeOverridesRef.current = updated;
       setEdgeOverrides(updated);
-      setEdges((prev) => applyEdgeSides(nodesRef.current, prev, updated));
+      setEdges((prev) =>
+        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
+      );
       dirtyRef.current = true;
       setEdgeMenu(null);
     },
@@ -2143,7 +2216,9 @@ function MapInternal() {
       };
       edgeOverridesRef.current = updated;
       setEdgeOverrides(updated);
-      setEdges((prev) => applyEdgeSides(nodesRef.current, prev, updated));
+      setEdges((prev) =>
+        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
+      );
       dirtyRef.current = true;
     },
     [setEdges, sideFromClientForNode]
@@ -2160,7 +2235,7 @@ function MapInternal() {
       edgeOverridesRef.current = updated;
       setEdgeOverrides(updated);
       setEdges((prev) =>
-        prev.map((e) => (e.id === edgeId ? { ...e, data: { ...e.data, controlPoint: null } } : e))
+        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
       );
       dirtyRef.current = true;
       setEdgeMenu(null);
@@ -2190,10 +2265,13 @@ function MapInternal() {
   const openConnectionPicker = useCallback(
     (mode, connection, oldEdge = null) => {
       const pos = clampPickerPosition(lastPointerRef.current.x, lastPointerRef.current.y);
+      const defaultType =
+        oldEdge?.data?.connection_type || oldEdge?.data?.connectionType || 'ethernet';
       setPendingConnection({
         mode,
         oldEdge,
         connection,
+        defaultConnectionType: defaultType,
         x: pos.x,
         y: pos.y,
       });
@@ -2256,6 +2334,14 @@ function MapInternal() {
         return;
       }
 
+      // Unlink old edge first so the graph never shows duplicate logical edges.
+      try {
+        await unlinkByEdge(oldEdge);
+      } catch (err) {
+        toast.error(err?.message || 'Could not remove the previous connection.');
+        return;
+      }
+
       const linkMeta = await createLinkByNodeIds(
         connection.source,
         connection.target,
@@ -2264,18 +2350,12 @@ function MapInternal() {
       if (linkMeta.updatable) {
         const createdEdgeId = await findCreatedEdgeId(linkMeta, connection);
         if (!createdEdgeId) {
-          toast.warn('Reconnected link, but edge ID lookup failed. Type may not persist.');
+          toast.warn('New connection created, but edge ID lookup failed. Type may not persist.');
         } else if (connectionType !== 'ethernet') {
           await persistEdgeType(createdEdgeId, connectionType);
         }
       } else if (connectionType !== 'ethernet') {
         toast.info('Reconnected link, but this structural link does not store a connection type.');
-      }
-
-      try {
-        await unlinkByEdge(oldEdge);
-      } catch {
-        toast.warn('New connection created, but old link could not be removed.');
       }
     },
     [findCreatedEdgeId, persistEdgeType, toast]
@@ -3311,6 +3391,14 @@ function MapInternal() {
                     dirtyRef.current = true;
                 }}
                 onEdgesChange={onEdgesChange}
+                nodeExtent={[
+                  [-4000, -4000],
+                  [4000, 4000],
+                ]}
+                translateExtent={[
+                  [-4000, -4000],
+                  [4000, 4000],
+                ]}
                 onNodeDragStop={handleNodeDragStop}
                 onNodeMouseEnter={handleNodeMouseEnter}
                 onNodeMouseLeave={handleNodeMouseLeave}
@@ -3339,6 +3427,7 @@ function MapInternal() {
                 zoomOnPinch={!boundaryDrawMode && !lineDrawMode}
                 zoomOnDoubleClick={!boundaryDrawMode && !lineDrawMode}
                 preventScrolling /* keep page from scrolling when pointer is over map */
+                deleteKeyCode={null}
               >
                 {/* Loading overlay */}
                 {loading && nodes.length === 0 && (
@@ -3577,6 +3666,7 @@ function MapInternal() {
               <ConnectionTypePicker
                 x={pendingConnection.x}
                 y={pendingConnection.y}
+                defaultConnectionType={pendingConnection.defaultConnectionType}
                 onSelect={handlePickConnectionType}
                 onCancel={() => setPendingConnection(null)}
               />
@@ -3603,8 +3693,8 @@ function MapInternal() {
               </div>
             )}
 
-            {/* Hover telemetry floating sidebar */}
-            {telemetrySidebarNode && (
+            {/* Hover telemetry floating sidebar — hide when main Sidebar is open so it never covers it */}
+            {telemetrySidebarNode && !selectedNode && (
               <TelemetrySidebar
                 node={telemetrySidebarNode}
                 position={telemetrySidebarPos}
@@ -3901,6 +3991,10 @@ function MapInternal() {
                 const ey = Math.min(edgeMenu.y, window.innerHeight - menuH - 8);
                 const currentOverride = edgeOverrides[edgeMenu.edgeId] || {};
                 const SIDES = ['auto', 'top', 'right', 'bottom', 'left'];
+                const stopAll = (e) => {
+                  e.stopPropagation();
+                  // Do not preventDefault so button clicks still work; we stop propagation so the pane never receives the event.
+                };
                 return (
                   <div
                     role="menu"
@@ -3918,7 +4012,11 @@ function MapInternal() {
                       overflow: 'hidden',
                       userSelect: 'none',
                     }}
-                    onMouseDown={(e) => e.stopPropagation()}
+                    onMouseDown={stopAll}
+                    onMouseUp={stopAll}
+                    onClick={stopAll}
+                    onPointerDown={stopAll}
+                    onPointerUp={stopAll}
                   >
                     {/* ── Connection Type ────────────────────────────── */}
                     {edgeMenu.isUpdatable && (
@@ -3951,7 +4049,13 @@ function MapInternal() {
                             return (
                               <button
                                 key={t}
-                                onClick={() => handleEdgeConnectionTypeChange(edgeMenu.edgeId, t)}
+                                type="button"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  handleEdgeConnectionTypeChange(edgeMenu.edgeId, t);
+                                }}
                                 title={t}
                                 style={{
                                   padding: '3px 4px',
@@ -4012,7 +4116,13 @@ function MapInternal() {
                       {SIDES.map((s) => (
                         <button
                           key={s}
-                          onClick={() => handleEdgeAnchorChange(edgeMenu.edgeId, 'source', s)}
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            handleEdgeAnchorChange(edgeMenu.edgeId, 'source', s);
+                          }}
                           style={{
                             padding: '2px 8px',
                             borderRadius: 4,
@@ -4050,7 +4160,13 @@ function MapInternal() {
                       {SIDES.map((s) => (
                         <button
                           key={s}
-                          onClick={() => handleEdgeAnchorChange(edgeMenu.edgeId, 'target', s)}
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            handleEdgeAnchorChange(edgeMenu.edgeId, 'target', s);
+                          }}
                           style={{
                             padding: '2px 8px',
                             borderRadius: 4,
@@ -4077,7 +4193,13 @@ function MapInternal() {
                       style={{ height: 1, background: 'var(--color-border)', margin: '2px 0' }}
                     />
                     <button
-                      onClick={() => handleClearBend(edgeMenu.edgeId)}
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        handleClearBend(edgeMenu.edgeId);
+                      }}
                       style={{
                         width: '100%',
                         background: 'transparent',

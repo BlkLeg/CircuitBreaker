@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -927,7 +928,7 @@ function LogsPage() {
     logsApi
       .actions()
       .then((r) => setAvailableActions(r.data.actions || []))
-      .catch(() => {});
+      .catch((err) => console.error('Log actions load failed:', err));
     logsApi
       .list({ limit: 500 })
       .then((r) => {
@@ -936,7 +937,7 @@ function LogsPage() {
         ].sort();
         setAvailableActors(actors);
       })
-      .catch(() => {});
+      .catch((err) => console.error('Log actors load failed:', err));
   }, []);
 
   // ── Debounce search ────────────────────────────────────────────────────────────

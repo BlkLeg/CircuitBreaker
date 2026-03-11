@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal node/type keys */
 /**
  * Pure data transformation helpers for the topology map.
  * No React dependencies — safe to import from any module.

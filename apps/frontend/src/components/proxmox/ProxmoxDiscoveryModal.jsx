@@ -1,9 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { discoveryEmitter } from '../../hooks/useDiscoveryStream';
 
 function formatDuration(seconds) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Extract user-facing message from API error (response body detail/error or fallback). */
+function getErrorMessage(e, fallback = 'Request failed') {
+  const data = e.response?.data;
+  if (!data) return e.message || fallback;
+  const detail = data.detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((d) => d.msg || JSON.stringify(d)).join('; ');
+  }
+  if (typeof detail === 'string') return detail;
+  if (data.error) return data.error;
+  return e.message || fallback;
 }
 
 export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComplete }) {
@@ -41,7 +55,7 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         setCompletedInSeconds(
           startTimeRef.current ? Math.floor((Date.now() - startTimeRef.current) / 1000) : null
         );
-        setError(e.message || 'Discovery failed');
+        setError(getErrorMessage(e, 'Discovery failed'));
         setPhase('error');
       }
     };
@@ -49,6 +63,54 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [integrationId]);
+
+  // Live progress from discovery WebSocket (Proxmox scan events)
+  useEffect(() => {
+    const id = integrationId;
+    const onProgress = (payload) => {
+      if (payload.integration_id !== id) return;
+      setMessage(payload.message || 'Importing...');
+      if (typeof payload.percent === 'number') setPercent(payload.percent);
+    };
+    const onCompleted = (payload) => {
+      if (payload.integration_id !== id) return;
+      setPercent(100);
+      setResult({
+        ok: true,
+        nodes_imported: payload.nodes ?? 0,
+        vms_imported: payload.vms ?? 0,
+        cts_imported: payload.cts ?? 0,
+        storage_imported: payload.storage ?? 0,
+        errors: [],
+      });
+      setMessage(
+        `Imported ${payload.nodes ?? 0} nodes, ${payload.vms ?? 0} VMs, ${payload.cts ?? 0} CTs, ${payload.storage ?? 0} storage`
+      );
+      setPhase('done');
+      if (onComplete)
+        onComplete({
+          ok: true,
+          nodes_imported: payload.nodes,
+          vms_imported: payload.vms,
+          cts_imported: payload.cts,
+          storage_imported: payload.storage,
+          errors: [],
+        });
+    };
+    const onFailed = (payload) => {
+      if (payload.integration_id !== id) return;
+      setError(payload.error || 'Discovery failed');
+      setPhase('error');
+    };
+    discoveryEmitter.on('proxmox:progress', onProgress);
+    discoveryEmitter.on('proxmox:completed', onCompleted);
+    discoveryEmitter.on('proxmox:failed', onFailed);
+    return () => {
+      discoveryEmitter.off('proxmox:progress', onProgress);
+      discoveryEmitter.off('proxmox:completed', onCompleted);
+      discoveryEmitter.off('proxmox:failed', onFailed);
+    };
+  }, [integrationId, onComplete]);
 
   // Timer: update elapsed every second while scanning
   useEffect(() => {
@@ -191,7 +253,7 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
               marginBottom: 16,
             }}
           >
-            {error || result.errors.join('\n')}
+            {error || (result?.errors?.length ? result.errors.join('\n') : '')}
           </div>
         )}
 

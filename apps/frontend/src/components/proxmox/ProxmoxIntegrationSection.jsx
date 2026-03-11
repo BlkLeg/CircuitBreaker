@@ -2,14 +2,29 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { proxmoxApi } from '../../api/client';
 import SettingSection from '../settings/SettingSection';
 import SettingField from '../settings/SettingField';
+import ConfirmDialog from '../common/ConfirmDialog';
+
+/** Extract user-facing message from API error (response body detail/error or fallback). */
+function getErrorMessage(e, fallback = 'Request failed') {
+  const data = e.response?.data;
+  if (!data) return e.message || fallback;
+  const detail = data.detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map((d) => d.msg || JSON.stringify(d)).join('; ');
+  }
+  if (typeof detail === 'string') return detail;
+  if (data.error) return data.error;
+  return e.message || fallback;
+}
+
+const STATUS_BADGE_MAP = new Map([
+  ['ok', { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', label: 'Connected' }],
+  ['error', { color: '#ef4444', bg: 'rgba(239,68,68,0.1)', label: 'Error' }],
+  ['syncing', { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', label: 'Syncing' }],
+]);
 
 function StatusBadge({ status }) {
-  const map = {
-    ok: { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', label: 'Connected' },
-    error: { color: '#ef4444', bg: 'rgba(239,68,68,0.1)', label: 'Error' },
-    syncing: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', label: 'Syncing' },
-  };
-  const s = map[status] || {
+  const s = STATUS_BADGE_MAP.get(status) || {
     color: 'var(--color-text-muted)',
     bg: 'rgba(255,255,255,0.06)',
     label: status || 'Not synced',
@@ -59,6 +74,7 @@ export default function ProxmoxIntegrationSection() {
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -120,20 +136,21 @@ export default function ProxmoxIntegrationSection() {
     setSaving(false);
   };
 
-  const handleDelete = async (id) => {
-    if (
-      !window.confirm(
-        'Delete this Proxmox integration? Associated hardware and VMs will not be removed.'
-      )
-    )
-      return;
-    try {
-      await proxmoxApi.delete(id);
-      await load();
-    } catch {
-      /* ignore */
-    }
-  };
+  const handleDelete = useCallback(
+    async (id) => {
+      try {
+        await proxmoxApi.delete(id);
+        await load();
+      } catch {
+        /* ignore */
+      } finally {
+        setDeleteConfirmId(null);
+      }
+    },
+    [load]
+  );
+
+  const handleDeleteClick = (id) => setDeleteConfirmId(id);
 
   const handleTest = async (id) => {
     setTesting(id);
@@ -142,7 +159,9 @@ export default function ProxmoxIntegrationSection() {
       const res = await proxmoxApi.test(id);
       setTestResult(res.data);
     } catch (e) {
-      setTestResult({ ok: false, error: e.message });
+      const msg = getErrorMessage(e, 'Test failed');
+      console.error('Proxmox test failed', e.response?.data ?? e.message);
+      setTestResult({ ok: false, error: msg });
     }
     setTesting(null);
   };
@@ -156,7 +175,9 @@ export default function ProxmoxIntegrationSection() {
       setDiscoverResult(res.data);
       await load();
     } catch (e) {
-      setDiscoverError(e.message || 'Discovery failed');
+      const msg = getErrorMessage(e, 'Discovery failed');
+      console.error('Proxmox discover failed', e.response?.data ?? e.message);
+      setDiscoverError(msg);
     }
   };
 
@@ -268,7 +289,7 @@ export default function ProxmoxIntegrationSection() {
                   </button>
                   <button
                     className="btn btn-sm btn-danger"
-                    onClick={() => handleDelete(c.id)}
+                    onClick={() => handleDeleteClick(c.id)}
                     disabled={isDiscovering}
                     style={{ fontSize: 11, padding: '2px 10px' }}
                   >
@@ -313,7 +334,7 @@ export default function ProxmoxIntegrationSection() {
                 >
                   {testResult.ok
                     ? `Connected - PVE v${testResult.version}${testResult.cluster_name ? ` (${testResult.cluster_name})` : ''}`
-                    : `Error: ${testResult.error}`}
+                    : `Error: ${testResult.error || 'Unknown error'}`}
                 </div>
               )}
 
@@ -409,7 +430,9 @@ export default function ProxmoxIntegrationSection() {
                         overflowY: 'auto',
                       }}
                     >
-                      {discoverError || discoverResult.errors.join('\\n')}
+                      {discoverError ||
+                        (discoverResult?.errors || []).filter(Boolean).join('\n') ||
+                        'Unknown error'}
                     </div>
                   )}
 
@@ -482,6 +505,18 @@ export default function ProxmoxIntegrationSection() {
                 placeholder={editId ? '(unchanged)' : 'user@pam!cb-integration=628c4a4d-…'}
               />
             </SettingField>
+            <p
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted)',
+                margin: '-8px 0 12px 0',
+                maxWidth: 480,
+              }}
+            >
+              For telemetry only (CPU, memory, status), a token with <strong>PVEAuditor</strong>{' '}
+              role on path <strong>/</strong> is sufficient; full discovery and controls are pending
+              a future release.
+            </p>
 
             <SettingField label="Auto Sync" hint="Periodically sync cluster state">
               <label className="toggle-switch">
@@ -561,6 +596,13 @@ export default function ProxmoxIntegrationSection() {
           </div>
         )}
       </SettingSection>
+
+      <ConfirmDialog
+        open={deleteConfirmId !== null}
+        message="Delete this Proxmox integration? Associated hardware and VMs will not be removed."
+        onConfirm={() => handleDelete(deleteConfirmId)}
+        onCancel={() => setDeleteConfirmId(null)}
+      />
     </>
   );
 }

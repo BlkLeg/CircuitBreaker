@@ -85,23 +85,30 @@ def test_list_environments_usage_count_across_all_tables(client):
     assert found["usage_count"] == 4
 
 
-# ── Delete blocking ──────────────────────────────────────────────────────────
+# ── Delete (unlinks entities; no blockers) ─────────────────────────────────────
 
-def test_delete_environment_in_use_returns_blocking_breakdown(client):
+def test_delete_environment_in_use_unlinks_and_deletes(client):
+    """Deleting an environment in use clears entity references and deletes the env."""
     env = _create_env(client, name="prod").json()
     env_id = env["id"]
     _create_hardware(client, name="pve-01", environment_id=env_id)
     _create_service(client, name="Plex", environment_id=env_id)
 
     resp = client.delete(f"/api/v1/environments/{env_id}")
-    assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert "blocking" in detail
-    blocking = detail["blocking"]
-    assert "hardware" in blocking
-    assert "services" in blocking
-    hw_names = [h["name"] for h in blocking["hardware"]]
-    assert "pve-01" in hw_names
+    assert resp.status_code == 204
+
+    envs = client.get("/api/v1/environments").json()
+    assert not any(e["id"] == env_id for e in envs)
+
+    hw = client.get("/api/v1/hardware").json()
+    pve = next((h for h in hw if h.get("name") == "pve-01"), None)
+    assert pve is not None
+    assert pve.get("environment_id") is None
+
+    svc = client.get("/api/v1/services").json()
+    plex = next((s for s in svc if s.get("name") == "Plex"), None)
+    assert plex is not None
+    assert plex.get("environment_id") is None
 
 
 # ── Backfill ─────────────────────────────────────────────────────────────────

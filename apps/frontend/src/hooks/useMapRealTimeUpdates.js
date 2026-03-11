@@ -23,7 +23,9 @@ export function useMapRealTimeUpdates({ setNodes, nodesRef, unmountedRef }) {
       .then((r) => {
         if (!unmountedRef?.current) setPendingDiscoveries(r.data?.total ?? 0);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('Pending discoveries fetch failed:', err);
+      });
     const onAdded = () => {
       if (!unmountedRef?.current) setPendingDiscoveries((c) => c + 1);
     };
@@ -47,8 +49,8 @@ export function useMapRealTimeUpdates({ setNodes, nodesRef, unmountedRef }) {
           if (!unmountedRef?.current) {
             setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
           }
-        } catch {
-          /* silent — connection may be unavailable */
+        } catch (err) {
+          console.warn('Telemetry polling failed for node', n.id, err);
         }
       });
     }, 60_000);
@@ -66,8 +68,8 @@ export function useMapRealTimeUpdates({ setNodes, nodesRef, unmountedRef }) {
         setNodes((prev) =>
           applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, monitors)
         );
-      } catch {
-        /* silent */
+      } catch (err) {
+        console.warn('Monitor polling failed:', err);
       }
     }, 60_000);
     return () => clearInterval(interval);

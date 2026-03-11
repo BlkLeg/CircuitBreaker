@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal edge/node keys */
 import {
   computeUnitsApi,
   hardwareApi,

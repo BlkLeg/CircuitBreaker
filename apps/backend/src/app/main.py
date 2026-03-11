@@ -343,6 +343,60 @@ async def lifespan(app: FastAPI):
             await nats_client.subscribe(_topo_subject, _topo_handler)
         _logger.info("NATS → topology WS bridge subscribed.")
 
+        # ── NATS → discovery WebSocket bridge (Proxmox scan progress) ─────
+        from app.core.ws_manager import ws_manager
+
+        async def _discovery_scan_handler(msg) -> None:
+            try:
+                data = _json.loads(msg.data.decode())
+            except Exception:
+                data = {}
+            if data.get("source") != "proxmox":
+                return
+            subject = msg.subject
+            if subject == _subj.DISCOVERY_SCAN_STARTED:
+                await ws_manager.broadcast(
+                    {"type": "proxmox_scan_started", "integration_id": data.get("integration_id")}
+                )
+            elif subject == _subj.DISCOVERY_SCAN_PROGRESS:
+                await ws_manager.broadcast(
+                    {
+                        "type": "proxmox_scan_progress",
+                        "integration_id": data.get("integration_id"),
+                        "phase": data.get("phase"),
+                        "message": data.get("message"),
+                        "percent": data.get("percent"),
+                    }
+                )
+            elif subject == _subj.DISCOVERY_SCAN_COMPLETED:
+                await ws_manager.broadcast(
+                    {
+                        "type": "proxmox_scan_completed",
+                        "integration_id": data.get("integration_id"),
+                        "nodes": data.get("nodes"),
+                        "vms": data.get("vms"),
+                        "cts": data.get("cts"),
+                        "storage": data.get("storage"),
+                    }
+                )
+            elif subject == _subj.DISCOVERY_SCAN_FAILED:
+                await ws_manager.broadcast(
+                    {
+                        "type": "proxmox_scan_failed",
+                        "integration_id": data.get("integration_id"),
+                        "error": data.get("error"),
+                    }
+                )
+
+        for _disc_subject in (
+            _subj.DISCOVERY_SCAN_STARTED,
+            _subj.DISCOVERY_SCAN_PROGRESS,
+            _subj.DISCOVERY_SCAN_COMPLETED,
+            _subj.DISCOVERY_SCAN_FAILED,
+        ):
+            await nats_client.subscribe(_disc_subject, _discovery_scan_handler)
+        _logger.info("NATS → discovery WS bridge (Proxmox) subscribed.")
+
     # ── CVE database (separate SQLite file) ───────────────────────────────
     from app.db.cve_session import init_cve_db
 
@@ -743,7 +797,9 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.message, "error_code": exc.error_code}
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -759,14 +815,26 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.exception_handler(Exception)
 async def unhandled_error_handler(request: Request, exc: Exception):
+    from app.schemas.errors import ErrorCodes
+
     if settings.dev_mode:
         import traceback
 
         return JSONResponse(
             status_code=500,
-            content={"detail": str(exc), "traceback": traceback.format_exc()},
+            content={
+                "error_code": ErrorCodes.INTERNAL_SERVER_ERROR,
+                "detail": str(exc),
+                "traceback": traceback.format_exc(),
+            },
         )
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error_code": ErrorCodes.INTERNAL_SERVER_ERROR,
+            "detail": "Internal server error",
+        },
+    )
 
 
 # ── API routers ────────────────────────────────────────────────────────────

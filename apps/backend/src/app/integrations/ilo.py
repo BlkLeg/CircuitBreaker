@@ -32,12 +32,16 @@ class ILOClient:
         return None  # Use requests' default CA bundle
 
     def _get(self, path: str) -> dict:
-        r = self._session.get(
-            f"{self.base}{path}",
-            timeout=5,
-        )
-        r.raise_for_status()
-        return r.json()
+        try:
+            r = self._session.get(f"{self.base}{path}", timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except requests.ConnectionError as exc:
+            raise ConnectionError(f"Cannot reach iLO at {self.base}: {exc}") from exc
+        except requests.HTTPError:
+            raise ConnectionError(f"iLO returned {r.status_code} for {path}") from None
+        except ValueError as exc:
+            raise ConnectionError(f"iLO returned invalid JSON for {path}") from exc
 
     def poll(self) -> dict:
         try:

@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- Map used for job-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import '../styles/discovery.css';
 import {
@@ -7,7 +8,9 @@ import {
   getPendingResults,
   getDiscoveryStatus,
   getJobLogs,
+  startAdHocScan,
 } from '../api/discovery.js';
+import { X } from 'lucide-react';
 import { systemApi } from '../api/client.jsx';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 import { useToast } from '../components/common/Toast';
@@ -23,12 +26,12 @@ import NewScanPage from '../components/discovery/NewScanPage.jsx';
 import ReviewQueuePanel from '../components/discovery/ReviewQueuePanel.jsx';
 import ProxmoxIntegrationSection from '../components/proxmox/ProxmoxIntegrationSection.jsx';
 
-const STATUS_FILTERS = {
-  all: null,
-  active: ['running'],
-  completed: ['completed', 'done'],
-  queued: ['queued'],
-};
+const STATUS_FILTERS = new Map([
+  ['all', null],
+  ['active', ['running']],
+  ['completed', ['completed', 'done']],
+  ['queued', ['queued']],
+]);
 
 function logApiWarning(scope, error) {
   logger.warn(`[DiscoveryPage] ${scope}`, error);
@@ -50,15 +53,17 @@ export default function DiscoveryPage() {
     dockerContainerCount: 0,
   });
   const [hostStats, setHostStats] = useState(null);
+  const [dockerScanning, setDockerScanning] = useState(false);
+  const [dockerScanError, setDockerScanError] = useState(null);
 
-  const progressMapRef = useRef({});
-  const [progressMap, setProgressMap] = useState({});
-  const etaMapRef = useRef({});
-  const [etaMap, setEtaMap] = useState({});
-  const logMapRef = useRef({});
-  const [logMap, setLogMap] = useState({});
-  const [detailedLogMap, setDetailedLogMap] = useState({});
-  const detailedLogMapRef = useRef({});
+  const progressMapRef = useRef(new Map());
+  const [progressMap, setProgressMap] = useState(() => new Map());
+  const etaMapRef = useRef(new Map());
+  const [etaMap, setEtaMap] = useState(() => new Map());
+  const logMapRef = useRef(new Map());
+  const [logMap, setLogMap] = useState(() => new Map());
+  const [detailedLogMap, setDetailedLogMap] = useState(() => new Map());
+  const detailedLogMapRef = useRef(new Map());
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -92,10 +97,12 @@ export default function DiscoveryPage() {
     getJobLogs(jobId)
       .then((res) => {
         const logs = Array.isArray(res.data) ? res.data : [];
-        detailedLogMapRef.current = { ...detailedLogMapRef.current, [jobId]: logs };
-        setDetailedLogMap({ ...detailedLogMapRef.current });
+        detailedLogMapRef.current.set(jobId, logs);
+        setDetailedLogMap(new Map(detailedLogMapRef.current));
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to load job logs:', err);
+      });
   }, []);
 
   useEffect(() => {
@@ -112,7 +119,9 @@ export default function DiscoveryPage() {
           dockerContainerCount: res.data?.docker_container_count ?? 0,
         })
       )
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Discovery capabilities load failed:', err);
+      });
   }, []);
 
   useEffect(() => {
@@ -136,7 +145,8 @@ export default function DiscoveryPage() {
               : null
           );
         })
-        .catch(() => {
+        .catch((err) => {
+          console.error('Discovery host stats fetch failed:', err);
           if (mounted) setHostStats(null);
         });
     };
@@ -167,31 +177,28 @@ export default function DiscoveryPage() {
 
     const onJobProgress = (data) => {
       if (typeof data.percent === 'number') {
-        progressMapRef.current = {
-          ...progressMapRef.current,
-          [data.job_id]: Math.round(data.percent),
-        };
-        setProgressMap({ ...progressMapRef.current });
+        progressMapRef.current.set(data.job_id, Math.round(data.percent));
+        setProgressMap(new Map(progressMapRef.current));
       } else if (
         typeof data.processed === 'number' &&
         typeof data.total === 'number' &&
         data.total > 0
       ) {
         const pct = Math.round((data.processed / data.total) * 100);
-        progressMapRef.current = { ...progressMapRef.current, [data.job_id]: pct };
-        setProgressMap({ ...progressMapRef.current });
+        progressMapRef.current.set(data.job_id, pct);
+        setProgressMap(new Map(progressMapRef.current));
       }
 
       if (typeof data.eta_seconds === 'number') {
-        etaMapRef.current = { ...etaMapRef.current, [data.job_id]: data.eta_seconds };
-        setEtaMap({ ...etaMapRef.current });
+        etaMapRef.current.set(data.job_id, data.eta_seconds);
+        setEtaMap(new Map(etaMapRef.current));
       }
 
       if (data.message || data.phase) {
         const entry = { phase: data.phase, message: data.message, ts: Date.now() };
-        const prev = logMapRef.current[data.job_id] || [];
-        logMapRef.current = { ...logMapRef.current, [data.job_id]: [...prev, entry].slice(-200) };
-        setLogMap({ ...logMapRef.current });
+        const prev = logMapRef.current.get(data.job_id) || [];
+        logMapRef.current.set(data.job_id, [...prev, entry].slice(-200));
+        setLogMap(new Map(logMapRef.current));
       }
     };
 
@@ -205,12 +212,9 @@ export default function DiscoveryPage() {
           message: data.message,
           details: data.details,
         };
-        const prev = detailedLogMapRef.current[data.job_id] || [];
-        detailedLogMapRef.current = {
-          ...detailedLogMapRef.current,
-          [data.job_id]: [...prev, entry].slice(-500),
-        };
-        setDetailedLogMap({ ...detailedLogMapRef.current });
+        const prev = detailedLogMapRef.current.get(data.job_id) || [];
+        detailedLogMapRef.current.set(data.job_id, [...prev, entry].slice(-500));
+        setDetailedLogMap(new Map(detailedLogMapRef.current));
       }
     };
 
@@ -218,26 +222,26 @@ export default function DiscoveryPage() {
       setPendingReviewCount((c) => c + 1);
     };
 
+    const onWsReconnected = () => loadJobs();
+
     discoveryEmitter.on('job:update', onJobUpdate);
     discoveryEmitter.on('job:progress', onJobProgress);
     discoveryEmitter.on('scan:log_entry', onScanLogEntry);
     discoveryEmitter.on('result:added', onResultAdded);
+    discoveryEmitter.on('ws:reconnected', onWsReconnected);
 
     return () => {
       discoveryEmitter.off('job:update', onJobUpdate);
       discoveryEmitter.off('job:progress', onJobProgress);
       discoveryEmitter.off('scan:log_entry', onScanLogEntry);
       discoveryEmitter.off('result:added', onResultAdded);
+      discoveryEmitter.off('ws:reconnected', onWsReconnected);
     };
   }, [loadJobs, loadPendingResults]);
 
   // ── Derived state ──────────────────────────────────────────────────────
 
-  const profileMap = useMemo(() => {
-    const map = {};
-    for (const p of profiles) map[p.id] = p.name;
-    return map;
-  }, [profiles]);
+  const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p.name])), [profiles]);
 
   // Load logs when a job is selected
   useEffect(() => {
@@ -247,18 +251,19 @@ export default function DiscoveryPage() {
   }, [selectedJobId, loadJobLogs]);
 
   const filteredJobs = useMemo(() => {
-    const statusSet = STATUS_FILTERS[filter];
+    const statusSet = STATUS_FILTERS.get(filter);
     if (!statusSet) return jobs;
     return jobs.filter((j) => statusSet.includes(j.status));
   }, [jobs, filter]);
 
   const jobCounts = useMemo(
-    () => ({
-      all: jobs.length,
-      active: jobs.filter((j) => j.status === 'running').length,
-      completed: jobs.filter((j) => j.status === 'completed' || j.status === 'done').length,
-      queued: jobs.filter((j) => j.status === 'queued').length,
-    }),
+    () =>
+      new Map([
+        ['all', jobs.length],
+        ['active', jobs.filter((j) => j.status === 'running').length],
+        ['completed', jobs.filter((j) => j.status === 'completed' || j.status === 'done').length],
+        ['queued', jobs.filter((j) => j.status === 'queued').length],
+      ]),
     [jobs]
   );
 
@@ -268,6 +273,24 @@ export default function DiscoveryPage() {
   );
 
   // ── Actions ────────────────────────────────────────────────────────────
+
+  const handleDockerScan = async () => {
+    if (dockerScanning) return;
+    setDockerScanning(true);
+    setDockerScanError(null);
+    try {
+      await startAdHocScan({ scan_types: ['docker'] });
+      toast.success('Docker scan started — results will appear in the Review Queue');
+      loadJobs();
+      setFilter('all');
+    } catch (err) {
+      const brief = err?.response?.data?.detail || err?.message || 'Docker scan failed';
+      toast.error(brief);
+      setDockerScanError(brief);
+    } finally {
+      setDockerScanning(false);
+    }
+  };
 
   const handleCancelJob = async (jobId) => {
     try {
@@ -330,10 +353,10 @@ export default function DiscoveryPage() {
         />
         <ScanDetailPanel
           job={selectedJob}
-          progressPct={selectedJob ? progressMap[selectedJobId] : undefined}
-          etaSeconds={selectedJob ? etaMap[selectedJobId] : undefined}
-          logEntries={selectedJob ? logMap[selectedJobId] : undefined}
-          detailedLogs={selectedJob ? detailedLogMap[selectedJobId] : undefined}
+          progressPct={selectedJob ? progressMap.get(selectedJobId) : undefined}
+          etaSeconds={selectedJob ? etaMap.get(selectedJobId) : undefined}
+          logEntries={selectedJob ? logMap.get(selectedJobId) : undefined}
+          detailedLogs={selectedJob ? detailedLogMap.get(selectedJobId) : undefined}
           profileMap={profileMap}
         />
         <DiscoveryStatusBar
@@ -357,9 +380,57 @@ export default function DiscoveryPage() {
         pendingReviewCount={pendingReviewCount}
         memoryUsed={hostStats?.memPercent ?? null}
         storageUsed={hostStats?.diskPercent ?? null}
+        dockerAvailable={discoveryCapabilities.dockerAvailable}
+        dockerScanning={dockerScanning}
+        dockerContainerCount={discoveryCapabilities.dockerContainerCount}
+        onDockerScan={handleDockerScan}
       />
 
       <div className="discovery-main">{mainContent}</div>
+
+      {dockerScanError && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1200,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={() => setDockerScanError(null)}
+        >
+          <div
+            style={{
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 10,
+              padding: '24px 28px',
+              maxWidth: 420,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 700, fontSize: 14 }}>Docker Scan Error</span>
+              <button
+                type="button"
+                className="scan-toolbar-btn"
+                onClick={() => setDockerScanError(null)}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-muted)' }}>
+              {dockerScanError}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

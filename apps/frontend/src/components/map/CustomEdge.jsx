@@ -8,7 +8,7 @@ import {
   useReactFlow,
 } from 'reactflow';
 import { MapEdgeCallbacksContext, MapViewOptionsContext } from './mapContexts';
-import { CONNECTION_STYLES } from '../../config/mapTheme';
+import { CONNECTION_STYLES_MAP } from '../../config/mapTheme';
 import { graphApi } from '../../api/client';
 import { isUpdatableEdgeId, unlinkByEdge } from './linkMutations';
 import {
@@ -72,7 +72,7 @@ export default function CustomEdge({
   const relation = data?.relation || label || data?.label || '';
   const connectionType = normalizeConnectionType(data?.connection_type);
   const typedEdge = connectionType !== null;
-  const connStyle = typedEdge ? CONNECTION_STYLES[connectionType] : null;
+  const connStyle = typedEdge ? CONNECTION_STYLES_MAP.get(connectionType) : null;
 
   const pathArgs = { sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition };
 
@@ -198,7 +198,7 @@ export default function CustomEdge({
 
       <path
         d={pathD}
-        className="react-flow__edge-path"
+        className="react-flow__edge-path cb-edge-smooth"
         markerEnd={markerEnd}
         style={{
           stroke: strokeColor,

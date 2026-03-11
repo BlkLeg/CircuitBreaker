@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback } from 'react';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';

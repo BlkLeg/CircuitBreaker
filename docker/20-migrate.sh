@@ -84,9 +84,11 @@ else
 fi
 
 echo "[migrate] Running Alembic migrations from ${APP_DIR}..."
-(
-  cd "${APP_DIR}"
-  alembic -c "${CB_ALEMBIC_INI}" upgrade head
-)
+if ! ( cd "${APP_DIR}" && alembic -c "${CB_ALEMBIC_INI}" upgrade head ); then
+  echo "[migrate] If the error was 'Can't locate revision identified by ...', the database has a revision that this image does not have." >&2
+  echo "[migrate] Rebuild the image so it includes the latest migrations, then start again:" >&2
+  echo "[migrate]   docker compose -f docker/docker-compose.yml build --no-cache && docker compose -f docker/docker-compose.yml up -d" >&2
+  exit 1
+fi
 
 echo "[migrate] Database migrations complete."

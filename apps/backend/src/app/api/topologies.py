@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import Topology, TopologyEdge, TopologyNode
@@ -130,7 +131,13 @@ def create_topology(
         is_default=payload.is_default,
     )
     db.add(topology)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A topology with this name already exists."
+        ) from None
     db.refresh(topology)
     _logger.info("Created topology id=%d name=%s", topology.id, topology.name)
     return {"id": topology.id, "name": topology.name, "team_id": topology.team_id}

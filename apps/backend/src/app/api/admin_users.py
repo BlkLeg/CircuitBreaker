@@ -8,6 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
@@ -182,7 +183,13 @@ def create_user(
         role=role,
     )
     db.add(new_user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists."
+        ) from None
     db.refresh(new_user)
     return {
         "id": new_user.id,
@@ -269,7 +276,13 @@ def create_local_user(
         created_at_utc=now,
     )
     db.add(audit)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists."
+        ) from None
     db.refresh(new_user)
 
     return CreateLocalUserResponse(

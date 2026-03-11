@@ -49,10 +49,36 @@ function getWsUrl() {
   return `${proto}://${host}/api/v1/discovery/stream`;
 }
 
+function syncPendingCount(res, setPendingCount, actionsPendingRef) {
+  if (typeof res.data?.pending_results !== 'number') return;
+  const serverCount = res.data.pending_results;
+  setPendingCount((currentCount) => {
+    if (Math.abs(currentCount - serverCount) > 0) {
+      console.debug(`Badge sync: frontend=${currentCount}, backend=${serverCount}`);
+      actionsPendingRef.current.clear();
+    }
+    return serverCount;
+  });
+}
+
+function reconcileOnReconnect(setPendingCount) {
+  getDiscoveryStatus()
+    .then((res) => {
+      if (typeof res.data?.pending_results === 'number') {
+        setPendingCount(res.data.pending_results);
+      }
+      discoveryEmitter.emit('ws:reconnected', { activeJobs: res.data?.active_jobs ?? [] });
+    })
+    .catch((err) => {
+      console.error('Discovery reconcile on reconnect failed:', err);
+    });
+}
+
 export function useDiscoveryStream({ authEnabled = true } = {}) {
   const { user, token } = useAuth();
   const [connected, setConnected] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [wsStatus, setWsStatus] = useState('connecting');
 
   const wsRef = useRef(null);
   const attemptRef = useRef(0);
@@ -60,6 +86,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
   const intentionalRef = useRef(false); // true when we closed on purpose (auth fail)
   const syncTimerRef = useRef(null); // periodic sync timer
   const actionsPendingRef = useRef(new Set()); // track pending actions for optimistic updates
+  const reconnectedRef = useRef(false); // true after the first successful connect
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) {
@@ -95,6 +122,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      setWsStatus('connecting');
       if (token && token !== 'cookie' && token.length > 10) {
         ws.send(token);
       } else if (!authEnabled) {
@@ -114,7 +142,11 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       // ── Auth / connection handshake ──────────────────────────────────
       if (msg.status === 'connected') {
         setConnected(true);
+        setWsStatus('connected');
         attemptRef.current = 0;
+        // On reconnect (not the initial connect), reconcile pending count and job state
+        if (reconnectedRef.current) reconcileOnReconnect(setPendingCount);
+        reconnectedRef.current = true;
         return;
       }
 
@@ -199,6 +231,32 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
             actionsPendingRef.current.clear();
           }
           break;
+        case 'proxmox_scan_started':
+          discoveryEmitter.emit('proxmox:started', { integration_id: msg.integration_id });
+          break;
+        case 'proxmox_scan_progress':
+          discoveryEmitter.emit('proxmox:progress', {
+            integration_id: msg.integration_id,
+            phase: msg.phase,
+            message: msg.message,
+            percent: msg.percent,
+          });
+          break;
+        case 'proxmox_scan_completed':
+          discoveryEmitter.emit('proxmox:completed', {
+            integration_id: msg.integration_id,
+            nodes: msg.nodes,
+            vms: msg.vms,
+            cts: msg.cts,
+            storage: msg.storage,
+          });
+          break;
+        case 'proxmox_scan_failed':
+          discoveryEmitter.emit('proxmox:failed', {
+            integration_id: msg.integration_id,
+            error: msg.error,
+          });
+          break;
         default:
           break;
       }
@@ -206,6 +264,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
 
     ws.onclose = (event) => {
       setConnected(false);
+      setWsStatus('disconnected');
       wsRef.current = null;
 
       // Auth failure / intentional close — hard stop
@@ -264,7 +323,9 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
           setPendingCount(res.data.pending_results);
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Discovery pending count sync failed:', err);
+      });
   }, []);
 
   // Badge refresh: re-fetch count whenever something emits 'badge:refresh'
@@ -277,7 +338,9 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
             actionsPendingRef.current.clear();
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          console.error('Badge refresh failed:', err);
+        });
     };
 
     // Optimistic badge decrement for immediate UI feedback
@@ -314,20 +377,10 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
     if (connected) {
       syncTimerRef.current = setInterval(() => {
         getDiscoveryStatus()
-          .then((res) => {
-            if (typeof res.data?.pending_results === 'number') {
-              const serverCount = res.data.pending_results;
-              setPendingCount((currentCount) => {
-                // Log discrepancies for debugging
-                if (Math.abs(currentCount - serverCount) > 0) {
-                  console.debug(`Badge sync: frontend=${currentCount}, backend=${serverCount}`);
-                  actionsPendingRef.current.clear();
-                }
-                return serverCount;
-              });
-            }
-          })
-          .catch(() => {}); // Silent fail for background sync
+          .then((res) => syncPendingCount(res, setPendingCount, actionsPendingRef))
+          .catch((err) => {
+            console.warn('Background pending count sync failed:', err);
+          });
       }, 30000); // 30 second sync interval
     } else {
       clearSyncTimer();
@@ -336,5 +389,5 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
     return clearSyncTimer;
   }, [connected, clearSyncTimer]);
 
-  return { connected, pendingCount, setPendingCount };
+  return { connected, pendingCount, setPendingCount, wsStatus };
 }

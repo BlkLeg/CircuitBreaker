@@ -47,7 +47,11 @@ function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, authEnabled } =
     useAuth();
-  const { pendingCount, connected: discoveryConnected } = useDiscoveryStream({ authEnabled });
+  const {
+    pendingCount,
+    connected: discoveryConnected,
+    wsStatus,
+  } = useDiscoveryStream({ authEnabled });
 
   // Start the SSE client once at app root; tear down on unmount
   useEffect(() => {
@@ -130,7 +134,7 @@ function AppInner() {
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock pendingCount={pendingCount} />
+      <Dock pendingCount={pendingCount} wsStatus={wsStatus} />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />
     </div>
@@ -333,27 +337,31 @@ function AppRoutes() {
 
   if (authEnabled && !isAuthenticated) {
     return (
-      <React.Suspense fallback={<div className="login-root" />}>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
-          <Route path="/invite/accept" element={<InviteAcceptPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route path="/reset-password/vault" element={<VaultResetPage />} />
-          <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
-          <Route path="*" element={<NavigateToLogin />} />
-        </Routes>
-      </React.Suspense>
+      <ErrorBoundary>
+        <React.Suspense fallback={<div className="login-root" />}>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
+            <Route path="/invite/accept" element={<InviteAcceptPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/reset-password/vault" element={<VaultResetPage />} />
+            <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
+            <Route path="*" element={<NavigateToLogin />} />
+          </Routes>
+        </React.Suspense>
+      </ErrorBoundary>
     );
   }
 
   return (
-    <React.Suspense fallback={<div className="login-root" />}>
-      <Routes>
-        <Route path="/login" element={<Navigate to="/map" replace />} />
-        <Route path="/*" element={<AppInner />} />
-      </Routes>
-    </React.Suspense>
+    <ErrorBoundary>
+      <React.Suspense fallback={<div className="login-root" />}>
+        <Routes>
+          <Route path="/login" element={<Navigate to="/map" replace />} />
+          <Route path="/*" element={<AppInner />} />
+        </Routes>
+      </React.Suspense>
+    </ErrorBoundary>
   );
 }
 

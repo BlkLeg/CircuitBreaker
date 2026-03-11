@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal type/status keys */
 /**
  * Shared map constants — node styles, edge colors, icon resolution, entity
  * field definitions, API mutation maps, and boundary presets.

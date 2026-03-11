@@ -884,6 +884,7 @@ class AppSettings(Base):
     docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
     map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
+    graph_uplink_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     map_default_filters: Mapped[dict | None] = mapped_column(JSONB)  # JSONB as of v0.2.0
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
@@ -948,6 +949,21 @@ class AppSettings(Base):
     )
 
 
+# ── Onboarding (OOBE step state, Homarr-style) ─────────────────────────────────
+# Single row (id=1). Only relevant when needs_bootstrap is True.
+
+
+class Onboarding(Base):
+    __tablename__ = "onboarding"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    step: Mapped[str] = mapped_column(String, nullable=False, default="start")
+    previous_step: Mapped[str] = mapped_column(String, nullable=False, default="start")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
 # ── Credentials (encrypted per-entity secrets) ────────────────────────────────
 
 
@@ -998,6 +1014,36 @@ class IntegrationConfig(Base):
 
     credential: Mapped["Credential | None"] = relationship(
         "Credential", foreign_keys=[credential_id]
+    )
+
+
+class ProxmoxDiscoverRun(Base):
+    """One run of Proxmox cluster discovery (nodes, VMs, CTs, storage)."""
+
+    __tablename__ = "proxmox_discover_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
+    integration_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("integration_configs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="running"
+    )  # running | completed | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    nodes_imported: Mapped[int] = mapped_column(Integer, default=0)
+    vms_imported: Mapped[int] = mapped_column(Integer, default=0)
+    cts_imported: Mapped[int] = mapped_column(Integer, default=0)
+    storage_imported: Mapped[int] = mapped_column(Integer, default=0)
+    networks_imported: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # list of error strings
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    integration: Mapped["IntegrationConfig"] = relationship(
+        "IntegrationConfig", foreign_keys=[integration_id]
     )
 
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { ArrowLeft, Box, Play, ShieldCheck, Zap, X } from 'lucide-react';
-import { startAdHocScan, runProfile } from '../../api/discovery.js';
+import { startAdHocScan, runProfile, getDockerNetworks } from '../../api/discovery.js';
 import { networksApi } from '../../api/client.jsx';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
@@ -76,6 +76,8 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
 
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [profileSectionOpen, setProfileSectionOpen] = useState(false);
+  const [dockerNetworks, setDockerNetworks] = useState([]);
+  const [dockerNetworksLoading, setDockerNetworksLoading] = useState(false);
 
   React.useEffect(() => {
     let mounted = true;
@@ -110,6 +112,29 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
       mounted = false;
     };
   }, []);
+
+  React.useEffect(() => {
+    if (scanMode !== 'docker' || !dockerAvailable) {
+      setDockerNetworks([]);
+      return;
+    }
+    let mounted = true;
+    setDockerNetworksLoading(true);
+    getDockerNetworks()
+      .then((res) => {
+        if (!mounted || !res?.data) return;
+        setDockerNetworks(Array.isArray(res.data) ? res.data : []);
+      })
+      .catch(() => {
+        if (mounted) setDockerNetworks([]);
+      })
+      .finally(() => {
+        if (mounted) setDockerNetworksLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [scanMode, dockerAvailable]);
 
   const [launching, setLaunching] = useState(false);
   const [ackPending, setAckPending] = useState(false);
@@ -476,6 +501,50 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
         {/* Docker fields */}
         {scanMode === 'docker' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {dockerAvailable && (
+              <div className="cb-field">
+                <span className="cb-label">Docker networks scanned</span>
+                {dockerNetworksLoading ? (
+                  <p className="cb-hint">Loading networks…</p>
+                ) : dockerNetworks.length === 0 ? (
+                  <p className="cb-hint">
+                    All Docker networks (scan will enumerate from the daemon). Run a sync or scan
+                    first to see discovered networks here.
+                  </p>
+                ) : (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      padding: '8px 10px',
+                      background: 'var(--color-bg-alt)',
+                      borderRadius: 6,
+                      border: '1px solid var(--color-border)',
+                    }}
+                  >
+                    {dockerNetworks.slice(0, 20).map((net) => (
+                      <span
+                        key={net.id ?? net.name}
+                        style={{
+                          fontSize: 11,
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          background: 'rgba(11, 110, 142, 0.12)',
+                          color: '#0b6e8e',
+                        }}
+                        title={net.docker_driver ? `Driver: ${net.docker_driver}` : net.name}
+                      >
+                        {net.name || net.docker_network_id || 'Unnamed'}
+                      </span>
+                    ))}
+                    {dockerNetworks.length > 20 && (
+                      <span className="cb-hint">+{dockerNetworks.length - 20} more</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="cb-scan-modal-grid">
               <div className="cb-field">
                 <span className="cb-label">Docker Socket Path</span>

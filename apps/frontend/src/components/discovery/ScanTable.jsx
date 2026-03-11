@@ -27,7 +27,7 @@ function formatEtaSecs(secs) {
   return `${h}:${m}:${s}`;
 }
 
-function parseVlanIds(json) {
+function parseJsonArray(json) {
   if (!json) return [];
   try {
     const arr = JSON.parse(json);
@@ -35,6 +35,13 @@ function parseVlanIds(json) {
   } catch {
     return [];
   }
+}
+
+const parseVlanIds = parseJsonArray;
+
+function isDockerJob(job) {
+  const types = parseJsonArray(job.scan_types_json);
+  return types.includes('docker');
 }
 
 function computeEta(job, progressPct = 0, etaSeconds = undefined) {
@@ -62,7 +69,14 @@ export default function ScanTable({
   onCancelJob,
 }) {
   const filteredJobs = searchQuery
-    ? jobs.filter((j) => j.target_cidr?.toLowerCase().includes(searchQuery.toLowerCase()))
+    ? jobs.filter((j) => {
+        const q = searchQuery.toLowerCase();
+        if (j.target_cidr?.toLowerCase().includes(q)) return true;
+        if (isDockerJob(j) && 'docker'.includes(q)) return true;
+        const scanTypes = parseJsonArray(j.scan_types_json);
+        if (scanTypes.some((t) => t.toLowerCase().includes(q))) return true;
+        return false;
+      })
     : jobs;
 
   return (
@@ -136,10 +150,10 @@ export default function ScanTable({
             ) : (
               filteredJobs.map((job) => {
                 const pct =
-                  progressMap[job.id] ??
+                  progressMap.get(job.id) ??
                   (job.status === 'completed' || job.status === 'done' ? 100 : 0);
                 const profileName =
-                  (job.profile_id && profileMap[job.profile_id]) || job.label || 'Ad-hoc';
+                  (job.profile_id && profileMap.get(job.profile_id)) || job.label || 'Ad-hoc';
                 const isSelected = selectedJobId === job.id;
                 const isRunning = job.status === 'running';
 
@@ -174,19 +188,36 @@ export default function ScanTable({
                             VLAN {vid}
                           </span>
                         ))}
-                        <span
-                          title={job.target_cidr}
-                          style={{
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                            maxWidth: '150px',
-                            display: 'inline-block',
-                            verticalAlign: 'bottom',
-                          }}
-                        >
-                          {job.target_cidr}
-                        </span>
+                        {isDockerJob(job) ? (
+                          <span
+                            title={job.label || 'Docker (all networks)'}
+                            style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '150px',
+                              display: 'inline-block',
+                              verticalAlign: 'bottom',
+                              color: 'var(--color-text-secondary)',
+                            }}
+                          >
+                            Docker{job.target_cidr ? ` — ${job.target_cidr}` : ' (all networks)'}
+                          </span>
+                        ) : (
+                          <span
+                            title={job.target_cidr}
+                            style={{
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '150px',
+                              display: 'inline-block',
+                              verticalAlign: 'bottom',
+                            }}
+                          >
+                            {job.target_cidr}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="col-profile">{profileName}</td>

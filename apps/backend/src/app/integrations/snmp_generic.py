@@ -13,7 +13,7 @@ def _snmp_get_one(host: str, community: str, oid: str) -> str | None:
             timeout=3,
         )
         return r.stdout.strip() if r.returncode == 0 else None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
 
 

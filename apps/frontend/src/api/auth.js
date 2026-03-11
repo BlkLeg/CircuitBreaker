@@ -1,8 +1,20 @@
 import client from './client';
 import { hashPasswordForAuth } from '../utils/passwordHash';
 
+/** OOBE step names used by backend onboarding API. */
+export const OOBE_STEP_NAMES = [
+  'start', // 1
+  'account', // 2
+  'theme', // 3
+  'regional', // 4
+  'email', // 5
+  'summary', // 6
+];
+
 export const authApi = {
   bootstrapStatus: () => client.get('/bootstrap/status'),
+  getOnboardingStep: () => client.get('/bootstrap/onboarding'),
+  setOnboardingStep: (step) => client.patch('/bootstrap/onboarding', { step }),
   bootstrapInitialize: async (payload) => {
     const p = { ...payload };
     if (p.password != null && p.password !== '') {

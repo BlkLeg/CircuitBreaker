@@ -196,15 +196,24 @@ export function useMapMutations({
           edge.source === deleteConflictModal.nodeId || edge.target === deleteConflictModal.nodeId
       );
 
+      let edgeFailCount = 0;
       for (const edge of connectedEdges) {
-        await unlinkByEdge({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          _relation: edge._relation,
-          data: edge.data,
-          label: edge.label,
-        });
+        try {
+          await unlinkByEdge({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            _relation: edge._relation,
+            data: edge.data,
+            label: edge.label,
+          });
+        } catch (err) {
+          edgeFailCount++;
+          console.error('Failed to remove edge:', edge.id, err);
+        }
+      }
+      if (edgeFailCount > 0) {
+        toast.warn(`${edgeFailCount} connection(s) could not be removed.`);
       }
 
       await deleter(deleteConflictModal.nodeRefId);

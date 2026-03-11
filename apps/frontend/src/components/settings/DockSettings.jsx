@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useEffect, useState } from 'react';
 import { settingsApi } from '../../api/client';
 import { useSettings } from '../../context/SettingsContext';

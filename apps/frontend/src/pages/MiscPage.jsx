@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { SkeletonTable } from '../components/common/SkeletonTable';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
@@ -212,7 +213,7 @@ function MiscPage() {
       </div>
 
       {loading ? (
-        <p>Loading...</p>
+        <SkeletonTable cols={5} />
       ) : (
         <EntityTable
           columns={COLUMNS}

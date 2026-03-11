@@ -13,6 +13,10 @@ export default function DiscoverySidebar({
   memoryUsed = null,
   storageUsed = null,
   listenerEnabled = false,
+  dockerAvailable = false,
+  dockerScanning = false,
+  dockerContainerCount = 0,
+  onDockerScan = () => {},
 }) {
   const memPct = memoryUsed == null ? null : Math.min(100, Math.max(0, memoryUsed));
   const diskPct = storageUsed == null ? null : Math.min(100, Math.max(0, storageUsed));
@@ -26,9 +30,29 @@ export default function DiscoverySidebar({
         <Plus size={16} /> New Scan
       </button>
 
+      <button
+        type="button"
+        className="sidebar-docker-scan-btn"
+        onClick={onDockerScan}
+        disabled={!dockerAvailable || dockerScanning}
+        title={
+          dockerAvailable
+            ? 'Scan your Docker environment and add containers to the Review Queue'
+            : 'Docker daemon not reachable'
+        }
+      >
+        <img src="/icons/vendors/docker.svg" width={16} height={16} alt="" />
+        {dockerScanning ? 'Scanning…' : 'Discover Docker'}
+      </button>
+      {dockerContainerCount > 0 && (
+        <p className="sidebar-docker-status">
+          {dockerContainerCount} container{dockerContainerCount === 1 ? '' : 's'} visible
+        </p>
+      )}
+
       <nav className="sidebar-nav">
         {FILTERS.map(({ key, label, Icon }) => {
-          const count = jobCounts[key] ?? 0;
+          const count = jobCounts.get(key) ?? 0;
           return (
             <button
               key={key}
@@ -130,4 +154,8 @@ DiscoverySidebar.propTypes = {
   memoryUsed: PropTypes.number,
   storageUsed: PropTypes.number,
   listenerEnabled: PropTypes.bool,
+  dockerAvailable: PropTypes.bool,
+  dockerScanning: PropTypes.bool,
+  dockerContainerCount: PropTypes.number,
+  onDockerScan: PropTypes.func,
 };

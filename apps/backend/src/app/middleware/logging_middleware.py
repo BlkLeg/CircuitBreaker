@@ -266,6 +266,7 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
                 return (user.display_name or user.email), user.gravatar_hash, user.id, user.role
             return "anonymous", None, None, None
     except Exception:
+        _logger.debug("Failed to resolve actor from request", exc_info=True)
         return "anonymous", None, None, None
 
 
@@ -303,6 +304,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             try:
                 req_body_str = req_body_bytes.decode("utf-8")
             except Exception:
+                _logger.debug("Failed to decode request body as UTF-8", exc_info=True)
                 req_body_str = None
 
         # Fetch old value for updates/deletes
@@ -311,7 +313,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             try:
                 old_value_str = _fetch_entity_json(entity_type, entity_id)
             except Exception:
-                pass
+                _logger.debug("Failed to fetch old entity value for audit diff", exc_info=True)
 
         # Process request
         response = await call_next(request)
@@ -333,7 +335,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 if method in {"POST", "PATCH", "PUT"} and resp_body:
                     new_value_str = resp_body.decode("utf-8")
             except Exception:
-                pass
+                _logger.debug("Failed to read/decode response body for audit log", exc_info=True)
 
         # For POST where new_value wasn't captured from response, fall back to request body
         if method == "POST" and not new_value_str and req_body_str:
@@ -345,7 +347,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 parsed = json.loads(new_value_str)
                 entity_id = parsed.get("id")
             except Exception:
-                pass
+                _logger.debug("Failed to parse entity_id from response JSON", exc_info=True)
 
         # Extract entity_name from response JSON (best-effort)
         entity_name = ""
@@ -354,14 +356,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 _parsed = json.loads(new_value_str)
                 entity_name = _parsed.get("name") or _parsed.get("title") or ""
             except Exception:
-                pass
+                _logger.debug("Failed to parse entity_name from response JSON", exc_info=True)
         # Fall back to request body name if response had none
         if not entity_name and req_body_str:
             try:
                 _parsed = json.loads(req_body_str)
                 entity_name = _parsed.get("name") or _parsed.get("title") or ""
             except Exception:
-                pass
+                _logger.debug("Failed to parse entity_name from request JSON", exc_info=True)
 
         # Build structured diff from old/new values
         diff: dict | None = None
@@ -371,7 +373,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             if before is not None or after is not None:
                 diff = {"before": before, "after": after}
         except Exception:
-            pass
+            _logger.debug("Failed to build audit diff from old/new values", exc_info=True)
 
         # Write log entry via the centralised service (always — including errors)
         try:
@@ -395,7 +397,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 role_at_time=role_at_time,
             )
         except Exception as exc:
-            _logger.warning("Audit log write failed: %s", exc)
+            _logger.warning("Audit log write failed: %s", exc, exc_info=True)
 
         return response
 
@@ -447,6 +449,7 @@ def _scrub_sensitive_data(json_str: str | None) -> str | None:
     try:
         data = json.loads(json_str)
     except Exception:
+        _logger.debug("Failed to parse JSON for sensitive data scrubbing", exc_info=True)
         return json_str
     from app.services.log_service import sanitise_diff
 

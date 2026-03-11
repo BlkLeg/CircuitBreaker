@@ -2,6 +2,7 @@
 asset deletion, dynamic manifest, Theme Park export/import."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["branding"])
+_logger = logging.getLogger(__name__)
 
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
 _MAX_FAVICON_BYTES = 512 * 1024  # 512 KB
@@ -80,7 +82,11 @@ async def upload_favicon(
     row = get_or_create_settings(db)
     row.favicon_path = "/branding/favicon.ico"
     row.updated_at = utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     db.refresh(row)
     return _build_branding(row)
 
@@ -119,7 +125,11 @@ async def upload_login_logo(
     row = get_or_create_settings(db)
     row.login_logo_path = f"/branding/login-logo{suffix}"
     row.updated_at = utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     db.refresh(row)
     return _build_branding(row)
 
@@ -179,7 +189,11 @@ async def upload_login_bg(
     row = get_or_create_settings(db)
     row.login_bg_path = "/branding/login-bg.jpg"
     row.updated_at = utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
     db.refresh(row)
     return _build_branding(row)
 
@@ -228,7 +242,11 @@ def delete_branding_asset(
     row = get_or_create_settings(db)
     setattr(row, col_name, None)
     row.updated_at = utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        _logger.exception("Failed to commit branding asset deletion for %s", asset_type)
+        raise
     db.refresh(row)
     return _build_branding(row)
 
@@ -303,6 +321,10 @@ def import_theme(
     if payload.accent_colors is not None:
         row.accent_colors = json.dumps(payload.accent_colors)
     row.updated_at = utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        _logger.exception("Failed to commit theme import")
+        raise
     db.refresh(row)
     return _build_branding(row)

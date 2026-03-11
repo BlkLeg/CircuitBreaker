@@ -144,6 +144,13 @@ class ScanResultOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+def _datetime_to_str(v):
+    """Coerce datetime to ISO string for API output."""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v) if v is not None else ""
+
+
 class ScanLogOut(BaseModel):
     id: int
     scan_job_id: int
@@ -154,6 +161,13 @@ class ScanLogOut(BaseModel):
     details: str | None
     created_at: str
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("timestamp", "created_at", mode="before")
+    @classmethod
+    def coerce_datetime_to_str(cls, v):
+        if isinstance(v, str):
+            return v
+        return _datetime_to_str(v)
 
 
 class AdHocScanRequest(BaseModel):

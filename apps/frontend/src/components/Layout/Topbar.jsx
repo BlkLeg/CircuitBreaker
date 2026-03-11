@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React from 'react';
 import { useLocation } from 'react-router-dom';
 

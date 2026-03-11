@@ -1,11 +1,14 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { CONNECTION_STYLES } from '../../config/mapTheme';
-import { CONNECTION_TYPE_OPTIONS } from './connectionTypes';
+import { CONNECTION_STYLES_MAP } from '../../config/mapTheme';
+import { CONNECTION_TYPE_OPTIONS, normalizeConnectionType } from './connectionTypes';
 
-function ConnectionTypePicker({ x, y, onSelect, onCancel }) {
+function ConnectionTypePicker({ x, y, defaultConnectionType, onSelect, onCancel }) {
   const left = Math.max(8, x);
   const top = Math.max(8, y);
+  const normalizedDefault = normalizeConnectionType(defaultConnectionType) || 'ethernet';
+  const isDefault = (type) =>
+    type === normalizedDefault || normalizeConnectionType(type) === normalizedDefault;
 
   return (
     <div
@@ -41,9 +44,22 @@ function ConnectionTypePicker({ x, y, onSelect, onCancel }) {
       >
         Select connection type
       </div>
+      {defaultConnectionType && (
+        <div
+          style={{
+            fontSize: 10,
+            color: 'var(--color-text-muted)',
+            marginBottom: 8,
+            textAlign: 'center',
+          }}
+        >
+          Previous: <strong style={{ color: 'var(--color-text)' }}>{normalizedDefault}</strong>
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
         {CONNECTION_TYPE_OPTIONS.map((type) => {
-          const cs = CONNECTION_STYLES[type];
+          const cs = CONNECTION_STYLES_MAP.get(type);
+          const selected = isDefault(type);
           return (
             <button
               key={type}
@@ -51,16 +67,19 @@ function ConnectionTypePicker({ x, y, onSelect, onCancel }) {
               style={{
                 padding: '7px 6px',
                 borderRadius: 6,
-                border: `1px solid ${cs?.stroke || '#555'}`,
-                background: 'var(--color-surface-secondary)',
+                border: `2px solid ${selected ? cs?.stroke || 'var(--color-primary)' : cs?.stroke || '#555'}`,
+                background: selected
+                  ? `${cs?.stroke || 'var(--color-primary)'}22`
+                  : 'var(--color-surface-secondary)',
                 color: cs?.stroke || '#ccc',
                 fontSize: 10,
-                fontWeight: 700,
+                fontWeight: selected ? 700 : 600,
                 cursor: 'pointer',
                 textTransform: 'uppercase',
                 letterSpacing: '0.06em',
-                transition: 'background 0.12s',
+                transition: 'background 0.12s, border-color 0.12s',
               }}
+              title={selected ? 'Same as previous connection' : undefined}
             >
               {type}
             </button>
@@ -90,6 +109,7 @@ function ConnectionTypePicker({ x, y, onSelect, onCancel }) {
 ConnectionTypePicker.propTypes = {
   x: PropTypes.number.isRequired,
   y: PropTypes.number.isRequired,
+  defaultConnectionType: PropTypes.string,
   onSelect: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
 };

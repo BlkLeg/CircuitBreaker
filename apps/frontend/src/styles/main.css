@@ -321,6 +321,16 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
   z-index: 100;
   overflow: visible;
+  transition:
+    transform 0.28s ease-out,
+    opacity 0.22s ease-out;
+}
+
+/* Auto-hide: slide down and fade when mouse is away from dock and bottom trigger zone */
+.dock.dock--autohide-hidden {
+  transform: translate(-50%, calc(100% + 32px));
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Status indicator pulsing */
@@ -2869,12 +2879,34 @@ body {
   width: min(520px, 100%);
 }
 
+.oobe-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
 .oobe-progress {
   font-size: 0.6875rem;
   color: var(--color-text-muted);
-  margin-bottom: 12px;
+  margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.oobe-back-to-start {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.oobe-back-to-start:hover {
+  color: var(--color-primary);
 }
 
 .oobe-actions {
@@ -3619,6 +3651,15 @@ body {
   opacity: 0.85;
 }
 
+/* Wire path smoothing — transition d, stroke, opacity when edge moves or reconnects */
+.react-flow__edge-path.cb-edge-smooth {
+  transition:
+    d 0.22s ease-out,
+    stroke 0.2s ease-out,
+    stroke-width 0.2s ease-out,
+    opacity 0.2s ease-out;
+}
+
 .smart-edge-endpoint-handle {
   fill: var(--color-primary);
   stroke: rgba(5, 8, 18, 0.9);
@@ -3727,5 +3768,28 @@ body {
 @media (prefers-color-scheme: dark) {
   .login-brand[style*='backgroundImage'] {
     filter: brightness(0.8) contrast(1.1);
+  }
+}
+
+/* ── Skeleton loading shimmer ───────────────────────────────────────────────── */
+.skeleton-bar {
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--color-border, #333) 25%,
+    var(--color-surface-2, #2a2a2a) 50%,
+    var(--color-border, #333) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
   }
 }

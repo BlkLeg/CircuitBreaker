@@ -47,7 +47,15 @@ def create_network(
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
 ):
-    result = networks_service.create_network(db, payload)
+    try:
+        result = networks_service.create_network(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Network with this name already exists"
+        ) from exc
     log_audit(
         db,
         request,
@@ -88,6 +96,11 @@ def patch_network(
         return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Network with this name already exists"
+        ) from exc
 
 
 @router.delete("/{network_id}", status_code=204)
@@ -211,7 +224,7 @@ def add_peer(
         return networks_service.add_peer(db, network_id, payload.peer_network_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
+    except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
             status_code=409, detail="Peer relationship already exists or constraint failed."

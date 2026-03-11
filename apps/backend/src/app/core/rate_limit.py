@@ -13,7 +13,7 @@ from slowapi.util import get_remote_address
 
 _logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
 
 _PROFILE_CACHE_TTL_S = 300
 _profile_cache: tuple[str, float] | None = None

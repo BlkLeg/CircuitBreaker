@@ -81,6 +81,25 @@ class ProxmoxTestResponse(BaseModel):
 # ── Discovery ────────────────────────────────────────────────────────────────
 
 
+class ProxmoxDiscoverRunOut(BaseModel):
+    """One Proxmox discovery run (for history and detail)."""
+
+    id: int
+    integration_id: int
+    status: str  # running | completed | failed
+    started_at: datetime
+    completed_at: datetime | None = None
+    nodes_imported: int = 0
+    vms_imported: int = 0
+    cts_imported: int = 0
+    storage_imported: int = 0
+    networks_imported: int = 0
+    errors: list[str] | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class ProxmoxDiscoverResponse(BaseModel):
     ok: bool
     cluster_name: str | None = None

@@ -164,6 +164,31 @@ class TestFirstPageLoad:
             resp = client.get(f"{API}{path}")
             assert resp.status_code < 300, f"GET {path} returned {resp.status_code}"
 
+    def test_onboarding_endpoint_returns_step_state(self, client):
+        """GET /bootstrap/onboarding returns current_step and previous_step (public, no auth)."""
+        resp = client.get(f"{API}/bootstrap/onboarding")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "current_step" in data and "previous_step" in data
+        assert data["current_step"] in (
+            "start",
+            "account",
+            "theme",
+            "regional",
+            "email",
+            "summary",
+            "finish",
+        )
+        assert data["previous_step"] in (
+            "start",
+            "account",
+            "theme",
+            "regional",
+            "email",
+            "summary",
+            "finish",
+        )
+
 
 # ===========================================================================
 # 3. Auth-disabled CRUD (writes succeed without Authorization header)
@@ -310,6 +335,25 @@ class TestFirstUserAndAuthFlow:
         resp = client.get(f"{API}/admin/export", headers=_auth_header(token))
         assert resp.status_code == 200
         assert "hardware" in resp.json()
+
+    def test_onboarding_step_is_finish_after_bootstrap(self, client):
+        """After bootstrap/initialize completes, stored onboarding step must be 'finish'."""
+        status = client.get(f"{API}/bootstrap/status")
+        assert status.status_code == 200 and status.json().get("needs_bootstrap") is True
+        init_resp = client.post(
+            f"{API}/bootstrap/initialize",
+            json={
+                "email": _EMAIL,
+                "password": _PASS,
+                "theme_preset": "one-dark",
+            },
+        )
+        assert init_resp.status_code == 200
+        onboarding = client.get(f"{API}/bootstrap/onboarding")
+        assert onboarding.status_code == 200
+        assert onboarding.json()["current_step"] == "finish", (
+            "OOBE completion must set onboarding step to 'finish'"
+        )
 
 
 # ===========================================================================

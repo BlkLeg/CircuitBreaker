@@ -101,7 +101,9 @@ function LoginPage() {
     authApi
       .getOAuthProviders()
       .then((res) => setOauthProviders(res.data.providers || []))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to fetch OAuth providers:', err);
+      });
   }, []);
 
   // Handle ?oauth_token=<jwt> callback from OAuth provider redirect
@@ -118,7 +120,10 @@ function LoginPage() {
         login(oauthToken, res.data);
         navigate('/map', { replace: true });
       })
-      .catch(() => setError('OAuth login failed. Please try again.'));
+      .catch((err) => {
+        console.error('OAuth token exchange failed:', err);
+        setError('OAuth login failed. Please try again.');
+      });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e) => {

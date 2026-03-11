@@ -6,7 +6,6 @@ from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.environments import EnvironmentCreate, EnvironmentRead, EnvironmentUpdate
 from app.services.environments_service import (
-    EnvironmentInUseError,
     create_environment,
     delete_environment,
     list_environments,
@@ -74,8 +73,3 @@ def del_environment(
         delete_environment(db, environment_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=_NOT_FOUND) from exc
-    except EnvironmentInUseError as e:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "Environment is in use", "blocking": e.blocking},
-        ) from e

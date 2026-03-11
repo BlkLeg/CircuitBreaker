@@ -5,11 +5,6 @@ from app.core.time import utcnow_iso
 from app.db.models import ComputeUnit, Environment, Hardware, Service
 
 
-class EnvironmentInUseError(Exception):
-    def __init__(self, blocking: dict):
-        self.blocking = blocking
-
-
 def list_environments(db: Session) -> list[dict]:
     rows = (
         db.query(
@@ -42,9 +37,9 @@ def list_environments(db: Session) -> list[dict]:
 def create_environment(db: Session, name: str, color: str | None = None) -> Environment:
     existing = db.query(Environment).filter(Environment.name.ilike(name)).first()
     if existing:
-        from fastapi import HTTPException
+        from app.core.errors import ConflictError
 
-        raise HTTPException(status_code=409, detail={"error": "Environment already exists"})
+        raise ConflictError("Environment already exists")
     env = Environment(
         name=name,
         color=color,
@@ -76,18 +71,16 @@ def delete_environment(db: Session, environment_id: int) -> None:
     if env is None:
         raise ValueError(f"Environment {environment_id} not found")
 
-    blocking_hw = db.query(Hardware).filter(Hardware.environment_id == environment_id).all()
-    blocking_cu = db.query(ComputeUnit).filter(ComputeUnit.environment_id == environment_id).all()
-    blocking_svc = db.query(Service).filter(Service.environment_id == environment_id).all()
-
-    if blocking_hw or blocking_cu or blocking_svc:
-        raise EnvironmentInUseError(
-            {
-                "hardware": [{"id": h.id, "name": h.name} for h in blocking_hw],
-                "compute_units": [{"id": c.id, "name": c.name} for c in blocking_cu],
-                "services": [{"id": s.id, "name": s.name} for s in blocking_svc],
-            }
-        )
+    # Clear references so delete is never blocked (environment_id is nullable on all entities)
+    db.query(Hardware).filter(Hardware.environment_id == environment_id).update(
+        {Hardware.environment_id: None}, synchronize_session="fetch"
+    )
+    db.query(ComputeUnit).filter(ComputeUnit.environment_id == environment_id).update(
+        {ComputeUnit.environment_id: None}, synchronize_session="fetch"
+    )
+    db.query(Service).filter(Service.environment_id == environment_id).update(
+        {Service.environment_id: None}, synchronize_session="fetch"
+    )
 
     db.delete(env)
     db.commit()

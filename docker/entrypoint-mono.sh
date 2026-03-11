@@ -49,6 +49,7 @@ chmod 1777 "$DATA/run/postgresql"
 
 if [ "$USE_EXTERNAL_DB" -eq 1 ]; then
   # External Postgres: wait for it to be reachable, then run migrate/oobe against CB_DB_URL (do not start temp postgres).
+  # Auth state (users, sessions, jwt_secret in app_settings) lives only in this external DB; CB_DATA_DIR and compose-clean do not touch it.
   echo "[entrypoint] Using external Postgres (CB_DB_URL); waiting for it to become ready..."
   PGHOST=$(python3 -c "import os; from urllib.parse import urlparse; u=urlparse(os.environ.get('CB_DB_URL','')); print(u.hostname or '127.0.0.1')" 2>/dev/null || true)
   PGPORT=$(python3 -c "import os; from urllib.parse import urlparse; u=urlparse(os.environ.get('CB_DB_URL','')); print(u.port or 5432)" 2>/dev/null || true)
@@ -98,6 +99,11 @@ if [ ! -f "${DATA}/tls/fullchain.pem" ] || [ ! -f "${DATA}/tls/privkey.pem" ]; t
     -keyout "${DATA}/tls/privkey.pem" -out "${DATA}/tls/fullchain.pem" \
     -subj "/CN=localhost" 2>/dev/null
   [ "$(id -u)" -eq 0 ] && chown breaker:breaker "${DATA}/tls/fullchain.pem" "${DATA}/tls/privkey.pem" 2>/dev/null || true
+fi
+
+# Allow breaker user to reach the Docker socket if mounted
+if [ -S /var/run/docker.sock ]; then
+  chmod 666 /var/run/docker.sock 2>/dev/null || true
 fi
 
 # Run supervisord as root so nginx can bind to port 80

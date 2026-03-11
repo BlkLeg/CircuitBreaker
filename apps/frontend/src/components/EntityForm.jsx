@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useRef, createRef } from 'react';
 import PropTypes from 'prop-types';
 import { getIconEntry } from './common/IconPickerModal';

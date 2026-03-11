@@ -11,6 +11,8 @@ from app.schemas.auth import (
     BootstrapInitializeRequest,
     BootstrapInitializeResponse,
     BootstrapStatusResponse,
+    OnboardingStepResponse,
+    OnboardingStepUpdateRequest,
 )
 from app.services import auth_service
 from app.services.settings_service import get_or_create_settings
@@ -21,6 +23,21 @@ router = APIRouter(tags=["bootstrap"])
 @router.get("/status", response_model=BootstrapStatusResponse)
 def get_bootstrap_status(db: Annotated[Session, Depends(get_db)]):
     return auth_service.bootstrap_status(db)
+
+
+@router.get("/onboarding", response_model=OnboardingStepResponse)
+def get_onboarding_step(db: Annotated[Session, Depends(get_db)]):
+    """Return current OOBE step (public, no auth). Used for resume and Back to start."""
+    return auth_service.get_onboarding_or_fallback(db)
+
+
+@router.patch("/onboarding", response_model=OnboardingStepResponse)
+def set_onboarding_step(
+    payload: OnboardingStepUpdateRequest,
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Set OOBE step (public, no auth). Used when advancing or going Back to start."""
+    return auth_service.set_onboarding_step(db, payload.step)
 
 
 @router.post("/initialize", response_model=BootstrapInitializeResponse)

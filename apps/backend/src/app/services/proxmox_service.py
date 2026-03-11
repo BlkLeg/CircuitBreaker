@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import json
 import logging
+import random
 import threading
 from datetime import timedelta
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.nats_client import nats_client
+from app.core.retry import INTEGRATION_RETRY_ATTEMPTS, INTEGRATION_RETRY_BASE_DELAY_S
 from app.core.subjects import (
     DISCOVERY_SCAN_COMPLETED,
     DISCOVERY_SCAN_PROGRESS,
@@ -26,6 +28,7 @@ from app.db.models import (
     HardwareCluster,
     HardwareClusterMember,
     IntegrationConfig,
+    ProxmoxDiscoverRun,
     StatusGroup,
     Storage,
     TelemetryTimeseries,
@@ -58,7 +61,13 @@ def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
     if not cred:
         raise ValueError(f"Credential {config.credential_id} not found for integration {config.id}")
 
-    token = vault.decrypt(cred.encrypted_value)
+    try:
+        token = vault.decrypt(cred.encrypted_value)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot decrypt credentials for integration {config.id}. "
+            "The vault key may have changed."
+        ) from exc
     extra = json.loads(config.extra_config) if config.extra_config else {}
     verify_ssl = extra.get("verify_ssl", False)
     client = build_client_from_token(config.config_url, token, verify_ssl=verify_ssl)
@@ -96,7 +105,7 @@ async def _publish(subject: str, payload: dict) -> None:
     try:
         await nats_client.publish(subject, payload)
     except Exception:
-        pass
+        _logger.debug("NATS publish to %s failed (non-critical)", subject, exc_info=True)
 
 
 # ── Config CRUD ──────────────────────────────────────────────────────────────
@@ -205,7 +214,36 @@ def list_integrations(db: Session) -> list[IntegrationConfig]:
     return db.query(IntegrationConfig).filter(IntegrationConfig.type == "proxmox").all()
 
 
+def list_proxmox_discover_runs(
+    db: Session,
+    integration_id: int | None = None,
+    limit: int = 100,
+) -> list[ProxmoxDiscoverRun]:
+    """List Proxmox discovery runs, most recent first."""
+    q = db.query(ProxmoxDiscoverRun).order_by(ProxmoxDiscoverRun.created_at.desc())
+    if integration_id is not None:
+        q = q.filter(ProxmoxDiscoverRun.integration_id == integration_id)
+    return q.limit(limit).all()
+
+
+def get_proxmox_discover_run(db: Session, run_id: int) -> ProxmoxDiscoverRun | None:
+    """Return a single Proxmox discovery run by id."""
+    return db.query(ProxmoxDiscoverRun).filter(ProxmoxDiscoverRun.id == run_id).first()
+
+
 # ── Test connection ──────────────────────────────────────────────────────────
+
+
+def _proxmox_error_message(e: Exception) -> str:
+    """Return a user-facing error string. Maps known exception types to clear messages."""
+    msg = str(e).strip()
+    if type(e).__name__ == "InvalidToken":
+        return (
+            "Stored credential could not be decrypted. The vault key may have changed "
+            "(e.g. after a reset or new deployment). Edit this integration and re-enter "
+            "the Proxmox API token to save it with the current vault key."
+        )
+    return msg or f"{type(e).__name__} (no message)"
 
 
 async def test_connection(db: Session, config: IntegrationConfig) -> dict:
@@ -214,7 +252,8 @@ async def test_connection(db: Session, config: IntegrationConfig) -> dict:
         result = await client.test_connection()
         return {"ok": True, **result}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        err_msg = _proxmox_error_message(e)
+        return {"ok": False, "error": err_msg}
 
 
 # ── Discovery & Import ───────────────────────────────────────────────────────
@@ -224,6 +263,20 @@ async def discover_and_import(db: Session, config: IntegrationConfig) -> dict:
     """Full cluster discovery: nodes, VMs, CTs, networks."""
     config.last_sync_status = "syncing"
     db.commit()
+
+    run = ProxmoxDiscoverRun(
+        integration_id=config.id,
+        status="running",
+        started_at=utcnow(),
+        nodes_imported=0,
+        vms_imported=0,
+        cts_imported=0,
+        storage_imported=0,
+        networks_imported=0,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
 
     result: dict[str, Any] = {
         "ok": True,
@@ -237,173 +290,226 @@ async def discover_and_import(db: Session, config: IntegrationConfig) -> dict:
     }
 
     try:
-        client = _get_client(db, config)
-        await _publish(
-            DISCOVERY_SCAN_STARTED,
-            {
-                "source": "proxmox",
-                "integration_id": config.id,
-            },
-        )
-
-        cluster_data = await client.discover_cluster()
-        resources = cluster_data.get("resources", [])
-        cluster_status = cluster_data.get("cluster_status", [])
-
-        # Extract cluster name
-        cluster_name = next(
-            (item.get("name") for item in cluster_status if item.get("type") == "cluster"),
-            config.name,
-        )
-        config.cluster_name = cluster_name
-        result["cluster_name"] = cluster_name
-
-        # Upsert HardwareCluster
-        cluster = (
-            db.query(HardwareCluster)
-            .filter(
-                HardwareCluster.integration_config_id == config.id,
-            )
-            .first()
-        )
-        if not cluster:
-            cluster = HardwareCluster(
-                name=cluster_name or config.name,
-                type="proxmox",
-                integration_config_id=config.id,
-            )
-            db.add(cluster)
-            db.flush()
-        else:
-            cluster.name = cluster_name or config.name
-
-        # Classify resources
-        nodes = [r for r in resources if r.get("type") == "node"]
-        qemu_vms = [r for r in resources if r.get("type") == "qemu"]
-        lxc_cts = [r for r in resources if r.get("type") == "lxc"]
-
-        # Fallback: if cluster/resources returned nodes but no VMs/CTs,
-        # query each node directly (handles tokens with limited Datacenter perms)
-        if nodes and not qemu_vms and not lxc_cts:
-            _logger.info("cluster/resources returned 0 VMs/CTs — trying per-node queries")
-            for node_res in nodes:
-                nn = node_res.get("node", "")
-                if not nn:
-                    continue
-                try:
-                    per_node_qemu = await client.get_node_vms(nn, "qemu")
-                    for vm in per_node_qemu:
-                        vm.setdefault("node", nn)
-                    qemu_vms.extend(per_node_qemu)
-                except Exception as e:
-                    _logger.debug("Per-node qemu query failed for %s: %s", nn, e)
-                try:
-                    per_node_lxc = await client.get_node_vms(nn, "lxc")
-                    for ct in per_node_lxc:
-                        ct.setdefault("node", nn)
-                    lxc_cts.extend(per_node_lxc)
-                except Exception as e:
-                    _logger.debug("Per-node lxc query failed for %s: %s", nn, e)
-
-            if not qemu_vms and not lxc_cts:
-                privsep_hint = await _check_token_privsep(client)
-                result["errors"].append(privsep_hint)
-
-        await _publish(
-            DISCOVERY_SCAN_PROGRESS,
-            {
-                "source": "proxmox",
-                "integration_id": config.id,
-                "phase": "importing_nodes",
-                "message": f"Found {len(nodes)} nodes, {len(qemu_vms)} VMs, {len(lxc_cts)} CTs",
-            },
-        )
-
-        # ── Import nodes ─────────────────────────────────────────────────
-        node_hw_map: dict[str, Hardware] = {}
-        for node_res in nodes:
-            node_name = node_res.get("node", "")
+        for attempt in range(INTEGRATION_RETRY_ATTEMPTS):
             try:
-                hw = _upsert_node(db, config, cluster, node_name, node_res)
-                node_hw_map[node_name] = hw
-                result["nodes_imported"] += 1
-            except Exception as e:
-                result["errors"].append(f"Node {node_name}: {e}")
-                _logger.warning("Failed to import node %s: %s", node_name, e)
+                client = _get_client(db, config)
+                await _publish(
+                    DISCOVERY_SCAN_STARTED,
+                    {
+                        "source": "proxmox",
+                        "integration_id": config.id,
+                    },
+                )
 
-        # ── Import VMs ───────────────────────────────────────────────────
-        total_vms = len(qemu_vms) + len(lxc_cts)
-        imported = 0
-        for vm_res in qemu_vms:
-            try:
-                _upsert_vm(db, config, vm_res, "qemu", node_hw_map, client)
-                result["vms_imported"] += 1
-            except Exception as e:
-                vmid = vm_res.get("vmid", "?")
-                result["errors"].append(f"VM {vmid}: {e}")
-                _logger.warning("Failed to import VM %s: %s", vmid, e)
-            imported += 1
-            if imported % 10 == 0:
+                cluster_data = await client.discover_cluster()
+                resources = cluster_data.get("resources", [])
+                cluster_status = cluster_data.get("cluster_status", [])
+
+                # Extract cluster name
+                cluster_name = next(
+                    (item.get("name") for item in cluster_status if item.get("type") == "cluster"),
+                    config.name,
+                )
+                config.cluster_name = cluster_name
+                result["cluster_name"] = cluster_name
+
+                # Upsert HardwareCluster
+                cluster = (
+                    db.query(HardwareCluster)
+                    .filter(
+                        HardwareCluster.integration_config_id == config.id,
+                    )
+                    .first()
+                )
+                if not cluster:
+                    cluster = HardwareCluster(
+                        name=cluster_name or config.name,
+                        type="proxmox",
+                        integration_config_id=config.id,
+                    )
+                    db.add(cluster)
+                    db.flush()
+                else:
+                    cluster.name = cluster_name or config.name
+
+                # Classify resources
+                nodes = [r for r in resources if r.get("type") == "node"]
+                qemu_vms = [r for r in resources if r.get("type") == "qemu"]
+                lxc_cts = [r for r in resources if r.get("type") == "lxc"]
+
+                # Fallback: if cluster/resources returned nodes but no VMs/CTs,
+                # query each node directly (handles tokens with limited Datacenter perms)
+                if nodes and not qemu_vms and not lxc_cts:
+                    _logger.info("cluster/resources returned 0 VMs/CTs — trying per-node queries")
+                    for node_res in nodes:
+                        nn = node_res.get("node", "")
+                        if not nn:
+                            continue
+                        try:
+                            per_node_qemu = await client.get_node_vms(nn, "qemu")
+                            for vm in per_node_qemu:
+                                vm.setdefault("node", nn)
+                            qemu_vms.extend(per_node_qemu)
+                        except Exception as e:
+                            _logger.debug("Per-node qemu query failed for %s: %s", nn, e)
+                        try:
+                            per_node_lxc = await client.get_node_vms(nn, "lxc")
+                            for ct in per_node_lxc:
+                                ct.setdefault("node", nn)
+                            lxc_cts.extend(per_node_lxc)
+                        except Exception as e:
+                            _logger.debug("Per-node lxc query failed for %s: %s", nn, e)
+
+                    if not qemu_vms and not lxc_cts:
+                        privsep_hint = await _check_token_privsep(client)
+                        result["errors"].append(privsep_hint)
+
                 await _publish(
                     DISCOVERY_SCAN_PROGRESS,
                     {
                         "source": "proxmox",
                         "integration_id": config.id,
-                        "phase": "importing_vms",
-                        "percent": int(imported / max(total_vms, 1) * 100),
-                        "message": f"{imported}/{total_vms} VMs/CTs imported",
+                        "phase": "importing_nodes",
+                        "message": f"Found {len(nodes)} nodes, {len(qemu_vms)} VMs, {len(lxc_cts)} CTs",
                     },
                 )
 
-        # ── Import CTs ───────────────────────────────────────────────────
-        for ct_res in lxc_cts:
-            try:
-                _upsert_vm(db, config, ct_res, "lxc", node_hw_map, client)
-                result["cts_imported"] += 1
+                # ── Import nodes ─────────────────────────────────────────────────
+                node_hw_map: dict[str, Hardware] = {}
+                for node_res in nodes:
+                    node_name = node_res.get("node", "")
+                    try:
+                        hw = _upsert_node(db, config, cluster, node_name, node_res)
+                        node_hw_map[node_name] = hw
+                        result["nodes_imported"] += 1
+                    except Exception as e:
+                        result["errors"].append(f"Node {node_name}: {e}")
+                        _logger.warning("Failed to import node %s: %s", node_name, e)
+
+                # ── Import VMs ───────────────────────────────────────────────────
+                total_vms = len(qemu_vms) + len(lxc_cts)
+                imported = 0
+                for vm_res in qemu_vms:
+                    try:
+                        _upsert_vm(db, config, vm_res, "qemu", node_hw_map, client)
+                        result["vms_imported"] += 1
+                    except Exception as e:
+                        vmid = vm_res.get("vmid", "?")
+                        result["errors"].append(f"VM {vmid}: {e}")
+                        _logger.warning("Failed to import VM %s: %s", vmid, e)
+                    imported += 1
+                    if imported % 10 == 0:
+                        await _publish(
+                            DISCOVERY_SCAN_PROGRESS,
+                            {
+                                "source": "proxmox",
+                                "integration_id": config.id,
+                                "phase": "importing_vms",
+                                "percent": int(imported / max(total_vms, 1) * 100),
+                                "message": f"{imported}/{total_vms} VMs/CTs imported",
+                            },
+                        )
+
+                # ── Import CTs ───────────────────────────────────────────────────
+                for ct_res in lxc_cts:
+                    try:
+                        _upsert_vm(db, config, ct_res, "lxc", node_hw_map, client)
+                        result["cts_imported"] += 1
+                    except Exception as e:
+                        vmid = ct_res.get("vmid", "?")
+                        result["errors"].append(f"CT {vmid}: {e}")
+                        _logger.warning("Failed to import CT %s: %s", vmid, e)
+                    imported += 1
+
+                # ── Import networks ──────────────────────────────────────────────
+                for node_name, hw in node_hw_map.items():
+                    try:
+                        nets = await _import_node_networks(db, config, client, node_name, hw)
+                        result["networks_imported"] += nets
+                    except Exception as e:
+                        result["errors"].append(f"Networks for {node_name}: {e}")
+
+                # ── Import storage pools ──────────────────────────────────────
+                for node_name, hw in node_hw_map.items():
+                    try:
+                        st_count = await _import_node_storage(db, config, client, node_name, hw)
+                        result["storage_imported"] += st_count
+                    except Exception as e:
+                        result["errors"].append(f"Storage for {node_name}: {e}")
+
+                # Finalize
+                config.last_sync_at = utcnow()
+                config.last_sync_status = "ok"
+                db.commit()
+
+                await _publish(
+                    DISCOVERY_SCAN_COMPLETED,
+                    {
+                        "source": "proxmox",
+                        "integration_id": config.id,
+                        "nodes": result["nodes_imported"],
+                        "vms": result["vms_imported"],
+                        "cts": result["cts_imported"],
+                        "storage": result["storage_imported"],
+                    },
+                )
+                run.status = "completed"
+                run.completed_at = utcnow()
+                run.nodes_imported = result["nodes_imported"]
+                run.vms_imported = result["vms_imported"]
+                run.cts_imported = result["cts_imported"]
+                run.storage_imported = result["storage_imported"]
+                run.networks_imported = result["networks_imported"]
+                run.errors = result["errors"] if result["errors"] else None
+                db.commit()
+                return result
+
+            except ValueError as e:
+                result["ok"] = False
+                result["errors"].append(_proxmox_error_message(e))
+                config.last_sync_status = "error"
+                config.last_sync_at = utcnow()
+                run.status = "failed"
+                run.completed_at = utcnow()
+                run.errors = result["errors"]
+                db.commit()
+                _logger.warning(
+                    "Proxmox discovery failed (invalid config/token) for integration %d: %s",
+                    config.id,
+                    e,
+                )
+                return result
             except Exception as e:
-                vmid = ct_res.get("vmid", "?")
-                result["errors"].append(f"CT {vmid}: {e}")
-                _logger.warning("Failed to import CT %s: %s", vmid, e)
-            imported += 1
-
-        # ── Import networks ──────────────────────────────────────────────
-        for node_name, hw in node_hw_map.items():
-            try:
-                nets = await _import_node_networks(db, config, client, node_name, hw)
-                result["networks_imported"] += nets
-            except Exception as e:
-                result["errors"].append(f"Networks for {node_name}: {e}")
-
-        # ── Import storage pools ──────────────────────────────────────
-        for node_name, hw in node_hw_map.items():
-            try:
-                st_count = await _import_node_storage(db, config, client, node_name, hw)
-                result["storage_imported"] += st_count
-            except Exception as e:
-                result["errors"].append(f"Storage for {node_name}: {e}")
-
-        # Finalize
-        config.last_sync_at = utcnow()
-        config.last_sync_status = "ok"
-        db.commit()
-
-        await _publish(
-            DISCOVERY_SCAN_COMPLETED,
-            {
-                "source": "proxmox",
-                "integration_id": config.id,
-                "nodes": result["nodes_imported"],
-                "vms": result["vms_imported"],
-                "cts": result["cts_imported"],
-                "storage": result["storage_imported"],
-            },
-        )
+                if attempt < INTEGRATION_RETRY_ATTEMPTS - 1:
+                    delay = (
+                        INTEGRATION_RETRY_BASE_DELAY_S
+                        * (2**attempt)
+                        * (0.5 + random.random() * 0.5)
+                    )
+                    _logger.warning(
+                        "Proxmox discover attempt %s/%s failed, retrying in %.1fs: %s",
+                        attempt + 1,
+                        INTEGRATION_RETRY_ATTEMPTS,
+                        delay,
+                        e,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
     except Exception as e:
         result["ok"] = False
-        result["errors"].append(str(e))
+        result["errors"].append(_proxmox_error_message(e))
         config.last_sync_status = "error"
         config.last_sync_at = utcnow()
+        run.status = "failed"
+        run.completed_at = utcnow()
+        run.nodes_imported = result.get("nodes_imported", 0)
+        run.vms_imported = result.get("vms_imported", 0)
+        run.cts_imported = result.get("cts_imported", 0)
+        run.storage_imported = result.get("storage_imported", 0)
+        run.networks_imported = result.get("networks_imported", 0)
+        run.errors = result["errors"]
         db.commit()
         _logger.exception("Proxmox discovery failed for integration %d", config.id)
 

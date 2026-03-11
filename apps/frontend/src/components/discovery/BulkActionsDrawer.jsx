@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- internal key lookups */
 /**
  * BulkActionsDrawer — the primary UI for the Enhanced Bulk Review workflow.
  *
@@ -227,7 +228,9 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
       .then((res) => {
         if (!abortController.signal.aborted) setVendorCatalog(res.data || {});
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to load vendor catalog:', err);
+      });
 
     networksApi
       .list({ limit: 200 })
@@ -235,7 +238,9 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
         if (!abortController.signal.aborted)
           setExistingNetworks(Array.isArray(res.data) ? res.data : (res.data?.items ?? []));
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to load networks for drawer:', err);
+      });
 
     clustersApi
       .list({ limit: 200 })
@@ -243,7 +248,9 @@ export default function BulkActionsDrawer({ results, onClose, onComplete }) {
         if (!abortController.signal.aborted)
           setExistingClusters(Array.isArray(res.data) ? res.data : (res.data?.items ?? []));
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error('Failed to load clusters for drawer:', err);
+      });
 
     return () => {
       abortController.abort();

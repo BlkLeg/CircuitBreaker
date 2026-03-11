@@ -75,7 +75,8 @@ class ProxmoxIntegration:
                     ),
                     None,
                 )
-            except Exception:
+            except Exception as exc:
+                _logger.warning("Could not fetch cluster/status (standalone node?): %s", exc)
                 cluster_name = None
             return {
                 "version": version_info.get("version", "unknown"),
@@ -93,7 +94,8 @@ class ProxmoxIntegration:
             resources = self._px.get("cluster/resources")
             try:
                 cluster_status = self._px.get("cluster/status")
-            except Exception:
+            except Exception as exc:
+                _logger.warning("Could not fetch cluster/status during discovery: %s", exc)
                 cluster_status = []
             return {"cluster_status": cluster_status, "resources": resources}
 
@@ -163,7 +165,7 @@ class ProxmoxIntegration:
             return self._px.get(f"nodes/{node}/network")
 
         async with self._semaphore:
-            return await asyncio.to_thread(_sync)
+            return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_rrddata(self, node: str, timeframe: str = "hour") -> list[dict]:
         def _sync() -> list[dict]:
