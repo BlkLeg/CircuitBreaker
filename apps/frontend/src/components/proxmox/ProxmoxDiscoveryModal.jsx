@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { discoveryEmitter } from '../../hooks/useDiscoveryStream';
 
 function formatDuration(seconds) {
@@ -21,6 +22,7 @@ function getErrorMessage(e, fallback = 'Request failed') {
 }
 
 export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComplete }) {
+  const navigate = useNavigate();
   const [phase, setPhase] = useState('starting');
   const [message, setMessage] = useState('Connecting to Proxmox cluster...');
   const [percent, setPercent] = useState(0);
@@ -47,7 +49,7 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         setPercent(100);
         setMessage(
           data.ok
-            ? `Imported ${data.nodes_imported} nodes, ${data.vms_imported} VMs, ${data.cts_imported} CTs, ${data.storage_imported || 0} storage`
+            ? `Queued ${data.nodes_imported} nodes, ${data.vms_imported} VMs, ${data.cts_imported} CTs for review, imported ${data.storage_imported || 0} storage`
             : `Discovery completed with errors`
         );
         if (onComplete) onComplete(data);
@@ -84,7 +86,7 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         errors: [],
       });
       setMessage(
-        `Imported ${payload.nodes ?? 0} nodes, ${payload.vms ?? 0} VMs, ${payload.cts ?? 0} CTs, ${payload.storage ?? 0} storage`
+        `Queued ${payload.nodes ?? 0} nodes, ${payload.vms ?? 0} VMs, ${payload.cts ?? 0} CTs for review, imported ${payload.storage ?? 0} storage`
       );
       setPhase('done');
       if (onComplete)
@@ -216,9 +218,9 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
             }}
           >
             {[
-              { label: 'Nodes', value: result.nodes_imported, color: '#22c55e' },
-              { label: 'VMs', value: result.vms_imported, color: '#3b82f6' },
-              { label: 'Containers', value: result.cts_imported, color: '#a855f7' },
+              { label: 'Nodes Queued', value: result.nodes_imported, color: '#22c55e' },
+              { label: 'VMs Queued', value: result.vms_imported, color: '#3b82f6' },
+              { label: 'Containers Queued', value: result.cts_imported, color: '#a855f7' },
               { label: 'Storage', value: result.storage_imported || 0, color: '#f59e0b' },
             ].map(({ label, value, color }) => (
               <div
@@ -239,6 +241,25 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
           </div>
         )}
 
+        {result &&
+          result.ok &&
+          Number(result.vms_imported || 0) === 0 &&
+          Number(result.cts_imported || 0) === 0 && (
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted)',
+                background: 'rgba(148,163,184,0.12)',
+                padding: '8px 12px',
+                borderRadius: 6,
+                marginBottom: 16,
+              }}
+            >
+              No VMs or containers were detected in this run. If you expected workloads,
+              double-check the PVE UI and token scope. Discovery behavior is still beta.
+            </div>
+          )}
+
         {/* Errors */}
         {(error || result?.errors?.length > 0) && (
           <div
@@ -258,6 +279,20 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {phase === 'done' && !error && (
+            <button
+              className="btn btn-sm"
+              onClick={() => navigate('/discovery', { state: { discoveryFilter: 'review' } })}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                fontSize: 13,
+                fontWeight: 500,
+              }}
+            >
+              Open Review Queue
+            </button>
+          )}
           {phase !== 'starting' && (
             <button
               className="btn btn-sm"

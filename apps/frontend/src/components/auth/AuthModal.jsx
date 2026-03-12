@@ -25,8 +25,6 @@ function AuthModal({ isOpen, onClose }) {
   const [photoFile, setPhotoFile] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [error, setError] = useState('');
-  const [resetMessage, setResetMessage] = useState('');
-  const [resetLoading, setResetLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef(null);
   const photoFileRef = useRef(null);
@@ -55,7 +53,6 @@ function AuthModal({ isOpen, onClose }) {
       setPhotoFile(null);
       setPhotoPreview(null);
       setError('');
-      setResetMessage('');
       setTab('login');
       setTimeout(() => inputRef.current?.focus(), 50);
     }
@@ -90,7 +87,6 @@ function AuthModal({ isOpen, onClose }) {
       return;
     }
     setError('');
-    setResetMessage('');
     setLoading(true);
     try {
       if (tab === 'login') {
@@ -140,26 +136,6 @@ function AuthModal({ isOpen, onClose }) {
     }
   };
 
-  const handleForgotPassword = async () => {
-    if (!email.includes('@')) {
-      setError('Enter your email address above to request a reset link.');
-      setResetMessage('');
-      return;
-    }
-
-    setResetLoading(true);
-    setError('');
-    setResetMessage('');
-    try {
-      await authApi.forgotPassword(email);
-      setResetMessage('If an account exists for that email, a password reset link has been sent.');
-    } catch (err) {
-      setError(err.message || 'Unable to request a password reset.');
-    } finally {
-      setResetLoading(false);
-    }
-  };
-
   return (
     <div
       className="modal-overlay"
@@ -182,7 +158,6 @@ function AuthModal({ isOpen, onClose }) {
               onClick={() => {
                 setTab(t);
                 setError('');
-                setResetMessage('');
                 setDisplayName('');
                 setPhotoFile(null);
                 setPhotoPreview(null);
@@ -271,7 +246,6 @@ function AuthModal({ isOpen, onClose }) {
               onChange={(e) => setEmail(e.target.value)}
               onInput={() => {
                 setError('');
-                setResetMessage('');
               }}
               required
               autoComplete="email"
@@ -394,30 +368,25 @@ function AuthModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {resetMessage && (
-            <div style={{ color: 'var(--color-online, #b8bb26)', fontSize: 13, marginBottom: 14 }}>
-              {resetMessage}
-            </div>
-          )}
-
           {tab === 'login' && (
             <div style={{ textAlign: 'right', marginBottom: 12 }}>
               <button
                 type="button"
-                onClick={handleForgotPassword}
-                disabled={resetLoading}
+                onClick={() => {
+                  onClose();
+                  navigate('/reset-password/vault', { state: { email } });
+                }}
                 style={{
                   background: 'none',
                   border: 'none',
-                  cursor: resetLoading ? 'default' : 'pointer',
+                  cursor: 'pointer',
                   color: 'var(--color-primary)',
                   fontSize: 12,
                   padding: 0,
                   textDecoration: 'underline',
-                  opacity: resetLoading ? 0.7 : 1,
                 }}
               >
-                {resetLoading ? 'Sending reset link…' : 'Forgot Password?'}
+                Forgot Password? (Use Vault Key)
               </button>
               <div style={{ marginTop: 8 }}>
                 <button

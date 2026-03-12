@@ -52,7 +52,13 @@ export function useMapRealTimeUpdates({
         (n) => n.originalType === 'hardware' && n._refId === msg.entity_id
       )?.id;
       if (nodeId) {
-        setNodes(applyTelemetryUpdate(nodesRef.current, nodeId, { data: msg.data ?? msg }));
+        setNodes(
+          applyTelemetryUpdate(nodesRef.current, nodeId, {
+            status: msg.status,
+            data: msg.data ?? msg,
+            last_polled: msg.last_polled ?? null,
+          })
+        );
       }
     };
     telemetryEmitter.on('telemetry:any', onTelemetry);
@@ -63,77 +69,82 @@ export function useMapRealTimeUpdates({
   useEffect(() => {
     if (telemetryConnected) return;
 
-    // Per-node error tracking: nodeId → { count, pausedUntil }
-    const errorCounters = {};
-    // Nodes that returned "unconfigured" — skip permanently
+    const BASE_DELAY = 30_000;
+    const MAX_DELAY = 300_000;
+    const LOOP_DELAY = 5_000;
+    const PAUSE_AFTER_ERRORS = 3;
+    const PAUSE_WINDOW = 5 * 60 * 1000;
+
+    // Node-level state
+    const nextPollAt = {};
+    const backoffByNode = {};
+    const errorCounts = {};
+    const pausedUntil = {};
     const unconfiguredNodes = new Set();
-    let pollInterval = 60_000;
+
     let timer = null;
 
-    const doPoll = () => {
+    const doPoll = async () => {
       if (unmountedRef?.current) return;
       const now = Date.now();
       const liveHwNodes = nodesRef.current.filter(
         (n) =>
           n.originalType === 'hardware' &&
-          n.data.telemetry_status &&
-          n.data.telemetry_status !== 'unknown' &&
+          Number.isInteger(n._refId) &&
           !unconfiguredNodes.has(n.id)
       );
-      let hadErrors = false;
-      liveHwNodes.forEach(async (n) => {
-        // Skip nodes paused due to consecutive failures (5-minute cooldown)
-        const counter = errorCounters[n.id];
-        if (counter && counter.count >= 3 && now < counter.pausedUntil) return;
 
-        try {
-          const res = await telemetryApi.get(n._refId);
-          if (unmountedRef?.current) return;
-
-          // Skip unconfigured nodes permanently
-          if (res?.status === 'unconfigured') {
-            unconfiguredNodes.add(n.id);
-            return;
-          }
-
-          // Success — reset error counter
-          delete errorCounters[n.id];
-          setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
-        } catch (err) {
-          hadErrors = true;
-          const status = err?.statusCode || err?.response?.status;
-          if (!errorCounters[n.id]) errorCounters[n.id] = { count: 0, pausedUntil: 0 };
-          errorCounters[n.id].count += 1;
-
-          // After 3 consecutive failures, pause polling this node for 5 minutes
-          if (errorCounters[n.id].count >= 3) {
-            errorCounters[n.id].pausedUntil = now + 5 * 60 * 1000;
-          }
-
-          // On 500/503 — mark node as telemetry_unavailable
-          if (status >= 500 && !unmountedRef?.current) {
-            setNodes((prev) =>
-              prev.map((node) =>
-                node.id === n.id
-                  ? { ...node, data: { ...node.data, telemetry_status: 'offline' } }
-                  : node
-              )
-            );
-          }
-          console.warn('Telemetry polling failed for node', n.id, err);
-        }
+      const dueNodes = liveHwNodes.filter((node) => {
+        if ((pausedUntil[node.id] ?? 0) > now) return false;
+        if ((nextPollAt[node.id] ?? 0) > now) return false;
+        return true;
       });
 
-      // Exponential backoff on errors: increase interval up to 30s cap
-      if (hadErrors) {
-        pollInterval = Math.min(pollInterval * 1.5, 30_000);
-      } else {
-        pollInterval = 60_000; // Reset to normal on success
-      }
-      timer = setTimeout(doPoll, pollInterval);
+      await Promise.allSettled(
+        dueNodes.map(async (n) => {
+          try {
+            const res = await telemetryApi.get(n._refId);
+            if (unmountedRef?.current) return;
+
+            if (res?.status === 'unconfigured') {
+              unconfiguredNodes.add(n.id);
+              return;
+            }
+
+            errorCounts[n.id] = 0;
+            backoffByNode[n.id] = BASE_DELAY;
+            nextPollAt[n.id] = Date.now() + BASE_DELAY;
+            setNodes(applyTelemetryUpdate(nodesRef.current, n.id, res));
+          } catch (err) {
+            const status = err?.statusCode || err?.response?.status;
+            const currentBackoff = backoffByNode[n.id] ?? BASE_DELAY;
+            const nextBackoff = Math.min(Math.round(currentBackoff * 1.5), MAX_DELAY);
+            backoffByNode[n.id] = nextBackoff;
+            nextPollAt[n.id] = Date.now() + nextBackoff;
+            errorCounts[n.id] = (errorCounts[n.id] ?? 0) + 1;
+
+            if (errorCounts[n.id] >= PAUSE_AFTER_ERRORS) {
+              pausedUntil[n.id] = Date.now() + PAUSE_WINDOW;
+            }
+
+            if (status >= 500 && !unmountedRef?.current) {
+              setNodes((prev) =>
+                prev.map((node) =>
+                  node.id === n.id
+                    ? { ...node, data: { ...node.data, telemetry_status: 'offline' } }
+                    : node
+                )
+              );
+            }
+            console.warn('Telemetry polling failed for node', n.id, err);
+          }
+        })
+      );
+
+      timer = setTimeout(doPoll, LOOP_DELAY);
     };
 
-    timer = setTimeout(doPoll, pollInterval);
+    timer = setTimeout(doPoll, LOOP_DELAY);
     return () => {
       if (timer) clearTimeout(timer);
     };

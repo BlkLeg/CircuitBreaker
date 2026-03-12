@@ -160,55 +160,11 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
             actor_id=user.id,
         )
 
-    async def on_after_forgot_password(
-        self, user: User, token: str, request: Request | None = None
-    ) -> None:
-        from app.db.session import SessionLocal
-        from app.services.settings_service import get_or_create_settings
-        from app.services.smtp_service import SmtpService
-
-        db = SessionLocal()
-        try:
-            cfg = get_or_create_settings(db)
-            if cfg.smtp_enabled and cfg.smtp_from_email:
-                from app.services.smtp_service import (
-                    public_base_from_request_headers,
-                    resolve_public_base_url,
-                )
-
-                if request:
-                    request_headers = getattr(request, "headers", None)
-                    request_base_url = str(getattr(request, "base_url", "")).rstrip("/")
-                    header_fallback = (
-                        public_base_from_request_headers(request_headers, request_base_url)
-                        if request_headers is not None
-                        else request_base_url
-                    )
-                else:
-                    header_fallback = ""
-                base_url = resolve_public_base_url(cfg, header_fallback)
-                await SmtpService(cfg).send_password_reset(user.email, token, base_url)
-                _logger.info("Password reset email sent to %s", user.email)
-            else:
-                _logger.info(
-                    "Password reset token generated for %s (SMTP not configured); deliver token via alternate channel.",
-                    user.email,
-                )
-        except Exception as exc:
-            _logger.warning(
-                "Failed to send password reset email to %s (reason: %s)",
-                user.email,
-                type(exc).__name__,
-            )
-        finally:
-            db.close()
-
 
 async def get_user_manager(
     user_db: SQLAlchemyUserDatabase = Depends(get_user_db),
 ) -> AsyncGenerator[UserManager, None]:
     manager = UserManager(user_db, password_helper=_password_helper)
-    manager.reset_password_token_secret = _get_jwt_secret()
     manager.verification_token_secret = _get_jwt_secret()
     yield manager
 

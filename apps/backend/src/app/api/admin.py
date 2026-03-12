@@ -454,6 +454,7 @@ _RECENT_CHANGE_ENTITY_TYPES = tuple(entity_type for entity_type, _, _ in _ENTITY
 def recent_changes(
     db: Annotated[Session, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
+    _: Annotated[None, require_role("admin")] = None,
 ):
     """Return the *limit* most-recent actions across supported entity types."""
     rows = (

@@ -5,6 +5,8 @@ import { hashPasswordForAuth } from '../utils/passwordHash';
 
 const AUTH_ROUTE_PREFIXES = [
   '/auth/login',
+  '/auth/logout',
+  '/auth/me',
   '/auth/forgot-password',
   '/auth/reset-password',
   '/auth/vault-reset',
@@ -107,9 +109,11 @@ client.interceptors.response.use(
     // currently stored bearer token. This avoids stale in-flight 401s
     // clearing a freshly issued token after logout/re-login.
     if (isSessionExpiryCandidate(error)) {
-      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch((err) => {
-        console.debug('Server logout failed (expected if session expired):', err);
-      });
+      axios
+        .post('/api/v1/auth/logout', null, { withCredentials: true, timeout: 5000 })
+        .catch((err) => {
+          console.debug('Server logout failed (expected if session expired):', err);
+        });
       globalThis.dispatchEvent(new CustomEvent('cb:session-expired'));
     }
 
@@ -287,6 +291,20 @@ export const settingsApi = {
   smtpUpdate: (data) => client.patch('/settings/smtp', data),
   smtpTest: (send_to) =>
     client.post('/settings/smtp/test', null, { params: send_to ? { send_to } : {} }),
+};
+
+export const securityApi = {
+  status: () => client.get('/security/status'),
+};
+
+export const assetsApi = {
+  uploadUserIcon: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return client.post('/assets/user-icon', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
 };
 
 export const timezonesApi = {

@@ -4,6 +4,8 @@ Tests cover Phases 1–3: Rack Foundation, Correctness Fixes, and Derived State.
 Uses existing conftest.py fixtures (client, db, db_engine).
 """
 
+import pytest
+
 # ── Test constants ────────────────────────────────────────────────────────────
 IP_CONFLICT_A    = "10.0.0.50"   # duplicate IP for conflict-cascade test
 IP_PORT_HOST     = "10.0.0.70"   # hardware host in port-conflict test
@@ -18,6 +20,11 @@ IP_MERGE_RESULT  = "10.0.0.99"   # IP in merge-atomicity scan result
 IP_SOURCE_RESULT = "10.0.0.200"  # IP in source_scan_result_id test
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(client, auth_headers):
+    client.headers.update(auth_headers)
 
 
 def _create_hardware(client, name="Test Server", **kwargs):

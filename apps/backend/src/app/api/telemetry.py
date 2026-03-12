@@ -1,19 +1,21 @@
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
-from app.core.time import utcnow
+from app.core.security import require_auth_always
 from app.db.models import ComputeUnit, Hardware, Storage, TelemetryTimeseries, User
 from app.db.session import get_db
 from app.integrations.dispatcher import poll_hardware
 from app.schemas.hardware import TelemetryConfig
+from app.schemas.telemetry import TelemetryResponse
 from app.services.credential_vault import CredentialVault, get_vault
+from app.services.telemetry_service import get_telemetry_for_hardware, write_telemetry
 
 _logger = logging.getLogger(__name__)
 
@@ -34,59 +36,19 @@ def _safe_json(val) -> dict | None:
     return None
 
 
-@router.get("/{hardware_id}/telemetry")
+@router.get("/{hardware_id}/telemetry", response_model=TelemetryResponse)
 @limiter.limit(lambda: get_limit("telemetry"))
-async def get_telemetry(request: Request, hardware_id: int, db: Session = Depends(get_db)):
-    from app.services.telemetry_cache import get_cached_telemetry
-
-    # 1. Redis cache hit (fast path) — wrapped so Redis failures never crash the endpoint
-    try:
-        cached = await get_cached_telemetry(hardware_id)
-    except Exception:
-        cached = None  # Redis down → fall through to DB
-
+async def get_telemetry(
+    request: Request,
+    response: Response,
+    hardware_id: int,
+    db: Session = Depends(get_db),
+    _user_id: int = Depends(require_auth_always),
+):
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
-    if not hw:
+    if hw is None:
         raise HTTPException(status_code=404, detail="Hardware not found")
-
-    config = _safe_json(hw.telemetry_config)
-
-    # If no telemetry is configured, return clean "unconfigured" — not an error
-    if not config or not config.get("profile"):
-        return {
-            "hardware_id": hardware_id,
-            "name": hw.name,
-            "status": "unconfigured",
-            "data": {},
-            "source": "none",
-        }
-
-    if cached is not None:
-        return {
-            "hardware_id": hardware_id,
-            "name": hw.name,
-            "vendor": hw.vendor,
-            "model": hw.model,
-            "telemetry_profile": config.get("profile"),
-            "data": cached.get("data", cached),
-            "status": cached.get("status", hw.telemetry_status or "unknown"),
-            "last_polled": hw.telemetry_last_polled,
-            "source": "cache",
-        }
-
-    # 2. DB fallback
-    data = _safe_json(hw.telemetry_data)
-    return {
-        "hardware_id": hardware_id,
-        "name": hw.name,
-        "vendor": hw.vendor,
-        "model": hw.model,
-        "telemetry_profile": config.get("profile"),
-        "data": data or {},
-        "status": hw.telemetry_status or "unknown",
-        "last_polled": hw.telemetry_last_polled,
-        "source": "db",
-    }
+    return await get_telemetry_for_hardware(hardware_id, db)
 
 
 @router.post("/{hardware_id}/telemetry/config")
@@ -106,7 +68,7 @@ def configure_telemetry(
     if config_dict.get("password"):
         config_dict["password"] = vault.encrypt(config_dict["password"])
 
-    hw.telemetry_config = json.dumps(config_dict)
+    hw.telemetry_config = config_dict
     db.commit()
     log_audit(
         db,
@@ -120,7 +82,7 @@ def configure_telemetry(
 
 
 @router.post("/{hardware_id}/telemetry/poll")
-def poll_now(
+async def poll_now(
     hardware_id: int,
     request: Request,
     db: Session = Depends(get_db),
@@ -133,24 +95,18 @@ def poll_now(
         raise HTTPException(status_code=404, detail="Hardware not found")
 
     result = poll_hardware(hw, vault)
-    if "error" in result and "status" not in result:
-        _logger.error("Telemetry poll failed for hardware %d: %s", hardware_id, result["error"])
-        raise HTTPException(status_code=502, detail="Telemetry poll failed.")
-    if result.get("status") == "unknown" and "error" in result:
-        _logger.error("Telemetry poll error for hardware %d: %s", hardware_id, result["error"])
-        raise HTTPException(status_code=502, detail="Telemetry poll returned an error status.")
+    if "status" not in result and "error" in result:
+        result = {"status": "unreachable", "error_msg": str(result["error"]), "data": {}}
+    elif result.get("status") == "unknown" and "error" in result:
+        result["status"] = "unreachable"
+        result["error_msg"] = str(result["error"])
 
-    hw.telemetry_data = json.dumps(result.get("data", {}))
-    hw.telemetry_status = result.get("status", "unknown")
-    hw.telemetry_last_polled = utcnow()
-    # CB-STATE-005: touch last_seen on successful poll
-    hw.last_seen = utcnow().isoformat()
-    db.flush()
-    # CB-STATE-001: recalculate derived hardware status from telemetry + children
-    from app.services.status_service import recalculate_hardware_status
-
-    recalculate_hardware_status(db, hardware_id)
-    db.commit()
+    response = await write_telemetry(
+        hardware_id=hardware_id,
+        payload=result,
+        source="manual_poll",
+        db=db,
+    )
     log_audit(
         db,
         request,
@@ -160,12 +116,7 @@ def poll_now(
         status="ok",
     )
 
-    return {
-        "hardware_id": hardware_id,
-        "data": result.get("data", {}),
-        "status": hw.telemetry_status,
-        "last_polled": hw.telemetry_last_polled,
-    }
+    return response.model_dump()
 
 
 # ── Generic entity telemetry (Proxmox sidebar) ──────────────────────────────
@@ -174,7 +125,12 @@ _ENTITY_TYPES = {"hardware", "compute_unit", "storage"}
 
 
 @router.get("/entity/{entity_type}/{entity_id}")
-def get_entity_telemetry(entity_type: str, entity_id: int, db: Session = Depends(get_db)):
+def get_entity_telemetry(
+    entity_type: str,
+    entity_id: int,
+    db: Session = Depends(get_db),
+    _user: User = require_scope("read", "*"),
+):
     if entity_type not in _ENTITY_TYPES:
         raise HTTPException(status_code=400, detail=f"entity_type must be one of {_ENTITY_TYPES}")
 

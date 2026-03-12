@@ -784,8 +784,7 @@ function OOBEWizardPage({ onCompleted }) {
               <p className="login-card-subtitle" style={{ marginBottom: 12 }}>
                 Circuit Breaker generated a vault key to encrypt all secrets (SNMP, SSH, SMTP
                 passwords). This key is stored in the persistent volume, but you must back it up
-                now. If you enable SMTP, email reset becomes the convenience path, but this vault
-                key remains your offline recovery fallback.
+                now. This vault key is your account recovery fallback.
                 <strong> It will never be shown again.</strong>
               </p>
 
@@ -1621,12 +1620,11 @@ function OOBEWizardPage({ onCompleted }) {
 
             {step === 5 && (
               <>
-                <h2 className="login-card-title">Email Recovery Setup</h2>
+                <h2 className="login-card-title">Email Delivery Setup</h2>
                 <p className="login-card-subtitle">
-                  Recommended: configure SMTP now so Circuit Breaker can send password reset emails
-                  and user invites. Set your external app URL too so those links work outside your
-                  local network. You can skip SMTP and rely on your vault key as the offline
-                  recovery path.
+                  Recommended: configure SMTP now so Circuit Breaker can send invites and outbound
+                  notifications. Set your external app URL so invite links work outside your local
+                  network.
                 </p>
 
                 {/* ── Caddy HTTPS notice ── */}
@@ -1727,8 +1725,8 @@ function OOBEWizardPage({ onCompleted }) {
                       lineHeight: 1.5,
                     }}
                   >
-                    Used in password reset and invite emails so remote users open the public Circuit
-                    Breaker URL instead of a local address.
+                    Used in invite emails so remote users open the public Circuit Breaker URL
+                    instead of a local address.
                   </p>
                 </div>
 
@@ -1757,7 +1755,7 @@ function OOBEWizardPage({ onCompleted }) {
                     }}
                   />
                   <span style={{ fontSize: '0.85rem' }}>
-                    Configure SMTP now for password reset emails and invite delivery.
+                    Configure SMTP now for invite delivery and outbound notifications.
                   </span>
                 </label>
 
@@ -1893,8 +1891,7 @@ function OOBEWizardPage({ onCompleted }) {
                     lineHeight: 1.6,
                   }}
                 >
-                  SMTP gives users a convenient email reset flow. Your vault key is still the
-                  offline recovery mechanism if email delivery is unavailable.
+                  SMTP handles outbound emails. Vault key recovery remains the account reset path.
                 </p>
 
                 <div className="oobe-actions">
@@ -1965,6 +1962,20 @@ function OOBEWizardPage({ onCompleted }) {
                         : 'Skipped for now'}
                     </div>
                   </div>
+                </div>
+
+                <div className="oobe-beta-warning" role="note" aria-label="Beta security advisory">
+                  <div className="oobe-beta-warning-tape oobe-beta-warning-tape--top" />
+                  <div className="oobe-beta-warning-tape oobe-beta-warning-tape--bottom" />
+                  <div className="oobe-beta-warning-header">
+                    <ShieldAlert size={16} />
+                    <strong>Beta Advisory</strong>
+                  </div>
+                  <p>
+                    Circuit Breaker is in beta. Run it with good security habits: keep your vault
+                    key backed up, use strong unique passwords, restrict network exposure, and keep
+                    updates current.
+                  </p>
                 </div>
 
                 <div className="oobe-actions">

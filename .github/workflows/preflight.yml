@@ -29,6 +29,7 @@ jobs:
           --health-retries 5
     env:
       CB_TEST_DB_URL: postgresql://breaker:breaker@localhost:5432/circuitbreaker_test
+      CB_DATA_DIR: ./data
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -289,6 +289,8 @@ def require_write_auth(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if not _is_user_accessible(db, user_id):
+        raise HTTPException(status_code=403, detail="Account is not accessible")
     role = _effective_role(user)
     scopes = effective_scopes(user)
     if role not in {"admin", "editor"} and not has_scope(scopes, "write", "*"):
@@ -296,8 +298,12 @@ def require_write_auth(
     return user_id
 
 
-def require_auth_always(user_id: int | None = Depends(get_optional_user)) -> int:
+def require_auth_always(
+    user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
+) -> int:
     """Validates JWT and raises 401 if no authenticated user."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    if user_id != 0 and not _is_user_accessible(db, user_id):
+        raise HTTPException(status_code=403, detail="Account is not accessible")
     return user_id

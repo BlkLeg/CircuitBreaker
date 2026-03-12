@@ -11,6 +11,7 @@ import zoneinfo
 
 from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow, utcnow_iso
@@ -68,8 +69,15 @@ def get_or_create_settings(db: Session) -> AppSettings:
         row = AppSettings(**_DEFAULTS)
         row.jwt_secret = secrets.token_hex(32)
         db.add(row)
-        db.commit()
-        db.refresh(row)
+        try:
+            db.commit()
+            db.refresh(row)
+        except IntegrityError:
+            # Concurrent first-request race: another request inserted id=1.
+            db.rollback()
+            row = db.get(AppSettings, 1)
+            if row is None:
+                raise
     elif not row.jwt_secret:
         row.jwt_secret = secrets.token_hex(32)
         db.commit()

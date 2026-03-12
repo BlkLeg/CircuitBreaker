@@ -110,7 +110,7 @@ describe('OOBEWizardPage', () => {
     });
     fireEvent.click(
       screen.getByLabelText(
-        'Configure SMTP now for password reset emails and invite delivery.'
+        'Configure SMTP now for invite delivery and outbound notifications.'
       )
     );
     fireEvent.change(screen.getByLabelText('SMTP Host'), {

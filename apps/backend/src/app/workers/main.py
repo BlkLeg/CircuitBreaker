@@ -11,6 +11,7 @@ _TYPE_MAP = {
     "0": "discovery",
     "1": "webhook",
     "2": "notification",
+    "3": "telemetry",
 }
 
 
@@ -32,6 +33,12 @@ async def _run_notification():
     await run_with_graceful_shutdown(notification_worker.run_worker)
 
 
+async def _run_telemetry():
+    from app.workers import telemetry_collector
+
+    await run_with_graceful_shutdown(telemetry_collector.run_worker)
+
+
 async def _dispatch(kind: str) -> None:
     if kind == "discovery":
         await _run_discovery()
@@ -39,6 +46,8 @@ async def _dispatch(kind: str) -> None:
         await _run_webhook()
     elif kind == "notification":
         await _run_notification()
+    elif kind == "telemetry":
+        await _run_telemetry()
     else:
         raise SystemExit(f"Unknown worker type: {kind!r}")
 
@@ -48,7 +57,7 @@ def main() -> None:
     parser.add_argument(
         "--type",
         required=True,
-        help="Worker type: discovery, webhook, notification, or numeric (0=discovery,1=webhook,2=notification)",
+        help="Worker type: discovery, webhook, notification, telemetry, or numeric (0=discovery,1=webhook,2=notification,3=telemetry)",
     )
     args = parser.parse_args()
 

@@ -2,10 +2,11 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.rbac import require_role
+from app.core.security import get_optional_user
 from app.db.session import get_db
 from app.schemas.settings import AppSettingsRead, AppSettingsUpdate, SmtpUpdate
 from app.services import settings_service
@@ -16,9 +17,16 @@ _logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=AppSettingsRead)
-def get_settings(db: Session = Depends(get_db)):
+def get_settings(
+    db: Session = Depends(get_db),
+    user_id: int | None = Depends(get_optional_user),
+):
     """Return the current app settings, initializing defaults on first access."""
-    return settings_service.get_or_create_settings(db)
+    settings = settings_service.get_or_create_settings(db)
+    # Keep pre-bootstrap behavior (no jwt secret yet), but require auth after OOBE.
+    if settings.jwt_secret and user_id is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return settings
 
 
 @router.put("", response_model=AppSettingsRead)
@@ -54,7 +62,17 @@ def patch_smtp(
     db: Session = Depends(get_db),
     _=require_role("admin"),
 ):
-    """Update SMTP configuration fields only; auto-encrypts password."""
+    """Update SMTP configuration fields only; auto-encrypts password.
+
+    Auto-enables SMTP when the caller provides a host and from-email but
+    doesn't explicitly set smtp_enabled.  Entering SMTP configuration is a
+    clear signal the user wants email delivery active.
+    """
+    data = payload.model_dump(exclude_unset=True)
+    has_host = bool((data.get("smtp_host") or "").strip())
+    has_from = bool((data.get("smtp_from_email") or "").strip())
+    if has_host and has_from and "smtp_enabled" not in data:
+        payload.smtp_enabled = True
     return settings_service.update_settings(db, payload)  # type: ignore[arg-type]
 
 
@@ -79,6 +97,8 @@ async def test_smtp(
 
     cfg.smtp_last_test_at = datetime.utcnow().isoformat()
     cfg.smtp_last_test_status = result["status"]
+    if result["status"] == "ok" and not cfg.smtp_enabled:
+        cfg.smtp_enabled = True
     db.commit()
     return result
 

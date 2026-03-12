@@ -1276,6 +1276,27 @@ select.cb-input {
   background: rgba(107, 114, 128, 0.13);
 }
 
+.history-live-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--text-muted, var(--color-text-muted, #6b7a9e));
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+}
+
+.history-live-message {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted, var(--color-text-muted, #6b7a9e));
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Review queue shared styles ───────────────────────────────────────────── */
 
 .review-state-pill {

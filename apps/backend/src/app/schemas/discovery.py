@@ -102,6 +102,7 @@ class ScanJobOut(BaseModel):
     hosts_updated: int
     hosts_conflict: int
     error_text: str | None
+    error_reason: str | None = None
     triggered_by: str
     progress_phase: str | None = None
     progress_message: str | None = None

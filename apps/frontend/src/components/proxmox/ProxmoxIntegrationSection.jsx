@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { proxmoxApi } from '../../api/client';
 import SettingSection from '../settings/SettingSection';
 import SettingField from '../settings/SettingField';
@@ -52,6 +53,7 @@ function StatusBadge({ status }) {
 }
 
 export default function ProxmoxIntegrationSection() {
+  const navigate = useNavigate();
   const [configs, setConfigs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -226,7 +228,7 @@ export default function ProxmoxIntegrationSection() {
 
         {!loading && configs.length === 0 && !showAdd && (
           <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-            No Proxmox clusters configured. Add one to auto-import nodes, VMs, and containers.
+            No Proxmox clusters configured. Add one to queue nodes, VMs, and containers for review.
           </p>
         )}
 
@@ -384,37 +386,77 @@ export default function ProxmoxIntegrationSection() {
                   )}
 
                   {discoverResult && discoverResult.ok && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                      {[
-                        { label: 'Nodes', value: discoverResult.nodes_imported, color: '#22c55e' },
-                        { label: 'VMs', value: discoverResult.vms_imported, color: '#3b82f6' },
-                        {
-                          label: 'Containers',
-                          value: discoverResult.cts_imported,
-                          color: '#a855f7',
-                        },
-                        {
-                          label: 'Storage',
-                          value: discoverResult.storage_imported || 0,
-                          color: '#f59e0b',
-                        },
-                      ].map(({ label, value, color }) => (
-                        <div
-                          key={label}
-                          style={{
-                            textAlign: 'center',
-                            padding: '8px',
-                            background: 'rgba(255,255,255,0.03)',
-                            borderRadius: 6,
-                          }}
-                        >
-                          <div style={{ fontSize: 18, fontWeight: 'bold', color }}>{value}</div>
-                          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                            {label}
+                    <>
+                      <div
+                        style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}
+                      >
+                        {[
+                          {
+                            label: 'Nodes Queued',
+                            value: discoverResult.nodes_imported,
+                            color: '#22c55e',
+                          },
+                          {
+                            label: 'VMs Queued',
+                            value: discoverResult.vms_imported,
+                            color: '#3b82f6',
+                          },
+                          {
+                            label: 'Containers Queued',
+                            value: discoverResult.cts_imported,
+                            color: '#a855f7',
+                          },
+                          {
+                            label: 'Storage',
+                            value: discoverResult.storage_imported || 0,
+                            color: '#f59e0b',
+                          },
+                        ].map(({ label, value, color }) => (
+                          <div
+                            key={label}
+                            style={{
+                              textAlign: 'center',
+                              padding: '8px',
+                              background: 'rgba(255,255,255,0.03)',
+                              borderRadius: 6,
+                            }}
+                          >
+                            <div style={{ fontSize: 18, fontWeight: 'bold', color }}>{value}</div>
+                            <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                              {label}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                      {Number(discoverResult.vms_imported || 0) === 0 &&
+                        Number(discoverResult.cts_imported || 0) === 0 && (
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: 'var(--color-text-muted)',
+                              background: 'rgba(148,163,184,0.12)',
+                              padding: '8px',
+                              borderRadius: 6,
+                              marginTop: 8,
+                            }}
+                          >
+                            No VMs or containers were detected in this run. If you expected
+                            workloads, double-check the PVE UI and token scope. Discovery behavior
+                            is still beta.
+                          </div>
+                        )}
+                      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          className="btn btn-sm"
+                          type="button"
+                          onClick={() =>
+                            navigate('/discovery', { state: { discoveryFilter: 'review' } })
+                          }
+                        >
+                          Open Review Queue
+                        </button>
+                      </div>
+                    </>
                   )}
 
                   {(discoverError || discoverResult?.errors?.length > 0) && (
@@ -513,9 +555,9 @@ export default function ProxmoxIntegrationSection() {
                 maxWidth: 480,
               }}
             >
-              For telemetry only (CPU, memory, status), a token with <strong>PVEAuditor</strong>{' '}
-              role on path <strong>/</strong> is sufficient; full discovery and controls are pending
-              a future release.
+              For telemetry and discovery queueing, a token with <strong>PVEAuditor</strong> role on
+              path <strong>/</strong> is recommended. Discovery is still beta and results should be
+              reviewed before import.
             </p>
 
             <SettingField label="Auto Sync" hint="Periodically sync cluster state">

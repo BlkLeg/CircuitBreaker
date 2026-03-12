@@ -76,6 +76,19 @@ function meterColor(pct) {
   return '#22c55e';
 }
 
+const HEALTHY_STATUSES = new Set(['active', 'running', 'online']);
+const HEALTHY_TELEMETRY = new Set(['ok', 'healthy']);
+
+function isHealthyStatus(data) {
+  const status = String(data?.status || '')
+    .trim()
+    .toLowerCase();
+  const telemetry = String(data?.telemetry_status || '')
+    .trim()
+    .toLowerCase();
+  return HEALTHY_STATUSES.has(status) || HEALTHY_TELEMETRY.has(telemetry);
+}
+
 const NODE_STYLES = {
   cluster: { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }, // violet
   hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }, // steel blue
@@ -385,10 +398,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                background:
-                  data.status === 'active' || data.telemetry_status === 'ok'
-                    ? '#22c55e'
-                    : '#ef4444',
+                background: isHealthyStatus(data) ? '#22c55e' : '#ef4444',
                 display: 'inline-block',
               }}
             />
@@ -544,8 +554,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                background:
-                  data.status === 'active' || data.status === 'running' ? '#22c55e' : '#ef4444',
+                background: isHealthyStatus(data) ? '#22c55e' : '#ef4444',
                 display: 'inline-block',
               }}
             />

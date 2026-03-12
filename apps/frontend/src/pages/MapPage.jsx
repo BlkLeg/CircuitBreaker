@@ -4,7 +4,6 @@ import { createPortal } from 'react-dom';
 import ReactFlow, {
   Background,
   Controls,
-  Panel,
   useNodesState,
   useEdgesState,
   ReactFlowProvider,
@@ -25,6 +24,7 @@ import ContextMenu from '../components/map/ContextMenu';
 import TelemetrySidebar from '../components/map/TelemetrySidebar';
 import BoundaryContextMenu from '../components/map/BoundaryContextMenu';
 import VisualLineContextMenu from '../components/map/VisualLineContextMenu';
+import MapCanvasOverlays from '../components/map/MapCanvasOverlays';
 import DrawToolsDropdown from '../components/map/DrawToolsDropdown';
 import BulkQuickCreateModal from '../components/map/BulkQuickCreateModal';
 import CreateNodeModal from '../components/map/CreateNodeModal';
@@ -36,6 +36,8 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
 import Sidebar from '../components/Map/Sidebar';
+import LegendPanel from '../components/map/LegendPanel';
+import NodeTypeFilterBar from '../components/map/NodeTypeFilterBar';
 import { useToast } from '../components/common/Toast';
 import { X } from 'lucide-react';
 import {
@@ -55,21 +57,7 @@ import {
 import { MapEdgeCallbacksContext, MapViewOptionsContext } from '../components/map/mapContexts';
 export { MapEdgeCallbacksContext, MapViewOptionsContext };
 
-import {
-  getDagreLayout,
-  getDagreViewportOptions,
-  getForceLayout,
-  getTreeLayout,
-  getHierarchicalNetworkLayout,
-  getRadialLayout,
-  getElkLayeredLayout,
-  getCircularClusterLayout,
-  getGridRackLayout,
-  getConcentricLayout,
-  getCortexLayout,
-  getMindmapLayout,
-  scaleAndCenterToViewport,
-} from '../utils/layouts';
+// Layout functions consumed by useMapLayout hook (../hooks/useMapLayout)
 import MapToolbar from '../components/MapToolbar';
 // Sigma (WebGL renderer) is only used when useSigma=true; lazy-load to defer
 // ~100 KB of sigma/graphology parsing until the user explicitly enables WebGL mode.
@@ -79,11 +67,6 @@ import { viewportFit } from '../utils/viewportFit';
 
 // ── Extracted modules ────────────────────────────────────────────────────────
 import {
-  NODE_STYLES,
-  NODE_TYPE_LABELS,
-  FILTER_NODE_TYPES,
-  CONNECTION_TYPE_LEGEND,
-  STATUS_LEGEND,
   NODE_TYPE_ROUTES,
   ENTITY_API_UPDATE_ICON,
   ENTITY_API_UPDATE_STATUS,
@@ -104,8 +87,6 @@ import {
   computeBoundaryPolygon,
   boundaryFlowRect,
   nodeCenterInFlow,
-  nodeBoundsInFlow,
-  rectIntersectsRect,
   flowToScreenPoint,
   boundaryPath,
   boundaryRoundedRectPath,
@@ -123,8 +104,15 @@ import {
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
+import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
 import { canEdit } from '../utils/rbac';
+import { useMapLayout } from '../hooks/useMapLayout';
+import { useContextMenuState } from '../hooks/useContextMenuState';
+import { useMapPolling } from '../hooks/useMapPolling';
+import { useMapBoundaryInteractions } from '../hooks/useMapBoundaryInteractions';
+import { useMapVisualLines } from '../hooks/useMapVisualLines';
+import { useMapEdgeInteractions } from '../hooks/useMapEdgeInteractions';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
 // Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
@@ -132,28 +120,7 @@ const NODE_TYPES = { iconNode: CustomNode, custom: CustomNode };
 const EDGE_TYPES = { smart: CustomEdge, custom: CustomEdge };
 
 // ── Small module-level helpers ───────────────────────────────────────────────
-
-function isLightTheme(settings) {
-  return (
-    settings.theme === 'light' ||
-    (settings.theme === 'auto' && globalThis.matchMedia('(prefers-color-scheme: light)').matches)
-  );
-}
-
-function omitKey(obj, key) {
-  return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== key));
-}
-
-function isHiddenByTag(node, trimmedTag) {
-  if (!trimmedTag) return false;
-  return !(node._tags || []).some((t) => t.toLowerCase().includes(trimmedTag));
-}
-
-function getQuickCreateTitle(mode) {
-  if (mode === 'service') return 'New Service';
-  if (mode === 'compute') return 'New Compute Unit';
-  return 'New Storage';
-}
+import { isLightTheme, omitKey, isHiddenByTag, getQuickCreateTitle } from '../utils/mapHelpers';
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
@@ -186,15 +153,8 @@ function MapInternal() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [layoutEngine, setLayoutEngine] = useState(() => settings?.graph_default_layout || 'dagre');
   const [cloudViewEnabled, setCloudViewEnabled] = useState(false);
   const [useSigma, setUseSigma] = useState(false);
-  // Phase 6: view options — edge rendering mode, label visibility, node spacing, group-by
-  const [edgeMode, setEdgeMode] = useState('smoothstep'); // 'straight' | 'smoothstep' | 'bundled'
-  const [edgeLabelVisible, setEdgeLabelVisible] = useState(true);
-  const [nodeSpacing, setNodeSpacing] = useState(1); // multiplier: 0.5 / 1 / 1.5 / 2
-  const [groupBy, setGroupBy] = useState('none'); // 'none' | 'type' | 'environment' | 'rack'
-  const prevGroupByRef = React.useRef('none');
   const [lastSaved, setLastSaved] = useState(null);
   const dirtyRef = useRef(false);
   // Track node IDs that have been auto-placed this session so fetchData re-runs
@@ -235,16 +195,12 @@ function MapInternal() {
   const [editingBoundaryId, setEditingBoundaryId] = useState(null);
   const pendingZonePresetRef = useRef(null); // holds ZONE_PRESETS entry when zone draw is started
   const [editingBoundaryName, setEditingBoundaryName] = useState('');
-  const [boundaryMenu, setBoundaryMenu] = useState(null);
   const [selectedBoundaryId, setSelectedBoundaryId] = useState(null);
   const resizingBoundaryRef = useRef(null);
   const [visualLines, setVisualLines] = useState([]);
   const [lineDrawMode, setLineDrawMode] = useState(null);
   const [lineDrawDraft, setLineDrawDraft] = useState(null);
   const [selectedVisualLineId, setSelectedVisualLineId] = useState(null);
-  const [visualLineMenu, setVisualLineMenu] = useState(null);
-  // Edge anchor context menu — { edgeId, x, y } | null
-  const [edgeMenu, setEdgeMenu] = useState(null);
   // Pending connection action (new connect or reconnect), resolved by type picker
   const [pendingConnection, setPendingConnection] = useState(null);
 
@@ -265,8 +221,7 @@ function MapInternal() {
   const labelPointerMoveRef = useRef(null);
   const labelPointerUpRef = useRef(null);
   const labelMenuRef = useRef(null);
-  const layoutEngineRef = useRef(layoutEngine);
-  const applyLayoutRef = useRef(() => {});
+  const dragStartPositionsRef = useRef(new Map());
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -288,6 +243,17 @@ function MapInternal() {
     lineDrawDraftRef.current = lineDrawDraft;
   }, [lineDrawDraft]);
 
+  const telemetryEntityIds = useMemo(
+    () =>
+      nodes
+        .filter((n) => n.originalType === 'hardware' && Number.isInteger(n._refId))
+        .map((n) => n._refId),
+    [nodes]
+  );
+  const { connected: telemetryConnected } = useTelemetryStream({
+    entityIds: telemetryEntityIds,
+  });
+
   // Stable ref that SmartEdge reads via MapEdgeCallbacksContext
   const edgeCallbacksRef = useRef(null);
 
@@ -300,10 +266,6 @@ function MapInternal() {
     return () => {
       isMountedRef.current = false;
       unmountedRef.current = true;
-      if (telemetrySidebarTimerRef.current) {
-        clearTimeout(telemetrySidebarTimerRef.current);
-        telemetrySidebarTimerRef.current = null;
-      }
     };
   }, []);
 
@@ -312,6 +274,7 @@ function MapInternal() {
     setNodes,
     nodesRef,
     unmountedRef,
+    telemetryConnected,
   });
 
   // Live topology sync: node moves, cable add/remove, status changes from other clients
@@ -391,11 +354,6 @@ function MapInternal() {
   // Telemetry sidebar state (hover card)
   const [telemetrySidebarNode, setTelemetrySidebarNode] = useState(null);
   const [telemetrySidebarPos, setTelemetrySidebarPos] = useState({ x: 0, y: 0 });
-  const telemetrySidebarTimerRef = useRef(null);
-
-  // Context menu state (node)
-  const [contextMenu, setContextMenu] = useState(null); // { x, y, node } | null
-  const contextMenuOpenRef = useRef(false);
 
   // Sidebar bounding rect — kept in a ref (not state) so updates don't trigger re-renders.
   // The ContextMenu reads this ref on each position recalculation to avoid overlapping the panel.
@@ -470,15 +428,12 @@ function MapInternal() {
       if (e.key === 'Escape') {
         clearBoundaryPointerListeners();
         clearLabelPointerListeners();
-        contextMenuOpenRef.current = false;
-        setContextMenu(null);
-        setEdgeMenu(null);
+        closeAllMenus();
         setPendingConnection(null);
         setBoundaryDrawMode(false);
         setBoundaryDraft(null);
         setLineDrawMode(null);
         setLineDrawDraft(null);
-        setVisualLineMenu(null);
         setMapLabelMenuOpenId(null);
         setEditingBoundaryId(null);
         setEditingBoundaryName('');
@@ -529,8 +484,82 @@ function MapInternal() {
   }, [selectedNode]);
 
   // Debounce tag filter
-  const tagDebounceRef = useRef(null);
   const [debouncedTag, setDebouncedTag] = useState('');
+
+  const {
+    layoutEngine,
+    setLayoutEngine,
+    applyLayout,
+    applyLayoutRef,
+    applyPreset,
+    viewOptions,
+    nodeSpacing,
+    setNodeSpacing,
+    edgeMode,
+    setEdgeMode,
+    edgeLabelVisible,
+    setEdgeLabelVisible,
+    groupBy,
+    setGroupBy,
+  } = useMapLayout({
+    nodes,
+    edges,
+    setNodes,
+    setEdges,
+    setEdgeOverrides,
+    edgeOverridesRef,
+    flowContainerRef,
+    isMountedRef,
+    fitView,
+    cloudViewEnabled,
+    setLoading,
+    dirtyRef,
+    settings,
+  });
+
+  const layoutEngineRef = { current: layoutEngine };
+
+  const {
+    contextMenu,
+    setContextMenu,
+    contextMenuOpenRef,
+    openNodeContextMenu,
+    closeNodeContextMenu,
+    edgeMenu,
+    setEdgeMenu,
+    boundaryMenu,
+    setBoundaryMenu,
+    openBoundaryContextMenu,
+    visualLineMenu,
+    setVisualLineMenu,
+    openVisualLineContextMenu,
+    closeAllMenus,
+  } = useContextMenuState();
+
+  const {
+    scheduleTelemetrySidebar,
+    cancelTelemetrySidebar,
+    scheduleTagDebounce,
+    scheduleCloudViewFit,
+    scheduleResizeFit,
+  } = useMapPolling({
+    onTelemetrySidebarShow: (node, pos) => {
+      setTelemetrySidebarPos(pos);
+      setTelemetrySidebarNode(node);
+    },
+    onTagDebounced: setDebouncedTag,
+    onCloudViewFit: () => {
+      if (isMountedRef.current) viewportFit(fitView);
+    },
+    onResizeFit: () => {
+      if (isMountedRef.current && typeof fitView === 'function')
+        viewportFit(fitView, { duration: 400 });
+    },
+    onResizeObserverLayout: () => {
+      if (isMountedRef.current && layoutEngineRef?.current !== 'manual')
+        applyLayoutRef.current(layoutEngineRef?.current);
+    },
+  });
 
   // Fetch environments list for filter dropdown
   useEffect(() => {
@@ -562,10 +591,8 @@ function MapInternal() {
   }, [settings]);
 
   useEffect(() => {
-    clearTimeout(tagDebounceRef.current);
-    tagDebounceRef.current = setTimeout(() => setDebouncedTag(tagFilter), 300);
-    return () => clearTimeout(tagDebounceRef.current);
-  }, [tagFilter]);
+    scheduleTagDebounce(tagFilter);
+  }, [tagFilter, scheduleTagDebounce]);
 
   // Re-apply tag filter client-side (preserves positions via hidden property)
   useEffect(() => {
@@ -682,178 +709,24 @@ function MapInternal() {
 
   // Handle Cloud View Toggle independent of fetch
   useEffect(() => {
-    let t;
     if (cloudViewEnabled) {
       setNodes((nds) => groupNodesIntoCloud(nds));
-      t = setTimeout(() => {
-        if (isMountedRef.current) viewportFit(fitView);
-      }, 100);
     } else {
       setNodes((nds) => restoreFromCloudView(nds));
-      t = setTimeout(() => {
-        if (isMountedRef.current) viewportFit(fitView);
-      }, 100);
     }
-    return () => {
-      if (t) clearTimeout(t);
-    };
-  }, [cloudViewEnabled, setNodes, fitView]);
+    scheduleCloudViewFit();
+  }, [cloudViewEnabled, setNodes, scheduleCloudViewFit]);
 
   // Kiosk: debounced refit on resize so the graph stays readable after window/layout changes
   useEffect(() => {
-    let debounceTimer;
     const onResize = () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (isMountedRef.current && typeof fitView === 'function') {
-          viewportFit(fitView, { duration: 400 });
-        }
-      }, 300);
+      scheduleResizeFit();
     };
     window.addEventListener('resize', onResize);
     return () => {
       window.removeEventListener('resize', onResize);
-      clearTimeout(debounceTimer);
     };
-  }, [fitView]);
-
-  layoutEngineRef.current = layoutEngine;
-
-  const applyLayout = useCallback(
-    (engine) => {
-      setLoading(true);
-
-      if (engine === 'manual') {
-        setLayoutEngine('manual');
-        setLoading(false);
-        return;
-      }
-
-      const baseNodes = cloudViewEnabled ? restoreFromCloudView(nodes) : [...nodes];
-
-      const rect = flowContainerRef.current?.getBoundingClientRect?.();
-      const viewport = rect ? { width: rect.width, height: rect.height } : null;
-
-      // Viewport normalizer for bounded layouts only; Force/Radial/Concentric keep their own behavior.
-      const skipNormalizer = ['force', 'radial', 'concentric'].includes(engine);
-      const _applyResult = (layout) => {
-        if (layout) {
-          let finalNodes = layout.nodes;
-          if (viewport && finalNodes.length > 0 && !skipNormalizer) {
-            finalNodes = scaleAndCenterToViewport(finalNodes, viewport);
-          }
-          if (cloudViewEnabled) {
-            finalNodes = groupNodesIntoCloud(finalNodes);
-          }
-          setNodes(finalNodes);
-
-          // Clear stale edge overrides (manual control points + forced handle
-          // sides) — they reference absolute positions from the previous layout
-          // and would cause wires to route through wrong coordinates.
-          edgeOverridesRef.current = {};
-          setEdgeOverrides({});
-          const cleanEdges = layout.edges.map((e) =>
-            e.data?.controlPoint ? { ...e, data: { ...e.data, controlPoint: null } } : e
-          );
-          setEdges(applyEdgeSides(finalNodes, cleanEdges, {}));
-
-          setTimeout(() => {
-            if (isMountedRef.current) viewportFit(fitView, { duration: 400 });
-          }, 10);
-        }
-        setLayoutEngine(engine);
-        dirtyRef.current = true;
-        setLoading(false);
-        settingsApi.update({ graph_default_layout: engine }).catch((err) => {
-          console.warn('Failed to save default layout preference:', err);
-        });
-      };
-
-      const layoutSpacing = nodeSpacing ?? 1;
-      const dagreOptions = getDagreViewportOptions(
-        viewport?.width ?? rect?.width,
-        viewport,
-        layoutSpacing
-      );
-
-      if (engine === 'elk_layered') {
-        getElkLayeredLayout(baseNodes, edges)
-          .then((layout) => {
-            if (isMountedRef.current) _applyResult(layout);
-          })
-          .catch((err) => {
-            console.error('Async layout computation failed:', err);
-            if (isMountedRef.current)
-              _applyResult(getDagreLayout(baseNodes, edges, 'LR', dagreOptions));
-          });
-        return;
-      }
-
-      setTimeout(() => {
-        if (!isMountedRef.current) return;
-        let layout;
-        if (engine === 'dagre') layout = getDagreLayout(baseNodes, edges, 'TB', dagreOptions);
-        else if (engine === 'dagre_lr')
-          layout = getDagreLayout(baseNodes, edges, 'LR', dagreOptions);
-        else if (engine === 'force') layout = getForceLayout(baseNodes, edges);
-        else if (engine === 'tree')
-          layout = getTreeLayout(baseNodes, edges, viewport, layoutSpacing);
-        else if (engine === 'hierarchical_network')
-          layout = getHierarchicalNetworkLayout(baseNodes, edges, layoutSpacing);
-        else if (engine === 'radial') layout = getRadialLayout(baseNodes, edges);
-        else if (engine === 'circular_cluster')
-          layout = getCircularClusterLayout(baseNodes, edges, layoutSpacing);
-        else if (engine === 'grid_rack')
-          layout = getGridRackLayout(baseNodes, edges, layoutSpacing);
-        else if (engine === 'concentric') layout = getConcentricLayout(baseNodes, edges);
-        else if (engine === 'cortex')
-          layout = getCortexLayout(baseNodes, edges, viewport, layoutSpacing);
-        else if (engine === 'mindmap')
-          layout = getMindmapLayout(baseNodes, edges, viewport, layoutSpacing);
-        _applyResult(layout);
-      }, 50);
-    },
-    [nodes, edges, setNodes, setEdges, setEdgeOverrides, fitView, cloudViewEnabled, nodeSpacing]
-  );
-
-  applyLayoutRef.current = applyLayout;
-
-  // Re-apply current layout when map container is resized (e.g. sidebar toggled)
-  useEffect(() => {
-    const el = flowContainerRef.current;
-    if (!el) return;
-    let debounceTimer;
-    const ro = new ResizeObserver(() => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        if (isMountedRef.current && layoutEngineRef.current !== 'manual') {
-          applyLayoutRef.current(layoutEngineRef.current);
-        }
-      }, 200);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      clearTimeout(debounceTimer);
-    };
-  }, []);
-
-  // Apply a layout preset when Group By changes (declared after applyLayout to avoid TDZ)
-  useEffect(() => {
-    if (groupBy === prevGroupByRef.current) return;
-    prevGroupByRef.current = groupBy;
-    if (groupBy === 'type') applyLayout('circular_cluster');
-    else if (groupBy === 'rack') applyLayout('grid_rack');
-    else if (groupBy === 'environment') applyLayout('hierarchical_network');
-    // 'none' just keeps the current layout unchanged
-  }, [groupBy, applyLayout]);
-
-  const applyPreset = useCallback(
-    (preset) => {
-      applyLayout(preset.layout);
-    },
-    [applyLayout]
-  );
+  }, [scheduleResizeFit]);
 
   useEffect(() => {
     // Don't attempt placement when backend is unreachable
@@ -900,24 +773,19 @@ function MapInternal() {
 
   // ── Node interactions ──────────────────────────────────────────────────────
 
-  const handleNodeMouseEnter = useCallback((event, node) => {
-    if (contextMenuOpenRef.current) return;
-    // Don't show hover telemetry when the main (click) Sidebar is open — avoids overlap
-    if (selectedNodeRef.current) return;
-    if (telemetrySidebarTimerRef.current) clearTimeout(telemetrySidebarTimerRef.current);
-    telemetrySidebarTimerRef.current = setTimeout(() => {
-      if (!isMountedRef.current || contextMenuOpenRef.current || selectedNodeRef.current) return;
-      setTelemetrySidebarPos({ x: event.clientX + 20, y: event.clientY - 30 });
-      setTelemetrySidebarNode(node);
-    }, 400);
-  }, []);
+  const handleNodeMouseEnter = useCallback(
+    (event, node) => {
+      if (contextMenuOpenRef.current) return;
+      // Don't show hover telemetry when the main (click) Sidebar is open — avoids overlap
+      if (selectedNodeRef.current) return;
+      scheduleTelemetrySidebar(node, { x: event.clientX + 20, y: event.clientY - 30 });
+    },
+    [scheduleTelemetrySidebar]
+  );
 
   const handleNodeMouseLeave = useCallback(() => {
-    if (telemetrySidebarTimerRef.current) {
-      clearTimeout(telemetrySidebarTimerRef.current);
-      telemetrySidebarTimerRef.current = null;
-    }
-  }, []);
+    cancelTelemetrySidebar();
+  }, [cancelTelemetrySidebar]);
 
   const handlePaneContextMenu = useCallback(
     (event) => {
@@ -1410,21 +1278,12 @@ function MapInternal() {
     (event, node) => {
       event.preventDefault();
       if (!canMapEdit) return;
-      if (telemetrySidebarTimerRef.current) {
-        clearTimeout(telemetrySidebarTimerRef.current);
-        telemetrySidebarTimerRef.current = null;
-      }
+      cancelTelemetrySidebar();
       setTelemetrySidebarNode(null);
-      contextMenuOpenRef.current = true;
-      setContextMenu({ x: event.clientX, y: event.clientY, node });
+      openNodeContextMenu({ x: event.clientX, y: event.clientY, node });
     },
-    [canMapEdit]
+    [canMapEdit, cancelTelemetrySidebar, openNodeContextMenu]
   );
-
-  const handleContextMenuClose = useCallback(() => {
-    contextMenuOpenRef.current = false;
-    setContextMenu(null);
-  }, []);
 
   const handleNodeClick = useCallback((event, node) => {
     setTelemetrySidebarNode(null);
@@ -1584,447 +1443,64 @@ function MapInternal() {
     return { left, top };
   }, [mapLabelMenuOpenId, mapLabels]);
 
-  const handlePanePointerDown = useCallback(
-    (event) => {
-      if (!boundaryDrawMode || event.button !== 0) return;
-      event.preventDefault();
-      const initialDraft = {
-        startClient: { x: event.clientX, y: event.clientY },
-        endClient: { x: event.clientX, y: event.clientY },
-      };
-      clearBoundaryPointerListeners();
-      setBoundaryDraft(initialDraft);
-      boundaryDraftRef.current = initialDraft;
+  const {
+    beginBoundaryRename,
+    commitBoundaryRename,
+    deleteBoundary,
+    updateBoundaryColor,
+    updateBoundaryShape,
+    sendBoundaryToBack,
+    sendBoundaryToFront,
+    screenToFlow,
+    handleBoundaryClick,
+    startBoundaryDrag,
+    startBoundaryResize,
+  } = useMapBoundaryInteractions({
+    clearBoundaryPointerListeners,
+    boundaryDrawMode,
+    setBoundaryDrawMode,
+    setBoundaryDraft,
+    boundaryDraftRef,
+    boundaryPointerMoveRef,
+    boundaryPointerUpRef,
+    finishBoundaryDrawRef,
+    flowContainerRef,
+    screenToFlowPosition,
+    nodes,
+    setBoundaries,
+    pendingZonePresetRef,
+    toast,
+    dirtyRef,
+    computeBoundaryPolygon,
+    boundaryFlowRect,
+    defaultBoundaryColor: DEFAULT_BOUNDARY_COLOR,
+    defaultBoundaryFillOpacity: DEFAULT_BOUNDARY_FILL_OPACITY,
+    editingBoundaryId,
+    editingBoundaryName,
+    setEditingBoundaryId,
+    setEditingBoundaryName,
+    selectedBoundaryId,
+    setSelectedBoundaryId,
+    boundaryRenderData,
+    resizingBoundaryRef,
+    viewport,
+    setSelectedNode,
+  });
 
-      const onPointerMove = (moveEvent) => {
-        setBoundaryDraft((draft) => {
-          if (!draft) return draft;
-          const updated = {
-            ...draft,
-            endClient: { x: moveEvent.clientX, y: moveEvent.clientY },
-          };
-          boundaryDraftRef.current = updated;
-          return updated;
-        });
-      };
-
-      const onPointerUp = () => {
-        const latestDraft = boundaryDraftRef.current;
-        clearBoundaryPointerListeners();
-        if (latestDraft) finishBoundaryDrawRef.current(latestDraft);
-      };
-
-      boundaryPointerMoveRef.current = onPointerMove;
-      boundaryPointerUpRef.current = onPointerUp;
-      globalThis.addEventListener('pointermove', onPointerMove);
-      globalThis.addEventListener('pointerup', onPointerUp);
-      setSelectedNode(null);
-    },
-    [boundaryDrawMode, clearBoundaryPointerListeners]
-  );
-
-  const finishBoundaryDraw = useCallback(
-    (draft) => {
-      if (!draft) return;
-
-      const width = Math.abs((draft.endClient?.x || 0) - (draft.startClient?.x || 0));
-      const height = Math.abs((draft.endClient?.y || 0) - (draft.startClient?.y || 0));
-      if (width < 12 || height < 12) {
-        setBoundaryDraft(null);
-        toast.info('Drag a larger area to create a boundary.');
-        return;
-      }
-
-      const containerRect = flowContainerRef.current?.getBoundingClientRect();
-      if (!containerRect) {
-        setBoundaryDraft(null);
-        return;
-      }
-
-      const startFlow = screenToFlowPosition({
-        x: draft.startClient.x,
-        y: draft.startClient.y,
-      });
-      const endFlow = screenToFlowPosition({
-        x: draft.endClient.x,
-        y: draft.endClient.y,
-      });
-      const rect = boundaryFlowRect(startFlow, endFlow);
-
-      const memberIds = nodesRef.current
-        .filter((node) => {
-          if (!node || node.hidden) return false;
-          const bounds = nodeBoundsInFlow(node);
-          return rectIntersectsRect(bounds, rect);
-        })
-        .map((node) => String(node.id));
-
-      if (memberIds.length < 1) {
-        toast.info('Boundary requires at least one node inside the draw area.');
-        setBoundaryDraft(null);
-        return;
-      }
-
-      const boundaryId = `boundary-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const zonePreset = pendingZonePresetRef.current;
-      pendingZonePresetRef.current = null;
-      setBoundaries((prev) => [
-        ...prev,
-        {
-          id: boundaryId,
-          name: zonePreset
-            ? `${zonePreset.defaultName} ${prev.filter((b) => b.zoneType === zonePreset.key).length + 1}`
-            : `Boundary ${prev.length + 1}`,
-          memberIds,
-          flowRect: rect,
-          color: zonePreset?.color || DEFAULT_BOUNDARY_COLOR,
-          fillOpacity: DEFAULT_BOUNDARY_FILL_OPACITY,
-          shape: zonePreset?.shape || 'rectangle',
-          zoneType: zonePreset?.key || null,
-          behindNodes: false,
-        },
-      ]);
-      dirtyRef.current = true;
-      setBoundaryDrawMode(false);
-      setBoundaryDraft(null);
-      toast.success(zonePreset ? `${zonePreset.label} zone created.` : 'Boundary created.');
-    },
-    [screenToFlowPosition, toast]
-  );
-
-  useEffect(() => {
-    finishBoundaryDrawRef.current = finishBoundaryDraw;
-  }, [finishBoundaryDraw]);
-
-  useEffect(() => {
-    if (!boundaryDrawMode) return;
-    const paneEl = flowContainerRef.current?.querySelector('.react-flow__pane');
-    if (!paneEl) return;
-    paneEl.addEventListener('pointerdown', handlePanePointerDown);
-    return () => paneEl.removeEventListener('pointerdown', handlePanePointerDown);
-  }, [boundaryDrawMode, handlePanePointerDown]);
-
-  const beginBoundaryRename = useCallback((boundaryId, currentName) => {
-    setEditingBoundaryId(boundaryId);
-    setEditingBoundaryName(currentName);
-  }, []);
-
-  const commitBoundaryRename = useCallback(() => {
-    if (!editingBoundaryId) return;
-    const nextName = editingBoundaryName.trim();
-    if (!nextName) {
-      setEditingBoundaryId(null);
-      setEditingBoundaryName('');
-      return;
-    }
-    setBoundaries((prev) =>
-      prev.map((boundary) =>
-        boundary.id === editingBoundaryId ? { ...boundary, name: nextName } : boundary
-      )
-    );
-    dirtyRef.current = true;
-    setEditingBoundaryId(null);
-    setEditingBoundaryName('');
-  }, [editingBoundaryId, editingBoundaryName]);
-
-  const deleteBoundary = useCallback(
-    (boundaryId) => {
-      setBoundaries((prev) => prev.filter((b) => b.id !== boundaryId));
-      if (selectedBoundaryId === boundaryId) setSelectedBoundaryId(null);
-      dirtyRef.current = true;
-    },
-    [selectedBoundaryId]
-  );
-
-  const updateBoundaryColor = useCallback((boundaryId, colorKey) => {
-    setBoundaries((prev) => prev.map((b) => (b.id === boundaryId ? { ...b, color: colorKey } : b)));
-    dirtyRef.current = true;
-  }, []);
-
-  const updateBoundaryShape = useCallback((boundaryId, shapeKey) => {
-    setBoundaries((prev) => prev.map((b) => (b.id === boundaryId ? { ...b, shape: shapeKey } : b)));
-    dirtyRef.current = true;
-  }, []);
-
-  const sendBoundaryToBack = useCallback((boundaryId) => {
-    setBoundaries((prev) =>
-      prev.map((b) => (b.id === boundaryId ? { ...b, behindNodes: true } : b))
-    );
-    dirtyRef.current = true;
-  }, []);
-
-  const sendBoundaryToFront = useCallback((boundaryId) => {
-    setBoundaries((prev) =>
-      prev.map((b) => (b.id === boundaryId ? { ...b, behindNodes: false } : b))
-    );
-    dirtyRef.current = true;
-  }, []);
-
-  const openBoundaryContextMenu = useCallback((event, boundaryId) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setBoundaryMenu({ x: event.clientX, y: event.clientY, boundaryId });
-  }, []);
-
-  const screenToFlow = useCallback(
-    (sx, sy) => {
-      return { x: (sx - viewport.x) / viewport.zoom, y: (sy - viewport.y) / viewport.zoom };
-    },
-    [viewport]
-  );
-
-  const handleBoundaryClick = useCallback((event, boundaryId) => {
-    event.stopPropagation();
-    setSelectedBoundaryId((prev) => (prev === boundaryId ? null : boundaryId));
-  }, []);
-
-  const startBoundaryDrag = useCallback(
-    (event, boundaryId) => {
-      if (event.button !== 0) return;
-      event.stopPropagation();
-      event.preventDefault();
-
-      const renderItem = boundaryRenderData.find((b) => b.id === boundaryId);
-      const bbox = renderItem?.flowBBox;
-      if (!bbox) return;
-
-      const startFlow = screenToFlow(event.clientX, event.clientY);
-      const origRect = { minX: bbox.minX, maxX: bbox.maxX, minY: bbox.minY, maxY: bbox.maxY };
-      let moved = false;
-
-      const onMove = (moveEvt) => {
-        moved = true;
-        const curFlow = screenToFlow(moveEvt.clientX, moveEvt.clientY);
-        const dx = curFlow.x - startFlow.x;
-        const dy = curFlow.y - startFlow.y;
-        setBoundaries((prev) =>
-          prev.map((b) => {
-            if (b.id !== boundaryId) return b;
-            return {
-              ...b,
-              flowRect: {
-                minX: origRect.minX + dx,
-                maxX: origRect.maxX + dx,
-                minY: origRect.minY + dy,
-                maxY: origRect.maxY + dy,
-              },
-              memberIds: [],
-            };
-          })
-        );
-      };
-
-      const onUp = (upEvt) => {
-        globalThis.removeEventListener('pointermove', onMove);
-        globalThis.removeEventListener('pointerup', onUp);
-        if (moved) {
-          dirtyRef.current = true;
-        } else {
-          handleBoundaryClick(upEvt, boundaryId);
-        }
-      };
-
-      globalThis.addEventListener('pointermove', onMove);
-      globalThis.addEventListener('pointerup', onUp);
-    },
-    [boundaryRenderData, screenToFlow, handleBoundaryClick]
-  );
-
-  const startBoundaryResize = useCallback(
-    (event, boundaryId, corner) => {
-      event.stopPropagation();
-      event.preventDefault();
-      const boundary = boundaries.find((b) => b.id === boundaryId);
-      if (!boundary) return;
-
-      const renderItem = boundaryRenderData.find((b) => b.id === boundaryId);
-      const bbox = renderItem?.flowBBox;
-      if (!bbox) return;
-      const origRect = { minX: bbox.minX, maxX: bbox.maxX, minY: bbox.minY, maxY: bbox.maxY };
-
-      resizingBoundaryRef.current = { boundaryId, corner, origRect };
-
-      const onMove = (moveEvt) => {
-        const flowPt = screenToFlow(moveEvt.clientX, moveEvt.clientY);
-        setBoundaries((prev) =>
-          prev.map((b) => {
-            if (b.id !== boundaryId) return b;
-            const next = { ...origRect };
-            if (corner === 'nw' || corner === 'sw')
-              next.minX = Math.min(flowPt.x, origRect.maxX - 20);
-            if (corner === 'ne' || corner === 'se')
-              next.maxX = Math.max(flowPt.x, origRect.minX + 20);
-            if (corner === 'nw' || corner === 'ne')
-              next.minY = Math.min(flowPt.y, origRect.maxY - 20);
-            if (corner === 'sw' || corner === 'se')
-              next.maxY = Math.max(flowPt.y, origRect.minY + 20);
-            return { ...b, flowRect: next, memberIds: [] };
-          })
-        );
-      };
-
-      const onUp = () => {
-        globalThis.removeEventListener('pointermove', onMove);
-        globalThis.removeEventListener('pointerup', onUp);
-        resizingBoundaryRef.current = null;
-        dirtyRef.current = true;
-      };
-
-      globalThis.addEventListener('pointermove', onMove);
-      globalThis.addEventListener('pointerup', onUp);
-    },
-    [boundaries, boundaryRenderData, screenToFlow]
-  );
-
-  useEffect(() => {
-    if (!selectedBoundaryId) return;
-    const handleKey = (e) => {
-      if (e.key === 'Escape') setSelectedBoundaryId(null);
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [selectedBoundaryId]);
-
-  // ── Visual Line draw mode ─────────────────────────────────────────────────
-  const clearLinePointerListeners = useCallback(() => {
-    if (linePointerMoveRef.current) {
-      globalThis.removeEventListener('pointermove', linePointerMoveRef.current);
-      linePointerMoveRef.current = null;
-    }
-    if (linePointerUpRef.current) {
-      globalThis.removeEventListener('pointerup', linePointerUpRef.current);
-      linePointerUpRef.current = null;
-    }
-  }, []);
-
-  const handleLinePointerDown = useCallback(
-    (event) => {
-      if (!lineDrawMode || event.button !== 0) return;
-      event.preventDefault();
-      clearLinePointerListeners();
-
-      const startClient = { x: event.clientX, y: event.clientY };
-      const startFlow = screenToFlow(event.clientX, event.clientY);
-      const draft = { startClient, endClient: startClient, startFlow, endFlow: startFlow };
-      setLineDrawDraft(draft);
-      lineDrawDraftRef.current = draft;
-
-      const onMove = (moveEvt) => {
-        const endFlow = screenToFlow(moveEvt.clientX, moveEvt.clientY);
-        setLineDrawDraft((prev) => {
-          if (!prev) return prev;
-          const updated = {
-            ...prev,
-            endClient: { x: moveEvt.clientX, y: moveEvt.clientY },
-            endFlow,
-          };
-          lineDrawDraftRef.current = updated;
-          return updated;
-        });
-      };
-
-      const onUp = () => {
-        clearLinePointerListeners();
-        const latest = lineDrawDraftRef.current;
-        if (!latest) return;
-        const dx = Math.abs(latest.endClient.x - latest.startClient.x);
-        const dy = Math.abs(latest.endClient.y - latest.startClient.y);
-        if (dx < 8 && dy < 8) {
-          setLineDrawDraft(null);
-          return;
-        }
-        setVisualLines((prev) => [
-          ...prev,
-          {
-            id: `vline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            startFlow: latest.startFlow,
-            endFlow: latest.endFlow,
-            lineType: lineDrawMode,
-          },
-        ]);
-        dirtyRef.current = true;
-        setLineDrawDraft(null);
-        setLineDrawMode(null);
-      };
-
-      linePointerMoveRef.current = onMove;
-      linePointerUpRef.current = onUp;
-      globalThis.addEventListener('pointermove', onMove);
-      globalThis.addEventListener('pointerup', onUp);
-    },
-    [lineDrawMode, clearLinePointerListeners, screenToFlow]
-  );
-
-  useEffect(() => {
-    if (!lineDrawMode) return;
-    const paneEl = flowContainerRef.current?.querySelector('.react-flow__pane');
-    if (!paneEl) return;
-    paneEl.addEventListener('pointerdown', handleLinePointerDown);
-    return () => paneEl.removeEventListener('pointerdown', handleLinePointerDown);
-  }, [lineDrawMode, handleLinePointerDown]);
-
-  const deleteVisualLine = useCallback(
-    (lineId) => {
-      setVisualLines((prev) => prev.filter((vl) => vl.id !== lineId));
-      if (selectedVisualLineId === lineId) setSelectedVisualLineId(null);
-      dirtyRef.current = true;
-    },
-    [selectedVisualLineId]
-  );
-
-  const updateVisualLineType = useCallback((lineId, newType) => {
-    setVisualLines((prev) =>
-      prev.map((vl) => (vl.id === lineId ? { ...vl, lineType: newType } : vl))
-    );
-    dirtyRef.current = true;
-  }, []);
-
-  const openVisualLineContextMenu = useCallback((event, lineId) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setVisualLineMenu({ x: event.clientX, y: event.clientY, lineId });
-  }, []);
-
-  const startVisualLineDrag = useCallback(
-    (event, lineId, endpoint) => {
-      if (event.button !== 0) return;
-      event.stopPropagation();
-      event.preventDefault();
-
-      const vl = visualLinesRef.current.find((v) => v.id === lineId);
-      if (!vl) return;
-
-      const onMove = (moveEvt) => {
-        const flowPt = screenToFlow(moveEvt.clientX, moveEvt.clientY);
-        setVisualLines((prev) =>
-          prev.map((v) => {
-            if (v.id !== lineId) return v;
-            return endpoint === 'start' ? { ...v, startFlow: flowPt } : { ...v, endFlow: flowPt };
-          })
-        );
-      };
-
-      const onUp = () => {
-        globalThis.removeEventListener('pointermove', onMove);
-        globalThis.removeEventListener('pointerup', onUp);
-        dirtyRef.current = true;
-      };
-
-      globalThis.addEventListener('pointermove', onMove);
-      globalThis.addEventListener('pointerup', onUp);
-    },
-    [screenToFlow]
-  );
-
-  useEffect(() => {
-    if (!selectedVisualLineId) return;
-    const handleKey = (e) => {
-      if (e.key === 'Escape') setSelectedVisualLineId(null);
-      if (e.key === 'Delete' || e.key === 'Backspace') deleteVisualLine(selectedVisualLineId);
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [selectedVisualLineId, deleteVisualLine]);
+  const { deleteVisualLine, updateVisualLineType, startVisualLineDrag } = useMapVisualLines({
+    lineDrawMode,
+    setLineDrawMode,
+    setLineDrawDraft,
+    lineDrawDraftRef,
+    linePointerMoveRef,
+    linePointerUpRef,
+    flowContainerRef,
+    screenToFlow,
+    setVisualLines,
+    selectedVisualLineId,
+    setSelectedVisualLineId,
+    dirtyRef,
+  });
 
   const addMapLabel = useCallback(
     (colorOverride) => {
@@ -2111,148 +1587,6 @@ function MapInternal() {
     [clearLabelPointerListeners, updateMapLabel]
   );
 
-  // ── Edge interaction handlers ───────────────────────────────────────────────
-
-  const handleEdgeContextMenu = useCallback((event, _edge) => {
-    event.preventDefault();
-    setEdgeMenu({
-      edgeId: _edge.id,
-      x: event.clientX,
-      y: event.clientY,
-      connectionType: _edge.data?.connection_type || 'ethernet',
-      isUpdatable: isUpdatableEdgeId(_edge.id),
-    });
-  }, []);
-
-  const persistEdgeType = useCallback(async (edgeId, connectionType) => {
-    if (!edgeId) return false;
-    try {
-      await graphApi.updateEdgeType(edgeId, connectionType);
-      return true;
-    } catch (err) {
-      console.warn('Could not persist edge type:', err?.message);
-      return false;
-    }
-  }, []);
-
-  const handleEdgeConnectionTypeChange = useCallback(
-    async (edgeId, newType) => {
-      const normalized = normalizeConnectionType(newType) || 'ethernet';
-      setEdges((prev) =>
-        prev.map((e) =>
-          e.id === edgeId ? { ...e, data: { ...e.data, connection_type: normalized } } : e
-        )
-      );
-      setEdgeMenu((prev) => (prev ? { ...prev, connectionType: normalized } : prev));
-      await persistEdgeType(edgeId, normalized);
-    },
-    [persistEdgeType, setEdges]
-  );
-
-  const handleControlPointChange = useCallback(
-    (edgeId, clientPos) => {
-      const flowPos = screenToFlowPosition({ x: clientPos.x, y: clientPos.y });
-      const updated = {
-        ...edgeOverridesRef.current,
-        [edgeId]: { ...edgeOverridesRef.current[edgeId], control_point: flowPos },
-      };
-      edgeOverridesRef.current = updated;
-      setEdgeOverrides(updated);
-      setEdges((prev) =>
-        prev.map((e) =>
-          e.id === edgeId ? { ...e, data: { ...e.data, controlPoint: flowPos } } : e
-        )
-      );
-      dirtyRef.current = true;
-    },
-    [screenToFlowPosition, setEdges]
-  );
-
-  const handleEdgeAnchorChange = useCallback(
-    (edgeId, which, side) => {
-      const key = which === 'source' ? 'source_side' : 'target_side';
-      let updated;
-      if (side === 'auto') {
-        const existing = { ...edgeOverridesRef.current[edgeId] };
-        delete existing[key];
-        if (Object.keys(existing).length === 0) {
-          updated = omitKey(edgeOverridesRef.current, edgeId);
-        } else {
-          updated = { ...edgeOverridesRef.current, [edgeId]: existing };
-        }
-      } else {
-        updated = {
-          ...edgeOverridesRef.current,
-          [edgeId]: { ...edgeOverridesRef.current[edgeId], [key]: side },
-        };
-      }
-      edgeOverridesRef.current = updated;
-      setEdgeOverrides(updated);
-      setEdges((prev) =>
-        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
-      );
-      dirtyRef.current = true;
-    },
-    [setEdges]
-  );
-
-  const sideFromClientForNode = useCallback(
-    (nodeId, clientPos) => {
-      const node = nodesRef.current.find((candidate) => candidate.id === nodeId);
-      if (!node || !clientPos) return null;
-      const flowPos = screenToFlowPosition({
-        x: clientPos.x,
-        y: clientPos.y,
-      });
-      const center = nodeCenterInFlow(node);
-      const dx = flowPos.x - center.x;
-      const dy = flowPos.y - center.y;
-      if (Math.abs(dx) > Math.abs(dy)) {
-        return dx > 0 ? 'right' : 'left';
-      }
-      return dy > 0 ? 'bottom' : 'top';
-    },
-    [screenToFlowPosition]
-  );
-
-  const handleEdgeEndpointDrop = useCallback(
-    (edgeId, which, nodeId, clientPos) => {
-      const side = sideFromClientForNode(nodeId, clientPos);
-      if (!side) return;
-      const key = which === 'source' ? 'source_side' : 'target_side';
-      const updated = {
-        ...edgeOverridesRef.current,
-        [edgeId]: { ...edgeOverridesRef.current[edgeId], [key]: side },
-      };
-      edgeOverridesRef.current = updated;
-      setEdgeOverrides(updated);
-      setEdges((prev) =>
-        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
-      );
-      dirtyRef.current = true;
-    },
-    [setEdges, sideFromClientForNode]
-  );
-
-  const handleClearBend = useCallback(
-    (edgeId) => {
-      const existing = { ...edgeOverridesRef.current[edgeId] };
-      delete existing.control_point;
-      const updated =
-        Object.keys(existing).length === 0
-          ? omitKey(edgeOverridesRef.current, edgeId)
-          : { ...edgeOverridesRef.current, [edgeId]: existing };
-      edgeOverridesRef.current = updated;
-      setEdgeOverrides(updated);
-      setEdges((prev) =>
-        prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
-      );
-      dirtyRef.current = true;
-      setEdgeMenu(null);
-    },
-    [setEdges]
-  );
-
   // ── Drag-to-connect / drag-to-reconnect handlers ──────────────────────────
 
   const handlePanePointerMove = useCallback(
@@ -2272,147 +1606,75 @@ function MapInternal() {
     [clampPickerPosition]
   );
 
-  const openConnectionPicker = useCallback(
-    (mode, connection, oldEdge = null) => {
-      const pos = clampPickerPosition(lastPointerRef.current.x, lastPointerRef.current.y);
-      const defaultType =
-        oldEdge?.data?.connection_type || oldEdge?.data?.connectionType || 'ethernet';
-      setPendingConnection({
-        mode,
-        oldEdge,
-        connection,
-        defaultConnectionType: defaultType,
-        x: pos.x,
-        y: pos.y,
+  const {
+    handleEdgeContextMenu,
+    handleEdgeConnectionTypeChange,
+    handleControlPointChange,
+    handleEdgeAnchorChange,
+    handleEdgeEndpointDrop,
+    handleClearBend,
+    handleConnect,
+    handleEdgeUpdate,
+    handlePickConnectionType,
+  } = useMapEdgeInteractions({
+    setEdges,
+    setEdgeMenu,
+    setEdgeOverrides,
+    edgeOverridesRef,
+    nodesRef,
+    dirtyRef,
+    screenToFlowPosition,
+    normalizeConnectionType,
+    omitKey,
+    applyEdgeSidesForEdge,
+    nodeCenterInFlow,
+    graphApi,
+    isUpdatableEdgeId,
+    clampPickerPosition,
+    lastPointerRef,
+    setPendingConnection,
+    pendingConnection,
+    createLinkByNodeIds,
+    inferEdgeNodeIdsFromMeta,
+    getTopologyParams,
+    getNewestEdgeId,
+    unlinkByEdge,
+    fetchData,
+    toast,
+  });
+
+  const handleNodeDragStart = useCallback((_event, node, draggedNodes) => {
+    const trackedNodes =
+      Array.isArray(draggedNodes) && draggedNodes.length > 0 ? draggedNodes : [node];
+    const startPositions = new Map();
+    trackedNodes.forEach((trackedNode) => {
+      if (!trackedNode?.id) return;
+      const pos = trackedNode.positionAbsolute || trackedNode.position || { x: 0, y: 0 };
+      startPositions.set(trackedNode.id, {
+        x: Number.isFinite(pos.x) ? pos.x : 0,
+        y: Number.isFinite(pos.y) ? pos.y : 0,
       });
-    },
-    [clampPickerPosition]
-  );
-
-  const findCreatedEdgeId = useCallback(
-    async (linkMeta, fallbackConnection) => {
-      const topoRes = await graphApi.topology(getTopologyParams());
-      const edgeList = topoRes?.data?.edges || [];
-      const nodeIds = inferEdgeNodeIdsFromMeta(
-        linkMeta,
-        fallbackConnection.source,
-        fallbackConnection.target
-      );
-      return getNewestEdgeId(edgeList, (edge) => {
-        const relation = edge?.data?.relation || edge?.relation;
-        const relationMatch = !linkMeta?.relation || relation === linkMeta.relation;
-        const prefixMatch = !linkMeta?.edgePrefix || edge.id.startsWith(linkMeta.edgePrefix);
-        return (
-          edge.source === nodeIds.sourceNodeId &&
-          edge.target === nodeIds.targetNodeId &&
-          relationMatch &&
-          prefixMatch
-        );
-      });
-    },
-    [getNewestEdgeId, getTopologyParams]
-  );
-
-  const createConnection = useCallback(
-    async (connection, connectionType) => {
-      const linkMeta = await createLinkByNodeIds(
-        connection.source,
-        connection.target,
-        nodesRef.current
-      );
-      if (linkMeta.updatable) {
-        const createdEdgeId = await findCreatedEdgeId(linkMeta, connection);
-        if (!createdEdgeId) {
-          toast.warn('Connection created, but edge ID lookup failed. Type may not persist.');
-        } else if (connectionType !== 'ethernet') {
-          await persistEdgeType(createdEdgeId, connectionType);
-        }
-      } else if (connectionType !== 'ethernet') {
-        toast.info(
-          'Connection created, but this structural link does not store a connection type.'
-        );
-      }
-    },
-    [findCreatedEdgeId, persistEdgeType, toast]
-  );
-
-  const reconnectEdge = useCallback(
-    async (oldEdge, connection, connectionType) => {
-      if (!oldEdge) return;
-      if (oldEdge.source === connection.source && oldEdge.target === connection.target) {
-        await persistEdgeType(oldEdge.id, connectionType);
-        return;
-      }
-
-      // Unlink old edge first so the graph never shows duplicate logical edges.
-      try {
-        await unlinkByEdge(oldEdge);
-      } catch (err) {
-        toast.error(err?.message || 'Could not remove the previous connection.');
-        return;
-      }
-
-      const linkMeta = await createLinkByNodeIds(
-        connection.source,
-        connection.target,
-        nodesRef.current
-      );
-      if (linkMeta.updatable) {
-        const createdEdgeId = await findCreatedEdgeId(linkMeta, connection);
-        if (!createdEdgeId) {
-          toast.warn('New connection created, but edge ID lookup failed. Type may not persist.');
-        } else if (connectionType !== 'ethernet') {
-          await persistEdgeType(createdEdgeId, connectionType);
-        }
-      } else if (connectionType !== 'ethernet') {
-        toast.info('Reconnected link, but this structural link does not store a connection type.');
-      }
-    },
-    [findCreatedEdgeId, persistEdgeType, toast]
-  );
-
-  const handleConnect = useCallback(
-    (connection) => {
-      if (!connection?.source || !connection?.target) return;
-      openConnectionPicker('new', connection);
-    },
-    [openConnectionPicker]
-  );
-
-  const handleEdgeUpdate = useCallback(
-    (oldEdge, newConnection) => {
-      if (!oldEdge || !newConnection?.source || !newConnection?.target) return;
-      openConnectionPicker('reconnect', newConnection, oldEdge);
-    },
-    [openConnectionPicker]
-  );
-
-  const handlePickConnectionType = useCallback(
-    async (requestedType) => {
-      if (!pendingConnection) return;
-      const current = pendingConnection;
-      setPendingConnection(null);
-
-      const connectionType = normalizeConnectionType(requestedType) || 'ethernet';
-
-      try {
-        if (current.mode === 'new') {
-          await createConnection(current.connection, connectionType);
-        } else {
-          await reconnectEdge(current.oldEdge, current.connection, connectionType);
-        }
-        await fetchData();
-      } catch (err) {
-        toast.error(err.message || 'Connection update failed.');
-        await fetchData();
-      }
-    },
-    [createConnection, fetchData, pendingConnection, reconnectEdge, toast]
-  );
+    });
+    dragStartPositionsRef.current = startPositions;
+  }, []);
 
   const handleNodeDragStop = useCallback(
-    (_event, _node, draggedNodes) => {
-      setEdges((prev) => applyEdgeSides(draggedNodes, prev, edgeOverridesRef.current, _node.id));
+    (_event, node, draggedNodes) => {
+      const movedNodes =
+        Array.isArray(draggedNodes) && draggedNodes.length > 0 ? draggedNodes : [node];
+      const movementThresholdPx = 0.5;
+      const hasActualMovement = movedNodes.some((movedNode) => {
+        if (!movedNode?.id) return false;
+        const startPos = dragStartPositionsRef.current.get(movedNode.id);
+        if (!startPos) return true;
+        const endPos = movedNode.positionAbsolute || movedNode.position || startPos;
+        const dx = Math.abs((Number.isFinite(endPos.x) ? endPos.x : startPos.x) - startPos.x);
+        const dy = Math.abs((Number.isFinite(endPos.y) ? endPos.y : startPos.y) - startPos.y);
+        return dx > movementThresholdPx || dy > movementThresholdPx;
+      });
+      dragStartPositionsRef.current = new Map();
+      if (!hasActualMovement) return;
+      setEdges((prev) => applyEdgeSides(movedNodes, prev, edgeOverridesRef.current, node.id));
       dirtyRef.current = true;
     },
     [setEdges]
@@ -2424,11 +1686,6 @@ function MapInternal() {
     onControlPointChange: handleControlPointChange,
     onEdgeEndpointDrop: handleEdgeEndpointDrop,
   };
-
-  const viewOptions = React.useMemo(
-    () => ({ edgeMode, edgeLabelVisible, nodeSpacing, groupBy }),
-    [edgeMode, edgeLabelVisible, nodeSpacing, groupBy]
-  );
 
   const handleToggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -2538,93 +1795,12 @@ function MapInternal() {
                 }}
               />
 
-              {/* Node type toggles */}
-              <span
-                style={{
-                  color: 'var(--color-text-muted)',
-                  fontSize: 11,
-                  borderLeft: '1px solid var(--color-border)',
-                  paddingLeft: 8,
-                }}
-              >
-                Show:
-              </span>
-              {FILTER_NODE_TYPES.map((type) => {
-                const style = NODE_STYLES[type];
-                return (
-                  <button
-                    key={type}
-                    onClick={() => setIncludeTypes((prev) => ({ ...prev, [type]: !prev[type] }))}
-                    style={{
-                      padding: '3px 8px',
-                      borderRadius: 4,
-                      border: `1px solid ${style.borderColor}`,
-                      background: includeTypes[type] ? style.background : 'transparent',
-                      color: includeTypes[type] ? '#fff' : style.background,
-                      fontSize: 11,
-                      cursor: 'pointer',
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    {NODE_TYPE_LABELS[type]}
-                  </button>
-                );
-              })}
-              {/* Docker toggle — single button controlling both docker_network + docker_container */}
-              <button
-                onClick={() => setIncludeTypes((prev) => ({ ...prev, docker: !prev.docker }))}
-                style={{
-                  padding: '3px 8px',
-                  borderRadius: 4,
-                  border: '1px solid #1cb8d8',
-                  background: includeTypes.docker ? '#0b6e8e' : 'transparent',
-                  color: includeTypes.docker ? '#fff' : '#1cb8d8',
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  transition: 'all 0.15s',
-                }}
-              >
-                Docker
-              </button>
-
-              {/* Hardware sub-role chips */}
-              {includeTypes.hardware && (
-                <>
-                  <span
-                    style={{
-                      color: 'var(--color-text-muted)',
-                      fontSize: 11,
-                      borderLeft: '1px solid var(--color-border)',
-                      paddingLeft: 8,
-                    }}
-                  >
-                    Role:
-                  </span>
-                  {[
-                    { value: 'ups', label: 'UPS' },
-                    { value: 'pdu', label: 'PDU' },
-                    { value: 'access_point', label: 'AP' },
-                    { value: 'sbc', label: 'SBC' },
-                  ].map(({ value, label }) => (
-                    <button
-                      key={value}
-                      onClick={() => setHwRoleFilter((prev) => (prev === value ? null : value))}
-                      style={{
-                        padding: '3px 8px',
-                        borderRadius: 4,
-                        fontSize: 11,
-                        cursor: 'pointer',
-                        border: '1px solid #4a7fa5',
-                        background: hwRoleFilter === value ? '#4a7fa5' : 'transparent',
-                        color: hwRoleFilter === value ? '#fff' : '#4a7fa5',
-                        transition: 'all 0.15s',
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </>
-              )}
+              <NodeTypeFilterBar
+                includeTypes={includeTypes}
+                setIncludeTypes={setIncludeTypes}
+                hwRoleFilter={hwRoleFilter}
+                setHwRoleFilter={setHwRoleFilter}
+              />
 
               <MapToolbar
                 layout={layoutEngine}
@@ -2802,230 +1978,40 @@ function MapInternal() {
             ref={flowContainerRef}
             style={{ flex: 1, position: 'relative', background: 'var(--color-bg)' }}
           >
-            {/* Boundaries sent "to back" — behind nodes so nodes can be clicked */}
-            {boundaryRenderData.some((b) => b.behindNodes) && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none' }}>
-                <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
-                  {boundaryRenderData
-                    .filter((b) => b.behindNodes)
-                    .map((boundary) => (
-                      <g key={boundary.id}>
-                        <path
-                          d={boundary.path}
-                          fill={boundary.fill}
-                          stroke={boundary.stroke}
-                          strokeWidth={2}
-                          strokeDasharray="8 6"
-                          vectorEffect="non-scaling-stroke"
-                          style={{ pointerEvents: 'none' }}
-                        />
-                      </g>
-                    ))}
-                </svg>
-              </div>
-            )}
-
-            {boundaryRenderData.some((b) => !b.behindNodes) && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 9, pointerEvents: 'none' }}>
-                <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
-                  {boundaryRenderData
-                    .filter((b) => !b.behindNodes)
-                    .map((boundary) => (
-                      <g key={boundary.id}>
-                        <path
-                          d={boundary.path}
-                          fill={boundary.fill}
-                          stroke={boundary.stroke}
-                          strokeWidth={selectedBoundaryId === boundary.id ? 3 : 2}
-                          strokeDasharray={selectedBoundaryId === boundary.id ? 'none' : '8 6'}
-                          vectorEffect="non-scaling-stroke"
-                          style={{
-                            pointerEvents: 'visiblePainted',
-                            cursor: selectedBoundaryId === boundary.id ? 'grab' : 'pointer',
-                          }}
-                          onPointerDown={(e) => startBoundaryDrag(e, boundary.id)}
-                          onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
-                        />
-                        {selectedBoundaryId === boundary.id &&
-                          (() => {
-                            const { flowBBox } = boundary;
-                            const corners = [
-                              {
-                                key: 'nw',
-                                fx: flowBBox.minX,
-                                fy: flowBBox.minY,
-                                cursor: 'nwse-resize',
-                              },
-                              {
-                                key: 'ne',
-                                fx: flowBBox.maxX,
-                                fy: flowBBox.minY,
-                                cursor: 'nesw-resize',
-                              },
-                              {
-                                key: 'sw',
-                                fx: flowBBox.minX,
-                                fy: flowBBox.maxY,
-                                cursor: 'nesw-resize',
-                              },
-                              {
-                                key: 'se',
-                                fx: flowBBox.maxX,
-                                fy: flowBBox.maxY,
-                                cursor: 'nwse-resize',
-                              },
-                            ];
-                            return corners.map((c) => {
-                              const sp = flowToScreenPoint({ x: c.fx, y: c.fy }, viewport);
-                              return (
-                                <circle
-                                  key={c.key}
-                                  cx={sp.x}
-                                  cy={sp.y}
-                                  r={6}
-                                  fill={boundary.stroke}
-                                  stroke="var(--color-bg)"
-                                  strokeWidth={2}
-                                  style={{ pointerEvents: 'auto', cursor: c.cursor }}
-                                  onPointerDown={(e) => startBoundaryResize(e, boundary.id, c.key)}
-                                />
-                              );
-                            });
-                          })()}
-                      </g>
-                    ))}
-                </svg>
-              </div>
-            )}
-
-            {visualLines.length > 0 && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }}>
-                <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
-                  {visualLines.map((vl) => {
-                    const cs = CONNECTION_STYLES[vl.lineType] || CONNECTION_STYLES.ethernet;
-                    const s = flowToScreenPoint(vl.startFlow, viewport);
-                    const e = flowToScreenPoint(vl.endFlow, viewport);
-                    const isSelected = selectedVisualLineId === vl.id;
-                    return (
-                      <g key={vl.id}>
-                        <line
-                          x1={s.x}
-                          y1={s.y}
-                          x2={e.x}
-                          y2={e.y}
-                          stroke="transparent"
-                          strokeWidth={12}
-                          style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            setSelectedVisualLineId((prev) => (prev === vl.id ? null : vl.id));
-                          }}
-                          onContextMenu={(ev) => openVisualLineContextMenu(ev, vl.id)}
-                        />
-                        <line
-                          x1={s.x}
-                          y1={s.y}
-                          x2={e.x}
-                          y2={e.y}
-                          stroke={cs.stroke}
-                          strokeWidth={isSelected ? cs.strokeWidth * 2 : cs.strokeWidth}
-                          strokeDasharray={cs.strokeDasharray || 'none'}
-                          strokeLinecap="round"
-                          filter={cs.filter || 'none'}
-                          style={{ pointerEvents: 'none' }}
-                        />
-                        {isSelected && (
-                          <>
-                            <circle
-                              cx={s.x}
-                              cy={s.y}
-                              r={6}
-                              fill={cs.stroke}
-                              stroke="var(--color-bg)"
-                              strokeWidth={2}
-                              style={{ pointerEvents: 'auto', cursor: 'move' }}
-                              onPointerDown={(ev) => startVisualLineDrag(ev, vl.id, 'start')}
-                            />
-                            <circle
-                              cx={e.x}
-                              cy={e.y}
-                              r={6}
-                              fill={cs.stroke}
-                              stroke="var(--color-bg)"
-                              strokeWidth={2}
-                              style={{ pointerEvents: 'auto', cursor: 'move' }}
-                              onPointerDown={(ev) => startVisualLineDrag(ev, vl.id, 'end')}
-                            />
-                          </>
-                        )}
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-            )}
-
-            {boundaryRenderData.length > 0 && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 12, pointerEvents: 'none' }}>
-                {boundaryRenderData.map((boundary) => (
-                  <div
-                    key={`label-${boundary.id}`}
-                    style={{
-                      position: 'absolute',
-                      left: boundary.labelScreen.x,
-                      top: boundary.labelScreen.y,
-                      transform: 'translate(0, -100%)',
-                      pointerEvents: 'auto',
-                    }}
-                  >
-                    {editingBoundaryId === boundary.id ? (
-                      <input
-                        autoFocus
-                        value={editingBoundaryName}
-                        onChange={(event) => setEditingBoundaryName(event.target.value)}
-                        onBlur={commitBoundaryRename}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') commitBoundaryRename();
-                          if (event.key === 'Escape') {
-                            setEditingBoundaryId(null);
-                            setEditingBoundaryName('');
-                          }
-                        }}
-                        style={{
-                          minWidth: 140,
-                          borderRadius: 999,
-                          border: `1px solid ${boundary.stroke}`,
-                          background: 'rgba(7, 18, 33, 0.92)',
-                          color: 'var(--color-text)',
-                          padding: '3px 10px',
-                          fontSize: 12,
-                          textAlign: 'center',
-                        }}
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={(e) => handleBoundaryClick(e, boundary.id)}
-                        onDoubleClick={() => beginBoundaryRename(boundary.id, boundary.name)}
-                        onContextMenu={(e) => openBoundaryContextMenu(e, boundary.id)}
-                        style={{
-                          borderRadius: 999,
-                          border: `1px solid ${boundary.stroke}`,
-                          background: 'rgba(7, 18, 33, 0.72)',
-                          color: 'var(--color-text)',
-                          padding: '2px 10px',
-                          fontSize: 12,
-                          cursor: 'pointer',
-                        }}
-                        title="Click to select · Double-click to rename · Right-click for options"
-                      >
-                        {boundary.name}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <MapCanvasOverlays
+              boundaryRenderData={boundaryRenderData}
+              selectedBoundaryId={selectedBoundaryId}
+              startBoundaryDrag={startBoundaryDrag}
+              startBoundaryResize={startBoundaryResize}
+              openBoundaryContextMenu={openBoundaryContextMenu}
+              viewport={viewport}
+              visualLines={visualLines}
+              selectedVisualLineId={selectedVisualLineId}
+              setSelectedVisualLineId={setSelectedVisualLineId}
+              openVisualLineContextMenu={openVisualLineContextMenu}
+              startVisualLineDrag={startVisualLineDrag}
+              editingBoundaryId={editingBoundaryId}
+              editingBoundaryName={editingBoundaryName}
+              setEditingBoundaryName={setEditingBoundaryName}
+              setEditingBoundaryId={setEditingBoundaryId}
+              commitBoundaryRename={commitBoundaryRename}
+              handleBoundaryClick={handleBoundaryClick}
+              beginBoundaryRename={beginBoundaryRename}
+              mapLabels={mapLabels}
+              resolveBoundaryPreset={resolveBoundaryPreset}
+              boundaryFillString={boundaryFillString}
+              startMapLabelDrag={startMapLabelDrag}
+              setMapLabelMenuOpenId={setMapLabelMenuOpenId}
+              updateMapLabel={updateMapLabel}
+              removeMapLabel={removeMapLabel}
+              mapLabelMenuOpenId={mapLabelMenuOpenId}
+              openMapLabelMenuPosition={openMapLabelMenuPosition}
+              labelMenuRef={labelMenuRef}
+              boundaryDrawMode={boundaryDrawMode}
+              boundaryDraft={boundaryDraft}
+              lineDrawMode={lineDrawMode}
+              lineDrawDraft={lineDrawDraft}
+            />
 
             {selectedBoundaryId &&
               (() => {
@@ -3136,252 +2122,6 @@ function MapInternal() {
                 );
               })()}
 
-            {mapLabels.length > 0 && (
-              <div style={{ position: 'absolute', inset: 0, zIndex: 14, pointerEvents: 'none' }}>
-                {mapLabels.map((label) => {
-                  const preset = resolveBoundaryPreset(label.color);
-                  const fillBg = boundaryFillString(preset, 0.15);
-                  return (
-                    <div
-                      key={label.id}
-                      className="map-pill-label"
-                      style={{
-                        position: 'absolute',
-                        left: label.x,
-                        top: label.y,
-                        pointerEvents: 'auto',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        padding: '4px 10px',
-                        borderRadius: 999,
-                        border: `1.5px solid ${preset.stroke}`,
-                        background: fillBg,
-                        cursor: 'grab',
-                        userSelect: 'none',
-                      }}
-                      onPointerDown={(event) => startMapLabelDrag(event, label.id)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setMapLabelMenuOpenId((prev) => (prev === label.id ? null : label.id));
-                      }}
-                    >
-                      <input
-                        type="text"
-                        value={label.text}
-                        onChange={(event) => updateMapLabel(label.id, { text: event.target.value })}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        placeholder="Label"
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          outline: 'none',
-                          color: 'var(--color-text)',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          width: Math.max(40, label.text.length * 7 + 12),
-                          minWidth: 40,
-                          padding: 0,
-                        }}
-                      />
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeMapLabel(label.id);
-                        }}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: preset.stroke,
-                          cursor: 'pointer',
-                          padding: '0 2px',
-                          fontSize: 14,
-                          lineHeight: 1,
-                          fontWeight: 700,
-                          opacity: 0.7,
-                        }}
-                        aria-label="Delete label"
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  );
-                })}
-
-                {mapLabelMenuOpenId && openMapLabelMenuPosition && (
-                  <div
-                    ref={labelMenuRef}
-                    style={{
-                      position: 'absolute',
-                      left: openMapLabelMenuPosition.left,
-                      top: openMapLabelMenuPosition.top,
-                      pointerEvents: 'auto',
-                      background: 'var(--color-surface)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 8,
-                      padding: 8,
-                      boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
-                      zIndex: 50,
-                    }}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    <div
-                      style={{
-                        fontSize: 9,
-                        color: 'var(--color-text-muted)',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.06em',
-                        marginBottom: 6,
-                      }}
-                    >
-                      Label Color
-                    </div>
-                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                      {BOUNDARY_PRESETS.map((preset) => {
-                        const active =
-                          mapLabels.find((entry) => entry.id === mapLabelMenuOpenId)?.color ===
-                          preset.key;
-                        return (
-                          <button
-                            key={preset.key}
-                            title={preset.label}
-                            onClick={() => {
-                              updateMapLabel(mapLabelMenuOpenId, { color: preset.key });
-                              setMapLabelMenuOpenId(null);
-                            }}
-                            style={{
-                              width: 20,
-                              height: 20,
-                              borderRadius: '50%',
-                              border: active
-                                ? '2px solid var(--color-text)'
-                                : '2px solid transparent',
-                              background: preset.stroke,
-                              cursor: 'pointer',
-                              transition: 'transform 0.1s',
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.transform = 'scale(1.15)';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.transform = 'scale(1)';
-                            }}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {boundaryDrawMode && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 10,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex: 20,
-                  pointerEvents: 'none',
-                }}
-              >
-                <div
-                  style={{
-                    padding: '5px 10px',
-                    borderRadius: 999,
-                    border: '1px solid var(--color-primary)',
-                    background: 'rgba(0,0,0,0.45)',
-                    color: 'var(--color-text)',
-                    fontSize: 12,
-                  }}
-                >
-                  Drag on the canvas to draw a boundary around nodes
-                </div>
-              </div>
-            )}
-
-            {boundaryDraft &&
-              (() => {
-                const left = Math.min(boundaryDraft.startClient.x, boundaryDraft.endClient.x);
-                const top = Math.min(boundaryDraft.startClient.y, boundaryDraft.endClient.y);
-                const width = Math.abs(boundaryDraft.endClient.x - boundaryDraft.startClient.x);
-                const height = Math.abs(boundaryDraft.endClient.y - boundaryDraft.startClient.y);
-                return (
-                  <div
-                    style={{
-                      position: 'fixed',
-                      left,
-                      top,
-                      width,
-                      height,
-                      border: '1px dashed rgba(95, 205, 255, 0.95)',
-                      background: 'rgba(70, 170, 220, 0.12)',
-                      zIndex: 25,
-                      pointerEvents: 'none',
-                    }}
-                  />
-                );
-              })()}
-
-            {lineDrawMode && !lineDrawDraft && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 10,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex: 20,
-                  pointerEvents: 'none',
-                }}
-              >
-                <div
-                  style={{
-                    padding: '5px 10px',
-                    borderRadius: 999,
-                    border: `1px solid ${CONNECTION_STYLES[lineDrawMode]?.stroke || 'var(--color-primary)'}`,
-                    background: 'rgba(0,0,0,0.45)',
-                    color: 'var(--color-text)',
-                    fontSize: 12,
-                  }}
-                >
-                  Drag on the canvas to draw a {lineDrawMode} line
-                </div>
-              </div>
-            )}
-
-            {lineDrawDraft &&
-              (() => {
-                const cs = CONNECTION_STYLES[lineDrawMode] || CONNECTION_STYLES.ethernet;
-                return (
-                  <svg
-                    style={{
-                      position: 'fixed',
-                      inset: 0,
-                      width: '100vw',
-                      height: '100vh',
-                      zIndex: 25,
-                      pointerEvents: 'none',
-                    }}
-                  >
-                    <line
-                      x1={lineDrawDraft.startClient.x}
-                      y1={lineDrawDraft.startClient.y}
-                      x2={lineDrawDraft.endClient.x}
-                      y2={lineDrawDraft.endClient.y}
-                      stroke={cs.stroke}
-                      strokeWidth={cs.strokeWidth + 1}
-                      strokeDasharray={cs.strokeDasharray || 'none'}
-                      strokeLinecap="round"
-                      opacity={0.85}
-                    />
-                  </svg>
-                );
-              })()}
-
             {useSigma ? (
               <React.Suspense fallback={null}>
                 <SigmaMap envFilter={envFilter} includeTypes={includeTypes} />
@@ -3412,6 +2152,7 @@ function MapInternal() {
                   [-4000, -4000],
                   [4000, 4000],
                 ]}
+                onNodeDragStart={handleNodeDragStart}
                 onNodeDragStop={handleNodeDragStop}
                 onNodeMouseEnter={handleNodeMouseEnter}
                 onNodeMouseLeave={handleNodeMouseLeave}
@@ -3473,201 +2214,11 @@ function MapInternal() {
                 )}
 
                 {/* Legend */}
-                <Panel position="top-left" style={{ zIndex: 35 }}>
-                  {legendOpen ? (
-                    <div
-                      style={{
-                        background: 'var(--color-surface)',
-                        padding: 12,
-                        borderRadius: 8,
-                        fontSize: 11,
-                        color: 'var(--color-text)',
-                        border: '1px solid var(--color-border)',
-                        minWidth: 238,
-                        boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
-                        position: 'relative',
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          marginBottom: 8,
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontWeight: 600,
-                            color: 'var(--color-text-muted)',
-                            fontSize: 10,
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.05em',
-                          }}
-                        >
-                          Legend
-                        </div>
-                        <button
-                          onClick={() => setLegendOpen(false)}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'var(--color-text-muted)',
-                            cursor: 'pointer',
-                            padding: 2,
-                            display: 'flex',
-                          }}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                        <div>
-                          <div
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 700,
-                              letterSpacing: '0.05em',
-                              textTransform: 'uppercase',
-                              color: 'var(--color-text-muted)',
-                              marginBottom: 6,
-                            }}
-                          >
-                            Connection Types
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {CONNECTION_TYPE_LEGEND.map((entry) => (
-                              <div
-                                key={entry.key}
-                                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                              >
-                                <span
-                                  style={{
-                                    width: 10,
-                                    height: 10,
-                                    borderRadius: '50%',
-                                    background: entry.color,
-                                    boxShadow: `0 0 8px ${entry.color}88`,
-                                  }}
-                                />
-                                <span>{entry.label}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 700,
-                              letterSpacing: '0.05em',
-                              textTransform: 'uppercase',
-                              color: 'var(--color-text-muted)',
-                              marginBottom: 6,
-                            }}
-                          >
-                            Node Types
-                          </div>
-                          <div
-                            style={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 6,
-                              marginBottom: 10,
-                            }}
-                          >
-                            {Object.entries(NODE_STYLES).map(([type, style]) => {
-                              const isDockerType =
-                                type === 'docker_network' || type === 'docker_container';
-                              const isActive = isDockerType
-                                ? includeTypes.docker
-                                : includeTypes[type];
-                              return (
-                                <div
-                                  key={type}
-                                  style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                                >
-                                  <div
-                                    style={{
-                                      width: 10,
-                                      height: 10,
-                                      background: style.background,
-                                      borderRadius: 2,
-                                      border: `1px solid ${style.borderColor}`,
-                                    }}
-                                  />
-                                  <span
-                                    style={{
-                                      color: isActive
-                                        ? 'var(--color-text)'
-                                        : 'var(--color-text-muted)',
-                                    }}
-                                  >
-                                    {NODE_TYPE_LABELS[type] || type}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-
-                          <div
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 700,
-                              letterSpacing: '0.05em',
-                              textTransform: 'uppercase',
-                              color: 'var(--color-text-muted)',
-                              marginBottom: 6,
-                            }}
-                          >
-                            Status
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {STATUS_LEGEND.map((entry) => (
-                              <div
-                                key={entry.key}
-                                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                              >
-                                <span
-                                  style={{
-                                    width: 9,
-                                    height: 9,
-                                    borderRadius: '50%',
-                                    background: entry.color,
-                                    boxShadow: `0 0 8px ${entry.color}88`,
-                                  }}
-                                />
-                                <span>{entry.label}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setLegendOpen(true)}
-                      style={{
-                        background: 'var(--color-surface)',
-                        padding: '6px 12px',
-                        borderRadius: 20,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: 'var(--color-text)',
-                        border: '1px solid var(--color-border)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-                      }}
-                    >
-                      <span>Legend</span>
-                      <span style={{ fontSize: 10 }}>▼</span>
-                    </button>
-                  )}
-                </Panel>
+                <LegendPanel
+                  legendOpen={legendOpen}
+                  setLegendOpen={setLegendOpen}
+                  includeTypes={includeTypes}
+                />
                 <Controls style={{ zIndex: 35 }} />
                 <Background color={bgGridColor} gap={24} size={1} />
               </ReactFlow>
@@ -3722,7 +2273,7 @@ function MapInternal() {
                 position={{ x: contextMenu.x, y: contextMenu.y }}
                 node={contextMenu.node}
                 nodes={nodes}
-                onClose={handleContextMenuClose}
+                onClose={closeNodeContextMenu}
                 onAction={handleContextAction}
                 avoidRectRef={sidebarBoundsRef}
                 avoidRectRef2={telemetrySidebarBoundsRef}

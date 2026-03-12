@@ -298,6 +298,34 @@ def test_scan_endpoint_accepts_valid_token(client, auth_headers):
     }, headers=auth_headers)
     assert resp.status_code != 401
 
+
+def test_discovery_status_requires_auth_without_token(client):
+    client.post("/api/v1/bootstrap/initialize", json={
+        "email": "admin@example.com",
+        "password": "Secure1234!",
+        "theme_preset": "one-dark",
+    })
+    client.cookies.clear()
+    resp = client.get("/api/v1/discovery/status")
+    assert resp.status_code == 401
+
+
+def test_discovery_jobs_requires_auth_without_token(client):
+    client.post("/api/v1/bootstrap/initialize", json={
+        "email": "admin@example.com",
+        "password": "Secure1234!",
+        "theme_preset": "one-dark",
+    })
+    client.cookies.clear()
+    resp = client.get("/api/v1/discovery/jobs")
+    assert resp.status_code == 401
+
+
+def test_discovery_status_accepts_valid_token(client, auth_headers):
+    resp = client.get("/api/v1/discovery/status", headers=auth_headers)
+    assert resp.status_code == 200
+
+
 def test_scan_endpoint_invalid_cidr_returns_422(client, auth_headers):
     resp = client.post("/api/v1/discovery/scan", json={
         "cidr": "not-a-cidr",

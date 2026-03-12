@@ -84,9 +84,14 @@ function FormModal({
         onClick={handleBackdropClick}
         onKeyDown={handleBackdropKeyDown}
         tabIndex={-1}
-        aria-hidden="true"
       >
-        <dialog className="modal" open aria-labelledby="modal-title">
+        <dialog
+          className="modal"
+          open
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+        >
           <h3 id="modal-title">{title}</h3>
           <EntityForm
             fields={fields}

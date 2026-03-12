@@ -2,12 +2,12 @@
 
 Key loading fallback chain (load_vault_key):
   1. Process environment variable CB_VAULT_KEY
-  2. /data/.env file (CB_VAULT_KEY=...)
+    2. CB_DATA_DIR/.env file (CB_VAULT_KEY=...)
   3. AppSettings.vault_key in the database
   4. Returns None — caller decides whether to warn or fail
 
 This order ensures that after any container restart, as long as
-/data/.env or the DB row is intact, the same Fernet key is loaded
+CB_DATA_DIR/.env or the DB row is intact, the same Fernet key is loaded
 and all previously encrypted ciphertext remains valid.
 """
 
@@ -29,10 +29,16 @@ from app.services.credential_vault import get_vault
 
 _logger = logging.getLogger(__name__)
 
-_DATA_ENV_PATH = Path(os.environ.get("CB_DATA_DIR", "/data")) / ".env"
+
+def _get_data_dir() -> Path:
+    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
+
+
+_DATA_ENV_PATH = _get_data_dir() / ".env"
 _ENV_KEY_RE = re.compile(r"^CB_VAULT_KEY\s*=\s*(.+)$", re.MULTILINE)
 
 _key_source: str = "none"
+_active_key: str | None = None
 
 
 def _is_valid_fernet_key(key: str) -> bool:
@@ -82,21 +88,58 @@ def is_vault_key_valid(db: Session, candidate: str) -> bool:
 
 
 def load_vault_key(db: Session) -> str | None:
-    """Try each key source in order; return the first non-empty key found."""
-    global _key_source
+    """Try each key source in order; return the first non-empty key found.
+
+    Before accepting the environment variable key, this function cross-checks
+    it against the stored vault_key_hash in the database.  A syntactically
+    valid-but-stale Fernet key (e.g. the original CB_VAULT_KEY env var after
+    an auto-rotation) would otherwise win over the rotated key in data/.env,
+    causing every restart to report "degraded".
+    """
+    global _key_source, _active_key
 
     # 1. Process environment variable
     env_key = os.environ.get("CB_VAULT_KEY", "").strip()
     if env_key and _is_valid_fernet_key(env_key):
-        _key_source = "environment"
-        return env_key
+        # Cross-check against the stored hash before accepting.
+        # If a hash is present and doesn't match, the env var is stale (pre-rotation).
+        try:
+            from app.db.models import AppSettings
+
+            cfg = db.get(AppSettings, 1)
+            if cfg and cfg.vault_key_hash:
+                if hmac.compare_digest(_sha256(env_key), cfg.vault_key_hash):
+                    _key_source = "environment"
+                    _active_key = env_key
+                    return env_key
+                else:
+                    _logger.warning(
+                        "CB_VAULT_KEY env var is a valid Fernet key but does not match "
+                        "the stored vault_key_hash — it is stale (likely from before an "
+                        "auto-rotation). Falling through to file / database sources."
+                    )
+                    # Fall through — do NOT return the stale key
+            else:
+                # No hash stored yet (first-time setup): env var is authoritative.
+                _key_source = "environment"
+                _active_key = env_key
+                return env_key
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Could not verify CB_VAULT_KEY against database hash (reason: %s) — "
+                "accepting env var key as-is.",
+                type(exc).__name__,
+            )
+            _key_source = "environment"
+            _active_key = env_key
+            return env_key
     elif env_key:
         _logger.warning(
             "CB_VAULT_KEY environment variable is set but is not a valid Fernet key "
             "(likely a placeholder). Falling through to file / database sources."
         )
 
-    # 2. /data/.env file
+    # 2. CB_DATA_DIR/.env file
     if _DATA_ENV_PATH.exists():
         try:
             content = _DATA_ENV_PATH.read_text(encoding="utf-8")
@@ -105,6 +148,7 @@ def load_vault_key(db: Session) -> str | None:
                 file_key = m.group(1).strip()
                 if file_key and _is_valid_fernet_key(file_key):
                     _key_source = str(_DATA_ENV_PATH)
+                    _active_key = file_key
                     return file_key
         except OSError as exc:
             _logger.warning(
@@ -122,6 +166,7 @@ def load_vault_key(db: Session) -> str | None:
             db_key = (cfg.vault_key or "").strip()
             if db_key and _is_valid_fernet_key(db_key):
                 _key_source = "database"
+                _active_key = db_key
                 return db_key
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
@@ -130,6 +175,7 @@ def load_vault_key(db: Session) -> str | None:
         )
 
     _key_source = "none"
+    _active_key = None
     return None
 
 
@@ -144,7 +190,7 @@ def generate_vault_key() -> str:
 
 
 def write_vault_key_to_env(key: str) -> None:
-    """Write (or update) CB_VAULT_KEY in /data/.env, with 0600 permissions."""
+    """Write (or update) CB_VAULT_KEY in CB_DATA_DIR/.env, with 0600 permissions."""
     try:
         _DATA_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -202,6 +248,53 @@ def rotate_vault_key(db: Session) -> None:
     if not vault.is_initialized:
         raise RuntimeError("Cannot rotate vault key — vault is not currently initialized.")
 
+    # Integrity probe: verify the active key can decrypt before mutating anything.
+    # If the vault was loaded with a stale key (e.g. original CB_VAULT_KEY env var
+    # after an auto-rotation), every _reencrypt call would silently fail, producing
+    # orphaned ciphertext encrypted with new_key but unreadable by it.
+    _probe: str | None = None
+    _probe_label = "unknown"
+    try:
+        _cfg_p = db.get(AppSettings, 1)
+        if _cfg_p and _cfg_p.smtp_password_enc:
+            _probe, _probe_label = _cfg_p.smtp_password_enc, "AppSettings.smtp_password_enc"
+    except Exception:  # noqa: BLE001
+        pass
+    if _probe is None:
+        try:
+            _pp = (
+                db.query(DiscoveryProfile)
+                .filter(DiscoveryProfile.snmp_community_encrypted.isnot(None))
+                .first()
+            )
+            if _pp:
+                _probe = _pp.snmp_community_encrypted
+                _probe_label = f"DiscoveryProfile(id={_pp.id})"
+        except Exception:  # noqa: BLE001
+            pass
+    if _probe is None:
+        try:
+            _pc = db.query(Credential).first()
+            if _pc and _pc.encrypted_value:
+                _probe, _probe_label = _pc.encrypted_value, f"Credential(id={_pc.id})"
+        except Exception:  # noqa: BLE001
+            pass
+    if _probe is not None:
+        try:
+            vault.decrypt(_probe)
+        except Exception as exc:
+            _logger.error(
+                "rotate_vault_key ABORTED: current vault key cannot decrypt '%s' (%s). "
+                "The vault was loaded with a stale key — restore the correct key first. "
+                "No data has been modified.",
+                _probe_label,
+                type(exc).__name__,
+            )
+            raise RuntimeError(
+                f"Vault key integrity check failed: cannot decrypt {_probe_label}. "
+                "Rotation aborted to prevent data loss."
+            ) from exc
+
     new_key_str = generate_vault_key()
     new_fernet = Fernet(new_key_str.encode())
 
@@ -210,7 +303,7 @@ def rotate_vault_key(db: Session) -> None:
         return new_fernet.encrypt(plain.encode()).decode()
 
     # Re-encrypt AppSettings.smtp_password_enc
-    cfg = db.get(AppSettings, 1)
+    cfg = db.get(AppSettings, 1)  # AppSettings already imported above
     if cfg and cfg.smtp_password_enc:
         try:
             cfg.smtp_password_enc = _reencrypt(cfg.smtp_password_enc)
@@ -265,8 +358,9 @@ def rotate_vault_key(db: Session) -> None:
     # Also inject into the process environment for consistency
     os.environ["CB_VAULT_KEY"] = new_key_str
 
-    global _key_source
+    global _key_source, _active_key
     _key_source = str(_DATA_ENV_PATH)
+    _active_key = new_key_str
 
     _logger.info("Vault key rotated successfully.")
 
@@ -314,8 +408,9 @@ def initialize_vault_key(db: Session) -> None:
     vault.reinitialize(new_key_str)
     os.environ["CB_VAULT_KEY"] = new_key_str
 
-    global _key_source
+    global _key_source, _active_key
     _key_source = str(_DATA_ENV_PATH)
+    _active_key = new_key_str
 
     _logger.info("Vault key initialized successfully.")
 
@@ -367,7 +462,10 @@ def _resolve_vault_status(db: Session) -> str:
     vault = get_vault()
     if not vault.is_initialized:
         return "ephemeral"
-    current_key = os.environ.get("CB_VAULT_KEY", "")
+    # Prefer the module-level _active_key (set by load_vault_key, initialize_vault_key,
+    # and rotate_vault_key) over the environment variable.  The env var can be stale in
+    # multi-worker setups or before load_vault_key's hash cross-check runs.
+    current_key = _active_key or os.environ.get("CB_VAULT_KEY", "")
     try:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.vault_key_hash and current_key:

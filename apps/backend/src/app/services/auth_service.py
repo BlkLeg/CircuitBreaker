@@ -140,11 +140,10 @@ def _normalise_smtp_bootstrap_payload(
     smtp_from_name: str | None,
     smtp_tls: bool | None,
 ) -> dict[str, Any] | None:
-    if not smtp_enabled:
-        return None
-
     host = (smtp_host or "").strip()
     from_email = (smtp_from_email or "").strip().lower()
+    if not smtp_enabled and not host:
+        return None
     if not host or not from_email:
         raise HTTPException(status_code=400, detail="SMTP host and from email are required")
     if len(from_email) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(from_email):
@@ -830,11 +829,11 @@ def login(
         )
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Check lockout (Phase 6.5)
+    # Check lockout — return generic 401 to avoid username enumeration via 423
     if getattr(user, "locked_until", None) and user.locked_until and user.locked_until > utcnow():
         raise HTTPException(
-            status_code=423,
-            detail="Account locked due to failed login attempts. Contact an administrator.",
+            status_code=401,
+            detail="Invalid email or password",
         )
 
     reset_login_attempts(db, user)

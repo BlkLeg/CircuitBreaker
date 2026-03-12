@@ -12,7 +12,7 @@ function formatTime(iso) {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
-      hour12: false,
+      hour12: true,
     });
   } catch {
     return '--:--:--';
@@ -257,7 +257,7 @@ export default function ScanTable({
                     <td className="col-time">
                       {job.status === 'queued' ? 'Pending' : formatTime(job.started_at)}
                     </td>
-                    <td className="col-time">{computeEta(job, pct, etaMap?.[job.id])}</td>
+                    <td className="col-time">{computeEta(job, pct, etaMap?.get?.(job.id))}</td>
                   </tr>
                 );
               })

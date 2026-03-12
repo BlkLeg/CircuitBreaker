@@ -3,7 +3,7 @@ import { SkeletonTable } from '../components/common/SkeletonTable';
 import EntityTable from '../components/EntityTable';
 import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
-import { IconImg } from '../components/common/IconPickerModal';
+import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import TagsCell from '../components/TagsCell';
 import { externalNodesApi, networksApi, tagsApi } from '../api/client';
 import FormModal from '../components/common/FormModal';
@@ -63,6 +63,9 @@ function ExternalNodesPage() {
   const [formApiErrors, setFormApiErrors] = useState({});
   const [selectedIds, setSelectedIds] = useState([]);
   const [allTags, setAllTags] = useState([]);
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [pendingIconSlug, setPendingIconSlug] = useState(null);
+  const [iconPickerCallback, setIconPickerCallback] = useState(null);
 
   const envOptions = useMemo(
     () => settings?.environments || ['prod', 'staging', 'dev'],
@@ -97,6 +100,11 @@ function ExternalNodesPage() {
         label: 'Icon',
         type: 'icon-picker',
         value: currentIcon,
+        onOpenPicker: (slug, onSelect) => {
+          setPendingIconSlug(slug);
+          setIconPickerCallback(() => onSelect);
+          setIconPickerOpen(true);
+        },
       },
       {
         name: 'provider',
@@ -532,6 +540,16 @@ function ExternalNodesPage() {
         onSubmit={handleLinkNetwork}
         onClose={() => setShowLinkNetworkForm(false)}
       />
+
+      {iconPickerOpen && (
+        <IconPickerModal
+          currentSlug={pendingIconSlug}
+          onSelect={(slug) => {
+            if (iconPickerCallback) iconPickerCallback(slug);
+          }}
+          onClose={() => setIconPickerOpen(false)}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmState.open}

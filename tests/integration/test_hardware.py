@@ -1,3 +1,11 @@
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(client, auth_headers):
+    client.headers.update(auth_headers)
+
+
 def test_create_and_list_hardware(client):
     resp = client.post("/api/v1/hardware", json={"name": "Node-1", "role": "hypervisor"})
     assert resp.status_code == 201

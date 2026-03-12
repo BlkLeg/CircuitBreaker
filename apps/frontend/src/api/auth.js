@@ -39,6 +39,7 @@ export const authApi = {
     const password_hash = await hashPasswordForAuth(password);
     return client.post('/auth/login', { email, password_hash });
   },
+  logout: () => client.post('/auth/logout'),
   me: () => client.get('/auth/me'),
   meWithToken: (token) => client.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } }),
   updateProfile: (formData, tokenOverride) => {

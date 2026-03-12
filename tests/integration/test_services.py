@@ -3,6 +3,11 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _authenticated_client(client, auth_headers):
+    client.headers.update(auth_headers)
+
+
 @pytest.fixture
 def hardware_id(client):
     resp = client.post("/api/v1/hardware", json={"name": "Node-1"})

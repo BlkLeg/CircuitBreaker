@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
+from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.hardware import Hardware, HardwareCreate, HardwareUpdate, PortEntry
@@ -14,7 +15,7 @@ from app.services import clusters_service, hardware_service
 
 _logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["hardware"])
+router = APIRouter(tags=["hardware"], dependencies=[require_scope("read", "*")])
 
 DUPLICATE_IDENTIFIER_ERROR = "A record with this identifier already exists."
 

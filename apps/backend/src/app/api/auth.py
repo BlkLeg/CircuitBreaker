@@ -58,7 +58,6 @@ router = APIRouter(tags=["auth"])
 # ---------------------------------------------------------------------------
 
 auth_jwt_router = fastapi_users.get_auth_router(auth_backend)
-reset_password_router = fastapi_users.get_reset_password_router()
 users_router = fastapi_users.get_users_router(UserRead, UserUpdate)
 
 # Phase 6.5: Self-service sessions and password (mounted at /api/v1/users)
@@ -133,6 +132,65 @@ def register_user(
     result = svc_register(db, payload.email, password_or_hash, cfg, payload.display_name)
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
+
+
+# ---------------------------------------------------------------------------
+# Password reset (Redis-backed, replaces FastAPI-Users reset router)
+# ---------------------------------------------------------------------------
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    password: str | None = None
+    password_hash: str | None = None
+
+    @model_validator(mode="after")
+    def require_password_or_hash(self):
+        if not self.password and not self.password_hash:
+            raise ValueError("Either password or password_hash is required")
+        if self.password and self.password_hash:
+            raise ValueError("Provide only one of password or password_hash")
+        return self
+
+
+_EMAIL_RESET_DISABLED_DETAIL = (
+    "Email password reset is temporarily disabled. Use Reset With Vault Key from the login page."
+)
+
+
+@router.post("/forgot-password", tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+async def forgot_password(
+    request: Request,
+    response: Response,
+    payload: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Email-based reset is disabled; users must use vault-key recovery."""
+    _logger.info("[auth] forgot-password requested while email reset is disabled")
+    raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
+
+
+@router.post("/reset-password", tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+async def reset_password(
+    request: Request,
+    response: Response,
+    payload: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Email-based reset is disabled; users must use vault-key recovery."""
+    _logger.info("[auth] reset-password requested while email reset is disabled")
+    raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# Demo session
+# ---------------------------------------------------------------------------
 
 
 @router.post("/demo", response_model=DemoAuthResponse, tags=["auth"])

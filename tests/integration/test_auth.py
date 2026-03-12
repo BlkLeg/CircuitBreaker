@@ -99,8 +99,8 @@ def test_bootstrap_initialize_conflicts_after_first_user(client):
 # F3-1  jwt_secret must NOT be exposed in GET /settings
 # ---------------------------------------------------------------------------
 
-def test_settings_jwt_secret_hidden(client):
-    resp = client.get("/api/v1/settings")
+def test_settings_jwt_secret_hidden(client, auth_headers):
+    resp = client.get("/api/v1/settings", headers=auth_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert "jwt_secret" not in data, "jwt_secret should never appear in the settings response"
@@ -109,6 +109,31 @@ def test_settings_jwt_secret_hidden(client):
 # ---------------------------------------------------------------------------
 # F3-2  PUT /settings and POST /settings/reset require auth when enabled
 # ---------------------------------------------------------------------------
+
+
+def test_settings_get_requires_auth_after_bootstrap(client):
+    _register(client)
+
+    client.cookies.clear()
+    resp = client.get("/api/v1/settings")
+    assert resp.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/hardware",
+        "/api/v1/graph/topology",
+        "/api/v1/hardware-clusters",
+        "/api/v1/hardware/entity/hardware/1",
+    ],
+)
+def test_sensitive_read_routes_require_auth_after_bootstrap(client, path):
+    _register(client)
+
+    client.cookies.clear()
+    resp = client.get(path)
+    assert resp.status_code == 401
 
 def test_settings_put_requires_auth(client):
     """After bootstrap, unauthenticated PUT /settings must return 401."""
@@ -321,69 +346,24 @@ def test_bootstrap_initialize_can_seed_smtp_settings(client, db):
     assert get_vault().decrypt(cfg.smtp_password_enc) == "Mailer123!"
 
 
-@pytest.mark.asyncio
-async def test_forgot_password_callback_tolerates_missing_smtp_library(client, db, monkeypatch):
-    from app.core.users import UserManager
-    from app.db.models import User
-    from app.services import smtp_service
-    from app.services.settings_service import get_or_create_settings
-
-    _register(client)
-    cfg = get_or_create_settings(db)
-    cfg.smtp_enabled = True
-    cfg.smtp_host = "smtp.example.com"
-    cfg.smtp_port = 587
-    cfg.smtp_from_email = "noreply@example.com"
-    cfg.smtp_from_name = "Circuit Breaker"
-    db.commit()
-
-    monkeypatch.setattr(smtp_service, "aiosmtplib", None)
-    user = db.query(User).filter(User.email == DEFAULT_TEST_EMAIL).first()
-    assert user is not None
-
-    manager = UserManager(None)
-    await manager.on_after_forgot_password(user, "reset-token", None)
-
-
-@pytest.mark.asyncio
-async def test_forgot_password_uses_external_app_url_for_email_links(client, db, monkeypatch):
-    from types import SimpleNamespace
-
-    from app.core.users import UserManager
-    from app.db.models import User
-    from app.services.settings_service import get_or_create_settings
-    from app.services.smtp_service import SmtpService
-
-    captured = {}
-
-    async def _capture_send_password_reset(self, to_email, token, base_url):
-        captured["to_email"] = to_email
-        captured["token"] = token
-        captured["base_url"] = base_url
-
-    _register(client)
-    cfg = get_or_create_settings(db)
-    cfg.smtp_enabled = True
-    cfg.smtp_host = "smtp.example.com"
-    cfg.smtp_from_email = "noreply@example.com"
-    cfg.api_base_url = "https://circuitbreaker.example.com"
-    db.commit()
-
-    monkeypatch.setattr(SmtpService, "send_password_reset", _capture_send_password_reset)
-
-    user = db.query(User).filter(User.email == DEFAULT_TEST_EMAIL).first()
-    assert user is not None
-
-    manager = UserManager(None)
-    request = SimpleNamespace(
-        base_url="http://internal.local/",
-        client=None,
-        headers={},
+def test_email_forgot_password_endpoint_is_disabled(client):
+    resp = client.post(
+        "/api/v1/auth/forgot-password",
+        json={"email": "doesnotexist@example.com"},
     )
-    await manager.on_after_forgot_password(user, "reset-token", request)
 
-    assert captured["to_email"] == DEFAULT_TEST_EMAIL
-    assert captured["base_url"] == "https://circuitbreaker.example.com"
+    assert resp.status_code == 410
+    assert "vault key" in resp.json()["detail"].lower()
+
+
+def test_email_reset_password_endpoint_is_disabled(client):
+    resp = client.post(
+        "/api/v1/auth/reset-password",
+        json={"token": "deadbeef", "password": "Secure1234!"},
+    )
+
+    assert resp.status_code == 410
+    assert "vault key" in resp.json()["detail"].lower()
 
 
 class TestProfile:

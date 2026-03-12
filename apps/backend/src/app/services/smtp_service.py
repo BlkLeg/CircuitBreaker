@@ -110,6 +110,15 @@ class SmtpService:
 
     def __init__(self, cfg: AppSettings) -> None:
         self.cfg = cfg
+        # Verify SMTP password is decryptable at init — surface vault key issues early
+        if cfg.smtp_password_enc:
+            try:
+                get_vault().decrypt(cfg.smtp_password_enc)
+            except Exception:
+                _log.warning(
+                    "SMTP password cannot be decrypted (CB_VAULT_KEY may have changed). "
+                    "Re-save the SMTP password in Settings to fix password reset emails."
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -256,16 +265,41 @@ class SmtpService:
         await smtp.quit()
 
     async def send_password_reset(self, to_email: str, token: str, base_url: str) -> None:
-        """Send a password-reset email. Link has no token (token in body only, submitted via POST)."""
+        """Send a password-reset email with a clickable link containing the token."""
         app_name, primary_color, logo_path = self._branding()
-        reset_url = f"{base_url}/reset-password"
+        reset_url = f"{base_url}/reset-password?token={token}"
         smtp = await self._connect()
-        msg = self._build_message(
-            to_email,
-            f"Password reset — {app_name}",
-            _reset_html(app_name, primary_color, logo_path is not None, reset_url, token),
-            logo_path=logo_path,
-        )
+
+        subject = f"Password reset — {app_name}"
+        html = _reset_html(app_name, primary_color, logo_path is not None, reset_url)
+        plain = _reset_plain(app_name, reset_url)
+
+        if logo_path and logo_path.exists():
+            ext = logo_path.suffix.lower()
+            subtype = _LOGO_MIME.get(ext)
+            if subtype:
+                outer = MIMEMultipart("related")
+                outer["Subject"] = subject
+                outer["From"] = f"{self.cfg.smtp_from_name} <{self.cfg.smtp_from_email}>"
+                outer["To"] = to_email
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(plain, "plain", "utf-8"))
+                alt.attach(MIMEText(html, "html", "utf-8"))
+                outer.attach(alt)
+                img = MIMEImage(logo_path.read_bytes(), _subtype=subtype)
+                img.add_header("Content-ID", "<cb-email-logo>")
+                img.add_header("Content-Disposition", "inline", filename=f"logo{ext}")
+                outer.attach(img)
+                await smtp.send_message(outer, sender=self.cfg.smtp_from_email)
+                await smtp.quit()
+                return
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{self.cfg.smtp_from_name} <{self.cfg.smtp_from_email}>"
+        msg["To"] = to_email
+        msg.attach(MIMEText(plain, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
         await smtp.send_message(msg, sender=self.cfg.smtp_from_email)
         await smtp.quit()
 
@@ -355,16 +389,9 @@ def _invite_html(
     )
 
 
-def _reset_html(
-    app_name: str, primary_color: str, has_logo: bool, reset_url: str, reset_token: str = ""
-) -> str:
+def _reset_html(app_name: str, primary_color: str, has_logo: bool, reset_url: str) -> str:
     header = _header_block(app_name, primary_color, has_logo)
     btn = _s_btn(primary_color)
-    token_block = (
-        f'    <p style="{_S_P}">Enter this token in the reset form: <code style="background:#3c3836;padding:4px 8px;border-radius:4px;word-break:break-all">{reset_token}</code></p>'
-        if reset_token
-        else ""
-    )
     return (
         f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>'
         f'<body style="margin:0;padding:0;background:#1d2021">'
@@ -374,9 +401,12 @@ def _reset_html(
         f'    <p style="{_S_P}">Hi there,</p>'
         f'    <p style="{_S_P}">A password reset was requested for your'
         f"    <strong>{app_name}</strong> account.</p>"
-        f'    <p style="{_S_P}">Click the button below to open the reset page, then enter the token from this email and your new password. This token expires in 1 hour.</p>'
+        f'    <p style="{_S_P}">Click the button below to set a new password.'
+        f"    This link expires in <strong>15&nbsp;minutes</strong>.</p>"
         f'    <a href="{reset_url}" style="{btn}">Reset Password &rarr;</a>'
-        f"{token_block}"
+        f'    <hr style="{_S_HR}">'
+        f'    <p style="{_S_SMALL}">Or copy this link into your browser:<br>'
+        f'    <a href="{reset_url}" style="color:#a89984;word-break:break-all">{reset_url}</a></p>'
         f'    <hr style="{_S_HR}">'
         f'    <p style="{_S_SMALL}">If you didn&rsquo;t request this, you can safely'
         f"    ignore this email &mdash; your password has not been changed.</p>"
@@ -384,6 +414,17 @@ def _reset_html(
         f'  <div style="{_S_FOOT}">{app_name} &mdash; automated security notification</div>'
         f"</div>"
         f"</body></html>"
+    )
+
+
+def _reset_plain(app_name: str, reset_url: str) -> str:
+    return (
+        f"Password Reset — {app_name}\n\n"
+        f"A password reset was requested for your {app_name} account.\n"
+        f"Visit the link below to set a new password. It expires in 15 minutes.\n\n"
+        f"{reset_url}\n\n"
+        f"If you didn't request this, you can safely ignore this email.\n"
+        f"Your password has not been changed."
     )
 
 

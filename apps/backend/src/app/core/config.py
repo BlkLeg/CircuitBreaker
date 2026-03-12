@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Developer mode — enables verbose SQL logging, exposes
     # full stack traces in error responses.  NEVER enable in production.
     dev_mode: bool = False
-    database_url: str = "sqlite:///./data/app.db"
+    database_url: str = ""  # Must be a postgresql:// URL; set via CB_DB_URL env var
     db_pool_url: str | None = None  # pgbouncer URL; falls back to database_url
     redis_url: str = "redis://localhost:6379/0"
     airgap: bool = False

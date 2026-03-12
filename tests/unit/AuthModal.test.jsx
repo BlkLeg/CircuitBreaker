@@ -34,7 +34,7 @@ describe('AuthModal', () => {
 
   it('shows Forgot Password? link on login tab', () => {
     renderAuthModal();
-    expect(screen.getByText('Forgot Password?')).toBeTruthy();
+    expect(screen.getByText(/Forgot Password\?/i)).toBeTruthy();
     expect(screen.getByText('Reset with Vault Key')).toBeTruthy();
   });
 

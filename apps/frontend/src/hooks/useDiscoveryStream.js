@@ -198,6 +198,7 @@ export function useDiscoveryStream() {
             percent: msg.percent,
             processed: msg.processed,
             total: msg.total,
+            eta_seconds: msg.eta_seconds,
           });
           break;
         case 'scan_log_entry':

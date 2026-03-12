@@ -1,8 +1,8 @@
 /* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback } from 'react';
 import { Radio, X } from 'lucide-react';
+import { getListenerEvents, getListenerStatus } from '../../api/discovery.js';
 
-const API_BASE = '/api/v1';
 const POLL_INTERVAL_MS = 10_000;
 
 const SOURCE_COLORS = { mdns: '#06b6d4', ssdp: '#a78bfa' };
@@ -43,8 +43,8 @@ export default function LiveListenersPanel({ listenerEnabled = false }) {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/discovery/listener/status`);
-      if (r.ok) setStatus(await r.json());
+      const r = await getListenerStatus();
+      setStatus((prev) => r.data ?? prev);
     } catch {
       // network error — keep last known status
     }
@@ -52,8 +52,8 @@ export default function LiveListenersPanel({ listenerEnabled = false }) {
 
   const fetchEvents = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/discovery/listener/events?limit=50`);
-      if (r.ok) setEvents(await r.json());
+      const r = await getListenerEvents({ limit: 50 });
+      setEvents(Array.isArray(r.data) ? r.data : []);
     } catch {
       // network error — keep last known events
     }

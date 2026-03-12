@@ -83,23 +83,25 @@ def poll_hardware(hardware, vault: CredentialVault) -> dict:
         return result
 
     except Exception as e:
-        return {"error": str(e), "status": "unknown"}
+        error_result = {"error": str(e), "status": "unknown"}
+        _fire_and_forget_publish(hardware.id, error_result, ttl=30)
+        return error_result
 
 
-def _fire_and_forget_publish(hardware_id: int, result: dict) -> None:
+def _fire_and_forget_publish(hardware_id: int, result: dict, ttl: int | None = None) -> None:
     """Schedule async Redis cache+publish without blocking the sync caller."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(_async_cache_and_publish(hardware_id, result))
+    loop.create_task(_async_cache_and_publish(hardware_id, result, ttl))
 
 
-async def _async_cache_and_publish(hardware_id: int, result: dict) -> None:
+async def _async_cache_and_publish(hardware_id: int, result: dict, ttl: int | None = None) -> None:
     from app.services.telemetry_cache import cache_telemetry, publish_telemetry
 
     try:
-        await cache_telemetry(hardware_id, result)
+        await cache_telemetry(hardware_id, result, ttl=ttl)
         await publish_telemetry(hardware_id, result)
     except Exception as exc:
         _logger.debug("Redis cache/publish after poll failed: %s", exc)

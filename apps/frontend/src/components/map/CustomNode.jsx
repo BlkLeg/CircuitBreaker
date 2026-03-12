@@ -261,10 +261,8 @@ function CustomNode({ data, selected }) {
 
   const ringStyle = computeRingStyle(isConnectSource, tRing, baseShadow);
 
-  // Selected state: brighter glow + slight scale
-  const selectedStyle = selected
-    ? { boxShadow: `${ringStyle.boxShadow}, 0 0 10px #fff`, transform: 'scale(1.1)' }
-    : {};
+  // Selected state: brighter glow only (no geometric transform).
+  const selectedStyle = selected ? { boxShadow: `${ringStyle.boxShadow}, 0 0 10px #fff` } : {};
 
   const pingColor = statusColors?.border || glow;
 
@@ -314,9 +312,6 @@ function CustomNode({ data, selected }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transition: 'transform 0.2s ease',
-        // Keep scale-on-select; drop box-shadow entirely for shaped nodes.
-        transform: selected ? 'scale(1.1)' : undefined,
       }}
     >
       <svg

@@ -1,14 +1,15 @@
-"""Feature 2 — Environments tests.
+"""Feature 2 — Environments tests."""
 
-Auth is always enabled after bootstrap. These tests run on a fresh DB
-before bootstrap completes, so writes succeed without auth headers.
-The auth_headers fixture is only used in tests that explicitly need auth.
-"""
-
+import pytest
 from app.db.models import Environment
 from app.services.environments_service import resolve_environment_id
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(client, auth_headers):
+    client.headers.update(auth_headers)
 
 def _create_env(client, name="prod", color=None):
     payload = {"name": name}

@@ -252,7 +252,7 @@ async def discover_proxmox_cluster(
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     try:
-        result = await proxmox_service.discover_and_import(db, config)
+        result = await proxmox_service.discover_and_import(db, config, queue_for_review=True)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

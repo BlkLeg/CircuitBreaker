@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.clusters import (
@@ -12,7 +13,7 @@ from app.schemas.clusters import (
 )
 from app.services import clusters_service
 
-router = APIRouter(tags=["hardware-clusters"])
+router = APIRouter(tags=["hardware-clusters"], dependencies=[require_scope("read", "*")])
 
 
 # ── Cluster CRUD ─────────────────────────────────────────────────────────────

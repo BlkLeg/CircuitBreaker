@@ -1,30 +1,46 @@
 """Async SQLAlchemy session factory for FastAPI-Users.
 
-Provides an AsyncEngine + async_sessionmaker that share the same SQLite file
-as the sync engine in session.py.  WAL mode (set by the sync engine on first
-connect) ensures concurrent sync/async access is safe.
+Uses the same database URL source as the sync engine so FastAPI-Users routes
+like forgot-password and reset-password talk to the live PostgreSQL database.
+PostgreSQL is required; SQLite is not supported for the async session.
 """
 
+import os
 from collections.abc import AsyncGenerator
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
 
-_sync_url: str = settings.database_url
+_sync_url: str = (
+    os.environ.get("CB_DB_POOL_URL")
+    or os.environ.get("CB_DB_URL")
+    or settings.db_pool_url
+    or settings.database_url
+)
 
-if _sync_url.startswith("sqlite"):
-    _async_url = _sync_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
-    _connect_args: dict = {"check_same_thread": False}
-else:
-    # PostgreSQL: replace sync driver with asyncpg
-    _pg_async = "postgresql+asyncpg://"
-    _async_url = (
-        _sync_url.replace("postgresql://", _pg_async, 1)
-        .replace("postgresql+psycopg2://", _pg_async, 1)
-        .replace("postgres://", _pg_async, 1)
-    )
-    _connect_args = {}
+# PostgreSQL: replace sync driver with asyncpg
+_pg_async = "postgresql+asyncpg://"
+_async_url = (
+    _sync_url.replace("postgresql://", _pg_async, 1)
+    .replace("postgresql+psycopg2://", _pg_async, 1)
+    .replace("postgres://", _pg_async, 1)
+)
+
+parsed = urlparse(_async_url)
+
+# Disable SSL by default unless the URL explicitly requests it.
+# asyncpg reads ~/.postgresql/postgresql.key even for Unix socket connections,
+# which raises PermissionError in the container's read-only filesystem.
+_connect_args: dict = {}
+query = (parsed.query or "").lower()
+ssl_explicitly_requested = any(
+    kw in query
+    for kw in ("sslmode=require", "sslmode=verify-full", "sslmode=verify-ca", "ssl=true")
+)
+if not ssl_explicitly_requested:
+    _connect_args["ssl"] = False
 
 async_engine = create_async_engine(
     _async_url,

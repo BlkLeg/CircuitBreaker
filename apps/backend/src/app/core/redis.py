@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
+from urllib.parse import urlparse
 
 import redis.asyncio as aioredis
 
@@ -25,17 +27,53 @@ _logger = logging.getLogger(__name__)
 
 _redis: aioredis.Redis | None = None
 _url: str = os.environ.get("CB_REDIS_URL", "redis://localhost:6379/0")
+_password_file: str = os.environ.get("CB_REDIS_PASSWORD_FILE", "/data/.redis_pass")
 
 _RECONNECT_COOLDOWN_S = 10.0
 _last_reconnect_attempt: float = 0.0
 
 
+def _resolve_redis_password(url: str) -> str | None:
+    """Resolve Redis password for URLs without embedded auth.
+
+    Priority:
+    1) Explicit ``CB_REDIS_PASSWORD`` environment variable
+    2) Embedded single-container password file (``/data/.redis_pass`` by default)
+       when connecting to localhost/loopback.
+    """
+    parsed = urlparse(url)
+    if parsed.password:
+        return None
+
+    explicit = os.environ.get("CB_REDIS_PASSWORD")
+    if explicit:
+        return explicit
+
+    host = (parsed.hostname or "").lower()
+    if host not in {"localhost", "127.0.0.1", "::1"}:
+        return None
+
+    try:
+        pass_file = Path(_password_file)
+        if pass_file.exists():
+            secret = pass_file.read_text(encoding="utf-8").strip()
+            if secret:
+                return secret
+    except Exception as exc:
+        _logger.debug("Failed reading Redis password file %s: %s", _password_file, exc)
+
+    return None
+
+
 async def _try_connect(connect_timeout: int = 5, socket_timeout: int = 5) -> aioredis.Redis | None:
     """Attempt a Redis connection.  Returns the client or ``None``."""
     try:
+        password = _resolve_redis_password(_url)
         client = aioredis.from_url(
             _url,
+            password=password,
             decode_responses=True,
+            max_connections=20,
             socket_connect_timeout=connect_timeout,
             socket_timeout=socket_timeout,
             retry_on_timeout=True,

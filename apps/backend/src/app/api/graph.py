@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.models import (
     ComputeNetwork,
@@ -42,7 +43,7 @@ from app.services.ip_reservation import bulk_conflict_map
 
 _logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["graph"])
+router = APIRouter(tags=["graph"], dependencies=[require_scope("read", "*")])
 
 
 def _preload_edge_maps(db: Session) -> dict:
@@ -807,9 +808,28 @@ def build_topology_graph(
 
     # 6. Storage
     if "storage" in include_set:
+        proxmox_hw_lookup: dict[tuple[int, str], Hardware] = {}
+        for hw in db.execute(select(Hardware)).scalars():
+            if hw.integration_config_id and hw.proxmox_node_name:
+                proxmox_hw_lookup[(hw.integration_config_id, hw.proxmox_node_name.strip())] = hw
+
         for st in (
             db.execute(select(Storage).options(joinedload(Storage.hardware))).unique().scalars()
         ):
+            inferred_hw_id = st.hardware_id
+            inferred_vendor = st.hardware.vendor if st.hardware else None
+            inferred_icon = st.hardware.vendor_icon_slug if st.hardware else None
+
+            # Queue-mode Proxmox storage can arrive before node rows are accepted.
+            # Infer node association from "<pool>@<node>" naming so the map links it.
+            if inferred_hw_id is None and st.integration_config_id and st.name and "@" in st.name:
+                node_name = st.name.rsplit("@", 1)[-1].strip()
+                fallback_hw = proxmox_hw_lookup.get((st.integration_config_id, node_name))
+                if fallback_hw is not None:
+                    inferred_hw_id = fallback_hw.id
+                    inferred_vendor = fallback_hw.vendor
+                    inferred_icon = fallback_hw.vendor_icon_slug
+
             nodes.append(
                 {
                     "id": f"st-{st.id}",
@@ -819,19 +839,19 @@ def build_topology_graph(
                     "kind": st.kind,
                     "capacity_gb": st.capacity_gb,
                     "used_gb": st.used_gb,
-                    "vendor": st.hardware.vendor if st.hardware else None,
-                    "icon_slug": st.hardware.vendor_icon_slug if st.hardware else None,
+                    "vendor": inferred_vendor,
+                    "icon_slug": inferred_icon,
                     "tags": get_tags("storage", st.id),
-                    "hardware_id": st.hardware_id,
+                    "hardware_id": inferred_hw_id,
                     "integration_config_id": st.integration_config_id,
                 }
             )
             # Edge: Storage → Hardware (attached_to)
-            if st.hardware_id and "hardware" in include_set:
+            if inferred_hw_id and "hardware" in include_set:
                 edges.append(
                     build_edge_dict(
                         id=f"e-hw-st-{st.id}",
-                        source=f"hw-{st.hardware_id}",
+                        source=f"hw-{inferred_hw_id}",
                         target=f"st-{st.id}",
                         relation="has_storage",
                     )

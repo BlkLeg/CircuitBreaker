@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { securityApi } from '../../api/client.jsx';
 
 const ACK_KEY = 'cb:security-banner-ack';
 
@@ -16,9 +17,10 @@ export default function SecurityBanner() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetch('/api/v1/security/status')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
+    securityApi
+      .status()
+      .then((res) => {
+        const data = res?.data;
         if (!data) return;
         if (data.auth_enabled) {
           // Clear any stale ack so re-disabling auth will show the banner again

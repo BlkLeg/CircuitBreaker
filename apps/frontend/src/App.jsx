@@ -27,7 +27,6 @@ const DocsPage = React.lazy(() => import('./pages/DocsPage'));
 const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
 const MapPage = React.lazy(() => import('./pages/MapPage'));
 const DiscoveryPage = React.lazy(() => import('./pages/DiscoveryPage'));
-const DiscoveryHistoryPage = React.lazy(() => import('./pages/DiscoveryHistoryPage'));
 const HardwarePage = React.lazy(() => import('./pages/HardwarePage'));
 const ComputeUnitsPage = React.lazy(() => import('./pages/ComputeUnitsPage'));
 const ServicesPage = React.lazy(() => import('./pages/ServicesPage'));
@@ -126,7 +125,7 @@ function AppInner() {
                 }
               />
               <Route path="/discovery" element={<DiscoveryPage />} />
-              <Route path="/discovery/history" element={<DiscoveryHistoryPage />} />
+              <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
               <Route
                 path="/admin/users"
                 element={
@@ -182,13 +181,14 @@ function NavigateToLogin() {
 }
 
 function AppRoutes() {
+  const BOOTSTRAP_RETRY_SECONDS = 10;
   const { isAuthenticated, authReady } = useAuth();
   const { settings } = useSettings();
   const branding = settings?.branding;
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
   const [bootstrapError, setBootstrapError] = useState(null);
-  const [retryCountdown, setRetryCountdown] = useState(3);
+  const [retryCountdown, setRetryCountdown] = useState(BOOTSTRAP_RETRY_SECONDS);
   const [isRetrying, setIsRetrying] = useState(false);
   const checkInFlightRef = useRef(false);
 
@@ -205,7 +205,7 @@ function AppRoutes() {
       .then((res) => {
         setNeedsBootstrap(Boolean(res.data?.needs_bootstrap));
         setBootstrapError(null);
-        setRetryCountdown(3);
+        setRetryCountdown(BOOTSTRAP_RETRY_SECONDS);
       })
       .catch((err) => {
         const message = err?.message || 'Failed to determine setup state.';
@@ -231,7 +231,7 @@ function AppRoutes() {
 
   useEffect(() => {
     if (!bootstrapError) {
-      setRetryCountdown(3);
+      setRetryCountdown(BOOTSTRAP_RETRY_SECONDS);
       return;
     }
 
@@ -239,7 +239,7 @@ function AppRoutes() {
       setRetryCountdown((prev) => {
         if (prev <= 1) {
           fetchBootstrapStatus({ background: true });
-          return 3;
+          return BOOTSTRAP_RETRY_SECONDS;
         }
         return prev - 1;
       });

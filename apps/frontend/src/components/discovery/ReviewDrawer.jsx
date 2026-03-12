@@ -80,7 +80,8 @@ export default function ReviewDrawer({ result, onClose, onAccepted, onRejected }
       const data = res.data;
 
       const label = name || result.ip_address;
-      toast.success(`${label} added as hardware`);
+      const entityLabel = data?.entity_type === 'compute_unit' ? 'compute unit' : 'hardware';
+      toast.success(`${label} added as ${entityLabel}`);
 
       onAccepted(data);
     } catch (err) {

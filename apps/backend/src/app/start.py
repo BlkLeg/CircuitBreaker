@@ -94,14 +94,6 @@ def load_native_config(path: str | Path | None) -> dict[str, object]:
     return config
 
 
-def _sqlite_url_for_path(path: Path) -> str:
-    resolved = path.expanduser().resolve()
-    as_posix = resolved.as_posix()
-    if as_posix.startswith("/"):
-        return f"sqlite:////{as_posix.lstrip('/')}"
-    return f"sqlite:///{as_posix}"
-
-
 def _get_option(
     cli_value: object,
     env_key: str,
@@ -171,7 +163,13 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     if not database_url:
-        database_url = _sqlite_url_for_path(data_dir / "app.db")
+        import logging as _logging
+
+        _logging.getLogger(__name__).error(
+            "DATABASE_URL is not set. PostgreSQL is required. "
+            "Set CB_DB_URL or DATABASE_URL to a postgresql:// connection string."
+        )
+        sys.exit(1)
 
     _set_default_env("APP_VERSION", app_version)
     _set_default_env("CB_DATA_DIR", str(data_dir))

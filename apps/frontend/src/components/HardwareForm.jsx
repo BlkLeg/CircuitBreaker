@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 
-import { hardwareApi } from '../api/client';
+import { assetsApi, hardwareApi } from '../api/client';
 
 const HardwareForm = ({ hardware, onUpdated }) => {
   const [uploading, setUploading] = useState(false);
@@ -10,19 +10,9 @@ const HardwareForm = ({ hardware, onUpdated }) => {
     if (!file) return;
     setUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch('/api/v1/assets/user-icon', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('Upload failed');
-      }
-
-      const { url } = await response.json();
+      const response = await assetsApi.uploadUserIcon(file);
+      const { url } = response.data || {};
+      if (!url) throw new Error('Upload failed');
       const updated = await hardwareApi.update(hardware.id, { custom_icon: url });
       onUpdated?.(updated.data);
     } finally {

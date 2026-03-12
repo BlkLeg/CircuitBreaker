@@ -1,4 +1,11 @@
+import pytest
+
 from app.db import models
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_client(client, auth_headers):
+    client.headers.update(auth_headers)
 
 
 def test_update_edge_type_normalizes_alias_and_validates(client, db, auth_headers):

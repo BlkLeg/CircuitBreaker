@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
+import { authApi } from '../api/auth.js';
 
 export const AuthContext = createContext({
   isAuthenticated: false,
@@ -30,11 +31,11 @@ export function AuthProvider({ children }) {
   // Validate session on mount via cookie (httpOnly); sets meReady when done
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/v1/auth/me', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((u) => {
+    authApi
+      .me()
+      .then((res) => {
         if (cancelled) return;
-        setUser(u);
+        setUser(res?.data || null);
         setToken('cookie');
       })
       .catch(() => {
@@ -74,7 +75,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(() => {
-    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch((err) => {
+    authApi.logout().catch((err) => {
       console.warn('Server-side logout failed (session will expire):', err);
     });
     setToken(null);

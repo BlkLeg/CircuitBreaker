@@ -12,12 +12,13 @@ SQLAlchemy's ``Base.metadata.create_all()`` handles the initial schema.  These
 SQL files capture *additive* changes (new columns, new tables, new indexes) that
 are applied on top of an existing database without wiping data.  No down-migrations
 are provided; schema changes are additive-only.
+
+PostgreSQL is required; ``ADD COLUMN IF NOT EXISTS`` is used directly.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
 from sqlalchemy import text
@@ -25,12 +26,6 @@ from sqlalchemy.engine import Engine
 
 _logger = logging.getLogger(__name__)
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
-_TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-def _is_safe_identifier(name: str) -> bool:
-    """Return True if *name* is a safe SQL identifier (prevents SQL injection)."""
-    return bool(_TABLE_NAME_RE.match(name))
 
 
 def run_migrations(engine: Engine) -> None:
@@ -40,47 +35,11 @@ def run_migrations(engine: Engine) -> None:
         _logger.debug("No SQL migration files found in %s", _MIGRATIONS_DIR)
         return
 
-    is_sqlite = engine.dialect.name == "sqlite"
-
     with engine.connect() as conn:
         for sql_file in sql_files:
             _logger.info("Applying migration: %s", sql_file.name)
             statements = sql_file.read_text(encoding="utf-8")
             for stmt in _iter_statements(statements):
-                if is_sqlite and "ADD COLUMN IF NOT EXISTS" in stmt.upper():
-                    match = re.search(
-                        r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)",
-                        stmt,
-                        re.IGNORECASE,
-                    )
-                    if match:
-                        table_name = match.group(1)
-                        column_name = match.group(2)
-
-                        if not _is_safe_identifier(table_name):
-                            _logger.warning(
-                                "Skipping PRAGMA table_info() for unsafe table name %r in migration %s",
-                                table_name,
-                                sql_file.name,
-                            )
-                            continue
-
-                        # table_name is validated above as a safe identifier; PRAGMA call is not user-controlled.
-                        cols = [
-                            row[1]
-                            for row in conn.execute(
-                                text(f"PRAGMA table_info({table_name})")
-                            ).fetchall()
-                        ]
-                        if column_name in cols:
-                            continue
-
-                        stmt = re.sub(
-                            r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS",
-                            "ADD COLUMN",
-                            stmt,
-                            flags=re.IGNORECASE,
-                        )
                 try:
                     conn.execute(text(stmt))
                 except Exception as exc:

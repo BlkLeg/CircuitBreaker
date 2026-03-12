@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import '../styles/discovery.css';
-import { getJobs, getJobResults, getProxmoxRuns, cancelJob } from '../api/discovery.js';
-import { proxmoxApi } from '../api/client';
+import { getJobs, getJobResults, cancelJob } from '../api/discovery.js';
 import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
@@ -38,6 +37,7 @@ const TYPE_COLORS = new Map([
   ['snmp', '#8b5cf6'],
   ['arp', '#f59e0b'],
   ['http', '#10b981'],
+  ['proxmox', '#a855f7'],
 ]);
 
 function TypePill({ type }) {
@@ -107,14 +107,37 @@ function parsePorts(json) {
   }
 }
 
+function formatEtaSeconds(secs) {
+  if (typeof secs !== 'number' || secs < 0) return null;
+  if (secs < 1) return '< 1s';
+  const h = String(Math.floor(secs / 3600)).padStart(2, '0');
+  const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+  const s = String(Math.floor(secs % 60)).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function getProgressPercent(job) {
+  if (typeof job?.progress_percent === 'number') {
+    return Math.max(0, Math.min(100, Math.round(job.progress_percent)));
+  }
+  if (job?.status === 'completed' || job?.status === 'done') return 100;
+  return 0;
+}
+
+function getLiveMessage(job) {
+  if (!job) return '';
+  const phase = job.current_phase || job.last_log_phase;
+  const message = job.current_message || job.last_log_message;
+  if (phase && message) return `${phase}: ${message}`;
+  return phase || message || '';
+}
+
 const SOURCE_NETWORK = 'network';
 const SOURCE_PROXMOX = 'proxmox';
 
-export default function DiscoveryHistoryPage({ embedded = false }) {
+export default function DiscoveryHistoryPage({ embedded = false, jobsData = null, onRefreshJobs }) {
   const toast = useToast();
   const [jobs, setJobs] = useState([]);
-  const [proxmoxRuns, setProxmoxRuns] = useState([]);
-  const [integrationNames, setIntegrationNames] = useState(() => new Map());
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(new Set());
   const [results, setResults] = useState(() => new Map());
@@ -124,59 +147,48 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([
-      getJobs()
-        .then((r) => r.data)
-        .catch((error) => {
-          logApiWarning('Failed to load scan history', error);
-          return [];
-        }),
-      getProxmoxRuns()
-        .then((r) => r.data)
-        .catch((error) => {
-          logApiWarning('Failed to load Proxmox runs', error);
-          return [];
-        }),
-      proxmoxApi
-        .list()
-        .then((r) => r.data || [])
-        .catch(() => []),
-    ])
-      .then(([jobList, runList, configs]) => {
-        setJobs(jobList);
-        setProxmoxRuns(runList);
-        const names = new Map();
-        (configs || []).forEach((c) => {
-          names.set(c.id, c.name || `Integration ${c.id}`);
-        });
-        setIntegrationNames(names);
+    getJobs()
+      .then((r) => setJobs(r.data || []))
+      .catch((error) => {
+        logApiWarning('Failed to load scan history', error);
+        setJobs([]);
       })
       .finally(() => setLoading(false));
   }, []);
 
+  const hasExternalJobs = Array.isArray(jobsData);
+
   useEffect(() => {
+    if (hasExternalJobs) {
+      setLoading(false);
+      return;
+    }
     load();
-  }, [load]);
+  }, [load, hasExternalJobs]);
 
   const handleCancelJob = async (jobId, event) => {
     event?.stopPropagation();
     try {
       await cancelJob(jobId);
       toast.success('Scan cancelled');
-      load();
+      if (onRefreshJobs) {
+        onRefreshJobs();
+      } else {
+        load();
+      }
     } catch (err) {
       toast.error(err?.message || 'Failed to cancel scan');
     }
   };
 
   const toggleExpand = (item) => {
-    const key = item.source === SOURCE_PROXMOX ? `proxmox-${item.id}` : item.id;
+    const key = item.id;
     const newExpanded = new Set(expanded);
     if (newExpanded.has(key)) {
       newExpanded.delete(key);
     } else {
       newExpanded.add(key);
-      if (item.source === SOURCE_NETWORK && !results.has(item.id)) {
+      if (!results.has(item.id)) {
         getJobResults(item.id)
           .then((r) => {
             setResults((prev) => {
@@ -190,85 +202,6 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
     }
     setExpanded(newExpanded);
   };
-
-  const renderExpandedProxmoxRun = (run) => (
-    <div className="history-expanded-results" style={{ padding: '8px 0' }}>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
-          gap: 12,
-          marginBottom: 8,
-        }}
-      >
-        <div
-          style={{
-            textAlign: 'center',
-            padding: 8,
-            background: 'var(--color-bg-elevated)',
-            borderRadius: 6,
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#22c55e' }}>
-            {run.nodes_imported ?? 0}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Nodes</div>
-        </div>
-        <div
-          style={{
-            textAlign: 'center',
-            padding: 8,
-            background: 'var(--color-bg-elevated)',
-            borderRadius: 6,
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#3b82f6' }}>
-            {run.vms_imported ?? 0}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>VMs</div>
-        </div>
-        <div
-          style={{
-            textAlign: 'center',
-            padding: 8,
-            background: 'var(--color-bg-elevated)',
-            borderRadius: 6,
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#a855f7' }}>
-            {run.cts_imported ?? 0}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Containers</div>
-        </div>
-        <div
-          style={{
-            textAlign: 'center',
-            padding: 8,
-            background: 'var(--color-bg-elevated)',
-            borderRadius: 6,
-          }}
-        >
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#f59e0b' }}>
-            {run.storage_imported ?? 0}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Storage</div>
-        </div>
-      </div>
-      {run.errors && run.errors.length > 0 && (
-        <div
-          style={{
-            fontSize: 12,
-            color: '#ef4444',
-            background: 'rgba(239,68,68,0.08)',
-            padding: 8,
-            borderRadius: 6,
-          }}
-        >
-          {run.errors.join('\n')}
-        </div>
-      )}
-    </div>
-  );
 
   const renderExpandedResults = (jobId) => {
     const jobResults = results.get(jobId);
@@ -318,41 +251,29 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
     );
   };
 
-  // Merge network jobs and Proxmox runs, sort by date desc
-  const merged = [
-    ...jobs.map((j) => ({
-      source: SOURCE_NETWORK,
-      id: j.id,
-      sortAt: j.created_at,
+  const activeJobs = hasExternalJobs ? jobsData : jobs;
+
+  const merged = activeJobs
+    .map((j) => ({
+      source: j.source_type === 'proxmox' ? SOURCE_PROXMOX : SOURCE_NETWORK,
       ...j,
-    })),
-    ...proxmoxRuns.map((r) => ({
-      source: SOURCE_PROXMOX,
-      id: r.id,
-      sortAt: r.started_at || r.created_at,
-      ...r,
-    })),
-  ].sort((a, b) => {
-    const ta = new Date(a.sortAt || 0).getTime();
-    const tb = new Date(b.sortAt || 0).getTime();
-    return tb - ta;
-  });
+      sortAt: j.started_at || j.created_at,
+    }))
+    .sort((a, b) => {
+      const ta = new Date(a.sortAt || 0).getTime();
+      const tb = new Date(b.sortAt || 0).getTime();
+      return tb - ta;
+    });
 
   const filtered = merged.filter((item) => {
-    const matchesSource =
-      sourceFilter === 'all' ||
-      (sourceFilter === 'network' && item.source === SOURCE_NETWORK) ||
-      (sourceFilter === 'proxmox' && item.source === SOURCE_PROXMOX);
+    const matchesSource = sourceFilter === 'all' || sourceFilter === item.source;
     if (!matchesSource) return false;
-    if (item.source === SOURCE_NETWORK) {
-      const matchesText = !filter || item.target_cidr?.toLowerCase().includes(filter.toLowerCase());
-      const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
-      return matchesText && matchesStatus;
-    }
-    const targetName =
-      integrationNames.get(item.integration_id) || `Proxmox ${item.integration_id}`;
-    const matchesText = !filter || targetName.toLowerCase().includes(filter.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
+    const targetText = `${item.label || ''} ${item.target_cidr || ''}`.toLowerCase();
+    const matchesText = !filter || targetText.includes(filter.toLowerCase());
+    const matchesStatus =
+      statusFilter === 'all' ||
+      item.status === statusFilter ||
+      (statusFilter === 'completed' && item.status === 'done');
     return matchesText && matchesStatus;
   });
 
@@ -365,7 +286,7 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
       }
     >
       {!embedded && (
-        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20 }}>Discovery Scan History</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20 }}>Discovery Scans</h1>
       )}
 
       {/* Filters */}
@@ -434,58 +355,18 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
             </thead>
             <tbody>
               {filtered.map((item) => {
-                const rowKey = item.source === SOURCE_PROXMOX ? `proxmox-${item.id}` : item.id;
-                const isExpanded = expanded.has(rowKey);
-                if (item.source === SOURCE_PROXMOX) {
-                  const targetName =
-                    integrationNames.get(item.integration_id) || `Proxmox ${item.integration_id}`;
-                  return (
-                    <React.Fragment key={rowKey}>
-                      <tr className="history-row" onClick={() => toggleExpand(item)}>
-                        <td className="history-expand-cell">
-                          {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                        </td>
-                        <td>
-                          <TimestampCell isoString={item.started_at || item.created_at} />
-                        </td>
-                        <td className="history-target">{targetName}</td>
-                        <td>
-                          <span
-                            style={{
-                              padding: '1px 7px',
-                              borderRadius: 4,
-                              fontSize: 10,
-                              fontWeight: 600,
-                              background: '#a855f722',
-                              color: '#a855f7',
-                              border: '1px solid #a855f744',
-                            }}
-                          >
-                            Proxmox
-                          </span>
-                        </td>
-                        <td>
-                          <HistoryStatusPill
-                            status={item.status === 'completed' ? 'done' : item.status}
-                          />
-                        </td>
-                        <td>{item.nodes_imported ?? 0}</td>
-                        <td>—</td>
-                        <td>—</td>
-                      </tr>
-                      {isExpanded && (
-                        <tr className="history-expanded-row">
-                          <td colSpan={8}>
-                            <div className="history-expanded-shell">
-                              {renderExpandedProxmoxRun(item)}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                }
+                const rowKey = item.id;
+                const isExpanded = expanded.has(item.id);
                 const types = parseJsonArray(item.scan_types_json);
+                const targetLabel = item.label || item.target_cidr || 'Ad-hoc scan';
+                const progressPercent = getProgressPercent(item);
+                const liveEta = formatEtaSeconds(item.eta_seconds);
+                const liveMessage = getLiveMessage(item);
+                const showLiveMeta =
+                  item.status === 'running' ||
+                  item.status === 'queued' ||
+                  typeof item.progress_percent === 'number' ||
+                  typeof item.eta_seconds === 'number';
                 return (
                   <React.Fragment key={rowKey}>
                     <tr className="history-row" onClick={() => toggleExpand(item)}>
@@ -493,28 +374,46 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
                         {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                       </td>
                       <td>
-                        <TimestampCell isoString={item.created_at} />
+                        <TimestampCell isoString={item.started_at || item.created_at} />
                       </td>
-                      <td className="history-target">{item.target_cidr}</td>
+                      <td className="history-target">{targetLabel}</td>
                       <td>
                         <div className="history-type-row">
-                          {types.map((t) => (
-                            <TypePill key={t} type={t} />
-                          ))}
+                          {item.source === SOURCE_PROXMOX ? (
+                            <TypePill type="proxmox" />
+                          ) : (
+                            types.map((t) => <TypePill key={t} type={t} />)
+                          )}
                         </div>
                       </td>
-                      <td style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <HistoryStatusPill status={item.status} />
-                        {(item.status === 'running' || item.status === 'queued') && (
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            style={{ fontSize: 10, padding: '2px 8px', lineHeight: 1.4 }}
-                            onClick={(e) => handleCancelJob(item.id, e)}
-                          >
-                            Cancel
-                          </button>
+                      <td>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <HistoryStatusPill status={item.status} />
+                          {(item.status === 'running' || item.status === 'queued') && (
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ fontSize: 10, padding: '2px 8px', lineHeight: 1.4 }}
+                              onClick={(e) => handleCancelJob(item.id, e)}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </div>
+                        {showLiveMeta && (
+                          <div className="history-live-meta">
+                            <span>{progressPercent}%</span>
+                            {liveEta && <span>ETA {liveEta}</span>}
+                          </div>
                         )}
+                        {liveMessage && <div className="history-live-message">{liveMessage}</div>}
                       </td>
                       <td>{item.hosts_found ?? 0}</td>
                       <td>{item.hosts_new ?? 0}</td>
@@ -542,8 +441,6 @@ export default function DiscoveryHistoryPage({ embedded = false }) {
 
 DiscoveryHistoryPage.propTypes = {
   embedded: PropTypes.bool,
-};
-
-DiscoveryHistoryPage.defaultProps = {
-  embedded: false,
+  jobsData: PropTypes.array,
+  onRefreshJobs: PropTypes.func,
 };

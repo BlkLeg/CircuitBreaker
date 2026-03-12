@@ -108,6 +108,8 @@ class ProxmoxDiscoverResponse(BaseModel):
     cts_imported: int = 0
     networks_imported: int = 0
     storage_imported: int = 0
+    results_queued: int = 0
+    review_job_id: int | None = None
     errors: list[str] = []
 
 

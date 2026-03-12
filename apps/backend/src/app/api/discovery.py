@@ -1,13 +1,13 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
-from app.core.rbac import require_role
+from app.core.rbac import require_role, require_scope
 from app.core.scheduler import get_scheduler
 from app.db.models import ListenerEvent, ScanJob, ScanLog, ScanResult, User
 from app.db.session import get_db
@@ -36,7 +36,7 @@ from app.services.settings_service import get_or_create_settings
 _logger = logging.getLogger(__name__)
 
 _DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
-router = APIRouter(tags=["discovery"])
+router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")])
 
 
 def _get_actor(db: Session, user_id: int) -> str:
@@ -177,6 +177,7 @@ def delete_profile(
 @limiter.limit(lambda: get_limit("scan"))
 async def run_profile_scan(
     request: Request,
+    response: Response,
     profile_id: int,
     bg_tasks: BackgroundTasks,
     user: User = require_role("admin"),
@@ -223,6 +224,7 @@ async def run_profile_scan(
 @limiter.limit(lambda: get_limit("scan"))
 async def run_adhoc_scan(
     request: Request,
+    response: Response,
     payload: AdHocScanRequest,
     bg_tasks: BackgroundTasks,
     user: User = require_role("admin"),

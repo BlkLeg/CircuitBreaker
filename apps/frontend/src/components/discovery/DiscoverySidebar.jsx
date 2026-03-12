@@ -1,9 +1,9 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Plus, Layers, Settings2, ClipboardList, History } from 'lucide-react';
+import { Plus, Layers, Settings2, ClipboardList } from 'lucide-react';
 import LiveListenersPanel from './LiveListenersPanel.jsx';
 
-const FILTERS = [{ key: 'all', label: 'All Scans', Icon: Layers }];
+const FILTERS = [{ key: 'all', label: 'Scans', Icon: Layers }];
 
 export default function DiscoverySidebar({
   filter,
@@ -105,16 +105,6 @@ export default function DiscoverySidebar({
           {pendingReviewCount > 0 && (
             <span className="sidebar-nav-count">{pendingReviewCount}</span>
           )}
-        </button>
-        <button
-          type="button"
-          className={`sidebar-nav-item ${filter === 'history' ? 'active' : ''}`}
-          onClick={() => onFilterChange('history')}
-        >
-          <span className="sidebar-nav-icon">
-            <History size={16} />
-          </span>
-          <span className="sidebar-nav-label">History</span>
         </button>
       </nav>
 

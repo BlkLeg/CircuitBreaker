@@ -18,7 +18,12 @@ from app.db.models import CVEEntry  # noqa: F401 — ensure model metadata is lo
 
 _logger = logging.getLogger(__name__)
 
-_CVE_DB_PATH = Path(os.environ.get("CB_DATA_DIR", "/data")) / "cve.db"
+
+def _get_data_dir() -> Path:
+    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
+
+
+_CVE_DB_PATH = _get_data_dir() / "cve.db"
 
 
 def _ensure_dir() -> None:

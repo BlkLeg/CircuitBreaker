@@ -1109,6 +1109,7 @@ class ScanJob(Base):
     hosts_updated: Mapped[int] = mapped_column(Integer, default=0)
     hosts_conflict: Mapped[int] = mapped_column(Integer, default=0)
     error_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     triggered_by: Mapped[str] = mapped_column(String, default="api")
     source_type: Mapped[str] = mapped_column(
         String, default="manual"
@@ -1408,6 +1409,33 @@ class LiveMetric(Base):
     status: Mapped[str | None] = mapped_column(String)  # up/down/offline
     assigned_to: Mapped[str | None] = mapped_column(String)  # service slug or null
     subnet: Mapped[str | None] = mapped_column(String)  # 10.10.10.0/24
+
+
+# ── Hardware Live Metrics ───────────────────────────────────────────────────
+
+
+class HardwareLiveMetric(Base):
+    __tablename__ = "hardware_live_metrics"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True
+    )
+    cpu_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_used_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_total_mb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disk_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uptime_s: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ── Telemetry Timeseries ─────────────────────────────────────────────────────

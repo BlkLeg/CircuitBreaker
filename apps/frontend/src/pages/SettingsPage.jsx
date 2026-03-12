@@ -988,7 +988,7 @@ export default function SettingsPage() {
                 <SettingSection title="External Access">
                   <SettingField
                     label="External App URL"
-                    hint="Publicly reachable domain used in invite and password-reset emails. Example: https://circuitbreaker.example.com"
+                    hint="Publicly reachable domain used in invite links. Example: https://circuitbreaker.example.com"
                   >
                     <input
                       className="form-control"
@@ -1429,7 +1429,7 @@ export default function SettingsPage() {
 
                     <SettingField
                       label="Enabled"
-                      hint="Send invite and password-reset emails via SMTP."
+                      hint="Send invite and outbound notification emails via SMTP."
                     >
                       <label className="toggle-switch">
                         <span className="sr-only">SMTP Enabled</span>

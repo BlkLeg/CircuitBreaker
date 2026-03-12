@@ -1,12 +1,16 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+
+const mockApplyEdgeSides = vi.fn((draggedNodes, edges) => edges);
+let latestReactFlowProps = null;
 
 // Mock ReactFlow before importing MapPage
 vi.mock('reactflow', () => {
-  const ReactFlow = React.forwardRef(({ children }, ref) =>
-    React.createElement('div', { 'data-testid': 'react-flow', ref }, children)
-  );
+  const ReactFlow = React.forwardRef((props, ref) => {
+    latestReactFlowProps = props;
+    return React.createElement('div', { 'data-testid': 'react-flow', ref }, props.children);
+  });
   ReactFlow.displayName = 'ReactFlow';
   return {
     default: ReactFlow,
@@ -14,7 +18,14 @@ vi.mock('reactflow', () => {
     Controls: () => React.createElement('div', { 'data-testid': 'rf-controls' }),
     Panel: ({ children }) => React.createElement('div', { 'data-testid': 'rf-panel' }, children),
     useNodesState: (initial) => [initial || [], vi.fn(), vi.fn()],
-    useEdgesState: (initial) => [initial || [], vi.fn(), vi.fn()],
+    useEdgesState: (initial) => {
+      let current = initial || [];
+      const setEdges = vi.fn((updater) => {
+        current = typeof updater === 'function' ? updater(current) : updater;
+        return current;
+      });
+      return [current, setEdges, vi.fn()];
+    },
     ReactFlowProvider: ({ children }) => React.createElement('div', null, children),
     useReactFlow: () => ({
       fitView: vi.fn(),
@@ -182,7 +193,7 @@ vi.mock('../components/Map/Sidebar', () => ({
 }));
 
 vi.mock('../components/MapToolbar', () => ({
-  default: (props) => React.createElement('div', { 'data-testid': 'map-toolbar' }, 'MapToolbar'),
+  default: () => React.createElement('div', { 'data-testid': 'map-toolbar' }, 'MapToolbar'),
 }));
 
 vi.mock('../components/map/connectionTypes', () => ({
@@ -235,6 +246,14 @@ vi.mock('../utils/cloudView', () => ({
   restoreFromCloudView: vi.fn(),
 }));
 
+vi.mock('../utils/mapGeometryUtils', async () => {
+  const actual = await vi.importActual('../utils/mapGeometryUtils');
+  return {
+    ...actual,
+    applyEdgeSides: (...args) => mockApplyEdgeSides(...args),
+  };
+});
+
 vi.mock('../utils/viewportFit', () => ({
   viewportFit: vi.fn(),
 }));
@@ -267,6 +286,13 @@ vi.mock('../hooks/useMapRealTimeUpdates', () => ({
   }),
 }));
 
+vi.mock('../hooks/useTelemetryStream', () => ({
+  useTelemetryStream: () => ({
+    data: new Map(),
+    connected: false,
+  }),
+}));
+
 // Polyfill ResizeObserver for jsdom
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class ResizeObserver {
@@ -285,6 +311,8 @@ import MapPage from '../pages/MapPage.jsx';
 describe('MapPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockApplyEdgeSides.mockClear();
+    latestReactFlowProps = null;
   });
 
   it('renders map page container', async () => {
@@ -302,5 +330,28 @@ describe('MapPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('map-toolbar')).toBeInTheDocument();
     });
+  });
+
+  it('does not recompute edge sides on click or zero-delta drag stop', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('react-flow')).toBeInTheDocument();
+      expect(latestReactFlowProps).toBeTruthy();
+    });
+
+    const stationaryNode = {
+      id: 'hw-1',
+      position: { x: 100, y: 200 },
+      positionAbsolute: { x: 100, y: 200 },
+    };
+
+    act(() => {
+      latestReactFlowProps.onNodeClick?.({}, stationaryNode);
+      latestReactFlowProps.onNodeDragStart?.({}, stationaryNode, [stationaryNode]);
+      latestReactFlowProps.onNodeDragStop?.({}, stationaryNode, [stationaryNode]);
+    });
+
+    expect(mockApplyEdgeSides).not.toHaveBeenCalled();
   });
 });

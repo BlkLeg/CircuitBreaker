@@ -62,8 +62,6 @@ function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [resetMessage, setResetMessage] = useState('');
-  const [resetLoading, setResetLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [oauthProviders, setOauthProviders] = useState([]);
   /* track which field is focused so we can apply .focused glow class */
@@ -209,31 +207,6 @@ function LoginPage() {
           setError(err?.response?.data?.detail || 'Invalid code. Try again.');
           setMfaCode('');
         });
-    }
-  };
-
-  const handleForgotPassword = async () => {
-    if (!email.includes('@')) {
-      setError('Enter your email address above to reset your password.');
-      setResetMessage('');
-      return;
-    }
-
-    setResetLoading(true);
-    setError('');
-    setResetMessage('');
-    try {
-      await authApi.forgotPassword(email);
-      setResetMessage('If an account exists for that email, a password reset link has been sent.');
-    } catch (err) {
-      setError(
-        err?.response?.data?.detail ||
-          err?.response?.data?.message ||
-          err?.message ||
-          'Unable to request a password reset.'
-      );
-    } finally {
-      setResetLoading(false);
     }
   };
 
@@ -395,7 +368,6 @@ function LoginPage() {
                     onChange={(e) => {
                       setEmail(e.target.value);
                       setError('');
-                      setResetMessage('');
                     }}
                     onFocus={() => setFocused('email')}
                     onBlur={() => setFocused('')}
@@ -435,47 +407,22 @@ function LoginPage() {
                   </div>
                 )}
 
-                {resetMessage && (
-                  <div className="login-success-banner" role="output">
-                    {resetMessage}
-                  </div>
-                )}
-
                 <div style={{ textAlign: 'right', marginBottom: 12 }}>
                   <button
                     type="button"
-                    onClick={handleForgotPassword}
-                    disabled={resetLoading}
+                    onClick={() => navigate('/reset-password/vault', { state: { email } })}
                     style={{
                       background: 'none',
                       border: 'none',
-                      cursor: resetLoading ? 'default' : 'pointer',
+                      cursor: 'pointer',
                       color: 'var(--color-primary)',
                       fontSize: 12,
                       padding: 0,
                       textDecoration: 'underline',
-                      opacity: resetLoading ? 0.7 : 1,
                     }}
                   >
-                    {resetLoading ? 'Sending reset link…' : 'Forgot Password?'}
+                    Forgot Password? (Use Vault Key)
                   </button>
-                  <div style={{ marginTop: 8 }}>
-                    <button
-                      type="button"
-                      onClick={() => navigate('/reset-password/vault', { state: { email } })}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        color: 'var(--color-text-muted)',
-                        fontSize: 12,
-                        padding: 0,
-                        textDecoration: 'underline',
-                      }}
-                    >
-                      Reset with Vault Key
-                    </button>
-                  </div>
                 </div>
 
                 <button

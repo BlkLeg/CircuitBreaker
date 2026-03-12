@@ -456,6 +456,21 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    def _purge_hardware_live_metrics() -> None:
+        from app.services.telemetry_service import purge_old_hardware_live_metrics
+
+        with get_session_context() as _tdb:
+            removed = purge_old_hardware_live_metrics(_tdb, days=7)
+            if removed:
+                _logger.info("Purged %d rows from hardware_live_metrics.", removed)
+
+    scheduler.add_job(
+        _purge_hardware_live_metrics,
+        trigger=CronTrigger(hour=3, minute=5),
+        id="purge_hardware_live_metrics",
+        replace_existing=True,
+    )
+
     # Daily purge of old audit log entries based on retention setting
     from app.services.log_purge import purge_old_audit_logs
 
@@ -675,7 +690,7 @@ async def lifespan(app: FastAPI):
             for cfg in configs:
                 if cfg.auto_sync:
                     try:
-                        await discover_and_import(_pdb, cfg)
+                        await discover_and_import(_pdb, cfg, queue_for_review=False)
                     except Exception as exc:
                         _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
 
@@ -968,7 +983,6 @@ app.include_router(graph.router, prefix=f"{_V1}/graph", tags=["graph"])
 app.include_router(search.router, prefix=f"{_V1}/search", tags=["search"])
 app.include_router(logs.router, prefix=f"{_V1}/logs", tags=["logs"])
 app.include_router(auth.auth_jwt_router, prefix=f"{_V1}/auth/jwt", tags=["auth"])
-app.include_router(auth.reset_password_router, prefix=f"{_V1}/auth", tags=["auth"])
 app.include_router(auth.user_me_router, prefix=f"{_V1}/users", tags=["users"])
 app.include_router(auth.users_router, prefix=f"{_V1}/users", tags=["users"])
 app.include_router(auth.router, prefix=f"{_V1}/auth", tags=["auth"])
@@ -1029,7 +1043,18 @@ async def health():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-    except Exception:
+            # Readiness contract check: discovery endpoints serialize ScanJob.error_reason.
+            # If this column is missing (migration drift), report unhealthy instead of green.
+            conn.execute(text("SELECT error_reason FROM scan_jobs LIMIT 1"))
+    except Exception as e:
+        detail = "Database unavailable or migration required."
+        try:
+            # Keep the failure message compact but actionable for operators.
+            msg = str(e)
+            if "scan_jobs.error_reason" in msg or ("column" in msg and "error_reason" in msg):
+                detail = "Database migration required: missing scan_jobs.error_reason."
+        except Exception:
+            pass
         return JSONResponse(
             status_code=503,
             content={
@@ -1037,6 +1062,7 @@ async def health():
                 "version": "v0.2.0",
                 "db": "unavailable",
                 "redis": "unknown",
+                "detail": detail,
             },
         )
     redis_ok = await redis_health()

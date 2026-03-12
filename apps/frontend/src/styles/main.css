@@ -3129,6 +3129,64 @@ body {
   margin-bottom: 2px;
 }
 
+.oobe-beta-warning {
+  position: relative;
+  margin-top: 12px;
+  padding: 16px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(250, 189, 47, 0.5);
+  background: linear-gradient(
+    145deg,
+    rgba(250, 189, 47, 0.2),
+    rgba(250, 189, 47, 0.08) 55%,
+    rgba(250, 189, 47, 0.16)
+  );
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  backdrop-filter: blur(14px) saturate(1.25);
+  overflow: hidden;
+}
+
+.oobe-beta-warning-tape {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(17, 17, 17, 0.85),
+    rgba(17, 17, 17, 0.85) 10px,
+    rgba(250, 189, 47, 0.95) 10px,
+    rgba(250, 189, 47, 0.95) 20px
+  );
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.oobe-beta-warning-tape--top {
+  top: 6px;
+}
+
+.oobe-beta-warning-tape--bottom {
+  bottom: 6px;
+}
+
+.oobe-beta-warning-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: #facc15;
+  font-size: 0.8rem;
+}
+
+.oobe-beta-warning p {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--color-text);
+}
+
 /* ── Step 3 wide layout (theme step) ──────────────────────────────────────── */
 
 /* Expand the oobe-layout max-width for step 3 */

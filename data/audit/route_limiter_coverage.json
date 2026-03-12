@@ -1,0 +1,2382 @@
+[
+  {
+    "file": "admin.py",
+    "fn": "export_backup",
+    "method": "GET",
+    "path": "/export",
+    "limiter": false
+  },
+  {
+    "file": "admin.py",
+    "fn": "import_backup",
+    "method": "POST",
+    "path": "/import",
+    "limiter": false
+  },
+  {
+    "file": "admin.py",
+    "fn": "clear_lab",
+    "method": "POST",
+    "path": "/clear-lab",
+    "limiter": false
+  },
+  {
+    "file": "admin.py",
+    "fn": "recent_changes",
+    "method": "GET",
+    "path": "/recent-changes",
+    "limiter": false
+  },
+  {
+    "file": "admin_audit.py",
+    "fn": "audit_log_verify_chain",
+    "method": "GET",
+    "path": "/audit-log/verify-chain",
+    "limiter": false
+  },
+  {
+    "file": "admin_db.py",
+    "fn": "db_health",
+    "method": "GET",
+    "path": "/db/health",
+    "limiter": false
+  },
+  {
+    "file": "admin_db.py",
+    "fn": "trigger_backup",
+    "method": "POST",
+    "path": "/db/backup",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "list_users",
+    "method": "GET",
+    "path": "/users",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "create_user",
+    "method": "POST",
+    "path": "/users",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "create_local_user",
+    "method": "POST",
+    "path": "/users/local",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "update_user",
+    "method": "PATCH",
+    "path": "/users/{user_id}",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "delete_user",
+    "method": "DELETE",
+    "path": "/users/{user_id}",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "unlock_user_endpoint",
+    "method": "POST",
+    "path": "/users/{user_id}/unlock",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "masquerade_user",
+    "method": "POST",
+    "path": "/users/{user_id}/masquerade",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "get_user_actions",
+    "method": "GET",
+    "path": "/user-actions/{user_id}",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "create_invite_endpoint",
+    "method": "POST",
+    "path": "/invites",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "list_invites",
+    "method": "GET",
+    "path": "/invites",
+    "limiter": false
+  },
+  {
+    "file": "admin_users.py",
+    "fn": "update_invite",
+    "method": "PATCH",
+    "path": "/invites/{invite_id}",
+    "limiter": false
+  },
+  {
+    "file": "assets.py",
+    "fn": "upload_user_icon",
+    "method": "POST",
+    "path": "/user-icon",
+    "limiter": false
+  },
+  {
+    "file": "assets.py",
+    "fn": "upload_favicon",
+    "method": "POST",
+    "path": "/branding/favicon",
+    "limiter": false
+  },
+  {
+    "file": "auth.py",
+    "fn": "accept_invite_endpoint",
+    "method": "POST",
+    "path": "/accept-invite",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "register_user",
+    "method": "POST",
+    "path": "/register",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "forgot_password",
+    "method": "POST",
+    "path": "/forgot-password",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "reset_password",
+    "method": "POST",
+    "path": "/reset-password",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "create_demo_session",
+    "method": "POST",
+    "path": "/demo",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "login_compat",
+    "method": "POST",
+    "path": "/login",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "force_change_password",
+    "method": "POST",
+    "path": "/force-change-password",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "create_api_token",
+    "method": "POST",
+    "path": "/api-token",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "list_api_tokens",
+    "method": "GET",
+    "path": "/api-tokens",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "revoke_api_token",
+    "method": "DELETE",
+    "path": "/api-tokens/{token_id}",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "vault_reset_password",
+    "method": "POST",
+    "path": "/vault-reset",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "get_me_compat",
+    "method": "GET",
+    "path": "/me",
+    "limiter": false
+  },
+  {
+    "file": "auth.py",
+    "fn": "logout",
+    "method": "POST",
+    "path": "/logout",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "delete_me",
+    "method": "DELETE",
+    "path": "/me",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "list_my_sessions",
+    "method": "GET",
+    "path": "/me/sessions",
+    "limiter": false
+  },
+  {
+    "file": "auth.py",
+    "fn": "revoke_session",
+    "method": "DELETE",
+    "path": "/me/sessions/{session_id}",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "revoke_all_other_sessions",
+    "method": "DELETE",
+    "path": "/me/sessions",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "change_password",
+    "method": "PATCH",
+    "path": "/me/password",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "upload_avatar",
+    "method": "PUT",
+    "path": "/me/avatar",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "mfa_setup",
+    "method": "POST",
+    "path": "/mfa/setup",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "mfa_activate",
+    "method": "POST",
+    "path": "/mfa/activate",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "mfa_verify",
+    "method": "POST",
+    "path": "/mfa/verify",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "mfa_disable",
+    "method": "POST",
+    "path": "/mfa/disable",
+    "limiter": true
+  },
+  {
+    "file": "auth.py",
+    "fn": "mfa_regenerate_backup_codes",
+    "method": "POST",
+    "path": "/mfa/backup-codes/regenerate",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "list_oauth_providers",
+    "method": "GET",
+    "path": "/oauth/providers",
+    "limiter": false
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "github_authorize",
+    "method": "GET",
+    "path": "/oauth/github",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "github_callback",
+    "method": "GET",
+    "path": "/oauth/github/callback",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "google_authorize",
+    "method": "GET",
+    "path": "/oauth/google",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "google_callback",
+    "method": "GET",
+    "path": "/oauth/google/callback",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "oidc_authorize",
+    "method": "GET",
+    "path": "/oauth/oidc/{provider_slug}",
+    "limiter": true
+  },
+  {
+    "file": "auth_oauth.py",
+    "fn": "oidc_callback",
+    "method": "GET",
+    "path": "/oauth/oidc/{provider_slug}/callback",
+    "limiter": true
+  },
+  {
+    "file": "bootstrap.py",
+    "fn": "get_bootstrap_status",
+    "method": "GET",
+    "path": "/status",
+    "limiter": false
+  },
+  {
+    "file": "bootstrap.py",
+    "fn": "get_onboarding_step",
+    "method": "GET",
+    "path": "/onboarding",
+    "limiter": false
+  },
+  {
+    "file": "bootstrap.py",
+    "fn": "set_onboarding_step",
+    "method": "PATCH",
+    "path": "/onboarding",
+    "limiter": false
+  },
+  {
+    "file": "bootstrap.py",
+    "fn": "initialize_bootstrap",
+    "method": "POST",
+    "path": "/initialize",
+    "limiter": true
+  },
+  {
+    "file": "bootstrap.py",
+    "fn": "initialize_bootstrap_oauth",
+    "method": "POST",
+    "path": "/initialize-oauth",
+    "limiter": true
+  },
+  {
+    "file": "branding.py",
+    "fn": "upload_favicon",
+    "method": "POST",
+    "path": "/upload-favicon",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "upload_login_logo",
+    "method": "POST",
+    "path": "/upload-login-logo",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "upload_login_bg",
+    "method": "POST",
+    "path": "/upload-login-bg",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "delete_branding_asset",
+    "method": "DELETE",
+    "path": "/{asset_type}",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "dynamic_manifest",
+    "method": "GET",
+    "path": "/manifest.json",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "export_theme",
+    "method": "GET",
+    "path": "/export",
+    "limiter": false
+  },
+  {
+    "file": "branding.py",
+    "fn": "import_theme",
+    "method": "POST",
+    "path": "/import",
+    "limiter": false
+  },
+  {
+    "file": "capabilities.py",
+    "fn": "get_capabilities",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "catalog.py",
+    "fn": "list_vendors",
+    "method": "GET",
+    "path": "/vendors",
+    "limiter": false
+  },
+  {
+    "file": "catalog.py",
+    "fn": "list_devices",
+    "method": "GET",
+    "path": "/vendors/{vendor_key}/devices",
+    "limiter": false
+  },
+  {
+    "file": "catalog.py",
+    "fn": "get_device",
+    "method": "GET",
+    "path": "/vendors/{vendor_key}/devices/{model_key}",
+    "limiter": false
+  },
+  {
+    "file": "catalog.py",
+    "fn": "search_catalog",
+    "method": "GET",
+    "path": "/search",
+    "limiter": false
+  },
+  {
+    "file": "categories.py",
+    "fn": "get_categories",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "categories.py",
+    "fn": "post_category",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "categories.py",
+    "fn": "patch_category",
+    "method": "PATCH",
+    "path": "/{category_id}",
+    "limiter": false
+  },
+  {
+    "file": "categories.py",
+    "fn": "del_category",
+    "method": "DELETE",
+    "path": "/{category_id}",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "list_certificates",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "create_certificate",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "get_certificate",
+    "method": "GET",
+    "path": "/{cert_id}",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "update_certificate",
+    "method": "PUT",
+    "path": "/{cert_id}",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "delete_certificate",
+    "method": "DELETE",
+    "path": "/{cert_id}",
+    "limiter": false
+  },
+  {
+    "file": "certificates.py",
+    "fn": "renew_certificate",
+    "method": "POST",
+    "path": "/{cert_id}/renew",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "list_clusters",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "create_cluster",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "get_cluster",
+    "method": "GET",
+    "path": "/{cluster_id}",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "update_cluster",
+    "method": "PATCH",
+    "path": "/{cluster_id}",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "delete_cluster",
+    "method": "DELETE",
+    "path": "/{cluster_id}",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "list_members",
+    "method": "GET",
+    "path": "/{cluster_id}/members",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "add_member",
+    "method": "POST",
+    "path": "/{cluster_id}/members",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "update_member",
+    "method": "PATCH",
+    "path": "/{cluster_id}/members/{member_id}",
+    "limiter": false
+  },
+  {
+    "file": "clusters.py",
+    "fn": "remove_member",
+    "method": "DELETE",
+    "path": "/{cluster_id}/members/{member_id}",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "list_compute_units",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "create_compute_unit",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "list_icons",
+    "method": "GET",
+    "path": "/icons",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "upload_icon",
+    "method": "POST",
+    "path": "/icons/upload",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "delete_icon",
+    "method": "DELETE",
+    "path": "/icons/{slug}",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "list_compute_networks",
+    "method": "GET",
+    "path": "/{cu_id}/networks",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "get_compute_unit",
+    "method": "GET",
+    "path": "/{cu_id}",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "patch_compute_unit",
+    "method": "PATCH",
+    "path": "/{cu_id}",
+    "limiter": false
+  },
+  {
+    "file": "compute_units.py",
+    "fn": "delete_compute_unit",
+    "method": "DELETE",
+    "path": "/{cu_id}",
+    "limiter": false
+  },
+  {
+    "file": "cve.py",
+    "fn": "search_cves",
+    "method": "GET",
+    "path": "/search",
+    "limiter": false
+  },
+  {
+    "file": "cve.py",
+    "fn": "cves_for_entity",
+    "method": "GET",
+    "path": "/entity/{entity_type}/{entity_id}",
+    "limiter": false
+  },
+  {
+    "file": "cve.py",
+    "fn": "trigger_sync",
+    "method": "POST",
+    "path": "/sync",
+    "limiter": false
+  },
+  {
+    "file": "cve.py",
+    "fn": "cve_status",
+    "method": "GET",
+    "path": "/status",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_discovery_status",
+    "method": "GET",
+    "path": "/status",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_profiles",
+    "method": "GET",
+    "path": "/profiles",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "create_profile",
+    "method": "POST",
+    "path": "/profiles",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "update_profile",
+    "method": "PATCH",
+    "path": "/profiles/{profile_id}",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "delete_profile",
+    "method": "DELETE",
+    "path": "/profiles/{profile_id}",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "run_profile_scan",
+    "method": "POST",
+    "path": "/profiles/{profile_id}/run",
+    "limiter": true
+  },
+  {
+    "file": "discovery.py",
+    "fn": "run_adhoc_scan",
+    "method": "POST",
+    "path": "/scan",
+    "limiter": true
+  },
+  {
+    "file": "discovery.py",
+    "fn": "list_jobs",
+    "method": "GET",
+    "path": "/jobs",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_job",
+    "method": "GET",
+    "path": "/jobs/{job_id}",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "cancel_job",
+    "method": "DELETE",
+    "path": "/jobs/{job_id}",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "list_proxmox_runs",
+    "method": "GET",
+    "path": "/proxmox-runs",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_proxmox_run",
+    "method": "GET",
+    "path": "/proxmox-runs/{run_id}",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_job_results",
+    "method": "GET",
+    "path": "/jobs/{job_id}/results",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_job_logs",
+    "method": "GET",
+    "path": "/jobs/{job_id}/logs",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "list_results",
+    "method": "GET",
+    "path": "/results",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "merge_result",
+    "method": "POST",
+    "path": "/results/{result_id}/merge",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "bulk_merge",
+    "method": "POST",
+    "path": "/results/bulk-merge",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "enhanced_bulk_merge",
+    "method": "POST",
+    "path": "/results/enhanced-bulk-merge",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "suggest_actions",
+    "method": "POST",
+    "path": "/results/suggest",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "vendor_catalog",
+    "method": "GET",
+    "path": "/vendor-catalog",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "docker_status",
+    "method": "GET",
+    "path": "/docker/status",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "docker_sync",
+    "method": "POST",
+    "path": "/docker/sync",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "docker_networks",
+    "method": "GET",
+    "path": "/docker/networks",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_listener_status",
+    "method": "GET",
+    "path": "/listener/status",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_listener_events",
+    "method": "GET",
+    "path": "/listener/events",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "trigger_self_cluster",
+    "method": "POST",
+    "path": "/self-cluster",
+    "limiter": false
+  },
+  {
+    "file": "discovery.py",
+    "fn": "get_self_cluster_status",
+    "method": "GET",
+    "path": "/self-cluster/status",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "attach_doc",
+    "method": "POST",
+    "path": "/attach",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "detach_doc",
+    "method": "DELETE",
+    "path": "/attach",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "docs_by_entity",
+    "method": "GET",
+    "path": "/by-entity",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "list_docs",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "create_doc",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "export_docs",
+    "method": "GET",
+    "path": "/export",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "import_docs",
+    "method": "POST",
+    "path": "/import",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "get_doc",
+    "method": "GET",
+    "path": "/{doc_id}",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "doc_entities",
+    "method": "GET",
+    "path": "/{doc_id}/entities",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "patch_doc",
+    "method": "PATCH",
+    "path": "/{doc_id}",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "delete_doc",
+    "method": "DELETE",
+    "path": "/{doc_id}",
+    "limiter": false
+  },
+  {
+    "file": "docs.py",
+    "fn": "upload_doc_image",
+    "method": "POST",
+    "path": "/{doc_id}/upload-image",
+    "limiter": false
+  },
+  {
+    "file": "environments.py",
+    "fn": "get_environments",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "environments.py",
+    "fn": "post_environment",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "environments.py",
+    "fn": "patch_environment",
+    "method": "PATCH",
+    "path": "/{environment_id}",
+    "limiter": false
+  },
+  {
+    "file": "environments.py",
+    "fn": "del_environment",
+    "method": "DELETE",
+    "path": "/{environment_id}",
+    "limiter": false
+  },
+  {
+    "file": "events.py",
+    "fn": "events_stream",
+    "method": "GET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "events.py",
+    "fn": "events_status",
+    "method": "GET",
+    "path": "/status",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "list_external_nodes",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "create_external_node",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "get_external_node",
+    "method": "GET",
+    "path": "/{node_id}",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "patch_external_node",
+    "method": "PATCH",
+    "path": "/{node_id}",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "delete_external_node",
+    "method": "DELETE",
+    "path": "/{node_id}",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "list_networks",
+    "method": "GET",
+    "path": "/{node_id}/networks",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "link_network",
+    "method": "POST",
+    "path": "/{node_id}/networks",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "list_services",
+    "method": "GET",
+    "path": "/{node_id}/services",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "unlink_network",
+    "method": "DELETE",
+    "path": "/external-node-networks/{relation_id}",
+    "limiter": false
+  },
+  {
+    "file": "external_nodes.py",
+    "fn": "unlink_service",
+    "method": "DELETE",
+    "path": "/service-external-nodes/{relation_id}",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "delete_edge",
+    "method": "DELETE",
+    "path": "/edges/{edge_id}",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "update_edge_type",
+    "method": "PATCH",
+    "path": "/edges/{edge_id}",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "get_topology",
+    "method": "GET",
+    "path": "/topology",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "get_layout",
+    "method": "GET",
+    "path": "/layout",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "save_layout",
+    "method": "POST",
+    "path": "/layout",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "place_node",
+    "method": "POST",
+    "path": "/place-node",
+    "limiter": false
+  },
+  {
+    "file": "graph.py",
+    "fn": "get_layouts",
+    "method": "GET",
+    "path": "/layouts",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "list_hardware",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "create_hardware",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_orphans",
+    "method": "GET",
+    "path": "/orphans",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_groups",
+    "method": "GET",
+    "path": "/groups",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_hardware",
+    "method": "GET",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "replace_hardware",
+    "method": "PUT",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "patch_hardware",
+    "method": "PATCH",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "delete_hardware",
+    "method": "DELETE",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_network_memberships",
+    "method": "GET",
+    "path": "/{hardware_id}/network-memberships",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_clusters_for_hardware",
+    "method": "GET",
+    "path": "/{hardware_id}/clusters",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "get_hardware_ports",
+    "method": "GET",
+    "path": "/{hardware_id}/ports",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "update_hardware_ports",
+    "method": "PUT",
+    "path": "/{hardware_id}/ports",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "create_hardware_connection",
+    "method": "POST",
+    "path": "/{hardware_id}/connections",
+    "limiter": false
+  },
+  {
+    "file": "hardware.py",
+    "fn": "delete_hardware_connection",
+    "method": "DELETE",
+    "path": "/hardware-connections/{connection_id}",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "list_configs",
+    "method": "GET",
+    "path": "/{provider}/config",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "create_config",
+    "method": "POST",
+    "path": "/{provider}/config",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "get_config",
+    "method": "GET",
+    "path": "/{provider}/config/{config_id}",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "update_config",
+    "method": "PUT",
+    "path": "/{provider}/config/{config_id}",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "delete_config",
+    "method": "DELETE",
+    "path": "/{provider}/config/{config_id}",
+    "limiter": false
+  },
+  {
+    "file": "integration_provider.py",
+    "fn": "test_config",
+    "method": "POST",
+    "path": "/{provider}/config/{config_id}/test",
+    "limiter": false
+  },
+  {
+    "file": "ip_check.py",
+    "fn": "check_ip",
+    "method": "POST",
+    "path": "/ip-check",
+    "limiter": true
+  },
+  {
+    "file": "ipam.py",
+    "fn": "list_ip_addresses",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "create_ip_address",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "get_ip_address",
+    "method": "GET",
+    "path": "/{ip_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "update_ip_address",
+    "method": "PATCH",
+    "path": "/{ip_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "delete_ip_address",
+    "method": "DELETE",
+    "path": "/{ip_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "scan_network_addresses",
+    "method": "POST",
+    "path": "/scan/{network_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "list_vlans",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "create_vlan",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "get_vlan",
+    "method": "GET",
+    "path": "/{vlan_pk}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "update_vlan",
+    "method": "PATCH",
+    "path": "/{vlan_pk}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "delete_vlan",
+    "method": "DELETE",
+    "path": "/{vlan_pk}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "list_sites",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "create_site",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "get_site",
+    "method": "GET",
+    "path": "/{site_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "update_site",
+    "method": "PATCH",
+    "path": "/{site_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "delete_site",
+    "method": "DELETE",
+    "path": "/{site_id}",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "list_node_relations",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "create_node_relation",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "ipam.py",
+    "fn": "delete_node_relation",
+    "method": "DELETE",
+    "path": "/{rel_id}",
+    "limiter": false
+  },
+  {
+    "file": "logs.py",
+    "fn": "list_logs",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "logs.py",
+    "fn": "list_actions",
+    "method": "GET",
+    "path": "/actions",
+    "limiter": false
+  },
+  {
+    "file": "logs.py",
+    "fn": "list_audit_logs",
+    "method": "GET",
+    "path": "/audit",
+    "limiter": false
+  },
+  {
+    "file": "logs.py",
+    "fn": "clear_logs",
+    "method": "DELETE",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "logs.py",
+    "fn": "stream_logs",
+    "method": "GET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "metrics.py",
+    "fn": "prometheus_metrics",
+    "method": "GET",
+    "path": "/metrics",
+    "limiter": false
+  },
+  {
+    "file": "misc.py",
+    "fn": "list_misc",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "misc.py",
+    "fn": "create_misc_item",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "misc.py",
+    "fn": "get_misc_item",
+    "method": "GET",
+    "path": "/{item_id}",
+    "limiter": false
+  },
+  {
+    "file": "misc.py",
+    "fn": "patch_misc_item",
+    "method": "PATCH",
+    "path": "/{item_id}",
+    "limiter": false
+  },
+  {
+    "file": "misc.py",
+    "fn": "delete_misc_item",
+    "method": "DELETE",
+    "path": "/{item_id}",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "list_monitors",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "get_monitor",
+    "method": "GET",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "create_monitor",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "update_monitor",
+    "method": "PUT",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "delete_monitor",
+    "method": "DELETE",
+    "path": "/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "get_history",
+    "method": "GET",
+    "path": "/{hardware_id}/history",
+    "limiter": false
+  },
+  {
+    "file": "monitor.py",
+    "fn": "run_immediate_check",
+    "method": "POST",
+    "path": "/{hardware_id}/check",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "list_networks",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "create_network",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "get_network",
+    "method": "GET",
+    "path": "/{network_id}",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "patch_network",
+    "method": "PATCH",
+    "path": "/{network_id}",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "delete_network",
+    "method": "DELETE",
+    "path": "/{network_id}",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "list_members",
+    "method": "GET",
+    "path": "/{network_id}/members",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "add_member",
+    "method": "POST",
+    "path": "/{network_id}/members",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "remove_member",
+    "method": "DELETE",
+    "path": "/{network_id}/members/{compute_id}",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "list_hardware_members",
+    "method": "GET",
+    "path": "/{network_id}/hardware-members",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "add_hardware_member",
+    "method": "POST",
+    "path": "/{network_id}/hardware-members",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "remove_hardware_member",
+    "method": "DELETE",
+    "path": "/{network_id}/hardware-members/{hardware_id}",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "list_peers",
+    "method": "GET",
+    "path": "/{network_id}/peers",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "add_peer",
+    "method": "POST",
+    "path": "/{network_id}/peers",
+    "limiter": false
+  },
+  {
+    "file": "networks.py",
+    "fn": "remove_peer",
+    "method": "DELETE",
+    "path": "/{network_id}/peers/{peer_network_id}",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "list_sinks",
+    "method": "GET",
+    "path": "/sinks",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "create_sink",
+    "method": "POST",
+    "path": "/sinks",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "update_sink",
+    "method": "PATCH",
+    "path": "/sinks/{sink_id}",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "delete_sink",
+    "method": "DELETE",
+    "path": "/sinks/{sink_id}",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "toggle_sink",
+    "method": "PUT",
+    "path": "/sinks/{sink_id}/toggle",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "test_sink",
+    "method": "POST",
+    "path": "/sinks/{sink_id}/test",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "list_routes",
+    "method": "GET",
+    "path": "/routes",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "create_route",
+    "method": "POST",
+    "path": "/routes",
+    "limiter": false
+  },
+  {
+    "file": "notifications.py",
+    "fn": "delete_route",
+    "method": "DELETE",
+    "path": "/routes/{route_id}",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "create_proxmox_config",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "list_proxmox_configs",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "get_cluster_overview",
+    "method": "GET",
+    "path": "/cluster-overview",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "get_proxmox_config",
+    "method": "GET",
+    "path": "/{integration_id}",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "update_proxmox_config",
+    "method": "PUT",
+    "path": "/{integration_id}",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "delete_proxmox_config",
+    "method": "DELETE",
+    "path": "/{integration_id}",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "test_proxmox_connection",
+    "method": "POST",
+    "path": "/{integration_id}/test",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "discover_proxmox_cluster",
+    "method": "POST",
+    "path": "/{integration_id}/discover",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "get_proxmox_status",
+    "method": "GET",
+    "path": "/{integration_id}/status",
+    "limiter": false
+  },
+  {
+    "file": "proxmox.py",
+    "fn": "proxmox_vm_action",
+    "method": "POST",
+    "path": "/{integration_id}/nodes/{node}/{vm_type}/{vmid}/action",
+    "limiter": false
+  },
+  {
+    "file": "rack.py",
+    "fn": "list_racks",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "rack.py",
+    "fn": "create_rack",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "rack.py",
+    "fn": "get_rack",
+    "method": "GET",
+    "path": "/{rack_id}",
+    "limiter": false
+  },
+  {
+    "file": "rack.py",
+    "fn": "update_rack",
+    "method": "PATCH",
+    "path": "/{rack_id}",
+    "limiter": false
+  },
+  {
+    "file": "rack.py",
+    "fn": "delete_rack",
+    "method": "DELETE",
+    "path": "/{rack_id}",
+    "limiter": false
+  },
+  {
+    "file": "search.py",
+    "fn": "search",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "security_status.py",
+    "fn": "get_security_status",
+    "method": "GET",
+    "path": "/status",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "check_service_ip",
+    "method": "POST",
+    "path": "/check-ip",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "list_services",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "create_service",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "get_service",
+    "method": "GET",
+    "path": "/{service_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "patch_service",
+    "method": "PATCH",
+    "path": "/{service_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "delete_service",
+    "method": "DELETE",
+    "path": "/{service_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "get_dependencies",
+    "method": "GET",
+    "path": "/{service_id}/dependencies",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "add_dependency",
+    "method": "POST",
+    "path": "/{service_id}/dependencies",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "remove_dependency",
+    "method": "DELETE",
+    "path": "/{service_id}/dependencies/{depends_on_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "get_service_storage",
+    "method": "GET",
+    "path": "/{service_id}/storage",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "add_storage_link",
+    "method": "POST",
+    "path": "/{service_id}/storage",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "remove_storage_link",
+    "method": "DELETE",
+    "path": "/{service_id}/storage/{storage_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "get_service_misc",
+    "method": "GET",
+    "path": "/{service_id}/misc",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "add_misc_link",
+    "method": "POST",
+    "path": "/{service_id}/misc",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "remove_misc_link",
+    "method": "DELETE",
+    "path": "/{service_id}/misc/{misc_id}",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "get_external_deps",
+    "method": "GET",
+    "path": "/{service_id}/external-dependencies",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "add_external_dep",
+    "method": "POST",
+    "path": "/{service_id}/external-dependencies",
+    "limiter": false
+  },
+  {
+    "file": "services.py",
+    "fn": "remove_external_dep",
+    "method": "DELETE",
+    "path": "/{service_id}/external-dependencies/{relation_id}",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "get_settings",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "put_settings",
+    "method": "PUT",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "reset_settings",
+    "method": "POST",
+    "path": "/reset",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "patch_smtp",
+    "method": "PATCH",
+    "path": "/smtp",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "test_smtp",
+    "method": "POST",
+    "path": "/smtp/test",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "get_oauth_settings",
+    "method": "GET",
+    "path": "/oauth",
+    "limiter": false
+  },
+  {
+    "file": "settings.py",
+    "fn": "update_oauth_settings",
+    "method": "PATCH",
+    "path": "/oauth",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "list_pages",
+    "method": "GET",
+    "path": "/pages",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "get_page",
+    "method": "GET",
+    "path": "/pages/{page_id}",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "create_page",
+    "method": "POST",
+    "path": "/pages",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "update_page",
+    "method": "PATCH",
+    "path": "/pages/{page_id}",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "delete_page",
+    "method": "DELETE",
+    "path": "/pages/{page_id}",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "list_groups",
+    "method": "GET",
+    "path": "/pages/{page_id}/groups",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "create_group",
+    "method": "POST",
+    "path": "/groups",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "bulk_create_group",
+    "method": "POST",
+    "path": "/groups/bulk",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "update_group",
+    "method": "PATCH",
+    "path": "/groups/{group_id}",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "delete_group",
+    "method": "DELETE",
+    "path": "/groups/{group_id}",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "list_history",
+    "method": "GET",
+    "path": "/history",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "get_dashboard_legacy",
+    "method": "GET",
+    "path": "/dashboard",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "get_dashboard_v2",
+    "method": "GET",
+    "path": "/dashboard/v2",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "list_group_events",
+    "method": "GET",
+    "path": "/groups/{group_id}/events",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "get_available_entities",
+    "method": "GET",
+    "path": "/available-entities",
+    "limiter": false
+  },
+  {
+    "file": "status.py",
+    "fn": "refresh_status",
+    "method": "POST",
+    "path": "/refresh",
+    "limiter": false
+  },
+  {
+    "file": "storage.py",
+    "fn": "list_storage",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "storage.py",
+    "fn": "create_storage",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "storage.py",
+    "fn": "get_storage",
+    "method": "GET",
+    "path": "/{storage_id}",
+    "limiter": false
+  },
+  {
+    "file": "storage.py",
+    "fn": "patch_storage",
+    "method": "PATCH",
+    "path": "/{storage_id}",
+    "limiter": false
+  },
+  {
+    "file": "storage.py",
+    "fn": "delete_storage",
+    "method": "DELETE",
+    "path": "/{storage_id}",
+    "limiter": false
+  },
+  {
+    "file": "system.py",
+    "fn": "get_system_stats",
+    "method": "GET",
+    "path": "/stats",
+    "limiter": false
+  },
+  {
+    "file": "tags.py",
+    "fn": "list_tags",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "tags.py",
+    "fn": "update_tag",
+    "method": "PATCH",
+    "path": "/{tag_id}",
+    "limiter": false
+  },
+  {
+    "file": "telemetry.py",
+    "fn": "get_telemetry",
+    "method": "GET",
+    "path": "/{hardware_id}/telemetry",
+    "limiter": true
+  },
+  {
+    "file": "telemetry.py",
+    "fn": "configure_telemetry",
+    "method": "POST",
+    "path": "/{hardware_id}/telemetry/config",
+    "limiter": false
+  },
+  {
+    "file": "telemetry.py",
+    "fn": "poll_now",
+    "method": "POST",
+    "path": "/{hardware_id}/telemetry/poll",
+    "limiter": false
+  },
+  {
+    "file": "telemetry.py",
+    "fn": "get_entity_telemetry",
+    "method": "GET",
+    "path": "/entity/{entity_type}/{entity_id}",
+    "limiter": false
+  },
+  {
+    "file": "timezones.py",
+    "fn": "get_timezones",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "list_topologies",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "create_topology",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "get_topology",
+    "method": "GET",
+    "path": "/{topology_id}",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "update_topology",
+    "method": "PUT",
+    "path": "/{topology_id}",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "delete_topology",
+    "method": "DELETE",
+    "path": "/{topology_id}",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "export_cytoscape",
+    "method": "GET",
+    "path": "/{topology_id}/graph",
+    "limiter": false
+  },
+  {
+    "file": "topologies.py",
+    "fn": "bulk_update_nodes",
+    "method": "PUT",
+    "path": "/{topology_id}/nodes",
+    "limiter": false
+  },
+  {
+    "file": "vault.py",
+    "fn": "get_vault_health",
+    "method": "GET",
+    "path": "/health/vault",
+    "limiter": false
+  },
+  {
+    "file": "vault.py",
+    "fn": "initialize_vault_key",
+    "method": "POST",
+    "path": "/admin/vault/initialize",
+    "limiter": false
+  },
+  {
+    "file": "vault.py",
+    "fn": "rotate_vault_key",
+    "method": "POST",
+    "path": "/admin/vault/rotate",
+    "limiter": false
+  },
+  {
+    "file": "vault.py",
+    "fn": "test_vault_decryption",
+    "method": "POST",
+    "path": "/admin/vault/test",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "list_event_groups",
+    "method": "GET",
+    "path": "/event-groups",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "list_webhooks",
+    "method": "GET",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "create_webhook",
+    "method": "POST",
+    "path": "",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "update_webhook",
+    "method": "PATCH",
+    "path": "/{rule_id}",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "test_webhook",
+    "method": "POST",
+    "path": "/{rule_id}/test",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "list_webhook_deliveries",
+    "method": "GET",
+    "path": "/{rule_id}/deliveries",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "list_deliveries",
+    "method": "GET",
+    "path": "/deliveries",
+    "limiter": false
+  },
+  {
+    "file": "webhooks.py",
+    "fn": "delete_webhook",
+    "method": "DELETE",
+    "path": "/{rule_id}",
+    "limiter": false
+  },
+  {
+    "file": "ws_discovery.py",
+    "fn": "discovery_stream",
+    "method": "WEBSOCKET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "ws_discovery.py",
+    "fn": "ws_status",
+    "method": "GET",
+    "path": "/ws/status",
+    "limiter": false
+  },
+  {
+    "file": "ws_status.py",
+    "fn": "ws_status_stream",
+    "method": "WEBSOCKET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "ws_status.py",
+    "fn": "ws_status_connections",
+    "method": "GET",
+    "path": "/ws/status",
+    "limiter": false
+  },
+  {
+    "file": "ws_telemetry.py",
+    "fn": "telemetry_stream",
+    "method": "WEBSOCKET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "ws_topology.py",
+    "fn": "topology_stream",
+    "method": "WEBSOCKET",
+    "path": "/stream",
+    "limiter": false
+  },
+  {
+    "file": "ws_topology.py",
+    "fn": "topology_ws_status",
+    "method": "GET",
+    "path": "/ws/status",
+    "limiter": false
+  }
+]

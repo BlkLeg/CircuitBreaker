@@ -1,13 +1,12 @@
 /* eslint-disable security/detect-object-injection -- Map used for job-keyed state */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import '../styles/discovery.css';
 import {
   getProfiles,
   getJobs,
-  cancelJob,
   getPendingResults,
   getDiscoveryStatus,
-  getJobLogs,
   startAdHocScan,
 } from '../api/discovery.js';
 import { X } from 'lucide-react';
@@ -18,33 +17,22 @@ import logger from '../utils/logger.js';
 
 import DiscoverySidebar from '../components/discovery/DiscoverySidebar.jsx';
 import DiscoveryHistoryPage from './DiscoveryHistoryPage.jsx';
-import ScanTable from '../components/discovery/ScanTable.jsx';
-import ScanDetailPanel from '../components/discovery/ScanDetailPanel.jsx';
 import ScanProfilesPanel from '../components/discovery/ScanProfilesPanel.jsx';
-import DiscoveryStatusBar from '../components/discovery/DiscoveryStatusBar.jsx';
 import NewScanPage from '../components/discovery/NewScanPage.jsx';
 import ReviewQueuePanel from '../components/discovery/ReviewQueuePanel.jsx';
 import ProxmoxIntegrationSection from '../components/proxmox/ProxmoxIntegrationSection.jsx';
-
-const STATUS_FILTERS = new Map([
-  ['all', null],
-  ['active', ['running']],
-  ['completed', ['completed', 'done']],
-  ['queued', ['queued']],
-]);
 
 function logApiWarning(scope, error) {
   logger.warn(`[DiscoveryPage] ${scope}`, error);
 }
 
 export default function DiscoveryPage() {
+  const location = useLocation();
   const toast = useToast();
 
   const [jobs, setJobs] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [filter, setFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedJobId, setSelectedJobId] = useState(null);
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [discoveryCapabilities, setDiscoveryCapabilities] = useState({
     effectiveMode: null,
@@ -56,14 +44,7 @@ export default function DiscoveryPage() {
   const [dockerScanning, setDockerScanning] = useState(false);
   const [dockerScanError, setDockerScanError] = useState(null);
 
-  const progressMapRef = useRef(new Map());
-  const [progressMap, setProgressMap] = useState(() => new Map());
-  const etaMapRef = useRef(new Map());
-  const [etaMap, setEtaMap] = useState(() => new Map());
-  const logMapRef = useRef(new Map());
-  const [logMap, setLogMap] = useState(() => new Map());
-  const [detailedLogMap, setDetailedLogMap] = useState(() => new Map());
-  const detailedLogMapRef = useRef(new Map());
+  const locationFilterAppliedRef = useRef(false);
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -84,6 +65,15 @@ export default function DiscoveryPage() {
     loadProfiles();
   }, [loadJobs, loadProfiles]);
 
+  useEffect(() => {
+    if (locationFilterAppliedRef.current) return;
+    const requestedFilter = location.state?.discoveryFilter;
+    if (typeof requestedFilter === 'string' && requestedFilter.trim()) {
+      setFilter(requestedFilter);
+      locationFilterAppliedRef.current = true;
+    }
+  }, [location.state]);
+
   const loadPendingResults = useCallback(() => {
     getPendingResults({ limit: 1 })
       .then((res) => {
@@ -91,18 +81,6 @@ export default function DiscoveryPage() {
         setPendingReviewCount(count);
       })
       .catch((err) => logApiWarning('Failed to fetch pending count', err));
-  }, []);
-
-  const loadJobLogs = useCallback((jobId) => {
-    getJobLogs(jobId)
-      .then((res) => {
-        const logs = Array.isArray(res.data) ? res.data : [];
-        detailedLogMapRef.current.set(jobId, logs);
-        setDetailedLogMap(new Map(detailedLogMapRef.current));
-      })
-      .catch((err) => {
-        console.error('Failed to load job logs:', err);
-      });
   }, []);
 
   useEffect(() => {
@@ -176,46 +154,53 @@ export default function DiscoveryPage() {
     };
 
     const onJobProgress = (data) => {
+      if (!data?.job_id) return;
+
+      let progressPercent = null;
       if (typeof data.percent === 'number') {
-        progressMapRef.current.set(data.job_id, Math.round(data.percent));
-        setProgressMap(new Map(progressMapRef.current));
+        progressPercent = Math.round(data.percent);
       } else if (
         typeof data.processed === 'number' &&
         typeof data.total === 'number' &&
         data.total > 0
       ) {
-        const pct = Math.round((data.processed / data.total) * 100);
-        progressMapRef.current.set(data.job_id, pct);
-        setProgressMap(new Map(progressMapRef.current));
+        progressPercent = Math.round((data.processed / data.total) * 100);
       }
 
-      if (typeof data.eta_seconds === 'number') {
-        etaMapRef.current.set(data.job_id, data.eta_seconds);
-        setEtaMap(new Map(etaMapRef.current));
-      }
-
-      if (data.message || data.phase) {
-        const entry = { phase: data.phase, message: data.message, ts: Date.now() };
-        const prev = logMapRef.current.get(data.job_id) || [];
-        logMapRef.current.set(data.job_id, [...prev, entry].slice(-200));
-        setLogMap(new Map(logMapRef.current));
-      }
+      setJobs((prev) => {
+        const idx = prev.findIndex((job) => job.id === data.job_id);
+        if (idx === -1) return prev;
+        const existing = prev[idx];
+        const nextJob = {
+          ...existing,
+          ...(progressPercent != null ? { progress_percent: progressPercent } : {}),
+          ...(typeof data.eta_seconds === 'number' ? { eta_seconds: data.eta_seconds } : {}),
+          ...(data.phase ? { current_phase: data.phase } : {}),
+          ...(data.message ? { current_message: data.message } : {}),
+        };
+        const next = [...prev];
+        next[idx] = nextJob;
+        return next;
+      });
     };
 
     const onScanLogEntry = (data) => {
-      if (data.job_id && data.message) {
-        const entry = {
-          id: data.log_id,
-          timestamp: data.timestamp,
-          level: data.level,
-          phase: data.phase,
-          message: data.message,
-          details: data.details,
+      if (!data?.job_id) return;
+      setJobs((prev) => {
+        const idx = prev.findIndex((job) => job.id === data.job_id);
+        if (idx === -1) return prev;
+        const existing = prev[idx];
+        const nextJob = {
+          ...existing,
+          ...(data.message ? { last_log_message: data.message } : {}),
+          ...(data.phase ? { last_log_phase: data.phase } : {}),
+          ...(data.level ? { last_log_level: data.level } : {}),
+          ...(data.timestamp ? { last_log_ts: data.timestamp } : {}),
         };
-        const prev = detailedLogMapRef.current.get(data.job_id) || [];
-        detailedLogMapRef.current.set(data.job_id, [...prev, entry].slice(-500));
-        setDetailedLogMap(new Map(detailedLogMapRef.current));
-      }
+        const next = [...prev];
+        next[idx] = nextJob;
+        return next;
+      });
     };
 
     const onResultAdded = () => {
@@ -237,24 +222,7 @@ export default function DiscoveryPage() {
       discoveryEmitter.off('result:added', onResultAdded);
       discoveryEmitter.off('ws:reconnected', onWsReconnected);
     };
-  }, [loadJobs, loadPendingResults]);
-
-  // ── Derived state ──────────────────────────────────────────────────────
-
-  const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p.name])), [profiles]);
-
-  // Load logs when a job is selected
-  useEffect(() => {
-    if (selectedJobId) {
-      loadJobLogs(selectedJobId);
-    }
-  }, [selectedJobId, loadJobLogs]);
-
-  const filteredJobs = useMemo(() => {
-    const statusSet = STATUS_FILTERS.get(filter);
-    if (!statusSet) return jobs;
-    return jobs.filter((j) => statusSet.includes(j.status));
-  }, [jobs, filter]);
+  }, [loadJobs]);
 
   const jobCounts = useMemo(
     () =>
@@ -265,11 +233,6 @@ export default function DiscoveryPage() {
         ['queued', jobs.filter((j) => j.status === 'queued').length],
       ]),
     [jobs]
-  );
-
-  const selectedJob = useMemo(
-    () => jobs.find((j) => j.id === selectedJobId) ?? null,
-    [jobs, selectedJobId]
   );
 
   // ── Actions ────────────────────────────────────────────────────────────
@@ -297,26 +260,6 @@ export default function DiscoveryPage() {
     }
   };
 
-  const handleCancelJob = async (jobId) => {
-    try {
-      await cancelJob(jobId);
-      toast.success('Scan cancelled');
-      loadJobs();
-    } catch (err) {
-      toast.error(err?.message || 'Failed to cancel scan');
-    }
-  };
-
-  const aggregateStats = useMemo(
-    () => ({
-      totalScans: jobs.length,
-      activeCount: jobs.filter((j) => j.status === 'running').length,
-      totalFound: jobs.reduce((s, j) => s + (j.hosts_found ?? 0), 0),
-      conflictCount: jobs.reduce((s, j) => s + (j.hosts_conflict ?? 0), 0),
-    }),
-    [jobs]
-  );
-
   let mainContent;
   if (filter === 'proxmox') {
     mainContent = (
@@ -326,8 +269,6 @@ export default function DiscoveryPage() {
     );
   } else if (filter === 'profiles') {
     mainContent = <ScanProfilesPanel onSaved={loadProfiles} />;
-  } else if (filter === 'history') {
-    mainContent = <DiscoveryHistoryPage embedded />;
   } else if (filter === 'review') {
     mainContent = <ReviewQueuePanel onCountChange={setPendingReviewCount} />;
   } else if (filter === 'new-scan') {
@@ -350,37 +291,7 @@ export default function DiscoveryPage() {
       />
     );
   } else {
-    mainContent = (
-      <>
-        <ScanTable
-          jobs={filteredJobs}
-          profileMap={profileMap}
-          progressMap={progressMap}
-          etaMap={etaMap}
-          selectedJobId={selectedJobId}
-          onSelectJob={setSelectedJobId}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          onCancelJob={handleCancelJob}
-        />
-        <ScanDetailPanel
-          job={selectedJob}
-          progressPct={selectedJob ? progressMap.get(selectedJobId) : undefined}
-          etaSeconds={selectedJob ? etaMap.get(selectedJobId) : undefined}
-          logEntries={selectedJob ? logMap.get(selectedJobId) : undefined}
-          detailedLogs={selectedJob ? detailedLogMap.get(selectedJobId) : undefined}
-          profileMap={profileMap}
-        />
-        <DiscoveryStatusBar
-          totalScans={aggregateStats.totalScans}
-          activeCount={aggregateStats.activeCount}
-          totalFound={aggregateStats.totalFound}
-          conflictCount={aggregateStats.conflictCount}
-          effectiveMode={discoveryCapabilities.effectiveMode}
-          dockerAvailable={discoveryCapabilities.dockerAvailable}
-        />
-      </>
-    );
+    mainContent = <DiscoveryHistoryPage embedded jobsData={jobs} onRefreshJobs={loadJobs} />;
   }
 
   return (
