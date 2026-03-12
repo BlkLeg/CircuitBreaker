@@ -6,6 +6,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
+from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
 from app.core.time import utcnow
 from app.db.models import ComputeUnit, Hardware, Storage, TelemetryTimeseries, User
@@ -19,35 +20,72 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["telemetry"])
 
 
+def _safe_json(val) -> dict | None:
+    """Parse a JSON string to dict, returning None on any failure."""
+    if val is None:
+        return None
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
 @router.get("/{hardware_id}/telemetry")
-def get_telemetry(hardware_id: int, db: Session = Depends(get_db)):
+@limiter.limit(lambda: get_limit("telemetry"))
+async def get_telemetry(request: Request, hardware_id: int, db: Session = Depends(get_db)):
+    from app.services.telemetry_cache import get_cached_telemetry
+
+    # 1. Redis cache hit (fast path) — wrapped so Redis failures never crash the endpoint
+    try:
+        cached = await get_cached_telemetry(hardware_id)
+    except Exception:
+        cached = None  # Redis down → fall through to DB
+
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if not hw:
         raise HTTPException(status_code=404, detail="Hardware not found")
 
-    config = hw.telemetry_config
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except (json.JSONDecodeError, TypeError):
-            config = None
+    config = _safe_json(hw.telemetry_config)
 
-    data = hw.telemetry_data
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except (json.JSONDecodeError, TypeError):
-            data = {}  # type: ignore[assignment]
+    # If no telemetry is configured, return clean "unconfigured" — not an error
+    if not config or not config.get("profile"):
+        return {
+            "hardware_id": hardware_id,
+            "name": hw.name,
+            "status": "unconfigured",
+            "data": {},
+            "source": "none",
+        }
 
+    if cached is not None:
+        return {
+            "hardware_id": hardware_id,
+            "name": hw.name,
+            "vendor": hw.vendor,
+            "model": hw.model,
+            "telemetry_profile": config.get("profile"),
+            "data": cached.get("data", cached),
+            "status": cached.get("status", hw.telemetry_status or "unknown"),
+            "last_polled": hw.telemetry_last_polled,
+            "source": "cache",
+        }
+
+    # 2. DB fallback
+    data = _safe_json(hw.telemetry_data)
     return {
         "hardware_id": hardware_id,
         "name": hw.name,
         "vendor": hw.vendor,
         "model": hw.model,
-        "telemetry_profile": config.get("profile") if config else None,
+        "telemetry_profile": config.get("profile"),
         "data": data or {},
         "status": hw.telemetry_status or "unknown",
         "last_polled": hw.telemetry_last_polled,
+        "source": "db",
     }
 
 
@@ -135,27 +173,33 @@ def poll_now(
 _ENTITY_TYPES = {"hardware", "compute_unit", "storage"}
 
 
-def _parse_json(val: str | None) -> dict:
-    if not val:
-        return {}
-    try:
-        return json.loads(val) if isinstance(val, str) else val
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
 @router.get("/entity/{entity_type}/{entity_id}")
 def get_entity_telemetry(entity_type: str, entity_id: int, db: Session = Depends(get_db)):
     if entity_type not in _ENTITY_TYPES:
         raise HTTPException(status_code=400, detail=f"entity_type must be one of {_ENTITY_TYPES}")
 
+    try:
+        return _get_entity_telemetry_inner(entity_type, entity_id, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.warning("Entity telemetry %s:%d failed: %s", entity_type, entity_id, exc)
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "status": "error",
+            "error": "Telemetry temporarily unavailable",
+        }
+
+
+def _get_entity_telemetry_inner(entity_type: str, entity_id: int, db: Session) -> dict:
     result: dict = {"entity_type": entity_type, "entity_id": entity_id}
 
     if entity_type == "hardware":
         hw = db.get(Hardware, entity_id)
         if not hw:
             raise HTTPException(status_code=404, detail="Hardware not found")
-        tdata = _parse_json(hw.telemetry_data)
+        tdata = _safe_json(hw.telemetry_data) or {}
         result.update(
             {
                 "name": hw.name,
@@ -214,7 +258,7 @@ def get_entity_telemetry(entity_type: str, entity_id: int, db: Session = Depends
         cu = db.get(ComputeUnit, entity_id)
         if not cu:
             raise HTTPException(status_code=404, detail="Compute unit not found")
-        pve_status = _parse_json(cu.proxmox_status)
+        pve_status = _safe_json(cu.proxmox_status) or {}
         result.update(
             {
                 "name": cu.name,

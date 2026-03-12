@@ -7,6 +7,7 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     pool: 'forks',
+    maxConcurrency: 3,
     setupFiles: './src/__tests__/setup.js',
     coverage: {
       provider: 'v8',

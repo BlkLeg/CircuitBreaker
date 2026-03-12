@@ -35,18 +35,31 @@ class ProxmoxIntegration:
         token_name: str,
         token_value: str,
         verify_ssl: bool = False,
+        client_cert: str | None = None,
+        client_key: str | None = None,
     ) -> None:
         from proxmoxer import ProxmoxAPI
 
         self.host = host
-        self._px = ProxmoxAPI(
-            host,
-            user=user,
-            token_name=token_name,
-            token_value=token_value,
-            verify_ssl=verify_ssl,
-            timeout=15,
-        )
+
+        kwargs: dict[str, Any] = {
+            "user": user,
+            "token_name": token_name,
+            "token_value": token_value,
+            "verify_ssl": verify_ssl,
+            "timeout": 15,
+        }
+
+        if client_cert and client_key:
+            import requests
+
+            session = requests.Session()
+            session.cert = (client_cert, client_key)
+            if not verify_ssl:
+                session.verify = False
+            kwargs["session"] = session
+
+        self._px = ProxmoxAPI(host, **kwargs)
         self._semaphore = asyncio.Semaphore(PROXMOX_MAX_CONCURRENT)
 
     # ── helpers ────────────────────────────────────────────────────────────
@@ -187,7 +200,11 @@ class ProxmoxIntegration:
 
 
 def build_client_from_token(
-    url: str, api_token: str, verify_ssl: bool = False
+    url: str,
+    api_token: str,
+    verify_ssl: bool = False,
+    client_cert: str | None = None,
+    client_key: str | None = None,
 ) -> ProxmoxIntegration:
     """Parse a PVE API token string and build a client.
 
@@ -207,4 +224,6 @@ def build_client_from_token(
         token_name=token_name,
         token_value=token_value,
         verify_ssl=verify_ssl,
+        client_cert=client_cert,
+        client_key=client_key,
     )

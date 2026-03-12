@@ -46,7 +46,6 @@ export interface AuthToken {
 
 export interface AppSettings {
   id: number;
-  auth_enabled: boolean;
   registration_open: boolean;
   rate_limit_profile: 'relaxed' | 'normal' | 'strict';
   dev_mode: boolean;

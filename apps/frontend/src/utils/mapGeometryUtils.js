@@ -33,9 +33,9 @@ export function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = 
     const override = overrides[e.id];
     const src = posMap[e.source] ?? { x: 0, y: 0 };
     const tgt = posMap[e.target] ?? { x: 0, y: 0 };
-    const { sourceSide, targetSide } = override
-      ? { sourceSide: override.source_side, targetSide: override.target_side }
-      : computeSide(src, tgt);
+    const auto = computeSide(src, tgt);
+    const sourceSide = override?.source_side ?? auto.sourceSide;
+    const targetSide = override?.target_side ?? auto.targetSide;
 
     return {
       ...e,
@@ -62,9 +62,9 @@ export function applyEdgeSidesForEdge(nodesArr, edge, overrides = {}) {
   const override = overrides[edge.id];
   const src = posMap[edge.source] ?? { x: 0, y: 0 };
   const tgt = posMap[edge.target] ?? { x: 0, y: 0 };
-  const { sourceSide, targetSide } = override
-    ? { sourceSide: override.source_side, targetSide: override.target_side }
-    : computeSide(src, tgt);
+  const auto = computeSide(src, tgt);
+  const sourceSide = override?.source_side ?? auto.sourceSide;
+  const targetSide = override?.target_side ?? auto.targetSide;
 
   return {
     ...edge,
@@ -299,9 +299,9 @@ function hasNodeCollision(candidate, nodesArr, movingNodeId, threshold = 150) {
 export function resolveNonOverlappingPosition(candidate, nodesArr, movingNodeId) {
   if (!hasNodeCollision(candidate, nodesArr, movingNodeId)) return candidate;
 
-  const radiusStep = 90;
+  const radiusStep = 70;
   const angleStep = 20;
-  const maxRings = 8;
+  const maxRings = 4;
 
   for (let ring = 1; ring <= maxRings; ring += 1) {
     const radius = radiusStep * ring;

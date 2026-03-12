@@ -8,6 +8,7 @@ rebuilt without affecting operational data.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -17,7 +18,7 @@ from app.db.models import CVEEntry  # noqa: F401 — ensure model metadata is lo
 
 _logger = logging.getLogger(__name__)
 
-_CVE_DB_PATH = Path("data/cve.db")
+_CVE_DB_PATH = Path(os.environ.get("CB_DATA_DIR", "/data")) / "cve.db"
 
 
 def _ensure_dir() -> None:

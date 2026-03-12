@@ -50,6 +50,44 @@ def _invalidate_proxmox_client_cache(config_id: int) -> None:
         _proxmox_client_cache.pop(config_id, None)
 
 
+def _resolve_tls_cert(db: Session, config: IntegrationConfig) -> tuple[str | None, str | None]:
+    """Return (cert_path, key_path) for mTLS if a certificate is attached, else (None, None).
+
+    Writes ephemeral PEM files to /tmp so the requests library can use them.
+    """
+    cert_id = getattr(config, "tls_cert_id", None)
+    if not cert_id:
+        return None, None
+
+    from app.db.models import Certificate
+
+    cert_row = db.get(Certificate, cert_id)
+    if not cert_row:
+        return None, None
+
+    import os
+    import tempfile
+
+    vault = get_vault()
+    cert_pem = cert_row.cert_pem
+    try:
+        key_pem = vault.decrypt(cert_row.key_pem)
+    except Exception:
+        key_pem = cert_row.key_pem
+
+    prefix = f"cb_mtls_{config.id}_"
+    cert_path = os.path.join(tempfile.gettempdir(), f"{prefix}cert.pem")
+    key_path = os.path.join(tempfile.gettempdir(), f"{prefix}key.pem")
+
+    with open(cert_path, "w") as f:
+        f.write(cert_pem)
+    with open(key_path, "w") as f:
+        f.write(key_pem)
+    os.chmod(key_path, 0o600)
+
+    return cert_path, key_path
+
+
 def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
     """Build or return cached ProxmoxIntegration for this integration (one per config to avoid pool exhaustion)."""
     config_id = config.id
@@ -70,7 +108,16 @@ def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
         ) from exc
     extra = json.loads(config.extra_config) if config.extra_config else {}
     verify_ssl = extra.get("verify_ssl", False)
-    client = build_client_from_token(config.config_url, token, verify_ssl=verify_ssl)
+
+    cert_path, key_path = _resolve_tls_cert(db, config)
+
+    client = build_client_from_token(
+        config.config_url,
+        token,
+        verify_ssl=verify_ssl,
+        client_cert=cert_path,
+        client_key=key_path,
+    )
     with _proxmox_client_cache_lock:
         _proxmox_client_cache[config_id] = client
     return client
@@ -191,6 +238,11 @@ def update_integration(
 
 def delete_integration(db: Session, config: IntegrationConfig) -> None:
     _invalidate_proxmox_client_cache(config.id)
+    # Nullify child FKs before deleting to prevent FK constraint violations
+    for model in (Hardware, ComputeUnit, Storage, HardwareCluster):
+        db.query(model).filter(model.integration_config_id == config.id).update(
+            {"integration_config_id": None}, synchronize_session=False
+        )
     if config.credential_id:
         cred = db.get(Credential, config.credential_id)
         if cred:
@@ -1046,6 +1098,18 @@ async def poll_node_telemetry(db: Session) -> None:
                             "status": hw.telemetry_status,
                         },
                     )
+
+                    from app.services.telemetry_cache import (
+                        cache_telemetry as _redis_cache,
+                    )
+                    from app.services.telemetry_cache import (
+                        publish_telemetry as _redis_pub,
+                    )
+
+                    _tdata = {"data": json.loads(telemetry), "status": hw.telemetry_status}
+                    await _redis_cache(hw.id, _tdata)
+                    await _redis_pub(hw.id, _tdata)
+
                 except Exception as e:
                     _logger.debug("Telemetry apply failed for node %s: %s", hw.proxmox_node_name, e)
 
@@ -1269,6 +1333,17 @@ async def poll_vm_telemetry(db: Session) -> None:
                             "vmid": cu.proxmox_vmid,
                             "status": cu.status,
                             "telemetry": json.loads(pve_status),
+                        },
+                    )
+
+                    from app.services.telemetry_cache import publish_telemetry as _redis_pub_vm
+
+                    await _redis_pub_vm(
+                        cu.id,
+                        {
+                            "data": json.loads(pve_status),
+                            "status": cu.status,
+                            "entity_type": "compute_unit",
                         },
                     )
                 except Exception as e:

@@ -10,8 +10,8 @@ def test_is_available_returns_false_by_default():
     assert duckdb_client.is_available() is False
 
 
-def test_query_falls_back_to_sqlite():
-    """query() should succeed even without DuckDB, using the SQLite fallback."""
+def test_query_falls_back_to_postgres():
+    """query() should succeed even without DuckDB, using the PostgreSQL fallback."""
     result = duckdb_client.query("SELECT 1 AS val")
     assert len(result) == 1
     assert result[0]["val"] == 1

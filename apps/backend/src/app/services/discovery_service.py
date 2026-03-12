@@ -165,20 +165,38 @@ def _arp_available() -> bool:
     return _ARP_CAPABLE
 
 
+_REDIS_DISCOVERY_CHANNEL = "cb:discovery:events"
+
+
 async def _emit_ws_event(event_type: str, payload: dict):
-    """Broadcast a discovery event via WebSocket and NATS."""
+    """Broadcast a discovery event via Redis pub/sub, WebSocket, and NATS.
+
+    Primary delivery: Redis pub/sub (crosses Uvicorn worker boundaries).
+    Fallback: in-process ``ws_manager.broadcast`` when Redis is unavailable.
+    NATS publish is always attempted for SSE and external consumers.
+    """
     from app.core import subjects
     from app.core.nats_client import nats_client
+    from app.core.redis import get_redis
 
-    await ws_manager.broadcast({"type": event_type, **payload})
+    message = {"type": event_type, **payload}
 
-    # Mirror to NATS so other consumers (SSE, topology WS bridge) can subscribe.
+    r = await get_redis()
+    if r is not None:
+        try:
+            await r.publish(_REDIS_DISCOVERY_CHANNEL, json.dumps(message, default=str))
+        except Exception as exc:
+            logger.debug("Discovery Redis publish failed, falling back to local broadcast: %s", exc)
+            await ws_manager.broadcast(message)
+    else:
+        await ws_manager.broadcast(message)
+
     _SUBJECT_MAP = {
         "job_progress": subjects.DISCOVERY_SCAN_PROGRESS,
         "job_update": subjects.DISCOVERY_SCAN_COMPLETED,
         "scan_log_entry": subjects.DISCOVERY_SCAN_PROGRESS,
         "result_added": subjects.DISCOVERY_DEVICE_FOUND,
-        "result_processed": subjects.DISCOVERY_DEVICE_FOUND,  # Reuse device found subject for result processing
+        "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
     }
     subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
     await nats_client.publish(subject, {"event_type": event_type, **payload})
@@ -336,6 +354,12 @@ def create_scan_job(
     nmap_arguments: str | None = None,
     triggered_by: str = "api",
 ) -> ScanJob:
+    from app.core.config import settings as env_settings
+    from app.core.network_acl import validate_scan_target
+    from app.services.settings_service import get_or_create_settings
+
+    app_cfg = get_or_create_settings(db)
+
     cidrs: list[str] = []
     network_ids: list[int] = []
     effective_scan_types = scan_types or []
@@ -346,9 +370,21 @@ def create_scan_job(
         network_ids.extend(n_ids)
 
     if target_cidr:
-        # Raises ValueError on invalid CIDR
         normalised_cidr = _validate_cidr(target_cidr)
         cidrs.append(normalised_cidr)
+
+    # Enforce air-gap mode and CIDR ACL on every non-docker target
+    for c in cidrs:
+        validate_scan_target(
+            c,
+            airgap_env=env_settings.airgap,
+            airgap_db=getattr(app_cfg, "airgap_mode", False),
+            allowed_networks_json=getattr(
+                app_cfg,
+                "scan_allowed_networks",
+                '["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]',
+            ),
+        )
 
     if not cidrs and effective_scan_types != ["docker"]:
         raise ValueError("At least one CIDR range or VLAN must be targeted for scan.")

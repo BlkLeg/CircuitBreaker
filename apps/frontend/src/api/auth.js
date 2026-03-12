@@ -46,7 +46,10 @@ export const authApi = {
     return client.put('/auth/me/avatar', formData, { headers });
   },
   forgotPassword: (email) => client.post('/auth/forgot-password', { email }),
-  resetPassword: (token, password) => client.post('/auth/reset-password', { token, password }),
+  resetPassword: async (token, password) => {
+    const password_hash = await hashPasswordForAuth(password);
+    return client.post('/auth/reset-password', { token, password: password_hash });
+  },
   vaultReset: async (email, vaultKey, newPassword) => {
     const new_password_hash = await hashPasswordForAuth(newPassword);
     return client.post('/auth/vault-reset', {

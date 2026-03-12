@@ -1,9 +1,15 @@
-"""URL validation for SSRF prevention. Rejects loopback, link-local, and private IPs."""
+"""URL validation for SSRF prevention.
+
+Rejects loopback, link-local, and private IPs.  Also rejects non-HTTP(S)
+schemes to prevent ``file://``, ``gopher://``, ``ftp://``, etc.
+"""
 
 import ipaddress
 import socket
 from collections.abc import Callable
 from urllib.parse import urlparse
+
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
 def _is_forbidden_ip(ip_str: str) -> bool:
@@ -51,6 +57,13 @@ def reject_ssrf_url_proxmox(url: str) -> None:
 
 def _reject_ssrf_impl(url: str, is_forbidden: Callable[[str], bool], msg: str) -> None:
     parsed = urlparse(url)
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"URL scheme '{scheme}' is not allowed. Only HTTP and HTTPS are permitted."
+        )
+
     host = (parsed.hostname or parsed.netloc or "").strip()
     if not host:
         raise ValueError("URL has no host")

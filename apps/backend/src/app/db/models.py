@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -12,7 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.time import utcnow
@@ -159,11 +160,11 @@ class Hardware(Base):
     # v0.2.0: Proxmox integration
     proxmox_node_name: Mapped[str | None] = mapped_column(String, nullable=True)
     integration_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("integration_configs.id"), nullable=True
+        Integer, ForeignKey("integration_configs.id", ondelete="SET NULL"), nullable=True
     )
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -302,7 +303,7 @@ class ComputeUnit(Base):
     proxmox_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     proxmox_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     integration_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("integration_configs.id"), nullable=True
+        Integer, ForeignKey("integration_configs.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -392,9 +393,9 @@ class Service(Base):
     docker_image: Mapped[str | None] = mapped_column(String, nullable=True)
     docker_labels: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_docker_container: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -460,7 +461,7 @@ class Storage(Base):
     protocol: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
     integration_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("integration_configs.id"), nullable=True
+        Integer, ForeignKey("integration_configs.id", ondelete="SET NULL"), nullable=True
     )
     proxmox_storage_name: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -509,9 +510,9 @@ class Network(Base):
     docker_network_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     docker_driver: Mapped[str | None] = mapped_column(String, nullable=True)
     is_docker_network: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -634,11 +635,11 @@ class HardwareCluster(Base):
     type: Mapped[str] = mapped_column(String, default="manual")
     # values: manual | docker_compose | docker_swarm | k8s | proxmox
     integration_config_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("integration_configs.id"), nullable=True
+        Integer, ForeignKey("integration_configs.id", ondelete="SET NULL"), nullable=True
     )
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -728,9 +729,9 @@ class ExternalNode(Base):
     icon_slug: Mapped[str | None] = mapped_column(String)
     notes: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)  # 'prod', 'lab', 'shared'
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -943,6 +944,14 @@ class AppSettings(Base):
     vault_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Phase 7.5: PostgreSQL backup retention
     db_backup_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # Security hardening
+    scan_allowed_networks: Mapped[str] = mapped_column(
+        Text, nullable=False, default='["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]'
+    )  # JSON array of allowed CIDRs for scanning
+    airgap_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ws_allowed_cidrs: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )  # JSON array of CIDRs allowed to connect via WebSocket; empty = allow all
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1003,9 +1012,12 @@ class IntegrationConfig(Base):
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String, nullable=True)
     extra_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    tls_cert_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("certificates.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1015,6 +1027,7 @@ class IntegrationConfig(Base):
     credential: Mapped["Credential | None"] = relationship(
         "Credential", foreign_keys=[credential_id]
     )
+    tls_cert: Mapped["Certificate | None"] = relationship("Certificate", foreign_keys=[tls_cert_id])
 
 
 class ProxmoxDiscoverRun(Base):
@@ -1103,9 +1116,9 @@ class ScanJob(Base):
     progress_phase: Mapped[str] = mapped_column(String, default="queued")
     progress_message: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    # v0.2.0: multi-tenancy
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True
+    # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     profile: Mapped["DiscoveryProfile | None"] = relationship(
@@ -1239,6 +1252,10 @@ class User(Base):
     backup_codes: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # JSON list of hashed codes
+    # v0.3.0: tenant assignment
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True
+    )
 
     sessions: Mapped[list["UserSession"]] = relationship(
         "UserSession",
@@ -1567,29 +1584,32 @@ class StatusHistory(Base):
     group: Mapped["StatusGroup"] = relationship("StatusGroup", back_populates="history")
 
 
-# ── Teams (Multi-Tenancy) ─────────────────────────────────────────────────────
+# ── Tenants (Multi-Tenancy) ───────────────────────────────────────────────────
 
 
-team_members = Table(
-    "team_members",
+tenant_members = Table(
+    "tenant_members",
     Base.metadata,
-    Column("team_id", Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True),
+    Column("tenant_id", Integer, ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True),
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-    Column("team_role", String(20), nullable=False, default="member"),  # admin|member|viewer
+    Column("tenant_role", String(20), nullable=False, default="member"),
 )
 
 
-class Team(Base):
-    __tablename__ = "teams"
+class Tenant(Base):
+    __tablename__ = "tenants"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    slug: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
-    members: Mapped[list["User"]] = relationship("User", secondary=team_members, backref="teams")
+    members: Mapped[list["User"]] = relationship(
+        "User", secondary=tenant_members, backref="tenants"
+    )
 
 
 # ── Explicit Topologies ────────────────────────────────────────────────────────
@@ -1599,8 +1619,8 @@ class Topology(Base):
     __tablename__ = "topologies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    team_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True, index=True
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1655,3 +1675,154 @@ class TopologyEdge(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     topology: Mapped["Topology"] = relationship("Topology", back_populates="edges")
+
+
+# ── Certificates ──────────────────────────────────────────────────────────────
+
+
+class Certificate(Base):
+    __tablename__ = "certificates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="selfsigned"
+    )  # letsencrypt | selfsigned
+    cert_pem: Mapped[str] = mapped_column(Text, nullable=False)
+    key_pem: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+# ── Audit Log (DB-trigger populated, read-only from Python) ──────────────────
+
+
+class AuditLog(Base):
+    """Partitioned audit table populated by DB triggers -- read-only from Python."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    entity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    old_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    new_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, primary_key=True
+    )
+
+
+# ── IPAM (IP Address Management) ─────────────────────────────────────────────
+
+
+class IPAddress(Base):
+    __tablename__ = "ip_addresses"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "address", name="uq_ip_addresses_tenant_address"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    network_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("networks.id", ondelete="CASCADE"), nullable=True
+    )
+    address = mapped_column(INET, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="free"
+    )  # allocated | reserved | free
+    hardware_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="SET NULL"), nullable=True
+    )
+    service_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("services.id", ondelete="SET NULL"), nullable=True
+    )
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    allocated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    network: Mapped["Network | None"] = relationship("Network", foreign_keys=[network_id])
+    hardware: Mapped["Hardware | None"] = relationship("Hardware", foreign_keys=[hardware_id])
+    service: Mapped["Service | None"] = relationship("Service", foreign_keys=[service_id])
+
+
+# ── VLANs (Layer 2) ──────────────────────────────────────────────────────────
+
+
+class VLAN(Base):
+    __tablename__ = "vlans"
+    __table_args__ = (UniqueConstraint("tenant_id", "vlan_id", name="uq_vlans_tenant_vlan"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    vlan_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    network_ids: Mapped[list | None] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+# ── Sites (Multi-Site) ───────────────────────────────────────────────────────
+
+
+class Site(Base):
+    __tablename__ = "sites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
+# ── Node Relations (Generic Graph Edges) ──────────────────────────────────────
+
+
+class NodeRelation(Base):
+    __tablename__ = "node_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "source_id",
+            "target_type",
+            "target_id",
+            "relation_type",
+            name="uq_node_rel_edge",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
+    )
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

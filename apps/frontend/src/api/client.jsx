@@ -20,7 +20,8 @@ function isSessionExpiryCandidate(error) {
 function buildUserMessage(status, data, error) {
   if (status >= 500) {
     logger.error(`API ${status}:`, data);
-    return 'A server error occurred. Please try again or contact support.';
+    const detail = typeof data?.detail === 'string' ? data.detail : null;
+    return detail || 'A server error occurred. Please try again or contact support.';
   }
   const detail = data?.detail;
   const message = Array.isArray(detail)
@@ -48,15 +49,17 @@ const client = axios.create({
 });
 
 // Session is sent via httpOnly cookie (cb_session). Do not attach token from storage.
-// Strip any accidental plaintext password from payloads (defense in depth).
+// Strip accidental plaintext password when password_hash is already present (defense in depth).
 client.interceptors.request.use((config) => {
-  if (config.data && typeof config.data === 'object' && 'password' in config.data) {
+  if (
+    config.data &&
+    typeof config.data === 'object' &&
+    'password' in config.data &&
+    'password_hash' in config.data
+  ) {
     const rest = { ...config.data };
     delete rest.password;
     config.data = rest;
-  }
-  if (config.data instanceof FormData) {
-    delete config.headers['Content-Type'];
   }
   if (config.data instanceof FormData) {
     delete config.headers['Content-Type'];
@@ -72,8 +75,10 @@ client.interceptors.response.use(
     const isSafeMethod = ['get', 'head', 'options'].includes(method);
     const isRetryableStatus = !error.response || error.response.status >= 500;
 
-    // Auto-retry safe methods on network errors or 5xx (up to 3 times, exponential backoff)
-    if (isSafeMethod && isRetryableStatus && (config._retryCount ?? 0) < 3) {
+    // Auto-retry safe methods on network errors or 5xx (max 2 retries, exponential backoff)
+    // 503 = graceful degradation (not transient) → no retry
+    const is503 = error.response?.status === 503;
+    if (isSafeMethod && isRetryableStatus && !is503 && (config._retryCount ?? 0) < 2) {
       config._retryCount = (config._retryCount ?? 0) + 1;
       const delay = Math.min(500 * Math.pow(2, config._retryCount - 1), 4000);
       await new Promise((r) => setTimeout(r, delay));

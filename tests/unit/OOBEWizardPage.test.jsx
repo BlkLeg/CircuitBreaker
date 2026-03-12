@@ -6,7 +6,6 @@ import OOBEWizardPage from '../pages/OOBEWizardPage.jsx';
 const mockBootstrapInitialize = vi.fn();
 const mockUpdateProfile = vi.fn();
 const mockLogin = vi.fn();
-const mockSetAuthEnabled = vi.fn();
 const mockReloadSettings = vi.fn();
 const mockChangeLanguage = vi.fn().mockResolvedValue();
 
@@ -20,7 +19,6 @@ vi.mock('../api/auth.js', () => ({
 vi.mock('../context/AuthContext.jsx', () => ({
   useAuth: () => ({
     login: mockLogin,
-    setAuthEnabled: mockSetAuthEnabled,
   }),
 }));
 
@@ -65,7 +63,6 @@ describe('OOBEWizardPage', () => {
     mockBootstrapInitialize.mockReset();
     mockUpdateProfile.mockReset();
     mockLogin.mockReset();
-    mockSetAuthEnabled.mockReset();
     mockReloadSettings.mockReset();
     mockChangeLanguage.mockClear();
     mockBootstrapInitialize.mockResolvedValue({

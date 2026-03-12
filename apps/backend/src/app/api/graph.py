@@ -44,6 +44,75 @@ _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["graph"])
 
+
+def _preload_edge_maps(db: Session) -> dict:
+    """CTE-based bulk preload of all edge/relation data in a single round-trip.
+
+    Returns a dict of pre-built lookup maps that build_topology_graph uses
+    to emit edges without issuing separate queries for each join table.
+    """
+    from sqlalchemy import text as _text
+
+    # Fetch all relationship data via a single UNION ALL CTE.
+    # Each row: (edge_type, source_type, source_id, target_type, target_id,
+    #            connection_type, bandwidth_mbps, row_id)
+    cte_sql = _text("""
+        WITH all_edges AS (
+            SELECT 'hn' AS edge_type,
+                   hardware_id AS src_id, network_id AS tgt_id,
+                   connection_type, bandwidth_mbps, id AS row_id
+            FROM hardware_networks
+          UNION ALL
+            SELECT 'cn', compute_id, network_id,
+                   connection_type, bandwidth_mbps, id
+            FROM compute_networks
+          UNION ALL
+            SELECT 'hh', source_hardware_id, target_hardware_id,
+                   connection_type, bandwidth_mbps, id
+            FROM hardware_connections
+          UNION ALL
+            SELECT 'np', network_a_id, network_b_id,
+                   NULL, NULL, 0
+            FROM network_peers
+          UNION ALL
+            SELECT 'dep', service_id, depends_on_id,
+                   connection_type, bandwidth_mbps, id
+            FROM service_dependencies
+          UNION ALL
+            SELECT 'ss', service_id, storage_id,
+                   connection_type, bandwidth_mbps, id
+            FROM service_storage
+          UNION ALL
+            SELECT 'sm', service_id, misc_id,
+                   connection_type, bandwidth_mbps, id
+            FROM service_misc
+          UNION ALL
+            SELECT 'extnet', external_node_id, network_id,
+                   connection_type, bandwidth_mbps, id
+            FROM external_node_networks
+          UNION ALL
+            SELECT 'svcext', service_id, external_node_id,
+                   connection_type, bandwidth_mbps, id
+            FROM service_external_nodes
+          UNION ALL
+            SELECT 'hcm', cluster_id, hardware_id,
+                   NULL, NULL, id
+            FROM hardware_cluster_members
+        )
+        SELECT edge_type, src_id, tgt_id, connection_type, bandwidth_mbps, row_id
+        FROM all_edges
+    """)
+
+    result: dict[str, list] = {}
+    try:
+        rows = db.execute(cte_sql).all()
+        for edge_type, src_id, tgt_id, conn_type, bw, row_id in rows:
+            result.setdefault(edge_type, []).append((src_id, tgt_id, conn_type, bw, row_id))
+    except Exception:
+        _logger.debug("CTE edge preload failed; falling back to per-table queries")
+    return result
+
+
 _ALLOWED_CONNECTION_TYPES = {"ethernet", "wireless", "tunnel", "wg", "vpn", "ssh"}
 _CONNECTION_TYPE_ALIASES = {"wireguard": "wg"}
 
@@ -979,13 +1048,18 @@ async def save_layout(
             status_code=500, detail="An internal error occurred while saving the layout."
         ) from e
 
-    from app.core.nats_client import nats_client
-    from app.core.subjects import TOPOLOGY_NODE_MOVED
+    # NATS is best-effort — never fail the save response
+    try:
+        from app.core.nats_client import nats_client
+        from app.core.subjects import TOPOLOGY_NODE_MOVED
 
-    await nats_client.publish(
-        TOPOLOGY_NODE_MOVED,
-        {"layout_name": data.name, "layout_data": data.layout_data},
-    )
+        await nats_client.publish(
+            TOPOLOGY_NODE_MOVED,
+            {"layout_name": data.name, "layout_data": data.layout_data},
+        )
+    except Exception:
+        _logger.warning("NATS publish failed for layout save (non-fatal)")
+
     return {"status": "ok"}
 
 

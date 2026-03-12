@@ -1,7 +1,7 @@
 # Circuit Breaker
 
 
-![Circuit Breaker Logo](screenshots/cb_night-full.png)
+![Circuit Breaker Logo](screenshots/cb_night-full.webp)
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, clusters—with interactive topology, live telemetry, and auto-discovery. **Now PostgreSQL-powered for scalability!**
 
@@ -66,23 +66,23 @@
 
 ### Multiple Topologies (w/ live animations)
 
-![Concentric Rings](screenshots/01-concentric-rings.png)
+![Concentric Rings](screenshots/01-concentric-rings.webp)
 
-![Radial w/ Smooth connections](screenshots/01-heart-diagram.png)
+![Radial w/ Smooth connections](screenshots/01-heart-diagram.webp)
 
-![Radial Bundled](screenshots/radial-bundled.png)
+![Radial Bundled](screenshots/radial-bundled.webp)
 
-![Subnet Separation](screenshots/01-subnet.png)
+![Subnet Separation](screenshots/01-subnet.webp)
 
 ### Floating HUD w/ live Telemtry
 
-![Maintenance Status](screenshots/01-hud-maintenance.png)
+![Maintenance Status](screenshots/01-hud-maintenance.webp)
 
-![HUD w/ Telemetry](screenshots/01-hud-2.png)
+![HUD w/ Telemetry](screenshots/01-hud-2.webp)
 
 ### Non-Repudiation Audit Logs
 
-![Audit Log](screenshots/01-secure-logging.png)
+![Audit Log](screenshots/01-secure-logging.webp)
 
 ## Quick Start
 

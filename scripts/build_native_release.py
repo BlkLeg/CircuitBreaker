@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -158,6 +159,16 @@ def stage_bundle(
     shutil.copytree(BACKEND_ROOT / "migrations", backend_share / "migrations", dirs_exist_ok=True)
     shutil.copytree(frontend_dir, frontend_share, dirs_exist_ok=True)
 
+    # Bundle config.toml template if present
+    config_default = REPO_ROOT / "packaging" / "config.toml.default"
+    if config_default.exists():
+        shutil.copy2(config_default, share_dir / "config.toml.default")
+
+    # Bundle launchd plist template if present
+    plist_template = REPO_ROOT / "packaging" / "com.blkleg.circuitbreaker.plist"
+    if plist_template.exists():
+        shutil.copy2(plist_template, share_dir / "com.blkleg.circuitbreaker.plist")
+
     manifest = {
         "app": "Circuit Breaker",
         "version": version,
@@ -219,6 +230,53 @@ def write_metadata(output_dir: Path, manifest: dict[str, object], archive_path: 
     )
 
 
+def create_linux_packages(
+    bundle_dir: Path, version: str, target_arch: str, output_dir: Path
+) -> list[Path]:
+    """Generate .deb and .rpm packages using nfpm."""
+    nfpm = shutil.which("nfpm")
+    if not nfpm:
+        print("nfpm not found — skipping deb/rpm generation. Install: https://nfpm.goreleaser.com/install/")
+        return []
+
+    nfpm_config = REPO_ROOT / "nfpm.yaml"
+    if not nfpm_config.exists():
+        print("nfpm.yaml not found — skipping deb/rpm generation.")
+        return []
+
+    # nfpm uses GOARCH naming
+    arch_map = {"amd64": "amd64", "arm64": "arm64"}
+    goarch = arch_map.get(target_arch, target_arch)
+
+    # Symlink bundle contents to where nfpm.yaml expects them
+    dist_bundle = REPO_ROOT / "dist" / "native" / "bundle"
+    if dist_bundle.exists():
+        shutil.rmtree(dist_bundle)
+    shutil.copytree(bundle_dir, dist_bundle)
+
+    env = {
+        **os.environ,
+        "VERSION": version,
+        "GOARCH": goarch,
+    }
+
+    packages: list[Path] = []
+    for fmt in ("deb", "rpm"):
+        pkg_path = output_dir / f"circuit-breaker_{version}_{goarch}.{fmt}"
+        result = subprocess.run(
+            [nfpm, "package", "--config", str(nfpm_config), "--packager", fmt,
+             "--target", str(pkg_path)],
+            env=env, cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  Created: {pkg_path.name}")
+            packages.append(pkg_path)
+        else:
+            print(f"  WARNING: {fmt} packaging failed: {result.stderr.strip()}")
+
+    return packages
+
+
 def main() -> int:
     args = parse_args()
     target_os, target_arch = detect_target()
@@ -244,6 +302,11 @@ def main() -> int:
     archive_path = create_archive(bundle_dir, version, target_os, target_arch, output_dir)
     write_metadata(output_dir, manifest, archive_path)
     print(archive_path)
+
+    # Generate deb/rpm if on Linux
+    if target_os == "linux":
+        create_linux_packages(bundle_dir, version, target_arch, output_dir)
+
     return 0
 
 

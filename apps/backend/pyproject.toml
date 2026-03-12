@@ -43,6 +43,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "cachetools>=5.3.0",
     "docker>=7.0.0",
+    "redis[hiredis]>=5.0.0",
 ]
 
 [project.optional-dependencies]

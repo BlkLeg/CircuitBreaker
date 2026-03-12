@@ -203,5 +203,46 @@ def write_log(
         else:
             with SessionLocal() as _db:
                 _do_write(_db)
+
+        _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
     except Exception as exc:  # noqa: BLE001
         print(f"[audit] write_log failed (action={action!r}): {exc}", file=sys.stderr)
+
+
+def _publish_audit_to_redis(
+    action: str,
+    entity_type: str | None,
+    entity_id: int | None,
+    actor_id: int | None,
+    severity: str,
+    timestamp: str,
+) -> None:
+    """Best-effort publish of audit events to Redis ``audit:stream`` channel."""
+    try:
+        import asyncio
+
+        from app.core.redis import get_redis
+
+        async def _pub():
+            r = await get_redis()
+            if r is None:
+                return
+            payload = json.dumps(
+                {
+                    "action": action,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "actor_id": actor_id,
+                    "severity": severity,
+                    "ts": timestamp,
+                }
+            )
+            await r.publish("audit:stream", payload)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_pub())
+        except RuntimeError:
+            pass
+    except Exception:
+        pass

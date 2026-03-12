@@ -74,7 +74,7 @@ function reconcileOnReconnect(setPendingCount) {
     });
 }
 
-export function useDiscoveryStream({ authEnabled = true } = {}) {
+export function useDiscoveryStream() {
   const { user, token } = useAuth();
   const [connected, setConnected] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
@@ -114,7 +114,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       return;
     }
 
-    if (authEnabled && !user && !token) {
+    if (!user && !token) {
       return;
     }
 
@@ -125,10 +125,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       setWsStatus('connecting');
       if (token && token !== 'cookie' && token.length > 10) {
         ws.send(token);
-      } else if (!authEnabled) {
-        ws.send('');
       }
-      // When auth enabled and cookie: no first message; backend uses cookie
     };
 
     ws.onmessage = (event) => {
@@ -287,7 +284,7 @@ export function useDiscoveryStream({ authEnabled = true } = {}) {
       // onclose fires after onerror — reconnect logic lives there
       ws.close();
     };
-  }, [clearRetry, authEnabled, user, token]);
+  }, [clearRetry, user, token]);
 
   // Mount: connect and set up visibility listener
   useEffect(() => {

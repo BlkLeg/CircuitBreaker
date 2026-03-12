@@ -4,9 +4,10 @@ import os
 import re
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime  # noqa: F401 — used by models imported transitively
+from datetime import datetime, timedelta  # noqa: F401 — used by models imported transitively
 from pathlib import Path, PurePosixPath
 
+import sqlalchemy as sa
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -49,10 +50,13 @@ from app.api.admin_users import router as admin_users_router
 from app.api.assets import router as assets_router
 from app.api.branding import router as branding_router
 from app.api.capabilities import router as capabilities_router
+from app.api.certificates import router as certificates_router
 from app.api.cve import router as cve_router
 from app.api.discovery import router as discovery_router
 from app.api.events import router as events_router
+from app.api.integration_provider import router as integration_provider_router
 from app.api.ip_check import router as ip_check_router
+from app.api.ipam import ipam_router, node_relations_router, site_router, vlan_router
 from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
 from app.api.notifications import router as notifications_router
@@ -68,6 +72,7 @@ from app.api.webhooks import router as webhooks_router
 from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ws_status import router as ws_status_router
 from app.api.ws_status import set_status_main_loop
+from app.api.ws_telemetry import router as ws_telemetry_router
 from app.api.ws_topology import router as ws_topology_router
 from app.core import (
     compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
@@ -75,11 +80,13 @@ from app.core import (
 from app.core.config import settings
 from app.core.errors import AppError
 from app.core.rate_limit import limiter
+from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.session import engine, get_session_context
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.middleware.tenant_middleware import TenantMiddleware
 
 # ---------------------------------------------------------------------------
 # OAuth param scrubber for uvicorn access logs
@@ -302,6 +309,11 @@ async def lifespan(app: FastAPI):
         except Exception as _se:  # noqa: BLE001
             _logger.debug("Status page seed skipped or failed: %s", _se)
 
+    # ── Redis (telemetry cache + pub/sub) ────────────────────────────────
+    from app.core.redis import close_redis, init_redis
+
+    await init_redis(settings.redis_url)
+
     # ── NATS message bus ───────────────────────────────────────────────────
     await nats_client.connect()
     _logger.info("NATS initialised (connected=%s)", nats_client.is_connected)
@@ -343,7 +355,13 @@ async def lifespan(app: FastAPI):
             await nats_client.subscribe(_topo_subject, _topo_handler)
         _logger.info("NATS → topology WS bridge subscribed.")
 
-        # ── NATS → discovery WebSocket bridge (Proxmox scan progress) ─────
+        # ── NATS → discovery WebSocket bridge ─────────────────────────────
+        # Forwards ALL discovery events (both Proxmox and regular network
+        # scans) to discovery WS clients.  This is a secondary delivery
+        # path — Redis pub/sub is the primary cross-worker mechanism for
+        # regular scans.  Proxmox events that arrive via NATS are mapped
+        # to their specific WS message types; regular discovery events are
+        # forwarded using their embedded ``event_type``.
         from app.core.ws_manager import ws_manager
 
         async def _discovery_scan_handler(msg) -> None:
@@ -351,51 +369,59 @@ async def lifespan(app: FastAPI):
                 data = _json.loads(msg.data.decode())
             except Exception:
                 data = {}
-            if data.get("source") != "proxmox":
-                return
             subject = msg.subject
-            if subject == _subj.DISCOVERY_SCAN_STARTED:
-                await ws_manager.broadcast(
-                    {"type": "proxmox_scan_started", "integration_id": data.get("integration_id")}
-                )
-            elif subject == _subj.DISCOVERY_SCAN_PROGRESS:
-                await ws_manager.broadcast(
-                    {
-                        "type": "proxmox_scan_progress",
-                        "integration_id": data.get("integration_id"),
-                        "phase": data.get("phase"),
-                        "message": data.get("message"),
-                        "percent": data.get("percent"),
-                    }
-                )
-            elif subject == _subj.DISCOVERY_SCAN_COMPLETED:
-                await ws_manager.broadcast(
-                    {
-                        "type": "proxmox_scan_completed",
-                        "integration_id": data.get("integration_id"),
-                        "nodes": data.get("nodes"),
-                        "vms": data.get("vms"),
-                        "cts": data.get("cts"),
-                        "storage": data.get("storage"),
-                    }
-                )
-            elif subject == _subj.DISCOVERY_SCAN_FAILED:
-                await ws_manager.broadcast(
-                    {
-                        "type": "proxmox_scan_failed",
-                        "integration_id": data.get("integration_id"),
-                        "error": data.get("error"),
-                    }
-                )
+
+            if data.get("source") == "proxmox":
+                if subject == _subj.DISCOVERY_SCAN_STARTED:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "proxmox_scan_started",
+                            "integration_id": data.get("integration_id"),
+                        }
+                    )
+                elif subject == _subj.DISCOVERY_SCAN_PROGRESS:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "proxmox_scan_progress",
+                            "integration_id": data.get("integration_id"),
+                            "phase": data.get("phase"),
+                            "message": data.get("message"),
+                            "percent": data.get("percent"),
+                        }
+                    )
+                elif subject == _subj.DISCOVERY_SCAN_COMPLETED:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "proxmox_scan_completed",
+                            "integration_id": data.get("integration_id"),
+                            "nodes": data.get("nodes"),
+                            "vms": data.get("vms"),
+                            "cts": data.get("cts"),
+                            "storage": data.get("storage"),
+                        }
+                    )
+                elif subject == _subj.DISCOVERY_SCAN_FAILED:
+                    await ws_manager.broadcast(
+                        {
+                            "type": "proxmox_scan_failed",
+                            "integration_id": data.get("integration_id"),
+                            "error": data.get("error"),
+                        }
+                    )
+            else:
+                event_type = data.pop("event_type", None)
+                if event_type:
+                    await ws_manager.broadcast({"type": event_type, **data})
 
         for _disc_subject in (
             _subj.DISCOVERY_SCAN_STARTED,
             _subj.DISCOVERY_SCAN_PROGRESS,
             _subj.DISCOVERY_SCAN_COMPLETED,
             _subj.DISCOVERY_SCAN_FAILED,
+            _subj.DISCOVERY_DEVICE_FOUND,
         ):
             await nats_client.subscribe(_disc_subject, _discovery_scan_handler)
-        _logger.info("NATS → discovery WS bridge (Proxmox) subscribed.")
+        _logger.info("NATS → discovery WS bridge subscribed.")
 
     # ── CVE database (separate SQLite file) ───────────────────────────────
     from app.db.cve_session import init_cve_db
@@ -437,6 +463,36 @@ async def lifespan(app: FastAPI):
         purge_old_audit_logs,
         trigger=CronTrigger(hour=3, minute=15),
         id="audit_log_purge",
+        replace_existing=True,
+    )
+
+    # Monthly audit_log partition maintenance — ensures partitions exist ahead of time
+    def _ensure_audit_partitions() -> None:
+        try:
+            with get_session_context() as db:
+                now = utcnow()
+                for offset in range(3):
+                    dt = now + timedelta(days=30 * offset)
+                    name = f"audit_log_{dt.year}_{dt.month:02d}"
+                    start = f"{dt.year}-{dt.month:02d}-01"
+                    if dt.month == 12:
+                        end = f"{dt.year + 1}-01-01"
+                    else:
+                        end = f"{dt.year}-{dt.month + 1:02d}-01"
+                    db.execute(
+                        sa.text(
+                            f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF audit_log "
+                            f"FOR VALUES FROM ('{start}') TO ('{end}')"
+                        )
+                    )
+                db.commit()
+        except Exception:
+            _logger.debug("audit partition maintenance skipped (table may not exist yet)")
+
+    scheduler.add_job(
+        _ensure_audit_partitions,
+        trigger=CronTrigger(day=28, hour=2, minute=0),
+        id="audit_partition_maintenance",
         replace_existing=True,
     )
 
@@ -718,6 +774,53 @@ async def lifespan(app: FastAPI):
             )
             _logger.info("ARP prober scheduled every %d minutes.", prober_interval)
 
+    # ── Certificate auto-renewal (daily at 3:45 AM) ─────────────────────
+    async def _cert_renewal_job():
+        from app.services.certificate_service import check_and_renew_expiring
+
+        with get_session_context() as cert_db:
+            await check_and_renew_expiring(cert_db)
+
+    scheduler.add_job(
+        _cert_renewal_job,
+        trigger=CronTrigger(hour=3, minute=45),
+        id="cert_auto_renewal",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # ── Vault key auto-rotation (daily at 4:30 AM) ────────────────────
+    def _vault_rotation_check():
+        from app.services.vault_service import rotate_vault_key
+
+        with get_session_context() as vault_db:
+            from app.db.models import AppSettings
+
+            cfg = vault_db.get(AppSettings, 1)
+            if not cfg:
+                return
+            rotation_days = getattr(cfg, "vault_key_rotation_days", 90) or 90
+            rotated_at = getattr(cfg, "vault_key_rotated_at", None)
+            if rotated_at is None or (utcnow() - rotated_at) > timedelta(days=rotation_days):
+                _logger.info(
+                    "Vault key rotation due (last rotated: %s, interval: %d days)",
+                    rotated_at,
+                    rotation_days,
+                )
+                try:
+                    rotate_vault_key(vault_db)
+                except Exception as exc:
+                    _logger.error("Vault key auto-rotation failed: %s", exc)
+
+    scheduler.add_job(
+        _vault_rotation_check,
+        trigger=CronTrigger(hour=4, minute=30),
+        id="vault_rotation_check",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
+
     scheduler.start()
     _logger.info("APScheduler started.")
 
@@ -747,6 +850,14 @@ async def lifespan(app: FastAPI):
             "must run as separate containers."
         )
 
+    # ── Phase 9: Update check (non-blocking) ────────────────────────────
+    try:
+        from app.core.update_check import log_update_notice
+
+        asyncio.create_task(log_update_notice(settings.app_version))
+    except Exception:
+        pass  # Never let update check affect startup
+
     yield  # ── app is running ──
 
     await listener_service.stop()
@@ -764,6 +875,9 @@ async def lifespan(app: FastAPI):
     # ── Graceful NATS disconnect ───────────────────────────────────────────
     await nats_client.disconnect()
     _logger.info("NATS disconnected.")
+
+    # ── Graceful Redis disconnect ──────────────────────────────────────────
+    await close_redis()
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────
@@ -791,6 +905,7 @@ app.add_middleware(
 app.add_middleware(LegacyTokenMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TenantMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
 
@@ -867,6 +982,7 @@ app.include_router(categories.router, prefix=f"{_V1}/categories", tags=["categor
 app.include_router(environments.router, prefix=f"{_V1}/environments", tags=["environments"])
 app.include_router(discovery_router, prefix=f"{_V1}/discovery", tags=["discovery"])
 app.include_router(ws_discovery_router, prefix=f"{_V1}/discovery", tags=["discovery-ws"])
+app.include_router(ws_telemetry_router, prefix=f"{_V1}/telemetry", tags=["telemetry-ws"])
 app.include_router(ws_topology_router, prefix=f"{_V1}/topology", tags=["topology-ws"])
 app.include_router(ip_check_router, prefix=f"{_V1}", tags=["ip-check"])
 app.include_router(settings_router, prefix=f"{_V1}/settings", tags=["settings"])
@@ -885,6 +1001,7 @@ app.include_router(rack_api.router, prefix=f"{_V1}/racks", tags=["racks"])
 app.include_router(tags_api.router, prefix=f"{_V1}/tags", tags=["tags"])
 
 app.include_router(capabilities_router, prefix=f"{_V1}/capabilities", tags=["capabilities"])
+app.include_router(certificates_router, prefix=f"{_V1}/certificates", tags=["certificates"])
 app.include_router(cve_router, prefix=f"{_V1}/cve", tags=["cve"])
 app.include_router(monitor_router, prefix=f"{_V1}/monitors", tags=["monitors"])
 app.include_router(events_router, prefix=f"{_V1}/events", tags=["events"])
@@ -893,8 +1010,13 @@ app.include_router(status_router, prefix=f"{_V1}/status", tags=["status"])
 app.include_router(ws_status_router, prefix=f"{_V1}/status", tags=["status-ws"])
 app.include_router(notifications_router, prefix=f"{_V1}/notifications", tags=["notifications"])
 app.include_router(auth_oauth.router, prefix=f"{_V1}", tags=["oauth"])
+app.include_router(integration_provider_router, prefix=f"{_V1}/integrations", tags=["integrations"])
 app.include_router(proxmox_router, prefix=f"{_V1}/integrations/proxmox", tags=["proxmox"])
 app.include_router(topologies_router, prefix=f"{_V1}/topologies", tags=["topologies"])
+app.include_router(ipam_router, prefix=f"{_V1}/ipam", tags=["ipam"])
+app.include_router(vlan_router, prefix=f"{_V1}/vlans", tags=["vlans"])
+app.include_router(site_router, prefix=f"{_V1}/sites", tags=["sites"])
+app.include_router(node_relations_router, prefix=f"{_V1}/node-relations", tags=["node-relations"])
 
 
 # ── Health check ───────────────────────────────────────────────────────────
@@ -902,15 +1024,28 @@ app.include_router(topologies_router, prefix=f"{_V1}/topologies", tags=["topolog
 
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
+    from app.core.redis import redis_health
+
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception:
         return JSONResponse(
             status_code=503,
-            content={"status": "warming_up", "version": "v0.2.0", "db": "unavailable"},
+            content={
+                "status": "warming_up",
+                "version": "v0.2.0",
+                "db": "unavailable",
+                "redis": "unknown",
+            },
         )
-    return {"status": "ok", "version": "v0.2.0", "db": "postgresql"}
+    redis_ok = await redis_health()
+    return {
+        "status": "ok",
+        "version": "v0.2.0",
+        "db": "postgresql",
+        "redis": "connected" if redis_ok else "unavailable",
+    }
 
 
 # ── Static files & SPA fallback ────────────────────────────────────────────

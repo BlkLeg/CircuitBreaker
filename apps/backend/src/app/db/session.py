@@ -25,12 +25,17 @@ if not db_url.startswith("postgresql"):
         "Set CB_DB_URL=postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker"
     )
 
-# Pool defaults suit mid-range servers; tune via env vars on constrained hosts.
-# Increased from 10/10 to 20/20 to reduce exhaustion under concurrent + scheduler load.
+# Prefer pgbouncer pool URL if available (port 6432); fall back to direct connection.
+# When pgbouncer handles pooling, a smaller SQLAlchemy pool (5/5) avoids double-pooling.
+_pool_url = os.environ.get("CB_DB_POOL_URL", db_url)
+_using_pgbouncer = _pool_url != db_url
+_default_pool = "5" if _using_pgbouncer else "20"
+_default_overflow = "5" if _using_pgbouncer else "20"
+
 engine = create_engine(
-    db_url,
-    pool_size=int(os.environ.get("DB_POOL_SIZE", "20")),
-    max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", "20")),
+    _pool_url,
+    pool_size=int(os.environ.get("DB_POOL_SIZE", _default_pool)),
+    max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", _default_overflow)),
     pool_recycle=300,
     pool_pre_ping=True,
 )
@@ -39,6 +44,33 @@ engine = create_engine(
 is_sqlite = False
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# ── RLS: set app.current_tenant on every connection checkout ─────────────
+from sqlalchemy import event  # noqa: E402
+
+
+@event.listens_for(engine, "checkout")
+def _set_tenant_on_checkout(dbapi_conn, connection_record, connection_proxy):
+    """Propagate the current tenant from the request context to PostgreSQL."""
+    try:
+        from app.middleware.tenant_middleware import current_tenant_id
+
+        tid = current_tenant_id.get(None)
+    except Exception:  # noqa: BLE001
+        tid = None
+
+    try:
+        cursor = dbapi_conn.cursor()
+        try:
+            if tid is not None:
+                cursor.execute("SET app.current_tenant = %s", (str(tid),))
+            else:
+                cursor.execute("RESET app.current_tenant")
+        finally:
+            cursor.close()
+    except Exception:  # noqa: BLE001
+        _logger.debug("RLS tenant variable not available — skipping SET app.current_tenant")
+
 
 naming_convention = {
     "ix": "ix_%(column_0_label)s",

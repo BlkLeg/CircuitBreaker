@@ -59,9 +59,9 @@ class TestCapabilitiesShape:
         assert "enabled" in data["auth"]
 
     def test_fallback_when_no_settings_row(self, client):
-        """With empty DB there is no AppSettings row; endpoint must return safe all-false."""
+        """With empty DB there is no AppSettings row; endpoint must return safe defaults."""
         data = _get_caps(client)
-        assert data["auth"]["enabled"] is False
+        assert data["auth"]["enabled"] is True
         assert data["realtime"]["available"] is False
         assert data["cve"]["available"] is False
         assert data["listener"]["available"] is False
@@ -79,15 +79,10 @@ def _create_settings(client, **kwargs):
 
 
 class TestCapabilitiesReflectsSettings:
-    def test_auth_enabled_reflects_setting(self, client):
-        _create_settings(client, auth_enabled=True)
+    def test_auth_always_enabled(self, client):
+        _create_settings(client)
         data = _get_caps(client)
         assert data["auth"]["enabled"] is True
-
-    def test_auth_disabled_reflects_setting(self, client):
-        _create_settings(client, auth_enabled=False)
-        data = _get_caps(client)
-        assert data["auth"]["enabled"] is False
 
     def test_cve_enabled_reflects_setting(self, client):
         _create_settings(client, cve_sync_enabled=True)

@@ -212,15 +212,15 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     raw_token = _extract_token(request)
 
     api_token = _get_api_token()
-    if api_token and raw_token == api_token:
+    if api_token and raw_token and hmac.compare_digest(raw_token, api_token):
         return 0
 
     cfg = get_or_create_settings(db)
 
-    if not api_token and (not cfg.auth_enabled or not cfg.jwt_secret):
+    if not cfg.jwt_secret:
         return None
 
-    if not raw_token or not cfg.jwt_secret:
+    if not raw_token:
         return None
 
     token_hash = _hash_token_for_cache(raw_token)
@@ -281,14 +281,9 @@ def require_write_auth(
 ) -> int | None:
     """Raise 401/403 when write access is not authorised."""
     from app.core.rbac import _effective_role, effective_scopes, has_scope
-    from app.services.settings_service import get_or_create_settings
 
-    cfg = get_or_create_settings(db)
-    auth_required = cfg.auth_enabled or bool(_get_api_token())
-    if auth_required and user_id is None:
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if not auth_required:
-        return user_id
     if user_id == 0:
         return user_id
     user = db.get(User, user_id)
@@ -302,7 +297,7 @@ def require_write_auth(
 
 
 def require_auth_always(user_id: int | None = Depends(get_optional_user)) -> int:
-    """Validates JWT regardless of app_settings.auth_enabled."""
+    """Validates JWT and raises 401 if no authenticated user."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user_id

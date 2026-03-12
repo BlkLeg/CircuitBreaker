@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC
 
 from fastapi import Depends, HTTPException
@@ -114,21 +113,10 @@ def _is_demo_expired(user: User) -> bool:
     return expiry <= utcnow()
 
 
-def _auth_disabled_bypass(db: Session) -> bool:
-    """Return True when auth is disabled and no API token is configured."""
-    if os.getenv("CB_API_TOKEN"):
-        return False
-    from app.services.settings_service import get_or_create_settings
-
-    cfg = get_or_create_settings(db)
-    return not cfg.auth_enabled
-
-
 def require_role(*roles: str):
     """FastAPI dependency that checks user role against allowed roles.
 
     - Service account (user_id=0) and is_superuser bypass all checks.
-    - When auth_enabled=False and no CB_API_TOKEN, return synthetic admin (bypass).
     - Locked users receive 423 Locked.
     - Insufficient role receives 403 Forbidden.
     """
@@ -138,8 +126,6 @@ def require_role(*roles: str):
         db: Session = Depends(get_db),
     ) -> User:
         if user_id is None:
-            if _auth_disabled_bypass(db):
-                return _service_user()
             raise HTTPException(status_code=401, detail="Authentication required")
         if user_id == 0:
             return _service_user()
@@ -171,8 +157,6 @@ def require_scope(action: str, resource: str):
         db: Session = Depends(get_db),
     ) -> User:
         if user_id is None:
-            if _auth_disabled_bypass(db):
-                return _service_user()
             raise HTTPException(status_code=401, detail="Authentication required")
         if user_id == 0:
             return _service_user()

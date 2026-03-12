@@ -1,8 +1,13 @@
+import asyncio
+import logging
+
 from app.integrations.apc_ups import APCUPSClient
 from app.integrations.idrac import IDRACClient
 from app.integrations.ilo import ILOClient
 from app.integrations.snmp_generic import SNMPGenericClient
 from app.services.credential_vault import CredentialVault
+
+_logger = logging.getLogger(__name__)
 
 # Reuse ILO/IDRAC clients per (profile, host, username) to avoid connection pool exhaustion.
 _HW_CLIENT_CACHE_MAX = 64
@@ -72,7 +77,29 @@ def poll_hardware(hardware, vault: CredentialVault) -> dict:
 
         data = client.poll()
         status = client.get_status(data)
-        return {"data": data, "status": status}
+        result = {"data": data, "status": status}
+
+        _fire_and_forget_publish(hardware.id, result)
+        return result
 
     except Exception as e:
         return {"error": str(e), "status": "unknown"}
+
+
+def _fire_and_forget_publish(hardware_id: int, result: dict) -> None:
+    """Schedule async Redis cache+publish without blocking the sync caller."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_async_cache_and_publish(hardware_id, result))
+
+
+async def _async_cache_and_publish(hardware_id: int, result: dict) -> None:
+    from app.services.telemetry_cache import cache_telemetry, publish_telemetry
+
+    try:
+        await cache_telemetry(hardware_id, result)
+        await publish_telemetry(hardware_id, result)
+    except Exception as exc:
+        _logger.debug("Redis cache/publish after poll failed: %s", exc)

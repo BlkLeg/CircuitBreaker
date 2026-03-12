@@ -1,0 +1,33 @@
+[Unit]
+Description=Circuit Breaker — Homelab Topology Mapper
+Documentation=https://github.com/BlkLeg/circuitbreaker
+After=network-online.target postgresql.service redis.service nats.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=circuitbreaker
+Group=circuitbreaker
+ExecStart=/usr/local/bin/circuit-breaker serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/circuit-breaker /var/log/circuit-breaker /etc/circuit-breaker
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=65536
+
+# Environment
+EnvironmentFile=-/etc/circuit-breaker/circuit-breaker.env
+
+[Install]
+WantedBy=multi-user.target

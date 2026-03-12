@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.nats_client import nats_client
+from app.core.redis import get_redis
 from app.db.session import get_db
 from app.services.discovery_safe import is_docker_socket_available
 
@@ -18,20 +19,23 @@ _DEFAULT_SOCKET = "/var/run/docker.sock"
 
 
 @router.get("")
-def get_capabilities(db: Session = Depends(get_db)):
+async def get_capabilities(db: Session = Depends(get_db)):
     """Return a map of optional subsystem availability and configuration."""
     from app.db.models import AppSettings
 
     s = db.query(AppSettings).first()
 
+    redis_client = await get_redis()
+
     if s is None:
         return {
             "nats": {"available": False},
+            "redis": {"available": redis_client is not None},
             "realtime": {"available": False, "transport": "auto"},
             "cve": {"available": False, "last_sync": None},
             "listener": {"available": False, "mdns": False, "ssdp": False},
             "docker": {"available": False, "discovery_enabled": False},
-            "auth": {"enabled": False},
+            "auth": {"enabled": True},
         }
 
     socket_path = getattr(s, "docker_socket_path", None) or _DEFAULT_SOCKET
@@ -39,6 +43,9 @@ def get_capabilities(db: Session = Depends(get_db)):
     return {
         "nats": {
             "available": nats_client.is_connected,
+        },
+        "redis": {
+            "available": redis_client is not None,
         },
         "realtime": {
             "available": bool(s.realtime_notifications_enabled),
@@ -58,6 +65,6 @@ def get_capabilities(db: Session = Depends(get_db)):
             "discovery_enabled": bool(s.docker_discovery_enabled),
         },
         "auth": {
-            "enabled": bool(s.auth_enabled),
+            "enabled": True,
         },
     }

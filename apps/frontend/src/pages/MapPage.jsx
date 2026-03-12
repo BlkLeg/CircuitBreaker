@@ -746,7 +746,17 @@ function MapInternal() {
             finalNodes = groupNodesIntoCloud(finalNodes);
           }
           setNodes(finalNodes);
-          setEdges(applyEdgeSides(finalNodes, layout.edges, edgeOverridesRef.current));
+
+          // Clear stale edge overrides (manual control points + forced handle
+          // sides) — they reference absolute positions from the previous layout
+          // and would cause wires to route through wrong coordinates.
+          edgeOverridesRef.current = {};
+          setEdgeOverrides({});
+          const cleanEdges = layout.edges.map((e) =>
+            e.data?.controlPoint ? { ...e, data: { ...e.data, controlPoint: null } } : e
+          );
+          setEdges(applyEdgeSides(finalNodes, cleanEdges, {}));
+
           setTimeout(() => {
             if (isMountedRef.current) viewportFit(fitView, { duration: 400 });
           }, 10);
@@ -803,7 +813,7 @@ function MapInternal() {
         _applyResult(layout);
       }, 50);
     },
-    [nodes, edges, setNodes, setEdges, fitView, cloudViewEnabled, nodeSpacing]
+    [nodes, edges, setNodes, setEdges, setEdgeOverrides, fitView, cloudViewEnabled, nodeSpacing]
   );
 
   applyLayoutRef.current = applyLayout;
@@ -846,6 +856,8 @@ function MapInternal() {
   );
 
   useEffect(() => {
+    // Don't attempt placement when backend is unreachable
+    if (error) return;
     // Look for nodes marked _needsAutoPlace that aren't already in-flight.
     const nodesToPlace = nodes.filter(
       (n) => n._needsAutoPlace && !placingNodesRef.current.has(n.id)
@@ -856,7 +868,7 @@ function MapInternal() {
       nodesToPlace.forEach((n) => placingNodesRef.current.add(n.id));
       nodesToPlace.forEach((n) => autoPlaceNew(n.id));
     }
-  }, [nodes, autoPlaceNew]);
+  }, [nodes, autoPlaceNew, error]);
 
   const { saveLayoutSnapshot, saveLayout, handleDeleteNodeAction, forceRemoveDeleteConflicts } =
     useMapMutations({
@@ -2161,7 +2173,6 @@ function MapInternal() {
       const key = which === 'source' ? 'source_side' : 'target_side';
       let updated;
       if (side === 'auto') {
-        // Remove override for this side — auto-routing takes over
         const existing = { ...edgeOverridesRef.current[edgeId] };
         delete existing[key];
         if (Object.keys(existing).length === 0) {
@@ -2181,7 +2192,6 @@ function MapInternal() {
         prev.map((e) => (e.id === edgeId ? applyEdgeSidesForEdge(nodesRef.current, e, updated) : e))
       );
       dirtyRef.current = true;
-      setEdgeMenu(null);
     },
     [setEdges]
   );
@@ -2776,7 +2786,10 @@ function MapInternal() {
             >
               <span>{error}</span>
               <button
-                onClick={() => setError(null)}
+                onClick={() => {
+                  setError(null);
+                  fetchData();
+                }}
                 style={{ background: 'none', border: 'none', color: '#f38ba8', cursor: 'pointer' }}
               >
                 <X size={14} />

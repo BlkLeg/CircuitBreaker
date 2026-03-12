@@ -1,0 +1,83 @@
+name: circuit-breaker
+arch: "${GOARCH}"
+platform: linux
+version: "${VERSION}"
+version_schema: semver
+maintainer: "BlkLeg <letshost-admin@proton.me>"
+description: "Circuit Breaker — Homelab topology mapper and network documentation tool"
+vendor: "BlkLeg"
+homepage: "https://github.com/BlkLeg/circuitbreaker"
+license: "MIT"
+section: "admin"
+priority: "optional"
+
+contents:
+  # Binary
+  - src: dist/native/bundle/circuit-breaker
+    dst: /usr/local/bin/circuit-breaker
+    file_info:
+      mode: 0755
+
+  # Frontend static files
+  - src: dist/native/bundle/share/frontend/
+    dst: /usr/local/share/circuit-breaker/frontend/
+    type: tree
+
+  # Backend migrations + alembic config
+  - src: dist/native/bundle/share/backend/
+    dst: /usr/local/share/circuit-breaker/backend/
+    type: tree
+
+  # VERSION file
+  - src: dist/native/bundle/share/VERSION
+    dst: /usr/local/share/circuit-breaker/VERSION
+
+  # Default config template
+  - src: packaging/config.toml.default
+    dst: /usr/local/share/circuit-breaker/config.toml.default
+    file_info:
+      mode: 0644
+
+  # systemd unit
+  - src: packaging/circuit-breaker.service
+    dst: /lib/systemd/system/circuit-breaker.service
+    file_info:
+      mode: 0644
+
+  # Create empty dirs
+  - dst: /var/lib/circuit-breaker
+    type: dir
+    file_info:
+      mode: 0750
+      owner: circuitbreaker
+      group: circuitbreaker
+  - dst: /var/log/circuit-breaker
+    type: dir
+    file_info:
+      mode: 0750
+      owner: circuitbreaker
+      group: circuitbreaker
+  - dst: /etc/circuit-breaker
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libc6
+    recommends:
+      - postgresql
+      - redis-server
+      - nats-server
+  rpm:
+    depends:
+      - glibc
+    recommends:
+      - postgresql-server
+      - redis
+      - nats-server

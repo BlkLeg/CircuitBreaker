@@ -1,7 +1,7 @@
 """Feature 5 — Timezone setting tests.
 
-Settings PUT is protected by require_write_auth, but on a fresh DB auth is disabled,
-so calls succeed without a token.
+Settings PUT is protected by require_write_auth. Tests run against a fresh DB
+before OOBE, so calls succeed without a configured jwt_secret.
 """
 
 

@@ -1,10 +1,7 @@
 """Tests for Explicit Topologies API (v0.2.0).
 
-These tests run against the SQLite in-memory fixture because the
-topology models use standard SQLAlchemy types (Integer, Float, Boolean, JSONB
-falls back to Text in SQLite via dialect compatibility).
-
-For full JSONB/GIN index verification, use CB_TEST_DB_URL.
+These tests run against a PostgreSQL database via the ``client`` / ``db``
+fixtures from conftest.py.  JSONB columns require a real PostgreSQL instance.
 """
 
 import pytest

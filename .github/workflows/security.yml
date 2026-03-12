@@ -154,6 +154,27 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
 
+  trivy-image:
+    name: Trivy Container Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scanning
+        run: docker build -f Dockerfile.mono -t cb-scan:local .
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: image
+          image-ref: cb-scan:local
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: 'CRITICAL,HIGH'
+      - name: Upload Trivy image results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-image-results.sarif
+
   hadolint:
     name: Hadolint (Dockerfile)
     runs-on: ubuntu-latest
@@ -161,6 +182,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run Hadolint
         run: |
-          for f in Dockerfile docker/backend.Dockerfile docker/frontend.Dockerfile docker/Dockerfile.prod docker/Dockerfile.native; do
+          for f in Dockerfile.mono docker/backend.Dockerfile docker/frontend.Dockerfile; do
             [ -f "$f" ] && docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint hadolint "$f"
           done

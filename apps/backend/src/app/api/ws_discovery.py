@@ -89,6 +89,47 @@ async def _ping_loop(ws: WebSocket) -> None:
         logger.debug(f"Ping loop error: {e}")
 
 
+async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) -> None:
+    """Subscribe to the Redis ``cb:discovery:events`` pub/sub channel and
+    forward every message to the WebSocket.  This is the primary cross-worker
+    delivery mechanism — the scan may run on a different Uvicorn worker than
+    the one hosting this WebSocket connection.
+
+    Degrades to no-op when Redis is unavailable (the local
+    ``ws_manager.broadcast`` fallback in ``_emit_ws_event`` covers that case).
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        await stop_event.wait()
+        return
+
+    pubsub = r.pubsub()
+    try:
+        await pubsub.subscribe("cb:discovery:events")
+        while not stop_event.is_set():
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg["type"] == "message":
+                try:
+                    if ws.application_state == WebSocketState.DISCONNECTED:
+                        break
+                    await ws.send_text(msg["data"])
+                except Exception:
+                    break
+            await asyncio.sleep(0.05)
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.debug("Redis discovery listener error: %s", exc)
+    finally:
+        try:
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+        except Exception:
+            pass
+
+
 # NOTE: This router is mounted at prefix /api/v1/discovery in main.py.
 # All decorator paths here are relative to that prefix.
 @router.websocket("/stream")
@@ -134,11 +175,7 @@ async def discovery_stream(websocket: WebSocket) -> None:
         else:
             with _db_session.SessionLocal() as db:
                 cfg = get_or_create_settings(db)
-                # When auth is disabled, any connection is allowed through.
-                if not cfg.auth_enabled:
-                    authenticated = True
-                    user_id = 0  # anonymous sentinel
-                elif cfg.jwt_secret:
+                if cfg.jwt_secret:
                     if is_session_revoked(db, raw_token):
                         authenticated = False
                     else:
@@ -176,23 +213,26 @@ async def discovery_stream(websocket: WebSocket) -> None:
 
         await websocket.send_text(json.dumps({"status": "connected"}))
 
-        # ── Keep-alive + receive loop ───────────────────────────────────────
+        # ── Keep-alive + Redis pub/sub listener + receive loop ────────────
         ping_task = asyncio.create_task(_ping_loop(websocket))
+        redis_stop = asyncio.Event()
+        redis_task = asyncio.create_task(_redis_discovery_listener(websocket, redis_stop))
 
         try:
             while True:
                 raw = await websocket.receive_text()
-                # Respond to application-level pings from the client.
                 try:
                     msg = json.loads(raw)
                     if isinstance(msg, dict) and msg.get("type") == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
                 except Exception:
-                    pass  # Unknown / malformed client frames are silently ignored.
+                    pass
         except WebSocketDisconnect:
             pass
         finally:
+            redis_stop.set()
             ping_task.cancel()
+            redis_task.cancel()
             await ws_manager.disconnect(websocket)
 
     except Exception as e:

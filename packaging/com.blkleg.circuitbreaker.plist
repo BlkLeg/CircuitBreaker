@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.blkleg.circuitbreaker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__CB_BINARY_PATH__</string>
+    <string>serve</string>
+    <string>--config</string>
+    <string>__CB_CONFIG_PATH__</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__CB_LOG_DIR__/circuit-breaker.log</string>
+  <key>StandardErrorPath</key>
+  <string>__CB_LOG_DIR__/circuit-breaker.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>__CB_DATA_DIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CB_DATA_DIR</key>
+    <string>__CB_DATA_DIR__</string>
+  </dict>
+</dict>
+</plist>

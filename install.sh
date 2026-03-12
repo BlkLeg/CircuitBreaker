@@ -47,6 +47,13 @@ CB_BINARY_CERT_DIR="${CB_BINARY_CERT_DIR:-/etc/circuit-breaker/certs}"
 CB_BINARY_TLS_MODE="${CB_BINARY_TLS_MODE:-off}"
 CB_BINARY_TLS_CERT_FILE="${CB_BINARY_TLS_CERT_FILE:-}"
 CB_BINARY_TLS_KEY_FILE="${CB_BINARY_TLS_KEY_FILE:-}"
+
+# ─── macOS defaults ────────────────────────────────────────────────────────
+CB_MACOS_APP_SUPPORT="${HOME}/Library/Application Support/CircuitBreaker"
+CB_MACOS_LOG_DIR="${HOME}/Library/Logs/CircuitBreaker"
+CB_MACOS_CONFIG_DIR="${HOME}/.config/circuitbreaker"
+CB_MACOS_PLIST_NAME="com.blkleg.circuitbreaker"
+
 MINIMUM_DOCKER_VERSION=20
 REGION=""
 ARCH=""
@@ -931,6 +938,13 @@ Install_Binary_Bundle() {
 }
 
 Create_User_And_Dirs() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    # macOS: use user-level directories (no system user needed)
+    mkdir -p "$CB_MACOS_APP_SUPPORT" "$CB_MACOS_LOG_DIR" "$CB_MACOS_CONFIG_DIR"
+    Show 0 "Created macOS directories."
+    return
+  fi
+
   if ! id circuitbreaker &>/dev/null; then
     sudo useradd --system --no-create-home --shell /usr/sbin/nologin circuitbreaker
     Show 0 "System user 'circuitbreaker' created."
@@ -1187,6 +1201,42 @@ DESKTOP
   fi
 }
 
+Setup_Launchd_MacOS() {
+  local plist_dir="$HOME/Library/LaunchAgents"
+  local plist_file="${plist_dir}/${CB_MACOS_PLIST_NAME}.plist"
+  local binary_path="${CB_INSTALL_DIR}/circuit-breaker"
+  local config_path="${CB_MACOS_CONFIG_DIR}/config.toml"
+  local data_dir="${CB_MACOS_APP_SUPPORT}"
+  local log_dir="${CB_MACOS_LOG_DIR}"
+
+  mkdir -p "$plist_dir" "$data_dir" "$log_dir" "$CB_MACOS_CONFIG_DIR"
+
+  # Copy plist template and replace placeholders
+  local plist_src="${CB_INSTALL_DIR}/share/com.blkleg.circuitbreaker.plist"
+  if [[ ! -f "$plist_src" ]]; then
+    Show 3 "launchd plist template not found — skipping service setup."
+    return
+  fi
+
+  sed -e "s|__CB_BINARY_PATH__|${binary_path}|g" \
+      -e "s|__CB_CONFIG_PATH__|${config_path}|g" \
+      -e "s|__CB_DATA_DIR__|${data_dir}|g" \
+      -e "s|__CB_LOG_DIR__|${log_dir}|g" \
+      "$plist_src" > "$plist_file"
+
+  # Install default config if not present
+  local config_default="${CB_INSTALL_DIR}/share/config.toml.default"
+  if [[ -f "$config_default" && ! -f "$config_path" ]]; then
+    cp "$config_default" "$config_path"
+    Show 0 "Default config installed to $config_path"
+  fi
+
+  # Load the agent
+  launchctl unload "$plist_file" 2>/dev/null || true
+  launchctl load -w "$plist_file"
+  Show 0 "launchd agent installed and loaded: $CB_MACOS_PLIST_NAME"
+}
+
 ###############################################################################
 # INSTALL CONFIG  (read by the cb command)
 ###############################################################################
@@ -1298,7 +1348,7 @@ DOCKER_VARS
   elif [[ "$mode" == "compose" ]]; then
     cat >> "$tmp" <<COMPOSE_VARS
 CB_INSTALL_DIR="${CB_INSTALL_DIR}"
-CB_COMPOSE_FILE="${CB_INSTALL_DIR}/docker-compose.prod.yml"
+CB_COMPOSE_FILE="${CB_INSTALL_DIR}/docker-compose.yml"
 COMPOSE_VARS
   elif [[ "$mode" == "binary" ]]; then
     cat >> "$tmp" <<BINARY_VARS
@@ -1399,7 +1449,7 @@ elif [[ "$INSTALLED_MODE" == "compose" ]]; then
   if [[ -f "$CB_COMPOSE_FILE" ]]; then
     (cd "$(dirname "$CB_COMPOSE_FILE")" && docker compose -f "$(basename "$CB_COMPOSE_FILE")" down) 2>/dev/null || true
   elif [[ -d "$CB_INSTALL_DIR" ]]; then
-    (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml down) 2>/dev/null || true
+    (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.yml down) 2>/dev/null || true
   fi
   Show 0 "Compose stack stopped."
 
@@ -1407,7 +1457,7 @@ elif [[ "$INSTALLED_MODE" == "compose" ]]; then
     if [[ -f "$CB_COMPOSE_FILE" ]]; then
       (cd "$(dirname "$CB_COMPOSE_FILE")" && docker compose -f "$(basename "$CB_COMPOSE_FILE")" down -v) 2>/dev/null || true
     elif [[ -d "$CB_INSTALL_DIR" ]]; then
-      (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml down -v) 2>/dev/null || true
+      (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.yml down -v) 2>/dev/null || true
     fi
     Show 0 "Volumes removed."
   else
@@ -1504,7 +1554,7 @@ Prompt_Mode() {
   echo ""
   echo -e "  ${aCOLOUR[1]}[1]${COLOUR_RESET} Docker container  ${aCOLOUR[2]}(single image — minimal)${COLOUR_RESET}"
   echo -e "  ${aCOLOUR[1]}[2]${COLOUR_RESET} Compose stack    ${aCOLOUR[2]}(full capability — discovery, webhooks, HTTPS)${COLOUR_RESET}"
-  echo -e "  ${aCOLOUR[1]}[3]${COLOUR_RESET} Native binary    ${aCOLOUR[2]}(systemd service, FHS paths, no Docker required)${COLOUR_RESET}"
+  echo -e "  ${aCOLOUR[1]}[3]${COLOUR_RESET} Native binary    ${aCOLOUR[2]}(systemd service — requires external Postgres/Redis/NATS)${COLOUR_RESET}"
   echo -e "  ${aCOLOUR[1]}[Q]${COLOUR_RESET} Quit"
   echo ""
   printf "  Choice [1/2/3/Q]: "
@@ -1569,14 +1619,18 @@ Install_Compose_Mode() {
   chmod 700 "$CB_INSTALL_DIR"
 
   Show 2 "Downloading compose files..."
-  # Single source of truth for production Docker: docker/docker-compose.prod.yml (see README)
+  # Single source of truth for production Docker: docker/docker-compose.yml (see README)
   local base="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main"
-  cb_fetch "${base}/docker/docker-compose.prod.yml" "$CB_INSTALL_DIR/docker-compose.prod.yml" 0 \
-    || Show 1 "Failed to download docker-compose.prod.yml"
-  cb_fetch "${base}/docker/Caddyfile" "$CB_INSTALL_DIR/Caddyfile" 0 \
-    || Show 1 "Failed to download Caddyfile"
+  cb_fetch "${base}/docker/docker-compose.yml" "$CB_INSTALL_DIR/docker-compose.yml" 0 \
+    || Show 1 "Failed to download docker-compose.yml"
   cb_fetch "${base}/docker/.env.example" "$CB_INSTALL_DIR/.env.example" 0 \
     || Show 1 "Failed to download .env.example"
+
+  # Strip build context from compose file — remote install uses prebuilt GHCR image only
+  if command -v sed >/dev/null 2>&1; then
+    sed -i.bak '/^[[:space:]]*build:/,/^[[:space:]]*dockerfile:/d' "$CB_INSTALL_DIR/docker-compose.yml"
+    rm -f "$CB_INSTALL_DIR/docker-compose.yml.bak"
+  fi
   Show 0 "Compose files downloaded."
 
   if [[ ! -f "$CB_INSTALL_DIR/.env" ]]; then
@@ -1586,12 +1640,12 @@ Install_Compose_Mode() {
 
   export CB_TAG
   Show 2 "Pulling images..."
-  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml pull) \
+  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.yml pull) \
     || Show 1 "Failed to pull images."
   Show 0 "Images pulled."
 
   Show 2 "Starting compose stack..."
-  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.prod.yml up -d) \
+  (cd "$CB_INSTALL_DIR" && docker compose -f docker-compose.yml up -d) \
     || Show 1 "Failed to start compose stack."
   Show 0 "Stack started."
 
@@ -1642,9 +1696,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${CB_INSTALL_DIR}
 
-ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
-ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
-ExecReload=/usr/bin/docker compose -f docker-compose.prod.yml pull && /usr/bin/docker compose -f docker-compose.prod.yml up -d
+ExecStart=/usr/bin/docker compose -f docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.yml down
+ExecReload=/usr/bin/docker compose -f docker-compose.yml pull && /usr/bin/docker compose -f docker-compose.yml up -d
 
 TimeoutStartSec=120
 TimeoutStopSec=60
@@ -1667,7 +1721,7 @@ CB_MODE=compose
 CB_CONTAINER=cb-backend
 CB_BACKEND_CONTAINER=cb-backend
 CB_INSTALL_DIR=${CB_INSTALL_DIR}
-CB_COMPOSE_FILE=${CB_INSTALL_DIR}/docker-compose.prod.yml
+CB_COMPOSE_FILE=${CB_INSTALL_DIR}/docker-compose.yml
 CB_PORT=80
 CB_DATA_DIR=/app/data
 CB_IMAGE=ghcr.io/blkleg/circuitbreaker:backend-${CB_TAG}
@@ -1712,7 +1766,7 @@ Welcome_Banner_Compose() {
   echo ""
   echo -e "  ${aCOLOUR[2]}cb command   :${COLOUR_RESET} cb help"
   echo ""
-  echo -e "  To update    : docker compose -f $CB_INSTALL_DIR/docker-compose.prod.yml pull && docker compose up -d"
+  echo -e "  To update    : docker compose -f $CB_INSTALL_DIR/docker-compose.yml pull && docker compose up -d"
   echo -e "  To uninstall : cb uninstall"
   echo -e "${COLOUR_RESET}"
 }
@@ -1723,6 +1777,22 @@ Install_Binary_Mode() {
   echo -e " ${aCOLOUR[1]}Native Binary Install${COLOUR_RESET}"
   echo -e "$GREEN_LINE"
   echo ""
+
+  # ── Service dependency notice ──
+  echo -e "  ${aCOLOUR[4]}Native mode requires external services:${COLOUR_RESET}"
+  echo -e "  ${GREEN_BULLET} PostgreSQL 15+  ${aCOLOUR[2]}(data store)${COLOUR_RESET}"
+  echo -e "  ${GREEN_BULLET} Redis 7+        ${aCOLOUR[2]}(telemetry cache)${COLOUR_RESET}"
+  echo -e "  ${GREEN_BULLET} NATS 2.10+      ${aCOLOUR[2]}(message bus)${COLOUR_RESET}"
+  echo ""
+  echo -e "  ${aCOLOUR[2]}If you want everything bundled, choose Docker mode instead.${COLOUR_RESET}"
+  echo ""
+
+  # Check if PostgreSQL is reachable
+  if command -v pg_isready >/dev/null 2>&1 && pg_isready -q 2>/dev/null; then
+    Show 0 "PostgreSQL is reachable."
+  else
+    Show 3 "PostgreSQL not detected. You will need to configure CB_DB_URL after install."
+  fi
 
   Require_Sudo
   Find_Free_Port
@@ -1737,8 +1807,19 @@ Install_Binary_Mode() {
   Generate_API_Token
   Persist_Binary_Runtime_Env
 
-  Setup_Systemd_Binary
-  Setup_Desktop
+  # Platform-specific service setup
+  case "$(uname -s)" in
+    Linux)
+      Setup_Systemd_Binary
+      Setup_Desktop
+      ;;
+    Darwin)
+      Setup_Launchd_MacOS
+      ;;
+    *)
+      Show 3 "No service manager support for $(uname -s) — start manually."
+      ;;
+  esac
   if [[ "$CB_BINARY_TLS_MODE" == "off" || -z "$CB_BINARY_TLS_MODE" ]]; then
     Wait_For_Ready "$CB_PORT" "http" "0"
   else

@@ -1,0 +1,16 @@
+# Circuit Breaker — Docker socket override (opt-in)
+#
+# WARNING: Mounting the Docker socket grants the container near-root-equivalent
+# access to the host. Only use this when Docker container discovery is required
+# and you accept the security trade-off.
+#
+# Preferred alternative: set CB_DOCKER_HOST to a TCP Docker API proxy
+# (e.g., Tecnativa/docker-socket-proxy) which exposes only read-only endpoints.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.socket.yml up -d
+
+services:
+  circuitbreaker:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

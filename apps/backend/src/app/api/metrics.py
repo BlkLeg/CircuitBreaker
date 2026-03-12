@@ -25,7 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as _app_settings
-from app.core.security import _get_api_token, get_optional_user
+from app.core.security import get_optional_user
 from app.db.models import (
     ComputeUnit,
     Doc,
@@ -42,7 +42,6 @@ from app.db.models import (
     User,
 )
 from app.db.session import get_db
-from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,11 +53,9 @@ _SERVICE_STATUSES = ("running", "stopped", "degraded", "maintenance")
 
 def _check_metrics_auth(
     user_id: int | None = Depends(get_optional_user),
-    db: Session = Depends(get_db),
 ) -> None:
-    """Require auth when auth_enabled=True or CB_API_TOKEN is configured."""
-    cfg = get_or_create_settings(db)
-    if (cfg.auth_enabled or bool(_get_api_token())) and user_id is None:
+    """Require authentication for metrics access."""
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 

@@ -16,7 +16,7 @@ function getInitials(user) {
 }
 
 function UserAvatar({ onOpenAuth, onOpenProfile }) {
-  const { isAuthenticated, user, logout, authEnabled } = useAuth();
+  const { isAuthenticated, user, logout } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [photoBroken, setPhotoBroken] = useState(false);
   const [gravatarBroken, setGravatarBroken] = useState(false);
@@ -59,8 +59,7 @@ function UserAvatar({ onOpenAuth, onOpenProfile }) {
     }
   };
 
-  const defaultButtonTitle = authEnabled ? 'Login' : 'Guest';
-  const buttonTitle = isAuthenticated ? user?.display_name || user?.email : defaultButtonTitle;
+  const buttonTitle = isAuthenticated ? user?.display_name || user?.email : 'Login';
 
   const renderAvatar = () => {
     if (src) {

@@ -180,11 +180,12 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
       if (launching) return;
       setLaunching(true);
       try {
+        let jobRes;
         if (profileSectionOpen && selectedProfileId) {
           await runProfile(Number(selectedProfileId));
           toast.success('Profile scan started');
         } else if (scanMode === 'docker') {
-          await startAdHocScan({
+          jobRes = await startAdHocScan({
             cidr: dockerCidr.trim() || 'docker',
             scan_types: ['docker'],
             label: `docker:${socketPath}`,
@@ -193,7 +194,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
         } else {
           const types =
             scanMode === 'safe' ? scanTypes.filter((t) => ['snmp', 'http'].includes(t)) : scanTypes;
-          await startAdHocScan({
+          jobRes = await startAdHocScan({
             cidr: targetMode === 'cidr' ? cidr.trim() : undefined,
             vlan_ids: targetMode === 'vlan' ? selectedVlans : undefined,
             scan_types: types,
@@ -202,13 +203,16 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           });
           toast.success('Scan started');
         }
-        onStarted();
+        onStarted(jobRes?.data ?? null);
       } catch (err) {
         if (err?.response?.status === 429) {
           const retryAfter = Number(err?.response?.headers?.['retry-after']) || 60;
           toast.warn(`Rate limited. Please wait ${retryAfter}s.`);
         } else {
           toast.error(err?.message || 'Failed to start scan');
+          // Navigate back to scan list and refresh — the backend may have
+          // started the scan even though the frontend saw an error.
+          onStarted(null);
         }
       } finally {
         setLaunching(false);

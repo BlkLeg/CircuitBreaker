@@ -1,7 +1,7 @@
-"""Seed Default Team.
+"""Seed Default Tenant.
 
-Ensures Default Team (id=1) exists and assigns all tenant-capable entities
-that have a NULL team_id to team_id=1.
+Ensures Default Tenant (id=1) exists and assigns all tenant-capable entities
+that have a NULL tenant_id to tenant_id=1.
 
 Idempotent — safe to run multiple times.
 
@@ -18,31 +18,28 @@ from app.db.models import (
     Hardware,
     HardwareCluster,
     IntegrationConfig,
-    LiveMetric,
     Network,
     ScanJob,
     Service,
-    Team,
+    Tenant,
 )
 from app.db.session import SessionLocal
 
 _logger = logging.getLogger(__name__)
 
 
-def seed_default_team() -> None:
+def seed_default_tenant() -> None:
     db = SessionLocal()
     try:
-        # Ensure Default Team exists with id=1
-        team = db.query(Team).filter(Team.id == 1).first()
-        if team is None:
-            team = Team(id=1, name="Default Team")
-            db.add(team)
+        tenant = db.query(Tenant).filter(Tenant.id == 1).first()
+        if tenant is None:
+            tenant = Tenant(id=1, name="Default Tenant", slug="default")
+            db.add(tenant)
             db.flush()
-            _logger.info("Created Default Team (id=1)")
+            _logger.info("Created Default Tenant (id=1)")
         else:
-            _logger.info("Default Team already exists (id=%d, name=%s)", team.id, team.name)
+            _logger.info("Default Tenant already exists (id=%d, name=%s)", tenant.id, tenant.name)
 
-        # Entity tables to back-fill
         entity_models = [
             Hardware,
             Service,
@@ -50,23 +47,24 @@ def seed_default_team() -> None:
             HardwareCluster,
             ExternalNode,
             ScanJob,
-            LiveMetric,
             IntegrationConfig,
         ]
 
         total = 0
         for model in entity_models:
+            if not hasattr(model, "tenant_id"):
+                continue
             updated = (
                 db.query(model)
-                .filter(model.team_id.is_(None))
-                .update({model.team_id: 1}, synchronize_session="fetch")
+                .filter(model.tenant_id.is_(None))
+                .update({model.tenant_id: 1}, synchronize_session="fetch")
             )
             if updated:
-                _logger.info("  %s: assigned %d rows → team_id=1", model.__tablename__, updated)
+                _logger.info("  %s: assigned %d rows → tenant_id=1", model.__tablename__, updated)
                 total += updated
 
         db.commit()
-        _logger.info("Seed complete. %d total rows assigned to Default Team.", total)
+        _logger.info("Seed complete. %d total rows assigned to Default Tenant.", total)
     except Exception:
         db.rollback()
         raise
@@ -74,6 +72,9 @@ def seed_default_team() -> None:
         db.close()
 
 
+# Keep backward-compatible alias
+seed_default_team = seed_default_tenant
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    seed_default_team()
+    seed_default_tenant()

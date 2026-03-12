@@ -18,6 +18,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("onboarding"):
+        return
     op.create_table(
         "onboarding",
         sa.Column("id", sa.Integer(), nullable=False),

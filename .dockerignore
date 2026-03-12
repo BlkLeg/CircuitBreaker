@@ -7,7 +7,7 @@
 
 # Node modules (will be installed fresh inside the builder stage)
 node_modules
-frontend/node_modules
+apps/frontend/node_modules
 docker/node_modules
 
 # Python bytecode
@@ -16,17 +16,18 @@ docker/node_modules
 **/*.pyo
 
 # Secrets and local env overrides
-backend/.env
-backend/.env.*
+apps/backend/.env
+apps/backend/.env.*
 docker/.env
 
 # Build artefacts (rebuilt inside Docker)
 dist/
-frontend/dist/
+apps/frontend/dist/
 build/
 *.spec
 
 # Editor / IDE and tool caches
+.claude/
 .cursor/
 .vscode/
 .cache/
@@ -38,10 +39,10 @@ build/
 
 # Docs (not needed in the image)
 docs/
-mkdocs.yml
 
 # MkDocs HTML output (tracked in git for GitHub Pages, not needed in image)
 site/
+mkdocs.yml
 
 # Screenshots and icon source library (not needed at runtime)
 screenshots/
@@ -60,7 +61,11 @@ uninstall.sh
 !DocsPage.md
 
 # Tests (not needed in the production image)
-backend/tests/
+apps/backend/tests/
+tests/
+
+# Security reports
+SECURITY_REPORTS/
 
 # CI / GitHub Actions
 .github/

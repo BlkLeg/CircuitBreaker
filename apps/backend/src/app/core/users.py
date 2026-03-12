@@ -25,6 +25,39 @@ CB_JWT_SECRET_ENV = "CB_JWT_SECRET"
 
 
 # ---------------------------------------------------------------------------
+# Password helper — wraps the app's existing bcrypt hash/verify so that
+# FastAPI-Users endpoints (forgot-password, reset-password) produce the
+# same hash format as the custom auth layer in core/security.py.
+# ---------------------------------------------------------------------------
+
+
+class _BcryptPasswordHelper:
+    """Minimal PasswordHelper implementation backed by the app's own bcrypt usage."""
+
+    def hash(self, password: str) -> str:
+        import bcrypt as _bc
+
+        return _bc.hashpw(password.encode(), _bc.gensalt()).decode()
+
+    def verify_and_update(self, plain_password: str, hashed_password: str) -> tuple[bool, str]:
+        import bcrypt as _bc
+
+        try:
+            valid = _bc.checkpw(plain_password.encode(), hashed_password.encode())
+        except Exception:
+            return False, hashed_password
+        return valid, hashed_password
+
+    def generate(self) -> str:
+        import secrets
+
+        return secrets.token_urlsafe(16)
+
+
+_password_helper = _BcryptPasswordHelper()
+
+
+# ---------------------------------------------------------------------------
 # User DB adapter
 # ---------------------------------------------------------------------------
 
@@ -174,7 +207,7 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
 async def get_user_manager(
     user_db: SQLAlchemyUserDatabase = Depends(get_user_db),
 ) -> AsyncGenerator[UserManager, None]:
-    manager = UserManager(user_db)
+    manager = UserManager(user_db, password_helper=_password_helper)
     manager.reset_password_token_secret = _get_jwt_secret()
     manager.verification_token_secret = _get_jwt_secret()
     yield manager

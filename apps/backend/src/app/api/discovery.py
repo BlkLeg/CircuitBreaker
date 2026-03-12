@@ -205,6 +205,8 @@ async def run_profile_scan(
         triggered_by=_get_actor(db, user_id),
     )
 
+    db.expunge(job)  # Detach from session before any further commits expire attributes
+
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
     try:
         asyncio.create_task(discovery_service.run_scan_job(job.id))
@@ -249,6 +251,8 @@ async def run_adhoc_scan(
             status_code=500,
             detail="An error occurred while starting the scan.",
         ) from exc
+
+    db.expunge(job)  # Detach from session before audit commit expires attributes
 
     try:
         log_audit(

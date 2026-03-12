@@ -6,7 +6,7 @@ import i18n from './i18n';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
-import { ToastProvider } from './components/common/Toast';
+import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
 import Dock from './components/Dock';
@@ -14,11 +14,10 @@ import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
 import AuthModal from './components/auth/AuthModal.jsx';
 import ProfileModal from './components/auth/ProfileModal.jsx';
-import SecurityBanner from './components/common/SecurityBanner.jsx';
 import MiscPage from './pages/MiscPage';
 import LoginPage from './pages/LoginPage';
 import OOBEWizardPage from './pages/OOBEWizardPage';
-import { useDiscoveryStream } from './hooks/useDiscoveryStream.js';
+import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
@@ -45,19 +44,37 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, authEnabled } =
-    useAuth();
-  const {
-    pendingCount,
-    connected: discoveryConnected,
-    wsStatus,
-  } = useDiscoveryStream({ authEnabled });
+  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
+  const toast = useToast();
+  const location = useLocation();
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+
+  const { pendingCount, connected: discoveryConnected, wsStatus } = useDiscoveryStream();
 
   // Start the SSE client once at app root; tear down on unmount
   useEffect(() => {
     connectSSE();
     return () => disconnectSSE();
   }, []);
+
+  useEffect(() => {
+    const onJobUpdate = (job) => {
+      if (!job?.status) return;
+      if (pathnameRef.current.startsWith('/discovery')) return;
+
+      const name = job.label || job.target_cidr || 'Scan';
+      if (job.status === 'completed') {
+        const hosts = job.hosts_found ?? 0;
+        toast.success(`${name} completed \u2014 ${hosts} host${hosts !== 1 ? 's' : ''} found`);
+      } else if (job.status === 'failed') {
+        toast.error(`${name} failed${job.error_text ? `: ${job.error_text}` : ''}`);
+      }
+    };
+
+    discoveryEmitter.on('job:update', onJobUpdate);
+    return () => discoveryEmitter.off('job:update', onJobUpdate);
+  }, [toast]);
 
   const handleClosePalette = useCallback(() => setPaletteOpen(false), []);
   const handleOpenPalette = useCallback(() => setPaletteOpen(true), []);
@@ -77,7 +94,6 @@ function AppInner() {
     <div className="app-shell">
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
-      <SecurityBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div className="page-content">
         <ErrorBoundary>
@@ -166,7 +182,7 @@ function NavigateToLogin() {
 }
 
 function AppRoutes() {
-  const { isAuthenticated, authEnabled, authReady } = useAuth();
+  const { isAuthenticated, authReady } = useAuth();
   const { settings } = useSettings();
   const branding = settings?.branding;
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
@@ -335,7 +351,7 @@ function AppRoutes() {
     );
   }
 
-  if (authEnabled && !isAuthenticated) {
+  if (!isAuthenticated) {
     return (
       <ErrorBoundary>
         <React.Suspense fallback={<div className="login-root" />}>

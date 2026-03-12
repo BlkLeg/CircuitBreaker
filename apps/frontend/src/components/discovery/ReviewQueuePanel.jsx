@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-object-injection -- Map used for localEdits; merged keys from buildDefaultEdits */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Check, Layers, Map, RefreshCw, Server, X } from 'lucide-react';
+import { Check, Layers, Map as MapIcon, RefreshCw, Server, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { getPendingResults, mergeResult } from '../../api/discovery.js';
 import { createMonitor } from '../../api/monitor.js';
@@ -605,7 +605,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
           onClick={() => navigate('/map')}
           title="Open topology map"
         >
-          <Map size={12} /> View Map
+          <MapIcon size={12} /> View Map
         </button>
       </div>
 

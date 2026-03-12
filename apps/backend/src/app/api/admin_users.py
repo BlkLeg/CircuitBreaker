@@ -254,7 +254,13 @@ def create_local_user(
         force_password_change=True,
     )
     db.add(new_user)
-    db.flush()  # get new_user.id before audit log
+    try:
+        db.flush()  # get new_user.id before audit log
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="A user with this email already exists."
+        ) from None
 
     audit = Log(
         level="info",

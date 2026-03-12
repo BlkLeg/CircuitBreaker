@@ -725,9 +725,30 @@ def change_password(
     if not _is_client_hash(new_or_hash):
         _validate_password(new_or_hash)
     from app.core.security import hash_password
+    from app.services.user_service import _hash_token, revoke_all_sessions
 
     user.hashed_password = hash_password(new_or_hash)
+
+    token = _extract_token(request)
+    except_hash = _hash_token(token) if token else None
+    revoke_all_sessions(db, user_id, except_token_hash=except_hash)
+
     db.commit()
+
+    from app.services.log_service import write_log
+
+    write_log(
+        db,
+        action="password_changed",
+        entity_type="user",
+        entity_id=user_id,
+        entity_name=user.email,
+        severity="info",
+        category="auth",
+        actor_name=user.display_name or user.email,
+        actor_id=user_id,
+        details='{"source": "self_change"}',
+    )
 
 
 # ---------------------------------------------------------------------------

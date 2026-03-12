@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     libpcap0.8 \
     postgresql-client \
+    redis-server \
     procps \
     libjpeg62-turbo \
     zlib1g \

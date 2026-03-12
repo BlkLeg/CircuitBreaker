@@ -1,7 +1,7 @@
 """Feature 2 — Environments tests.
 
-Environment write endpoints require auth only when auth_enabled=True.
-On a fresh in-memory DB, auth_enabled=False, so tests can call freely.
+Auth is always enabled after bootstrap. These tests run on a fresh DB
+before bootstrap completes, so writes succeed without auth headers.
 The auth_headers fixture is only used in tests that explicitly need auth.
 """
 

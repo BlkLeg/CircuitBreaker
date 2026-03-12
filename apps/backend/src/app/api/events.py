@@ -20,7 +20,7 @@ Supported event types:
   discovery      — discovery scan progress / completion events
   keepalive      — empty comment (": keepalive") every 15 s
 
-Auth: optional — if auth_enabled is False the stream is public.
+Auth: optional — authenticated via get_optional_user.
 """
 
 import asyncio

@@ -20,7 +20,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.core import (
     compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
@@ -35,17 +34,8 @@ from app.main import app  # noqa: E402
 
 @pytest.fixture(scope="session")
 def db_engine():
-    if TEST_DB_URL.startswith("sqlite"):
-        engine = create_engine(
-            TEST_DB_URL,
-            connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
-        )
-    else:
-        # Provide larger pool size for async tests running concurrently
-        os.environ["DB_POOL_SIZE"] = "20"
-        engine = create_engine(TEST_DB_URL, pool_pre_ping=True)
-        
+    os.environ["DB_POOL_SIZE"] = "20"
+    engine = create_engine(TEST_DB_URL, pool_pre_ping=True)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine
@@ -56,15 +46,9 @@ def db_engine():
 @pytest.fixture(scope="function")
 def db(db_engine):
     with db_engine.connect() as conn:
-        if TEST_DB_URL.startswith("sqlite"):
-            # Fallback for SQLite (unsupported, but keeping code paths alive)
-            for table in reversed(Base.metadata.sorted_tables):
-                conn.execute(table.delete())
-        else:
-            # Fast clear of all data between tests using Postgres native cascade
-            tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
-            if tables:
-                conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE;"))
+        tables = ", ".join(table.name for table in Base.metadata.sorted_tables)
+        if tables:
+            conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE;"))
         conn.commit()
 
     Session = sessionmaker(bind=db_engine)
@@ -96,7 +80,7 @@ def client(db_engine, db, monkeypatch):
 
     # Patch SessionLocal at its source so that write_log (which imports it locally
     # on each call) and the logging middleware (module-level import) both use the
-    # test DB instead of the production SQLite file.
+    # test DB instead of the production database.
     import app.core.config as _config
     import app.db.session as _db_session
     import app.main as _main
@@ -138,10 +122,10 @@ def client(db_engine, db, monkeypatch):
 
 @pytest.fixture
 def auth_headers(client):
-    """Bootstrap the app (enables auth), log in, and return Bearer auth headers.
+    """Bootstrap the app, log in, and return Bearer auth headers.
 
-    Only use this fixture in tests that explicitly test authenticated behaviour.
-    Most tests run on a fresh DB where auth_enabled=False and do not need it.
+    Auth is always enabled after bootstrap. Use this fixture in tests that
+    need a fully bootstrapped app with valid credentials.
     """
     client.post(
         "/api/v1/bootstrap/initialize",

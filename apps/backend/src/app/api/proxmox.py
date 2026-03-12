@@ -207,7 +207,13 @@ def delete_proxmox_config(
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    proxmox_service.delete_integration(db, config)
+    try:
+        proxmox_service.delete_integration(db, config)
+    except Exception as exc:
+        _logger.exception("Failed to delete Proxmox integration %d: %s", integration_id, exc)
+        raise HTTPException(
+            status_code=500, detail="Failed to delete integration. Please try again."
+        ) from exc
     write_log(
         db,
         category="integrations",

@@ -290,7 +290,7 @@ preflight: test frontend-build ## Run tests, build frontend, build mono image
 # ==============================================================================
 # RELEASE & NATIVE BUILDS
 # ==============================================================================
-.PHONY: build-native build-native-docker docker-multiarch test-pi-local release-dry-run
+.PHONY: build-native build-native-docker docker-multiarch test-pi-local release-dry-run deb rpm package-all
 
 build-native: frontend-build ## Build a packaged native archive for the current OS/ARCH
 	@echo "Building packaged native release for $(OS_ARCH)..."
@@ -299,6 +299,24 @@ build-native: frontend-build ## Build a packaged native archive for the current 
 	@echo "Running native packaging..."
 	@.venv/bin/python scripts/build_native_release.py --clean
 	@echo "✅ Native package(s) created in dist/native/"
+
+deb: build-native ## Build .deb package (requires nfpm)
+	@command -v nfpm >/dev/null || { echo "Install nfpm: https://nfpm.goreleaser.com/install/"; exit 1; }
+	VERSION=$(VERSION) GOARCH=amd64 nfpm package --config nfpm.yaml --packager deb --target dist/native/
+	@echo "deb package created in dist/native/"
+
+rpm: build-native ## Build .rpm package (requires nfpm)
+	@command -v nfpm >/dev/null || { echo "Install nfpm: https://nfpm.goreleaser.com/install/"; exit 1; }
+	VERSION=$(VERSION) GOARCH=amd64 nfpm package --config nfpm.yaml --packager rpm --target dist/native/
+	@echo "rpm package created in dist/native/"
+
+package-all: build-native ## Build tar.gz + deb + rpm (requires nfpm)
+	@echo "Building all native packages for $(OS_ARCH)..."
+	@if command -v nfpm >/dev/null 2>&1; then \
+		VERSION=$(VERSION) GOARCH=amd64 nfpm package --config nfpm.yaml --packager deb --target dist/native/; \
+		VERSION=$(VERSION) GOARCH=amd64 nfpm package --config nfpm.yaml --packager rpm --target dist/native/; \
+	else echo "nfpm not found — skipping deb/rpm. tar.gz still available in dist/native/"; fi
+	@echo "Packages in dist/native/"
 
 build-native-docker: ## Build native archive inside Ubuntu 22.04 container (glibc-compatible for older VMs)
 	@echo "Building native package in Docker (Ubuntu 22.04, glibc 2.35)..."

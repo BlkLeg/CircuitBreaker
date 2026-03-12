@@ -122,7 +122,7 @@ def test_cve_status_endpoint(client, db):
 
 
 def test_cve_sync_trigger(client, db):
-    """POST /api/v1/cve/sync should accept the request (auth disabled in test)."""
+    """POST /api/v1/cve/sync should accept the request."""
     with patch("app.api.cve.cve_service.sync_nvd_feed", return_value=0):
         r = client.post("/api/v1/cve/sync")
     assert r.status_code == 200

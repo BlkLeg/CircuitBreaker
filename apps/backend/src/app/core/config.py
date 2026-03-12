@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # full stack traces in error responses.  NEVER enable in production.
     dev_mode: bool = False
     database_url: str = "sqlite:///./data/app.db"
+    db_pool_url: str | None = None  # pgbouncer URL; falls back to database_url
+    redis_url: str = "redis://localhost:6379/0"
+    airgap: bool = False
+    docker_host: str = ""
     api_prefix: str = "/api/v1"
     # Default same-origin only; set CORS_ORIGINS JSON array for dev (e.g. ["http://localhost:5173"]).
     cors_origins: list[str] = []

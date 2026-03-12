@@ -1,11 +1,11 @@
 """
 OOBE & E2E Smoke Audit — pre-ship checklist.
 
-Covers all six sections from PROMPT.md:
-  1. Fresh DB state
+Covers all sections from PROMPT.md:
+  1. Fresh DB state (auth_enabled=False as OOBE completion marker)
   2. First page load (API-level)
-  3. Auth-disabled CRUD
-  4. First user registration, enable-auth, login/logout
+  3. Pre-bootstrap CRUD (no users yet, auth not enforced)
+  4. First user registration (bootstrap enables auth), login/logout
   5. Password & form validation
   6. CB_API_TOKEN static token behaviour
   7. Secret / log cleanliness
@@ -64,16 +64,6 @@ def _auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _enable_auth(client, token: str):
-    resp = client.put(
-        f"{API}/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
-    assert resp.status_code == 200
-    return resp.json()
-
-
 def _create_hardware(client, name="OOBE-Server", **headers):
     return client.post(f"{API}/hardware", json={"name": name, "role": "server"}, **headers)
 
@@ -89,7 +79,7 @@ class TestFreshDB:
         resp = client.get(f"{API}/settings")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["auth_enabled"] is False, "auth should be disabled by default"
+        assert data["auth_enabled"] is False, "auth_enabled (OOBE marker) should be False before bootstrap"
 
     def test_jwt_secret_absent_from_settings_response(self, client):
         """jwt_secret must never appear in the settings payload."""
@@ -139,7 +129,7 @@ class TestFreshDB:
 
 class TestFirstPageLoad:
     def test_settings_read_unauthenticated(self, client):
-        """Settings are publicly readable (auth disabled by default)."""
+        """Settings are publicly readable before OOBE (no jwt_secret yet)."""
         resp = client.get(f"{API}/settings")
         assert resp.status_code == 200
 
@@ -191,11 +181,11 @@ class TestFirstPageLoad:
 
 
 # ===========================================================================
-# 3. Auth-disabled CRUD (writes succeed without Authorization header)
+# 3. Pre-bootstrap CRUD (writes succeed without Authorization header)
 # ===========================================================================
 
 
-class TestAuthDisabledCRUD:
+class TestPreBootstrapCRUD:
     def test_create_hardware_no_auth(self, client):
         resp = _create_hardware(client)
         assert resp.status_code == 201
@@ -209,18 +199,18 @@ class TestAuthDisabledCRUD:
         assert resp.status_code == 201
 
     def test_settings_update_no_auth(self, client):
-        """PUT /settings works without auth when auth is disabled."""
+        """PUT /settings works without auth before bootstrap."""
         resp = client.put(f"{API}/settings", json={"theme": "dark"})
         assert resp.status_code == 200
 
     def test_admin_export_no_auth(self, client):
-        """Admin export is accessible when auth is disabled."""
+        """Admin export is accessible before bootstrap."""
         resp = client.get(f"{API}/admin/export")
         assert resp.status_code == 200
 
 
 # ===========================================================================
-# 4. First user registration, enable auth, login / logout
+# 4. First user registration (bootstrap enables auth), login / logout
 # ===========================================================================
 
 
@@ -261,30 +251,25 @@ class TestFirstUserAndAuthFlow:
         assert resp.status_code == 200
         assert "jwt_secret" not in resp.json()
 
-    def test_enable_auth_blocks_anonymous_writes(self, client):
-        """After enabling auth, unauthenticated write requests must return 401."""
-        reg = _register(client)
-        token = reg.json()["token"]
-        _enable_auth(client, token)
+    def test_bootstrap_blocks_anonymous_writes(self, client):
+        """After bootstrap, unauthenticated write requests must return 401."""
+        _register(client)
 
         client.cookies.clear()
         resp = _create_hardware(client, name="ShouldFail")
-        assert resp.status_code == 401, f"Expected 401 after enabling auth, got {resp.status_code}"
+        assert resp.status_code == 401, f"Expected 401 after bootstrap, got {resp.status_code}"
 
-    def test_enable_auth_still_allows_settings_read(self, client):
-        """Read-only settings endpoint stays accessible after enabling auth."""
-        reg = _register(client)
-        token = reg.json()["token"]
-        _enable_auth(client, token)
+    def test_bootstrap_still_allows_settings_read(self, client):
+        """Read-only settings endpoint stays accessible after bootstrap."""
+        _register(client)
 
         resp = client.get(f"{API}/settings")
         assert resp.status_code == 200
 
-    def test_token_authenticates_write_when_auth_enabled(self, client):
-        """Valid JWT must allow writes when auth is enabled."""
+    def test_token_authenticates_write_after_bootstrap(self, client):
+        """Valid JWT must allow writes after bootstrap."""
         reg = _register(client)
         token = reg.json()["token"]
-        _enable_auth(client, token)
 
         resp = _create_hardware(client, name="AuthedWrite", headers=_auth_header(token))
         assert resp.status_code == 201
@@ -316,11 +301,9 @@ class TestFirstUserAndAuthFlow:
         resp = client.post(f"{API}/auth/logout", headers=_auth_header(token))
         assert resp.status_code == 204
 
-    def test_admin_export_requires_auth_when_enabled(self, client):
-        """GET /admin/export must return 401 when auth is enabled and no token given."""
-        reg = _register(client)
-        token = reg.json()["token"]
-        _enable_auth(client, token)
+    def test_admin_export_requires_auth_after_bootstrap(self, client):
+        """GET /admin/export must return 401 after bootstrap when no token given."""
+        _register(client)
 
         client.cookies.clear()
         resp = client.get(f"{API}/admin/export")
@@ -330,7 +313,6 @@ class TestFirstUserAndAuthFlow:
         """GET /admin/export must succeed with a valid JWT."""
         reg = _register(client)
         token = reg.json()["token"]
-        _enable_auth(client, token)
 
         resp = client.get(f"{API}/admin/export", headers=_auth_header(token))
         assert resp.status_code == 200

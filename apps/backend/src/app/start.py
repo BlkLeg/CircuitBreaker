@@ -214,6 +214,21 @@ def main(argv: list[str] | None = None) -> int:
         print(resolve_app_version())
         return 0
 
+    # Load config.toml (env vars take precedence over TOML values)
+    try:
+        from app.core.config_toml import load_config_toml
+
+        toml_path = (
+            args.config
+            if hasattr(args, "config") and args.config and args.config.endswith(".toml")
+            else None
+        )
+        toml_count = load_config_toml(toml_path)
+        if toml_count:
+            print(f"[start] Loaded {toml_count} setting(s) from config.toml")
+    except Exception:
+        pass  # config.toml support is optional
+
     uvicorn_options = configure_runtime(args)
 
     from app.main import run_alembic_upgrade

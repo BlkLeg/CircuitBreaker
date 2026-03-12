@@ -102,10 +102,7 @@ async def status_stream(websocket: WebSocket) -> None:
     else:
         with _db_session.SessionLocal() as db:
             cfg = get_or_create_settings(db)
-            if not cfg.auth_enabled:
-                authenticated = True
-                user_id = 0
-            elif cfg.jwt_secret:
+            if cfg.jwt_secret:
                 if not is_session_revoked(db, raw_token.strip()):
                     uid = decode_token(raw_token.strip(), cfg.jwt_secret)
                     if uid is not None:

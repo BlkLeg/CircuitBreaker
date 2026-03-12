@@ -1,0 +1,51 @@
+# Circuit Breaker Configuration
+# https://github.com/BlkLeg/circuitbreaker
+#
+# This file is read on startup. Environment variables override these values.
+# After editing, restart the service: sudo systemctl restart circuit-breaker
+
+[server]
+# host = "0.0.0.0"
+# port = 8080
+
+[database]
+# PostgreSQL connection URL (REQUIRED)
+# url = "postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker"
+#
+# Connection pool settings (defaults are fine for most deployments)
+# pool_size = 20
+# max_overflow = 20
+
+[redis]
+# Redis URL for telemetry cache and pub/sub
+# url = "redis://127.0.0.1:6379/0"
+
+[nats]
+# NATS URL and auth for the internal message bus
+# url = "nats://127.0.0.1:4222"
+# auth_token = ""
+
+[security]
+# Fernet encryption key for credential vault (auto-generated if empty)
+# vault_key = ""
+#
+# CORS origins (comma-separated or JSON array)
+# cors_origins = ""
+
+[discovery]
+# Docker socket path for container discovery
+# docker_host = "/var/run/docker.sock"
+#
+# Proxmox API URL for VM/LXC discovery
+# proxmox_url = ""
+
+[paths]
+# Override default file locations
+# data_dir = "/var/lib/circuit-breaker"
+# log_dir = "/var/log/circuit-breaker"
+# static_dir = "/usr/local/share/circuit-breaker/frontend"
+# alembic_ini = "/usr/local/share/circuit-breaker/backend/alembic.ini"
+
+[updates]
+# Check for new versions on startup (does NOT auto-install)
+check_on_startup = true

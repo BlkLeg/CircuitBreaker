@@ -58,6 +58,15 @@ data/user-icons/**
 data/uploads/**
 data/user-icons/**
 
+# Test artifacts
+coverage.xml
+
+# Generated security scan reports (keep STANDING reports untracked naturally)
+SECURITY_REPORTS/security_scan_report*.md
+
+# PyInstaller specs (legacy)
+*.spec
+
 # OS
 .DS_Store
 Thumbs.db

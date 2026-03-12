@@ -53,7 +53,7 @@ export const handlers = [
   // Settings
   http.get(`${BASE}/settings`, () =>
     HttpResponse.json({
-      timezone: 'UTC', theme_preset: 'one-dark', auth_enabled: false,
+      timezone: 'UTC', theme_preset: 'one-dark', auth_enabled: true,
       scan_ack_accepted: false,
       discovery_enabled: false,
       discovery_auto_merge: false,

@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Plus, Layers, Settings2, ClipboardList, History, Server } from 'lucide-react';
+import { Plus, Layers, Settings2, ClipboardList, History } from 'lucide-react';
 import LiveListenersPanel from './LiveListenersPanel.jsx';
 
 const FILTERS = [{ key: 'all', label: 'All Scans', Icon: Layers }];
@@ -79,7 +79,7 @@ export default function DiscoverySidebar({
           onClick={() => onFilterChange('proxmox')}
         >
           <span className="sidebar-nav-icon">
-            <Server size={16} />
+            <img src="/icons/vendors/proxmox-dark.svg" width={16} height={16} alt="" />
           </span>
           <span className="sidebar-nav-label">Proxmox VE</span>
         </button>

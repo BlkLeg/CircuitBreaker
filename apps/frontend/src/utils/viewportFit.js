@@ -3,8 +3,8 @@
  * Used so large graphs fill the viewport at a readable zoom (no ant-sized view).
  */
 export const VIEWPORT_FIT_DEFAULTS = {
-  padding: 0.1,
-  minZoom: 0.2,
+  padding: 0.15,
+  minZoom: 0.4,
   maxZoom: 2.5,
   duration: 800,
 };

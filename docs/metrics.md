@@ -19,12 +19,9 @@ Returns `text/plain; version=0.0.4; charset=utf-8` — the standard Prometheus s
 
 The metrics endpoint follows the same authentication model as the rest of the API:
 
-| Circuit Breaker auth setting | Endpoint access |
-|---|---|
-| Auth disabled (`auth_enabled = false`) and no `CB_API_TOKEN` set | Public — no token required |
-| Auth enabled **or** `CB_API_TOKEN` env var set | Requires a valid `Authorization: Bearer <token>` header |
+Authentication is always required. Provide a valid `Authorization: Bearer <token>` header (session JWT or `CB_API_TOKEN`).
 
-When auth is required and no token is provided, the endpoint returns HTTP `401`.
+Without a token, the endpoint returns HTTP `401`.
 
 ### Generating a token for Prometheus
 

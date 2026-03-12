@@ -266,6 +266,96 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   esac
 fi
 
+# ─── Native binary cleanup ──────────────────────────────────────────────────
+if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-breaker.service ]; then
+  echo ""
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo -e " ${aCOLOUR[1]}Native Binary Cleanup${COLOUR_RESET}"
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo ""
+
+  # Stop systemd service
+  if systemctl is-active --quiet circuit-breaker.service 2>/dev/null; then
+    Show 2 "Stopping circuit-breaker service..."
+    sudo systemctl stop circuit-breaker.service
+    sudo systemctl disable circuit-breaker.service
+    Show 0 "Service stopped and disabled."
+  fi
+
+  # Remove systemd unit
+  if [ -f /etc/systemd/system/circuit-breaker.service ]; then
+    sudo rm -f /etc/systemd/system/circuit-breaker.service
+    sudo systemctl daemon-reload
+    Show 0 "systemd unit removed."
+  fi
+
+  # Remove binary
+  if [ -f /usr/local/bin/circuit-breaker ]; then
+    sudo rm -f /usr/local/bin/circuit-breaker
+    Show 0 "Binary removed."
+  fi
+
+  # Remove share directory
+  if [ -d /usr/local/share/circuit-breaker ]; then
+    sudo rm -rf /usr/local/share/circuit-breaker
+    Show 0 "Share directory removed."
+  fi
+
+  # Config and data (ask first)
+  echo ""
+  if [ -d /etc/circuit-breaker ]; then
+    printf "  Remove config (/etc/circuit-breaker)? [y/N] "
+    read -r REPLY < /dev/tty
+    case "$REPLY" in
+      [yY]*) sudo rm -rf /etc/circuit-breaker; Show 0 "Config removed." ;;
+      *) Show 2 "Config retained at /etc/circuit-breaker" ;;
+    esac
+  fi
+
+  if [ -d /var/lib/circuit-breaker ]; then
+    printf "  Remove data (/var/lib/circuit-breaker)? [y/N] "
+    read -r REPLY < /dev/tty
+    case "$REPLY" in
+      [yY]*) sudo rm -rf /var/lib/circuit-breaker; Show 0 "Data removed." ;;
+      *) Show 2 "Data retained at /var/lib/circuit-breaker" ;;
+    esac
+  fi
+fi
+
+# ─── macOS cleanup ──────────────────────────────────────────────────────────
+if [ "$(uname -s)" = "Darwin" ]; then
+  PLIST="$HOME/Library/LaunchAgents/com.blkleg.circuitbreaker.plist"
+  if [ -f "$PLIST" ]; then
+    echo ""
+    echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+    echo -e " ${aCOLOUR[1]}macOS Cleanup${COLOUR_RESET}"
+    echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+    echo ""
+
+    launchctl unload "$PLIST" 2>/dev/null
+    rm -f "$PLIST"
+    Show 0 "launchd agent removed."
+
+    if [ -d "$HOME/Library/Application Support/CircuitBreaker" ]; then
+      printf "  Remove app data? [y/N] "
+      read -r REPLY < /dev/tty
+      case "$REPLY" in
+        [yY]*) rm -rf "$HOME/Library/Application Support/CircuitBreaker"; Show 0 "App data removed." ;;
+        *) Show 2 "App data retained." ;;
+      esac
+    fi
+
+    if [ -d "$HOME/.config/circuitbreaker" ]; then
+      printf "  Remove config (~/.config/circuitbreaker)? [y/N] "
+      read -r REPLY < /dev/tty
+      case "$REPLY" in
+        [yY]*) rm -rf "$HOME/.config/circuitbreaker"; Show 0 "Config removed." ;;
+        *) Show 2 "Config retained." ;;
+      esac
+    fi
+  fi
+fi
+
 # ─── Config directory cleanup (API token, TLS config, install.conf, etc.) ────
 if [ -d "$CB_CONFIG_DIR" ]; then
   rm -rf "$CB_CONFIG_DIR"

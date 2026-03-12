@@ -7,10 +7,8 @@ export const AuthContext = createContext({
   authReady: false,
   user: null,
   token: null,
-  authEnabled: false,
   login: () => {},
   logout: () => {},
-  setAuthEnabled: () => {},
   openAuthModal: () => {},
   openProfileModal: () => {},
 });
@@ -22,26 +20,12 @@ export function useAuth() {
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
-  const [authEnabled, setAuthEnabled] = useState(false);
-  const [settingsReady, setSettingsReady] = useState(false);
   const [meReady, setMeReady] = useState(false);
-  const authReady = settingsReady && meReady;
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const pendingActionRef = useRef(null);
   const loginJustSucceededAtRef = useRef(0);
   const navigate = useNavigate();
-
-  // Sync authEnabled from backend on mount (before SettingsPage loads)
-  useEffect(() => {
-    fetch('/api/v1/settings')
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((s) => setAuthEnabled(s.auth_enabled ?? false))
-      .catch((err) => {
-        console.error('Settings fetch failed during auth init:', err);
-      })
-      .finally(() => setSettingsReady(true));
-  }, []);
 
   // Validate session on mount via cookie (httpOnly); sets meReady when done
   useEffect(() => {
@@ -110,11 +94,9 @@ export function AuthProvider({ children }) {
 
   const value = {
     isAuthenticated: !!user,
-    authReady,
+    authReady: meReady,
     user,
     token,
-    authEnabled,
-    setAuthEnabled,
     login,
     logout,
     openAuthModal,

@@ -109,7 +109,7 @@ class AppSettingsRead(BaseModel):
     show_time_widget: bool = True
     show_weather_widget: bool = True
     weather_location: str = "Phoenix, AZ"
-    auth_enabled: bool = False
+    auth_enabled: bool = True
     registration_open: bool = True
     rate_limit_profile: str = "normal"
     session_timeout_hours: int = 24
@@ -333,7 +333,6 @@ class AppSettingsUpdate(BaseModel):
     show_time_widget: bool | None = None
     show_weather_widget: bool | None = None
     weather_location: str | None = None
-    auth_enabled: bool | None = None
     registration_open: bool | None = None
     rate_limit_profile: Literal["relaxed", "normal", "strict"] | None = None
     session_timeout_hours: int | None = None

@@ -33,7 +33,7 @@ _logger = logging.getLogger(__name__)
 
 class TopologyCreate(BaseModel):
     name: str
-    team_id: int | None = None
+    tenant_id: int | None = None
     is_default: bool = False
 
 
@@ -98,18 +98,18 @@ def _edge_to_cytoscape(edge: TopologyEdge, nodes: list[TopologyNode]) -> dict[st
 
 @router.get("")
 def list_topologies(
-    team_id: int | None = None,
+    tenant_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> list[dict]:
     q = db.query(Topology)
-    if team_id is not None:
-        q = q.filter(Topology.team_id == team_id)
+    if tenant_id is not None:
+        q = q.filter(Topology.tenant_id == tenant_id)
     topologies = q.order_by(Topology.id).all()
     return [
         {
             "id": t.id,
             "name": t.name,
-            "team_id": t.team_id,
+            "tenant_id": t.tenant_id,
             "is_default": t.is_default,
             "node_count": len(t.nodes),
             "edge_count": len(t.edges),
@@ -127,7 +127,7 @@ def create_topology(
 ) -> dict:
     topology = Topology(
         name=payload.name,
-        team_id=payload.team_id,
+        tenant_id=payload.tenant_id,
         is_default=payload.is_default,
     )
     db.add(topology)
@@ -140,7 +140,7 @@ def create_topology(
         ) from None
     db.refresh(topology)
     _logger.info("Created topology id=%d name=%s", topology.id, topology.name)
-    return {"id": topology.id, "name": topology.name, "team_id": topology.team_id}
+    return {"id": topology.id, "name": topology.name, "tenant_id": topology.tenant_id}
 
 
 @router.get("/{topology_id}")
@@ -149,7 +149,7 @@ def get_topology(topology_id: int, db: Session = Depends(get_db)) -> dict:
     return {
         "id": t.id,
         "name": t.name,
-        "team_id": t.team_id,
+        "tenant_id": t.tenant_id,
         "is_default": t.is_default,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
@@ -210,7 +210,7 @@ def export_cytoscape(topology_id: int, db: Session = Depends(get_db)) -> dict:
         _edge_to_cytoscape(e, nodes) for e in edges
     ]
     return {
-        "topology": {"id": t.id, "name": t.name, "team_id": t.team_id},
+        "topology": {"id": t.id, "name": t.name, "tenant_id": t.tenant_id},
         "elements": elements,
     }
 

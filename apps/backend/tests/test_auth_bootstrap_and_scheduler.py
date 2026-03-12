@@ -30,7 +30,8 @@ def _mock_db(user_count: int, cfg: AppSettings):
     return db
 
 
-def test_bootstrap_status_depends_on_auth_enabled_not_jwt_secret():
+def test_bootstrap_status_needs_bootstrap_when_oobe_incomplete():
+    """auth_enabled=False (OOBE marker not set) means bootstrap is still needed."""
     cfg = AppSettings()
     cfg.jwt_secret = "already-generated"
     cfg.auth_enabled = False
@@ -41,7 +42,8 @@ def test_bootstrap_status_depends_on_auth_enabled_not_jwt_secret():
     assert status.user_count == 0
 
 
-def test_bootstrap_status_false_after_auth_enabled():
+def test_bootstrap_status_complete_after_oobe_marker_set():
+    """auth_enabled=True (OOBE marker) means bootstrap is done."""
     cfg = AppSettings()
     cfg.jwt_secret = "already-generated"
     cfg.auth_enabled = True

@@ -1,7 +1,7 @@
 """
 Auth system tests — covers gaps F3-1 through F3-7.
 
-Uses the existing ``client`` / ``db`` fixtures from conftest.py (in-memory SQLite).
+Uses the existing ``client`` / ``db`` fixtures from conftest.py (PostgreSQL).
 """
 
 import pyotp
@@ -17,11 +17,6 @@ INVALID_WRONG_PASSWORD = "wrongpassword"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _enable_auth(client):
-    """Enable auth via settings and return the settings payload."""
-    resp = client.put("/api/v1/settings", json={"auth_enabled": True})
-    return resp.json()
 
 
 def _register(client, email=DEFAULT_TEST_EMAIL, password=DEFAULT_TEST_PASSWORD, display_name=None):
@@ -116,37 +111,19 @@ def test_settings_jwt_secret_hidden(client):
 # ---------------------------------------------------------------------------
 
 def test_settings_put_requires_auth(client):
-    """Once auth is enabled, unauthenticated PUT /settings must return 401."""
-    # Register first user so JWT secret is created, then enable auth
+    """After bootstrap, unauthenticated PUT /settings must return 401."""
     reg = _register(client)
     assert reg.status_code == 200
-    token = reg.json()["token"]
 
-    # Enable auth with a valid token
-    resp = client.put(
-        "/api/v1/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
-    print("FIRST PUT RESP:", resp.json())
-    assert resp.status_code == 200
-
-    # Now unauthenticated PUT should be blocked
     client.cookies.clear()
     resp = client.put("/api/v1/settings", json={"theme": "light"})
-    print("SECOND PUT RESP:", resp.status_code, resp.json())
     assert resp.status_code == 401
 
 
 def test_settings_reset_requires_auth(client):
-    reg = _register(client)
-    token = reg.json()["token"]
-    client.put(
-        "/api/v1/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
-    # Unauthenticated reset should be blocked
+    """After bootstrap, unauthenticated POST /settings/reset must return 401."""
+    _register(client)
+
     client.cookies.clear()
     resp = client.post("/api/v1/settings/reset")
     assert resp.status_code == 401
@@ -157,13 +134,9 @@ def test_settings_reset_requires_auth(client):
 # ---------------------------------------------------------------------------
 
 def test_logs_delete_requires_auth(client):
-    reg = _register(client)
-    token = reg.json()["token"]
-    client.put(
-        "/api/v1/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
+    """After bootstrap, unauthenticated DELETE /logs must return 401."""
+    _register(client)
+
     client.cookies.clear()
     resp = client.delete("/api/v1/logs")
     assert resp.status_code == 401
@@ -402,7 +375,11 @@ async def test_forgot_password_uses_external_app_url_for_email_links(client, db,
     assert user is not None
 
     manager = UserManager(None)
-    request = SimpleNamespace(base_url="http://internal.local/", client=None)
+    request = SimpleNamespace(
+        base_url="http://internal.local/",
+        client=None,
+        headers={},
+    )
     await manager.on_after_forgot_password(user, "reset-token", request)
 
     assert captured["to_email"] == DEFAULT_TEST_EMAIL
@@ -413,24 +390,12 @@ class TestProfile:
     def test_get_me_with_token(self, client):
         reg = _register(client)
         token = reg.json()["token"]
-        # Need to enable auth for token validation to work
-        client.put(
-            "/api/v1/settings",
-            json={"auth_enabled": True},
-            headers=_auth_header(token),
-        )
         resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
         assert resp.status_code == 200
         assert resp.json()["email"] == DEFAULT_TEST_EMAIL
 
     def test_get_me_no_token(self, client):
-        reg = _register(client)
-        token = reg.json()["token"]
-        client.put(
-            "/api/v1/settings",
-            json={"auth_enabled": True},
-            headers=_auth_header(token),
-        )
+        _register(client)
         client.cookies.clear()
         resp = client.get("/api/v1/auth/me")
         assert resp.status_code == 401
@@ -438,11 +403,6 @@ class TestProfile:
     def test_get_me_after_logout_revoked_token_is_unauthorized(self, client):
         reg = _register(client)
         token = reg.json()["token"]
-        client.put(
-            "/api/v1/settings",
-            json={"auth_enabled": True},
-            headers=_auth_header(token),
-        )
 
         logout_resp = client.post("/api/v1/auth/logout", headers=_auth_header(token))
         assert logout_resp.status_code == 204
@@ -571,29 +531,15 @@ def test_mfa_backup_codes_can_be_regenerated_and_old_codes_stop_working(client):
 def test_delete_me(client):
     reg = _register(client)
     token = reg.json()["token"]
-    # Enable auth
-    client.put(
-        "/api/v1/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
-    # Delete own account
     resp = client.delete("/api/v1/auth/me", headers=_auth_header(token))
     assert resp.status_code == 204
 
-    # Confirm the user is gone — /me should 401
     resp = client.get("/api/v1/auth/me", headers=_auth_header(token))
     assert resp.status_code == 401
 
 
 def test_delete_me_unauthenticated(client):
-    reg = _register(client)
-    token = reg.json()["token"]
-    client.put(
-        "/api/v1/settings",
-        json={"auth_enabled": True},
-        headers=_auth_header(token),
-    )
+    _register(client)
     client.cookies.clear()
     resp = client.delete("/api/v1/auth/me")
     assert resp.status_code == 401

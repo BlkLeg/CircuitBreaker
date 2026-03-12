@@ -64,7 +64,7 @@ def _extract_layout_nodes(layout_data: str | None) -> list[dict]:
     return nodes
 
 
-def overlaps(test_x: float, test_y: float, nodes: list[dict], threshold: float = 60.0) -> bool:
+def overlaps(test_x: float, test_y: float, nodes: list[dict], threshold: float = 120.0) -> bool:
     """Check if the given coordinate overlaps with any existing nodes within the threshold."""
     for node in nodes:
         pos = node.get("position", {})
@@ -77,36 +77,31 @@ def overlaps(test_x: float, test_y: float, nodes: list[dict], threshold: float =
     return False
 
 
-def jitter_if_collides(candidate: dict, nodes: list[dict]) -> dict | None:
-    """Find a safe position by trying angles radially outwards."""
-    jitter_radius = 60  # 1.5x node size approximation
-    for angle_deg in range(0, 360, 15):
-        angle_rad = math.radians(angle_deg)
-        test_x = candidate["x"] + jitter_radius * math.cos(angle_rad)
-        test_y = candidate["y"] + jitter_radius * math.sin(angle_rad)
-        if not overlaps(test_x, test_y, nodes, threshold=60.0):
-            return {"x": round(test_x, 1), "y": round(test_y, 1)}
-    return None
-
-
 def place_node_safe(db: Session, node_id: str, environment: str = "default") -> dict:
     layout_name = f"env_{environment}" if environment and environment != "default" else "default"
     layout = db.query(GraphLayout).filter(GraphLayout.name == layout_name).first()
 
     nodes = _extract_layout_nodes(layout.layout_data if layout else None)
 
-    # Basic bounding box fallback center if no intelligent layout algorithm is available on backend
-    center_x, center_y = 450.0, 320.0
-    candidate = {"x": center_x, "y": center_y}
+    # Calculate centroid of existing nodes, or use default viewport center
+    if nodes:
+        xs = [n["position"]["x"] for n in nodes if n["position"].get("x") is not None]
+        ys = [n["position"]["y"] for n in nodes if n["position"].get("y") is not None]
+        cx = sum(xs) / len(xs) if xs else 450.0
+        cy = sum(ys) / len(ys) if ys else 320.0
+    else:
+        cx, cy = 450.0, 320.0
 
-    for _attempt in range(5):
-        if not overlaps(candidate["x"], candidate["y"], nodes):
-            return candidate
-        safe_pos = jitter_if_collides(candidate, nodes)
-        if safe_pos:
-            return safe_pos
-        # Increase jitter radius incrementally if needed
-        candidate["x"] += 20
-        candidate["y"] += 20
+    # Grid-spiral placement: expanding from centroid, 160px spacing
+    spacing = 160
+    for ring in range(20):  # max 20 rings = 3200px
+        for dx in range(-ring, ring + 1):
+            for dy in range(-ring, ring + 1):
+                if abs(dx) != ring and abs(dy) != ring:
+                    continue  # only check perimeter of this ring
+                test_x = cx + dx * spacing
+                test_y = cy + dy * spacing
+                if not overlaps(test_x, test_y, nodes, threshold=120.0):
+                    return {"x": round(test_x, 1), "y": round(test_y, 1)}
 
-    return {"x": 50.0, "y": 50.0}  # Ultimate fallback corner
+    return {"x": cx, "y": cy}

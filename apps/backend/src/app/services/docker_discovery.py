@@ -25,6 +25,21 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_SOCKET_PATH = "/var/run/docker.sock"
 
 
+def _resolve_docker_base_url(socket_path: str = _DEFAULT_SOCKET_PATH) -> str:
+    """Return the Docker daemon base URL, preferring CB_DOCKER_HOST over a local socket.
+
+    If the ``CB_DOCKER_HOST`` env var is set (e.g. ``tcp://proxy:2375``), it is
+    used directly — this allows talking to a Docker API proxy instead of mounting
+    the raw Docker socket (which grants near-root host access).
+    """
+    import os
+
+    host = os.environ.get("CB_DOCKER_HOST", "").strip()
+    if host:
+        return host
+    return f"unix://{socket_path}"
+
+
 def _slugify(text: str) -> str:
     """Convert text to a URL-safe slug without external dependencies."""
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -238,8 +253,10 @@ def sync_docker_topology(
 
 def get_docker_status(socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
     """Return quick Docker connectivity status without touching the DB."""
-    available = is_docker_socket_available(socket_path)
-    if not available:
+    base_url = _resolve_docker_base_url(socket_path)
+    is_tcp = base_url.startswith("tcp://") or base_url.startswith("http")
+
+    if not is_tcp and not is_docker_socket_available(socket_path):
         return {
             "available": False,
             "container_count": 0,
@@ -251,7 +268,7 @@ def get_docker_status(socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
     try:
         import docker
 
-        client = docker.DockerClient(base_url=f"unix://{socket_path}")
+        client = docker.DockerClient(base_url=base_url)
         containers = client.containers.list(all=True)
         networks = client.networks.list()
         return {

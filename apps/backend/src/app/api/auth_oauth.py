@@ -295,7 +295,7 @@ def _bootstrap_redirect_or_none(
     """Redirect to OOBE bootstrap flow whenever setup hasn't been completed yet.
 
     This handles both fresh accounts and retries with the same OAuth provider/email —
-    as long as auth_enabled is False the user must finish OOBE before using the app.
+    until OOBE bootstrap is complete the user must finish setup before using the app.
     """
     import secrets as _secrets_mod
 

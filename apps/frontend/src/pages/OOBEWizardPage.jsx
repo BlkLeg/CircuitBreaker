@@ -53,7 +53,7 @@ function OOBEWizardPage({ onCompleted }) {
   const { i18n } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, setAuthEnabled } = useAuth();
+  const { login } = useAuth();
   const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
 
@@ -577,7 +577,6 @@ function OOBEWizardPage({ onCompleted }) {
       await i18n.changeLanguage(language);
 
       login(token, user);
-      setAuthEnabled(true);
       await reloadSettings();
 
       if (response.data.vault_key_warning && response.data.vault_key) {

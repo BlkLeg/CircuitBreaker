@@ -1,8 +1,8 @@
 # Generated from poetry.lock — do not edit manually.
 # Regenerate: python3 scripts/gen_requirements.py
 # SQLite driver (default). For PostgreSQL see requirements-pg.txt.
-aiosmtplib>=3.0
-aiosqlite>=0.20.0
+aiosmtplib==5.1.0
+aiosqlite==0.22.1
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0
@@ -18,7 +18,7 @@ colorama==0.4.6
 cryptography==46.0.5
 deprecated==1.3.1
 fastapi==0.135.1
-fastapi-users[sqlalchemy]>=13.0.0
+fastapi-users[sqlalchemy]==15.0.4
 greenlet==3.3.2; platform_machine != "armv7l"
 h11==0.16.0
 httpcore==1.0.9
@@ -31,7 +31,7 @@ markdown-it-py==4.0.0
 markupsafe==3.0.3
 mdit-py-plugins==0.5.0
 mdurl==0.1.2
-nats-py>=2.9.0
+nats-py==2.14.0
 netaddr==1.3.0
 packaging==26.0
 pexpect==4.9.0
@@ -50,6 +50,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.22
 python-nmap==0.7.1
 pyyaml==6.0.3
+redis==5.2.1
 requests==2.32.5
 scapy==2.7.0
 slowapi==0.1.9
@@ -66,7 +67,7 @@ watchfiles==1.1.1
 webencodings==0.5.1
 websockets==16.0
 wrapt==2.1.1
-proxmoxer>=2.0.0
-psutil>=5.9.0
-pyotp>=2.9.0
-docker>=7.0.0
+proxmoxer==2.3.0
+psutil==7.0.0
+pyotp==2.9.0
+docker==7.1.0

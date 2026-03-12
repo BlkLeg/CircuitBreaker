@@ -128,9 +128,13 @@ def docker_discover(
         network_types = ["bridge"]
 
     try:
+        import os
+
         import docker  # optional dep
 
-        client = docker.DockerClient(base_url=f"unix://{socket_path}")
+        docker_host = os.environ.get("CB_DOCKER_HOST", "").strip()
+        base_url = docker_host if docker_host else f"unix://{socket_path}"
+        client = docker.DockerClient(base_url=base_url)
         containers: list[dict] = []
         networks_info = {}
 
@@ -268,5 +272,8 @@ def docker_discover(
 
 
 def is_docker_socket_available(socket_path: str = "/var/run/docker.sock") -> bool:
-    """Return True if the Docker socket exists at the given path."""
+    """Return True if the Docker daemon is reachable via socket or CB_DOCKER_HOST."""
+    docker_host = os.environ.get("CB_DOCKER_HOST", "").strip()
+    if docker_host:
+        return True
     return os.path.exists(socket_path)

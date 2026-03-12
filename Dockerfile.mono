@@ -31,7 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Dependency layer from pinned requirements.txt + PostgreSQL drivers (mono image uses Postgres)
 COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-pg.txt
+    pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-pg.txt \
+    && find /usr/local/lib/python3.12 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true
 
 # App layer
 COPY VERSION /VERSION
@@ -45,6 +47,7 @@ FROM python:3.12.9-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONOPTIMIZE=2 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app/backend
@@ -61,12 +64,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql \
     postgresql-client \
     nats-server \
+    redis-server \
+    pgbouncer \
     ca-certificates \
     curl \
     bash \
     jq \
     netcat-traditional \
-    iproute2 \
     openssl \
     tini \
     && rm -rf /var/lib/apt/lists/* \
@@ -76,6 +80,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=backend-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=backend-builder /usr/local/bin /usr/local/bin
 COPY --from=backend-builder /app/backend/src ./src
+RUN rm -rf /usr/share/doc /usr/share/man /usr/share/locale /usr/share/info \
+    && find /usr/local/lib/python3.12 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 COPY apps/backend/alembic.ini ./alembic.ini
 # Migrations are baked into the image; add new migration files then rebuild (e.g. build --no-cache) so the container can run them.
 COPY apps/backend/migrations ./migrations
@@ -86,11 +92,12 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Mono-specific configs and init scripts
 COPY docker/supervisord.mono.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/nginx.mono.conf /etc/nginx/nginx.conf
+COPY docker/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh docker/run-postgres-if-embedded.sh /docker/
 RUN chmod +x /docker/*.sh
 
 # Runtime directories: /data/run/postgresql for socket/lock (breaker-owned); symlink so Postgres finds it
-RUN mkdir -p /app /data /data/uploads /data/tls /data/run/postgresql /var/log/circuitbreaker \
+RUN mkdir -p /app /data /data/uploads /data/tls /data/certs /data/redis /data/run/postgresql /var/log/circuitbreaker \
     && chmod 1777 /data/run/postgresql \
     && rm -rf /var/run/postgresql \
     && ln -s /data/run/postgresql /var/run/postgresql \
@@ -105,11 +112,15 @@ ENV PYTHONPATH=/app/backend/src \
     STATIC_DIR=/app/frontend/dist \
     CB_DATA_DIR=/data \
     UPLOADS_DIR=/data/uploads \
-    NATS_URL=nats://127.0.0.1:4222
+    NATS_URL=nats://127.0.0.1:4222 \
+    CB_REDIS_URL=redis://127.0.0.1:6379/0
 
 VOLUME ["/data"]
 
 EXPOSE 80 443
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -f http://127.0.0.1:80/api/v1/health || exit 1
 
 # tini as PID1 (reaps zombies, forwards signals). Entrypoint runs as root to chown /data, then exec supervisord.
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/docker/entrypoint-mono.sh"]

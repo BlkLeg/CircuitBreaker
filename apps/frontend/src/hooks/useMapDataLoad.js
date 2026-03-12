@@ -113,6 +113,9 @@ export function useMapDataLoad({
       } catch (e) {
         placingNodesRef.current.delete(newNodeId);
         console.error('Auto-place failed', e);
+        // Circuit breaker: clear flag with fallback position so the drain
+        // effect doesn't re-trigger infinitely when backend is unreachable
+        updateNodePos(newNodeId, { x: Math.random() * 800, y: Math.random() * 600 });
       } finally {
         pendingPlacementCountRef.current -= 1;
         if (pendingPlacementCountRef.current === 0 && batchPlacedCountRef.current > 0) {
@@ -125,6 +128,10 @@ export function useMapDataLoad({
           saveLayoutRef
             .current?.()
             .catch((err) => console.error('Auto-save after placement failed', err));
+          // Fit view after all auto-placed nodes are positioned
+          setTimeout(() => {
+            fitView({ ...VIEWPORT_FIT_DEFAULTS, duration: 600 });
+          }, 100);
         }
       }
     },

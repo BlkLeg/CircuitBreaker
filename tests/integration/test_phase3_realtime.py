@@ -143,7 +143,7 @@ def test_topology_ws_requires_auth(client: TestClient):
 
 
 def test_topology_ws_rejects_empty_token(client: TestClient):
-    """WS rejects empty token with unauthorized or connected (when auth disabled)."""
+    """WS rejects empty token with unauthorized."""
     with client.websocket_connect("/api/v1/topology/stream") as ws:
         ws.send_text("")
         msg = json.loads(ws.receive_text())

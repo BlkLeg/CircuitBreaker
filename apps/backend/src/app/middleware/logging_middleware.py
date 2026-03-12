@@ -207,8 +207,7 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
       2. FastAPI-Users JWT (``sub`` claim with ``aud=["fastapi-users:auth"]``)
       3. Legacy JWT (``user_id`` claim, no audience)
 
-    Returns ('anonymous', None, None, None) when no valid credential is present or
-    auth is disabled.
+    Returns ('anonymous', None, None, None) when no valid credential is present.
     """
     import os
 
@@ -235,7 +234,7 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
 
         with SessionLocal() as db:
             cfg = get_or_create_settings(db)
-            if not cfg.auth_enabled or not cfg.jwt_secret:
+            if not cfg.jwt_secret:
                 return "anonymous", None, None, None
 
             user_id: int | None = None

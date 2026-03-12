@@ -24,8 +24,11 @@ fi
 PG_BIN="/usr/lib/postgresql/15/bin"
 
 ensure_data_dirs() {
-  mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls"
+  mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/certs" "${CB_DATA_DIR:-/data}/redis"
+  mkdir -p /var/log/nginx /var/log/circuitbreaker
 }
+
+ensure_data_dirs
 
 run_as_breaker() {
   local cmd="$1"
@@ -36,16 +39,20 @@ run_as_breaker() {
   fi
 }
 
+# Postgres socket/lock dir (symlinked from /var/run/postgresql in image); must exist and be writable by breaker.
+# Create and set permissions BEFORE the bulk chown so root still owns the dir
+# (avoids needing CAP_FOWNER to chmod a breaker-owned directory on restart).
+mkdir -p "$DATA/run/postgresql"
 if [ "$(id -u)" -eq 0 ]; then
+  chown root:root "$DATA/run/postgresql" 2>/dev/null || true
+  chmod 1777 "$DATA/run/postgresql"
+
   if ! chown -R breaker:breaker "$DATA" 2>/dev/null; then
     echo "[entrypoint] chown /data not permitted; ensure volume is writable by 1000:1000 (e.g. chown 1000:1000 ./circuitbreaker-data)." >&2
   fi
+else
+  chmod 1777 "$DATA/run/postgresql" 2>/dev/null || true
 fi
-
-# Postgres socket/lock dir (symlinked from /var/run/postgresql in image); must exist and be writable by breaker
-mkdir -p "$DATA/run/postgresql"
-chmod 1777 "$DATA/run/postgresql"
-[ "$(id -u)" -eq 0 ] && chown breaker:breaker "$DATA/run/postgresql" 2>/dev/null || true
 
 if [ "$USE_EXTERNAL_DB" -eq 1 ]; then
   # External Postgres: wait for it to be reachable, then run migrate/oobe against CB_DB_URL (do not start temp postgres).
@@ -95,15 +102,52 @@ fi
 if [ ! -f "${DATA}/tls/fullchain.pem" ] || [ ! -f "${DATA}/tls/privkey.pem" ]; then
   echo "[entrypoint] No TLS certs found; creating self-signed for nginx."
   mkdir -p "${DATA}/tls"
-  openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  openssl req -x509 -nodes -days 365 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     -keyout "${DATA}/tls/privkey.pem" -out "${DATA}/tls/fullchain.pem" \
     -subj "/CN=localhost" 2>/dev/null
   [ "$(id -u)" -eq 0 ] && chown breaker:breaker "${DATA}/tls/fullchain.pem" "${DATA}/tls/privkey.pem" 2>/dev/null || true
 fi
 
-# Allow breaker user to reach the Docker socket if mounted
+# Generate a random Redis password if one does not already exist.
+# Embedded Redis uses requirepass to prevent unauthenticated access from
+# other processes sharing the container namespace.
+REDIS_PASS_FILE="${DATA}/.redis_pass"
+if [ ! -f "$REDIS_PASS_FILE" ]; then
+  openssl rand -base64 32 | tr -d '\n' > "$REDIS_PASS_FILE"
+  chmod 600 "$REDIS_PASS_FILE"
+  [ "$(id -u)" -eq 0 ] && chown breaker:breaker "$REDIS_PASS_FILE" 2>/dev/null || true
+  echo "[entrypoint] Generated Redis password at ${REDIS_PASS_FILE}."
+fi
+export CB_REDIS_PASSWORD
+CB_REDIS_PASSWORD="$(cat "$REDIS_PASS_FILE")"
+
+# Default CB_REDIS_URL to include the generated password when not already
+# explicitly set by the user.
+if [ -z "${CB_REDIS_URL_SET_BY_USER:-}" ]; then
+  export CB_REDIS_URL="redis://:${CB_REDIS_PASSWORD}@127.0.0.1:6379/0"
+fi
+
+# Allow breaker user to reach the Docker socket if mounted (group-based, not world-readable)
 if [ -S /var/run/docker.sock ]; then
-  chmod 666 /var/run/docker.sock 2>/dev/null || true
+  DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo "")
+  if [ -n "$DOCKER_GID" ] && [ "$DOCKER_GID" != "0" ]; then
+    groupadd -g "$DOCKER_GID" -o docker-host 2>/dev/null || true
+    usermod -aG docker-host breaker 2>/dev/null || true
+  else
+    chgrp breaker /var/run/docker.sock 2>/dev/null || true
+    chmod 660 /var/run/docker.sock 2>/dev/null || true
+  fi
+fi
+
+# pgbouncer pool URL — set AFTER migrations so alembic connects directly to
+# Postgres (port 5432) while the runtime backend routes through pgbouncer (6432).
+if [ "$USE_EXTERNAL_DB" -eq 0 ] && [ -n "${CB_DB_URL:-}" ]; then
+  export CB_DB_POOL_URL="$(echo "$CB_DB_URL" | sed 's/:5432/:6432/')"
+  # Generate pgbouncer userlist from the DB password
+  PG_PASS="${CB_DB_PASSWORD:-breaker}"
+  printf '"breaker" "%s"\n' "$PG_PASS" > "$DATA/pgbouncer_userlist.txt"
+  chmod 640 "$DATA/pgbouncer_userlist.txt"
+  chown breaker:breaker "$DATA/pgbouncer_userlist.txt" 2>/dev/null || true
 fi
 
 # Run supervisord as root so nginx can bind to port 80

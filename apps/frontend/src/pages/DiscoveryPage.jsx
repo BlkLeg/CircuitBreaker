@@ -279,9 +279,14 @@ export default function DiscoveryPage() {
     setDockerScanning(true);
     setDockerScanError(null);
     try {
-      await startAdHocScan({ scan_types: ['docker'] });
+      const res = await startAdHocScan({ scan_types: ['docker'] });
       toast.success('Docker scan started — results will appear in the Review Queue');
-      loadJobs();
+      const job = res?.data;
+      if (job?.id) {
+        setJobs((prev) => (prev.some((j) => j.id === job.id) ? prev : [job, ...prev]));
+      } else {
+        loadJobs();
+      }
       setFilter('all');
     } catch (err) {
       const brief = err?.response?.data?.detail || err?.message || 'Docker scan failed';
@@ -330,8 +335,15 @@ export default function DiscoveryPage() {
       <NewScanPage
         discoveryCapabilities={discoveryCapabilities}
         profiles={profiles}
-        onStarted={() => {
-          loadJobs();
+        onStarted={(job) => {
+          if (job?.id) {
+            setJobs((prev) => {
+              if (prev.some((j) => j.id === job.id)) return prev;
+              return [job, ...prev];
+            });
+          } else {
+            loadJobs();
+          }
           setFilter('all');
         }}
         onCancel={() => setFilter('all')}
@@ -390,6 +402,9 @@ export default function DiscoveryPage() {
 
       {dockerScanError && (
         <div
+          role="alertdialog"
+          aria-labelledby="docker-error-title"
+          aria-describedby="docker-error-message"
           style={{
             position: 'fixed',
             inset: 0,
@@ -400,6 +415,12 @@ export default function DiscoveryPage() {
             justifyContent: 'center',
           }}
           onClick={() => setDockerScanError(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setDockerScanError(null);
+            }
+          }}
+          tabIndex={-1}
         >
           <div
             style={{
@@ -414,9 +435,12 @@ export default function DiscoveryPage() {
               boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
             }}
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontWeight: 700, fontSize: 14 }}>Docker Scan Error</span>
+              <span id="docker-error-title" style={{ fontWeight: 700, fontSize: 14 }}>
+                Docker Scan Error
+              </span>
               <button
                 type="button"
                 className="scan-toolbar-btn"
@@ -425,7 +449,10 @@ export default function DiscoveryPage() {
                 <X size={14} />
               </button>
             </div>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--color-text-muted)' }}>
+            <p
+              id="docker-error-message"
+              style={{ margin: 0, fontSize: 13, color: 'var(--color-text-muted)' }}
+            >
               {dockerScanError}
             </p>
           </div>

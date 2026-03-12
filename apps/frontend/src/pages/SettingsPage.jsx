@@ -198,7 +198,7 @@ import OAuthProvidersManager from '../components/settings/OAuthProvidersManager'
 export default function SettingsPage() {
   const { i18n, t } = useTranslation();
   const { settings: ctxSettings, reloadSettings } = useSettings();
-  const { setAuthEnabled, user } = useAuth();
+  const { user } = useAuth();
   const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
   const allowedTabs = useMemo(
     () =>
@@ -250,7 +250,6 @@ export default function SettingsPage() {
       environments: ctxSettings.environments ?? ['prod', 'staging', 'dev'],
       categories: ctxSettings.categories ?? [],
       locations: ctxSettings.locations ?? [],
-      auth_enabled: ctxSettings.auth_enabled ?? false,
       registration_open: ctxSettings.registration_open ?? true,
       rate_limit_profile: ctxSettings.rate_limit_profile ?? 'normal',
       session_timeout_hours: ctxSettings.session_timeout_hours ?? 24,
@@ -296,9 +295,7 @@ export default function SettingsPage() {
     const initialFilters = parseMapFilters(ctxSettings.map_default_filters);
     setMapFilters(initialFilters);
     setOrigMapFilters(initialFilters);
-
-    setAuthEnabled(ctxSettings.auth_enabled ?? false);
-  }, [ctxSettings, setAuthEnabled]);
+  }, [ctxSettings]);
 
   // Populate SMTP form from settings context
   useEffect(() => {
@@ -356,7 +353,6 @@ export default function SettingsPage() {
         await i18n.changeLanguage(form.language || 'en');
       }
 
-      setAuthEnabled(form.auth_enabled);
       await reloadSettings();
       toast.success('Settings saved successfully');
     } catch (err) {
@@ -1247,154 +1243,135 @@ export default function SettingsPage() {
               <div className="settings-sections-grid">
                 <SettingSection title="Authentication">
                   <SettingField
-                    label="Enable Login"
-                    hint="Require credentials for all write operations."
+                    label="Open Registration"
+                    hint="Allow new users to self-register. Disable to restrict account creation to admins."
                   >
                     <label className="toggle-switch">
-                      <span className="sr-only">Enable Login</span>
+                      <span className="sr-only">Open Registration</span>
                       <input
                         type="checkbox"
-                        checked={form.auth_enabled}
-                        onChange={(e) => set('auth_enabled', e.target.checked)}
+                        checked={form.registration_open}
+                        onChange={(e) => set('registration_open', e.target.checked)}
                       />
                       <span className="toggle-switch-track" />
                     </label>
                   </SettingField>
 
-                  {form.auth_enabled && (
-                    <>
-                      <SettingField
-                        label="Open Registration"
-                        hint="Allow new users to self-register. Disable to restrict account creation to admins."
-                      >
-                        <label className="toggle-switch">
-                          <span className="sr-only">Open Registration</span>
-                          <input
-                            type="checkbox"
-                            checked={form.registration_open}
-                            onChange={(e) => set('registration_open', e.target.checked)}
-                          />
-                          <span className="toggle-switch-track" />
-                        </label>
-                      </SettingField>
+                  <SettingField
+                    label="Rate Limit Profile"
+                    hint="Controls how aggressively the API throttles repeated requests."
+                  >
+                    <select
+                      className="form-control"
+                      value={form.rate_limit_profile}
+                      onChange={(e) => set('rate_limit_profile', e.target.value)}
+                      style={{ width: 160 }}
+                    >
+                      <option value="relaxed">Relaxed</option>
+                      <option value="normal">Normal</option>
+                      <option value="strict">Strict</option>
+                    </select>
+                  </SettingField>
 
-                      <SettingField
-                        label="Rate Limit Profile"
-                        hint="Controls how aggressively the API throttles repeated requests."
-                      >
-                        <select
-                          className="form-control"
-                          value={form.rate_limit_profile}
-                          onChange={(e) => set('rate_limit_profile', e.target.value)}
-                          style={{ width: 160 }}
-                        >
-                          <option value="relaxed">Relaxed</option>
-                          <option value="normal">Normal</option>
-                          <option value="strict">Strict</option>
-                        </select>
-                      </SettingField>
+                  <SettingField
+                    label="Session Duration"
+                    hint="Hours until a login token expires (1-720)."
+                  >
+                    <input
+                      className="form-control"
+                      type="number"
+                      min={1}
+                      max={720}
+                      value={form.session_timeout_hours}
+                      onChange={(e) =>
+                        set('session_timeout_hours', Number.parseInt(e.target.value, 10) || 24)
+                      }
+                      style={{ width: 100 }}
+                    />
+                  </SettingField>
 
-                      <SettingField
-                        label="Session Duration"
-                        hint="Hours until a login token expires (1-720)."
-                      >
-                        <input
-                          className="form-control"
-                          type="number"
-                          min={1}
-                          max={720}
-                          value={form.session_timeout_hours}
-                          onChange={(e) =>
-                            set('session_timeout_hours', Number.parseInt(e.target.value, 10) || 24)
-                          }
-                          style={{ width: 100 }}
-                        />
-                      </SettingField>
+                  <SettingField
+                    label="Concurrent Sessions"
+                    hint="Max active sessions per user (1-20). Oldest revoked when exceeded."
+                  >
+                    <input
+                      className="form-control"
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.concurrent_sessions ?? 5}
+                      onChange={(e) =>
+                        set('concurrent_sessions', Number.parseInt(e.target.value, 10) || 5)
+                      }
+                      style={{ width: 100 }}
+                    />
+                  </SettingField>
 
-                      <SettingField
-                        label="Concurrent Sessions"
-                        hint="Max active sessions per user (1-20). Oldest revoked when exceeded."
-                      >
-                        <input
-                          className="form-control"
-                          type="number"
-                          min={1}
-                          max={20}
-                          value={form.concurrent_sessions ?? 5}
-                          onChange={(e) =>
-                            set('concurrent_sessions', Number.parseInt(e.target.value, 10) || 5)
-                          }
-                          style={{ width: 100 }}
-                        />
-                      </SettingField>
+                  <SettingField
+                    label="Login Lockout (attempts)"
+                    hint="Lock account after this many failed logins."
+                  >
+                    <input
+                      className="form-control"
+                      type="number"
+                      min={3}
+                      max={20}
+                      value={form.login_lockout_attempts ?? 5}
+                      onChange={(e) =>
+                        set('login_lockout_attempts', Number.parseInt(e.target.value, 10) || 5)
+                      }
+                      style={{ width: 100 }}
+                    />
+                  </SettingField>
 
-                      <SettingField
-                        label="Login Lockout (attempts)"
-                        hint="Lock account after this many failed logins."
-                      >
-                        <input
-                          className="form-control"
-                          type="number"
-                          min={3}
-                          max={20}
-                          value={form.login_lockout_attempts ?? 5}
-                          onChange={(e) =>
-                            set('login_lockout_attempts', Number.parseInt(e.target.value, 10) || 5)
-                          }
-                          style={{ width: 100 }}
-                        />
-                      </SettingField>
+                  <SettingField
+                    label="Lockout Duration (minutes)"
+                    hint="How long the account stays locked."
+                  >
+                    <input
+                      className="form-control"
+                      type="number"
+                      min={5}
+                      max={1440}
+                      value={form.login_lockout_minutes ?? 15}
+                      onChange={(e) =>
+                        set('login_lockout_minutes', Number.parseInt(e.target.value, 10) || 15)
+                      }
+                      style={{ width: 100 }}
+                    />
+                  </SettingField>
 
-                      <SettingField
-                        label="Lockout Duration (minutes)"
-                        hint="How long the account stays locked."
-                      >
-                        <input
-                          className="form-control"
-                          type="number"
-                          min={5}
-                          max={1440}
-                          value={form.login_lockout_minutes ?? 15}
-                          onChange={(e) =>
-                            set('login_lockout_minutes', Number.parseInt(e.target.value, 10) || 15)
-                          }
-                          style={{ width: 100 }}
-                        />
-                      </SettingField>
+                  <SettingField
+                    label="Invite Expiry (days)"
+                    hint="Invite links expire after this many days."
+                  >
+                    <input
+                      className="form-control"
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={form.invite_expiry_days ?? 7}
+                      onChange={(e) =>
+                        set('invite_expiry_days', Number.parseInt(e.target.value, 10) || 7)
+                      }
+                      style={{ width: 100 }}
+                    />
+                  </SettingField>
 
-                      <SettingField
-                        label="Invite Expiry (days)"
-                        hint="Invite links expire after this many days."
-                      >
-                        <input
-                          className="form-control"
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={form.invite_expiry_days ?? 7}
-                          onChange={(e) =>
-                            set('invite_expiry_days', Number.parseInt(e.target.value, 10) || 7)
-                          }
-                          style={{ width: 100 }}
-                        />
-                      </SettingField>
-
-                      <SettingField
-                        label="Allow Masquerade"
-                        hint="Let admins log in as another user for support."
-                      >
-                        <label className="toggle-switch">
-                          <span className="sr-only">Allow Masquerade</span>
-                          <input
-                            type="checkbox"
-                            checked={form.masquerade_enabled ?? true}
-                            onChange={(e) => set('masquerade_enabled', e.target.checked)}
-                          />
-                          <span className="toggle-switch-track" />
-                        </label>
-                      </SettingField>
-                    </>
-                  )}
+                  <SettingField
+                    label="Allow Masquerade"
+                    hint="Let admins log in as another user for support."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">Allow Masquerade</span>
+                      <input
+                        type="checkbox"
+                        checked={form.masquerade_enabled ?? true}
+                        onChange={(e) => set('masquerade_enabled', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
                 </SettingSection>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
