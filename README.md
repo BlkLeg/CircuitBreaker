@@ -39,14 +39,78 @@
 
 ### 🔒 Security
 
-- Built-in HTTPS
-- OAuth/OIDC - GitHub, Google, generic OIDC providers
-- MFA
-- RBAC roles + scopes (viewer/editor/admin/demo)
-- Fernet secured secrets management
-- Audit logging for non-repudiation
-- JWT
-- WebSockets over WSS in production; optional `CB_WS_REQUIRE_WSS` to reject plain-WS (see [Deployment & Security](docs/deployment-security.md#4-websockets-wss))
+Circuit Breaker is built security-first, with defense-in-depth applied across authentication, transport, secrets, and infrastructure layers.
+
+#### Authentication & Identity
+
+- **Local auth** — bcrypt-hashed passwords; salted HMAC-SHA256 API tokens stored only as hashes and shown exactly once
+- **OAuth/OIDC** — GitHub, Google, and any generic OIDC provider (Authentik, Keycloak, etc.) with PKCE-compatible flows and time-limited state tokens
+- **TOTP MFA** — per-user TOTP two-factor (RFC 6238) with a dedicated rate-limited verify endpoint
+- **HttpOnly session cookies** — `SameSite=Strict; Secure; HttpOnly` so the session token is never readable by JavaScript
+- **CSRF double-submit** — every mutating request (POST/PUT/DELETE/PATCH) requires a matching `X-CSRF-Token` header validated with `hmac.compare_digest`
+- **Account lockout** — configurable failed-attempt threshold (default: 5 attempts → 15-minute lockout); admin unlock endpoint
+- **Configurable session timeouts** — idle-session expiry set per deployment
+
+#### Role-Based Access Control
+
+- **4 built-in roles**: `viewer` (read-only), `editor` (write infrastructure), `admin` (full control), `demo` (read-only, auto-expiring)
+- **Granular scopes**: `read:*`, `write:hardware`, `write:networks`, `delete:*`, `admin:*` and resource-specific variants
+- **Role hierarchy** enforced server-side on every protected route; explicit per-user scope overrides for fine-grained delegation
+- **Admin masquerade** — admins can issue 15-minute impersonation tokens for support workflows; fully audit-logged and globally disableable
+
+#### Secrets Vault
+
+- **Fernet encryption at rest** — SMTP credentials, Proxmox API tokens, SNMP community strings, and iDRAC/iLO credentials never touch the database in plaintext
+- **Auto-generated key** during first-run OOBE; persisted to `/data/.env`; SHA-256 key hash stored in DB for verification without exposing the key
+- **Key rotation** support; `cb vault-recover` CLI for edge-case recovery
+- **Lazy vault initialization** — no silent ephemeral key generation; startup fails loudly if the key is missing
+
+#### Transport Security
+
+- **Automatic HTTPS** via Caddy — Let's Encrypt for public domains; local self-signed CA for LAN/`.local` deployments; one-click CA cert download from OOBE wizard
+- **Native TLS modes** — `local` (generated CA + cert) or `provided` (bring-your-own cert) for native Linux installs
+- **HSTS** (`max-age=63072000; includeSubDomains`) on all HTTPS responses
+- **WSS enforcement** — production WebSocket auth flows over cookie (`cb_session`); `CB_WS_REQUIRE_WSS=true` rejects any plain `ws://` connection
+
+#### HTTP Hardening
+
+- `Content-Security-Policy` — strict directive set with `frame-ancestors 'none'`
+- `X-Frame-Options: DENY` — clickjacking prevention
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy` — camera, microphone, geolocation, payment, USB, and sensor APIs all disabled
+- Applied by `SecurityHeadersMiddleware` on every HTTP response
+
+#### Rate Limiting
+
+- Per-IP rate limiting (slowapi) on auth, MFA verify, scans, telemetry, and general endpoints
+- Three configurable profiles — **relaxed**, **normal** (default), **strict** — switchable live from Settings
+- Profile cache with 5-minute TTL so changes propagate without restart
+
+#### Tamper-Evident Audit Log
+
+- Every significant action (login, settings change, certificate create, masquerade, CVE sync, etc.) is written as a structured log entry with IP, User-Agent, actor, role, and diff
+- **SHA-256 hash chain** — each entry includes `log_hash = SHA256(payload)` and `previous_hash`; the chain can be verified end-to-end via `/admin/audit-log/verify-chain`
+- **IP redaction** toggle — strip IP addresses from audit entries for privacy-conscious deployments
+- Non-repudiation: who did what, from where, and when — queryable at `/logs?category=audit`
+
+#### SSRF & Injection Prevention
+
+- **SSRF guard** — webhook URLs and integration endpoints are resolved and checked against loopback, link-local, and (for webhooks) RFC 1918 ranges before any outbound request
+- **Network ACL** — configurable per-deployment CIDR allowlist for scan targets; `CB_AIRGAP` / `airgap_mode` setting disables all outbound scanning entirely
+- **File upload magic-byte validation** — MIME type is verified against actual file bytes (PNG, JPEG, GIF, WebP, ICO), not the declared `Content-Type`
+- **SQL identifier hardening** — dynamic SQL identifiers (e.g. audit partition names) are regex-validated before use; ORM-parameterized queries everywhere else
+- **Log redaction** — global log filter strips Bearer tokens, passwords, secrets, API keys, and URL-embedded credentials before they reach any log sink
+
+#### Infrastructure Security
+
+- **Docker network segmentation** — `cb_frontend`, `cb_backend`, and `cb_workers` are distinct networks; workers can only reach the NATS bus and Postgres, never the backend API or frontend
+- **Optional NATS auth** — token or username/password auth plus TLS for the internal message bus
+- **CVE tracking** — built-in NVD CVE feed sync with entity-level CVE association and a security findings dashboard
+- **TLS certificate management** — track, create, renew, and audit-log TLS certificates from the admin UI
+- **Security CI pipeline** — every push runs Bandit, Semgrep, Gitleaks, ESLint (security plugin), Hadolint, Checkov, Trivy (filesystem + image), and `npm audit`
+
+> See [Deployment & Security](docs/deployment-security.md) for hardening checklists, NATS TLS configuration, WebSocket WSS setup, and network segmentation details.
 
 ### 🔌 Integrations
 
