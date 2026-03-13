@@ -3,9 +3,6 @@
 Runs pg_dump on the configured database and stores compressed .sql.gz files
 under /app/data/backups/. Old files are pruned based on the
 db_backup_retention_days setting (default: 30).
-
-Only activated when the database dialect is PostgreSQL — SQLite installs are
-skipped silently (SQLite files are already on a persistent volume).
 """
 
 import gzip
@@ -19,7 +16,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from app.db.session import SessionLocal, db_url, is_sqlite
+from app.db.session import SessionLocal, db_url
 
 _logger = logging.getLogger(__name__)
 
@@ -44,10 +41,7 @@ def _pg_env_from_url(url: str) -> dict[str, str]:
 
 
 def backup_postgres() -> None:
-    """Create a compressed pg_dump snapshot.  No-op for SQLite installs."""
-    if is_sqlite:
-        return
-
+    """Create a compressed pg_dump snapshot."""
     if not shutil.which("pg_dump"):
         _logger.warning("pg_dump not found — skipping scheduled backup")
         return

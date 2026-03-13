@@ -36,6 +36,7 @@ netaddr==1.3.0
 packaging==26.0
 pexpect==4.9.0
 pillow==12.1.1
+python-magic==0.4.27
 prometheus-client==0.24.1
 ptyprocess==0.7.0
 pyasn1==0.6.2

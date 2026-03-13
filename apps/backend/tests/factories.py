@@ -1,0 +1,110 @@
+"""
+Sync model factories — create real DB rows via the ORM.
+Each factory method returns the model instance after flush (ID assigned).
+"""
+
+from faker import Faker
+
+fake = Faker()
+
+
+class Factories:
+    def __init__(self, session):
+        self.session = session
+
+    # ── Users ─────────────────────────────────────────────────────────────────
+
+    def user(self, role: str = "viewer", password: str = "TestPassword123!", **kwargs):
+        from app.core.security import hash_password
+        from app.core.time import utcnow_iso
+        from app.db.models import User
+
+        defaults = {
+            "email": fake.unique.email(),
+            "hashed_password": hash_password(password),
+            "role": role,
+            "is_admin": role in ("admin", "superuser"),
+            "is_superuser": role == "superuser",
+            "is_active": True,
+            "display_name": fake.name(),
+            "provider": "local",
+            "created_at": utcnow_iso(),
+        }
+        defaults.update(kwargs)
+        user = User(**defaults)
+        self.session.add(user)
+        self.session.flush()
+        return user
+
+    # ── Hardware ──────────────────────────────────────────────────────────────
+
+    def hardware(self, **kwargs):
+        from app.db.models import Hardware
+
+        defaults = {"name": fake.unique.hostname()}
+        defaults.update(kwargs)
+        hw = Hardware(**defaults)
+        self.session.add(hw)
+        self.session.flush()
+        return hw
+
+    # ── Networks ──────────────────────────────────────────────────────────────
+
+    def network(self, **kwargs):
+        from app.db.models import Network
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "cidr": "10.0.0.0/24",
+        }
+        defaults.update(kwargs)
+        net = Network(**defaults)
+        self.session.add(net)
+        self.session.flush()
+        return net
+
+    # ── Services ──────────────────────────────────────────────────────────────
+
+    def service(self, **kwargs):
+        from app.db.models import Service
+
+        defaults = {"name": fake.unique.slug()}
+        defaults.update(kwargs)
+        svc = Service(**defaults)
+        self.session.add(svc)
+        self.session.flush()
+        return svc
+
+    # ── Webhooks ──────────────────────────────────────────────────────────────
+
+    def webhook(self, target_url: str = "https://hooks.example.com/cb", **kwargs):
+        from app.db.models import WebhookRule
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "target_url": target_url,
+            "events_json": '["hardware.created"]',
+            "enabled": True,
+        }
+        defaults.update(kwargs)
+        wh = WebhookRule(**defaults)
+        self.session.add(wh)
+        self.session.flush()
+        return wh
+
+    # ── Discovery profiles ────────────────────────────────────────────────────
+
+    def discovery_profile(self, **kwargs):
+        from app.db.models import DiscoveryProfile
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "cidr": "192.168.1.0/24",
+            "scan_types_json": '["nmap"]',
+            "enabled": True,
+        }
+        defaults.update(kwargs)
+        profile = DiscoveryProfile(**defaults)
+        self.session.add(profile)
+        self.session.flush()
+        return profile

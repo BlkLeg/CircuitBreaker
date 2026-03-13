@@ -1,11 +1,13 @@
 """HttpOnly session cookie for auth (zero token leakage to JS)."""
 
 import os
+import secrets
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 COOKIE_NAME = "cb_session"
+CSRF_COOKIE_NAME = "cb_csrf"  # Readable by JS — used for double-submit CSRF defense
 
 
 def _cookie_params(request: Request, session_timeout_hours: int | None):
@@ -37,9 +39,24 @@ def auth_response_with_cookie(
     body: dict,
     session_timeout_hours: int | None,
 ) -> Response:
-    """Return a JSONResponse with the given body and Set-Cookie for the session token."""
+    """Return a JSONResponse with the given body and Set-Cookie for the session token.
+
+    Also sets a readable (non-httpOnly) CSRF token cookie for double-submit defense.
+    """
+    csrf_token = secrets.token_hex(32)
     response = JSONResponse(content=body)
     set_auth_cookie_on_response(request, response, token, session_timeout_hours)
+    max_age = (session_timeout_hours or 24) * 3600
+    secure = request.url.scheme == "https" if request.url else True
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=csrf_token,
+        max_age=max_age,
+        httponly=False,  # Must be readable by JS for double-submit CSRF pattern
+        secure=secure,
+        samesite="strict",
+        path="/",
+    )
     return response
 
 

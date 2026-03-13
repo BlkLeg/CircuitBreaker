@@ -49,11 +49,13 @@ export default function ServerLifecycleBanner({ children }) {
     return () => clearTimeout(timer);
   }, [state, offlineSince]);
 
-  if (isReady) return <>{children}</>;
+  if (state === 'checking' || isReady) return <>{children}</>;
 
   const config = getStateConfig(state);
   const visible =
     state === 'starting' || state === 'stopping' || (state === 'offline' && showOffline);
+
+  if (!visible || !config) return <>{children}</>;
 
   return (
     <div

@@ -86,6 +86,7 @@ from app.core.sql_hardening import build_audit_partition_sql
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.session import engine, get_session_context
+from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -914,13 +915,18 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ───────────────────────────────────────────────────────────────────
+# Default to same-origin only; never allow wildcard origins in production.
+_cors_origins = settings.cors_origins
+if not _cors_origins or _cors_origins == ["*"]:
+    _cors_origins = []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
+app.add_middleware(CSRFMiddleware)
 app.add_middleware(LegacyTokenMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)

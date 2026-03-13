@@ -8,11 +8,12 @@ import secrets as _secrets
 from pathlib import Path
 from typing import Any
 
+import bcrypt as _bcrypt
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings as _settings
 from app.core.rbac import ROLE_DEFAULT_SCOPES
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
@@ -32,11 +33,26 @@ _logger = logging.getLogger(__name__)
 _MSG_BOOTSTRAP_DONE = "Bootstrap already completed. Please refresh and log in."
 _MSG_OAUTH_TOKEN_INVALID = "OAuth token is invalid or expired"
 
-from app.core.config import settings as _settings  # noqa: E402
+# Pre-computed bcrypt hash used when the looked-up user does not exist, ensuring that
+# verify_password() always runs and login response time is constant regardless of whether
+# the email address is registered (prevents timing-based email enumeration).
+_DUMMY_HASH: str = _bcrypt.hashpw(b"cb-dummy-not-real", _bcrypt.gensalt(rounds=12)).decode()
 
 _PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
-_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
-_ALLOWED_TYPES = {"image/jpeg", "image/png"}
+_MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB
+_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_PILLOW_FORMAT_TO_MIME: dict[str, str] = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "GIF": "image/gif",
+    "WEBP": "image/webp",
+}
+_PILLOW_FORMAT_TO_EXT: dict[str, str] = {
+    "JPEG": "jpg",
+    "PNG": "png",
+    "GIF": "gif",
+    "WEBP": "webp",
+}
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Hard limits applied before any regex to prevent polynomial backtracking on
@@ -455,15 +471,6 @@ def bootstrap_initialize(
         smtp_tls=smtp_tls,
     )
 
-    bind = db.get_bind()
-    dialect_name = (getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
-    if dialect_name == "sqlite":
-        try:
-            db.execute(text("BEGIN IMMEDIATE"))
-        except Exception:
-            # Roll back to clear the aborted transaction state before continuing.
-            db.rollback()
-
     # Bootstrap completion is tracked via auth_enabled, not jwt_secret.
     if bool(cfg.auth_enabled):
         db.rollback()
@@ -815,7 +822,11 @@ def login(
     from app.services.user_service import record_failed_login, record_session, reset_login_attempts
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
-    if not user or not verify_password(password_or_hash, user.hashed_password):
+    # Always call verify_password — even when user is None — to ensure constant-time
+    # response and prevent timing-based email enumeration (L-08).
+    _hash_to_check = user.hashed_password if user else _DUMMY_HASH
+    _password_valid = verify_password(password_or_hash, _hash_to_check)
+    if not user or not _password_valid:
         if user:
             record_failed_login(db, user, cfg)
         write_log(
@@ -885,24 +896,42 @@ async def update_profile(
         changed_fields.append("display_name")
 
     if profile_photo is not None:
-        if profile_photo.content_type not in _ALLOWED_TYPES:
-            raise HTTPException(status_code=400, detail="Profile photo must be JPEG or PNG")
-
         data = await profile_photo.read()
         if len(data) > _MAX_PHOTO_BYTES:
-            raise HTTPException(status_code=413, detail="Profile photo must be ≤ 10 MB")
+            raise HTTPException(status_code=413, detail="Profile photo must be ≤ 5 MB")
 
-        # Optional: resize with Pillow
+        # Validate actual file content — do NOT trust client Content-Type header.
+        # Use python-magic for primary MIME detection, Pillow for structural validation.
+        import io
+
+        import magic as _magic
+        from PIL import Image, UnidentifiedImageError
+
+        detected_mime = _magic.from_buffer(data[:2048], mime=True)
+        if detected_mime not in _ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=422, detail=f"File type '{detected_mime}' is not allowed"
+            )
+
         try:
-            import io
+            probe = Image.open(io.BytesIO(data))
+            probe.verify()  # Raises on corrupt or malicious files
+            detected_format = probe.format  # e.g. "JPEG", "PNG"
+        except (UnidentifiedImageError, Exception) as exc:
+            raise HTTPException(status_code=422, detail="File is not a valid image") from exc
 
-            from PIL import Image
+        detected_mime = _PILLOW_FORMAT_TO_MIME.get(detected_format or "", "")
+        if detected_mime not in _ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=422, detail=f"Image format {detected_format} is not allowed"
+            )
 
+        # Re-open after verify() (verify() exhausts internal state) and resize
+        try:
             img = Image.open(io.BytesIO(data))
             img.thumbnail((256, 256))
             buf = io.BytesIO()
-            fmt = "JPEG" if profile_photo.content_type == "image/jpeg" else "PNG"
-            img.save(buf, format=fmt)
+            img.save(buf, format=detected_format)
             data = buf.getvalue()
         except Exception:
             _logger.warning("Pillow resize failed; saving original photo as-is")
@@ -918,7 +947,7 @@ async def update_profile(
             old_path = _PROFILES_DIR / user.profile_photo
             old_path.unlink(missing_ok=True)
 
-        ext = "jpg" if profile_photo.content_type == "image/jpeg" else "png"
+        ext = _PILLOW_FORMAT_TO_EXT.get(detected_format or "", "jpg")
         safe_suffix = hashlib.sha256(data).hexdigest()[:12]
         filename = f"{user.id}-{safe_suffix}.{ext}"
         _PROFILES_DIR.mkdir(parents=True, exist_ok=True)

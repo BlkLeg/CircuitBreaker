@@ -127,12 +127,10 @@ def load_vault_key(db: Session) -> str | None:
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Could not verify CB_VAULT_KEY against database hash (reason: %s) — "
-                "accepting env var key as-is.",
+                "falling through to file / database sources.",
                 type(exc).__name__,
             )
-            _key_source = "environment"
-            _active_key = env_key
-            return env_key
+            # Fall through — do NOT short-circuit; data/.env or DB key may be correct.
     elif env_key:
         _logger.warning(
             "CB_VAULT_KEY environment variable is set but is not a valid Fernet key "

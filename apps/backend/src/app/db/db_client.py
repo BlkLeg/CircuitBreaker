@@ -2,20 +2,19 @@
 
 Returns the appropriate SQLAlchemy engine for a given workload type:
 
-* ``"primary"`` — the main SQLite database used for all transactional writes.
-  Always available; no additional dependencies required.
+* ``"primary"`` — the main PostgreSQL database used for all transactional writes.
 * ``"analytics"`` — a DuckDB engine for heavy read-only analytical queries
   (device catalog search, metrics aggregation).  Requires ``duckdb-engine``
   to be installed and ``settings.analytics_db_path`` to be set.  Falls back
-  to the primary SQLite engine if DuckDB is unavailable so callers never
+  to the primary PostgreSQL engine if DuckDB is unavailable so callers never
   crash on environments without DuckDB.
 
 Usage
 -----
     from app.db.db_client import get_engine
 
-    engine = get_engine("primary")    # always SQLite
-    engine = get_engine("analytics")  # DuckDB if available, else SQLite
+    engine = get_engine("primary")    # PostgreSQL
+    engine = get_engine("analytics")  # DuckDB if available, else PostgreSQL
 """
 
 from __future__ import annotations
@@ -43,10 +42,7 @@ def get_engine(engine_type: EngineType = "primary") -> Engine:
 
 
 def _make_primary_engine() -> Engine:
-    return create_engine(
-        settings.database_url,
-        connect_args={"check_same_thread": False},
-    )
+    return create_engine(settings.database_url)
 
 
 def _make_analytics_engine() -> Engine:
@@ -60,10 +56,10 @@ def _make_analytics_engine() -> Engine:
             return create_engine(url)
         except ImportError:
             _logger.warning(
-                "duckdb-engine not installed; falling back to SQLite for analytics queries"
+                "duckdb-engine not installed; falling back to PostgreSQL for analytics queries"
             )
     else:
         _logger.debug(
-            "analytics_db_path not configured; using primary SQLite for analytics queries"
+            "analytics_db_path not configured; using primary PostgreSQL for analytics queries"
         )
     return _make_primary_engine()

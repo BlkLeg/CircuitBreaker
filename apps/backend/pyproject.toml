@@ -30,7 +30,6 @@ dependencies = [
     "netaddr>=0.10",
     "apscheduler>=3.10",
     "httpx>=0.27",
-    "aiosqlite>=0.20.0",
     "fastapi-users[sqlalchemy]>=13.0.0",
     "nats-py>=2.9.0",
     "zeroconf>=0.131.0",
@@ -54,8 +53,15 @@ analytics = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
-    "httpx>=0.27.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "httpx>=0.27.0",
+    "testcontainers[postgres]>=4.0",
+    "factory-boy>=3.3",
+    "faker>=26.0",
+    "freezegun>=1.5",
+    "respx>=0.21",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "mypy-extensions>=1.0.0",
@@ -125,7 +131,20 @@ pythonpath = ["src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "--cov=./src/app --cov-report=xml --cov-report=term-missing"
+timeout = 30
+addopts = [
+    "-x",
+    "--tb=short",
+    "-q",
+    "--cov=./src/app",
+    "--cov-report=xml",
+    "--cov-report=term-missing",
+    "--cov-fail-under=60",
+]
+markers = [
+    "security: security regression tests (from audit report)",
+    "slow: tests that take > 2 seconds",
+]
 
 [tool.poetry]
 name = "circuit-breaker-backend"

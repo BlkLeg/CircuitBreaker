@@ -33,6 +33,8 @@ class NATSClient:
         self._subs: dict[str, Callable] = {}
         # buffer for messages published while disconnected (maxlen caps memory)
         self._publish_buffer: deque[tuple[str, bytes]] = deque(maxlen=200)
+        # counter for dropped messages when buffer is full
+        self._dropped = 0
 
     @property
     def is_connected(self) -> bool:
@@ -134,11 +136,11 @@ class NATSClient:
             data = payload
 
         if not self._connected or not self._nc:
-            if len(self._publish_buffer) >= self._publish_buffer.maxlen:
+            if len(self._publish_buffer) == self._publish_buffer.maxlen:
+                self._dropped += 1
                 _logger.warning(
-                    "NATS publish buffer full (maxlen=%d), dropping oldest message for subject %s",
-                    self._publish_buffer.maxlen,
-                    subject,
+                    "NATS publish buffer full — dropping message. Total dropped: %d",
+                    self._dropped,
                 )
             self._publish_buffer.append((subject, data))
             _logger.debug(

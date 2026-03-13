@@ -20,6 +20,24 @@ if [ "$USE_EXTERNAL_DB" -eq 0 ] && [ -n "${CB_DB_PASSWORD:-}" ]; then
   export CB_DB_URL="postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker"
 fi
 
+# ── Required secret validation ────────────────────────────────────────────────
+if [[ -z "${CB_JWT_SECRET:-}" ]]; then
+  echo "FATAL: CB_JWT_SECRET is required but not set. Generate one with:" >&2
+  echo "  python3 -c \"import secrets; print(secrets.token_hex(32))\"" >&2
+  exit 1
+fi
+
+if [[ ${#CB_JWT_SECRET} -lt 32 || "${CB_JWT_SECRET}" == "CHANGE_ME" ]]; then
+  echo "FATAL: CB_JWT_SECRET must be at least 32 characters and not 'CHANGE_ME'." >&2
+  exit 1
+fi
+
+if [[ -n "${CB_VAULT_KEY:-}" && "${CB_VAULT_KEY}" == "${CB_JWT_SECRET}" ]]; then
+  echo "FATAL: CB_JWT_SECRET and CB_VAULT_KEY must be different values." >&2
+  exit 1
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Postgres version from Debian package (Bookworm default)
 PG_BIN="/usr/lib/postgresql/15/bin"
 
@@ -151,6 +169,21 @@ if [ "$USE_EXTERNAL_DB" -eq 0 ] && [ -n "${CB_DB_URL:-}" ]; then
   chmod 640 "$DATA/pgbouncer_userlist.txt"
   chown breaker:breaker "$DATA/pgbouncer_userlist.txt" 2>/dev/null || true
 fi
+
+# ── Vault key auto-sync ───────────────────────────────────────────────────────
+# After first boot, vault key rotations write the new key to $DATA/.env.
+# If CB_VAULT_KEY in the deployment config is stale (pre-rotation), silently
+# adopt the data-volume copy so the app starts without a mismatch warning and
+# without any manual intervention — required for hands-free CT/LXC deployments.
+_DATA_ENV="${DATA}/.env"
+if [ -f "$_DATA_ENV" ]; then
+  _data_vault_key="$(grep -s '^CB_VAULT_KEY=' "$_DATA_ENV" | head -1 | cut -d= -f2-)"
+  if [ -n "$_data_vault_key" ] && [ "$_data_vault_key" != "${CB_VAULT_KEY:-}" ]; then
+    echo "[entrypoint] Vault key updated by auto-rotation — syncing from data volume."
+    export CB_VAULT_KEY="$_data_vault_key"
+  fi
+fi
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Run supervisord as non-root; nginx listens on unprivileged container ports.
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

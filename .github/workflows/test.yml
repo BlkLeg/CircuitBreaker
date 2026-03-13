@@ -1,0 +1,56 @@
+name: Backend Tests
+
+on:
+  push:
+    branches: [main, dev, "feature/*", "hotfix/*", "test/*"]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  test:
+    name: Backend Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        working-directory: apps/backend
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        working-directory: apps/backend
+        env:
+          CB_JWT_SECRET: "ci-test-jwt-secret-minimum-32-chars-xxxx"
+          CB_VAULT_KEY: "ci-test-vault-key-different-from-jwt-xxxxx"
+          NATS_AUTH_TOKEN: "ci-test-nats-token"
+          DOCKER_HOST: "unix:///var/run/docker.sock"
+        run: |
+          pytest \
+            -n auto \
+            --timeout=30 \
+            --cov=src/app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=60 \
+            -x \
+            --tb=short \
+            -q
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: apps/backend/coverage.xml
+          flags: backend
+          fail_ci_if_error: false
+
+      - name: Security test summary
+        if: always()
+        working-directory: apps/backend
+        run: pytest -m security --tb=short -q --no-header 2>&1 | tail -20 || true

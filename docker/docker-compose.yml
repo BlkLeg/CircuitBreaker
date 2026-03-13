@@ -7,7 +7,7 @@
 #   docker compose up -d
 #   CB_TAG=v0.2.0 docker compose -f docker/docker-compose.yml up -d
 #
-# Required env: CB_DB_PASSWORD, CB_VAULT_KEY (or set in .env / -e).
+# Required env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN (or set in .env / -e).
 # Optional: CB_DATA_DIR, CB_DB_URL, CB_PORT_HTTP, CB_PORT_HTTPS, CB_TAG, NATS_AUTH_TOKEN, CB_ENABLE_TLS
 #
 # Data: bind mount ./circuitbreaker-data (or CB_DATA_DIR) to /data.
@@ -66,6 +66,7 @@ services:
     environment:
       - CB_DB_PASSWORD=${CB_DB_PASSWORD:?Set CB_DB_PASSWORD}
       - CB_VAULT_KEY=${CB_VAULT_KEY:?Set CB_VAULT_KEY}
+      - CB_JWT_SECRET=${CB_JWT_SECRET:?Set CB_JWT_SECRET}
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:?Set NATS_AUTH_TOKEN for internal bus auth}
       - CB_REDIS_URL=${CB_REDIS_URL:-}
       - CB_REDIS_URL_SET_BY_USER=${CB_REDIS_URL:+1}
@@ -77,3 +78,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        compress: "true"

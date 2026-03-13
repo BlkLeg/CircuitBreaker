@@ -36,8 +36,39 @@ def _hash_token_for_cache(token: str) -> str:
 
 
 def hash_api_token(raw_token: str, secret: str) -> str:
-    """HMAC-SHA256(secret, raw_token) for API token storage/lookup. Use same secret (e.g. JWT secret) everywhere."""
+    """Legacy HMAC-SHA256(secret, raw_token). Only used for fallback verification of old unsalted hashes."""
     return hmac.new(secret.encode(), raw_token.encode(), hashlib.sha256).hexdigest()
+
+
+def create_salted_api_token_hash(raw_token: str) -> str:
+    """Create a per-token salted HMAC hash stored as '{salt_hex}:{hmac_hex}'.
+
+    The salt is 32 random bytes (os.urandom), HMAC uses SHA-256.
+    Verification requires iterating stored tokens (no direct lookup) since
+    the salt is embedded in the stored value.
+    """
+    salt = os.urandom(32)
+    token_hmac = hmac.new(salt, raw_token.encode(), hashlib.sha256).hexdigest()
+    return f"{salt.hex()}:{token_hmac}"
+
+
+def verify_salted_api_token_hash(raw_token: str, stored: str) -> bool:
+    """Verify a raw token against a salted stored hash ('{salt_hex}:{hmac_hex}').
+
+    Returns False for legacy unsalted hashes (no ':' prefix with 64-char salt hex).
+    """
+    if ":" not in stored:
+        return False
+    parts = stored.split(":", 1)
+    if len(parts) != 2:
+        return False
+    salt_hex, stored_hmac = parts
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError:
+        return False
+    computed = hmac.new(salt, raw_token.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, stored_hmac)
 
 
 def _session_cache_get(token_hash: str) -> int | None:
@@ -133,6 +164,7 @@ def create_token(
     role: str | None = None,
     scopes: list[str] | None = None,
     demo_expires: str | None = None,
+    extra_claims: dict | None = None,
 ) -> str:
     payload = {
         "user_id": user_id,
@@ -145,6 +177,8 @@ def create_token(
         payload["scopes"] = scopes
     if demo_expires:
         payload["demo_expires"] = demo_expires
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -256,15 +290,16 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     except (jwt.PyJWTError, ValueError, TypeError):
         pass
 
-    # Static API token (machine–machine): look up by HMAC hash
+    # Static API token (machine–machine): scan with per-token salted HMAC verification.
+    # Linear scan is acceptable since admin-created API tokens are few (<100 typical).
     from app.db.models import APIToken
 
-    api_token_hash = hash_api_token(raw_token, cfg.jwt_secret) if cfg.jwt_secret else ""
-    api_token_row = (
-        db.query(APIToken).filter(APIToken.token_hash == api_token_hash).first()
-        if api_token_hash
-        else None
-    )
+    api_token_row = None
+    for candidate in db.query(APIToken).all():
+        stored = candidate.token_hash or ""
+        if verify_salted_api_token_hash(raw_token, stored):
+            api_token_row = candidate
+            break
     if api_token_row:
         if api_token_row.expires_at and api_token_row.expires_at <= utcnow():
             return None

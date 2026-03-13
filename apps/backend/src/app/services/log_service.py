@@ -137,9 +137,7 @@ def write_log(
 
             from sqlalchemy import select
 
-            stmt = select(Log).order_by(Log.id.desc()).limit(1)
-            if session.bind.dialect.name != "sqlite":
-                stmt = stmt.with_for_update()
+            stmt = select(Log).order_by(Log.id.desc()).limit(1).with_for_update()
 
             try:
                 last_log = session.execute(stmt).scalar_one_or_none()

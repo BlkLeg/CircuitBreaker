@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 VendorSlug = Literal[
     "amd",
@@ -65,6 +65,16 @@ class TelemetryConfig(BaseModel):
     password: str | None = None  # encrypted before storage
     poll_interval_seconds: int = 60
     enabled: bool = True
+
+    @field_serializer("password", when_used="json")
+    def _mask_password(self, v: str | None) -> str | None:
+        """Mask password in API responses. Internal .model_dump() calls are unaffected."""
+        return "****" if v else v
+
+    @field_serializer("snmp_community", when_used="json")
+    def _mask_community(self, v: str | None) -> str | None:
+        """Mask SNMP community string in API responses."""
+        return "****" if v else v
 
 
 class PortEntry(BaseModel):

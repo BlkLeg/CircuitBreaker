@@ -34,6 +34,7 @@ Security notes:
 """
 
 import asyncio
+import hmac
 import json
 import logging
 
@@ -149,27 +150,22 @@ async def discovery_stream(websocket: WebSocket) -> None:
     _warn_if_insecure(websocket)
 
     try:
-        # ── Auth phase: cookie (httpOnly) or first message (legacy token) ─────
+        # ── Auth phase: cookie (httpOnly) only ──────────────────────────────
         raw_token = token_from_websocket_scope(websocket.scope)
         if not raw_token:
+            logger.warning("WS auth rejected: no session cookie (ip=%s)", client_ip)
             try:
-                raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-            except TimeoutError:
-                logger.warning("WS auth timeout (ip=%s)", client_ip)
-                try:
-                    await websocket.send_text(json.dumps({"error": "auth_timeout"}))
-                    await websocket.close(code=1008)
-                except Exception:
-                    pass
-                return
-            except WebSocketDisconnect:
-                return
+                await websocket.send_text(json.dumps({"error": "unauthorized"}))
+                await websocket.close(code=1008)
+            except Exception:
+                pass
+            return
 
         authenticated = False
         user_id: int | None = None
         api_token = _get_api_token()
 
-        if api_token and raw_token == api_token:
+        if api_token and raw_token and hmac.compare_digest(raw_token, api_token):
             authenticated = True
             user_id = 0  # service-account sentinel
         else:

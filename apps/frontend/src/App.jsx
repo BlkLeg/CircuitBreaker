@@ -21,6 +21,7 @@ import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
+import LoadingScreen from './components/common/LoadingScreen.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
 
 // Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
@@ -100,7 +101,7 @@ function AppInner() {
       <ConnectionStatus discoveryConnected={discoveryConnected} />
       <div className="page-content">
         <ErrorBoundary>
-          <React.Suspense fallback={null}>
+          <React.Suspense fallback={<LoadingScreen />}>
             <Routes>
               <Route path="/" element={<Navigate to="/map" replace />} />
               <Route path="/hardware" element={<HardwarePage />} />
@@ -278,7 +279,7 @@ function AppRoutes() {
   }, [bootstrapError, fetchBootstrapStatus]);
 
   if (bootstrapLoading || !authReady) {
-    return <div className="login-root" />;
+    return <LoadingScreen />;
   }
 
   // Server startup errors are now handled by ServerLifecycleBanner higher up the tree.
@@ -333,7 +334,7 @@ function AppRoutes() {
   if (!isAuthenticated) {
     return (
       <ErrorBoundary>
-        <React.Suspense fallback={<div className="login-root" />}>
+        <React.Suspense fallback={<LoadingScreen />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
@@ -350,7 +351,7 @@ function AppRoutes() {
 
   return (
     <ErrorBoundary>
-      <React.Suspense fallback={<div className="login-root" />}>
+      <React.Suspense fallback={<LoadingScreen />}>
         <Routes>
           <Route path="/login" element={<Navigate to="/map" replace />} />
           <Route path="/*" element={<AppInner />} />

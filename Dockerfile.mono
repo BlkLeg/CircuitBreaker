@@ -31,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cargo \
     && rm -rf /var/lib/apt/lists/*
 
+# Upgrade pip before installing deps — fixes CVE-2025-8869 (≥25.3) and CVE-2026-1703 (≥26.0)
+RUN pip install --no-cache-dir --upgrade "pip>=26.0"
+
 # Dependency layer from pinned requirements.txt + PostgreSQL drivers (mono image uses Postgres)
 COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -64,8 +67,8 @@ WORKDIR /app/backend
 # - ca-certificates, curl: TLS + simple debugging
 # Mono runtime tracks security updates from Debian bookworm; version pinning on
 # apt packages is intentionally avoided to keep CVE fixes current.
-# hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# hadolint ignore=DL3008,DL3005
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
     nginx \
     supervisor \
     postgresql \
@@ -80,6 +83,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-traditional \
     openssl \
     tini \
+    nmap \
+    snmp \
+    libmagic1 \
+    ipmitool \
+    && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
+    && if [ -d /etc/ssl/private ] && [ -n "$(find /etc/ssl/private -maxdepth 1 -type f -print -quit)" ]; then \
+        echo "Unexpected private key material found in /etc/ssl/private"; \
+        find /etc/ssl/private -maxdepth 1 -type f; \
+        exit 1; \
+    fi \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/local/bin/python3 /usr/bin/python
 

@@ -7,8 +7,8 @@
 #   docker compose -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# Required in .env: CB_DB_PASSWORD, CB_VAULT_KEY.
-# Optional: CB_DATA_DIR, CB_PORT_HTTP (default 80), CB_PORT_HTTPS (default 443), CB_TAG (default latest), NATS_AUTH_TOKEN.
+# Required in .env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN.
+# Optional: CB_DATA_DIR, CB_PORT_HTTP (default 80), CB_PORT_HTTPS (default 443), CB_TAG (default latest).
 
 name: circuitbreaker
 
@@ -22,13 +22,51 @@ services:
       - "${CB_PORT_HTTPS:-443}:443"
     volumes:
       - "${CB_DATA_DIR:-./circuitbreaker-data}:/data"
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+      - /run:size=10M
+      - /var/log:size=50M
+      - /var/lib/nginx:size=10M
+      - /var/lib/postgresql:size=10M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+      - NET_BIND_SERVICE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     environment:
       - CB_DB_PASSWORD=${CB_DB_PASSWORD:?Set CB_DB_PASSWORD in .env}
       - CB_VAULT_KEY=${CB_VAULT_KEY:?Set CB_VAULT_KEY in .env}
-      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:-}
+      - CB_JWT_SECRET=${CB_JWT_SECRET:?Set CB_JWT_SECRET in .env}
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:?Set NATS_AUTH_TOKEN in .env}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:80/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 90s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        compress: "true"

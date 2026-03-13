@@ -40,9 +40,6 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 
-# PG-only: kept for compatibility with admin_db and db_backup.
-is_sqlite = False
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ── RLS: set app.current_tenant on every connection checkout ─────────────

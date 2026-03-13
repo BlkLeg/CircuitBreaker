@@ -1,13 +1,11 @@
 """Admin endpoints for database health and backup management."""
 
-import os
-
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.core.rbac import require_role
-from app.db.session import db_url, engine, is_sqlite
+from app.db.session import engine
 from app.services.db_backup import backup_postgres, latest_backup_info
 
 router = APIRouter(tags=["admin-db"])
@@ -29,7 +27,7 @@ class DbHealthResponse(BaseModel):
 @router.get("/db/health", response_model=DbHealthResponse)
 def db_health(_=require_role("admin")):
     """Return database health metrics. Admin-only."""
-    dialect = "sqlite" if is_sqlite else "postgresql"
+    dialect = "postgresql"
 
     # Alembic version
     alembic_version: str | None = None
@@ -43,37 +41,29 @@ def db_health(_=require_role("admin")):
 
     # DB size
     db_size_mb: float | None = None
-    if is_sqlite:
-        db_path = db_url.replace("sqlite:///", "").replace("sqlite://", "")
-        try:
-            db_size_mb = round(os.path.getsize(db_path) / 1_048_576, 2)
-        except OSError:
-            pass
-    else:
-        try:
-            with engine.connect() as conn:
-                row = conn.execute(text("SELECT pg_database_size(current_database())")).fetchone()
-                if row:
-                    db_size_mb = round(row[0] / 1_048_576, 2)
-        except Exception:
-            pass
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT pg_database_size(current_database())")).fetchone()
+            if row:
+                db_size_mb = round(row[0] / 1_048_576, 2)
+    except Exception:
+        pass
 
     # PostgreSQL connection stats
     connections_active: int | None = None
     connections_max: int | None = None
-    if not is_sqlite:
-        try:
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text("SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'")
-                ).fetchone()
-                if row:
-                    connections_active = row[0]
-                row2 = conn.execute(text("SHOW max_connections")).fetchone()
-                if row2:
-                    connections_max = int(row2[0])
-        except Exception:
-            pass
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT count(*) FROM pg_stat_activity WHERE state != 'idle'")
+            ).fetchone()
+            if row:
+                connections_active = row[0]
+            row2 = conn.execute(text("SHOW max_connections")).fetchone()
+            if row2:
+                connections_max = int(row2[0])
+    except Exception:
+        pass
 
     # Backup info
     info = latest_backup_info()
@@ -96,9 +86,7 @@ def db_health(_=require_role("admin")):
 
 @router.post("/db/backup")
 def trigger_backup(_=require_role("admin")):
-    """Trigger an immediate pg_dump backup. No-op for SQLite installs."""
-    if is_sqlite:
-        return {"status": "skipped", "message": "SQLite installs do not use pg_dump backups"}
+    """Trigger an immediate pg_dump backup."""
     backup_postgres()
     info = latest_backup_info()
     return {"status": "ok", "backup": info}

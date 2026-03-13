@@ -31,6 +31,9 @@
 	# for on_demand_tls — enforce limits in the ask endpoint if needed.
 	on_demand_tls {
 		ask http://backend:8000/api/v1/health
+		max_certificates 10
+		interval 2m
+		burst 5
 	}
 }
 

@@ -107,8 +107,7 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
     spec_dir.mkdir(parents=True, exist_ok=True)
 
     hidden_imports = [
-        "aiosqlite",  # SQLAlchemy async SQLite driver (lazy-loaded)
-        "greenlet",   # Used by aiosqlite
+        "greenlet",   # Required by SQLAlchemy async
     ]
     run(
         [

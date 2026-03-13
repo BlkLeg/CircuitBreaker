@@ -138,12 +138,14 @@ def list_users(
             .filter(UserSession.revoked == False)  # noqa: E712
             .filter(UserSession.expires_at > utcnow())
         ).count()
+        # Only expose gravatar_hash for the requesting user (self); null it out for other users
+        gravatar_hash_value = u.gravatar_hash if u.id == user.id else None
         result.append(
             UserListItem(
                 id=u.id,
                 email=u.email,
                 display_name=u.display_name,
-                gravatar_hash=u.gravatar_hash,
+                gravatar_hash=gravatar_hash_value,
                 role=getattr(u, "role", None) or ("admin" if u.is_admin else "viewer"),
                 is_active=u.is_active,
                 last_login=u.last_login,
@@ -385,11 +387,15 @@ def masquerade_user(
         raise HTTPException(status_code=404, detail="User not found")
     if not target.is_active:
         raise HTTPException(status_code=400, detail="Cannot masquerade as inactive user")
-    # Short-lived token (15 min)
+    # Short-lived token (15 min) with masquerade claims for audit trail
     token = create_token(
         target.id,
         cfg.jwt_secret,  # type: ignore[arg-type]
         timeout_hours=15 / 60,  # type: ignore[arg-type]  # 15 minutes as fraction of hour
+        extra_claims={
+            "is_masquerade": True,
+            "masquerade_by": user.id,
+        },
     )
     log_audit(
         db,

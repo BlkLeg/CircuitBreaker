@@ -30,9 +30,9 @@ from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.core.security import (
     _extract_token,
+    create_salted_api_token_hash,
     create_token,
     get_optional_user,
-    hash_api_token,
     hash_password,
 )
 from app.core.time import utcnow, utcnow_iso
@@ -419,7 +419,7 @@ def create_api_token(
     if not cfg.jwt_secret:
         raise HTTPException(status_code=503, detail="Auth not configured")
     raw_token = secrets.token_urlsafe(32)
-    token_hash = hash_api_token(raw_token, cfg.jwt_secret)
+    token_hash = create_salted_api_token_hash(raw_token)
     expires_at = None
     if payload.expires_at:
         try:
@@ -1031,6 +1031,17 @@ def mfa_verify(
                 body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
                 return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
+    from app.core.audit import log_audit
+
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="mfa_verify_failed",
+        resource="auth",
+        status="fail",
+        details=f"Failed MFA attempt from {request.client.host if request.client else 'unknown'}",
+    )
     raise HTTPException(status_code=401, detail="Invalid or expired MFA code")
 
 
