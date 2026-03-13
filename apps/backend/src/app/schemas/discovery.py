@@ -4,6 +4,19 @@ import json
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+def _validate_cron_expression(v: str | None) -> str | None:
+    """Validate cron expression using APScheduler's CronTrigger. Returns HTTP 422 on invalid."""
+    if v is None or v == "":
+        return v
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+
+        CronTrigger.from_crontab(v)
+    except Exception as exc:
+        raise ValueError(f"Invalid cron expression {v!r}: {exc}") from exc
+    return v
+
+
 class DiscoveryProfileCreate(BaseModel):
     name: str
     cidr: str | None = None
@@ -18,6 +31,11 @@ class DiscoveryProfileCreate(BaseModel):
     docker_socket_path: str = "/var/run/docker.sock"
     schedule_cron: str | None = None
     enabled: bool = True
+
+    @field_validator("schedule_cron")
+    @classmethod
+    def validate_schedule_cron(cls, v: str | None) -> str | None:
+        return _validate_cron_expression(v)
 
 
 class DiscoveryProfileUpdate(BaseModel):
@@ -34,6 +52,11 @@ class DiscoveryProfileUpdate(BaseModel):
     docker_socket_path: str | None = None
     schedule_cron: str | None = None
     enabled: bool | None = None
+
+    @field_validator("schedule_cron")
+    @classmethod
+    def validate_schedule_cron(cls, v: str | None) -> str | None:
+        return _validate_cron_expression(v)
 
 
 class DiscoveryProfileOut(BaseModel):
@@ -265,3 +288,48 @@ class DiscoveryStatusOut(BaseModel):
     net_raw_capable: bool = False
     docker_available: bool = False
     docker_container_count: int = 0
+
+
+# ── Scan-to-Map pipeline schemas ─────────────────────────────────────────────
+
+
+class InferredScanResultOut(ScanResultOut):
+    """ScanResultOut extended with inference annotations for the import modal."""
+
+    inferred_vendor: str | None = None
+    inferred_role: str | None = None
+    inferred_icon_slug: str | None = None
+    confidence: float = 0.0
+    signals_used: list[str] = []
+    exists_in_hardware: bool = False
+    existing_hardware_id: int | None = None
+    is_new: bool = True
+
+
+class BatchImportItem(BaseModel):
+    scan_result_id: int
+    overrides: dict = {}
+
+
+class BatchImportRequest(BaseModel):
+    items: list[BatchImportItem]
+
+
+class BatchImportCreated(BaseModel):
+    id: int
+    ip: str | None = None
+    position: dict | None = None
+
+
+class BatchImportConflict(BaseModel):
+    scan_result_id: int
+    ip: str | None = None
+    mac: str | None = None
+    reason: str
+
+
+class BatchImportResponse(BaseModel):
+    created: list[BatchImportCreated] = []
+    updated: list[BatchImportCreated] = []
+    conflicts: list[BatchImportConflict] = []
+    skipped: list[int] = []
