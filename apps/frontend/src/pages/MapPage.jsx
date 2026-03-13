@@ -82,7 +82,6 @@ import {
   DEFAULT_BOUNDARY_FILL_OPACITY,
 } from '../components/map/mapConstants';
 import {
-  applyEdgeSides,
   applyEdgeSidesForEdge,
   computeBoundaryPolygon,
   boundaryFlowRect,
@@ -113,6 +112,12 @@ import { useMapPolling } from '../hooks/useMapPolling';
 import { useMapBoundaryInteractions } from '../hooks/useMapBoundaryInteractions';
 import { useMapVisualLines } from '../hooks/useMapVisualLines';
 import { useMapEdgeInteractions } from '../hooks/useMapEdgeInteractions';
+import { useMapNodeDragSnap } from '../hooks/useMapNodeDragSnap';
+import {
+  ConnectionStateProvider,
+  useConnectionStateContext,
+} from '../providers/ConnectionStateProvider';
+import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../lib/constants';
 
 // ── ReactFlow node/edge type registrations ───────────────────────────────────
 // Both 'iconNode'/'custom' keys registered for backward compat with saved layouts.
@@ -125,6 +130,7 @@ import { isLightTheme, omitKey, isHiddenByTag, getQuickCreateTitle } from '../ut
 // ── Main Component ──────────────────────────────────────────────────────────
 
 function MapInternal() {
+  const { onConnectStart, onConnectEnd } = useConnectionStateContext();
   const isMobile = useIsMobile();
   const { timezone } = useTimezone();
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
@@ -142,10 +148,24 @@ function MapInternal() {
 
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
-  // Ignore 'remove' from React Flow so edges are only deleted via explicit Delete in CustomEdge
+  // Only allow edge selection state changes from React Flow.
+  // Structural edge mutations must come from explicit user delete actions or
+  // server-driven relationship updates (entity pages / topology events).
   const onEdgesChange = useCallback(
-    (changes) => onEdgesChangeBase(changes.filter((c) => c.type !== 'remove')),
+    (changes) => {
+      const safeSelectionChanges = changes.filter((change) => change.type === 'select');
+      if (safeSelectionChanges.length === 0) return;
+      onEdgesChangeBase(safeSelectionChanges);
+    },
     [onEdgesChangeBase]
+  );
+
+  const handleNodesChange = useCallback(
+    (changes) => {
+      onNodesChange(changes);
+      if (changes.some((c) => c.type === 'position' && c.dragging)) dirtyRef.current = true;
+    },
+    [onNodesChange]
   );
 
   const outerMapRef = useRef(null);
@@ -221,7 +241,6 @@ function MapInternal() {
   const labelPointerMoveRef = useRef(null);
   const labelPointerUpRef = useRef(null);
   const labelMenuRef = useRef(null);
-  const dragStartPositionsRef = useRef(new Map());
 
   // Keep refs in sync with state
   useEffect(() => {
@@ -301,18 +320,25 @@ function MapInternal() {
       };
       setEdges((prev) => {
         const exists = prev.some((e) => e.source === source_id && e.target === target_id);
-        return exists ? prev : [...prev, newEdge];
+        if (exists) return prev;
+        const edgeWithAnchors = applyEdgeSidesForEdge(
+          nodesRef.current || [],
+          newEdge,
+          edgeOverridesRef.current || {}
+        );
+        return [...prev, edgeWithAnchors];
       });
     };
 
     const onCableRemoved = ({ source_id, target_id, connection_id }) => {
-      setEdges((prev) =>
-        prev.filter((e) => {
+      setEdges((prev) => {
+        const filteredEdges = prev.filter((e) => {
           if (connection_id != null && String(e.id) === String(connection_id)) return false;
           if (e.source === source_id && e.target === target_id) return false;
           return true;
-        })
-      );
+        });
+        return filteredEdges;
+      });
     };
 
     const onStatusChanged = ({ node_id, status }) => {
@@ -456,7 +482,7 @@ function MapInternal() {
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [clearBoundaryPointerListeners, clearLabelPointerListeners]);
+  }, [clearBoundaryPointerListeners, clearLabelPointerListeners, closeAllMenus]);
 
   useEffect(() => {
     return () => {
@@ -780,7 +806,7 @@ function MapInternal() {
       if (selectedNodeRef.current) return;
       scheduleTelemetrySidebar(node, { x: event.clientX + 20, y: event.clientY - 30 });
     },
-    [scheduleTelemetrySidebar]
+    [contextMenuOpenRef, scheduleTelemetrySidebar]
   );
 
   const handleNodeMouseLeave = useCallback(() => {
@@ -801,7 +827,7 @@ function MapInternal() {
         }),
       });
     },
-    [canMapEdit, screenToFlowPosition]
+    [canMapEdit, contextMenuOpenRef, screenToFlowPosition, setContextMenu]
   );
 
   const handleCreateNode = useCallback(
@@ -1280,7 +1306,7 @@ function MapInternal() {
       if (!canMapEdit) return;
       cancelTelemetrySidebar();
       setTelemetrySidebarNode(null);
-      openNodeContextMenu({ x: event.clientX, y: event.clientY, node });
+      openNodeContextMenu(event, node);
     },
     [canMapEdit, cancelTelemetrySidebar, openNodeContextMenu]
   );
@@ -1299,7 +1325,7 @@ function MapInternal() {
     setSelectedVisualLineId(null);
     setVisualLineMenu(null);
     if (selectedNode) setSelectedNode(null);
-  }, [selectedNode]);
+  }, [contextMenuOpenRef, selectedNode, setBoundaryMenu, setContextMenu, setVisualLineMenu]);
 
   useEffect(() => {
     if (!selectedNode) return;
@@ -1643,42 +1669,12 @@ function MapInternal() {
     toast,
   });
 
-  const handleNodeDragStart = useCallback((_event, node, draggedNodes) => {
-    const trackedNodes =
-      Array.isArray(draggedNodes) && draggedNodes.length > 0 ? draggedNodes : [node];
-    const startPositions = new Map();
-    trackedNodes.forEach((trackedNode) => {
-      if (!trackedNode?.id) return;
-      const pos = trackedNode.positionAbsolute || trackedNode.position || { x: 0, y: 0 };
-      startPositions.set(trackedNode.id, {
-        x: Number.isFinite(pos.x) ? pos.x : 0,
-        y: Number.isFinite(pos.y) ? pos.y : 0,
-      });
-    });
-    dragStartPositionsRef.current = startPositions;
-  }, []);
-
-  const handleNodeDragStop = useCallback(
-    (_event, node, draggedNodes) => {
-      const movedNodes =
-        Array.isArray(draggedNodes) && draggedNodes.length > 0 ? draggedNodes : [node];
-      const movementThresholdPx = 0.5;
-      const hasActualMovement = movedNodes.some((movedNode) => {
-        if (!movedNode?.id) return false;
-        const startPos = dragStartPositionsRef.current.get(movedNode.id);
-        if (!startPos) return true;
-        const endPos = movedNode.positionAbsolute || movedNode.position || startPos;
-        const dx = Math.abs((Number.isFinite(endPos.x) ? endPos.x : startPos.x) - startPos.x);
-        const dy = Math.abs((Number.isFinite(endPos.y) ? endPos.y : startPos.y) - startPos.y);
-        return dx > movementThresholdPx || dy > movementThresholdPx;
-      });
-      dragStartPositionsRef.current = new Map();
-      if (!hasActualMovement) return;
-      setEdges((prev) => applyEdgeSides(movedNodes, prev, edgeOverridesRef.current, node.id));
-      dirtyRef.current = true;
-    },
-    [setEdges]
-  );
+  const { handleNodeDragStart, handleNodeDragStop } = useMapNodeDragSnap({
+    setEdges,
+    dirtyRef,
+    edgeOverridesRef,
+    nodesRef,
+  });
 
   // Keep edgeCallbacksRef.current up-to-date so SmartEdge always calls the
   // latest version of handleControlPointChange without needing to re-render.
@@ -2138,11 +2134,7 @@ function MapInternal() {
                 edgeTypes={EDGE_TYPES}
                 nodes={nodes}
                 edges={edges}
-                onNodesChange={(changes) => {
-                  onNodesChange(changes);
-                  if (changes.some((c) => c.type === 'position' && c.dragging))
-                    dirtyRef.current = true;
-                }}
+                onNodesChange={handleNodesChange}
                 onEdgesChange={onEdgesChange}
                 nodeExtent={[
                   [-4000, -4000],
@@ -2161,12 +2153,15 @@ function MapInternal() {
                 onPaneContextMenu={handlePaneContextMenu}
                 onEdgeContextMenu={handleEdgeContextMenu}
                 onConnect={handleConnect}
+                onConnectStart={onConnectStart}
+                onConnectEnd={onConnectEnd}
                 onEdgeUpdate={handleEdgeUpdate}
                 onMoveEnd={(_, vp) => localStorage.setItem('cb_map_viewport', JSON.stringify(vp))}
                 onPaneMouseMove={handlePanePointerMove}
                 connectionLineType="smoothstep"
                 connectionRadius={14}
-                defaultEdgeOptions={{ style: { strokeWidth: 3, stroke: '#888' } }}
+                connectionLineStyle={CONNECTION_LINE_STYLE}
+                defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
                 onPaneClick={() => {
                   setEdgeMenu(null);
                   setPendingConnection(null);
@@ -2834,7 +2829,9 @@ function MapInternal() {
 export default function MapPage() {
   return (
     <ReactFlowProvider>
-      <MapInternal />
+      <ConnectionStateProvider>
+        <MapInternal />
+      </ConnectionStateProvider>
     </ReactFlowProvider>
   );
 }

@@ -1,3 +1,4 @@
+import ipaddress
 import json
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -173,11 +174,26 @@ class ScanLogOut(BaseModel):
 
 class AdHocScanRequest(BaseModel):
     cidr: str | None = None
+    cidrs: list[str] | None = None
     vlan_ids: list[int] = []
     scan_types: list[str] = ["nmap"]
     nmap_arguments: str | None = Field(None, max_length=256)
     snmp_community: str | None = None
     label: str | None = None
+
+    @field_validator("cidrs")
+    @classmethod
+    def validate_cidrs(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if len(v) > 10:
+            raise ValueError("Maximum 10 CIDR targets per scan")
+        for entry in v:
+            try:
+                ipaddress.ip_network(entry.strip(), strict=False)
+            except ValueError as err:
+                raise ValueError(f"Invalid CIDR: {entry}") from err
+        return [e.strip() for e in v if e.strip()]
 
 
 class MergeRequest(BaseModel):
@@ -213,7 +229,7 @@ class EnhancedBulkMergeCluster(BaseModel):
 
 
 class EnhancedBulkMergeNetwork(BaseModel):
-    name: str
+    name: str | None = None  # Optional when existing_id is provided
     cidr: str | None = None
     vlan_id: int | None = None
     gateway: str | None = None

@@ -452,4 +452,62 @@ export const systemApi = {
   getStats: () => client.get('/system/stats'),
 };
 
+export const ipamApi = {
+  // IP Addresses
+  listIPs: (params) => client.get('/ipam', { params }),
+  getIP: (id) => client.get(`/ipam/${id}`),
+  createIP: (data) => client.post('/ipam', data),
+  updateIP: (id, data) => client.patch(`/ipam/${id}`, data),
+  deleteIP: (id) => client.delete(`/ipam/${id}`),
+  scanNetwork: (networkId) => client.post(`/ipam/scan/${networkId}`),
+  // VLANs
+  listVLANs: (params) => client.get('/vlans', { params }),
+  createVLAN: (data) => client.post('/vlans', data),
+  updateVLAN: (id, data) => client.patch(`/vlans/${id}`, data),
+  deleteVLAN: (id) => client.delete(`/vlans/${id}`),
+  // Sites
+  listSites: () => client.get('/sites'),
+  createSite: (data) => client.post('/sites', data),
+  updateSite: (id, data) => client.patch(`/sites/${id}`, data),
+  deleteSite: (id) => client.delete(`/sites/${id}`),
+};
+
+export const topologiesApi = {
+  list: (params) => client.get('/topologies', { params }),
+  get: (id) => client.get(`/topologies/${id}`),
+  create: (data) => client.post('/topologies', data),
+  update: (id, data) => client.put(`/topologies/${id}`, data),
+  delete: (id) => client.delete(`/topologies/${id}`),
+  graph: (id) => client.get(`/topologies/${id}/graph`),
+  bulkNodes: (id, nodes) => client.put(`/topologies/${id}/nodes`, { nodes }),
+};
+
+export const statusApi = {
+  listPages: () => client.get('/status/pages'),
+  createPage: (data) => client.post('/status/pages', data),
+  updatePage: (id, data) => client.patch(`/status/pages/${id}`, data),
+  deletePage: (id) => client.delete(`/status/pages/${id}`),
+  listGroups: (pageId) => client.get(`/status/pages/${pageId}/groups`),
+  createGroup: (data) => client.post('/status/groups', data),
+  bulkCreateGroup: (data) => client.post('/status/groups/bulk', data),
+  updateGroup: (id, data) => client.patch(`/status/groups/${id}`, data),
+  deleteGroup: (id) => client.delete(`/status/groups/${id}`),
+  history: (params) => client.get('/status/history', { params }),
+  dashboardV2: (params) => client.get('/status/dashboard/v2', { params }),
+  availableEntities: (params) => client.get('/status/available-entities', { params }),
+  refresh: () => client.post('/status/refresh'),
+};
+
+export const racksApi = {
+  list: () => client.get('/racks'),
+  get: (id) => client.get(`/racks/${id}`),
+  create: (data) => client.post('/racks', data),
+  update: (id, data) => client.patch(`/racks/${id}`, data),
+  delete: (id) => client.delete(`/racks/${id}`),
+};
+
+export const eventsApi = {
+  status: () => client.get('/events/status'),
+};
+
 export default client;

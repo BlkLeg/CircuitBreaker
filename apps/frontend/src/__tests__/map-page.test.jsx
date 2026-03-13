@@ -1,9 +1,11 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { CONNECTION_LINE_STYLE } from '../lib/constants';
 
-const mockApplyEdgeSides = vi.fn((draggedNodes, edges) => edges);
+const mockSnapEdgesToNearestHandles = vi.fn((_movedNodeIds, _nodes, edges) => edges);
 let latestReactFlowProps = null;
+let latestBaseOnEdgesChange = null;
 
 // Mock ReactFlow before importing MapPage
 vi.mock('reactflow', () => {
@@ -24,7 +26,9 @@ vi.mock('reactflow', () => {
         current = typeof updater === 'function' ? updater(current) : updater;
         return current;
       });
-      return [current, setEdges, vi.fn()];
+      const onEdgesChangeBase = vi.fn();
+      latestBaseOnEdgesChange = onEdgesChangeBase;
+      return [current, setEdges, onEdgesChangeBase];
     },
     ReactFlowProvider: ({ children }) => React.createElement('div', null, children),
     useReactFlow: () => ({
@@ -246,11 +250,11 @@ vi.mock('../utils/cloudView', () => ({
   restoreFromCloudView: vi.fn(),
 }));
 
-vi.mock('../utils/mapGeometryUtils', async () => {
-  const actual = await vi.importActual('../utils/mapGeometryUtils');
+vi.mock('../utils/mapHandleHelpers', async () => {
+  const actual = await vi.importActual('../utils/mapHandleHelpers');
   return {
     ...actual,
-    applyEdgeSides: (...args) => mockApplyEdgeSides(...args),
+    snapEdgesToNearestHandles: (...args) => mockSnapEdgesToNearestHandles(...args),
   };
 });
 
@@ -311,8 +315,9 @@ import MapPage from '../pages/MapPage.jsx';
 describe('MapPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockApplyEdgeSides.mockClear();
+    mockSnapEdgesToNearestHandles.mockClear();
     latestReactFlowProps = null;
+    latestBaseOnEdgesChange = null;
   });
 
   it('renders map page container', async () => {
@@ -352,6 +357,71 @@ describe('MapPage', () => {
       latestReactFlowProps.onNodeDragStop?.({}, stationaryNode, [stationaryNode]);
     });
 
-    expect(mockApplyEdgeSides).not.toHaveBeenCalled();
+    expect(mockSnapEdgesToNearestHandles).not.toHaveBeenCalled();
+  });
+
+  it('wires connect lifecycle handlers and connection line style', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('react-flow')).toBeInTheDocument();
+      expect(latestReactFlowProps).toBeTruthy();
+    });
+
+    expect(latestReactFlowProps.onConnectStart).toEqual(expect.any(Function));
+    expect(latestReactFlowProps.onConnectEnd).toEqual(expect.any(Function));
+    expect(latestReactFlowProps.connectionLineStyle).toEqual(CONNECTION_LINE_STYLE);
+
+    expect(() => {
+      act(() => {
+        latestReactFlowProps.onConnectStart?.({}, { nodeId: 'hw-1', handleId: 's-right' });
+        latestReactFlowProps.onConnectEnd?.({});
+      });
+    }).not.toThrow();
+  });
+
+  it('filters out structural edge changes from React Flow', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('react-flow')).toBeInTheDocument();
+      expect(latestReactFlowProps).toBeTruthy();
+      expect(latestBaseOnEdgesChange).toBeTruthy();
+    });
+
+    act(() => {
+      latestReactFlowProps.onEdgesChange?.([
+        { id: 'edge-1', type: 'remove' },
+        { id: 'edge-2', type: 'reset' },
+        { id: 'edge-3', type: 'select', selected: true },
+      ]);
+    });
+
+    expect(latestBaseOnEdgesChange).toHaveBeenCalledTimes(1);
+    expect(latestBaseOnEdgesChange).toHaveBeenCalledWith([
+      { id: 'edge-3', type: 'select', selected: true },
+    ]);
+  });
+
+  it('opens node context flow without throwing on right click', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('react-flow')).toBeInTheDocument();
+      expect(latestReactFlowProps).toBeTruthy();
+    });
+
+    const preventDefault = vi.fn();
+    const node = { id: 'hw-1', data: { label: 'Node 1' } };
+
+    expect(() => {
+      act(() => {
+        latestReactFlowProps.onNodeContextMenu?.(
+          { preventDefault, clientX: 320, clientY: 180 },
+          node
+        );
+      });
+    }).not.toThrow();
+    expect(preventDefault).toHaveBeenCalled();
   });
 });

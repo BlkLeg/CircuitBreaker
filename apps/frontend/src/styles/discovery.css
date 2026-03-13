@@ -413,7 +413,7 @@ select.cb-input {
 .discovery-main {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
   min-height: 0;
 }
 
@@ -1125,10 +1125,15 @@ select.cb-input {
 
 .history-row {
   cursor: pointer;
+  min-height: 70px;
 }
 
 .history-row:hover {
   background: rgba(30, 36, 51, 0.45);
+}
+
+.history-row-enter {
+  animation: historyRowIn var(--history-row-entry-ms, 200ms) ease-out;
 }
 
 .history-target {
@@ -1233,13 +1238,19 @@ select.cb-input {
 .history-status-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 12px;
+  min-width: 90px;
   border: 1px solid rgba(107, 114, 128, 0.35);
   color: var(--text-muted, var(--color-text-muted, #6b7a9e));
   background: rgba(107, 114, 128, 0.13);
+  transition:
+    color var(--history-status-transition-ms, 300ms) ease,
+    border-color var(--history-status-transition-ms, 300ms) ease,
+    background var(--history-status-transition-ms, 300ms) ease;
 }
 
 .history-status-pill.status-done {
@@ -1256,12 +1267,11 @@ select.cb-input {
 
 .history-status-pill.status-running::before {
   content: '';
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
-  border: 2px solid rgba(126, 181, 255, 0.35);
-  border-top-color: #7eb5ff;
-  animation: cb-spin 0.75s linear infinite;
+  background: currentColor;
+  animation: historyStatusPulse var(--history-status-running-pulse-ms, 1500ms) ease-in-out infinite;
 }
 
 .history-status-pill.status-failed {
@@ -1285,6 +1295,13 @@ select.cb-input {
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
     monospace;
+  min-height: 14px;
+}
+
+.history-live-meta-item {
+  display: inline-flex;
+  min-width: 78px;
+  justify-content: flex-end;
 }
 
 .history-live-message {
@@ -1295,6 +1312,64 @@ select.cb-input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-height: 16px;
+  opacity: 0;
+  transition: opacity 160ms ease-in-out;
+}
+
+.history-live-message.is-visible {
+  opacity: 1;
+}
+
+.history-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.history-cancel-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  line-height: 1.4;
+  min-width: 58px;
+}
+
+.history-cancel-btn.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.history-counter-cell {
+  width: 70px;
+  text-align: right;
+}
+
+.history-counter-value {
+  display: inline-block;
+  min-width: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes historyStatusPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes historyRowIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ── Review queue shared styles ───────────────────────────────────────────── */

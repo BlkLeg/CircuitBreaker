@@ -152,7 +152,7 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
     docs_seed_file = _get_option(None, "CB_DOCS_SEED_FILE", config, "docs_seed_file", None)
     alembic_ini = _get_option(None, "CB_ALEMBIC_INI", config, "alembic_ini", None)
 
-    host = str(_get_option(args.host, "HOST", config, "host", "0.0.0.0"))
+    host = str(_get_option(args.host, "HOST", config, "host", "127.0.0.1"))
     port = int(str(_get_option(args.port, "PORT", config, "port", 8080)))
     workers = int(str(_get_option(args.workers, "UVICORN_WORKERS", config, "workers", 1)))
     tls_enabled = bool(_get_option(None, "CB_TLS_ENABLED", config, "tls_enabled", False))

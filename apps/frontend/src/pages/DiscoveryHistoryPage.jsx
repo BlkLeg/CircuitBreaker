@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import '../styles/discovery.css';
@@ -6,6 +6,12 @@ import { getJobs, getJobResults, cancelJob } from '../api/discovery.js';
 import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
+import AnimatedCounter from '../components/discovery/AnimatedCounter.jsx';
+import {
+  SCAN_ROW_ENTRY_ANIMATION_MS,
+  SCAN_STATUS_RUNNING_PULSE_DURATION_MS,
+  STATUS_BADGE_TRANSITION_MS,
+} from '../lib/constants.js';
 
 function logApiWarning(scope, error) {
   logger.warn(`[DiscoveryHistoryPage] ${scope}`, error);
@@ -25,7 +31,17 @@ function HistoryStatusPill({ status }) {
   const normalized = status === 'completed' ? 'done' : status;
   const label =
     normalized === 'done' ? 'Done' : normalized.charAt(0).toUpperCase() + normalized.slice(1);
-  return <span className={`history-status-pill status-${normalized}`}>{label}</span>;
+  const style = {
+    '--history-status-transition-ms': `${STATUS_BADGE_TRANSITION_MS}ms`,
+    ...(normalized === 'running'
+      ? { '--history-status-running-pulse-ms': `${SCAN_STATUS_RUNNING_PULSE_DURATION_MS}ms` }
+      : {}),
+  };
+  return (
+    <span className={`history-status-pill status-${normalized}`} style={style}>
+      {label}
+    </span>
+  );
 }
 
 HistoryStatusPill.propTypes = {
@@ -134,6 +150,153 @@ function getLiveMessage(job) {
 
 const SOURCE_NETWORK = 'network';
 const SOURCE_PROXMOX = 'proxmox';
+const EMPTY_VALUE = '\u2014';
+const LIVE_ETA_PLACEHOLDER = 'ETA --:--:--';
+
+function ExpandedResults({ jobResults }) {
+  if (!jobResults) {
+    return (
+      <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>Loading results…</p>
+    );
+  }
+
+  if (jobResults.length === 0) {
+    return (
+      <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>No devices found</p>
+    );
+  }
+
+  return (
+    <div className="history-expanded-results">
+      {jobResults.slice(0, 10).map((result) => {
+        const ports = parsePorts(result.open_ports_json);
+        return (
+          <div
+            key={result.id ?? `${result.ip_address}-${result.mac_address ?? 'na'}`}
+            className="history-result-row"
+          >
+            <div className="history-result-ip">{result.ip_address}</div>
+            <div className="history-result-mac">{result.mac_address || EMPTY_VALUE}</div>
+            <div className="history-result-os">
+              {[result.os_family, result.os_vendor].filter(Boolean).join(' ') || 'Unknown'}
+            </div>
+            {ports.length > 0 && (
+              <div className="history-result-ports">
+                <PortPills ports={ports} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {jobResults.length > 10 && (
+        <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: '8px 0 0' }}>
+          …and {jobResults.length - 10} more results
+        </p>
+      )}
+    </div>
+  );
+}
+
+ExpandedResults.propTypes = {
+  jobResults: PropTypes.array,
+};
+
+const ScanHistoryRow = React.memo(
+  function ScanHistoryRow({ item, isExpanded, jobResults, onToggleExpand, onCancelJob }) {
+    const types = parseJsonArray(item.scan_types_json);
+    const targetLabel = item.label || item.target_cidr || 'Ad-hoc scan';
+    const progressPercent = getProgressPercent(item);
+    const liveEta = formatEtaSeconds(item.eta_seconds);
+    const liveMessage = getLiveMessage(item);
+    const showLiveMeta =
+      item.status === 'running' ||
+      item.status === 'queued' ||
+      typeof item.progress_percent === 'number' ||
+      typeof item.eta_seconds === 'number';
+    const canCancel = item.status === 'running' || item.status === 'queued';
+
+    return (
+      <>
+        <tr
+          className="history-row history-row-enter"
+          style={{ '--history-row-entry-ms': `${SCAN_ROW_ENTRY_ANIMATION_MS}ms` }}
+          onClick={() => onToggleExpand(item)}
+        >
+          <td className="history-expand-cell">
+            {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </td>
+          <td>
+            <TimestampCell isoString={item.started_at || item.created_at} />
+          </td>
+          <td className="history-target">{targetLabel}</td>
+          <td>
+            <div className="history-type-row">
+              {item.source === SOURCE_PROXMOX ? (
+                <TypePill type="proxmox" />
+              ) : (
+                types.map((t) => <TypePill key={t} type={t} />)
+              )}
+            </div>
+          </td>
+          <td>
+            <div className="history-status-row">
+              <HistoryStatusPill status={item.status} />
+              <button
+                type="button"
+                className={`btn btn-secondary history-cancel-btn${canCancel ? '' : ' is-hidden'}`}
+                onClick={(event) => onCancelJob(item.id, event)}
+                disabled={!canCancel}
+              >
+                Cancel
+              </button>
+            </div>
+            <div className="history-live-meta">
+              <span className="history-live-meta-item">
+                {showLiveMeta ? `${progressPercent}%` : EMPTY_VALUE}
+              </span>
+              <span className="history-live-meta-item">
+                {showLiveMeta && liveEta ? `ETA ${liveEta}` : LIVE_ETA_PLACEHOLDER}
+              </span>
+            </div>
+            <div className={`history-live-message${liveMessage ? ' is-visible' : ''}`}>
+              {liveMessage || EMPTY_VALUE}
+            </div>
+          </td>
+          <td className="history-counter-cell">
+            <AnimatedCounter value={item.hosts_found ?? 0} className="history-counter-value" />
+          </td>
+          <td className="history-counter-cell">
+            <AnimatedCounter value={item.hosts_new ?? 0} className="history-counter-value" />
+          </td>
+          <td className="history-counter-cell">
+            <AnimatedCounter value={item.hosts_conflict ?? 0} className="history-counter-value" />
+          </td>
+        </tr>
+        {isExpanded && (
+          <tr className="history-expanded-row">
+            <td colSpan={8}>
+              <div className="history-expanded-shell">
+                <ExpandedResults jobResults={jobResults} />
+              </div>
+            </td>
+          </tr>
+        )}
+      </>
+    );
+  },
+  (previousProps, nextProps) =>
+    previousProps.item === nextProps.item &&
+    previousProps.isExpanded === nextProps.isExpanded &&
+    previousProps.jobResults === nextProps.jobResults
+);
+
+ScanHistoryRow.propTypes = {
+  item: PropTypes.object.isRequired,
+  isExpanded: PropTypes.bool.isRequired,
+  jobResults: PropTypes.array,
+  onToggleExpand: PropTypes.func.isRequired,
+  onCancelJob: PropTypes.func.isRequired,
+};
 
 export default function DiscoveryHistoryPage({ embedded = false, jobsData = null, onRefreshJobs }) {
   const toast = useToast();
@@ -166,116 +329,91 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
     load();
   }, [load, hasExternalJobs]);
 
-  const handleCancelJob = async (jobId, event) => {
-    event?.stopPropagation();
-    try {
-      await cancelJob(jobId);
-      toast.success('Scan cancelled');
-      if (onRefreshJobs) {
-        onRefreshJobs();
-      } else {
-        load();
-      }
-    } catch (err) {
-      toast.error(err?.message || 'Failed to cancel scan');
-    }
-  };
+  const resultsRef = useRef(results);
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
 
-  const toggleExpand = (item) => {
+  const handleCancelJob = useCallback(
+    async (jobId, event) => {
+      event?.stopPropagation();
+      try {
+        await cancelJob(jobId);
+        toast.success('Scan cancelled');
+        if (onRefreshJobs) {
+          onRefreshJobs();
+        } else {
+          load();
+        }
+      } catch (err) {
+        toast.error(err?.message || 'Failed to cancel scan');
+      }
+    },
+    [load, onRefreshJobs, toast]
+  );
+
+  const toggleExpand = useCallback((item) => {
     const key = item.id;
-    const newExpanded = new Set(expanded);
-    if (newExpanded.has(key)) {
-      newExpanded.delete(key);
-    } else {
-      newExpanded.add(key);
-      if (!results.has(item.id)) {
-        getJobResults(item.id)
-          .then((r) => {
-            setResults((prev) => {
-              const next = new Map(prev);
-              next.set(item.id, r.data);
-              return next;
-            });
-          })
-          .catch((error) => logApiWarning('Failed to load job results', error));
+    let shouldFetchResults = false;
+
+    setExpanded((currentExpanded) => {
+      const nextExpanded = new Set(currentExpanded);
+      if (nextExpanded.has(key)) {
+        nextExpanded.delete(key);
+      } else {
+        nextExpanded.add(key);
+        shouldFetchResults = !resultsRef.current.has(key);
       }
-    }
-    setExpanded(newExpanded);
-  };
+      return nextExpanded;
+    });
 
-  const renderExpandedResults = (jobId) => {
-    const jobResults = results.get(jobId);
-    if (!jobResults)
-      return (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>
-          Loading results…
-        </p>
-      );
-
-    if (jobResults.length === 0) {
-      return (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>
-          No devices found
-        </p>
-      );
-    }
-
-    return (
-      <div className="history-expanded-results">
-        {jobResults.slice(0, 10).map((result) => {
-          const ports = parsePorts(result.open_ports_json);
-          return (
-            <div
-              key={result.id ?? `${result.ip_address}-${result.mac_address ?? 'na'}`}
-              className="history-result-row"
-            >
-              <div className="history-result-ip">{result.ip_address}</div>
-              <div className="history-result-mac">{result.mac_address || '—'}</div>
-              <div className="history-result-os">
-                {[result.os_family, result.os_vendor].filter(Boolean).join(' ') || 'Unknown'}
-              </div>
-              {ports.length > 0 && (
-                <div className="history-result-ports">
-                  <PortPills ports={ports} />
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {jobResults.length > 10 && (
-          <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: '8px 0 0' }}>
-            …and {jobResults.length - 10} more results
-          </p>
-        )}
-      </div>
-    );
-  };
+    if (!shouldFetchResults) return;
+    getJobResults(key)
+      .then((response) => {
+        const jobResults = Array.isArray(response.data) ? response.data : [];
+        setResults((currentResults) => {
+          if (currentResults.has(key)) return currentResults;
+          const nextResults = new Map(currentResults);
+          nextResults.set(key, jobResults);
+          return nextResults;
+        });
+      })
+      .catch((error) => logApiWarning('Failed to load job results', error));
+  }, []);
 
   const activeJobs = hasExternalJobs ? jobsData : jobs;
 
-  const merged = activeJobs
-    .map((j) => ({
-      source: j.source_type === 'proxmox' ? SOURCE_PROXMOX : SOURCE_NETWORK,
-      ...j,
-      sortAt: j.started_at || j.created_at,
-    }))
-    .sort((a, b) => {
-      const ta = new Date(a.sortAt || 0).getTime();
-      const tb = new Date(b.sortAt || 0).getTime();
-      return tb - ta;
-    });
+  const merged = useMemo(
+    () =>
+      activeJobs
+        .map((job) => ({
+          source: job.source_type === 'proxmox' ? SOURCE_PROXMOX : SOURCE_NETWORK,
+          ...job,
+          sortAt: job.started_at || job.created_at,
+        }))
+        .sort((first, second) => {
+          const firstTs = new Date(first.sortAt || 0).getTime();
+          const secondTs = new Date(second.sortAt || 0).getTime();
+          return secondTs - firstTs;
+        }),
+    [activeJobs]
+  );
 
-  const filtered = merged.filter((item) => {
-    const matchesSource = sourceFilter === 'all' || sourceFilter === item.source;
-    if (!matchesSource) return false;
-    const targetText = `${item.label || ''} ${item.target_cidr || ''}`.toLowerCase();
-    const matchesText = !filter || targetText.includes(filter.toLowerCase());
-    const matchesStatus =
-      statusFilter === 'all' ||
-      item.status === statusFilter ||
-      (statusFilter === 'completed' && item.status === 'done');
-    return matchesText && matchesStatus;
-  });
+  const filtered = useMemo(
+    () =>
+      merged.filter((item) => {
+        const matchesSource = sourceFilter === 'all' || sourceFilter === item.source;
+        if (!matchesSource) return false;
+        const targetText = `${item.label || ''} ${item.target_cidr || ''}`.toLowerCase();
+        const matchesText = !filter || targetText.includes(filter.toLowerCase());
+        const matchesStatus =
+          statusFilter === 'all' ||
+          item.status === statusFilter ||
+          (statusFilter === 'completed' && item.status === 'done');
+        return matchesText && matchesStatus;
+      }),
+    [filter, merged, sourceFilter, statusFilter]
+  );
 
   return (
     <div
@@ -354,83 +492,16 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item) => {
-                const rowKey = item.id;
-                const isExpanded = expanded.has(item.id);
-                const types = parseJsonArray(item.scan_types_json);
-                const targetLabel = item.label || item.target_cidr || 'Ad-hoc scan';
-                const progressPercent = getProgressPercent(item);
-                const liveEta = formatEtaSeconds(item.eta_seconds);
-                const liveMessage = getLiveMessage(item);
-                const showLiveMeta =
-                  item.status === 'running' ||
-                  item.status === 'queued' ||
-                  typeof item.progress_percent === 'number' ||
-                  typeof item.eta_seconds === 'number';
-                return (
-                  <React.Fragment key={rowKey}>
-                    <tr className="history-row" onClick={() => toggleExpand(item)}>
-                      <td className="history-expand-cell">
-                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                      </td>
-                      <td>
-                        <TimestampCell isoString={item.started_at || item.created_at} />
-                      </td>
-                      <td className="history-target">{targetLabel}</td>
-                      <td>
-                        <div className="history-type-row">
-                          {item.source === SOURCE_PROXMOX ? (
-                            <TypePill type="proxmox" />
-                          ) : (
-                            types.map((t) => <TypePill key={t} type={t} />)
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <HistoryStatusPill status={item.status} />
-                          {(item.status === 'running' || item.status === 'queued') && (
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: 10, padding: '2px 8px', lineHeight: 1.4 }}
-                              onClick={(e) => handleCancelJob(item.id, e)}
-                            >
-                              Cancel
-                            </button>
-                          )}
-                        </div>
-                        {showLiveMeta && (
-                          <div className="history-live-meta">
-                            <span>{progressPercent}%</span>
-                            {liveEta && <span>ETA {liveEta}</span>}
-                          </div>
-                        )}
-                        {liveMessage && <div className="history-live-message">{liveMessage}</div>}
-                      </td>
-                      <td>{item.hosts_found ?? 0}</td>
-                      <td>{item.hosts_new ?? 0}</td>
-                      <td>{item.hosts_conflict ?? 0}</td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="history-expanded-row">
-                        <td colSpan={8}>
-                          <div className="history-expanded-shell">
-                            {renderExpandedResults(item.id)}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
+              {filtered.map((item) => (
+                <ScanHistoryRow
+                  key={item.id}
+                  item={item}
+                  isExpanded={expanded.has(item.id)}
+                  jobResults={results.get(item.id)}
+                  onToggleExpand={toggleExpand}
+                  onCancelJob={handleCancelJob}
+                />
+              ))}
             </tbody>
           </table>
         </div>

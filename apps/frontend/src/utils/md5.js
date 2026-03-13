@@ -1,6 +1,7 @@
 /* eslint-disable security/detect-object-injection -- algorithm lookup tables */
 /**
  * Minimal MD5 implementation used solely for Gravatar hash generation.
+ * MD5 usage outside this Gravatar path is prohibited.
  * Public-domain algorithm (Ronald Rivest, RFC 1321).
  */
 

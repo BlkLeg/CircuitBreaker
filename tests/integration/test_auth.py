@@ -73,6 +73,29 @@ def test_bootstrap_initialize_creates_admin_and_enables_auth(client):
     assert settings_resp.json()["auth_enabled"] is True
 
 
+def test_bootstrap_initialize_postgres_path_skips_sqlite_begin_immediate(client, db, monkeypatch):
+    assert db.get_bind().dialect.name == "postgresql"
+
+    original_execute = db.execute
+
+    def _guarded_execute(statement, *args, **kwargs):
+        sql_text = str(statement).upper()
+        assert "BEGIN IMMEDIATE" not in sql_text
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", _guarded_execute)
+
+    resp = client.post(
+        "/api/v1/bootstrap/initialize",
+        json={
+            "email": "bootstrap-postgres@example.com",
+            "password": BOOTSTRAP_TEST_PASSWORD,
+            "theme_preset": "one-dark",
+        },
+    )
+    assert resp.status_code == 200
+
+
 def test_bootstrap_initialize_conflicts_after_first_user(client):
     first = client.post(
         "/api/v1/bootstrap/initialize",

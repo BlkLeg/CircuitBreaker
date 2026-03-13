@@ -121,6 +121,7 @@ export default function MapCanvasOverlays({
         <div style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }}>
           <svg width="100%" height="100%" style={{ display: 'block', overflow: 'visible' }}>
             {visualLines.map((line) => {
+              if (!line.startFlow || !line.endFlow) return null;
               const style = CONNECTION_STYLES[line.lineType] || CONNECTION_STYLES.ethernet;
               const start = flowToScreenPoint(line.startFlow, viewport);
               const end = flowToScreenPoint(line.endFlow, viewport);

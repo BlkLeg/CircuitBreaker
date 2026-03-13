@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -149,34 +151,38 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
 
     if cert.type == "letsencrypt":
         try:
-            result = subprocess.run(
-                [
-                    "certbot",
-                    "certonly",
-                    "--standalone",
-                    "--non-interactive",
-                    "--agree-tos",
-                    "--email",
-                    "admin@localhost",
-                    "-d",
-                    cert.domain,
-                    "--cert-path",
-                    "/tmp/cb_cert.pem",
-                    "--key-path",
-                    "/tmp/cb_key.pem",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode != 0:
-                _logger.error("certbot renewal failed for %s: %s", cert.domain, result.stderr)
-                return cert
+            tmp_root = Path("/data/tmp")
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=str(tmp_root)) as tmp_dir:
+                cert_path = Path(tmp_dir) / "cb_cert.pem"
+                key_path = Path(tmp_dir) / "cb_key.pem"
 
-            with open("/tmp/cb_cert.pem") as f:
-                new_cert_pem = f.read()
-            with open("/tmp/cb_key.pem") as f:
-                new_key_pem = f.read()
+                result = subprocess.run(
+                    [
+                        "certbot",
+                        "certonly",
+                        "--standalone",
+                        "--non-interactive",
+                        "--agree-tos",
+                        "--email",
+                        "admin@localhost",
+                        "-d",
+                        cert.domain,
+                        "--cert-path",
+                        str(cert_path),
+                        "--key-path",
+                        str(key_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    _logger.error("certbot renewal failed for %s: %s", cert.domain, result.stderr)
+                    return cert
+
+                new_cert_pem = cert_path.read_text(encoding="utf-8")
+                new_key_pem = key_path.read_text(encoding="utf-8")
 
             parsed = x509.load_pem_x509_certificate(new_cert_pem.encode())
             cert.cert_pem = new_cert_pem

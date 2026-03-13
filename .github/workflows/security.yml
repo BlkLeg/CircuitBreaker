@@ -36,17 +36,15 @@ jobs:
         run: npm ci
       - name: Run Snyk scan
         uses: snyk/actions/python@master
-        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --all-projects --sarif-file-output=snyk-results.sarif
+          args: --all-projects --severity-threshold=high --sarif-file-output=snyk-results.sarif
       - name: Upload Snyk results to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: snyk-results.sarif
-        continue-on-error: true
 
   trivy-fs:
     name: Trivy Filesystem Scan
@@ -61,6 +59,7 @@ jobs:
           format: sarif
           output: trivy-fs-results.sarif
           severity: 'CRITICAL,HIGH'
+          exit-code: '1'
       - name: Upload Trivy filesystem results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -79,6 +78,8 @@ jobs:
           scan-ref: .
           format: sarif
           output: trivy-config-results.sarif
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
       - name: Upload Trivy config results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -97,7 +98,7 @@ jobs:
       - name: Install Semgrep
         run: pip install semgrep
       - name: Run Semgrep
-        run: semgrep scan --config p/default --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/ docker/ || true
+        run: semgrep scan --config p/default --error --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/ docker/
       - name: Upload Semgrep results
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('semgrep.sarif') != ''
@@ -116,7 +117,7 @@ jobs:
       - name: Install Bandit
         run: pip install bandit
       - name: Run Bandit
-        run: bandit -r apps/backend/src/ -f sarif -o bandit-results.sarif || true
+        run: bandit -r apps/backend/src/ -ll --skip B101 -f sarif -o bandit-results.sarif
       - name: Upload Bandit results
         uses: github/codeql-action/upload-sarif@v4
         if: always() && hashFiles('bandit-results.sarif') != ''
@@ -169,6 +170,7 @@ jobs:
           format: sarif
           output: trivy-image-results.sarif
           severity: 'CRITICAL,HIGH'
+          exit-code: '1'
       - name: Upload Trivy image results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -185,3 +187,28 @@ jobs:
           for f in Dockerfile.mono docker/backend.Dockerfile docker/frontend.Dockerfile; do
             [ -f "$f" ] && docker run --rm -v "$(pwd):/repo" -w /repo hadolint/hadolint hadolint "$f"
           done
+
+  runtime-user:
+    name: Runtime User Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images for user checks
+        run: |
+          docker build -f Dockerfile -t cb-usercheck-main .
+          docker build -f docker/backend.Dockerfile -t cb-usercheck-backend .
+          docker build -f Dockerfile.mono -t cb-usercheck-mono .
+      - name: Enforce non-root runtime user
+        run: |
+          check_user() {
+            image="$1"
+            user="$(docker inspect "$image" --format '{{.Config.User}}')"
+            if [ -z "$user" ] || [ "$user" = "root" ] || [ "$user" = "0" ] || [ "$user" = "0:0" ] || [ "$user" = "root:root" ]; then
+              echo "[runtime-user] FAIL $image runs as root (Config.User='$user')"
+              exit 1
+            fi
+            echo "[runtime-user] PASS $image user='$user'"
+          }
+          check_user cb-usercheck-main
+          check_user cb-usercheck-backend
+          check_user cb-usercheck-mono

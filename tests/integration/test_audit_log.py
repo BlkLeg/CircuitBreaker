@@ -159,6 +159,84 @@ def test_login_failure_produces_warn_log(client):
     assert entry.get("severity") == "warn"
 
 
+def test_logs_enrich_actor_fields_with_name_fallback(client, db, auth_headers):
+    user = db.query(models.User).filter(models.User.email == "test@example.com").one()
+    user.profile_photo = "avatar-test.png"
+    user.gravatar_hash = "fallbackhash123"
+    db.add(
+        models.Log(
+            category="audit",
+            action="name_fallback_enrichment",
+            actor=user.email,
+            actor_name=user.email,
+            actor_id=None,
+            actor_gravatar_hash=None,
+            entity_type="service",
+            level="info",
+            severity="info",
+        )
+    )
+    db.commit()
+
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
+    entry = next((log for log in logs if log.get("action") == "name_fallback_enrichment"), None)
+    assert entry is not None
+    assert entry.get("actor_gravatar_hash") == "fallbackhash123"
+    assert entry.get("actor_profile_photo_url") == "/uploads/profiles/avatar-test.png"
+
+
+def test_logs_keep_stored_gravatar_while_resolving_profile_photo(client, db, auth_headers):
+    user = db.query(models.User).filter(models.User.email == "test@example.com").one()
+    user.profile_photo = "avatar-precedence.png"
+    user.gravatar_hash = "dbhash123"
+    db.add(
+        models.Log(
+            category="audit",
+            action="name_fallback_gravatar_precedence",
+            actor=user.email,
+            actor_name=user.email,
+            actor_id=None,
+            actor_gravatar_hash="storedhash999",
+            entity_type="service",
+            level="info",
+            severity="info",
+        )
+    )
+    db.commit()
+
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
+    entry = next(
+        (log for log in logs if log.get("action") == "name_fallback_gravatar_precedence"),
+        None,
+    )
+    assert entry is not None
+    assert entry.get("actor_gravatar_hash") == "storedhash999"
+    assert entry.get("actor_profile_photo_url") == "/uploads/profiles/avatar-precedence.png"
+
+
+def test_logs_do_not_enrich_reserved_system_actor_name(client, db, auth_headers):
+    db.add(
+        models.Log(
+            category="audit",
+            action="reserved_actor_no_fallback",
+            actor="system",
+            actor_name="system",
+            actor_id=None,
+            actor_gravatar_hash=None,
+            entity_type="service",
+            level="info",
+            severity="info",
+        )
+    )
+    db.commit()
+
+    logs = client.get("/api/v1/logs", headers=auth_headers).json()["logs"]
+    entry = next((log for log in logs if log.get("action") == "reserved_actor_no_fallback"), None)
+    assert entry is not None
+    assert entry.get("actor_gravatar_hash") is None
+    assert entry.get("actor_profile_photo_url") is None
+
+
 # ── Credential safety ─────────────────────────────────────────────────────────
 
 def test_settings_update_log_never_contains_credentials(client):

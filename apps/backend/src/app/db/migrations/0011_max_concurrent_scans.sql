@@ -1,0 +1,2 @@
+ALTER TABLE app_settings
+    ADD COLUMN IF NOT EXISTS max_concurrent_scans INTEGER NOT NULL DEFAULT 2;

@@ -59,6 +59,7 @@ def log_audit(
         # Resolve actor display info from DB when possible.
         actor_email: str | None = None
         actor_name: str | None = None
+        actor_gravatar_hash: str | None = None
         if user_id is not None:
             try:
                 from app.db.models import User
@@ -67,6 +68,7 @@ def log_audit(
                 if u:
                     actor_email = u.email
                     actor_name = u.display_name or u.email
+                    actor_gravatar_hash = u.gravatar_hash
             except Exception as e:
                 _logger.debug(
                     "Audit: could not resolve actor for user_id=%s: %s", user_id, e, exc_info=True
@@ -92,6 +94,7 @@ def log_audit(
             actor=actor_email,
             actor_id=user_id,
             actor_name=actor_name,
+            actor_gravatar_hash=actor_gravatar_hash,
             entity_type=resource or None,
             ip_address=None if redact_ip else ip,
             user_agent=ua,

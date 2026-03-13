@@ -47,6 +47,7 @@ def test_configure_runtime_sets_defaults_from_config(
                 f"data_dir: {data_dir}",
                 f"static_dir: {static_dir}",
                 "workers: 3",
+                "database_url: postgresql://breaker:test@127.0.0.1:5432/circuitbreaker",
             ]
         ),
         encoding="utf-8",
@@ -83,7 +84,7 @@ def test_configure_runtime_sets_defaults_from_config(
     assert (data_dir / "uploads").exists()
     assert Path(os.environ["CB_DATA_DIR"]) == data_dir
     assert os.environ["STATIC_DIR"] == str(static_dir)
-    assert os.environ["DATABASE_URL"].endswith("app.db")
+    assert os.environ["DATABASE_URL"].startswith("postgresql://")
 
 
 def test_configure_runtime_requires_both_tls_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -91,6 +92,7 @@ def test_configure_runtime_requires_both_tls_paths(monkeypatch: pytest.MonkeyPat
     config_path.write_text("tls_enabled: true\ntls_cert_file: /tmp/server.crt\n", encoding="utf-8")
 
     monkeypatch.delenv("CB_TLS_KEY_FILE", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://breaker:test@127.0.0.1:5432/circuitbreaker")
 
     with pytest.raises(SystemExit, match="Both TLS cert and key files are required"):
         configure_runtime(
@@ -104,3 +106,22 @@ def test_configure_runtime_requires_both_tls_paths(monkeypatch: pytest.MonkeyPat
                 version=False,
             )
         )
+
+
+def test_configure_runtime_defaults_host_to_loopback(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://breaker:test@127.0.0.1:5432/circuitbreaker")
+    monkeypatch.delenv("HOST", raising=False)
+
+    options = configure_runtime(
+        argparse.Namespace(
+            config=None,
+            host=None,
+            port=None,
+            workers=None,
+            ssl_certfile=None,
+            ssl_keyfile=None,
+            version=False,
+        )
+    )
+
+    assert options["host"] == "127.0.0.1"

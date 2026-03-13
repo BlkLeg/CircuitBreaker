@@ -3,13 +3,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Check, Layers, Map as MapIcon, RefreshCw, Server, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { getPendingResults, mergeResult } from '../../api/discovery.js';
+import { getPendingResults, mergeResult, enhancedBulkMerge } from '../../api/discovery.js';
 import { createMonitor } from '../../api/monitor.js';
 import { clustersApi } from '../../api/client.jsx';
 import { useToast } from '../common/Toast';
 import ReviewDrawer from './ReviewDrawer.jsx';
 import { HARDWARE_ROLES } from '../../config/hardwareRoles.js';
 import IconPickerModal, { IconImg } from '../common/IconPickerModal.jsx';
+import NetworkSelectorDropdown from './NetworkSelectorDropdown.jsx';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -218,6 +219,8 @@ export default function ReviewQueuePanel({ onCountChange }) {
   // Synchronous lock — prevents double-click race before React re-renders the disabled state
   const opLock = useRef(false);
   const [sourceFilter, setSourceFilter] = useState('all'); // 'all' | 'docker' | 'network'
+  const [selectedNetwork, setSelectedNetwork] = useState(null);
+  const [pendingAccept, setPendingAccept] = useState(null); // { resultIds: number[] } | null
 
   const load = useCallback(() => {
     setLoading(true);
@@ -256,6 +259,15 @@ export default function ReviewQueuePanel({ onCountChange }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!pendingAccept) return;
+    const handler = (e) => {
+      if (e.key === 'Escape') setPendingAccept(null);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [pendingAccept]);
 
   const removeResult = useCallback(
     (id) => {
@@ -452,6 +464,39 @@ export default function ReviewQueuePanel({ onCountChange }) {
     }
   };
 
+  const handleNetworkAccept = useCallback(async () => {
+    if (!pendingAccept || !selectedNetwork) return;
+    if (opLock.current) return;
+    opLock.current = true;
+    setSubmitting(true);
+    try {
+      const networkPayload = selectedNetwork.id
+        ? { existing_id: selectedNetwork.id }
+        : {
+            name: selectedNetwork.name,
+            ...(selectedNetwork.cidr ? { cidr: selectedNetwork.cidr } : {}),
+          };
+
+      await enhancedBulkMerge({
+        result_ids: pendingAccept.resultIds,
+        network: networkPayload,
+      });
+
+      setPendingAccept(null);
+      setSelectedIds(new Set());
+      toast.success(
+        `Accepted ${pendingAccept.resultIds.length} result${pendingAccept.resultIds.length === 1 ? '' : 's'} → ${selectedNetwork.name}`
+      );
+      load();
+    } catch {
+      toast.error('Failed to accept results');
+      setPendingAccept(null);
+    } finally {
+      opLock.current = false;
+      setSubmitting(false);
+    }
+  }, [pendingAccept, selectedNetwork, toast, load]);
+
   const handleBulkReject = async (ids) => {
     if (ids.size === 0 || !_beginOp()) return;
     try {
@@ -548,11 +593,24 @@ export default function ReviewQueuePanel({ onCountChange }) {
     iconPickerRowId === null ? null : displayResults.find((r) => r.id === iconPickerRowId);
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div
+      style={{
+        padding: '20px 24px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        height: '100%',
+        minHeight: 0,
+      }}
+    >
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Review Queue</h2>
-        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{total} pending</span>
+        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+          {sourceFilter !== 'all'
+            ? `${displayResults.length} shown · ${total} pending`
+            : `${total} pending`}
+        </span>
 
         {/* Source filter chips */}
         <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
@@ -587,6 +645,12 @@ export default function ReviewQueuePanel({ onCountChange }) {
             </button>
           ))}
         </div>
+
+        <NetworkSelectorDropdown
+          value={selectedNetwork}
+          onChange={setSelectedNetwork}
+          disabled={submitting}
+        />
 
         <div style={{ flex: 1 }} />
         <button type="button" className="scan-toolbar-btn" title="Refresh" onClick={load}>
@@ -634,7 +698,13 @@ export default function ReviewQueuePanel({ onCountChange }) {
           className="btn btn-primary"
           style={{ fontSize: 11, padding: '4px 10px' }}
           disabled={submitting || !someSelected}
-          onClick={() => handleBulkAccept(selectedIds)}
+          onClick={() => {
+            if (selectedNetwork) {
+              setPendingAccept({ resultIds: Array.from(selectedIds), isAll: false });
+            } else {
+              handleBulkAccept(selectedIds);
+            }
+          }}
         >
           Accept
         </button>
@@ -691,7 +761,14 @@ export default function ReviewQueuePanel({ onCountChange }) {
           className="btn btn-secondary"
           style={{ fontSize: 11, padding: '4px 10px' }}
           disabled={submitting || displayResults.length === 0}
-          onClick={() => handleBulkAccept(new Set(displayResults.map((r) => r.id)))}
+          onClick={() => {
+            const allIds = displayResults.map((r) => r.id);
+            if (selectedNetwork) {
+              setPendingAccept({ resultIds: allIds, isAll: true });
+            } else {
+              handleBulkAccept(new Set(allIds));
+            }
+          }}
         >
           Accept All
         </button>
@@ -706,208 +783,264 @@ export default function ReviewQueuePanel({ onCountChange }) {
         </button>
       </div>
 
-      {/* Table */}
-      {displayResults.length === 0 ? (
-        <p
+      {/* Network accept confirmation banner */}
+      {pendingAccept && selectedNetwork && (
+        <div
           style={{
-            color: 'var(--color-text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 14,
+            background: 'var(--color-bg-alt, #0e1e2e)',
+            border: '1px solid rgba(56,189,248,0.3)',
+            borderRadius: 8,
+            padding: '12px 16px',
+            margin: '0 0 12px',
             fontSize: 13,
-            textAlign: 'center',
-            padding: '32px 0',
-            margin: 0,
           }}
         >
-          No pending results to review
-        </p>
-      ) : (
-        <div className="scan-table-wrap">
-          <table className="scan-table">
-            <thead>
-              <tr>
-                <th className="col-checkbox">
-                  <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
-                </th>
-                <th>IP Address</th>
-                <th>Hostname</th>
-                <th>MAC</th>
-                <th title="Click icon to change">Icon</th>
-                <th>OS / Vendor</th>
-                <th>Role</th>
-                <th title="Enable uptime ping monitor after accept">Monitor</th>
-                <th>State</th>
-                <th>Source</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayResults.map((r) => {
-                const edits = localEdits.get(r.id) || {};
-                const docker = isDockerResult(r);
-                const hostname = edits.hostname ?? (r.hostname || r.snmp_sys_name || '');
-                const role = edits.role ?? (docker ? 'lxc' : 'server');
-                const iconSlug = edits.iconSlug ?? (docker ? 'docker' : null);
-                const monitorEnabled = edits.monitor ?? r.state === 'new';
-                const osVendor = [r.os_family, r.os_vendor].filter(Boolean).join(' / ') || '—';
-                return (
-                  <tr
-                    key={r.id}
-                    className={selectedIds.has(r.id) ? 'selected' : ''}
-                    onClick={() => setDrawerResult(r)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <td
-                      className="col-checkbox"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSelect(r.id);
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(r.id)}
-                        onChange={() => toggleSelect(r.id)}
-                      />
-                    </td>
-
-                    <td className="col-target" style={{ fontFamily: 'monospace' }}>
-                      {r.ip_address}
-                    </td>
-
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <input
-                        className="cb-input"
-                        style={{ fontSize: 12, padding: '3px 7px', width: '100%', minWidth: 110 }}
-                        value={hostname}
-                        placeholder={r.ip_address}
-                        onChange={(e) => setEdit(r.id, 'hostname', e.target.value)}
-                      />
-                    </td>
-
-                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                      {r.mac_address || '—'}
-                    </td>
-
-                    {/* Icon picker cell */}
-                    <td
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIconPickerRowId(r.id);
-                      }}
-                      title={
-                        iconSlug ? `Icon: ${iconSlug} — click to change` : 'Click to assign icon'
-                      }
-                      style={{ cursor: 'pointer', textAlign: 'center' }}
-                    >
-                      <div
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          width: 28,
-                          height: 28,
-                          borderRadius: 6,
-                          border: `1px ${iconSlug ? 'solid' : 'dashed'} var(--color-border)`,
-                          background: iconSlug ? 'var(--color-surface)' : 'transparent',
-                        }}
-                      >
-                        {iconSlug ? (
-                          <IconImg slug={iconSlug} size={20} />
-                        ) : (
-                          <span style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>
-                            {'+'}
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    <td style={{ fontSize: 12 }}>{osVendor}</td>
-
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <select
-                        className="cb-input"
-                        style={{ fontSize: 12, padding: '3px 7px' }}
-                        value={role}
-                        onChange={(e) => setEdit(r.id, 'role', e.target.value)}
-                      >
-                        {HARDWARE_ROLES.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-
-                    {/* Monitor toggle */}
-                    <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
-                      <Toggle
-                        checked={monitorEnabled}
-                        onChange={(v) => setEdit(r.id, 'monitor', v)}
-                      />
-                    </td>
-
-                    <td>
-                      <StatePill state={r.state} />
-                    </td>
-
-                    <td>
-                      {docker ? (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            fontSize: 11,
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          <img src="/icons/vendors/docker.svg" width={14} height={14} alt="" />
-                          Docker
-                        </span>
-                      ) : (
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            fontSize: 11,
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          <Server size={14} />
-                          Network
-                        </span>
-                      )}
-                    </td>
-
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button
-                          type="button"
-                          className="scan-toolbar-btn"
-                          title="Accept"
-                          style={{ color: '#22c55e' }}
-                          onClick={() => handleAccept(r)}
-                        >
-                          <Check size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="scan-toolbar-btn"
-                          title="Reject"
-                          style={{ color: '#ef4444' }}
-                          onClick={() => handleReject(r)}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <span style={{ fontSize: 18 }}>🌐</span>
+          <div style={{ flex: 1, color: 'var(--color-text, #c0c0e0)', lineHeight: 1.6 }}>
+            {pendingAccept.isAll ? 'Accept all' : 'Accept'}{' '}
+            <strong style={{ color: '#38bdf8' }}>
+              {pendingAccept.resultIds.length} result
+              {pendingAccept.resultIds.length === 1 ? '' : 's'}
+            </strong>
+            {!pendingAccept.isAll && (
+              <span style={{ color: 'var(--color-text-muted)', fontWeight: 400 }}> (selected)</span>
+            )}{' '}
+            and assign to{' '}
+            <strong style={{ color: '#38bdf8' }}>
+              {selectedNetwork.name}
+              {selectedNetwork.cidr ? ` (${selectedNetwork.cidr})` : ''}
+            </strong>
+            ?
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: 12 }}
+              onClick={() => setPendingAccept(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 12 }}
+              onClick={handleNetworkAccept}
+              disabled={submitting}
+            >
+              {submitting ? 'Accepting…' : 'Confirm'}
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Table — flex-scroll wrapper so it fills remaining height and scrolls independently */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {displayResults.length === 0 ? (
+          <p
+            style={{
+              color: 'var(--color-text-muted)',
+              fontSize: 13,
+              textAlign: 'center',
+              padding: '32px 0',
+              margin: 0,
+            }}
+          >
+            No pending results to review
+          </p>
+        ) : (
+          <div className="scan-table-wrap">
+            <table className="scan-table">
+              <thead>
+                <tr>
+                  <th className="col-checkbox">
+                    <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
+                  </th>
+                  <th>IP Address</th>
+                  <th>Hostname</th>
+                  <th>MAC</th>
+                  <th title="Click icon to change">Icon</th>
+                  <th>OS / Vendor</th>
+                  <th>Role</th>
+                  <th title="Enable uptime ping monitor after accept">Monitor</th>
+                  <th>State</th>
+                  <th>Source</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayResults.map((r) => {
+                  const edits = localEdits.get(r.id) || {};
+                  const docker = isDockerResult(r);
+                  const hostname = edits.hostname ?? (r.hostname || r.snmp_sys_name || '');
+                  const role = edits.role ?? (docker ? 'lxc' : 'server');
+                  const iconSlug = edits.iconSlug ?? (docker ? 'docker' : null);
+                  const monitorEnabled = edits.monitor ?? r.state === 'new';
+                  const osVendor = [r.os_family, r.os_vendor].filter(Boolean).join(' / ') || '—';
+                  return (
+                    <tr
+                      key={r.id}
+                      className={selectedIds.has(r.id) ? 'selected' : ''}
+                      onClick={() => setDrawerResult(r)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <td
+                        className="col-checkbox"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelect(r.id);
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(r.id)}
+                          onChange={() => toggleSelect(r.id)}
+                        />
+                      </td>
+
+                      <td className="col-target" style={{ fontFamily: 'monospace' }}>
+                        {r.ip_address}
+                      </td>
+
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          className="cb-input"
+                          style={{ fontSize: 12, padding: '3px 7px', width: '100%', minWidth: 110 }}
+                          value={hostname}
+                          placeholder={r.ip_address}
+                          onChange={(e) => setEdit(r.id, 'hostname', e.target.value)}
+                        />
+                      </td>
+
+                      <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                        {r.mac_address || '—'}
+                      </td>
+
+                      {/* Icon picker cell */}
+                      <td
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIconPickerRowId(r.id);
+                        }}
+                        title={
+                          iconSlug ? `Icon: ${iconSlug} — click to change` : 'Click to assign icon'
+                        }
+                        style={{ cursor: 'pointer', textAlign: 'center' }}
+                      >
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 28,
+                            height: 28,
+                            borderRadius: 6,
+                            border: `1px ${iconSlug ? 'solid' : 'dashed'} var(--color-border)`,
+                            background: iconSlug ? 'var(--color-surface)' : 'transparent',
+                          }}
+                        >
+                          {iconSlug ? (
+                            <IconImg slug={iconSlug} size={20} />
+                          ) : (
+                            <span style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>
+                              {'+'}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td style={{ fontSize: 12 }}>{osVendor}</td>
+
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <select
+                          className="cb-input"
+                          style={{ fontSize: 12, padding: '3px 7px' }}
+                          value={role}
+                          onChange={(e) => setEdit(r.id, 'role', e.target.value)}
+                        >
+                          {HARDWARE_ROLES.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+
+                      {/* Monitor toggle */}
+                      <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
+                        <Toggle
+                          checked={monitorEnabled}
+                          onChange={(v) => setEdit(r.id, 'monitor', v)}
+                        />
+                      </td>
+
+                      <td>
+                        <StatePill state={r.state} />
+                      </td>
+
+                      <td>
+                        {docker ? (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: 11,
+                              color: 'var(--color-text-muted)',
+                            }}
+                          >
+                            <img src="/icons/vendors/docker.svg" width={14} height={14} alt="" />
+                            Docker
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: 11,
+                              color: 'var(--color-text-muted)',
+                            }}
+                          >
+                            <Server size={14} />
+                            Network
+                          </span>
+                        )}
+                      </td>
+
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button
+                            type="button"
+                            className="scan-toolbar-btn"
+                            title="Accept"
+                            style={{ color: '#22c55e' }}
+                            onClick={() => handleAccept(r)}
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="scan-toolbar-btn"
+                            title="Reject"
+                            style={{ color: '#ef4444' }}
+                            onClick={() => handleReject(r)}
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Icon picker modal */}
       {iconPickerResult && (

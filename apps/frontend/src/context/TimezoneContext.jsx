@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { settingsApi } from '../api/client.jsx';
+import { useSettings } from './SettingsContext.jsx';
 
 const _browserTz = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
@@ -10,24 +10,17 @@ export const TimezoneContext = createContext({
 
 export function TimezoneProvider({ children }) {
   const [timezone, _setTimezone] = useState(_browserTz);
+  const { settings } = useSettings();
 
-  // Load the persisted timezone from the settings API on mount.
-  // Falls back to browser-detected timezone on network/API error.
+  // Sync from SettingsContext whenever settings.timezone changes.
+  // This handles the initial load AND re-syncs after saves (reloadSettings()).
+  // Falls back to browser-detected timezone until settings are loaded.
   useEffect(() => {
-    settingsApi
-      .get()
-      .then((res) => {
-        const tz = res.data?.timezone;
-        if (tz) {
-          _setTimezone(tz);
-        }
-      })
-      .catch(() => {
-        // Non-critical — keep browser timezone on error
-      });
-  }, []);
+    const tz = settings?.timezone;
+    if (tz) _setTimezone(tz);
+  }, [settings?.timezone]);
 
-  // Pure state setter — callers are responsible for persisting to the API.
+  // Allow local optimistic updates (e.g. from SettingsPage before the reload completes).
   const setTimezone = useCallback((tz) => {
     _setTimezone(tz);
   }, []);

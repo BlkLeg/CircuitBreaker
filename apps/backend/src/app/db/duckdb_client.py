@@ -24,8 +24,14 @@ _TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 def _validate_table_name(table: str) -> None:
     """Raise ValueError if table is not a safe SQL identifier (prevents SQL injection)."""
-    if not _TABLE_NAME_RE.match(table):
+    if not _TABLE_NAME_RE.fullmatch(table):
         raise ValueError(f"Invalid table name: {table!r}; must match [a-zA-Z_][a-zA-Z0-9_]*")
+
+
+def _quoted_table_identifier(table: str) -> str:
+    """Return a SQL-safe quoted identifier after strict validation."""
+    _validate_table_name(table)
+    return f'"{table}"'
 
 
 def is_available() -> bool:
@@ -61,20 +67,23 @@ def ingest_csv(path: str, table: str) -> int:
     is unavailable — callers should check :func:`is_available` first.
     Raises ``ValueError`` if *table* is not a safe SQL identifier.
     """
-    _validate_table_name(table)
+    table_identifier = _quoted_table_identifier(table)
     if not is_available():
         raise RuntimeError("DuckDB is not available; cannot ingest CSV")
     engine = get_engine("analytics")
     with engine.connect() as conn:
-        # table name is validated above as a safe identifier; dynamic SQL below is not user-controlled.
+        # Table identifier is strictly validated and quoted; data values stay parameterized.
         conn.execute(
             text(
-                f"CREATE TABLE IF NOT EXISTS {table} AS SELECT * FROM read_csv_auto(:path) LIMIT 0"
-            )
+                f"CREATE TABLE IF NOT EXISTS {table_identifier} AS "
+                "SELECT * FROM read_csv_auto(:path) LIMIT 0"
+            ),
+            {"path": path},
         )
         conn.execute(
-            text(f"INSERT INTO {table} SELECT * FROM read_csv_auto(:path)"), {"path": path}
+            text(f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"),
+            {"path": path},
         )
-        row_count = conn.execute(text(f"SELECT count(*) FROM {table}")).scalar() or 0
+        row_count = conn.execute(text(f"SELECT count(*) FROM {table_identifier}")).scalar() or 0
         conn.commit()
     return row_count

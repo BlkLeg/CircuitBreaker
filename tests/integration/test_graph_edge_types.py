@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.db import models
@@ -110,3 +112,51 @@ def test_compute_unit_bandwidth_fields_persist_through_api(client):
     updated = patched.json()
     assert updated["download_speed_mbps"] == 850
     assert updated["upload_speed_mbps"] == 150
+
+
+def test_save_layout_does_not_mutate_topology_edges(client):
+    hw_a = client.post("/api/v1/hardware", json={"name": "Layout Host A"})
+    hw_b = client.post("/api/v1/hardware", json={"name": "Layout Host B"})
+    assert hw_a.status_code == 201
+    assert hw_b.status_code == 201
+    hw_a_id = hw_a.json()["id"]
+    hw_b_id = hw_b.json()["id"]
+
+    connection = client.post(
+        f"/api/v1/hardware/{hw_a_id}/connections",
+        json={"target_hardware_id": hw_b_id},
+    )
+    assert connection.status_code == 201
+
+    params = {"include": "hardware"}
+    before_topology = client.get("/api/v1/graph/topology", params=params)
+    assert before_topology.status_code == 200
+    before_edges = sorted(
+        (edge["id"], edge["source"], edge["target"], edge["data"].get("relation"))
+        for edge in before_topology.json()["edges"]
+    )
+    assert any(edge_id.startswith("e-hh-") for edge_id, *_ in before_edges)
+
+    layout_payload = {
+        "nodes": {
+            f"hw-{hw_a_id}": {"x": 9999, "y": 9999},
+            f"hw-{hw_b_id}": {"x": -5000, "y": 2500},
+        },
+        "edges": {},
+        "boundaries": [],
+        "labels": [],
+        "visualLines": [],
+    }
+    save_resp = client.post(
+        "/api/v1/graph/layout",
+        json={"name": "default", "layout_data": json.dumps(layout_payload)},
+    )
+    assert save_resp.status_code == 200
+
+    after_topology = client.get("/api/v1/graph/topology", params=params)
+    assert after_topology.status_code == 200
+    after_edges = sorted(
+        (edge["id"], edge["source"], edge["target"], edge["data"].get("relation"))
+        for edge in after_topology.json()["edges"]
+    )
+    assert after_edges == before_edges

@@ -9,12 +9,13 @@ from app.core.nmap_args import validate_nmap_arguments
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+_HEALTHY_FILE = Path("/data/worker-discovery.healthy")
 
 
 def _touch_healthy() -> None:
     """Update heartbeat file so the container healthcheck can verify liveness."""
     try:
+        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _HEALTHY_FILE.write_text(str(time.time()))
     except OSError:
         pass
@@ -129,7 +130,15 @@ async def run_worker(shutdown_event: asyncio.Event = None):
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 60)
 
-    semaphore = asyncio.Semaphore(2)
+    from app.db.session import SessionLocal
+    from app.services.settings_service import get_or_create_settings
+
+    with SessionLocal() as _db:
+        _settings = get_or_create_settings(_db)
+        _max_concurrent = max(1, getattr(_settings, "max_concurrent_scans", 2) or 2)
+
+    semaphore = asyncio.Semaphore(_max_concurrent)
+    logger.info("Discovery worker: max_concurrent_scans=%d", _max_concurrent)
     await _setup_jetstream(semaphore)
     logger.info("Discovery worker started")
     _touch_healthy()

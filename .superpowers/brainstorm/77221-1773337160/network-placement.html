@@ -1,0 +1,198 @@
+<h2>Where should the Network selector live?</h2>
+<p class="subtitle">Three ways to add network assignment to the Review Queue top bar</p>
+
+<style>
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a3e;
+    border-radius: 8px;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    font-family: monospace;
+    margin: 12px 0 4px;
+  }
+  .chip {
+    background: #2a2a3e;
+    border: 1px solid #3a3a5e;
+    border-radius: 20px;
+    padding: 4px 10px;
+    color: #a0a0c0;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .chip.active {
+    background: rgba(249,115,22,0.15);
+    border-color: #f97316;
+    color: #f97316;
+  }
+  .btn {
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    border: none;
+    cursor: pointer;
+    font-family: monospace;
+  }
+  .btn-primary { background: #f97316; color: white; }
+  .btn-danger { background: #ef4444; color: white; }
+  .btn-secondary { background: #2a2a3e; color: #a0a0c0; border: 1px solid #3a3a5e; }
+  .btn-network { background: rgba(56,189,248,0.15); color: #38bdf8; border: 1px solid rgba(56,189,248,0.35); }
+  .divider { width: 1px; height: 20px; background: #2a2a3e; margin: 0 2px; }
+  .spacer { flex: 1; }
+  .count { font-size: 11px; color: #6b6b8a; }
+  .net-select {
+    background: #1e2a38;
+    border: 1px solid rgba(56,189,248,0.4);
+    border-radius: 6px;
+    color: #38bdf8;
+    font-size: 11px;
+    padding: 4px 10px;
+    font-family: monospace;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .net-badge {
+    background: rgba(56,189,248,0.12);
+    border: 1px solid rgba(56,189,248,0.3);
+    border-radius: 20px;
+    padding: 3px 10px;
+    color: #38bdf8;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .net-label { color: #6b6b8a; font-size: 10px; margin-right: 2px; }
+  .mockup-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #6b6b8a;
+    margin: 20px 0 0;
+  }
+  .desc {
+    font-size: 12px;
+    color: #8888a8;
+    margin: 4px 0 0;
+    line-height: 1.5;
+  }
+  .arrow { font-size: 10px; color: #6b6b8a; }
+</style>
+
+<div class="options">
+
+  <!-- Option A -->
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Persistent top-bar selector</h3>
+      <p>A "Target Network" dropdown always visible. Setting it pre-assigns all accepts to that network — until cleared.</p>
+
+      <div class="mockup-label">When no network set</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="divider"></div>
+        <span class="net-select"><span class="net-label">NETWORK</span> Select… <span class="arrow">▾</span></span>
+        <div class="spacer"></div>
+        <span class="count">3 selected</span>
+        <div class="divider"></div>
+        <button class="btn btn-primary">Accept</button>
+        <button class="btn btn-danger">Reject</button>
+        <button class="btn btn-secondary">Cluster</button>
+      </div>
+
+      <div class="mockup-label">After picking "LAN-192.168.1.0/24"</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="divider"></div>
+        <span class="net-select" style="border-color:#38bdf8;"><span class="net-label">NETWORK</span> LAN-192.168.1.0/24 <span style="color:#ef4444;cursor:pointer;margin-left:4px">×</span></span>
+        <div class="spacer"></div>
+        <span class="count">3 selected</span>
+        <div class="divider"></div>
+        <button class="btn btn-primary">Accept</button>
+        <button class="btn btn-danger">Reject</button>
+        <button class="btn btn-secondary">Cluster</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option B -->
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Dedicated "Add to Network" action button</h3>
+      <p>A new button alongside Accept/Reject. Clicking it opens a small picker, then immediately merges selected results into the chosen network.</p>
+
+      <div class="mockup-label">With items selected</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="spacer"></div>
+        <span class="count">3 selected</span>
+        <div class="divider"></div>
+        <button class="btn btn-primary">Accept</button>
+        <button class="btn btn-danger">Reject</button>
+        <button class="btn btn-network">＋ Add to Network</button>
+        <button class="btn btn-secondary">Cluster</button>
+      </div>
+
+      <div class="mockup-label">No items selected — button hidden</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary">Accept All</button>
+        <button class="btn btn-secondary">Reject All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option C -->
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Network context badge (always-on)</h3>
+      <p>A persistent badge in the top bar showing the active network context. Clicking opens a popover to change it. The "Accept All" button changes to "Accept All → [Network]" when set.</p>
+
+      <div class="mockup-label">Active context set</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="divider"></div>
+        <span class="net-badge">🌐 LAN 192.168.1.0/24 <span class="arrow">▾</span></span>
+        <div class="spacer"></div>
+        <span class="count">3 selected</span>
+        <div class="divider"></div>
+        <button class="btn btn-primary">Accept → LAN</button>
+        <button class="btn btn-danger">Reject</button>
+        <button class="btn btn-secondary">Cluster</button>
+      </div>
+
+      <div class="mockup-label">No context set</div>
+      <div class="topbar">
+        <span class="chip active">All</span>
+        <span class="chip">Docker</span>
+        <span class="chip">Network</span>
+        <div class="divider"></div>
+        <span class="net-badge" style="border-color:#3a3a5e;color:#6b6b8a;">No Network <span class="arrow">▾</span></span>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary">Accept All</button>
+        <button class="btn btn-secondary">Reject All</button>
+      </div>
+    </div>
+  </div>
+
+</div>

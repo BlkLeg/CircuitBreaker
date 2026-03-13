@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -16,18 +17,29 @@ from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+_HEALTHY_FILE = Path("/data/worker-webhook.healthy")
 
 
 def _touch_healthy() -> None:
     """Update heartbeat file so the container healthcheck can verify liveness."""
     try:
+        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _HEALTHY_FILE.write_text(str(time.time()))
     except OSError:
         pass
 
 
 _RETRY_BACKOFF_S = [1, 5, 30]
+
+
+def _safe_target_url_for_log(url: str) -> str:
+    """Return origin-only URL for logs so credentials and query strings never leak."""
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.hostname:
+        return "[invalid-webhook-url]"
+    if parts.port:
+        return f"{parts.scheme}://{parts.hostname}:{parts.port}"
+    return f"{parts.scheme}://{parts.hostname}"
 
 
 def _subject_matches(subject: str, enabled_events: list[str]) -> bool:
@@ -108,6 +120,7 @@ async def _dispatch_with_retries(
         _write_delivery(rule.id, subject, body_text, None, e, None)
         return
     headers = _build_headers(rule, body_bytes)
+    safe_target = _safe_target_url_for_log(rule.target_url)
     retry_count = max(0, min(int(rule.retries or 0), len(_RETRY_BACKOFF_S)))
     max_attempts = retry_count + 1
     for attempt in range(max_attempts):
@@ -124,7 +137,7 @@ async def _dispatch_with_retries(
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.info(
                 "Webhook dispatched to %s for %s: %s (attempt %d/%d)",
-                rule.target_url,
+                safe_target,
                 subject,
                 resp.status_code,
                 attempt + 1,
@@ -138,7 +151,7 @@ async def _dispatch_with_retries(
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             logger.error(
                 "Failed dispatch to %s (attempt %d/%d): %s",
-                rule.target_url,
+                safe_target,
                 attempt + 1,
                 max_attempts,
                 exc,

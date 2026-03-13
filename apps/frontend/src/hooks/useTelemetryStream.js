@@ -28,9 +28,9 @@ const BACKOFF_MULTIPLIER = 1.5;
 
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
-function getWsUrl() {
-  const proto = globalThis.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = globalThis.location.host;
+export function getTelemetryWsUrl(locationLike = globalThis.location) {
+  const proto = locationLike.protocol === 'https:' ? 'wss' : 'ws';
+  const host = locationLike.host;
   return `${proto}://${host}/api/v1/telemetry/stream`;
 }
 
@@ -72,7 +72,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
 
     if (!user && !token) return;
 
-    const ws = new WebSocket(getWsUrl());
+    const ws = new WebSocket(getTelemetryWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {

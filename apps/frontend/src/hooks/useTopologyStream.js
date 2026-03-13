@@ -47,9 +47,9 @@ const CAP_RETRY_DELAY = 60000;
 
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
-function getWsUrl() {
-  const proto = globalThis.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = globalThis.location.host;
+export function getTopologyWsUrl(locationLike = globalThis.location) {
+  const proto = locationLike.protocol === 'https:' ? 'wss' : 'ws';
+  const host = locationLike.host;
   return `${proto}://${host}/api/v1/topology/stream`;
 }
 
@@ -84,7 +84,7 @@ export function useTopologyStream() {
       return;
     }
 
-    const ws = new WebSocket(getWsUrl());
+    const ws = new WebSocket(getTopologyWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {

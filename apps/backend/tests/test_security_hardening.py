@@ -491,3 +491,122 @@ def test_docker_compose_read_only_filesystem():
     svc = data["services"]["circuitbreaker"]
     assert svc.get("read_only") is True, "docker-compose must set read_only: true"
     assert "tmpfs" in svc, "docker-compose must define tmpfs mounts for writable paths"
+
+
+def test_dockerfiles_have_non_root_user_directive():
+    import pathlib
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    dockerfiles = [
+        repo_root / "Dockerfile",
+        repo_root / "docker" / "backend.Dockerfile",
+        repo_root / "Dockerfile.mono",
+    ]
+    user_pattern = re.compile(r"^\s*USER\s+(.+?)\s*$", re.MULTILINE)
+    for dockerfile in dockerfiles:
+        content = dockerfile.read_text(encoding="utf-8")
+        matches = user_pattern.findall(content)
+        assert matches, f"{dockerfile} must declare a runtime USER"
+        final_user = matches[-1].strip().lower()
+        assert "root" not in final_user, f"{dockerfile} final USER must not be root: {final_user}"
+
+
+def test_backend_md5_usage_is_gravatar_only():
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    backend_src = repo_root / "apps" / "backend" / "src"
+    allowed = {
+        pathlib.Path("apps/backend/src/app/core/security.py"),
+    }
+    offenders: list[str] = []
+    for path in backend_src.rglob("*.py"):
+        rel = path.relative_to(repo_root)
+        if rel in allowed:
+            continue
+        if "hashlib.md5(" in path.read_text(encoding="utf-8"):
+            offenders.append(str(rel))
+
+    assert not offenders, f"Unexpected hashlib.md5 usage outside Gravatar helper: {offenders}"
+
+
+def test_frontend_md5_usage_is_gravatar_only():
+    import pathlib
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    frontend_src = repo_root / "apps" / "frontend" / "src"
+    allowed = {
+        pathlib.Path("apps/frontend/src/utils/md5.js"),
+    }
+    md5_call_pattern = re.compile(r"\bmd5\s*\(")
+    offenders: list[str] = []
+    for extension in ("*.js", "*.jsx", "*.ts", "*.tsx"):
+        for path in frontend_src.rglob(extension):
+            rel = path.relative_to(repo_root)
+            if rel in allowed:
+                continue
+            if md5_call_pattern.search(path.read_text(encoding="utf-8")):
+                offenders.append(str(rel))
+
+    assert not offenders, f"Unexpected md5() usage outside Gravatar helper: {offenders}"
+
+
+def test_nginx_configs_enforce_frame_deny_and_csp_parity():
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    for rel_path in ("docker/nginx.conf", "docker/nginx.mono.conf"):
+        content = (repo_root / rel_path).read_text(encoding="utf-8")
+        assert 'add_header X-Frame-Options         "DENY"' in content
+        assert "frame-ancestors 'none';" in content
+
+
+def test_nginx_non_ws_locations_strip_upgrade_headers():
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    for rel_path in ("docker/nginx.conf", "docker/nginx.mono.conf"):
+        content = (repo_root / rel_path).read_text(encoding="utf-8")
+        assert "location ^~ /api/" in content
+        assert 'proxy_set_header Upgrade           "";' in content
+        assert 'proxy_set_header Connection        "";' in content
+
+
+def test_tmp_paths_replaced_with_data_scoped_paths():
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    discovery_worker = (repo_root / "apps/backend/src/app/workers/discovery.py").read_text(
+        encoding="utf-8"
+    )
+    webhook_worker = (repo_root / "apps/backend/src/app/workers/webhook_worker.py").read_text(
+        encoding="utf-8"
+    )
+    notification_worker = (
+        repo_root / "apps/backend/src/app/workers/notification_worker.py"
+    ).read_text(encoding="utf-8")
+    cert_service = (repo_root / "apps/backend/src/app/services/certificate_service.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "/tmp/worker.healthy" not in discovery_worker
+    assert "/tmp/worker.healthy" not in webhook_worker
+    assert "/tmp/worker.healthy" not in notification_worker
+    assert "/tmp/cb_cert.pem" not in cert_service
+    assert "/tmp/cb_key.pem" not in cert_service
+    assert "TemporaryDirectory(dir=str(tmp_root))" in cert_service
+
+
+def test_security_workflow_is_enforcing_and_not_advisory():
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[3]
+    workflow = (repo_root / ".github/workflows/security.yml").read_text(encoding="utf-8")
+
+    assert "continue-on-error: true" not in workflow
+    assert "|| true" not in workflow
+    assert "severity: 'CRITICAL,HIGH'" in workflow
+    assert "exit-code: '1'" in workflow
+    assert "name: Runtime User Policy" in workflow

@@ -924,6 +924,7 @@ class AppSettings(Base):
     login_lockout_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
     invite_expiry_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     masquerade_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_concurrent_scans: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     # SMTP / Email delivery
     smtp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     smtp_host: Mapped[str] = mapped_column(String, nullable=False, default="")

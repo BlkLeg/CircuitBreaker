@@ -96,15 +96,16 @@ RUN chmod +x /entrypoint.sh
 # Expose port (default 8080)
 EXPOSE 8080
 
+# Run runtime process as non-root by default.
+USER breaker26:breaker26
+
 # Health check — uses Python stdlib (no wget/curl needed in the image).
 # start-period=45s: covers the entrypoint chown + Python/uvicorn cold start on Pi 4 SD card
 # (chown on a populated /data + uvicorn import chain can exceed 15s on arm64 slow storage).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health', timeout=4)" || exit 1
 
-# checkov:skip=CKV_DOCKER_3: Process runs as breaker26 via gosu in entrypoint; root needed for volume chown.
-# Container starts as root so that the entrypoint can fix /data volume ownership at runtime,
-# then drops to breaker26 (UID 1000) via gosu before execing the app.
+# checkov:skip=CKV_DOCKER_3: final runtime user is non-root (breaker26).
 # tini as PID 1 ensures SIGTERM is forwarded to uvicorn and zombie processes are reaped.
 # start.py is used instead of raw uvicorn to retain the AF_UNIX socketpair monkeypatch
 # required for LXC/Proxmox container environments.

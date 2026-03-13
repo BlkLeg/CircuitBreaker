@@ -112,6 +112,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def gravatar_hash(email: str) -> str:
+    # MD5 is required by the Gravatar protocol and is intentionally limited to this helper.
     return hashlib.md5(email.strip().lower().encode()).hexdigest()  # noqa: S324
 
 

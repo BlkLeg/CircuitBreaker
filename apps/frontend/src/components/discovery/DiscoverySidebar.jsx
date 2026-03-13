@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Plus, Layers, Settings2, ClipboardList } from 'lucide-react';
+import { Plus, Layers, Settings2, ClipboardList, Settings } from 'lucide-react';
 import LiveListenersPanel from './LiveListenersPanel.jsx';
 
 const FILTERS = [{ key: 'all', label: 'Scans', Icon: Layers }];
@@ -50,65 +50,77 @@ export default function DiscoverySidebar({
         </p>
       )}
 
-      <nav className="sidebar-nav">
-        {FILTERS.map(({ key, label, Icon }) => {
-          const count = jobCounts.get(key) ?? 0;
-          return (
-            <button
-              key={key}
-              type="button"
-              className={`sidebar-nav-item ${filter === key ? 'active' : ''}`}
-              onClick={() => onFilterChange(key)}
-            >
-              <span className="sidebar-nav-icon">
-                <Icon size={16} />
-              </span>
-              <span className="sidebar-nav-label">{label}</span>
-              {count > 0 && <span className="sidebar-nav-count">{count}</span>}
-            </button>
-          );
-        })}
-      </nav>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <nav className="sidebar-nav">
+          {FILTERS.map(({ key, label, Icon }) => {
+            const count = jobCounts.get(key) ?? 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                className={`sidebar-nav-item ${filter === key ? 'active' : ''}`}
+                onClick={() => onFilterChange(key)}
+              >
+                <span className="sidebar-nav-icon">
+                  <Icon size={16} />
+                </span>
+                <span className="sidebar-nav-label">{label}</span>
+                {count > 0 && <span className="sidebar-nav-count">{count}</span>}
+              </button>
+            );
+          })}
+        </nav>
 
-      <div className="sidebar-divider" />
-      <p className="sidebar-section-label">Configuration</p>
-      <nav className="sidebar-nav">
-        <button
-          type="button"
-          className={`sidebar-nav-item ${filter === 'proxmox' ? 'active' : ''}`}
-          onClick={() => onFilterChange('proxmox')}
-        >
-          <span className="sidebar-nav-icon">
-            <img src="/icons/vendors/proxmox-dark.svg" width={16} height={16} alt="" />
-          </span>
-          <span className="sidebar-nav-label">Proxmox VE</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar-nav-item ${filter === 'profiles' ? 'active' : ''}`}
-          onClick={() => onFilterChange('profiles')}
-        >
-          <span className="sidebar-nav-icon">
-            <Settings2 size={16} />
-          </span>
-          <span className="sidebar-nav-label">Scan Profiles</span>
-        </button>
-        <button
-          type="button"
-          className={`sidebar-nav-item ${filter === 'review' ? 'active' : ''}`}
-          onClick={() => onFilterChange('review')}
-        >
-          <span className="sidebar-nav-icon">
-            <ClipboardList size={16} />
-          </span>
-          <span className="sidebar-nav-label">Review Queue</span>
-          {pendingReviewCount > 0 && (
-            <span className="sidebar-nav-count">{pendingReviewCount}</span>
-          )}
-        </button>
-      </nav>
+        <div className="sidebar-divider" />
+        <p className="sidebar-section-label">Configuration</p>
+        <nav className="sidebar-nav">
+          <button
+            type="button"
+            className={`sidebar-nav-item ${filter === 'proxmox' ? 'active' : ''}`}
+            onClick={() => onFilterChange('proxmox')}
+          >
+            <span className="sidebar-nav-icon">
+              <img src="/icons/vendors/proxmox-dark.svg" width={16} height={16} alt="" />
+            </span>
+            <span className="sidebar-nav-label">Proxmox VE</span>
+          </button>
+          <button
+            type="button"
+            className={`sidebar-nav-item ${filter === 'profiles' ? 'active' : ''}`}
+            onClick={() => onFilterChange('profiles')}
+          >
+            <span className="sidebar-nav-icon">
+              <Settings2 size={16} />
+            </span>
+            <span className="sidebar-nav-label">Scan Profiles</span>
+          </button>
+          <button
+            type="button"
+            className={`sidebar-nav-item ${filter === 'review' ? 'active' : ''}`}
+            onClick={() => onFilterChange('review')}
+          >
+            <span className="sidebar-nav-icon">
+              <ClipboardList size={16} />
+            </span>
+            <span className="sidebar-nav-label">Review Queue</span>
+            {pendingReviewCount > 0 && (
+              <span className="sidebar-nav-count">{pendingReviewCount}</span>
+            )}
+          </button>
+          <button
+            type="button"
+            className={`sidebar-nav-item ${filter === 'settings' ? 'active' : ''}`}
+            onClick={() => onFilterChange('settings')}
+          >
+            <span className="sidebar-nav-icon">
+              <Settings size={16} />
+            </span>
+            <span className="sidebar-nav-label">Scan Settings</span>
+          </button>
+        </nav>
 
-      <LiveListenersPanel listenerEnabled={listenerEnabled} />
+        <LiveListenersPanel listenerEnabled={listenerEnabled} />
+      </div>
 
       <div className="sidebar-footer">
         <div className="sidebar-stat">

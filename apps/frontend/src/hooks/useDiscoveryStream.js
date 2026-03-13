@@ -43,9 +43,9 @@ const CAP_RETRY_DELAY = 60000; // 60 seconds — wait longer when the cap is hit
 // Errors that should not trigger an immediate reconnect loop.
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
-function getWsUrl() {
-  const proto = globalThis.location.protocol === 'https:' ? 'wss' : 'ws';
-  const host = globalThis.location.host;
+export function getDiscoveryWsUrl(locationLike = globalThis.location) {
+  const proto = locationLike.protocol === 'https:' ? 'wss' : 'ws';
+  const host = locationLike.host;
   return `${proto}://${host}/api/v1/discovery/stream`;
 }
 
@@ -118,7 +118,7 @@ export function useDiscoveryStream() {
       return;
     }
 
-    const ws = new WebSocket(getWsUrl());
+    const ws = new WebSocket(getDiscoveryWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {

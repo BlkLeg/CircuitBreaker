@@ -677,6 +677,44 @@ export default function SettingsPage() {
                     </label>
                   </SettingField>
                 </SettingSection>
+
+                <SettingSection title="Topology Map">
+                  <SettingField
+                    label="Map Title"
+                    hint="The heading shown at the top of the topology map."
+                  >
+                    <input
+                      className="form-control"
+                      type="text"
+                      value={form.map_title}
+                      onChange={(e) => set('map_title', e.target.value)}
+                      style={{ width: 240 }}
+                      maxLength={80}
+                    />
+                  </SettingField>
+                  <SettingField
+                    label="Default Layout"
+                    hint="Layout algorithm applied when the topology map is first opened."
+                  >
+                    <select
+                      className="form-control"
+                      value={form.graph_default_layout}
+                      onChange={(e) => set('graph_default_layout', e.target.value)}
+                      style={{ width: 200 }}
+                    >
+                      <option value="dagre">Dagre (Hierarchical)</option>
+                      <option value="force">Force Directed</option>
+                      <option value="tree">Tree</option>
+                      <option value="hierarchical_network">Network Hierarchy</option>
+                      <option value="radial">Radial Services</option>
+                      <option value="elk_layered">VLAN Flow (ELK)</option>
+                      <option value="dagre_lr">Dagre (VLAN / LR)</option>
+                      <option value="circular_cluster">Docker Clusters</option>
+                      <option value="grid_rack">Rack Grid</option>
+                      <option value="concentric">Concentric Rings</option>
+                    </select>
+                  </SettingField>
+                </SettingSection>
               </div>
             )}
 
@@ -997,44 +1035,6 @@ export default function SettingsPage() {
                       placeholder="https://circuitbreaker.example.com"
                       onChange={(e) => set('api_base_url', e.target.value)}
                     />
-                  </SettingField>
-                </SettingSection>
-
-                <SettingSection title="Topology Map">
-                  <SettingField
-                    label="Map Title"
-                    hint="The heading shown at the top of the topology map."
-                  >
-                    <input
-                      className="form-control"
-                      type="text"
-                      value={form.map_title}
-                      onChange={(e) => set('map_title', e.target.value)}
-                      style={{ width: 240 }}
-                      maxLength={80}
-                    />
-                  </SettingField>
-                  <SettingField
-                    label="Default Layout"
-                    hint="Layout algorithm applied when the topology map is first opened."
-                  >
-                    <select
-                      className="form-control"
-                      value={form.graph_default_layout}
-                      onChange={(e) => set('graph_default_layout', e.target.value)}
-                      style={{ width: 200 }}
-                    >
-                      <option value="dagre">Dagre (Hierarchical)</option>
-                      <option value="force">Force Directed</option>
-                      <option value="tree">Tree</option>
-                      <option value="hierarchical_network">Network Hierarchy</option>
-                      <option value="radial">Radial Services</option>
-                      <option value="elk_layered">VLAN Flow (ELK)</option>
-                      <option value="dagre_lr">Dagre (VLAN / LR)</option>
-                      <option value="circular_cluster">Docker Clusters</option>
-                      <option value="grid_rack">Rack Grid</option>
-                      <option value="concentric">Concentric Rings</option>
-                    </select>
                   </SettingField>
                 </SettingSection>
               </div>

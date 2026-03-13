@@ -38,6 +38,8 @@ docker/.env
 frontend/.env.local
 frontend/.env.*.local
 .env
+.github/workflows/.env
+.github/workflows/.env.*
 
 # Docker
 docker/data/
@@ -77,13 +79,14 @@ Thumbs.db
 .cursor/
 .codex/
 *.swp
-
+.devcontainer/
 # Tool / editor caches
 .cache/
 .tools/snyk
 
 # Internal / auto-generated
 .INTERNAL/
+.claude/worktrees/
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md

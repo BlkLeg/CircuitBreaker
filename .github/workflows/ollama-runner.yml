@@ -2,6 +2,9 @@
 name: Ollama GPU Runner
 on: [workflow_dispatch]
 
+permissions:
+  contents: read
+
 jobs:
   run-ollama:
     runs-on: ubuntu-latest

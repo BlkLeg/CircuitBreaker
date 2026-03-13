@@ -1,0 +1,315 @@
+# Semgrep configuration for CircuitBreaker
+# Combines curated rulesets from the public registry with custom rules
+# that target patterns specific to this codebase.
+#
+# Run:   semgrep --config .semgrep.yml
+# CI:    semgrep --config .semgrep.yml --error
+
+rules:
+
+  # ── Custom: subprocess called with shell=True ──────────────────────────────
+  - id: cb-subprocess-shell-true
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+    message: >
+      subprocess called with shell=True enables shell injection. Pass a list of
+      arguments instead and remove shell=True.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-78"
+
+  # ── Custom: asyncio.create_subprocess_shell (shell injection) ─────────────
+  - id: cb-asyncio-subprocess-shell
+    patterns:
+      - pattern: asyncio.create_subprocess_shell(...)
+    message: >
+      asyncio.create_subprocess_shell passes the command to a shell. Use
+      asyncio.create_subprocess_exec with a list of arguments instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-78"
+
+  # ── Custom: SQLAlchemy raw text() with f-string or % formatting ───────────
+  - id: cb-sqlalchemy-text-injection
+    patterns:
+      - pattern: sa.text(f"...")
+      - pattern: text(f"...")
+      - pattern: sa.text("..." % ...)
+      - pattern: text("..." % ...)
+      - pattern: sa.text("..." + ...)
+      - pattern: text("..." + ...)
+    message: >
+      String interpolation inside sa.text() / text() can lead to SQL injection.
+      Use bound parameters (:param) with a mapping instead.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-89"
+
+  # ── Custom: yaml.load without explicit Loader ─────────────────────────────
+  - id: cb-yaml-load-unsafe
+    patterns:
+      - pattern: yaml.load($DATA)
+    message: >
+      yaml.load() without an explicit Loader is unsafe and can execute arbitrary
+      code. Use yaml.safe_load() or yaml.load($DATA, Loader=yaml.SafeLoader).
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      cwe: "CWE-502"
+
+  # ── Custom: pickle deserialization ───────────────────────────────────────
+  - id: cb-pickle-deserialization
+    patterns:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+    message: >
+      pickle.load/loads deserializes arbitrary Python objects, which can execute
+      malicious code. Use a safer serialization format (JSON, MessagePack).
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      cwe: "CWE-502"
+
+  # ── Custom: hardcoded secrets in source code ──────────────────────────────
+  - id: cb-hardcoded-secret
+    patterns:
+      - pattern: |
+          $VAR = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)(secret|password|passwd|api_key|apikey|token|private_key|auth_key)
+    message: >
+      Possible hardcoded secret in variable '$VAR'. Load credentials from
+      environment variables or the vault instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A02:2021 - Cryptographic Failures"
+      cwe: "CWE-798"
+
+  # ── Custom: JWT decode without verifying signature (options override) ─────
+  - id: cb-jwt-decode-no-verify
+    patterns:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: 'pyjwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+    message: >
+      JWT signature verification is disabled. Remove the verify_signature:false
+      option to ensure tokens cannot be forged.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      cwe: "CWE-347"
+
+  # ── Custom: assert used in non-test production code ───────────────────────
+  - id: cb-assert-in-production
+    patterns:
+      - pattern: assert $EXPR
+    paths:
+      include:
+        - apps/backend/src/app/api/**
+        - apps/backend/src/app/core/**
+        - apps/backend/src/app/services/**
+        - apps/backend/src/app/workers/**
+        - apps/backend/src/app/middleware/**
+        - apps/backend/src/app/integrations/**
+    message: >
+      assert statements are stripped when Python runs with -O and must not be
+      used to enforce security checks in production code. Raise an explicit
+      exception (HTTPException, ValueError, etc.) instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A05:2021 - Security Misconfiguration"
+      cwe: "CWE-617"
+
+  # ── Custom: eval / exec in application code ───────────────────────────────
+  - id: cb-eval-exec
+    patterns:
+      - pattern: eval(...)
+      - pattern: exec(...)
+    message: >
+      eval()/exec() can execute arbitrary code. Refactor to avoid dynamic
+      code execution.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-95"
+
+  # ── Custom: insecure hash algorithms ─────────────────────────────────────
+  - id: cb-weak-hash
+    patterns:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+    message: >
+      MD5 and SHA-1 are cryptographically broken. Use hashlib.sha256() or
+      stronger for any security-sensitive purpose.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A02:2021 - Cryptographic Failures"
+      cwe: "CWE-327"
+
+  # ── Custom: logging sensitive data ────────────────────────────────────────
+  - id: cb-log-sensitive-data
+    patterns:
+      - pattern: logging.$LEVEL(f"... {$VAR} ...")
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)(password|passwd|secret|token|api_key)
+    message: >
+      Sensitive variable '$VAR' may be written to logs. Redact it before
+      logging or use the project's log_redaction helpers.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A09:2021 - Security Logging and Monitoring Failures"
+      cwe: "CWE-532"
+
+  # ── Custom: SSRF – requests called with user-supplied URL ─────────────────
+  - id: cb-ssrf-requests
+    patterns:
+      - pattern: requests.$METHOD($URL, ...)
+      - pattern-not: requests.$METHOD("...", ...)
+      - pattern-not: requests.$METHOD(str(...), ...)
+    message: >
+      HTTP request using a dynamic URL may allow SSRF. Validate the URL against
+      an allowlist using the project's url_validation helpers before the call.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A10:2021 - Server-Side Request Forgery"
+      cwe: "CWE-918"
+
+  # ── Custom: httpx called with user-supplied URL ───────────────────────────
+  - id: cb-ssrf-httpx
+    patterns:
+      - pattern: httpx.$METHOD($URL, ...)
+      - pattern-not: httpx.$METHOD("...", ...)
+    message: >
+      httpx request using a dynamic URL may allow SSRF. Validate the URL with
+      the project's url_validation helpers before the call.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A10:2021 - Server-Side Request Forgery"
+      cwe: "CWE-918"
+
+  # ── Custom: response without security headers (FastAPI) ───────────────────
+  - id: cb-fastapi-plaintext-response
+    patterns:
+      - pattern: return Response(..., media_type="text/html", ...)
+    message: >
+      Returning raw HTML via Response() bypasses the security-headers
+      middleware. Verify that the response still passes through the middleware
+      stack; consider using HTMLResponse via the standard response flow.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  # ── Custom: open() on user-supplied path ─────────────────────────────────
+  - id: cb-open-user-path
+    patterns:
+      - pattern: open($PATH, ...)
+      - pattern-not: open("...", ...)
+      - pattern-not: open(Path("..."), ...)
+    paths:
+      include:
+        - apps/backend/src/app/api/**
+        - apps/backend/src/app/services/**
+    message: >
+      open() with a dynamic path may allow path traversal. Resolve and
+      validate the path against an allowed base directory first.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A01:2021 - Broken Access Control"
+      cwe: "CWE-22"
+
+  # ── Custom: TypeScript – storing tokens in localStorage ───────────────────
+  - id: cb-localstorage-token
+    patterns:
+      - pattern: localStorage.setItem($KEY, ...)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(token|jwt|auth|session|secret|credential|password)
+    message: >
+      Storing authentication tokens in localStorage exposes them to XSS.
+      Use http-only cookies or a secure in-memory store instead.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      cwe: "CWE-312"
+
+  # ── Custom: TypeScript – dangerouslySetInnerHTML ──────────────────────────
+  - id: cb-react-dangerous-inner-html
+    patterns:
+      - pattern: 'dangerouslySetInnerHTML={{ __html: $VAL }}'
+      - pattern-not: 'dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(...) }}'
+    message: >
+      dangerouslySetInnerHTML without sanitization enables XSS. Sanitize the
+      value with DOMPurify.sanitize() before rendering.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-79"
+
+  # ── Custom: TypeScript – eval ─────────────────────────────────────────────
+  - id: cb-ts-eval
+    patterns:
+      - pattern: eval(...)
+    message: >
+      eval() executes arbitrary code and is unsafe. Refactor to avoid it.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A03:2021 - Injection"
+      cwe: "CWE-95"
+
+  # ── Custom: TypeScript – console.log in production source ────────────────
+  - id: cb-ts-console-log
+    patterns:
+      - pattern: console.log(...)
+    paths:
+      include:
+        - apps/frontend/src/**
+      exclude:
+        - apps/frontend/src/**/*.test.*
+        - apps/frontend/src/**/*.spec.*
+    message: >
+      console.log() in production frontend code may leak sensitive data.
+      Remove or replace with a structured logger.
+    languages: [typescript, javascript]
+    severity: INFO
+    metadata:
+      category: best-practice

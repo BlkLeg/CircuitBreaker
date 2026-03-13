@@ -28,10 +28,10 @@ services:
     container_name: circuitbreaker
     restart: unless-stopped
     ports:
-      - "${CB_PORT_HTTP:-80}:80"
-      - "${CB_PORT_HTTPS:-443}:443"
+      - "${CB_PORT_HTTP:-80}:8080"
+      - "${CB_PORT_HTTPS:-443}:8443"
     volumes:
-      - "${CB_DATA_DIR:-./circuitbreaker-data}:/data"
+      - "${CB_DATA_DIR:-./circuitbreaker-data}:/data:z"
       # Docker socket is NOT mounted by default — it grants near-root host access.
       # To enable Docker discovery, use one of:
       #   1. docker compose -f docker-compose.yml -f docker-compose.socket.yml up -d
@@ -72,7 +72,7 @@ services:
       - CB_AIRGAP=${CB_AIRGAP:-false}
       - CB_DOCKER_HOST=${CB_DOCKER_HOST:-}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5

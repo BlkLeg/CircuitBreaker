@@ -14,12 +14,13 @@ from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/tmp/worker.healthy")  # noqa: S108
+_HEALTHY_FILE = Path("/data/worker-notification.healthy")
 
 
 def _touch_healthy() -> None:
     """Update heartbeat file so the container healthcheck can verify liveness."""
     try:
+        _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _HEALTHY_FILE.write_text(str(time.time()))
     except OSError:
         pass

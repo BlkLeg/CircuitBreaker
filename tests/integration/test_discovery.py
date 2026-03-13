@@ -128,6 +128,19 @@ def test_create_scan_job_invalid_cidr_raises(db):
         create_scan_job(db, "bad-input", ["nmap"])
     assert db.query(ScanJob).count() == before
 
+
+def test_create_scan_job_allows_queueing_beyond_max_concurrent_scans(db):
+    settings = get_or_create_settings(db)
+    settings.max_concurrent_scans = 1
+    db.commit()
+
+    create_scan_job(db, "10.20.0.0/30", ["snmp"])
+    create_scan_job(db, "10.20.1.0/30", ["snmp"])
+    create_scan_job(db, "10.20.2.0/30", ["snmp"])
+
+    statuses = [j.status for j in db.query(ScanJob).order_by(ScanJob.id.asc()).all()]
+    assert statuses == ["queued", "queued", "queued"]
+
 # ─────────────────────────────────────────────────────────────────
 # 3. Result state classification
 # ─────────────────────────────────────────────────────────────────
@@ -390,6 +403,90 @@ def test_rate_limit_scan_endpoint(client, auth_headers):
     finally:
         limiter.reset()
         limiter.enabled = False
+
+# ─────────────────────────────────────────────────────────────────
+# 10. Multi-CIDR scan endpoint
+# ─────────────────────────────────────────────────────────────────
+def test_multi_cidr_scan_creates_queued_jobs(client, auth_headers):
+    """POST /scan with cidrs=[A,B] creates 2 queued jobs."""
+    resp = client.post(
+        "/api/v1/discovery/scan",
+        json={"cidrs": ["10.99.0.0/30", "10.99.1.0/30"], "scan_types": ["snmp"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    jobs = resp.json()
+    assert isinstance(jobs, list)
+    assert len(jobs) == 2
+    for job in jobs:
+        assert job["status"] == "queued"
+
+
+def test_multi_cidr_scan_survives_audit_failure(client, auth_headers):
+    run_scan_job_mock = AsyncMock(return_value=None)
+    with (
+        patch("app.api.discovery.log_audit", side_effect=RuntimeError("audit offline")),
+        patch("app.api.discovery.discovery_service.run_scan_job", run_scan_job_mock),
+    ):
+        resp = client.post(
+            "/api/v1/discovery/scan",
+            json={"cidrs": ["10.97.0.0/30", "10.97.1.0/30"], "scan_types": ["snmp"]},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 200
+    jobs = resp.json()
+    assert isinstance(jobs, list)
+    assert len(jobs) == 2
+    scheduled_job_ids = [call.args[0] for call in run_scan_job_mock.call_args_list]
+    response_job_ids = [job["id"] for job in jobs]
+    assert scheduled_job_ids == response_job_ids
+
+
+def test_multi_cidr_scan_with_max_one_still_queues(client, auth_headers):
+    settings_resp = client.put(
+        "/api/v1/settings",
+        json={"max_concurrent_scans": 1},
+        headers=auth_headers,
+    )
+    assert settings_resp.status_code == 200
+
+    run_scan_job_mock = AsyncMock(return_value=None)
+    with patch("app.api.discovery.discovery_service.run_scan_job", run_scan_job_mock):
+        resp = client.post(
+            "/api/v1/discovery/scan",
+            json={"cidrs": ["10.96.0.0/30", "10.96.1.0/30"], "scan_types": ["snmp"]},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 200
+    jobs = resp.json()
+    assert len(jobs) == 2
+    assert all(job["status"] == "queued" for job in jobs)
+
+
+def test_single_cidr_scan_backwards_compat(client, auth_headers):
+    """POST /scan with single cidr= still returns single job dict."""
+    resp = client.post(
+        "/api/v1/discovery/scan",
+        json={"cidr": "10.98.0.0/30", "scan_types": ["snmp"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    job = resp.json()
+    assert isinstance(job, dict)
+    assert job["status"] == "queued"
+
+
+def test_cidrs_max_10_enforced(client, auth_headers):
+    """POST /scan with >10 cidrs returns 422."""
+    resp = client.post(
+        "/api/v1/discovery/scan",
+        json={"cidrs": [f"10.{i}.0.0/30" for i in range(11)], "scan_types": ["snmp"]},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
 
 # ─────────────────────────────────────────────────────────────────
 # 11. Purge respects retention_days

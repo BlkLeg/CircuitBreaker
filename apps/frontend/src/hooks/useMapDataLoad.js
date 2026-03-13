@@ -20,9 +20,16 @@ import {
   proxmoxClusterDetected,
 } from '../utils/mapDataUtils';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
+import { isUpdatableEdgeId } from '../components/map/linkMutations';
 import { getDagreLayout, getDagreViewportOptions, getRadialLayout } from '../utils/layouts';
 import { groupNodesIntoCloud } from '../utils/cloudView';
 import { VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
+import {
+  ADHOC_EDGE_COLOR,
+  ADHOC_EDGE_DASH_ARRAY,
+  ADHOC_EDGE_STROKE_WIDTH,
+  AUTO_EDGE_STROKE_WIDTH,
+} from '../lib/constants';
 
 /**
  * Encapsulates the graph data-loading logic (fetchData, autoPlaceNew, drain
@@ -144,6 +151,7 @@ export function useMapDataLoad({
       placingNodesRef,
       batchPlacedCountRef,
       saveLayoutRef,
+      fitView,
     ]
   );
 
@@ -224,6 +232,15 @@ export function useMapDataLoad({
       const rawE = res.data.edges.map((e) => {
         const color = getEdgeColor(e.relation);
         const relation = e.data?.relation || e.relation;
+        const isAdHoc = isUpdatableEdgeId(e.id);
+        const edgeStyle = isAdHoc
+          ? {
+              stroke: ADHOC_EDGE_COLOR,
+              strokeWidth: ADHOC_EDGE_STROKE_WIDTH,
+              strokeDasharray: ADHOC_EDGE_DASH_ARRAY,
+              opacity: 0.95,
+            }
+          : { stroke: color, strokeWidth: AUTO_EDGE_STROKE_WIDTH, opacity: 0.75 };
         return {
           id: e.id,
           source: e.source,
@@ -231,7 +248,7 @@ export function useMapDataLoad({
           type: 'smart',
           label: showLabels ? relation : '',
           animated: e.relation === 'depends_on' || e.relation === 'runs',
-          style: { stroke: color, strokeWidth: 1.5, opacity: 0.75 },
+          style: edgeStyle,
           _relation: e.relation,
           data: {
             label: showLabels ? relation : '',
@@ -239,6 +256,7 @@ export function useMapDataLoad({
             controlPoint: null,
             connection_type: normalizeConnectionType(e.data?.connection_type),
             bandwidth: e.data?.bandwidth || null,
+            isAdHoc,
           },
         };
       });
@@ -371,7 +389,8 @@ export function useMapDataLoad({
         }
 
         setNodes(initialNodes);
-        setEdges(applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides));
+        const nextEdgesManual = applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides);
+        setEdges(nextEdgesManual);
         setLayoutEngine('manual');
       } else {
         const viewportWidth = containerRef?.current?.getBoundingClientRect?.()?.width;
@@ -389,7 +408,8 @@ export function useMapDataLoad({
           initialNodes = groupNodesIntoCloud(initialNodes);
         }
         setNodes(initialNodes);
-        setEdges(applyEdgeSides(initialNodes, layout.edges, {}));
+        const nextEdgesAuto = applyEdgeSides(initialNodes, layout.edges, {});
+        setEdges(nextEdgesAuto);
         setLayoutEngine(isProxmox ? 'radial' : settings?.graph_default_layout || 'dagre');
         nodesForProxmox = initialNodes;
       }

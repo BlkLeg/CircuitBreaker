@@ -54,4 +54,29 @@ describe('DiscoveryHistoryPage', () => {
     expect(screen.getByText('ETA 00:01:05')).toBeInTheDocument();
     expect(screen.getByText('probe: Scanning host 10.0.0.12')).toBeInTheDocument();
   });
+
+  it('keeps placeholder layout values rendered for queued rows', () => {
+    render(
+      <DiscoveryHistoryPage
+        embedded
+        jobsData={[
+          {
+            id: 202,
+            status: 'queued',
+            source_type: 'network',
+            created_at: '2026-03-12T12:00:00Z',
+            target_cidr: '10.0.2.0/24',
+            scan_types_json: '["nmap"]',
+            hosts_found: 0,
+            hosts_new: 0,
+            hosts_conflict: 0,
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getByText('ETA --:--:--')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(screen.getAllByText('\u2014').length).toBeGreaterThan(0);
+  });
 });

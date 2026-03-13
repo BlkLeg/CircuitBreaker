@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time as _time_module
 from datetime import UTC, datetime
 from typing import Any
 
@@ -32,6 +33,10 @@ from app.services.discovery_safe import (
 )
 from app.services.log_service import write_log
 from app.services.settings_service import get_or_create_settings
+
+_scan_start_gate = asyncio.Lock()
+_ema_eta: dict[int, float] = {}
+_last_progress_snap: dict[int, tuple[float, float]] = {}
 
 
 def resolve_vlans_to_cidrs(db: Session, vlan_ids: list[int]) -> tuple[list[str], list[int]]:
@@ -301,13 +306,23 @@ async def _update_job_progress(
         payload["percent"] = clamped
         if clamped > 0 and job.started_at:
             try:
-                from datetime import datetime
-
-                started = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
-                elapsed = (datetime.now(UTC) - started).total_seconds()
-                if elapsed > 0:
-                    total_est = elapsed / (clamped / 100.0)
-                    payload["eta_seconds"] = int(max(0, total_est - elapsed))
+                EMA_ALPHA = 0.2
+                now_mono = _time_module.monotonic()
+                prev_ts, prev_pct = _last_progress_snap.get(job.id, (now_mono, 0.0))
+                time_delta = max(now_mono - prev_ts, 0.5)
+                pct_delta = max(clamped - prev_pct, 0.0)
+                if pct_delta > 0:
+                    rate = pct_delta / time_delta
+                    instant_eta = (100.0 - clamped) / rate
+                else:
+                    started = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
+                    elapsed = (datetime.now(UTC) - started).total_seconds()
+                    instant_eta = elapsed * (100.0 / max(clamped, 0.1) - 1) if elapsed > 0 else 0
+                prev_ema = _ema_eta.get(job.id, instant_eta)
+                new_ema = EMA_ALPHA * instant_eta + (1.0 - EMA_ALPHA) * prev_ema
+                _ema_eta[job.id] = new_ema
+                _last_progress_snap[job.id] = (now_mono, clamped)
+                payload["eta_seconds"] = int(max(0, new_ema))
             except Exception as e:
                 logger.debug("Discovery: ETA calculation failed: %s", e, exc_info=True)
     if processed is not None:
@@ -365,7 +380,6 @@ def create_scan_job(
 ) -> ScanJob:
     from app.core.config import settings as env_settings
     from app.core.network_acl import validate_scan_target
-    from app.services.settings_service import get_or_create_settings
 
     app_cfg = get_or_create_settings(db)
 
@@ -397,14 +411,6 @@ def create_scan_job(
 
     if not cidrs and effective_scan_types != ["docker"]:
         raise ValueError("At least one CIDR range or VLAN must be targeted for scan.")
-
-    # Concurrent scan limit (global)
-    _MAX_CONCURRENT_SCANS = 2
-    running = db.query(ScanJob).filter(ScanJob.status.in_(["queued", "running"])).count()
-    if running >= _MAX_CONCURRENT_SCANS:
-        raise ValueError(
-            f"Too many scans in progress (max {_MAX_CONCURRENT_SCANS}). Wait for one to finish."
-        )
 
     # De-duplicate and sort CIDRs
     final_cidrs = sorted(set(cidrs))
@@ -642,6 +648,31 @@ async def _run_vendor_lookup(mac: str) -> str | None:
     return None
 
 
+def _running_scan_count(db: Session) -> int:
+    return db.query(ScanJob).filter(ScanJob.status == "running").count()
+
+
+def _max_concurrent_scans(settings) -> int:
+    return max(1, int(getattr(settings, "max_concurrent_scans", 2) or 2))
+
+
+def _schedule_queued_scan_jobs(db: Session) -> None:
+    settings = get_or_create_settings(db)
+    available_slots = _max_concurrent_scans(settings) - _running_scan_count(db)
+    if available_slots <= 0:
+        return
+
+    queued_jobs = (
+        db.query(ScanJob)
+        .filter(ScanJob.status == "queued")
+        .order_by(ScanJob.created_at.asc(), ScanJob.id.asc())
+        .limit(available_slots)
+        .all()
+    )
+    for queued in queued_jobs:
+        asyncio.create_task(run_scan_job(queued.id))
+
+
 async def run_scan_job(job_id: int):
     """
     Background worker function that performs the actual network scanning orchestration.
@@ -651,16 +682,32 @@ async def run_scan_job(job_id: int):
     # 1. Fetch Job and Settings
     db = SessionLocal()
     try:
-        job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
-        if not job:
-            return
+        async with _scan_start_gate:
+            job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+            if not job:
+                return
+            if job.status != "queued":
+                logger.debug("Skipping scan job %s because status=%s", job_id, job.status)
+                return
 
-        settings = get_or_create_settings(db)
-        scan_types = json.loads(job.scan_types_json)
+            # Re-verify slot is still available (race-safe: we hold _scan_start_gate)
+            running_now = _running_scan_count(db)
+            max_allowed = _max_concurrent_scans(get_or_create_settings(db))
+            if running_now >= max_allowed:
+                logger.info(
+                    "Scan job %d: no slot available (running=%d, max=%d), re-queuing",
+                    job_id,
+                    running_now,
+                    max_allowed,
+                )
+                job.status = "queued"
+                db.commit()
+                return
 
-        job.status = "running"
-        job.started_at = utcnow_iso()
-        db.commit()
+            scan_types = json.loads(job.scan_types_json)
+            job.status = "running"
+            job.started_at = utcnow_iso()
+            db.commit()
 
         write_log(
             db,
@@ -688,6 +735,7 @@ async def run_scan_job(job_id: int):
         )
 
         # Determine effective parameters from profile or settings
+        settings = get_or_create_settings(db)
         nmap_args = settings.discovery_nmap_args
         snmp_community_plain = _decrypt_community(settings.discovery_snmp_community)
         snmp_version = "2c"
@@ -858,6 +906,9 @@ async def run_scan_job(job_id: int):
                 percent=100,
             )
             await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
+            _ema_eta.pop(job.id, None)
+            _last_progress_snap.pop(job.id, None)
+            _schedule_queued_scan_jobs(db)
             return
 
         active_ips: set[str] = set()
@@ -1343,6 +1394,9 @@ async def run_scan_job(job_id: int):
             total=max(hosts_found, n_active),
         )
         await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
+        _ema_eta.pop(job.id, None)
+        _last_progress_snap.pop(job.id, None)
+        _schedule_queued_scan_jobs(db)
 
     except Exception as e:
         logger.error(f"Scan job {job_id} failed: {e}")
@@ -1377,6 +1431,9 @@ async def run_scan_job(job_id: int):
                     {"job_id": job.id, "phase": "failed", "message": str(e), "percent": 100},
                 )
             )
+            _ema_eta.pop(job.id, None)
+            _last_progress_snap.pop(job.id, None)
+            _schedule_queued_scan_jobs(db)
     finally:
         db.close()
 

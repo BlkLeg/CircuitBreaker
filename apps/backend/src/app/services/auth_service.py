@@ -455,12 +455,14 @@ def bootstrap_initialize(
         smtp_tls=smtp_tls,
     )
 
-    try:
-        db.execute(text("BEGIN IMMEDIATE"))
-    except Exception:
-        # Non-SQLite engines (e.g. PostgreSQL) don't support BEGIN IMMEDIATE.
-        # Roll back to clear the aborted transaction state before continuing.
-        db.rollback()
+    bind = db.get_bind()
+    dialect_name = (getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+    if dialect_name == "sqlite":
+        try:
+            db.execute(text("BEGIN IMMEDIATE"))
+        except Exception:
+            # Roll back to clear the aborted transaction state before continuing.
+            db.rollback()
 
     # Bootstrap completion is tracked via auth_enabled, not jwt_secret.
     if bool(cfg.auth_enabled):

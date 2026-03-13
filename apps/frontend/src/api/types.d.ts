@@ -59,6 +59,7 @@ export interface AppSettings {
   discovery_enabled: boolean;
   discovery_default_cidr: string;
   discovery_auto_merge: boolean;
+  max_concurrent_scans: number;
   scan_ack_accepted: boolean;
   audit_log_retention_days: number;
   audit_log_hide_ip: boolean;

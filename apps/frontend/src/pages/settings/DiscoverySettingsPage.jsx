@@ -119,6 +119,23 @@ export default function DiscoverySettingsPage() {
   return (
     <div style={{ maxWidth: 640 }}>
       <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 24 }}>Discovery Settings</h2>
+      <div
+        style={{
+          background: 'rgba(56,189,248,0.08)',
+          border: '1px solid rgba(56,189,248,0.25)',
+          borderRadius: 8,
+          padding: '10px 14px',
+          fontSize: 13,
+          marginBottom: 16,
+        }}
+      >
+        <strong>Tip:</strong> Default CIDR, concurrent scans, SNMP community, and HTTP probing can
+        now be adjusted directly on the{' '}
+        <a href="/discovery" style={{ color: 'var(--color-primary)' }}>
+          Discovery page
+        </a>{' '}
+        → Scan Settings.
+      </div>
 
       {/* Enable auto-discovery */}
       <Section title={null}>

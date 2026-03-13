@@ -11,7 +11,8 @@ import logging
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import CVEEntry  # noqa: F401 — ensure model metadata is loaded
@@ -56,8 +57,20 @@ CVESessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=cve_engin
 
 def init_cve_db() -> None:
     """Create the ``cve_entries`` table in the CVE database if it doesn't exist."""
-    CVEEntry.__table__.create(bind=cve_engine, checkfirst=True)  # type: ignore[attr-defined]
+    try:
+        CVEEntry.__table__.create(bind=cve_engine, checkfirst=True)  # type: ignore[attr-defined]
+    except OperationalError as exc:
+        if not _is_existing_table_race(exc):
+            raise
+        _logger.info("CVE database table already exists; continuing after startup race")
     _logger.info("CVE database initialised at %s", _CVE_DB_PATH)
+
+
+def _is_existing_table_race(exc: OperationalError) -> bool:
+    message = str(exc).lower()
+    if "already exists" not in message:
+        return False
+    return inspect(cve_engine).has_table(CVEEntry.__tablename__)
 
 
 def get_cve_db():

@@ -3,6 +3,7 @@ import mimetypes
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta  # noqa: F401 — used by models imported transitively
 from pathlib import Path, PurePosixPath
@@ -79,7 +80,9 @@ from app.core import (
 )
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.log_redaction import install_global_log_redaction
 from app.core.rate_limit import limiter
+from app.core.sql_hardening import build_audit_partition_sql
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.session import engine, get_session_context
@@ -114,11 +117,13 @@ class _OAuthScrubFilter(logging.Filter):
 
 
 logging.getLogger("uvicorn.access").addFilter(_OAuthScrubFilter())
+install_global_log_redaction()
 
 _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
 _FAVICON_FILENAME = "favicon.ico"
 _logger = logging.getLogger(__name__)
+SERVER_START_TIME = time.time()
 
 
 def _seed_default_docs(db) -> None:
@@ -270,7 +275,11 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     from app.core.nats_client import nats_client
+    from app.core.server_state import ServerState, set_state
     from app.services import discovery_service
+
+    set_state(ServerState.STARTING)
+    _logger.info("[lifecycle] server state → STARTING")
 
     _assert_required_schema()
 
@@ -488,18 +497,7 @@ async def lifespan(app: FastAPI):
                 now = utcnow()
                 for offset in range(3):
                     dt = now + timedelta(days=30 * offset)
-                    name = f"audit_log_{dt.year}_{dt.month:02d}"
-                    start = f"{dt.year}-{dt.month:02d}-01"
-                    if dt.month == 12:
-                        end = f"{dt.year + 1}-01-01"
-                    else:
-                        end = f"{dt.year}-{dt.month + 1:02d}-01"
-                    db.execute(
-                        sa.text(
-                            f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF audit_log "
-                            f"FOR VALUES FROM ('{start}') TO ('{end}')"
-                        )
-                    )
+                    db.execute(sa.text(build_audit_partition_sql(dt)))
                 db.commit()
         except Exception:
             _logger.debug("audit partition maintenance skipped (table may not exist yet)")
@@ -873,7 +871,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Never let update check affect startup
 
+    set_state(ServerState.READY)
+    _logger.info("[lifecycle] server state → READY")
+
     yield  # ── app is running ──
+
+    set_state(ServerState.STOPPING)
+    _logger.info("[lifecycle] server state → STOPPING")
 
     await listener_service.stop()
 
@@ -1039,38 +1043,32 @@ app.include_router(node_relations_router, prefix=f"{_V1}/node-relations", tags=[
 @app.api_route(f"{_V1}/health", methods=["GET", "HEAD"])
 async def health():
     from app.core.redis import redis_health
+    from app.core.server_state import ServerState, get_state
+
+    state = get_state()
 
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             # Readiness contract check: discovery endpoints serialize ScanJob.error_reason.
-            # If this column is missing (migration drift), report unhealthy instead of green.
+            # If this column is missing (migration drift), report db as error.
             conn.execute(text("SELECT error_reason FROM scan_jobs LIMIT 1"))
-    except Exception as e:
-        detail = "Database unavailable or migration required."
-        try:
-            # Keep the failure message compact but actionable for operators.
-            msg = str(e)
-            if "scan_jobs.error_reason" in msg or ("column" in msg and "error_reason" in msg):
-                detail = "Database migration required: missing scan_jobs.error_reason."
-        except Exception:
-            pass
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "warming_up",
-                "version": "v0.2.0",
-                "db": "unavailable",
-                "redis": "unknown",
-                "detail": detail,
-            },
-        )
+        db_status = "ok"
+    except Exception:
+        db_status = "error"
+
     redis_ok = await redis_health()
+    redis_status = "ok" if redis_ok else "error"
+
     return {
-        "status": "ok",
-        "version": "v0.2.0",
-        "db": "postgresql",
-        "redis": "connected" if redis_ok else "unavailable",
+        "state": state.value,
+        "ready": state == ServerState.READY,
+        "version": settings.app_version,
+        "uptime_s": round(time.time() - SERVER_START_TIME),
+        "checks": {
+            "db": db_status,
+            "redis": redis_status,
+        },
     }
 
 

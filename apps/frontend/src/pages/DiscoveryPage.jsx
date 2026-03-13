@@ -14,6 +14,7 @@ import { systemApi } from '../api/client.jsx';
 import { discoveryEmitter } from '../hooks/useDiscoveryStream.js';
 import { useToast } from '../components/common/Toast';
 import logger from '../utils/logger.js';
+import { hasJobVisualDiff, mergeJobPatch, mergeJobsById } from '../lib/discoveryJobState.js';
 
 import DiscoverySidebar from '../components/discovery/DiscoverySidebar.jsx';
 import DiscoveryHistoryPage from './DiscoveryHistoryPage.jsx';
@@ -21,6 +22,7 @@ import ScanProfilesPanel from '../components/discovery/ScanProfilesPanel.jsx';
 import NewScanPage from '../components/discovery/NewScanPage.jsx';
 import ReviewQueuePanel from '../components/discovery/ReviewQueuePanel.jsx';
 import ProxmoxIntegrationSection from '../components/proxmox/ProxmoxIntegrationSection.jsx';
+import ScanSettingsPanel from '../components/discovery/ScanSettingsPanel.jsx';
 
 function logApiWarning(scope, error) {
   logger.warn(`[DiscoveryPage] ${scope}`, error);
@@ -50,7 +52,10 @@ export default function DiscoveryPage() {
 
   const loadJobs = useCallback(() => {
     getJobs()
-      .then((res) => setJobs(res.data || []))
+      .then((res) => {
+        const incoming = Array.isArray(res.data) ? res.data : [];
+        setJobs((current) => mergeJobsById(current, incoming));
+      })
       .catch((err) => logApiWarning('Failed to load jobs', err));
   }, []);
 
@@ -147,8 +152,12 @@ export default function DiscoveryPage() {
       setJobs((prev) => {
         const idx = prev.findIndex((j) => j.id === jobData.id);
         if (idx === -1) return [...prev, jobData];
+        const existing = prev[idx];
+        if (!hasJobVisualDiff(existing, jobData)) return prev;
+        const nextJob = mergeJobPatch(existing, jobData);
+        if (nextJob === existing) return prev;
         const next = [...prev];
-        next[idx] = jobData;
+        next[idx] = nextJob;
         return next;
       });
     };
@@ -171,13 +180,14 @@ export default function DiscoveryPage() {
         const idx = prev.findIndex((job) => job.id === data.job_id);
         if (idx === -1) return prev;
         const existing = prev[idx];
-        const nextJob = {
-          ...existing,
+        const patch = {
           ...(progressPercent != null ? { progress_percent: progressPercent } : {}),
           ...(typeof data.eta_seconds === 'number' ? { eta_seconds: data.eta_seconds } : {}),
           ...(data.phase ? { current_phase: data.phase } : {}),
           ...(data.message ? { current_message: data.message } : {}),
         };
+        const nextJob = mergeJobPatch(existing, patch);
+        if (nextJob === existing) return prev;
         const next = [...prev];
         next[idx] = nextJob;
         return next;
@@ -190,13 +200,14 @@ export default function DiscoveryPage() {
         const idx = prev.findIndex((job) => job.id === data.job_id);
         if (idx === -1) return prev;
         const existing = prev[idx];
-        const nextJob = {
-          ...existing,
+        const patch = {
           ...(data.message ? { last_log_message: data.message } : {}),
           ...(data.phase ? { last_log_phase: data.phase } : {}),
           ...(data.level ? { last_log_level: data.level } : {}),
           ...(data.timestamp ? { last_log_ts: data.timestamp } : {}),
         };
+        const nextJob = mergeJobPatch(existing, patch);
+        if (nextJob === existing) return prev;
         const next = [...prev];
         next[idx] = nextJob;
         return next;
@@ -276,11 +287,12 @@ export default function DiscoveryPage() {
       <NewScanPage
         discoveryCapabilities={discoveryCapabilities}
         profiles={profiles}
-        onStarted={(job) => {
-          if (job?.id) {
+        onStarted={(result) => {
+          const newJobs = Array.isArray(result) ? result : result?.id ? [result] : [];
+          if (newJobs.length > 0) {
             setJobs((prev) => {
-              if (prev.some((j) => j.id === job.id)) return prev;
-              return [job, ...prev];
+              const ids = new Set(prev.map((j) => j.id));
+              return [...newJobs.filter((j) => !ids.has(j.id)), ...prev];
             });
           } else {
             loadJobs();
@@ -290,6 +302,8 @@ export default function DiscoveryPage() {
         onCancel={() => setFilter('all')}
       />
     );
+  } else if (filter === 'settings') {
+    mainContent = <ScanSettingsPanel />;
   } else {
     mainContent = <DiscoveryHistoryPage embedded jobsData={jobs} onRefreshJobs={loadJobs} />;
   }

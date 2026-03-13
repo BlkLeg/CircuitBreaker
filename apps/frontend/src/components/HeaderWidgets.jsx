@@ -41,6 +41,36 @@ const WMO_CODES = {
   99: 'Thunderstorm',
 };
 
+const WEATHER_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
+const buildLocationCandidates = (value) => {
+  const primary = value.trim();
+  const beforeComma = primary.split(',')[0]?.trim();
+  const candidates = [primary];
+  if (beforeComma && beforeComma !== primary) {
+    candidates.push(beforeComma);
+  }
+  return [...new Set(candidates)];
+};
+
+const resolveCoordinates = async (location) => {
+  const candidates = buildLocationCandidates(location);
+  for (const candidate of candidates) {
+    const geoRes = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(candidate)}&count=1&language=en&format=json`
+    );
+    if (!geoRes.ok) {
+      continue;
+    }
+    const geoData = await geoRes.json();
+    if (geoData.results?.length) {
+      const { latitude, longitude } = geoData.results[0];
+      return { latitude, longitude };
+    }
+  }
+  return null;
+};
+
 const HeaderWidgets = ({ settings }) => {
   const showHeaderWidgets = settings?.showHeaderWidgets ?? settings?.show_header_widgets ?? true;
   const showTimeWidget = settings?.showTimeWidget ?? settings?.show_time_widget ?? true;
@@ -63,28 +93,29 @@ const HeaderWidgets = ({ settings }) => {
 
     const fetchWeather = async () => {
       try {
-        const geoRes = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(weatherLocation)}&count=1&language=en&format=json`
-        );
-        const geoData = await geoRes.json();
-        if (!geoData.results || geoData.results.length === 0) {
+        const coords = await resolveCoordinates(weatherLocation);
+        if (!coords) {
           if (isMounted) setWeatherData({ temp: '--', condition: 'Not Found' });
           return;
         }
-
-        const { latitude, longitude } = geoData.results[0];
+        const { latitude, longitude } = coords;
 
         const weatherRes = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&temperature_unit=fahrenheit`
+          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true&current=temperature_2m,weather_code&temperature_unit=fahrenheit`
         );
+        if (!weatherRes.ok) {
+          throw new Error(`Weather request failed with ${weatherRes.status}`);
+        }
         const weatherJson = await weatherRes.json();
+        const current = weatherJson.current_weather ?? weatherJson.current;
+        const temperature = current?.temperature ?? current?.temperature_2m;
+        const weatherCode = current?.weathercode ?? current?.weather_code;
 
-        if (isMounted && weatherJson.current_weather) {
-          const cw = weatherJson.current_weather;
+        if (isMounted && temperature !== undefined) {
           setWeatherData({
-            temp: `${Math.round(cw.temperature)}°F`,
-            condition: WMO_CODES[cw.weathercode] || 'Unknown',
-            code: cw.weathercode,
+            temp: `${Math.round(temperature)}°F`,
+            condition: WMO_CODES[weatherCode] || 'Unknown',
+            code: weatherCode,
           });
         }
       } catch (err) {
@@ -94,7 +125,7 @@ const HeaderWidgets = ({ settings }) => {
     };
 
     fetchWeather();
-    const weatherInterval = setInterval(fetchWeather, 15 * 60 * 1000); // refresh every 15 mins
+    const weatherInterval = setInterval(fetchWeather, WEATHER_REFRESH_INTERVAL_MS);
 
     return () => {
       isMounted = false;

@@ -20,6 +20,7 @@ import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
+import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
 
 // Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
@@ -40,6 +41,9 @@ const InviteAcceptPage = React.lazy(() => import('./pages/InviteAcceptPage'));
 const ForceChangePasswordPage = React.lazy(() => import('./pages/ForceChangePasswordPage'));
 const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
 const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
+const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
+const StatusPagesPage = React.lazy(() => import('./pages/StatusPagesPage'));
+const RackPage = React.lazy(() => import('./pages/RackPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -108,6 +112,31 @@ function AppInner() {
               <Route path="/misc" element={<MiscPage />} />
               <Route path="/docs" element={<DocsPage />} />
               <Route path="/map" element={<MapPage />} />
+              <Route
+                path="/ipam"
+                element={
+                  <RequireEditor>
+                    <IPAMPage />
+                  </RequireEditor>
+                }
+              />
+              <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
+              <Route
+                path="/status-pages"
+                element={
+                  <RequireEditor>
+                    <StatusPagesPage />
+                  </RequireEditor>
+                }
+              />
+              <Route
+                path="/racks"
+                element={
+                  <RequireEditor>
+                    <RackPage />
+                  </RequireEditor>
+                }
+              />
               <Route
                 path="/logs"
                 element={
@@ -252,59 +281,9 @@ function AppRoutes() {
     return <div className="login-root" />;
   }
 
-  if (bootstrapError) {
-    if (bootstrapError.isStartup) {
-      return (
-        <div className="login-root">
-          <div className="setup-check-shell" role="alert" aria-live="polite">
-            <img
-              src={branding?.login_logo_path ?? '/CB-AZ_Final.png'}
-              alt={branding?.app_name ?? 'Circuit Breaker'}
-              className="setup-check-logo"
-            />
-            <div
-              className="login-card setup-check-card"
-              style={{
-                textAlign: 'center',
-                minHeight: 250,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <div
-                className="spinner"
-                style={{
-                  margin: '0 auto 24px',
-                  width: 48,
-                  height: 48,
-                  border: '4px solid rgba(255,255,255,0.1)',
-                  borderLeftColor: '#32b89e',
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                }}
-              ></div>
-              <h2 className="login-card-title" style={{ marginBottom: 8 }}>
-                Circuit Breaker is starting up...
-              </h2>
-              <p className="login-card-subtitle" style={{ margin: 0 }}>
-                The server is warming up. This may take a moment.
-              </p>
-              <div
-                className="setup-check-status"
-                aria-live="polite"
-                style={{ marginTop: 24, fontSize: '0.9rem', color: '#a0a0a0' }}
-              >
-                {isRetrying ? 'Checking connection…' : `Checking again in ${retryCountdown}s`}
-              </div>
-            </div>
-          </div>
-          <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
-        </div>
-      );
-    }
-
+  // Server startup errors are now handled by ServerLifecycleBanner higher up the tree.
+  // Only surface non-startup (configuration/setup) errors here.
+  if (bootstrapError && !bootstrapError.isStartup) {
     return (
       <div className="login-root">
         <div className="setup-check-shell" role="alert" aria-live="polite">
@@ -389,7 +368,9 @@ function App() {
           <TimezoneProvider>
             <AuthProvider>
               <ToastProvider>
-                <AppRoutes />
+                <ServerLifecycleBanner>
+                  <AppRoutes />
+                </ServerLifecycleBanner>
               </ToastProvider>
             </AuthProvider>
           </TimezoneProvider>

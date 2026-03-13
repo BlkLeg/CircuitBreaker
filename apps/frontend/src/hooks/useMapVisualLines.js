@@ -29,19 +29,27 @@ export function useMapVisualLines({
     (event) => {
       if (!lineDrawMode || event.button !== 0) return;
       if (event.target?.closest?.('[data-map-overlay-root="true"]')) return;
+      // Prevent ReactFlow from interpreting this as a pan and calling
+      // setPointerCapture() on the pane — which would redirect all subsequent
+      // pointermove/pointerup events away from globalThis.
+      event.stopPropagation();
       event.preventDefault();
+
+      const paneEl = event.currentTarget;
 
       clearLinePointerListeners();
       const startFlow = screenToFlow(event.clientX, event.clientY);
-      const draft = { startFlow, endFlow: startFlow };
+      const startClient = { x: event.clientX, y: event.clientY };
+      const draft = { startFlow, endFlow: startFlow, startClient, endClient: startClient };
       setLineDrawDraft(draft);
       lineDrawDraftRef.current = draft;
 
       const onMove = (moveEvt) => {
         const endFlow = screenToFlow(moveEvt.clientX, moveEvt.clientY);
+        const endClient = { x: moveEvt.clientX, y: moveEvt.clientY };
         setLineDrawDraft((prev) => {
           if (!prev) return prev;
-          const next = { ...prev, endFlow };
+          const next = { ...prev, endFlow, endClient };
           lineDrawDraftRef.current = next;
           return next;
         });
@@ -49,18 +57,26 @@ export function useMapVisualLines({
 
       const onUp = () => {
         const latest = lineDrawDraftRef.current;
-        clearLinePointerListeners();
+        paneEl.removeEventListener('pointermove', onMove);
+        paneEl.removeEventListener('pointerup', onUp);
+        linePointerMoveRef.current = null;
+        linePointerUpRef.current = null;
         if (latest) {
-          setVisualLines((prev) => [
-            ...prev,
-            {
-              id: `vline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              startFlow: latest.startFlow,
-              endFlow: latest.endFlow,
-              lineType: lineDrawMode,
-            },
-          ]);
-          dirtyRef.current = true;
+          const dx = latest.endFlow.x - latest.startFlow.x;
+          const dy = latest.endFlow.y - latest.startFlow.y;
+          // Only commit if the user actually dragged (> 4px in flow space)
+          if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+            setVisualLines((prev) => [
+              ...prev,
+              {
+                id: `vline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                startFlow: latest.startFlow,
+                endFlow: latest.endFlow,
+                lineType: lineDrawMode,
+              },
+            ]);
+            dirtyRef.current = true;
+          }
         }
         setLineDrawDraft(null);
         setLineDrawMode(null);
@@ -68,8 +84,8 @@ export function useMapVisualLines({
 
       linePointerMoveRef.current = onMove;
       linePointerUpRef.current = onUp;
-      globalThis.addEventListener('pointermove', onMove);
-      globalThis.addEventListener('pointerup', onUp);
+      paneEl.addEventListener('pointermove', onMove);
+      paneEl.addEventListener('pointerup', onUp);
     },
     [
       clearLinePointerListeners,

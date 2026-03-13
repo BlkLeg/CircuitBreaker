@@ -15,6 +15,9 @@ import {
   Settings,
   Map,
   ScanSearch,
+  Globe,
+  MonitorCheck,
+  RectangleHorizontal,
 } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -36,6 +39,9 @@ export const NAV_MAP = {
   '/docs': { icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
   '/logs': { icon: ScrollText, label: 'Logs', labelKey: 'header.logs' },
   '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
+  '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
+  '/status-pages': { icon: MonitorCheck, label: 'Status', labelKey: 'header.status' },
+  '/racks': { icon: RectangleHorizontal, label: 'Racks', labelKey: 'header.racks' },
 };
 
 export const DEFAULT_ORDER = [
@@ -47,6 +53,9 @@ export const DEFAULT_ORDER = [
   '/storage',
   '/networks',
   '/external-nodes',
+  '/ipam',
+  '/racks',
+  '/status-pages',
   '/docs',
   '/logs',
   '/settings',

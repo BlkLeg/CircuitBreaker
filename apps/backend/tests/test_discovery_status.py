@@ -27,18 +27,20 @@ def test_compute_discovery_status_returns_correct_shape_and_values():
     def _query(model):
         if model is ScanResult:
             q = MagicMock()
-            q.filter.return_value.count.return_value = pending_count
-            return q.filter.return_value
+            q.filter.return_value = q
+            q.count.return_value = pending_count
+            return q
         if model is ScanJob:
             call_count[0] += 1
             q = MagicMock()
+            q.filter.return_value = q
+            q.order_by.return_value = q
             if call_count[0] == 1:
-                q.filter.return_value.order_by.return_value.limit.return_value.all.return_value = (
-                    active_jobs_list
-                )
-                return q.filter.return_value.order_by.return_value.limit.return_value
-            q.filter.return_value.order_by.return_value.first.return_value = last_completed_job
-            return q.filter.return_value.order_by.return_value
+                q.limit.return_value = q
+                q.all.return_value = active_jobs_list
+                return q
+            q.first.return_value = last_completed_job
+            return q
         raise AssertionError(f"unexpected model {model}")
 
     db.query.side_effect = _query
@@ -89,16 +91,20 @@ def test_compute_discovery_status_downgrades_to_safe_when_no_net_raw():
     def _query(model):
         if model is ScanResult:
             q = MagicMock()
-            q.filter.return_value.count.return_value = 0
-            return q.filter.return_value
+            q.filter.return_value = q
+            q.count.return_value = 0
+            return q
         if model is ScanJob:
             scan_job_calls[0] += 1
             q = MagicMock()
+            q.filter.return_value = q
+            q.order_by.return_value = q
             if scan_job_calls[0] == 1:
-                q.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
-                return q.filter.return_value.order_by.return_value.limit.return_value
-            q.filter.return_value.order_by.return_value.first.return_value = None
-            return q.filter.return_value.order_by.return_value
+                q.limit.return_value = q
+                q.all.return_value = []
+                return q
+            q.first.return_value = None
+            return q
         raise AssertionError(f"unexpected model {model}")
 
     db.query.side_effect = _query

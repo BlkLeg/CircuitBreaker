@@ -1,8 +1,11 @@
 /* eslint-disable security/detect-object-injection -- internal node/status keys */
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Handle, Position, useStore } from 'reactflow';
+import { useStore } from 'reactflow';
 import { STATUS_COLORS } from '../../config/mapTheme';
+import { getConnectedHandleIds } from '../../utils/mapHandleHelpers';
+import NodeHandles from './nodes/NodeHandles';
+import { useConnectionStateContext } from '../../providers/ConnectionStateProvider';
 
 /**
  * CustomNode — enhanced topology node supporting:
@@ -14,7 +17,7 @@ import { STATUS_COLORS } from '../../config/mapTheme';
  *  - IP conflict badge
  *  - Storage capacity bar
  *  - Telemetry CPU temp / power badges
- *  - 8 invisible named handles for applyEdgeSides() routing
+ *  - 8-point dynamic handles with connect-aware visibility
  *  - Role-aware SVG shapes (server/switch/rack/ups/router/nas/sbc) with icon overlay
  *
  * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
@@ -59,24 +62,6 @@ export const NODE_SHAPES = {
 function getNodeShape(data) {
   return data.nodeShape ? NODE_SHAPES[data.nodeShape] || null : null;
 }
-
-// Keep handles visually hidden but anchored to visible connector dots.
-const INVISIBLE_HANDLE = {
-  opacity: 0,
-  width: 8,
-  height: 8,
-  minWidth: 8,
-  minHeight: 8,
-  background: 'transparent',
-  border: 'none',
-};
-
-const HANDLE_POS_STYLE = {
-  top: { top: -7 },
-  right: { right: -7 },
-  bottom: { bottom: -7 },
-  left: { left: -7 },
-};
 
 const TELEMETRY_RING = {
   healthy: {
@@ -144,8 +129,11 @@ function computeRingStyle(isConnectSource, tRing, baseShadow) {
   return { boxShadow: baseShadow };
 }
 
-function CustomNode({ data, selected }) {
+function CustomNode({ id, data, selected }) {
   const zoom = useStore((s) => s.transform[2]);
+  const edges = useStore((s) => (Array.isArray(s.edges) ? s.edges : []));
+  const { isConnecting } = useConnectionStateContext();
+  const connectedHandleIds = useMemo(() => getConnectedHandleIds(id, edges), [id, edges]);
 
   // status_override takes precedence over auto-derived status
   const status = data.status_override || data.status || null;
@@ -165,14 +153,7 @@ function CustomNode({ data, selected }) {
           boxShadow: selected ? `0 0 0 2px var(--bg-color), 0 0 0 4px ${glow}` : 'none',
         }}
       >
-        <Handle type="target" id="t-top" position={Position.Top} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-right" position={Position.Right} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-left" position={Position.Left} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-top" position={Position.Top} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-right" position={Position.Right} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-left" position={Position.Left} style={INVISIBLE_HANDLE} />
+        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
       </div>
     );
   }
@@ -223,15 +204,7 @@ function CustomNode({ data, selected }) {
             {data.memberCount} nodes
           </div>
         )}
-        {/* Handles for connections */}
-        <Handle type="target" id="t-top" position={Position.Top} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-right" position={Position.Right} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="target" id="t-left" position={Position.Left} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-top" position={Position.Top} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-right" position={Position.Right} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-bottom" position={Position.Bottom} style={INVISIBLE_HANDLE} />
-        <Handle type="source" id="s-left" position={Position.Left} style={INVISIBLE_HANDLE} />
+        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
       </div>
     );
   }
@@ -426,57 +399,7 @@ function CustomNode({ data, selected }) {
     >
       {/* Glow ring + icon */}
       <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
-        {/* 4 target handles — one per side, aligned to visible port dots */}
-        <Handle
-          type="target"
-          id="t-top"
-          position={Position.Top}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }}
-        />
-        <Handle
-          type="target"
-          id="t-right"
-          position={Position.Right}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }}
-        />
-        <Handle
-          type="target"
-          id="t-bottom"
-          position={Position.Bottom}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }}
-        />
-        <Handle
-          type="target"
-          id="t-left"
-          position={Position.Left}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }}
-        />
-
-        {/* 4 source handles — one per side, aligned to visible port dots */}
-        <Handle
-          type="source"
-          id="s-top"
-          position={Position.Top}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.top }}
-        />
-        <Handle
-          type="source"
-          id="s-right"
-          position={Position.Right}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.right }}
-        />
-        <Handle
-          type="source"
-          id="s-bottom"
-          position={Position.Bottom}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.bottom }}
-        />
-        <Handle
-          type="source"
-          id="s-left"
-          position={Position.Left}
-          style={{ ...INVISIBLE_HANDLE, ...HANDLE_POS_STYLE.left }}
-        />
+        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
 
         {data.isClusterMember && (
           <div
@@ -491,10 +414,6 @@ function CustomNode({ data, selected }) {
           />
         )}
 
-        <span className="map-node-port map-node-port-top" />
-        <span className="map-node-port map-node-port-right" />
-        <span className="map-node-port map-node-port-bottom" />
-        <span className="map-node-port map-node-port-left" />
         <span
           className="map-node-ping map-node-ping-bottom-right"
           style={{ '--ping-color': pingColor, animationDelay: '0.6s' }}
@@ -742,6 +661,7 @@ function CustomNode({ data, selected }) {
 }
 
 CustomNode.propTypes = {
+  id: PropTypes.string,
   selected: PropTypes.bool,
   data: PropTypes.shape({
     status: PropTypes.string,
@@ -798,6 +718,7 @@ export default memo(CustomNode, (prev, next) => {
     prev.data.telemetry_data === next.data.telemetry_data &&
     prev.data.docker_driver === next.data.docker_driver &&
     prev.data.docker_image === next.data.docker_image &&
+    prev.id === next.id &&
     prev.selected === next.selected
   );
 });

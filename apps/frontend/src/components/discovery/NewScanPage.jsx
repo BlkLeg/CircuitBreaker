@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { ArrowLeft, Box, Play, ShieldCheck, Zap, X } from 'lucide-react';
 import { startAdHocScan, runProfile, getDockerNetworks } from '../../api/discovery.js';
+import { MAX_NETWORKS_PER_SCAN, MIN_NETWORKS_PER_SCAN } from '../../lib/constants.js';
 import { networksApi } from '../../api/client.jsx';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
@@ -60,7 +61,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const defaultNmapArgs = settings?.discovery_nmap_args || '-sV -O --open -T4';
 
   const [scanMode, setScanMode] = useState('safe');
-  const [cidr, setCidr] = useState(defaultCidr);
+  const [cidrs, setCidrs] = useState([defaultCidr || '']);
   const [scanTypes, setScanTypes] = useState(['snmp', 'http']);
   const [nmapArgs, setNmapArgs] = useState(defaultNmapArgs);
   const [ports, setPorts] = useState('');
@@ -195,8 +196,9 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           const types =
             scanMode === 'safe' ? scanTypes.filter((t) => ['snmp', 'http'].includes(t)) : scanTypes;
           jobRes = await startAdHocScan({
-            cidr: targetMode === 'cidr' ? cidr.trim() : undefined,
-            vlan_ids: targetMode === 'vlan' ? selectedVlans : undefined,
+            ...(targetMode === 'cidr'
+              ? { cidrs: cidrs.map((c) => c.trim()).filter(Boolean) }
+              : { vlan_ids: selectedVlans }),
             scan_types: types,
             nmap_arguments: scanMode === 'full' ? composeNmapArgs(nmapArgs, '3', ports) : undefined,
             snmp_community: snmpCom.trim() || undefined,
@@ -225,7 +227,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
       ? true
       : scanMode === 'docker'
         ? Boolean(socketPath.trim())
-        : (targetMode === 'cidr' ? Boolean(cidr.trim()) : selectedVlans.length > 0) &&
+        : (targetMode === 'cidr' ? cidrs.some((c) => c.trim()) : selectedVlans.length > 0) &&
           scanTypes.length > 0;
 
   return (
@@ -377,13 +379,51 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                 </div>
 
                 {targetMode === 'cidr' ? (
-                  <input
-                    className="cb-input"
-                    type="text"
-                    placeholder="e.g., 192.168.1.0/24"
-                    value={cidr}
-                    onChange={(e) => setCidr(e.target.value)}
-                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {cidrs.map((val, idx) => (
+                      <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input
+                          className="cb-input"
+                          type="text"
+                          placeholder="e.g., 192.168.1.0/24"
+                          value={val}
+                          onChange={(e) => {
+                            const nextValue = e.target.value;
+                            setCidrs((prev) =>
+                              prev.map((existing, existingIdx) =>
+                                existingIdx === idx ? nextValue : existing
+                              )
+                            );
+                          }}
+                          style={{ flex: 1 }}
+                        />
+                        {cidrs.length > MIN_NETWORKS_PER_SCAN && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ padding: '4px 8px', fontSize: 12 }}
+                            onClick={() => setCidrs(cidrs.filter((_, i) => i !== idx))}
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {cidrs.length < MAX_NETWORKS_PER_SCAN && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ fontSize: 11, alignSelf: 'flex-start', marginTop: 2 }}
+                        onClick={() => setCidrs([...cidrs, ''])}
+                      >
+                        + Add Network
+                      </button>
+                    )}
+                    <span className="cb-hint">
+                      {cidrs.length} / {MAX_NETWORKS_PER_SCAN} networks
+                    </span>
+                  </div>
                 ) : (
                   <div
                     style={{

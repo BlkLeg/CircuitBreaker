@@ -25,7 +25,9 @@ PG_BIN="/usr/lib/postgresql/15/bin"
 
 ensure_data_dirs() {
   mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/certs" "${CB_DATA_DIR:-/data}/redis"
-  mkdir -p /var/log/nginx /var/log/circuitbreaker
+  if [ "$(id -u)" -eq 0 ]; then
+    mkdir -p /var/log/nginx /var/log/circuitbreaker
+  fi
 }
 
 ensure_data_dirs
@@ -128,7 +130,7 @@ if [ -z "${CB_REDIS_URL_SET_BY_USER:-}" ]; then
 fi
 
 # Allow breaker user to reach the Docker socket if mounted (group-based, not world-readable)
-if [ -S /var/run/docker.sock ]; then
+if [ -S /var/run/docker.sock ] && [ "$(id -u)" -eq 0 ]; then
   DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo "")
   if [ -n "$DOCKER_GID" ] && [ "$DOCKER_GID" != "0" ]; then
     groupadd -g "$DOCKER_GID" -o docker-host 2>/dev/null || true
@@ -150,5 +152,5 @@ if [ "$USE_EXTERNAL_DB" -eq 0 ] && [ -n "${CB_DB_URL:-}" ]; then
   chown breaker:breaker "$DATA/pgbouncer_userlist.txt" 2>/dev/null || true
 fi
 
-# Run supervisord as root so nginx can bind to port 80
+# Run supervisord as non-root; nginx listens on unprivileged container ports.
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf

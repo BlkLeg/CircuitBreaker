@@ -1,0 +1,250 @@
+<h2>Network selector dropdown — does this flow feel right?</h2>
+<p class="subtitle">Step through the interaction: select → accept → confirm</p>
+
+<style>
+  .flow { display: flex; flex-direction: column; gap: 28px; }
+  .step-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #f97316;
+    margin-bottom: 6px;
+    font-family: monospace;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a3e;
+    border-radius: 8px;
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    font-family: monospace;
+    position: relative;
+  }
+  .chip {
+    background: #2a2a3e;
+    border: 1px solid #3a3a5e;
+    border-radius: 20px;
+    padding: 4px 10px;
+    color: #a0a0c0;
+    font-size: 11px;
+  }
+  .chip.active { background: rgba(249,115,22,0.15); border-color: #f97316; color: #f97316; }
+  .btn { padding: 5px 12px; border-radius: 6px; font-size: 11px; border: none; cursor: pointer; font-family: monospace; }
+  .btn-primary { background: #f97316; color: white; }
+  .btn-danger { background: #ef4444; color: white; }
+  .btn-secondary { background: #2a2a3e; color: #a0a0c0; border: 1px solid #3a3a5e; }
+  .divider { width: 1px; height: 20px; background: #2a2a3e; margin: 0 2px; }
+  .spacer { flex: 1; }
+  .count { font-size: 11px; color: #6b6b8a; }
+  .net-select {
+    background: #1e2a38;
+    border: 1px solid rgba(56,189,248,0.4);
+    border-radius: 6px;
+    color: #38bdf8;
+    font-size: 11px;
+    padding: 4px 10px;
+    font-family: monospace;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    cursor: pointer;
+    position: relative;
+  }
+  .net-label { color: #6b6b8a; font-size: 10px; }
+  .dropdown {
+    position: absolute;
+    top: 34px;
+    left: 0;
+    min-width: 240px;
+    background: #1a1a2e;
+    border: 1px solid #3a3a5e;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 10;
+    overflow: hidden;
+  }
+  .dropdown-search {
+    padding: 8px 10px;
+    border-bottom: 1px solid #2a2a3e;
+  }
+  .dropdown-search input {
+    width: 100%;
+    background: #0e0e1a;
+    border: 1px solid #3a3a5e;
+    border-radius: 4px;
+    padding: 5px 8px;
+    color: #e0e0f0;
+    font-size: 11px;
+    font-family: monospace;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .dropdown-item {
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #c0c0e0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #1e1e30;
+    cursor: pointer;
+  }
+  .dropdown-item:hover { background: #2a2a3e; }
+  .dropdown-item.create { color: #38bdf8; }
+  .dropdown-item .cidr { color: #6b6b8a; font-size: 10px; margin-left: auto; }
+  .inline-create {
+    padding: 10px 12px;
+    background: #0e1e2e;
+    border-top: 1px solid rgba(56,189,248,0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .inline-create input {
+    background: #0e0e1a;
+    border: 1px solid #3a3a5e;
+    border-radius: 4px;
+    padding: 5px 8px;
+    color: #e0e0f0;
+    font-size: 11px;
+    font-family: monospace;
+    outline: none;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .inline-create .row { display: flex; gap: 6px; }
+  .inline-create .label { font-size: 10px; color: #6b6b8a; margin-bottom: 2px; }
+  .create-btn {
+    background: rgba(56,189,248,0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56,189,248,0.35);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-family: monospace;
+    cursor: pointer;
+    align-self: flex-end;
+  }
+  /* confirmation banner */
+  .confirm-banner {
+    background: #0e1e2e;
+    border: 1px solid rgba(56,189,248,0.3);
+    border-radius: 8px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: monospace;
+    font-size: 12px;
+    margin-top: 8px;
+  }
+  .confirm-icon { font-size: 18px; }
+  .confirm-text { flex: 1; color: #c0c0e0; line-height: 1.6; }
+  .confirm-text strong { color: #38bdf8; }
+  .confirm-actions { display: flex; gap: 6px; }
+  .confirm-ok { background: #f97316; color: white; border: none; border-radius: 6px; padding: 6px 14px; font-size: 11px; font-family: monospace; cursor: pointer; }
+  .confirm-cancel { background: #2a2a3e; color: #a0a0c0; border: 1px solid #3a3a5e; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-family: monospace; cursor: pointer; }
+  .selected-badge { background: #1e2a38; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 6px; }
+</style>
+
+<div class="flow">
+
+  <!-- Step 1: Dropdown open, existing networks -->
+  <div>
+    <div class="step-label">Step 1 — Click the selector, dropdown opens</div>
+    <div class="topbar">
+      <span class="chip active">All</span>
+      <span class="chip">Docker</span>
+      <div class="divider"></div>
+      <div class="net-select">
+        <span class="net-label">NETWORK</span> Select… ▾
+        <div class="dropdown">
+          <div class="dropdown-search">
+            <input type="text" placeholder="Search networks…" value="" />
+          </div>
+          <div class="dropdown-item">🌐 LAN — Office <span class="cidr">192.168.1.0/24</span></div>
+          <div class="dropdown-item">🌐 IoT VLAN <span class="cidr">10.10.20.0/24</span></div>
+          <div class="dropdown-item">🌐 Management <span class="cidr">10.0.0.0/24</span></div>
+          <div class="dropdown-item create">＋ Create new network…</div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <span class="count">4 selected</span>
+      <div class="divider"></div>
+      <button class="btn btn-primary">Accept</button>
+      <button class="btn btn-danger">Reject</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Inline create expanded -->
+  <div>
+    <div class="step-label">Step 2a — "Create new network" expands inline</div>
+    <div class="topbar">
+      <span class="chip active">All</span>
+      <span class="chip">Docker</span>
+      <div class="divider"></div>
+      <div class="net-select">
+        <span class="net-label">NETWORK</span> Select… ▾
+        <div class="dropdown">
+          <div class="dropdown-search">
+            <input type="text" placeholder="Search networks…" value="" />
+          </div>
+          <div class="dropdown-item">🌐 LAN — Office <span class="cidr">192.168.1.0/24</span></div>
+          <div class="dropdown-item">🌐 IoT VLAN <span class="cidr">10.10.20.0/24</span></div>
+          <div class="inline-create">
+            <div style="font-size:10px;color:#38bdf8;margin-bottom:2px;">New Network</div>
+            <div>
+              <div class="label">Name *</div>
+              <input type="text" placeholder="e.g., Prod Servers" value="Prod Servers" />
+            </div>
+            <div>
+              <div class="label">CIDR (optional)</div>
+              <input type="text" placeholder="e.g., 172.16.0.0/24" value="172.16.0.0/24" />
+            </div>
+            <button class="create-btn">Create &amp; Select</button>
+          </div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary">Accept</button>
+      <button class="btn btn-danger">Reject</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Network selected -->
+  <div>
+    <div class="step-label">Step 2b — Existing network selected, selector shows it</div>
+    <div class="topbar">
+      <span class="chip active">All</span>
+      <span class="chip">Docker</span>
+      <div class="divider"></div>
+      <div class="selected-badge">
+        <span class="net-label">NETWORK</span> LAN — Office
+        <span style="color:#6b6b8a;font-size:10px;">192.168.1.0/24</span>
+        <span style="color:#ef4444;cursor:pointer;margin-left:2px;">×</span>
+      </div>
+      <div class="spacer"></div>
+      <span class="count">4 selected</span>
+      <div class="divider"></div>
+      <button class="btn btn-primary">Accept</button>
+      <button class="btn btn-danger">Reject</button>
+    </div>
+    <!-- Confirmation banner -->
+    <div class="confirm-banner">
+      <span class="confirm-icon">🌐</span>
+      <div class="confirm-text">
+        Accept <strong>4 results</strong> and assign to <strong>LAN — Office (192.168.1.0/24)</strong>?
+      </div>
+      <div class="confirm-actions">
+        <button class="confirm-cancel">Cancel</button>
+        <button class="confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+</div>

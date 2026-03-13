@@ -3,6 +3,11 @@ name: Ollama Issue Triage
 on:
   issues:
     types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   triage:
     runs-on: ubuntu-latest

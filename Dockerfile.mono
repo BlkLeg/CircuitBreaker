@@ -18,6 +18,9 @@ FROM python:3.12.9-slim-bookworm AS backend-builder
 
 WORKDIR /app/backend
 
+# Mono image tracks security updates from Debian bookworm; pinning apt package
+# versions here would block unattended base-image security rollups.
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -43,6 +46,7 @@ RUN pip install --no-cache-dir --no-deps .
 
 
 ########## Stage 3: Runtime image (all services + supervisor) ##########
+# checkov:skip=CKV_DOCKER_3: Mono runtime intentionally starts as root to run entrypoint bootstrap tasks (volume ownership, embedded service wiring) before supervised processes run as breaker/root where required.
 FROM python:3.12.9-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -58,6 +62,9 @@ WORKDIR /app/backend
 # - postgresql: embedded DB (Debian Bookworm default is PostgreSQL 15)
 # - nats-server: JetStream message bus
 # - ca-certificates, curl: TLS + simple debugging
+# Mono runtime tracks security updates from Debian bookworm; version pinning on
+# apt packages is intentionally avoided to keep CVE fixes current.
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     supervisor \
@@ -117,11 +124,13 @@ ENV PYTHONPATH=/app/backend/src \
 
 VOLUME ["/data"]
 
-EXPOSE 80 443
+EXPOSE 8080 8443
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD curl -f http://127.0.0.1:80/api/v1/health || exit 1
+  CMD curl -f http://127.0.0.1:8080/api/v1/health || exit 1
 
-# tini as PID1 (reaps zombies, forwards signals). Entrypoint runs as root to chown /data, then exec supervisord.
+USER breaker:breaker
+
+# tini as PID1 (reaps zombies, forwards signals). Entrypoint and supervised processes run as breaker.
 ENTRYPOINT ["/usr/bin/tini", "--", "/bin/bash", "/docker/entrypoint-mono.sh"]
 

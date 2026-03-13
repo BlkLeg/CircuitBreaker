@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 
+from app.core.log_redaction import install_global_log_redaction
 from app.workers import run_with_graceful_shutdown
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def main() -> None:
         worker_type = _TYPE_MAP[worker_type]
 
     logging.basicConfig(level=logging.INFO)
+    install_global_log_redaction()
     logger.info("Starting worker type %s", worker_type)
 
     asyncio.run(_dispatch(worker_type))

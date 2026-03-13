@@ -41,6 +41,8 @@ export function applyEdgeSides(nodesArr, edgesArr, overrides = {}, onlyNodeId = 
       ...e,
       sourceHandle: `s-${sourceSide}`,
       targetHandle: `t-${targetSide}`,
+      sourceHandleId: `s-${sourceSide}`,
+      targetHandleId: `t-${targetSide}`,
       data: {
         ...e.data,
         controlPoint: override?.control_point ?? e.data?.controlPoint ?? null,
@@ -70,6 +72,8 @@ export function applyEdgeSidesForEdge(nodesArr, edge, overrides = {}) {
     ...edge,
     sourceHandle: `s-${sourceSide}`,
     targetHandle: `t-${targetSide}`,
+    sourceHandleId: `s-${sourceSide}`,
+    targetHandleId: `t-${targetSide}`,
     data: {
       ...edge.data,
       controlPoint: override?.control_point ?? edge.data?.controlPoint ?? null,

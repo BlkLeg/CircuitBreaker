@@ -47,6 +47,14 @@ def _get_actor(db: Session, user_id: int) -> str:
     return (u.display_name or u.email) if u else "unknown"
 
 
+def _load_jobs_in_order(db: Session, job_ids: list[int]) -> list[ScanJob]:
+    if not job_ids:
+        return []
+    rows = db.scalars(select(ScanJob).where(ScanJob.id.in_(job_ids))).all()
+    rows_by_id = {row.id: row for row in rows}
+    return [rows_by_id[job_id] for job_id in job_ids if job_id in rows_by_id]
+
+
 def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
     settings = get_or_create_settings(db)
     discovery_enabled = getattr(settings, "discovery_enabled", False)
@@ -70,9 +78,14 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
         .order_by(ScanJob.completed_at.desc())
         .first()
     )
-    last_scan = (
-        last_completed.completed_at if last_completed and last_completed.completed_at else None
-    )
+    raw_last_scan = getattr(last_completed, "completed_at", None)
+    if isinstance(raw_last_scan, str):
+        last_scan = raw_last_scan
+    elif hasattr(raw_last_scan, "isoformat"):
+        scan_iso = raw_last_scan.isoformat()
+        last_scan = scan_iso if isinstance(scan_iso, str) else None
+    else:
+        last_scan = None
 
     next_scheduled = None
     try:
@@ -220,7 +233,7 @@ async def run_profile_scan(
 # --- Ad-Hoc ---
 
 
-@router.post("/scan", response_model=ScanJobOut)
+@router.post("/scan", response_model=ScanJobOut | list[ScanJobOut])
 @limiter.limit(lambda: get_limit("scan"))
 async def run_adhoc_scan(
     request: Request,
@@ -231,16 +244,39 @@ async def run_adhoc_scan(
     db: Session = Depends(get_db),
 ):
     user_id = user.id
+
+    if payload.cidrs:
+        target_list = payload.cidrs
+    elif payload.cidr:
+        target_list = [payload.cidr]
+    else:
+        target_list = []
+
+    job_ids: list[int] = []
     try:
-        job = discovery_service.create_scan_job(
-            db,
-            target_cidr=payload.cidr,
-            vlan_ids=payload.vlan_ids,
-            scan_types=payload.scan_types,
-            nmap_arguments=payload.nmap_arguments,  # B12: thread through
-            label=payload.label,
-            triggered_by=_get_actor(db, user_id),
-        )
+        for target_cidr in target_list:
+            job = discovery_service.create_scan_job(
+                db,
+                target_cidr=target_cidr,
+                vlan_ids=payload.vlan_ids,
+                scan_types=payload.scan_types,
+                nmap_arguments=payload.nmap_arguments,  # B12: thread through
+                label=payload.label,
+                triggered_by=_get_actor(db, user_id),
+            )
+            job_ids.append(job.id)
+        if not target_list:
+            # No target — create a single job with no cidr (existing behavior)
+            job = discovery_service.create_scan_job(
+                db,
+                target_cidr=None,
+                vlan_ids=payload.vlan_ids,
+                scan_types=payload.scan_types,
+                nmap_arguments=payload.nmap_arguments,
+                label=payload.label,
+                triggered_by=_get_actor(db, user_id),
+            )
+            job_ids.append(job.id)
     except ValueError as exc:
         _logger.warning("Ad-hoc scan request rejected: %s", exc)
         msg = str(exc)
@@ -254,30 +290,37 @@ async def run_adhoc_scan(
             detail="An error occurred while starting the scan.",
         ) from exc
 
-    db.expunge(job)  # Detach from session before audit commit expires attributes
-
     try:
         log_audit(
             db,
             request,
             user_id=user_id,
             action="scan_triggered",
-            resource=f"scan_job:{job.id}",
+            resource=",".join(f"scan_job:{job_id}" for job_id in job_ids),
             status="ok",
         )
     except Exception as audit_exc:
-        _logger.warning("Audit log failed for scan_triggered (job %s): %s", job.id, audit_exc)
+        _logger.warning(
+            "Audit log failed for scan_triggered (jobs %s): %s",
+            job_ids,
+            audit_exc,
+        )
 
     try:
-        asyncio.create_task(discovery_service.run_scan_job(job.id))
+        for job_id in job_ids:
+            asyncio.create_task(discovery_service.run_scan_job(job_id))
     except Exception as task_exc:
-        _logger.exception("Failed to schedule scan job %s: %s", job.id, task_exc)
+        _logger.exception("Failed to schedule scan job(s) %s: %s", job_ids, task_exc)
         raise HTTPException(
             status_code=500,
             detail="An error occurred while starting the scan.",
         ) from task_exc
 
-    return job
+    ordered_jobs = _load_jobs_in_order(db, job_ids)
+    response_jobs = [ScanJobOut.model_validate(job) for job in ordered_jobs]
+    if len(response_jobs) == 1:
+        return response_jobs[0]
+    return response_jobs
 
 
 # --- Jobs ---
@@ -394,7 +437,7 @@ def get_job_logs(
 
 
 @router.get("/results", response_model=list[ScanResultOut])
-def list_results(status: str = "pending", job_id: int = None, db: Session = Depends(get_db)):
+def list_results(status: str = "pending", job_id: int | None = None, db: Session = Depends(get_db)):
     q = select(ScanResult)
     if status != "all":
         q = q.where(ScanResult.merge_status == status)
@@ -465,7 +508,7 @@ def docker_status(db: Session = Depends(get_db)):
     from app.services.docker_discovery import get_docker_status, get_last_sync_result
 
     settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", "/var/run/docker.sock")
+    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
     status = get_docker_status(socket_path)
     last_sync = get_last_sync_result()
     return {**status, "last_sync": last_sync}
@@ -481,7 +524,7 @@ def docker_sync(
     from app.services.docker_discovery import sync_docker_topology
 
     settings = get_or_create_settings(db)
-    socket_path = getattr(settings, "docker_socket_path", "/var/run/docker.sock")
+    socket_path = getattr(settings, "docker_socket_path", _DEFAULT_DOCKER_SOCKET)
     background_tasks.add_task(sync_docker_topology, socket_path=socket_path)
     return {"status": "sync_started", "socket_path": socket_path}
 
