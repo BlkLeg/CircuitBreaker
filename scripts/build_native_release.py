@@ -135,6 +135,111 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
     return binary_path
 
 
+def _write_env_example(bundle_dir: Path) -> None:
+    """Generate a .env.example tailored to native (non-Docker) deployments."""
+    text = """\
+# Circuit Breaker — environment variables for native binary deployments.
+# Copy this file to .env (next to the binary) and fill in the values.
+# The binary reads .env automatically on startup; explicit exports also work.
+
+# ── Required ─────────────────────────────────────────────────────────────────
+# Fernet encryption key for the credential vault.
+# Generate: openssl rand -base64 32
+CB_VAULT_KEY=
+
+# PostgreSQL connection string (database must already exist).
+CB_DB_URL=postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker
+
+# ── Optional ─────────────────────────────────────────────────────────────────
+# Host and port the web server listens on.
+# CB_HOST=0.0.0.0
+# CB_PORT=8080
+
+# Redis URL for telemetry cache and pub/sub (omit to disable).
+# CB_REDIS_URL=redis://127.0.0.1:6379/0
+
+# Connection pool tuning (defaults: 10 / 10).
+# DB_POOL_SIZE=10
+# DB_MAX_OVERFLOW=10
+
+# Data and log directories.
+# CB_DATA_DIR=/var/lib/circuit-breaker
+# CB_LOG_DIR=/var/log/circuit-breaker
+
+# Path to the bundled frontend assets (auto-detected from share/frontend).
+# STATIC_DIR=./share/frontend
+
+# Path to alembic.ini for database migrations (auto-detected from share/).
+# CB_ALEMBIC_INI=./share/backend/alembic.ini
+"""
+    (bundle_dir / ".env.example").write_text(text, encoding="utf-8")
+
+
+def _write_readme(bundle_dir: Path, version: str, target_os: str, binary: str) -> None:
+    """Generate a quick-start README.txt placed at the archive root."""
+    run_prefix = "./" if target_os != "windows" else ""
+    text = f"""\
+Circuit Breaker {version} — Quick Start
+{'=' * 42}
+
+Prerequisites
+-------------
+- PostgreSQL 14+ (running and accessible)
+- openssl  (for generating secrets)
+
+1. Generate a vault encryption key
+-----------------------------------
+  openssl rand -base64 32
+
+  Copy the output — you will use it as CB_VAULT_KEY below.
+
+2. Configure environment
+-------------------------
+  Copy the included .env.example to .env and fill in values:
+
+    cp .env.example .env
+
+  At minimum, set CB_VAULT_KEY (from step 1) and CB_DB_URL.
+
+3. Run Circuit Breaker
+-----------------------
+  {run_prefix}{binary}
+
+  The binary reads .env automatically. You can also export vars directly:
+
+  CB_VAULT_KEY="<key>" CB_DB_URL="postgresql://..." {run_prefix}{binary}
+
+  The web UI will be available at http://localhost:8080 by default.
+
+4. Configuration (optional)
+----------------------------
+  A sample config file is included at:
+
+    share/config.toml.default
+
+  Copy it to /etc/circuit-breaker/config.toml (Linux) or pass
+  --config <path> to the binary. Environment variables always
+  take precedence over config file values.
+
+Archive contents
+-----------------
+  {binary}                  — Application binary
+  README.txt                — This file
+  .env.example              — Environment variable template
+  manifest.json             — Build metadata (version, arch, checksums)
+  share/VERSION             — Version string
+  share/frontend/           — Pre-built web UI assets
+  share/backend/alembic.ini — Database migration config
+  share/backend/migrations/ — Database migration scripts
+  share/config.toml.default — Sample configuration file
+
+Full documentation
+-------------------
+  https://github.com/BlkLeg/circuitbreaker
+"""
+    (bundle_dir / "README.txt").write_text(text, encoding="utf-8")
+
+
 def stage_bundle(
     binary_path: Path,
     version: str,
@@ -186,11 +291,21 @@ def stage_bundle(
         },
     }
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    _write_readme(bundle_dir, version, target_os, binary_path.name)
+    _write_env_example(bundle_dir)
+
     return bundle_dir, manifest
 
 
 def create_archive(bundle_dir: Path, version: str, target_os: str, target_arch: str, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not os.access(output_dir, os.W_OK):
+        raise SystemExit(
+            f"Output directory is not writable: {output_dir}\n"
+            "  (possibly left behind by a root-owned build). Fix ownership, for example:\n"
+            f"  sudo chown -R \"$USER\":\"$USER\" {output_dir}"
+        )
     archive_path = output_dir / archive_name(version, target_os, target_arch)
     if archive_path.exists():
         try:

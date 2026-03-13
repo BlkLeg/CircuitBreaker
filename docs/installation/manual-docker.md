@@ -69,7 +69,7 @@ docker run -d \
 Generate a key with:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+openssl rand -base64 32
 ```
 
 If `CB_VAULT_KEY` is not set, Circuit Breaker auto-generates one during the [first-run wizard](first-run.md) and writes it to `/data/.env` inside the volume. This persists as long as the volume is not deleted.

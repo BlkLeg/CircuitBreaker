@@ -295,6 +295,7 @@ preflight: test frontend-build ## Run tests, build frontend, build mono image
 build-native: frontend-build ## Build a packaged native archive for the current OS/ARCH
 	@echo "Building packaged native release for $(OS_ARCH)..."
 	@echo "Ensuring pyinstaller is installed..."
+	@.venv/bin/python -c "import pip" >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
 	@.venv/bin/python -m pip install pyinstaller
 	@echo "Running native packaging..."
 	@.venv/bin/python scripts/build_native_release.py --clean

@@ -89,20 +89,11 @@ _container_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"
 }
 
-# Generate a valid Fernet key using the backend container's own Python runtime,
-# guaranteeing compatibility with the running app.
-# Falls back to host python3 stdlib when the container is unavailable.
+# Generate a valid Fernet key using openssl (available on virtually every Linux/macOS host).
 _gen_fernet_key() {
-  if [[ "$CB_MODE" == "docker" || "$CB_MODE" == "compose" ]]; then
-    if _container_running "$CB_BACKEND_CONTAINER"; then
-      docker exec "$CB_BACKEND_CONTAINER" python3 \
-        -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-        2>/dev/null && return
-    fi
-  fi
-  command -v python3 >/dev/null 2>&1 \
-    || _fail "python3 is required to generate a vault key. Install it and retry."
-  python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+  command -v openssl >/dev/null 2>&1 \
+    || _fail "openssl is required to generate a vault key. Install it and retry."
+  openssl rand -base64 32
 }
 
 ###############################################################################

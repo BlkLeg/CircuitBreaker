@@ -74,7 +74,7 @@ To pre-seed a persistent key before first launch, generate one and set it in the
 
 ```bash
 # Generate a key
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+openssl rand -base64 32
 ```
 
 Then set it in `docker-compose.yml`:
