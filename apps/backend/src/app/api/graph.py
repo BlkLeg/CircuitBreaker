@@ -647,7 +647,9 @@ def build_topology_graph(
                     "proxmox_vmid": cu.proxmox_vmid,
                     "proxmox_type": cu.proxmox_type,
                     "proxmox_status": (
-                        json.loads(cu.proxmox_status) if cu.proxmox_status else None
+                        cu.proxmox_status
+                        if isinstance(cu.proxmox_status, dict)
+                        else (json.loads(cu.proxmox_status) if cu.proxmox_status else None)
                     ),
                     "hardware_id": cu.hardware_id,
                     "integration_config_id": cu.integration_config_id,

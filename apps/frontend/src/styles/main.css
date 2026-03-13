@@ -3884,3 +3884,94 @@ body {
     background-position: -200% 0;
   }
 }
+
+/* ── Scan Import Banner + Modal ─────────────────────────────────────────── */
+.scan-import-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--color-surface, #1e2a3a);
+  border: 1px solid var(--color-accent, #3b82f6);
+  border-radius: 8px;
+  padding: 8px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 14px;
+}
+
+.scan-import-modal {
+  width: min(90vw, 860px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.scan-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.scan-import-count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--color-text-muted, #8899aa);
+}
+
+.scan-import-table-wrapper {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.scan-import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.scan-import-table th,
+.scan-import-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #2a3a4a);
+}
+
+.scan-import-table select {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.badge-new {
+  background: #1a3a1a;
+  color: #4ade80;
+}
+
+.badge-exists {
+  background: #1a2a3a;
+  color: #60a5fa;
+}
+
+.row-conflict {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--color-border, #2a3a4a);
+  margin-top: 8px;
+}

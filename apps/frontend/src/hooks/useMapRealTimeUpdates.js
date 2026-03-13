@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { telemetryApi } from '../api/client';
+import { useCallback, useEffect, useState } from 'react';
+import { discoveryApi, telemetryApi } from '../api/client';
 import { listMonitors } from '../api/monitor';
 import { discoveryEmitter } from './useDiscoveryStream';
 import { telemetryEmitter } from './useTelemetryStream';
@@ -41,6 +41,31 @@ export function useMapRealTimeUpdates({
     discoveryEmitter.on('result:added', onAdded);
     return () => discoveryEmitter.off('result:added', onAdded);
   }, [unmountedRef]);
+
+  // Scan completion → dispatch scan:import-ready when a job finishes with new hosts
+  const checkScanForImport = useCallback(async (jobId) => {
+    try {
+      const { data: results } = await discoveryApi.getResultsWithInference(jobId);
+      const newCount = results.filter((r) => r.is_new).length;
+      if (newCount > 0) {
+        globalThis.dispatchEvent(
+          new CustomEvent('scan:import-ready', { detail: { scanId: jobId, newCount } })
+        );
+      }
+    } catch {
+      // Non-fatal — banner is optional UX enhancement
+    }
+  }, []);
+
+  useEffect(() => {
+    const onJobUpdate = (job) => {
+      if (job?.status === 'done') {
+        checkScanForImport(job.id);
+      }
+    };
+    discoveryEmitter.on('job:update', onJobUpdate);
+    return () => discoveryEmitter.off('job:update', onJobUpdate);
+  }, [checkScanForImport]);
 
   // Real-time telemetry via Redis push (replaces 60 s polling when connected)
   useEffect(() => {

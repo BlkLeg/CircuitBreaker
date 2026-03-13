@@ -50,8 +50,16 @@ const client = axios.create({
   withCredentials: true,
 });
 
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];
+
 // Session is sent via httpOnly cookie (cb_session). Do not attach token from storage.
 // Strip accidental plaintext password when password_hash is already present (defense in depth).
+// Inject X-CSRF-Token header for all mutating requests using the cb_csrf cookie.
 client.interceptors.request.use((config) => {
   if (
     config.data &&
@@ -65,6 +73,10 @@ client.interceptors.request.use((config) => {
   }
   if (config.data instanceof FormData) {
     delete config.headers['Content-Type'];
+  }
+  if (CSRF_METHODS.includes(config.method?.toLowerCase())) {
+    const csrf = getCookie('cb_csrf');
+    if (csrf) config.headers['X-CSRF-Token'] = csrf;
   }
   return config;
 });
@@ -508,6 +520,14 @@ export const racksApi = {
 
 export const eventsApi = {
   status: () => client.get('/events/status'),
+};
+
+export const discoveryApi = {
+  getJobs: (params) => client.get('/discovery/jobs', { params }),
+  getJob: (id) => client.get(`/discovery/jobs/${id}`),
+  getResultsWithInference: (jobId) =>
+    client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
+  batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
 };
 
 export default client;
