@@ -28,7 +28,7 @@ Or with `wget`:
 wget -qO- https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-The script will prompt you to choose between **Docker mode** (recommended) and **binary mode**, then walk you through the rest of the options.
+The script is intended to land users on the standard Docker deployment. If you are using the interactive flow, choose the full Docker or Compose option when prompted.
 
 ---
 
@@ -36,19 +36,9 @@ The script will prompt you to choose between **Docker mode** (recommended) and *
 
 1. **Detects your architecture** — supports amd64, arm64, and arm/v7.
 2. **Verifies Docker** is installed and meets the minimum version requirement.
-3. **Prompts for install mode** — Docker container or native binary.
-4. **Docker mode:**
-   - Pulls `ghcr.io/blkleg/circuitbreaker:latest` from GHCR.
-   - Creates a named Docker volume (`circuit-breaker-data`) for persistent storage.
-   - Starts the container with `--restart unless-stopped`.
-   - Optionally installs a **Caddy reverse proxy** container for automatic HTTPS with a self-signed local CA.
-   - Installs the self-signed CA certificate into your system trust store and Firefox NSS (where found).
-   - Installs the `cb` CLI tool to `/usr/local/bin/cb`.
-   - Optionally creates a **systemd service** so Circuit Breaker starts on boot.
-5. **Binary mode:**
-   - Downloads the Circuit Breaker native binary for your architecture.
-   - Installs it to `/usr/local/bin/circuit-breaker`.
-   - Optionally creates a systemd service with its own data and log directories.
+3. **Prompts for install mode** — use the full Docker deployment for the standard supported setup.
+4. **Docker mode** — downloads the standard Docker deployment files, generates or reuses persistent configuration and secrets, starts the full supported stack with discovery, workers, webhooks, and HTTPS support, installs the self-signed CA certificate when local TLS is enabled, installs the `cb` CLI tool to `/usr/local/bin/cb`, and can create a **systemd service** so Circuit Breaker starts on boot.
+5. **Binary mode** — exists for native package testing and platform-specific workflows and is not the standard recommended install path while native builds remain under active validation.
 
 ---
 
@@ -98,7 +88,7 @@ CB_MODE=docker CB_TLS=1 CB_HOSTNAME=cb.lan CB_YES=1 \
 ### Example: Specific version, no systemd
 
 ```bash
-bash install.sh --mode docker --version v0.2.0 --no-systemd
+bash install.sh --mode docker --version v0.2.2 --no-systemd
 ```
 
 ---
@@ -142,3 +132,5 @@ Open Circuit Breaker in your browser and complete the **[First-Run Setup](first-
 **Container exits immediately** — Check logs with `docker logs circuit-breaker`. A missing `CB_VAULT_KEY` after an interrupted install can cause startup failures; run `cb vault-recover` to resolve.
 
 **Browser certificate warning** — The self-signed CA was not trusted by the browser. Restart the browser after install, or see [Trusting the CA Certificate](configuration.md#trusting-the-self-signed-ca-certificate).
+
+If you need a native package or a custom reduced deployment, treat that as an advanced path and start from [Installation Overview](index.md) rather than the quick install flow.

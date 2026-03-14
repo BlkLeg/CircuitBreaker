@@ -1,8 +1,8 @@
-# Docker Compose — Prebuilt (Mono Image)
+# Docker Compose — Prebuilt Full Stack
 
-Deploy Circuit Breaker with the single **mono** image (PostgreSQL, NATS, Redis, backend, workers, nginx) from GHCR. No clone or build required—typically completes in under 60 seconds.
+Deploy Circuit Breaker with the standard prebuilt Docker stack from GHCR. No clone or build required and it matches the supported experience delivered by the quick installer.
 
-This mode provides full capability: discovery workers, webhooks, notifications, and HTTPS via nginx inside the container.
+This is the manual equivalent of the quick installer: same full capability, same discovery and worker support, and the same recommended Docker experience.
 
 ---
 
@@ -23,7 +23,7 @@ This mode provides full capability: discovery workers, webhooks, notifications, 
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Choose **option 2 (Compose stack)** when prompted.
+If the interactive installer asks which Docker path to use, choose the full Docker or Compose option.
 
 Non-interactive:
 
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-c
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/.env.example -o .env
 # Edit .env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN
 
-# 3. Start stack
+# 3. Edit .env, then start the standard stack
 docker compose up -d
 ```
 

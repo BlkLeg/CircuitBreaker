@@ -14,7 +14,7 @@
 
 ***
 
-## 🚀 Standout Features (v0.2.0-beta)
+## 🚀 Standout Features (v0.2.2-beta)
 
 - **Auto-Discovery Engine**: Scan LAN with nmap/SNMP/ARP. Auto-pop Proxmox VMs, TrueNAS pools, UniFi APs. Review & merge into topology!
 - **Live Telemetry**: iDRAC/iLO/APC UPS/SNMP badges update via WebSockets. Health rings (green=healthy, red=critical).
@@ -124,7 +124,7 @@ Circuit Breaker is built security-first, with defense-in-depth applied across au
 
 ### Efficient
 
-- Runs in under 500mb of RAM - Pi Ready!
+- Runs in under 1GB (currently)
 
 ***
 
@@ -162,7 +162,7 @@ The script downloads `docker-compose.yml`, generates `.env` with secrets if miss
 
 Open: **http://localhost** or **https://localhost** (or your host IP). On first run, the setup wizard creates your admin account.
 
-**Overrides**: `CB_PORT=9090` or `CB_VERSION=v0.2.0` (pin image tag)
+**Overrides**: `CB_PORT=9090` or `CB_VERSION=v0.2.2` (pin image tag)
 
 **Tagged deploy**: `CB_TAG=v1.2.0 curl ... | bash` (pin to a specific release)
 
@@ -170,97 +170,21 @@ Open: **http://localhost** or **https://localhost** (or your host IP). On first 
 
 **Uninstall**: `cb uninstall` or `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
 
-### Native Packages
+### Manual Docker Compose
 
-> **In testing:** Native (PyInstaller) builds are still in testing. Prefer Docker or the one-line install for production use.
-
-Native release archives are standardized across supported platforms:
-
-- Linux `amd64`: `circuit-breaker_<version>_linux_amd64.tar.gz`
-- Linux `arm64`: `circuit-breaker_<version>_linux_arm64.tar.gz`
-- macOS `arm64`: `circuit-breaker_<version>_macos_arm64.tar.gz`
-- Windows `amd64`: `circuit-breaker_<version>_windows_amd64.zip`
-
-The Linux native installer (`install.sh --mode binary`) consumes the same packaged archive format that GitHub Releases publishes, so branch/local packaging and release packaging now use the same artifact contract.
-
-For native Linux installs, the installer supports two HTTPS modes:
-
-- `local`: generate and optionally trust a local CA + server certificate
-- `provided`: copy an existing certificate and key into the managed cert directory
-
-macOS and Windows native archives are built in CI, but their install path is currently manual rather than `install.sh`.
-
-### Docker Compose (single deployment file)
-
-**Single source of truth:** [`docker-compose.yml`](docker-compose.yml) at repo root. The [one-line install](#one-line-install-recommended) downloads this file and runs the **mono** image (PostgreSQL, NATS, Redis, backend, workers, nginx in one container).
+Use this only if you want to manage the deployment files yourself. It uses the same `docker-compose.yml` and the same full Docker experience as the installer.
 
 ```bash
-make setup-buildx
-make docker-publish-prod TAG=v0.2.0-2-beta
-```
-
-Manual run from repo (same file the installer uses):
-
-```bash
-# Recommended: use the installer (it downloads docker-compose.prod.yml for you)
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
-# Choose option 2 (Compose stack)
-```
-
-Manual run from repo (same file the installer uses):
-
-```bash
+mkdir -p ~/.circuitbreaker && cd ~/.circuitbreaker
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-compose.yml -o docker-compose.yml
-# cp .env.example .env and set CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN; then:
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/.env.example -o .env
+# Edit .env, then start the stack
 docker compose up -d
 ```
 
-Single-container image only (minimal—no discovery workers):
+Set `CB_DB_PASSWORD`, `CB_VAULT_KEY`, `CB_JWT_SECRET`, and `NATS_AUTH_TOKEN` in `.env` before the first start.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-compose.yml -o docker-compose.yml && cp .env.example .env && docker compose up -d
-```
-
-### Mono Image (Single Container, Postgres + NATS + Workers)
-
-For a self-contained, single-container deployment that bundles PostgreSQL, NATS JetStream, the backend API, workers, and the frontend behind nginx, use the **mono** image:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | \
-  CB_TAG=v0.2.0 CB_DB_PASSWORD='strongpass123' \
-  CB_VAULT_KEY="$(openssl rand -base64 32)" bash
-```
-
-This starts:
-
-- `ghcr.io/blkleg/circuitbreaker:mono-v0.2.0`
-- Ports: `80` (HTTP) and optionally `443` (HTTPS, when `CB_ENABLE_TLS=1` and certs are mounted)
-- Volume: `./circuitbreaker-data:/data`
-
-To run manually:
-
-```bash
-docker run -d --name circuitbreaker \
-  -p 8080:80 \
-  -v "$(pwd)/circuitbreaker-data:/data" \
-  -e CB_DB_PASSWORD=strongpass123 \
-  -e CB_VAULT_KEY="$(openssl rand -base64 32)" \
-  ghcr.io/blkleg/circuitbreaker:mono-v0.2.0
-```
-
-TLS is terminated inside the container by nginx. Mount your certificates into `/data/tls`:
-
-```bash
-mkdir -p circuitbreaker-data/tls
-cp fullchain.pem circuitbreaker-data/tls/fullchain.pem
-cp privkey.pem circuitbreaker-data/tls/privkey.pem
-
-CB_ENABLE_TLS=1 CB_DB_PASSWORD=... CB_VAULT_KEY=... \
-docker run -d --name circuitbreaker \
-  -p 80:80 -p 443:443 \
-  -v "$(pwd)/circuitbreaker-data:/data" \
-  ghcr.io/blkleg/circuitbreaker:mono-v0.2.0
-```
+Need source builds, native package details, or advanced custom deployments? See the [installation guide](docs/installation/index.md) and [packaging notes](packaging/README.md).
 
 For advanced ARP discovery on native Linux Docker, you can add:
 
@@ -268,24 +192,9 @@ For advanced ARP discovery on native Linux Docker, you can add:
 --cap-add NET_RAW --cap-add NET_ADMIN --network host
 ```
 
-to the `docker run` command (trusted homelab networks only). See [docs/discovery.md](docs/discovery.md#arp-scanning-and-docker-desktop) for details.
+to the Docker deployment (trusted homelab networks only). See [docs/discovery.md](docs/discovery.md#arp-scanning-and-docker-desktop) for details.
 
 **Build from source** (for development): see [docs/installation/docker-compose-source.md](docs/installation/docker-compose-source.md)
-
-Single-container `docker-compose.yml`:
-
-```yaml
-services:
-  circuit-breaker:
-    image: ghcr.io/blkleg/circuitbreaker:v0.2.0-beta  # Or :latest
-    ports: ["127.0.0.1:8080:8080"]
-    volumes: [circuit-breaker-data:/data]
-    restart: unless-stopped
-volumes:
-  circuit-breaker-data:
-```
-
-Update: `docker compose pull && docker compose up -d`
 
 After starting the compose stack, install the `cb` CLI tool so you have access to operational commands:
 
@@ -319,7 +228,7 @@ make install-cb
 
 ***
 
-## 🔄 v0.2.0 Migration Notes
+## 🔄 v0.2.2 Migration Notes
 
 **PostgreSQL Upgrade for Scale!**  
 SQLite → PostgreSQL default (`DATABASE_URL=postgresql://...`). Handles 10k+ nodes effortlessly.  
@@ -535,11 +444,11 @@ The current Discovery UI has a **left sidebar** (New Scan, All Scans, Proxmox VE
 - **Compose install:** In your install directory (e.g. `~/.circuit-breaker`), re-pull with an explicit current tag and restart, then hard-refresh the browser (Ctrl+Shift+R or Cmd+Shift+R):
 
   ```bash
-  CB_TAG=v0.2.0 docker compose pull
+  CB_TAG=v0.2.2 docker compose pull
   docker compose up -d
   ```
 
-  Use the tag that matches your release (e.g. `v0.2.0` or the version shown in Settings). After each release, `frontend-latest` and `backend-latest` are updated, so future installs with the default script will get the current UI.
+  Use the tag that matches your release (e.g. `v0.2.2` or the version shown in Settings). After each release, `frontend-latest` and `backend-latest` are updated, so future installs with the default script will get the current UI.
 
 ***
 

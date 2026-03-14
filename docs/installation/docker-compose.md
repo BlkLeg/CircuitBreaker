@@ -1,8 +1,8 @@
-# Docker Compose — Prebuilt Image
+# Advanced Compose Reference
 
-Deploy Circuit Breaker as a single container using Docker Compose and the published image from GHCR. No repository clone or local build required.
+This page documents a custom Compose pattern for users who intentionally want to manage their own reverse proxy or deviate from the standard deployment.
 
-This is the recommended method for users who already manage services with Compose and want a portable `docker-compose.yml` they can drop into their stack.
+It is not the primary supported install path. For the standard tested experience, use [Quick Install (Script)](quick-install.md) or [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md).
 
 ---
 
@@ -20,7 +20,7 @@ docker compose version
 
 ---
 
-## Quick Start
+## Custom Compose Example
 
 ```bash
 # 1. Download the compose file
@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/d
 docker compose up -d
 ```
 
-That's it. Circuit Breaker starts on **port 8080**:
+This starts Circuit Breaker on **port 8080** behind your own surrounding infrastructure:
 
 ```
 http://localhost:8080
@@ -42,7 +42,7 @@ http://<host-ip>:8080
 
 ## Compose File Overview
 
-The prebuilt compose file runs a single container with a named volume for persistence:
+This custom compose file runs a single container with a named volume for persistence:
 
 ```yaml
 services:
@@ -146,3 +146,4 @@ docker compose down -v
 - Review the **[Configuration Reference](configuration.md)** for environment variables.
 - To add HTTPS, place Circuit Breaker behind a reverse proxy — see [Deployment & Security](../deployment-security.md).
 - For remote access over the internet — see [Remote Access & Tunnels](../remote-access.md).
+- If you want the standard supported Docker experience instead, use [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md).
