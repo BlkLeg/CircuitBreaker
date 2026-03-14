@@ -1,1 +1,0 @@
-{"Created":"2026-03-14T03:20:30.27216845Z","Name":"discovery_workers","durable_name":"discovery_workers","deliver_policy":"all","ack_policy":"explicit","ack_wait":30000000000,"max_deliver":-1,"filter_subject":"discovery.jobs","replay_policy":"instant","max_ack_pending":1000,"deliver_subject":"_INBOX.jklyUknq7aeDo8lvdbNbBj","deliver_group":"discovery_workers","num_replicas":0}

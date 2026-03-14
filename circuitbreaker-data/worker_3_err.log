@@ -1,9 +1,0 @@
-INFO:__main__:Starting worker type telemetry
-INFO:app.workers.telemetry_collector:Telemetry collector vault initialized.
-INFO:app.workers.telemetry_collector:Telemetry collector started (interval=30s timeout=20s max_parallel=8).
-INFO:__main__:Starting worker type telemetry
-INFO:app.workers.telemetry_collector:Telemetry collector vault initialized.
-INFO:app.workers.telemetry_collector:Telemetry collector started (interval=30s timeout=20s max_parallel=8).
-INFO:__main__:Starting worker type telemetry
-INFO:app.workers.telemetry_collector:Telemetry collector vault initialized.
-INFO:app.workers.telemetry_collector:Telemetry collector started (interval=30s timeout=20s max_parallel=8).
