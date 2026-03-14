@@ -46,7 +46,7 @@ make compose-up
 
 ## What Gets Built
 
-The `docker/docker-compose.yml` file builds these services from source:
+The root `docker-compose.yml` builds the mono image from source:
 
 | Service | Role | Port (internal) |
 |---|---|---|
@@ -91,7 +91,7 @@ make trust-ca
 ### PostgreSQL (instead of SQLite)
 
 ```bash
-docker compose -f docker/docker-compose.yml --profile pg up -d --build
+docker compose --profile pg up -d --build
 ```
 
 Set `CB_DB_PASSWORD` in `.env` before starting if you want a custom password (default: `breaker`).
@@ -99,7 +99,7 @@ Set `CB_DB_PASSWORD` in `.env` before starting if you want a custom password (de
 ### Cloudflare Tunnel
 
 ```bash
-docker compose -f docker/docker-compose.yml --profile tunnel up -d
+docker compose --profile tunnel up -d
 ```
 
 Requires `CLOUDFLARE_TUNNEL_TOKEN` in `.env`. See [Remote Access & Tunnels](../remote-access.md).
@@ -126,16 +126,16 @@ See the full variable list in the [Configuration Reference](configuration.md).
 
 ```bash
 # Start all services (build if needed)
-docker compose -f docker/docker-compose.yml up -d --build
+docker compose up -d --build
 
 # View logs for all services
-docker compose -f docker/docker-compose.yml logs -f
+docker compose logs -f
 
 # Rebuild a single service after a code change
-docker compose -f docker/docker-compose.yml up -d --build backend
+docker compose up -d --build backend
 
 # Stop without removing volumes
-docker compose -f docker/docker-compose.yml down
+docker compose down
 
 # Wipe everything and start fresh
 make compose-fresh

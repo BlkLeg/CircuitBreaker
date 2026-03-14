@@ -30,7 +30,7 @@ The project maintainer(s) are responsible for clarifying and enforcing our stand
 This Code of Conduct applies within all project spaces, and also applies when an individual is officially representing the project in public spaces.
 
 ## Enforcement
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by contacting the project team at [INSERT EMAIL]. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by contacting the project team at letshost-admin@proton.me. All complaints will be reviewed and investigated promptly and fairly.
 
 ```
 

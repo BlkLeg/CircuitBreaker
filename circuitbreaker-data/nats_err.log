@@ -1,0 +1,73 @@
+[108] 2026/03/14 03:20:24.437788 [INF] Starting nats-server
+[108] 2026/03/14 03:20:24.437818 [INF]   Version:  2.9.10
+[108] 2026/03/14 03:20:24.437819 [INF]   Git:      [not set]
+[108] 2026/03/14 03:20:24.437820 [INF]   Name:     NDTCNSEQNNA3HYOEPXKR7MMPZQ764SEY5DWFG3ORZXHFSH2225AS3B6J
+[108] 2026/03/14 03:20:24.437823 [INF]   Node:     JN9PboP7
+[108] 2026/03/14 03:20:24.437823 [INF]   ID:       NDTCNSEQNNA3HYOEPXKR7MMPZQ764SEY5DWFG3ORZXHFSH2225AS3B6J
+[108] 2026/03/14 03:20:24.438100 [INF] Starting JetStream
+[108] 2026/03/14 03:20:24.438359 [INF]     _ ___ _____ ___ _____ ___ ___   _   __  __
+[108] 2026/03/14 03:20:24.438363 [INF]  _ | | __|_   _/ __|_   _| _ \ __| /_\ |  \/  |
+[108] 2026/03/14 03:20:24.438364 [INF] | || | _|  | | \__ \ | | |   / _| / _ \| |\/| |
+[108] 2026/03/14 03:20:24.438365 [INF]  \__/|___| |_| |___/ |_| |_|_\___/_/ \_\_|  |_|
+[108] 2026/03/14 03:20:24.438366 [INF] 
+[108] 2026/03/14 03:20:24.438367 [INF]          https://docs.nats.io/jetstream
+[108] 2026/03/14 03:20:24.438368 [INF] 
+[108] 2026/03/14 03:20:24.438369 [INF] ---------------- JETSTREAM ----------------
+[108] 2026/03/14 03:20:24.438372 [INF]   Max Memory:      23.23 GB
+[108] 2026/03/14 03:20:24.438373 [INF]   Max Storage:     185.92 GB
+[108] 2026/03/14 03:20:24.438374 [INF]   Store Directory: "/data/nats/jetstream"
+[108] 2026/03/14 03:20:24.438375 [INF] -------------------------------------------
+[108] 2026/03/14 03:20:24.438863 [INF] Listening for client connections on 0.0.0.0:4222
+[108] 2026/03/14 03:20:24.439265 [INF] Server is ready
+[87] 2026/03/14 03:22:36.358971 [INF] Starting nats-server
+[87] 2026/03/14 03:22:36.359000 [INF]   Version:  2.9.10
+[87] 2026/03/14 03:22:36.359002 [INF]   Git:      [not set]
+[87] 2026/03/14 03:22:36.359002 [INF]   Name:     NAZ4DLR6EQPVUOGFNHYTOGFEO2IA5ARGJ4VAKYNU6UW5SWWVT2LED7ZE
+[87] 2026/03/14 03:22:36.359004 [INF]   Node:     hoTFn3rL
+[87] 2026/03/14 03:22:36.359005 [INF]   ID:       NAZ4DLR6EQPVUOGFNHYTOGFEO2IA5ARGJ4VAKYNU6UW5SWWVT2LED7ZE
+[87] 2026/03/14 03:22:36.359156 [INF] Starting JetStream
+[87] 2026/03/14 03:22:36.359288 [INF]     _ ___ _____ ___ _____ ___ ___   _   __  __
+[87] 2026/03/14 03:22:36.359290 [INF]  _ | | __|_   _/ __|_   _| _ \ __| /_\ |  \/  |
+[87] 2026/03/14 03:22:36.359291 [INF] | || | _|  | | \__ \ | | |   / _| / _ \| |\/| |
+[87] 2026/03/14 03:22:36.359291 [INF]  \__/|___| |_| |___/ |_| |_|_\___/_/ \_\_|  |_|
+[87] 2026/03/14 03:22:36.359292 [INF] 
+[87] 2026/03/14 03:22:36.359293 [INF]          https://docs.nats.io/jetstream
+[87] 2026/03/14 03:22:36.359294 [INF] 
+[87] 2026/03/14 03:22:36.359295 [INF] ---------------- JETSTREAM ----------------
+[87] 2026/03/14 03:22:36.359297 [INF]   Max Memory:      23.23 GB
+[87] 2026/03/14 03:22:36.359299 [INF]   Max Storage:     185.92 GB
+[87] 2026/03/14 03:22:36.359300 [INF]   Store Directory: "/data/nats/jetstream"
+[87] 2026/03/14 03:22:36.359301 [INF] -------------------------------------------
+[87] 2026/03/14 03:22:36.359592 [INF]   Starting restore for stream '$G > DISCOVERY'
+[87] 2026/03/14 03:22:36.359820 [INF]   Restored 0 messages for stream '$G > DISCOVERY'
+[87] 2026/03/14 03:22:36.359858 [INF]   Starting restore for stream '$G > KV_dashboard_cache'
+[87] 2026/03/14 03:22:36.359941 [INF]   Restored 0 messages for stream '$G > KV_dashboard_cache'
+[87] 2026/03/14 03:22:36.359946 [INF]   Recovering 1 consumers for stream - '$G > DISCOVERY'
+[87] 2026/03/14 03:22:36.360242 [INF] Listening for client connections on 0.0.0.0:4222
+[87] 2026/03/14 03:22:36.360418 [INF] Server is ready
+[89] 2026/03/14 03:25:55.725914 [INF] Starting nats-server
+[89] 2026/03/14 03:25:55.725964 [INF]   Version:  2.9.10
+[89] 2026/03/14 03:25:55.725966 [INF]   Git:      [not set]
+[89] 2026/03/14 03:25:55.725968 [INF]   Name:     NBSZXF2QKQWFYAO7TVRAZPVST2WFWLW3WAE4GYP56UGZWSK5CYTMAFK3
+[89] 2026/03/14 03:25:55.725971 [INF]   Node:     Rm7n25nf
+[89] 2026/03/14 03:25:55.725972 [INF]   ID:       NBSZXF2QKQWFYAO7TVRAZPVST2WFWLW3WAE4GYP56UGZWSK5CYTMAFK3
+[89] 2026/03/14 03:25:55.726224 [INF] Starting JetStream
+[89] 2026/03/14 03:25:55.727173 [INF]     _ ___ _____ ___ _____ ___ ___   _   __  __
+[89] 2026/03/14 03:25:55.727179 [INF]  _ | | __|_   _/ __|_   _| _ \ __| /_\ |  \/  |
+[89] 2026/03/14 03:25:55.727180 [INF] | || | _|  | | \__ \ | | |   / _| / _ \| |\/| |
+[89] 2026/03/14 03:25:55.727182 [INF]  \__/|___| |_| |___/ |_| |_|_\___/_/ \_\_|  |_|
+[89] 2026/03/14 03:25:55.727183 [INF] 
+[89] 2026/03/14 03:25:55.727184 [INF]          https://docs.nats.io/jetstream
+[89] 2026/03/14 03:25:55.727185 [INF] 
+[89] 2026/03/14 03:25:55.727186 [INF] ---------------- JETSTREAM ----------------
+[89] 2026/03/14 03:25:55.727192 [INF]   Max Memory:      23.23 GB
+[89] 2026/03/14 03:25:55.727195 [INF]   Max Storage:     185.91 GB
+[89] 2026/03/14 03:25:55.727196 [INF]   Store Directory: "/data/nats/jetstream"
+[89] 2026/03/14 03:25:55.727197 [INF] -------------------------------------------
+[89] 2026/03/14 03:25:55.728142 [INF]   Starting restore for stream '$G > DISCOVERY'
+[89] 2026/03/14 03:25:55.729133 [INF]   Restored 0 messages for stream '$G > DISCOVERY'
+[89] 2026/03/14 03:25:55.729198 [INF]   Starting restore for stream '$G > KV_dashboard_cache'
+[89] 2026/03/14 03:25:55.729494 [INF]   Restored 1 messages for stream '$G > KV_dashboard_cache'
+[89] 2026/03/14 03:25:55.729509 [INF]   Recovering 1 consumers for stream - '$G > DISCOVERY'
+[89] 2026/03/14 03:25:55.729941 [INF] Listening for client connections on 0.0.0.0:4222
+[89] 2026/03/14 03:25:55.730216 [INF] Server is ready

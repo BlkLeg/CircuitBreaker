@@ -543,7 +543,7 @@ async def _import_storage_without_hardware(
 
 
 async def discover_and_import(
-    db: Session, config: IntegrationConfig, *, queue_for_review: bool = True
+    db: Session, config: IntegrationConfig, *, queue_for_review: bool = False
 ) -> dict:
     """Full cluster discovery: nodes, VMs, CTs, networks."""
     config.last_sync_status = "syncing"

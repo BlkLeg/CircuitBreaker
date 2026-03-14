@@ -1,0 +1,20 @@
+2026-03-14 03:20:24.442 UTC [107] LOG kernel file descriptor limit: 65536 (hard: 65536); max_client_conn: 100, max expected fd use: 152
+2026-03-14 03:20:24.442 UTC [107] LOG listening on 127.0.0.1:6432
+2026-03-14 03:20:24.442 UTC [107] LOG listening on unix:/tmp/.s.PGSQL.6432
+2026-03-14 03:20:24.442 UTC [107] LOG process up: PgBouncer 1.18.0, libevent 2.1.12-stable (epoll), adns: c-ares 1.18.1, tls: OpenSSL 3.0.18 30 Sep 2025
+2026-03-14 03:21:24.442 UTC [107] LOG stats: 3 xacts/s, 12 queries/s, in 7686 B/s, out 7112 B/s, xact 14432 us, query 379 us, wait 211 us
+2026-03-14 03:22:36.359 UTC [86] LOG kernel file descriptor limit: 65536 (hard: 65536); max_client_conn: 100, max expected fd use: 152
+2026-03-14 03:22:36.360 UTC [86] LOG listening on 127.0.0.1:6432
+2026-03-14 03:22:36.360 UTC [86] LOG listening on unix:/tmp/.s.PGSQL.6432
+2026-03-14 03:22:36.360 UTC [86] LOG process up: PgBouncer 1.18.0, libevent 2.1.12-stable (epoll), adns: c-ares 1.18.1, tls: OpenSSL 3.0.18 30 Sep 2025
+2026-03-14 03:23:36.360 UTC [86] LOG stats: 4 xacts/s, 16 queries/s, in 11840 B/s, out 11362 B/s, xact 17260 us, query 256 us, wait 184 us
+2026-03-14 03:24:36.360 UTC [86] LOG stats: 7 xacts/s, 25 queries/s, in 20385 B/s, out 18229 B/s, xact 73978 us, query 420 us, wait 10 us
+2026-03-14 03:25:36.360 UTC [86] LOG stats: 26 xacts/s, 86 queries/s, in 99749 B/s, out 82908 B/s, xact 6377 us, query 965 us, wait 5 us
+2026-03-14 03:25:55.727 UTC [88] LOG kernel file descriptor limit: 65536 (hard: 65536); max_client_conn: 100, max expected fd use: 152
+2026-03-14 03:25:55.728 UTC [88] LOG listening on 127.0.0.1:6432
+2026-03-14 03:25:55.728 UTC [88] LOG listening on unix:/tmp/.s.PGSQL.6432
+2026-03-14 03:25:55.728 UTC [88] LOG process up: PgBouncer 1.18.0, libevent 2.1.12-stable (epoll), adns: c-ares 1.18.1, tls: OpenSSL 3.0.18 30 Sep 2025
+2026-03-14 03:26:55.728 UTC [88] LOG stats: 3 xacts/s, 14 queries/s, in 9591 B/s, out 10737 B/s, xact 16335 us, query 315 us, wait 151 us
+2026-03-14 03:27:55.728 UTC [88] LOG stats: 0 xacts/s, 2 queries/s, in 592 B/s, out 685 B/s, xact 624579 us, query 387 us, wait 0 us
+2026-03-14 03:28:55.728 UTC [88] LOG stats: 1 xacts/s, 3 queries/s, in 768 B/s, out 907 B/s, xact 31933 us, query 172 us, wait 10 us
+2026-03-14 03:29:55.728 UTC [88] LOG stats: 0 xacts/s, 1 queries/s, in 368 B/s, out 477 B/s, xact 13155 us, query 97 us, wait 1 us

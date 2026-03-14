@@ -282,6 +282,30 @@ async def lifespan(app: FastAPI):
     set_state(ServerState.STARTING)
     _logger.info("[lifecycle] server state → STARTING")
 
+    # ── Phase 1: Filesystem write validation ───────────────────────────────
+    # Fail fast if /data volume permissions are broken (avoids cryptic runtime errors).
+    _data_dir = Path(os.environ.get("CB_DATA_DIR", "/data"))
+    _test_paths = [
+        _data_dir,
+        _data_dir / "uploads",
+        Path(settings.uploads_dir) if not settings.uploads_dir.startswith("/data") else None,
+    ]
+    for _path in filter(None, _test_paths):
+        try:
+            _path.mkdir(parents=True, exist_ok=True)
+            _test_file = _path / ".write_test"
+            _test_file.touch()
+            _test_file.unlink()
+        except (PermissionError, OSError) as _pe:
+            _logger.critical(
+                "STARTUP FAILED: Cannot write to %s. Volume permissions are incorrect. "
+                "Fix: docker run --rm -v circuitbreaker-data:/data alpine "
+                "sh -c 'chown -R 1000:1000 /data'",
+                _path,
+            )
+            raise SystemExit(1) from _pe
+    _logger.info("Filesystem validation passed — data dir: %s", _data_dir)
+
     _assert_required_schema()
 
     # ── Phase 7: Vault key init ────────────────────────────────────────────

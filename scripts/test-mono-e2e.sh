@@ -47,7 +47,7 @@ fi
 
 echo "[E2E] Starting container..."
 docker run -d --name "$CONTAINER_NAME" \
-  -p "${HTTP_PORT}:80" \
+  -p "${HTTP_PORT}:8080" \
   -v "${DATA_DIR}:/data" \
   -e "CB_DB_PASSWORD=e2etestpass" \
   -e "CB_VAULT_KEY=e2etestvaultkey32byteslong!!!!!!!!" \

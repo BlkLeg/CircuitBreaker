@@ -1,50 +1,74 @@
-name: Docker Build & Publish
+# Build and push mono image; smoke test with root docker-compose.yml.
+# Push to main → build + push :mono-latest; tag v* → :mono-<tag> + :mono-latest.
+# PR → build only, no push.
+name: Build and Push
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/blkleg/circuitbreaker
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build-push:
-    name: Multi-arch Build & Push to GHCR
+  check-lockfiles:
+    name: Verify requirements.txt is up to date
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install poetry
+        run: pip install --quiet poetry
+      - name: Check requirements.txt matches pyproject.toml
+        run: |
+          python scripts/gen_requirements.py > /tmp/requirements_fresh.txt
+          if ! diff apps/backend/requirements.txt /tmp/requirements_fresh.txt > /tmp/requirements_diff.txt 2>&1; then
+            echo "::error::requirements.txt is out of sync with pyproject.toml."
+            echo "Run 'python scripts/gen_requirements.py > apps/backend/requirements.txt' and commit the result."
+            cat /tmp/requirements_diff.txt
+            exit 1
+          fi
 
+  build:
+    name: Build mono image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Resolve image tag
         id: vars
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             RAW_TAG="${{ github.ref_name }}"
+          elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            RAW_TAG="latest"
           else
-            RAW_TAG="dev"
+            RAW_TAG="sha-${GITHUB_SHA::7}"
           fi
           SAFE_TAG=$(printf '%s' "$RAW_TAG" | tr -cd '[:alnum:]_.-')
-          if [ -z "$SAFE_TAG" ]; then
-            echo "Empty tag after sanitization" >&2
-            exit 1
-          fi
-          # Append -beta for 0.x.y versions; bare version for v1+
+          [ -n "$SAFE_TAG" ] || { echo "Empty tag" >&2; exit 1; }
           MAJOR=$(echo "$SAFE_TAG" | sed 's/^v//' | cut -d. -f1)
           if [ "$MAJOR" -lt 1 ] 2>/dev/null; then
             RELEASE_TAG="${SAFE_TAG}-beta"
@@ -53,49 +77,15 @@ jobs:
           fi
           echo "tag=$SAFE_TAG" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "repo=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Build & Push multi-arch image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          build-args: |
-            APP_VERSION=${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ steps.vars.outputs.repo }}:${{ steps.vars.outputs.release_tag }}
-            ${{ steps.vars.outputs.repo }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Scan main image with Trivy
-        uses: aquasecurity/trivy-action@0.20.0
-        with:
-          image-ref: ${{ steps.vars.outputs.repo }}:${{ steps.vars.outputs.release_tag }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          ignore-unfixed: true
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-        if: always()
-
+          echo "repo=${{ env.IMAGE }}" >> "$GITHUB_OUTPUT"
       - name: Build mono image (amd64 for E2E)
         run: |
           docker build -f Dockerfile.mono \
             --build-arg APP_VERSION=${{ steps.vars.outputs.tag }} \
             -t ${{ steps.vars.outputs.repo }}:mono-${{ steps.vars.outputs.tag }} .
-
       - name: E2E test mono image
         run: |
           CB_MONO_IMAGE=${{ steps.vars.outputs.repo }}:mono-${{ steps.vars.outputs.tag }} ./scripts/test-mono-e2e.sh
-
       - name: Scan mono image with Trivy
         uses: aquasecurity/trivy-action@0.20.0
         with:
@@ -105,20 +95,18 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
-
-      - name: Upload Trivy results (mono) to GitHub Security
+      - name: Upload Trivy results (mono)
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results-mono.sarif
         if: always()
-
-      - name: Build & Push mono multi-arch (after E2E pass)
+      - name: Build and push mono multi-arch
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.mono
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           build-args: |
             APP_VERSION=${{ steps.vars.outputs.tag }}
           tags: |
@@ -126,3 +114,38 @@ jobs:
             ${{ steps.vars.outputs.repo }}:mono-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  smoke:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate test .env
+        run: |
+          echo "CB_JWT_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> .env.test
+          echo "CB_VAULT_KEY=$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> .env.test
+          echo "CB_DB_PASSWORD=testpass123" >> .env.test
+          echo "NATS_AUTH_TOKEN=$(openssl rand -base64 32)" >> .env.test
+          echo "CB_PORT=80" >> .env.test
+          echo "CB_IMAGE=${{ env.IMAGE }}:mono-latest" >> .env.test
+      - name: Start stack (root docker-compose.yml)
+        run: |
+          docker compose --env-file .env.test pull
+          docker compose --env-file .env.test up -d
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:80/api/v1/health && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Verify bootstrap endpoint
+        run: |
+          STATUS=$(curl -sf http://localhost:80/api/v1/bootstrap/status | jq -r .status)
+          [ "$STATUS" = "pending" ] || [ -n "$STATUS" ] || exit 1
+      - name: Teardown
+        if: always()
+        run: docker compose --env-file .env.test down -v

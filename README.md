@@ -158,15 +158,15 @@ The install script requires **curl or wget** on the host (e.g. Ubuntu: `sudo apt
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Choose **Compose stack** (option 2) for full capability—discovery, webhooks, HTTPS—in under 60 seconds. No build required.
+The script downloads `docker-compose.yml`, generates `.env` with secrets if missing, and starts the stack. Full capability—discovery, webhooks, HTTPS—in under 60 seconds. No build required.
 
-Open: <https://localhost> or <https://circuitbreaker.local> or <https://192.168.x.x> (your host IP)
+Open: **http://localhost** or **https://localhost** (or your host IP). On first run, the setup wizard creates your admin account.
 
-**Overrides**: `CB_MODE=compose CB_YES=1 curl ... | bash` (non-interactive compose install)
+**Overrides**: `CB_PORT=9090` or `CB_VERSION=v0.2.0` (pin image tag)
 
 **Tagged deploy**: `CB_TAG=v1.2.0 curl ... | bash` (pin to a specific release)
 
-**Upgrade**: `cb update` or `docker compose -f ~/.circuit-breaker/docker-compose.prod.yml pull && docker compose -f ~/.circuit-breaker/docker-compose.prod.yml up -d`
+**Upgrade**: `cb update` or `docker compose --project-directory ~/.circuitbreaker pull && docker compose --project-directory ~/.circuitbreaker up -d`
 
 **Uninstall**: `cb uninstall` or `curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash`
 
@@ -190,16 +190,16 @@ For native Linux installs, the installer supports two HTTPS modes:
 
 macOS and Windows native archives are built in CI, but their install path is currently manual rather than `install.sh`.
 
-### Docker Compose (Prebuilt)
+### Docker Compose (single deployment file)
 
-**Single source of truth for production Docker:** [`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml). The one-line install (option 2) downloads this file and uses it for the full stack (Caddy, backend, frontend, workers, NATS, Postgres). It expects **two** images: `ghcr.io/blkleg/circuitbreaker:backend-<tag>` and `:frontend-<tag>`. To build and push both for a version (e.g. `v0.2.0-2-beta`):
+**Single source of truth:** [`docker-compose.yml`](docker-compose.yml) at repo root. The [one-line install](#one-line-install-recommended) downloads this file and runs the **mono** image (PostgreSQL, NATS, Redis, backend, workers, nginx in one container).
 
 ```bash
 make setup-buildx
 make docker-publish-prod TAG=v0.2.0-2-beta
 ```
 
-Then run with `CB_TAG=v0.2.0-2-beta docker compose -f docker-compose.prod.yml up -d`. Manual runs and upgrades should use the same compose file:
+Manual run from repo (same file the installer uses):
 
 ```bash
 # Recommended: use the installer (it downloads docker-compose.prod.yml for you)
@@ -210,15 +210,15 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.
 Manual run from repo (same file the installer uses):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prod.yml -o docker-compose.prod.yml
-# Place Caddyfile and .env alongside (see docker/.env.example), then:
-docker compose -f docker-compose.prod.yml up -d
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-compose.yml -o docker-compose.yml
+# cp .env.example .env and set CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN; then:
+docker compose up -d
 ```
 
 Single-container image only (minimal—no discovery workers):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prebuilt.yml -o docker-compose.yml && docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-compose.yml -o docker-compose.yml && cp .env.example .env && docker compose up -d
 ```
 
 ### Mono Image (Single Container, Postgres + NATS + Workers)
@@ -226,7 +226,7 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/d
 For a self-contained, single-container deployment that bundles PostgreSQL, NATS JetStream, the backend API, workers, and the frontend behind nginx, use the **mono** image:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install-mono.sh | \
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | \
   CB_TAG=v0.2.0 CB_DB_PASSWORD='strongpass123' \
   CB_VAULT_KEY="$(openssl rand -base64 32)" bash
 ```
@@ -336,7 +336,7 @@ Why? Explosive growth—Proxmox scans add 100s of VMs. PG scales infinitely.
 
 ## Docker Compose — Production Stack
 
-For **production (prebuilt images)**, use **[`docker/docker-compose.prod.yml`](docker/docker-compose.prod.yml)** — the same file the [one-line install](#one-line-install-recommended) uses. The full stack includes:
+For **production (prebuilt images)**, use **[`docker-compose.yml`](docker-compose.yml)** — the same file the [one-line install](#one-line-install-recommended) uses. The full stack includes:
 
 | Service | Role |
 |---------|------|
@@ -351,13 +351,13 @@ For **production (prebuilt images)**, use **[`docker/docker-compose.prod.yml`](d
 
 ### Quick start
 
-**Prebuilt (recommended):** use the [installer](#one-line-install-recommended) or run `docker/docker-compose.prod.yml` as in the Quick Start section.
+**Prebuilt (recommended):** use the [installer](#one-line-install-recommended) or run `docker-compose.yml` (repo root) as in the Quick Start section.
 
 **Build from source:**
 
 ```bash
 git clone https://github.com/BlkLeg/circuitbreaker.git && cd circuitbreaker
-docker compose -f docker/docker-compose.yml up -d
+docker compose up -d
 ```
 
 Access at `https://circuitbreaker.local` (default domain). See **Caddy HTTPS** below if your browser shows a certificate warning.
@@ -381,7 +381,7 @@ Copy `docker/.env.example` to `docker/.env` and set as needed:
 
 ### Persistence Layout
 
-The source `docker/docker-compose.yml` uses a mix of **named volumes** (managed by Docker) and **bind mounts** (specific host folders). These are the important ones:
+The root `docker-compose.yml` uses a **bind mount** (managed by Docker) and **bind mounts** (specific host folders). These are the important ones:
 
 | Mount | Type | Container path | What it stores | Notes |
 |------|------|----------------|----------------|-------|
@@ -453,7 +453,7 @@ By default, discovery uses nmap TCP/ICMP and works without elevated privileges. 
 > **Native Linux Docker only — not supported on Docker Desktop (macOS / Docker Desktop for Linux).**
 > `network_mode: host` is required so the container can reach your LAN directly. Docker Desktop runs containers inside a VM, so host mode accesses the VM's network, not your LAN, and breaks the nginx → backend proxy.
 
-1. In `docker/docker-compose.yml`, uncomment under the `backend` service:
+1. In `docker-compose.yml`, uncomment under the `circuitbreaker` service:
    ```yaml
    cap_add:
      - NET_RAW
@@ -465,7 +465,7 @@ By default, discovery uses nmap TCP/ICMP and works without elevated privileges. 
    extra_hosts:
      - "backend:host-gateway"
    ```
-3. Restart: `docker compose -f docker/docker-compose.yml up -d`
+3. Restart: `docker compose up -d`
 
 **Security note:** `NET_RAW` + `NET_ADMIN` allow the container to craft and send arbitrary raw packets. Only enable this on trusted, isolated homelab networks.
 
@@ -475,10 +475,10 @@ The Docker socket is **not** mounted by default. To enable Docker-aware discover
 
 ```bash
 # Development
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.docker-socket.yml up -d
+docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d
 
 # Production (prebuilt images)
-docker compose -f docker/docker-compose.prod.yml -f docker/docker-compose.docker-socket.yml up -d
+docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d
 ```
 
 Then enable "Docker Container Discovery" in **Settings → Discovery**. See [docs/discovery.md](docs/discovery.md).
@@ -535,8 +535,8 @@ The current Discovery UI has a **left sidebar** (New Scan, All Scans, Proxmox VE
 - **Compose install:** In your install directory (e.g. `~/.circuit-breaker`), re-pull with an explicit current tag and restart, then hard-refresh the browser (Ctrl+Shift+R or Cmd+Shift+R):
 
   ```bash
-  CB_TAG=v0.2.0 docker compose -f docker-compose.prod.yml pull
-  docker compose -f docker-compose.prod.yml up -d
+  CB_TAG=v0.2.0 docker compose pull
+  docker compose up -d
   ```
 
   Use the tag that matches your release (e.g. `v0.2.0` or the version shown in Settings). After each release, `frontend-latest` and `backend-latest` are updated, so future installs with the default script will get the current UI.

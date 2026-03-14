@@ -11,6 +11,11 @@ export ALEMBIC_CONFIG="${ALEMBIC_CONFIG:-$CB_ALEMBIC_INI}"
 USE_EXTERNAL_DB=0
 if [ -n "${CB_DB_URL:-}" ]; then
   DB_HOST=$(python3 -c "import os; from urllib.parse import urlparse; u=urlparse(os.environ.get('CB_DB_URL','')); h=(u.hostname or '').lower(); print(h)" 2>/dev/null || true)
+  if [ -z "$DB_HOST" ]; then
+    echo "FATAL: CB_DB_URL is set but appears malformed (no hostname found)." >&2
+    echo "  Expected format: postgresql://user:pass@host:port/dbname" >&2
+    exit 1
+  fi
   case "$DB_HOST" in
     127.0.0.1|localhost|'') ;;
     *) USE_EXTERNAL_DB=1 ;;
@@ -34,6 +39,17 @@ fi
 
 if [[ -n "${CB_VAULT_KEY:-}" && "${CB_VAULT_KEY}" == "${CB_JWT_SECRET}" ]]; then
   echo "FATAL: CB_JWT_SECRET and CB_VAULT_KEY must be different values." >&2
+  exit 1
+fi
+
+if [[ -z "${NATS_AUTH_TOKEN:-}" ]]; then
+  echo "FATAL: NATS_AUTH_TOKEN is required but not set. Generate one with:" >&2
+  echo "  openssl rand -base64 32" >&2
+  exit 1
+fi
+
+if [[ ${#NATS_AUTH_TOKEN} -lt 32 || "${NATS_AUTH_TOKEN}" == "CHANGE_ME" ]]; then
+  echo "FATAL: NATS_AUTH_TOKEN must be at least 32 characters and not 'CHANGE_ME'." >&2
   exit 1
 fi
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +148,12 @@ fi
 # Embedded Redis uses requirepass to prevent unauthenticated access from
 # other processes sharing the container namespace.
 REDIS_PASS_FILE="${DATA}/.redis_pass"
-if [ ! -f "$REDIS_PASS_FILE" ]; then
+if [ -n "${CB_REDIS_PASS:-}" ]; then
+  # Use the deterministic password provided at deploy time (set by install.sh / .env)
+  printf '%s' "$CB_REDIS_PASS" > "$REDIS_PASS_FILE"
+  chmod 600 "$REDIS_PASS_FILE"
+  [ "$(id -u)" -eq 0 ] && chown breaker:breaker "$REDIS_PASS_FILE" 2>/dev/null || true
+elif [ ! -f "$REDIS_PASS_FILE" ]; then
   openssl rand -base64 32 | tr -d '\n' > "$REDIS_PASS_FILE"
   chmod 600 "$REDIS_PASS_FILE"
   [ "$(id -u)" -eq 0 ] && chown breaker:breaker "$REDIS_PASS_FILE" 2>/dev/null || true
