@@ -86,6 +86,11 @@ if [ "$(id -u)" -eq 0 ]; then
   if ! chown -R breaker:breaker "$DATA" 2>/dev/null; then
     echo "[entrypoint] chown /data not permitted; ensure volume is writable by 1000:1000 (e.g. chown 1000:1000 ./circuitbreaker-data)." >&2
   fi
+  
+  # PostgreSQL requires strict 0700 permissions on its data directory (no group/other access)
+  if [ -d "$DATA/pgdata" ]; then
+    chmod 700 "$DATA/pgdata"
+  fi
 else
   chmod 1777 "$DATA/run/postgresql" 2>/dev/null || true
 fi

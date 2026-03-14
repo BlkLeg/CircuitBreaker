@@ -33,9 +33,11 @@ If install.sh didn't auto-fix ownership or you're upgrading manually:
 
 ```bash
 docker compose down
-docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data"
+docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data && chmod 700 /data/pgdata 2>/dev/null || true"
 docker compose up -d
 ```
+
+**Note:** PostgreSQL requires strict `0700` permissions on `/data/pgdata` (owner-only access). The command above sets general permissions to `750` but corrects pgdata to `700`.
 
 ## Troubleshooting
 
@@ -74,6 +76,23 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
+### PostgreSQL data directory permission error
+
+**Symptoms:**
+```
+FATAL: data directory "/data/pgdata" has invalid permissions
+DETAIL: Permissions should be u=rwx (0700) or u=rwx,g=rx (0750).
+```
+
+**Cause:** PostgreSQL requires **exactly** `0700` permissions on its data directory. If the volume was remediated with bulk `chmod -R 750`, pgdata ends up with group-readable permissions (750), which PostgreSQL rejects.
+
+**Fix:**
+```bash
+docker compose down
+docker run --rm -v circuitbreaker-data:/data alpine chmod 700 /data/pgdata
+docker compose up -d
+```
+
 ### Volume ownership breaks after downgrade
 
 If you downgrade from a non-root version to an older root version and then upgrade again, the volume may have mixed ownership.
@@ -81,7 +100,7 @@ If you downgrade from a non-root version to an older root version and then upgra
 **Fix:**
 ```bash
 docker compose down
-docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data"
+docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data && chmod 700 /data/pgdata 2>/dev/null || true"
 docker compose up -d
 ```
 

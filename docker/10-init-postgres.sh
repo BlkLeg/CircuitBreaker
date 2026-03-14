@@ -17,6 +17,7 @@ fi
 
 echo "[init-postgres] Initializing Postgres cluster in ${PGDATA}..."
 mkdir -p "${PGDATA}"
+chmod 700 "${PGDATA}"
 
 echo "${CB_DB_PASSWORD}" > "${DATA_DIR}/.pg_pass"
 chmod 600 "${DATA_DIR}/.pg_pass"

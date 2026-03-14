@@ -94,7 +94,7 @@ if docker volume inspect circuitbreaker-data >/dev/null 2>&1; then
     OWNER_UID=$(docker run --rm -v circuitbreaker-data:/data alpine stat -c '%u' /data 2>/dev/null || echo "1000")
     if [ "$OWNER_UID" -eq 0 ]; then
         warn "Volume is owned by root (uid 0) — fixing permissions for non-root operation..."
-        docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data"
+        docker run --rm -v circuitbreaker-data:/data alpine sh -c "chown -R 1000:1000 /data && chmod -R 750 /data && chmod 700 /data/pgdata 2>/dev/null || true"
         ok "Volume ownership fixed (now 1000:1000)"
     else
         ok "Volume ownership is correct (uid $OWNER_UID)"
