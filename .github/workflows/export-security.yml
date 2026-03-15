@@ -1,5 +1,9 @@
 name: Export Security Alerts
 on:
+  push:
+    branches:
+      - dev
+      - main
   workflow_dispatch:
 
 jobs:
