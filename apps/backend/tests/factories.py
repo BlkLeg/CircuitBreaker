@@ -68,7 +68,8 @@ class Factories:
     def service(self, **kwargs):
         from app.db.models import Service
 
-        defaults = {"name": fake.unique.slug()}
+        slug = fake.unique.slug()
+        defaults = {"name": slug, "slug": slug}
         defaults.update(kwargs)
         svc = Service(**defaults)
         self.session.add(svc)
@@ -91,6 +92,140 @@ class Factories:
         self.session.add(wh)
         self.session.flush()
         return wh
+
+    # ── Compute Units ──────────────────────────────────────────────────────
+
+    def compute_unit(self, hardware_id: int | None = None, **kwargs):
+        from app.db.models import ComputeUnit
+
+        if hardware_id is None:
+            hardware_id = self.hardware().id
+        defaults = {
+            "name": fake.unique.hostname(),
+            "kind": "vm",
+            "hardware_id": hardware_id,
+        }
+        defaults.update(kwargs)
+        cu = ComputeUnit(**defaults)
+        self.session.add(cu)
+        self.session.flush()
+        return cu
+
+    # ── Clusters ───────────────────────────────────────────────────────────
+
+    def cluster(self, **kwargs):
+        from app.db.models import HardwareCluster
+
+        defaults = {"name": fake.unique.slug()}
+        defaults.update(kwargs)
+        cl = HardwareCluster(**defaults)
+        self.session.add(cl)
+        self.session.flush()
+        return cl
+
+    # ── External Nodes ─────────────────────────────────────────────────────
+
+    def external_node(self, **kwargs):
+        from app.db.models import ExternalNode
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "provider": "AWS",
+            "kind": "vps",
+        }
+        defaults.update(kwargs)
+        en = ExternalNode(**defaults)
+        self.session.add(en)
+        self.session.flush()
+        return en
+
+    # ── Environments ───────────────────────────────────────────────────────
+
+    def environment(self, **kwargs):
+        from app.core.time import utcnow_iso
+        from app.db.models import Environment
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "created_at": utcnow_iso(),
+        }
+        defaults.update(kwargs)
+        env = Environment(**defaults)
+        self.session.add(env)
+        self.session.flush()
+        return env
+
+    # ── Misc Items ─────────────────────────────────────────────────────────
+
+    def misc_item(self, **kwargs):
+        from app.db.models import MiscItem
+
+        defaults = {"name": fake.unique.slug(), "kind": "cable"}
+        defaults.update(kwargs)
+        mi = MiscItem(**defaults)
+        self.session.add(mi)
+        self.session.flush()
+        return mi
+
+    # ── Racks ──────────────────────────────────────────────────────────────
+
+    def rack(self, **kwargs):
+        from app.db.models import Rack
+
+        defaults = {"name": fake.unique.slug(), "height_u": 42}
+        defaults.update(kwargs)
+        r = Rack(**defaults)
+        self.session.add(r)
+        self.session.flush()
+        return r
+
+    # ── Storage ────────────────────────────────────────────────────────────
+
+    def storage(self, **kwargs):
+        from app.db.models import Storage
+
+        defaults = {"name": fake.unique.slug(), "kind": "disk"}
+        defaults.update(kwargs)
+        s = Storage(**defaults)
+        self.session.add(s)
+        self.session.flush()
+        return s
+
+    # ── Status Pages ───────────────────────────────────────────────────────
+
+    def status_page(self, **kwargs):
+        from app.db.models import StatusPage
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "slug": fake.unique.slug(),
+        }
+        defaults.update(kwargs)
+        sp = StatusPage(**defaults)
+        self.session.add(sp)
+        self.session.flush()
+        return sp
+
+    # ── Monitor Config ─────────────────────────────────────────────────────
+
+    def monitor_config(self, hardware_id: int | None = None, **kwargs):
+        from app.core.time import utcnow_iso
+        from app.db.models import HardwareMonitor
+
+        if hardware_id is None:
+            hardware_id = self.hardware().id
+        defaults = {
+            "hardware_id": hardware_id,
+            "enabled": True,
+            "interval_secs": 60,
+            "created_at": utcnow_iso(),
+            "updated_at": utcnow_iso(),
+        }
+        defaults.update(kwargs)
+        mc = HardwareMonitor(**defaults)
+        self.session.add(mc)
+        self.session.flush()
+        return mc
 
     # ── Discovery profiles ────────────────────────────────────────────────────
 

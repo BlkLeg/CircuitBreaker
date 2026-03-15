@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
+from app.core.validation import validate_snmp_community
+
 VendorSlug = Literal[
     "amd",
     "intel",
@@ -75,6 +77,13 @@ class TelemetryConfig(BaseModel):
     def _mask_community(self, v: str | None) -> str | None:
         """Mask SNMP community string in API responses."""
         return "****" if v else v
+
+    @field_validator("snmp_community")
+    @classmethod
+    def validate_snmp_community_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return validate_snmp_community(value)
 
 
 class PortEntry(BaseModel):

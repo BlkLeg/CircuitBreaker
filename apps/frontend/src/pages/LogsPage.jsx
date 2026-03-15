@@ -11,6 +11,7 @@ import TimestampCell from '../components/TimestampCell.jsx';
 import { formatAbsolute } from '../lib/time.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { sanitizeImageSrc } from '../utils/validation.js';
+import logger from '../utils/logger';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
 
@@ -928,7 +929,7 @@ function LogsPage() {
     logsApi
       .actions()
       .then((r) => setAvailableActions(r.data.actions || []))
-      .catch((err) => console.error('Log actions load failed:', err));
+      .catch((err) => logger.error('Log actions load failed:', err));
     logsApi
       .list({ limit: 500 })
       .then((r) => {
@@ -937,7 +938,7 @@ function LogsPage() {
         ].sort();
         setAvailableActors(actors);
       })
-      .catch((err) => console.error('Log actors load failed:', err));
+      .catch((err) => logger.error('Log actors load failed:', err));
   }, []);
 
   // ── Debounce search ────────────────────────────────────────────────────────────

@@ -1,4 +1,3 @@
-import json
 import logging
 
 from fastapi import HTTPException
@@ -228,7 +227,7 @@ def update_compute_unit(db: Session, cu_id: int, payload: ComputeUnitUpdate) -> 
         result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
         svc.ip_mode = result["ip_mode"]
         svc.ip_conflict = result["is_conflict"]
-        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+        svc.ip_conflict_json = result["conflict_with"]
     # CB-REL-002: cascade hardware_id change to services on this compute unit
     new_hardware_id = cu.hardware_id
     if new_hardware_id != old_hardware_id:

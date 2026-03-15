@@ -50,8 +50,10 @@ async def _ping_loop(ws: WebSocket) -> None:
             if ws.application_state == WebSocketState.DISCONNECTED:
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
-    except Exception:
-        pass
+    except asyncio.CancelledError:
+        logger.debug("Ping loop cancelled during connection shutdown")
+    except Exception as exc:
+        logger.debug("Ping loop error: %s", exc)
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
@@ -71,8 +73,10 @@ async def status_stream(websocket: WebSocket) -> None:
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to send WSS required error to client (already disconnected): %s", exc
+            )
         return
 
     client_ip = _extract_client_ip(websocket)
@@ -140,10 +144,10 @@ async def status_stream(websocket: WebSocket) -> None:
                 msg = json.loads(raw) if raw.strip() else {}
                 if msg.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as exc:
+                logger.debug("Failed to parse client message (non-fatal): %s", exc)
     except WebSocketDisconnect:
-        pass
+        logger.debug("WebSocket disconnected normally")
     except Exception:
         logger.exception("Status stream receive error")
     finally:
@@ -151,12 +155,12 @@ async def status_stream(websocket: WebSocket) -> None:
         try:
             await ping_task
         except asyncio.CancelledError:
-            pass
+            logger.debug("Ping task cancelled successfully")
         await status_ws_manager.disconnect(websocket)
         try:
             await websocket.close(code=1011)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to close WebSocket connection (already closed): %s", exc)
 
 
 def status_ws_status_snapshot() -> dict:

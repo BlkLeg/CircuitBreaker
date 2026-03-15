@@ -43,26 +43,92 @@ async def test_get_settings_viewer_returns_200(client, viewer_headers):
 
 
 async def test_put_settings_updates_string_field(client, auth_headers):
-    """Admin can update a string field (app_name) via PUT."""
+    """Admin can update a string field (default_environment) via PUT."""
     resp = await client.put(
         _BASE,
         headers=auth_headers,
-        json={"app_name": "CircuitBreaker-Test"},
+        json={"default_environment": "test-env"},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body.get("app_name") == "CircuitBreaker-Test"
+    assert body.get("default_environment") == "test-env"
 
 
 async def test_put_settings_viewer_returns_403(client, viewer_headers):
     resp = await client.put(
         _BASE,
         headers=viewer_headers,
-        json={"app_name": "should-fail"},
+        json={"default_environment": "should-fail"},
     )
     assert resp.status_code == 403
 
 
 async def test_put_settings_unauthenticated_returns_401(client):
-    resp = await client.put(_BASE, json={"app_name": "should-fail"})
+    resp = await client.put(_BASE, json={"default_environment": "should-fail"})
     assert resp.status_code == 401
+
+
+# ── Multiple fields at once ──────────────────────────────────────────────────
+
+
+async def test_put_settings_updates_multiple_fields(client, auth_headers):
+    """Admin can update several fields in one PUT call."""
+    resp = await client.put(
+        _BASE,
+        headers=auth_headers,
+        json={
+            "default_environment": "staging",
+            "show_experimental_features": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body.get("default_environment") == "staging"
+    assert body.get("show_experimental_features") is True
+
+
+# ── Timezone ─────────────────────────────────────────────────────────────────
+
+
+async def test_put_settings_valid_timezone(client, auth_headers):
+    """Admin can set a valid IANA timezone."""
+    resp = await client.put(
+        _BASE,
+        headers=auth_headers,
+        json={"timezone": "America/New_York"},
+    )
+    assert resp.status_code == 200
+    assert resp.json().get("timezone") == "America/New_York"
+
+
+async def test_put_settings_invalid_timezone_returns_422(client, auth_headers):
+    """An invalid timezone string is rejected with 422."""
+    resp = await client.put(
+        _BASE,
+        headers=auth_headers,
+        json={"timezone": "Fake/Nowhere"},
+    )
+    assert resp.status_code == 422
+
+
+# ── Reset to defaults ───────────────────────────────────────────────────────
+
+
+async def test_reset_settings_to_defaults(client, auth_headers):
+    """POST /api/v1/settings/reset restores factory defaults."""
+    # Change something first
+    await client.put(
+        _BASE,
+        headers=auth_headers,
+        json={"default_environment": "custom-env"},
+    )
+    resp = await client.post(f"{_BASE}/reset", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    # After reset, default_environment should be back to default (empty or None)
+    assert body.get("default_environment") in (None, "", "production")
+
+
+async def test_reset_settings_viewer_returns_403(client, viewer_headers):
+    resp = await client.post(f"{_BASE}/reset", headers=viewer_headers)
+    assert resp.status_code == 403

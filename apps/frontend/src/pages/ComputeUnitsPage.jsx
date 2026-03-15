@@ -15,6 +15,7 @@ import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
+import logger from '../utils/logger';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -171,7 +172,7 @@ function ComputeUnitsPage() {
       .list()
       .then((r) => setEnvironmentsList(r.data))
       .catch((err) => {
-        console.error('Failed to fetch environments list:', err);
+        logger.error('Failed to fetch environments list:', err);
       });
   }, []);
 
@@ -180,7 +181,7 @@ function ComputeUnitsPage() {
       const res = await tagsApi.list();
       setAllTags(res.data || []);
     } catch (err) {
-      console.error('Compute units tags load failed:', err);
+      logger.error('Compute units tags load failed:', err);
       setAllTags([]);
     }
   }, []);

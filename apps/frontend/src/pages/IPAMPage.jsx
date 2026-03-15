@@ -1,7 +1,6 @@
 /**
- * IPAMPage — 3-tab IPAM management: IP Addresses | VLANs | Sites.
- * Thin shell: data owned by useIPAMData, rendering delegated to tab components.
- * ≤ 150 LOC, cognitive complexity ≤ 20.
+ * IPAMPage — 7-tab IPAM management:
+ * IP Addresses | VLANs | Sites | Queue | Conflicts | DHCP | Subnets
  */
 import React, { useState } from 'react';
 import { useToast } from '../components/common/Toast';
@@ -9,9 +8,12 @@ import { useIPAMData } from '../hooks/useIPAMData';
 import IPAddressesTab from '../components/ipam/IPAddressesTab';
 import VLANsTab from '../components/ipam/VLANsTab';
 import SitesTab from '../components/ipam/SitesTab';
-import FutureFeatureBanner from '../components/common/FutureFeatureBanner';
+import ReservationQueueTab from '../components/ipam/ReservationQueueTab';
+import ConflictsTab from '../components/ipam/ConflictsTab';
+import DHCPTab from '../components/ipam/DHCPTab';
+import SubnetTab from '../components/ipam/SubnetTab';
 
-const TABS = ['IP Addresses', 'VLANs', 'Sites'];
+const TABS = ['IP Addresses', 'VLANs', 'Sites', 'Queue', 'Conflicts', 'DHCP', 'Subnets'];
 
 const TAB_STYLE = (active) => ({
   padding: '6px 16px',
@@ -24,6 +26,7 @@ const TAB_STYLE = (active) => ({
   fontWeight: active ? 600 : 400,
   fontSize: 13,
   marginBottom: -1,
+  position: 'relative',
 });
 
 export default function IPAMPage() {
@@ -34,6 +37,10 @@ export default function IPAMPage() {
     vlans,
     sites,
     networks,
+    reservationQueue,
+    conflicts,
+    conflictSummary,
+    dhcpPools,
     loading,
     createIP,
     deleteIP,
@@ -43,14 +50,22 @@ export default function IPAMPage() {
     createSite,
     updateSite,
     deleteSite,
+    approveReservation,
+    rejectReservation,
+    resolveConflict,
+    dismissConflict,
+    createDHCPPool,
+    deleteDHCPPool,
   } = useIPAMData(toast);
+
+  const openConflicts = conflictSummary.open || 0;
+  const pendingQueue = reservationQueue.filter((r) => r.status === 'pending').length;
 
   return (
     <div className="page">
       <div className="page-header">
         <h2>IPAM</h2>
       </div>
-      <FutureFeatureBanner message="IPAM is currently in early rollout. Additional workflows and automation will land in future updates." />
 
       {/* Tab bar */}
       <div
@@ -59,6 +74,7 @@ export default function IPAMPage() {
           gap: 2,
           marginBottom: 0,
           borderBottom: '1px solid var(--color-border)',
+          flexWrap: 'wrap',
         }}
       >
         {TABS.map((tab, i) => (
@@ -69,6 +85,36 @@ export default function IPAMPage() {
             onClick={() => setActiveTab(i)}
           >
             {tab}
+            {tab === 'Conflicts' && openConflicts > 0 && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  background: '#ef4444',
+                  color: '#fff',
+                  borderRadius: 8,
+                  padding: '0 6px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                }}
+              >
+                {openConflicts}
+              </span>
+            )}
+            {tab === 'Queue' && pendingQueue > 0 && (
+              <span
+                style={{
+                  marginLeft: 6,
+                  background: '#f59e0b',
+                  color: '#fff',
+                  borderRadius: 8,
+                  padding: '0 6px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                }}
+              >
+                {pendingQueue}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -85,7 +131,13 @@ export default function IPAMPage() {
           />
         )}
         {activeTab === 1 && (
-          <VLANsTab vlans={vlans} loading={loading} onCreate={createVLAN} onDelete={deleteVLAN} />
+          <VLANsTab
+            vlans={vlans}
+            networks={networks}
+            loading={loading}
+            onCreate={createVLAN}
+            onDelete={deleteVLAN}
+          />
         )}
         {activeTab === 2 && (
           <SitesTab
@@ -96,6 +148,32 @@ export default function IPAMPage() {
             onDelete={deleteSite}
           />
         )}
+        {activeTab === 3 && (
+          <ReservationQueueTab
+            queue={reservationQueue}
+            loading={loading}
+            onApprove={approveReservation}
+            onReject={rejectReservation}
+          />
+        )}
+        {activeTab === 4 && (
+          <ConflictsTab
+            conflicts={conflicts}
+            loading={loading}
+            onResolve={resolveConflict}
+            onDismiss={dismissConflict}
+          />
+        )}
+        {activeTab === 5 && (
+          <DHCPTab
+            pools={dhcpPools}
+            networks={networks}
+            loading={loading}
+            onCreate={createDHCPPool}
+            onDelete={deleteDHCPPool}
+          />
+        )}
+        {activeTab === 6 && <SubnetTab networks={networks} />}
       </div>
     </div>
   );

@@ -181,6 +181,23 @@ def _normalise_smtp_bootstrap_payload(
     }
 
 
+def check_password_reuse(user: User, password: str) -> bool:
+    """Return True if *password* matches any hash in the user's password_history."""
+    raw = getattr(user, "password_history", None)
+    if not raw:
+        return False
+    try:
+        history = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return False
+    if not isinstance(history, list):
+        return False
+    for old_hash in history:
+        if verify_password(password, old_hash):
+            return True
+    return False
+
+
 def reset_local_user_password(
     db: Session,
     user: User,
@@ -205,12 +222,29 @@ def reset_local_user_password(
     else:
         _validate_password(new_password_or_hash)
 
+    # Check password reuse before changing
+    if check_password_reuse(user, new_password_or_hash):
+        raise HTTPException(status_code=400, detail="Password reuse is not allowed")
+
     revoke_all_sessions(db, user.id)
+
+    # Save old hash to password_history before overwriting
+    old_hash = user.hashed_password
+    raw_history = getattr(user, "password_history", None)
+    try:
+        history = json.loads(raw_history) if isinstance(raw_history, str) and raw_history else []
+    except Exception:
+        history = []
+    if not isinstance(history, list):
+        history = []
+    history.append(old_hash)
+    user.password_history = json.dumps(history)
 
     user.hashed_password = hash_password(new_password_or_hash)
     user.force_password_change = False
     user.login_attempts = 0
     user.locked_until = None
+    user.password_changed_at = utcnow()
     if update_last_login:
         user.last_login = utcnow_iso()
     db.commit()
@@ -771,8 +805,8 @@ def get_onboarding_or_fallback(db: Session) -> OnboardingStepResponse:
                 current_step=row.step,
                 previous_step=row.previous_step,
             )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Failed to retrieve onboarding step (defaulting to start): %s", exc)
     return OnboardingStepResponse(current_step="start", previous_step="start")
 
 
@@ -851,6 +885,8 @@ def login(
 
     reset_login_attempts(db, user)
     user.last_login = utcnow_iso()
+    if ip_address:
+        user.last_login_ip = ip_address
     db.commit()
     db.refresh(user)
 
@@ -901,13 +937,20 @@ async def update_profile(
             raise HTTPException(status_code=413, detail="Profile photo must be ≤ 5 MB")
 
         # Validate actual file content — do NOT trust client Content-Type header.
-        # Use python-magic for primary MIME detection, Pillow for structural validation.
+        # Use file-magic/python-magic for primary MIME detection, Pillow for structural validation.
         import io
 
-        import magic as _magic
+        import magic
         from PIL import Image, UnidentifiedImageError
 
-        detected_mime = _magic.from_buffer(data[:2048], mime=True)
+        try:
+            detected_mime = magic.detect_from_content(data[:2048]).mime_type
+        except (AttributeError, TypeError):
+            try:
+                mime_detector = magic.Magic(mime=True)
+                detected_mime = mime_detector.from_buffer(data[:2048])
+            except TypeError:
+                detected_mime = magic.from_buffer(data[:2048], mime=True)
         if detected_mime not in _ALLOWED_TYPES:
             raise HTTPException(
                 status_code=422, detail=f"File type '{detected_mime}' is not allowed"

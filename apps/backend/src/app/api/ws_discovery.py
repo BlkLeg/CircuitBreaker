@@ -85,7 +85,7 @@ async def _ping_loop(ws: WebSocket) -> None:
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
-        pass
+        logger.debug("Ping loop cancelled during connection shutdown")
     except Exception as e:
         logger.debug(f"Ping loop error: {e}")
 
@@ -116,19 +116,20 @@ async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) ->
                     if ws.application_state == WebSocketState.DISCONNECTED:
                         break
                     await ws.send_text(msg["data"])
-                except Exception:
+                except Exception as exc:
+                    logger.debug("WebSocket send failed, client disconnected: %s", exc)
                     break
             await asyncio.sleep(0.05)
     except asyncio.CancelledError:
-        pass
+        logger.debug("Redis discovery listener cancelled during connection shutdown")
     except Exception as exc:
         logger.debug("Redis discovery listener error: %s", exc)
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis pubsub cleanup failed (non-fatal): %s", exc)
 
 
 # NOTE: This router is mounted at prefix /api/v1/discovery in main.py.
@@ -142,8 +143,10 @@ async def discovery_stream(websocket: WebSocket) -> None:
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to send WSS required error to client (already disconnected): %s", exc
+            )
         return
 
     client_ip = _extract_client_ip(websocket)
@@ -157,8 +160,8 @@ async def discovery_stream(websocket: WebSocket) -> None:
             try:
                 await websocket.send_text(json.dumps({"error": "unauthorized"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to send auth error to client (already disconnected): %s", exc)
             return
 
         authenticated = False
@@ -193,8 +196,8 @@ async def discovery_stream(websocket: WebSocket) -> None:
             try:
                 await websocket.send_text(json.dumps({"error": "unauthorized"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to send auth error to client (already disconnected): %s", exc)
             return
 
         # ── Connection cap check ────────────────────────────────────────────
@@ -203,8 +206,11 @@ async def discovery_stream(websocket: WebSocket) -> None:
             try:
                 await websocket.send_text(json.dumps({"error": "connection_limit_exceeded"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to send connection limit error to client (already disconnected): %s",
+                    exc,
+                )
             return
 
         await websocket.send_text(json.dumps({"status": "connected"}))
@@ -221,10 +227,12 @@ async def discovery_stream(websocket: WebSocket) -> None:
                     msg = json.loads(raw)
                     if isinstance(msg, dict) and msg.get("type") == "ping":
                         await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to parse/respond to client message (non-fatal): %s", exc)
         except WebSocketDisconnect:
-            pass
+            logger.debug("WebSocket disconnected normally")
+        except Exception as exc:
+            logger.warning("Unexpected error in WebSocket receive loop: %s", exc)
         finally:
             redis_stop.set()
             ping_task.cancel()
@@ -236,8 +244,8 @@ async def discovery_stream(websocket: WebSocket) -> None:
         try:
             await ws_manager.disconnect(websocket)
             await websocket.close(code=1011)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to cleanup WebSocket connection (already closed): %s", exc)
 
 
 @router.get("/ws/status")

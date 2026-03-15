@@ -48,9 +48,13 @@ def initialize_bootstrap(
     db: Annotated[Session, Depends(get_db)],
 ):
     cfg = get_or_create_settings(db)
-    password_or_hash = (
-        payload.password_hash if payload.password_hash is not None else payload.password
-    )
+    if payload.password_hash is not None:
+        password_or_hash = payload.password_hash
+    elif payload.password is not None:
+        password_or_hash = payload.password
+    else:
+        raise ValueError("Either password_hash or password must be provided.")
+
     result = auth_service.bootstrap_initialize(
         db=db,
         cfg=cfg,

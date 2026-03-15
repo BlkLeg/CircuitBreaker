@@ -48,6 +48,7 @@ import LegendPanel from '../components/map/LegendPanel';
 import NodeTypeFilterBar from '../components/map/NodeTypeFilterBar';
 import { useToast } from '../components/common/Toast';
 import { X } from 'lucide-react';
+import logger from '../utils/logger';
 import {
   CONNECTION_TYPE_OPTIONS,
   normalizeConnectionType,
@@ -620,7 +621,7 @@ function MapInternal() {
       .list()
       .then((r) => setEnvironmentsList(r.data))
       .catch((err) => {
-        console.error('Environments list load failed:', err);
+        logger.error('Environments list load failed:', err);
       });
   }, []);
 
@@ -1392,7 +1393,7 @@ function MapInternal() {
         hardwareApi
           .update(targetNode._refId, { upload_speed_mbps: value, download_speed_mbps: value })
           .catch((err) => {
-            console.warn('Failed to save hardware uplink speed:', err);
+            logger.warn('Failed to save hardware uplink speed:', err);
           });
       } else {
         const overrides = { ...(settings?.graph_uplink_overrides ?? {}), [nodeId]: value };
@@ -1400,7 +1401,7 @@ function MapInternal() {
           .update({ graph_uplink_overrides: overrides })
           .then(() => reloadSettings())
           .catch((err) => {
-            console.warn('Failed to save uplink override preference:', err);
+            logger.warn('Failed to save uplink override preference:', err);
           });
       }
     },

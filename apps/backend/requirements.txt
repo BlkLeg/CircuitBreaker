@@ -45,7 +45,7 @@ pydantic==2.12.5
 pydantic-core==2.41.5
 pydantic-settings==2.13.1
 pyipmi==0.11.0
-pyjwt==2.11.0
+pyjwt==2.12.1
 pysnmp==7.1.22
 python-dotenv==1.2.2
 python-multipart==0.0.22

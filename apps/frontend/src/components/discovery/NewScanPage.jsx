@@ -668,7 +668,11 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           padding: '14px 24px',
           borderTop: '1px solid var(--color-border)',
           display: 'flex',
-          justifyContent: 'space-between',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          columnGap: 10,
+          rowGap: 8,
+          flexWrap: 'wrap',
           flexShrink: 0,
         }}
       >
@@ -680,6 +684,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           className="btn btn-primary"
           onClick={handleStart}
           disabled={!canStart || launching}
+          style={{ marginLeft: 'auto' }}
         >
           {launching ? <span className="spinner" /> : <Play size={14} />}
           {launching ? 'Starting…' : 'Start Scan'}

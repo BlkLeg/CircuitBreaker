@@ -105,13 +105,14 @@ function EntityTable({
   );
   const [currentPage, setCurrentPage] = useState(1);
 
-  const total = data.length;
+  const rows = Array.isArray(data) ? data : [];
+  const total = rows.length;
   const effectiveSize = pageSize === -1 || pageSize >= total ? total : pageSize;
   const totalPages = effectiveSize > 0 ? Math.ceil(total / effectiveSize) : 1;
   const page = Math.max(1, Math.min(currentPage, totalPages));
   const start = (page - 1) * effectiveSize;
   const end = effectiveSize === total ? total : Math.min(start + effectiveSize, total);
-  const displayData = effectiveSize === total ? data : data.slice(start, end);
+  const displayData = effectiveSize === total ? rows : rows.slice(start, end);
   const from = total === 0 ? 0 : start + 1;
   const to = total === 0 ? 0 : end;
   const showLimitBar = total > Math.min(...pageSizeOptions.filter((n) => n > 0));

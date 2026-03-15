@@ -38,8 +38,8 @@ def _ping_host(ip: str, timeout: float = 1.0) -> bool:
         result = ping3.ping(ip, timeout=timeout, unit="ms")
         if result is not None and result is not False:
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ping3 probe failed for %s: %s", ip, exc)
 
     # Subprocess fallback — /bin/ping is setuid or has cap_net_raw in most images
     try:
@@ -50,7 +50,8 @@ def _ping_host(ip: str, timeout: float = 1.0) -> bool:
             timeout=3,
         )
         return r.returncode == 0
-    except Exception:
+    except Exception as exc:
+        logger.debug("subprocess ping failed for %s: %s", ip, exc)
         return False
 
 
@@ -66,8 +67,8 @@ def _tcp_probe(ip: str, ports: list[int] | None = None, timeout: float = 0.5) ->
             if s.connect_ex((ip, port)) == 0:
                 open_ports.append(port)
             s.close()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("TCP probe to %s:%d failed: %s", ip, port, exc)
     return open_ports
 
 

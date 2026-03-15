@@ -1,6 +1,5 @@
-import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -14,6 +13,116 @@ from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["settings"])
 _logger = logging.getLogger(__name__)
+
+
+def _oauth_providers_dict(settings) -> dict:
+    raw = settings.oauth_providers
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _oidc_providers_list(settings) -> list[dict]:
+    raw = settings.oidc_providers
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        return [dict(item) for item in raw.values() if isinstance(item, dict)]
+    return []
+
+
+def _set_encrypted_client_secret(target: dict, plain_secret: str, log_context: str) -> None:
+    try:
+        from app.services.credential_vault import get_vault
+
+        target["client_secret_enc"] = get_vault().encrypt(plain_secret)
+        target.pop("client_secret", None)
+    except Exception as err:
+        _logger.debug(
+            "%s vault encrypt failed (keeping plain): %s", log_context, err, exc_info=True
+        )
+
+
+def _merge_oauth_payload(existing: dict, oauth_payload: dict) -> dict:
+    merged = dict(existing)
+    for provider_name, cfg in oauth_payload.items():
+        if not isinstance(cfg, dict):
+            continue
+        entry = dict(merged.get(provider_name) or {})
+        entry.update({key: value for key, value in cfg.items() if key != "client_secret_set"})
+        client_secret = cfg.get("client_secret")
+        if isinstance(client_secret, str) and client_secret:
+            _set_encrypted_client_secret(entry, client_secret, "OAuth")
+        merged[provider_name] = entry
+    return merged
+
+
+def _merge_oidc_payload(existing_oidc: list[dict], oidc_payload: object) -> list[dict]:
+    incoming = _incoming_oidc_items(oidc_payload)
+    if not incoming:
+        return existing_oidc
+
+    existing_by_slug: dict[str, dict] = {}
+    for provider in existing_oidc:
+        key = provider.get("slug") or provider.get("name", "")
+        if isinstance(key, str) and key:
+            existing_by_slug[key] = provider
+
+    merged: list[dict] = []
+    for provider in incoming:
+        merged.append(_merge_single_oidc_entry(provider, existing_by_slug))
+    return merged
+
+
+def _incoming_oidc_items(oidc_payload: object) -> list[dict]:
+    if isinstance(oidc_payload, dict):
+        return [dict(item) for item in oidc_payload.values() if isinstance(item, dict)]
+    if isinstance(oidc_payload, list):
+        return [dict(item) for item in oidc_payload if isinstance(item, dict)]
+    return []
+
+
+def _merge_single_oidc_entry(provider: dict, existing_by_slug: dict[str, dict]) -> dict:
+    entry = dict(provider)
+    slug = entry.get("slug") or entry.get("name", "")
+    prev = existing_by_slug.get(slug, {}) if isinstance(slug, str) else {}
+    client_secret = entry.get("client_secret")
+
+    if isinstance(client_secret, str) and client_secret:
+        _set_encrypted_client_secret(entry, client_secret, "OIDC")
+        return entry
+
+    entry.pop("client_secret", None)
+    prev_secret = prev.get("client_secret_enc")
+    if prev_secret:
+        entry["client_secret_enc"] = prev_secret
+    return entry
+
+
+def _with_secret_flags_oauth(providers: dict) -> dict:
+    response: dict = {}
+    for name, cfg in providers.items():
+        if not isinstance(cfg, dict):
+            continue
+        entry = dict(cfg)
+        entry["client_secret_set"] = bool(
+            entry.get("client_secret_enc") or entry.get("client_secret")
+        )
+        entry.pop("client_secret", None)
+        entry.pop("client_secret_enc", None)
+        response[name] = entry
+    return response
+
+
+def _with_secret_flags_oidc(oidc_items: list[dict]) -> list[dict]:
+    response: list[dict] = []
+    for provider in oidc_items:
+        entry = dict(provider)
+        entry["client_secret_set"] = bool(
+            entry.get("client_secret_enc") or entry.get("client_secret")
+        )
+        entry.pop("client_secret", None)
+        entry.pop("client_secret_enc", None)
+        response.append(entry)
+    return response
 
 
 @router.get("", response_model=AppSettingsRead)
@@ -95,7 +204,7 @@ async def test_smtp(
     else:
         result = await svc.test_connection()
 
-    cfg.smtp_last_test_at = datetime.utcnow().isoformat()
+    cfg.smtp_last_test_at = datetime.now(UTC).isoformat()
     cfg.smtp_last_test_status = result["status"]
     if result["status"] == "ok" and not cfg.smtp_enabled:
         cfg.smtp_enabled = True
@@ -106,75 +215,25 @@ async def test_smtp(
 @router.get("/oauth", response_model=dict)
 def get_oauth_settings(db: Session = Depends(get_db), _=require_role("admin")):
     settings = get_or_create_settings(db)
-    providers = json.loads(settings.oauth_providers or "{}")
-    oidc_raw = json.loads(settings.oidc_providers or "[]")
-    for p in providers.values():
-        p["client_secret_set"] = bool(p.get("client_secret_enc") or p.get("client_secret"))
-        p.pop("client_secret", None)
-        p.pop("client_secret_enc", None)
-    # Strip raw OIDC secrets from GET response
-    oidc_items = oidc_raw if isinstance(oidc_raw, list) else list(oidc_raw.values())
-    for p in oidc_items:
-        p["client_secret_set"] = bool(p.get("client_secret_enc") or p.get("client_secret"))
-        p.pop("client_secret", None)
-        p.pop("client_secret_enc", None)
+    providers = _with_secret_flags_oauth(_oauth_providers_dict(settings))
+    oidc_items = _with_secret_flags_oidc(_oidc_providers_list(settings))
     return {"oauth_providers": providers, "oidc_providers": oidc_items}
 
 
 @router.patch("/oauth")
 def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=require_role("admin")):
     settings = get_or_create_settings(db)
-    existing = json.loads(settings.oauth_providers or "{}")
-    for provider_name, cfg in payload.get("oauth_providers", {}).items():
-        if provider_name not in existing:
-            existing[provider_name] = {}
-        existing[provider_name].update({k: v for k, v in cfg.items() if k != "client_secret_set"})
-        if cfg.get("client_secret"):
-            try:
-                from app.services.credential_vault import get_vault
+    existing = _oauth_providers_dict(settings)
+    oauth_payload = payload.get("oauth_providers")
+    if isinstance(oauth_payload, dict):
+        settings.oauth_providers = _merge_oauth_payload(existing, oauth_payload)
+    else:
+        settings.oauth_providers = existing
 
-                existing[provider_name]["client_secret_enc"] = get_vault().encrypt(
-                    cfg["client_secret"]
-                )
-                existing[provider_name].pop("client_secret", None)
-            except Exception as e:
-                _logger.debug("OAuth vault encrypt failed (keeping plain): %s", e, exc_info=True)
-    settings.oauth_providers = json.dumps(existing)
     if "oidc_providers" in payload:
-        oidc_raw = payload["oidc_providers"]
-        oidc_list = oidc_raw if isinstance(oidc_raw, list) else list(oidc_raw.values())
-        existing_oidc_raw = json.loads(settings.oidc_providers or "[]")
-        existing_oidc = (
-            existing_oidc_raw
-            if isinstance(existing_oidc_raw, list)
-            else list(existing_oidc_raw.values())
+        settings.oidc_providers = _merge_oidc_payload(
+            _oidc_providers_list(settings), payload["oidc_providers"]
         )
-        # Build lookup of existing entries by slug/name to preserve encrypted secrets
-        existing_by_slug: dict = {}
-        for ep in existing_oidc:
-            key = ep.get("slug") or ep.get("name", "")
-            if key:
-                existing_by_slug[key] = ep
-        merged: list = []
-        for p in oidc_list:
-            entry = dict(p)
-            slug = entry.get("slug") or entry.get("name", "")
-            prev = existing_by_slug.get(slug, {})
-            if entry.get("client_secret"):
-                # New secret supplied — encrypt it
-                try:
-                    from app.services.credential_vault import get_vault
 
-                    entry["client_secret_enc"] = get_vault().encrypt(entry["client_secret"])
-                    entry.pop("client_secret", None)
-                except Exception as e:
-                    _logger.debug("OIDC vault encrypt failed (keeping plain): %s", e, exc_info=True)
-            elif not entry.get("client_secret"):
-                # No new secret — preserve existing encrypted value if present
-                entry.pop("client_secret", None)
-                if prev.get("client_secret_enc"):
-                    entry["client_secret_enc"] = prev["client_secret_enc"]
-            merged.append(entry)
-        settings.oidc_providers = json.dumps(merged)
     db.commit()
     return {"status": "ok"}

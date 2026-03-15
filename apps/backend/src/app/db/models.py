@@ -375,7 +375,7 @@ class Service(Base):
     )
     url: Mapped[str | None] = mapped_column(String)
     ports: Mapped[str | None] = mapped_column(String)
-    ports_json: Mapped[str | None] = mapped_column(Text)
+    ports_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     description: Mapped[str | None] = mapped_column(Text)
     environment: Mapped[str | None] = mapped_column(String)
     # v0.1.4: environment registry
@@ -501,6 +501,9 @@ class Network(Base):
     icon_slug: Mapped[str | None] = mapped_column(String)
     cidr: Mapped[str | None] = mapped_column(String)
     vlan_id: Mapped[int | None] = mapped_column(Integer)
+    vlan_pk: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("vlans.id", ondelete="SET NULL"), nullable=True
+    )
     gateway: Mapped[str | None] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text)
     gateway_hardware_id: Mapped[int | None] = mapped_column(
@@ -953,6 +956,12 @@ class AppSettings(Base):
     ws_allowed_cidrs: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]"
     )  # JSON array of CIDRs allowed to connect via WebSocket; empty = allow all
+    # IPAM auto-reserve settings
+    ipam_auto_reserve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ipam_reserve_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="auto"
+    )  # "auto" | "approval"
+    ipam_release_on_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1132,6 +1141,7 @@ class ScanJob(Base):
 
 class ScanResult(Base):
     __tablename__ = "scan_results"
+    __table_args__ = (UniqueConstraint("scan_job_id", "ip_address", name="uq_scan_result_job_ip"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     scan_job_id: Mapped[int] = mapped_column(
@@ -1254,6 +1264,13 @@ class User(Base):
     backup_codes: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # JSON list of hashed codes
+    # v0.3.0: auth audit columns (migration 0013)
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_history: Mapped[str | None] = mapped_column(Text, nullable=True)
     # v0.3.0: tenant assignment
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True
@@ -1855,3 +1872,153 @@ class NodeRelation(Base):
     relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+# ── IPAM: Reservation Queue ──────────────────────────────────────────────────
+
+
+class IPReservationQueue(Base):
+    __tablename__ = "ip_reservation_queue"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    hardware_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="SET NULL"), nullable=True
+    )
+    ip_address = mapped_column(INET, nullable=False)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    network_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("networks.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending"
+    )  # pending | approved | rejected
+    reviewed_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    hardware: Mapped["Hardware | None"] = relationship("Hardware", foreign_keys=[hardware_id])
+    network: Mapped["Network | None"] = relationship("Network", foreign_keys=[network_id])
+    reviewer: Mapped["User | None"] = relationship("User", foreign_keys=[reviewed_by])
+
+
+# ── IPAM: IP Conflicts ───────────────────────────────────────────────────────
+
+
+class IPConflict(Base):
+    __tablename__ = "ip_conflicts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    address = mapped_column(INET, nullable=False, index=True)
+    entity_a_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_a_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity_b_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_b_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    conflict_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ip_overlap"
+    )  # ip_overlap | port_clash
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    protocol: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="open"
+    )  # open | resolved | dismissed
+    resolution: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    resolver: Mapped["User | None"] = relationship("User", foreign_keys=[resolved_by])
+
+
+# ── IPAM: DHCP Pools & Leases ────────────────────────────────────────────────
+
+
+class DHCPPool(Base):
+    __tablename__ = "dhcp_pools"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    network_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("networks.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    start_ip = mapped_column(INET, nullable=False)
+    end_ip = mapped_column(INET, nullable=False)
+    lease_duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    network: Mapped["Network | None"] = relationship("Network", foreign_keys=[network_id])
+    leases: Mapped[list["DHCPLease"]] = relationship("DHCPLease", back_populates="pool")
+
+
+class DHCPLease(Base):
+    __tablename__ = "dhcp_leases"
+    __table_args__ = (UniqueConstraint("tenant_id", "ip_address", name="uq_dhcp_lease_tenant_ip"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    pool_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("dhcp_pools.id", ondelete="CASCADE"), nullable=False
+    )
+    ip_address = mapped_column(INET, nullable=False, index=True)
+    mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    hostname: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lease_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expiry: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active"
+    )  # active | expired | released
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual"
+    )  # manual | import | api
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    pool: Mapped["DHCPPool"] = relationship("DHCPPool", back_populates="leases")
+
+
+# ── IPAM: VLAN Trunks ────────────────────────────────────────────────────────
+
+
+class VLANTrunk(Base):
+    __tablename__ = "vlan_trunks"
+    __table_args__ = (UniqueConstraint("hardware_id", "vlan_id", name="uq_vlan_trunk_hw_vlan"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="CASCADE"), nullable=False
+    )
+    vlan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("vlans.id", ondelete="CASCADE"), nullable=False
+    )
+    port_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    hardware: Mapped["Hardware"] = relationship("Hardware", foreign_keys=[hardware_id])
+    vlan: Mapped["VLAN"] = relationship("VLAN", foreign_keys=[vlan_id])

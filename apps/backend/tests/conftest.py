@@ -30,7 +30,7 @@ def pytest_configure(config):
     # Settings() is a module-level singleton in config.py — set env before import
     os.environ["CB_DB_URL"] = _PG_CONTAINER.get_connection_url()
     os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
-    os.environ["CB_VAULT_KEY"] = "ci-test-vault-key-different-from-jwt-xxxxx"
+    os.environ["CB_VAULT_KEY"] = "3__S8_NEU_uipJArCvNStY9bMB44fZTwWcw952jZPX0="
     os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
 
 
@@ -39,8 +39,8 @@ def pytest_unconfigure(config):
     if _PG_CONTAINER:
         try:
             _PG_CONTAINER.stop()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Failed to stop test Postgres container (non-fatal): {exc}")
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -80,12 +80,9 @@ def app_cfg(setup_db):
         session.commit()
 
     # Initialize in-memory vault with test key
-    try:
-        from app.services.credential_vault import get_vault
+    from app.services.credential_vault import get_vault
 
-        get_vault().reinitialize(os.environ["CB_VAULT_KEY"])
-    except Exception:
-        pass  # Vault may not be initialized yet; entrypoint handles it
+    get_vault().reinitialize(os.environ["CB_VAULT_KEY"])
 
 
 # ── Per-test DB session (rolled back after each test) ─────────────────────────
@@ -220,6 +217,49 @@ def pytest_configure_node(node):
 
 
 pytest_plugins = ["pytest_asyncio"]
+
+
+# ── Redis mock — in-memory dict backing for token-based flows ─────────────
+
+
+@pytest.fixture
+def redis_mock():
+    """Provide a fake Redis backed by a plain dict for token storage tests.
+
+    Returns ``(get_redis_fn, mock_redis, store)`` where *store* is the
+    underlying dict so tests can inspect written keys.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    store: dict[str, tuple[str, float | None]] = {}
+
+    mock = MagicMock()
+
+    def _get(key):
+        entry = store.get(key)
+        if entry is None:
+            return None
+        val, _exp = entry
+        return val
+
+    def _set(key, value, ex=None):
+        store[key] = (value, ex)
+
+    def _setex(key, ttl, value):
+        store[key] = (value, ttl)
+
+    def _delete(key):
+        store.pop(key, None)
+
+    mock.get = AsyncMock(side_effect=_get)
+    mock.set = AsyncMock(side_effect=_set)
+    mock.setex = AsyncMock(side_effect=_setex)
+    mock.delete = AsyncMock(side_effect=_delete)
+
+    async def get_redis_fn():
+        return mock
+
+    yield get_redis_fn, mock, store
 
 
 # ── Rate limiter reset — prevent cross-test pollution ─────────────────────────

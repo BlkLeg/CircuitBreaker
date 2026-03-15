@@ -11,17 +11,16 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
-from typing import Any, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 
 _logger = logging.getLogger(__name__)
 
 _CB_MAX_ENTRIES = int(os.environ.get("CB_CIRCUIT_BREAKER_MAX_ENTRIES", "500"))
 _CB_TTL_SEC = int(os.environ.get("CB_CIRCUIT_BREAKER_TTL_SEC", "3600"))
 
-T = TypeVar("T")
 
 # Defaults: 3 failures in 60s -> open for 90s
 DEFAULT_FAILURE_THRESHOLD = 3
@@ -126,15 +125,15 @@ class CircuitOpenError(Exception):
     pass
 
 
-async def call_with_circuit_breaker(
+async def call_with_circuit_breaker[T](
     key: str,
-    coro_factory: Callable[[], Any],
+    coro_factory: Callable[[], Awaitable[T]],
     *,
-    fallback: Any = None,
+    fallback: T | None = None,
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
     failure_window_sec: int = DEFAULT_FAILURE_WINDOW_SEC,
     open_duration_sec: int = DEFAULT_OPEN_DURATION_SEC,
-) -> Any:
+) -> T | None:
     """Run the async call through the circuit breaker. Returns fallback if circuit is open or call fails."""
     breaker = get_breaker(
         key,

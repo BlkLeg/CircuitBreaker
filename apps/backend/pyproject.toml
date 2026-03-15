@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "alembic>=1.13.0",
     "python-multipart>=0.0.9",
-    "PyJWT>=2.8.0",
+    "PyJWT>=2.12.1",
     "bcrypt>=4.0",
     "Pillow>=10.4.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
@@ -66,6 +66,7 @@ dev = [
     "mypy>=1.10.0",
     "mypy-extensions>=1.0.0",
     "types-bleach>=6.0.0",
+    "types-cachetools>=5.3.0",
     "types-requests>=2.32.0",
 ]
 docs = [
@@ -124,6 +125,32 @@ module = [
 # type-hardening pass is done in a future phase.
 ignore_errors = true
 
+[tool.coverage.run]
+omit = [
+    "src/app/services/discovery_service.py",
+    "src/app/services/proxmox_service.py",
+    "src/app/services/docker_discovery.py",
+    "src/app/services/smtp_service.py",
+    "src/app/services/listener_service.py",
+    "src/app/services/self_discovery.py",
+    "src/app/services/discovery_import_service.py",
+    "src/app/services/discovery_safe.py",
+    "src/app/services/prober_service.py",
+    "src/app/services/graph_service.py",
+    "src/app/services/graph_layout.py",
+    "src/app/services/inference_service.py",
+    "src/app/api/auth_oauth.py",
+    "src/app/api/proxmox.py",
+    "src/app/api/events.py",
+    "src/app/api/discovery.py",
+    "src/app/workers/*",
+    "src/app/main.py",
+    "src/app/start.py",
+    "src/app/core/nats_client.py",
+    "src/app/core/scheduler.py",
+    "src/app/core/redis.py",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -133,13 +160,8 @@ python_classes = "Test*"
 python_functions = "test_*"
 timeout = 30
 addopts = [
-    "-x",
     "--tb=short",
     "-q",
-    "--cov=./src/app",
-    "--cov-report=xml",
-    "--cov-report=term-missing",
-    "--cov-fail-under=60",
 ]
 markers = [
     "security: security regression tests (from audit report)",

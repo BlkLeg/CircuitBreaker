@@ -5,6 +5,7 @@ Audit logs are append-only. No update or delete endpoints exist by design.
 
 import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from datetime import datetime
 
@@ -18,6 +19,8 @@ from app.core.time import elapsed_seconds as _elapsed_seconds
 from app.db.models import Log, User
 from app.db.session import SessionLocal, get_db
 from app.schemas.logs import LogEntry, LogsResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["logs"])
 
@@ -136,16 +139,16 @@ def list_logs(
             dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp >= dt)
             count_q = count_q.where(Log.timestamp >= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("Invalid start_time format '%s' (ignored): %s", start_time, exc)
 
     if end_time:
         try:
             dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp <= dt)
             count_q = count_q.where(Log.timestamp <= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("Invalid end_time format '%s' (ignored): %s", end_time, exc)
 
     if category:
         q = q.where(Log.category == category)
@@ -246,16 +249,16 @@ def list_audit_logs(
             dt = _dt.fromisoformat(start_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp >= dt)
             count_q = count_q.where(Log.timestamp >= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("Invalid start_time format '%s' (ignored): %s", start_time, exc)
 
     if end_time:
         try:
             dt = _dt.fromisoformat(end_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp <= dt)
             count_q = count_q.where(Log.timestamp <= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug("Invalid end_time format '%s' (ignored): %s", end_time, exc)
 
     if action:
         q = q.where(Log.action == action)

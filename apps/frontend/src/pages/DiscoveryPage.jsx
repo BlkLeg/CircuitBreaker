@@ -103,7 +103,7 @@ export default function DiscoveryPage() {
         })
       )
       .catch((err) => {
-        console.error('Discovery capabilities load failed:', err);
+        logger.error('Discovery capabilities load failed:', err);
       });
   }, []);
 
@@ -129,7 +129,7 @@ export default function DiscoveryPage() {
           );
         })
         .catch((err) => {
-          console.error('Discovery host stats fetch failed:', err);
+          logger.error('Discovery host stats fetch failed:', err);
           if (mounted) setHostStats(null);
         });
     };

@@ -83,7 +83,10 @@ def _write_delivery(
 
 def _effective_events(rule: WebhookRule) -> list[str]:
     try:
-        return json.loads(rule.events_enabled or "[]")
+        events = rule.events_enabled
+        if isinstance(events, list):
+            return events
+        return json.loads(events or "[]")
     except Exception:
         return [t.strip() for t in (rule.topics or "").split(",") if t.strip()]
 
@@ -91,7 +94,11 @@ def _effective_events(rule: WebhookRule) -> list[str]:
 def _build_headers(rule: WebhookRule, payload_bytes: bytes) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     try:
-        custom_headers = json.loads(rule.headers_json or "{}")
+        headers_json = rule.headers_json or "{}"
+        if isinstance(headers_json, dict):
+            custom_headers = headers_json
+        else:
+            custom_headers = json.loads(headers_json)
     except Exception:
         custom_headers = {}
     for key, value in custom_headers.items():
@@ -205,7 +212,7 @@ async def process_event(msg):
             await _dispatch_with_retries(client, rule, subject, body_bytes, body_text)
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None):
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()

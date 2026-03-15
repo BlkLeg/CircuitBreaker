@@ -75,7 +75,7 @@ def create_proxmox_config(
     config = proxmox_service.create_integration(
         db,
         name=body.name,
-        config_url=body.config_url,
+        config_url=str(body.config_url),
         api_token=body.api_token,
         auto_sync=body.auto_sync,
         sync_interval_s=body.sync_interval_s,
@@ -184,7 +184,7 @@ def update_proxmox_config(
         db,
         config,
         name=body.name,
-        config_url=body.config_url,
+        config_url=str(body.config_url) if body.config_url is not None else None,
         api_token=body.api_token,
         auto_sync=body.auto_sync,
         sync_interval_s=body.sync_interval_s,

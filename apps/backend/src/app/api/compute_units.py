@@ -96,9 +96,9 @@ def list_icons(db: Session = Depends(get_db)):
 
                 if slug in db_icons:
                     if db_icons[slug].name:
-                        label = db_icons[slug].name
+                        label = db_icons[slug].name or label
                     if db_icons[slug].category:
-                        category = db_icons[slug].category
+                        category = db_icons[slug].category or "UPLOADED"
 
                 icons.append(
                     {
@@ -162,7 +162,8 @@ async def upload_icon(
     # Ensure directory exists before saving (fix for brand-new instances handling first uploads)
     ICON_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    suffix = Path(file.filename).suffix or ".png"
+    filename = file.filename or "default.png"
+    suffix = Path(filename).suffix or ".png"
     slug = f"user-{uuid.uuid4().hex[:8]}{suffix}"
     dest = ICON_UPLOAD_DIR / slug
     dest.write_bytes(data)

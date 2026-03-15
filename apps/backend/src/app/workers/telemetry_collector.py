@@ -79,9 +79,9 @@ def _discover_devices(default_interval_s: int) -> list[dict[str, Any]]:
             devices.append(
                 {
                     "id": hw.id,
-                    "profile": config.get("profile"),
+                    "profile": config.get("profile") if config else None,
                     "telemetry_config": config,
-                    "host": config.get("host"),
+                    "host": config.get("host") if config else None,
                 }
             )
     return devices
@@ -151,7 +151,7 @@ async def collect_once(
 
     with get_session_context() as db:
         for item in results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 logger.warning("Telemetry collector task failed unexpectedly: %s", item)
                 continue
             hardware_id, source, payload = item

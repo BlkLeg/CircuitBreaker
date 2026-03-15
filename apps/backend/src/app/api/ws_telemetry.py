@@ -108,15 +108,15 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
                     break
             await asyncio.sleep(0.05)
     except asyncio.CancelledError:
-        pass
+        logger.debug("Redis listener cancelled during connection shutdown")
     except Exception as exc:
         logger.debug("Redis listener error: %s", exc)
     finally:
         try:
             await pubsub.unsubscribe()
             await pubsub.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis pubsub cleanup failed (non-fatal): %s", exc)
 
 
 async def _ping_loop(ws: WebSocket) -> None:
@@ -127,9 +127,9 @@ async def _ping_loop(ws: WebSocket) -> None:
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
+        logger.debug("Ping loop cancelled during connection shutdown")
+    except Exception as exc:
+        logger.debug("Ping loop error: %s", exc)
 
 
 @router.websocket("/stream")
@@ -140,8 +140,10 @@ async def telemetry_stream(websocket: WebSocket) -> None:
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to send WSS required error to client (already disconnected): %s", exc
+            )
         return
 
     client_ip = _extract_client_ip(websocket)
@@ -240,8 +242,10 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                             listener_task.cancel()
                             try:
                                 await listener_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
+                            except asyncio.CancelledError:
+                                logger.debug("Previous listener task cancelled successfully")
+                            except Exception as exc:
+                                logger.debug("Previous listener task cleanup error: %s", exc)
                         stop_event = asyncio.Event()
                         listener_task = asyncio.create_task(
                             _redis_listener(websocket, subscribed_channels, stop_event)
@@ -257,8 +261,10 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                             listener_task.cancel()
                             try:
                                 await listener_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
+                            except asyncio.CancelledError:
+                                logger.debug("Previous listener task cancelled successfully")
+                            except Exception as exc:
+                                logger.debug("Previous listener task cleanup error: %s", exc)
                         if subscribed_channels:
                             stop_event = asyncio.Event()
                             listener_task = asyncio.create_task(
@@ -268,7 +274,7 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                             listener_task = None
 
         except WebSocketDisconnect:
-            pass
+            logger.debug("WebSocket disconnected normally")
         finally:
             stop_event.set()
             ping_task.cancel()
@@ -281,5 +287,5 @@ async def telemetry_stream(websocket: WebSocket) -> None:
         try:
             await _unregister(websocket, client_ip)
             await websocket.close(code=1011)
-        except Exception:
-            pass
+        except Exception as exc2:
+            logger.debug("Failed to cleanup WebSocket connection (already closed): %s", exc2)

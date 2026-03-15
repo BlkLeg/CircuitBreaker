@@ -18,6 +18,7 @@ import json
 import logging
 import secrets
 from datetime import timedelta
+from typing import cast
 
 import jwt as _jwt
 import pyotp
@@ -40,6 +41,7 @@ from app.core.users import auth_backend, fastapi_users
 from app.db.models import APIToken, User
 from app.db.session import get_db
 from app.schemas.auth import (
+    AuthResponse,
     LoginRequest,
     RegisterRequest,
     UserProfile,
@@ -51,6 +53,16 @@ from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
+
+TOKEN_INVALID_OR_EXPIRED_DETAIL = "Token is invalid or expired"
+AUTH_NOT_CONFIGURED_DETAIL = "Auth not configured"
+NOT_AUTHENTICATED_DETAIL = "Not authenticated"
+USER_NOT_FOUND_DETAIL = "User not found"
+PASSWORD_OR_HASH_REQUIRED_DETAIL = "Either password or password_hash is required"
+NEW_PASSWORD_OR_HASH_REQUIRED_DETAIL = "Either new_password or new_password_hash is required"
+CURRENT_PASSWORD_OR_HASH_REQUIRED_DETAIL = (
+    "Either current_password or current_password_hash is required"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +90,7 @@ class AcceptInviteRequest(BaseModel):
     @model_validator(mode="after")
     def require_password_or_hash(self):
         if not self.password and not self.password_hash:
-            raise ValueError("Either password or password_hash is required")
+            raise ValueError(PASSWORD_OR_HASH_REQUIRED_DETAIL)
         if self.password and self.password_hash:
             raise ValueError("Provide only one of password or password_hash")
         return self
@@ -106,7 +118,9 @@ def accept_invite_endpoint(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
-    user = svc_accept_invite(db, payload.token, password_or_hash, payload.display_name)
+    if password_or_hash is None:
+        raise HTTPException(status_code=400, detail=PASSWORD_OR_HASH_REQUIRED_DETAIL)
+    user = svc_accept_invite(db, payload.token, cast(str, password_or_hash), payload.display_name)
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
     body = AuthResponse(token=token, user=_to_profile(user)).model_dump()
@@ -129,7 +143,9 @@ def register_user(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
-    result = svc_register(db, payload.email, password_or_hash, cfg, payload.display_name)
+    if password_or_hash is None:
+        raise HTTPException(status_code=400, detail=PASSWORD_OR_HASH_REQUIRED_DETAIL)
+    result = svc_register(db, payload.email, cast(str, password_or_hash), cfg, payload.display_name)
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
@@ -151,7 +167,7 @@ class ResetPasswordRequest(BaseModel):
     @model_validator(mode="after")
     def require_password_or_hash(self):
         if not self.password and not self.password_hash:
-            raise ValueError("Either password or password_hash is required")
+            raise ValueError(PASSWORD_OR_HASH_REQUIRED_DETAIL)
         if self.password and self.password_hash:
             raise ValueError("Provide only one of password or password_hash")
         return self
@@ -170,9 +186,17 @@ async def forgot_password(
     payload: ForgotPasswordRequest,
     db: Session = Depends(get_db),
 ):
-    """Email-based reset is disabled; users must use vault-key recovery."""
-    _logger.info("[auth] forgot-password requested while email reset is disabled")
-    raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
+    """Request a password reset token.  Always returns 200 to prevent email enumeration."""
+    from app.services.password_reset_service import create_reset_token
+
+    user = db.query(User).filter(User.email == payload.email.strip().lower()).first()
+    if user and user.is_active and getattr(user, "hashed_password", None):
+        try:
+            await create_reset_token(user.id)
+            _logger.info("[auth] password reset token created for user_id=%s", user.id)
+        except Exception:
+            _logger.warning("[auth] failed to create reset token (Redis unavailable?)")
+    return {"detail": "If that email is registered, a reset link has been sent."}
 
 
 @router.post("/reset-password", tags=["auth"])
@@ -183,9 +207,102 @@ async def reset_password(
     payload: ResetPasswordRequest,
     db: Session = Depends(get_db),
 ):
-    """Email-based reset is disabled; users must use vault-key recovery."""
-    _logger.info("[auth] reset-password requested while email reset is disabled")
-    raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
+    """Consume a password reset token and set the new password."""
+    from app.services.auth_service import _make_token, _to_profile, reset_local_user_password
+    from app.services.password_reset_service import consume_reset_token, resolve_reset_token
+
+    user_id = await resolve_reset_token(payload.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail=TOKEN_INVALID_OR_EXPIRED_DETAIL)
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail=TOKEN_INVALID_OR_EXPIRED_DETAIL)
+
+    password_or_hash = payload.password_hash if payload.password_hash else payload.password
+    if password_or_hash is None:
+        raise HTTPException(status_code=400, detail=PASSWORD_OR_HASH_REQUIRED_DETAIL)
+    reset_local_user_password(
+        db,
+        user,
+        cast(str, password_or_hash),
+        source="email_reset",
+        update_last_login=True,
+    )
+    await consume_reset_token(payload.token)
+
+    cfg = get_or_create_settings(db)
+    token = _make_token(user, cfg)
+    body = {"token": token, "user": _to_profile(user).model_dump()}
+    return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
+
+
+# ---------------------------------------------------------------------------
+# Magic Link (passwordless login via Redis-backed token)
+# ---------------------------------------------------------------------------
+
+
+class MagicLinkRequest(BaseModel):
+    email: str
+
+
+class MagicLinkVerifyRequest(BaseModel):
+    token: str
+
+
+@router.post("/magic-link/request", tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+async def magic_link_request(
+    request: Request,
+    response: Response,
+    payload: MagicLinkRequest,
+    db: Session = Depends(get_db),
+):
+    """Request a magic link token. Always returns 200 to prevent email enumeration."""
+    from app.services.magic_link_service import create_magic_link_token
+
+    user = db.query(User).filter(User.email == payload.email.strip().lower()).first()
+    if user and user.is_active:
+        try:
+            await create_magic_link_token(user.id)
+            _logger.info("[auth] magic link token created for user_id=%s", user.id)
+        except Exception:
+            _logger.warning("[auth] failed to create magic link token (Redis unavailable?)")
+    return {"detail": "If that email is registered, a magic link has been sent."}
+
+
+@router.post("/magic-link/verify", tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+async def magic_link_verify(
+    request: Request,
+    response: Response,
+    payload: MagicLinkVerifyRequest,
+    db: Session = Depends(get_db),
+):
+    """Verify a magic link token and log the user in."""
+    from app.services.auth_service import _make_token, _to_profile
+    from app.services.magic_link_service import consume_magic_link_token, resolve_magic_link_token
+    from app.services.user_service import record_session
+
+    user_id = await resolve_magic_link_token(payload.token)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail=TOKEN_INVALID_OR_EXPIRED_DETAIL)
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=400, detail=TOKEN_INVALID_OR_EXPIRED_DETAIL)
+
+    await consume_magic_link_token(payload.token)
+
+    user.last_login = utcnow_iso()
+    db.commit()
+    db.refresh(user)
+
+    cfg = get_or_create_settings(db)
+    token = _make_token(user, cfg)
+    record_session(db, user, request, token, cfg)
+    body = {"token": token, "user": _to_profile(user).model_dump()}
+    return auth_response_with_cookie(request, token, body, cfg.session_timeout_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +319,7 @@ def create_demo_session(
     """Create a one-hour demo read-only session."""
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail=AUTH_NOT_CONFIGURED_DETAIL)
 
     expires_at = utcnow() + timedelta(hours=1)
     demo_user = User(
@@ -246,6 +363,7 @@ def create_demo_session(
 @limiter.limit(lambda: get_limit("auth"))
 def login_compat(
     request: Request,
+    response: Response,
     payload: LoginRequest,
     db: Session = Depends(get_db),
 ):
@@ -266,13 +384,17 @@ def login_compat(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
+    if password_or_hash is None:
+        raise HTTPException(status_code=400, detail=PASSWORD_OR_HASH_REQUIRED_DETAIL)
 
     # Early check for force_password_change before creating a full session.
     email_norm = payload.email.strip().lower()
     user = db.query(User).filter(User.email == email_norm).first()
+    _hash = user.hashed_password if user else None
     if (
         user
-        and verify_password(password_or_hash, user.hashed_password)
+        and _hash
+        and verify_password(cast(str, password_or_hash), _hash)
         and getattr(user, "force_password_change", False)
     ):
         reset_login_attempts(db, user)
@@ -289,10 +411,10 @@ def login_compat(
 
     # MFA challenge: if credentials are valid and MFA is enabled, issue
     # a short-lived mfa_token rather than a full session JWT.
-    if user and getattr(user, "mfa_enabled", False):
+    if user and _hash and getattr(user, "mfa_enabled", False):
         from app.core.security import verify_password as _vp
 
-        if _vp(password_or_hash, user.hashed_password):
+        if _vp(cast(str, password_or_hash), _hash):
             from app.services.user_service import reset_login_attempts as _rla
 
             _rla(db, user)
@@ -307,7 +429,7 @@ def login_compat(
             )
             return {"requires_mfa": True, "mfa_token": mfa_token}
 
-    result = svc_login(db, payload.email, password_or_hash, cfg, ip, request=request)
+    result = svc_login(db, payload.email, cast(str, password_or_hash), cfg, ip, request=request)
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
@@ -320,7 +442,7 @@ class ForceChangePasswordRequest(BaseModel):
     @model_validator(mode="after")
     def require_new_password_or_hash(self):
         if not self.new_password and not self.new_password_hash:
-            raise ValueError("Either new_password or new_password_hash is required")
+            raise ValueError(NEW_PASSWORD_OR_HASH_REQUIRED_DETAIL)
         if self.new_password and self.new_password_hash:
             raise ValueError("Provide only one of new_password or new_password_hash")
         return self
@@ -330,6 +452,7 @@ class ForceChangePasswordRequest(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def force_change_password(
     request: Request,
+    response: Response,
     payload: ForceChangePasswordRequest,
     db: Session = Depends(get_db),
 ):
@@ -342,7 +465,7 @@ def force_change_password(
 
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail=AUTH_NOT_CONFIGURED_DETAIL)
 
     try:
         payload_jwt = _jwt.decode(
@@ -369,8 +492,17 @@ def force_change_password(
     new_password_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
+    if new_password_or_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail=NEW_PASSWORD_OR_HASH_REQUIRED_DETAIL,
+        )
     reset_local_user_password(
-        db, user, new_password_or_hash, source="force_change", update_last_login=True
+        db,
+        user,
+        cast(str, new_password_or_hash),
+        source="force_change",
+        update_last_login=True,
     )
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
@@ -409,6 +541,7 @@ class CreateAPITokenResponse(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def create_api_token(
     request: Request,
+    response: Response,
     payload: CreateAPITokenRequest,
     db: Session = Depends(get_db),
     current_user: User = require_role("admin"),
@@ -417,7 +550,7 @@ def create_api_token(
 
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail=AUTH_NOT_CONFIGURED_DETAIL)
     raw_token = secrets.token_urlsafe(32)
     token_hash = create_salted_api_token_hash(raw_token)
     expires_at = None
@@ -451,6 +584,7 @@ def create_api_token(
 @limiter.limit(lambda: get_limit("auth"))
 def list_api_tokens(
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = require_role("admin"),
 ):
@@ -477,6 +611,7 @@ def list_api_tokens(
 @limiter.limit(lambda: get_limit("auth"))
 def revoke_api_token(
     request: Request,
+    response: Response,
     token_id: int,
     db: Session = Depends(get_db),
     current_user: User = require_role("admin"),
@@ -507,20 +642,31 @@ def vault_reset_password(
 
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail=AUTH_NOT_CONFIGURED_DETAIL)
     new_password_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
+    if new_password_or_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail=NEW_PASSWORD_OR_HASH_REQUIRED_DETAIL,
+        )
     result = svc_vault_reset_password(
         db,
         payload.email,
         payload.vault_key,
-        new_password_or_hash,
+        cast(str, new_password_or_hash),
         cfg,
         request=request,
     )
-    body = result.model_dump()
-    return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
+    if isinstance(result, User):
+        raise HTTPException(
+            status_code=500,
+            detail="Password reset did not return a session token",
+        )
+    result_auth = cast(AuthResponse, result)
+    body = result_auth.model_dump()
+    return auth_response_with_cookie(request, result_auth.token, body, cfg.session_timeout_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +718,7 @@ def get_me_compat(
 ):
     """Backward-compat endpoint returning the current user's profile."""
     if user_id is None:
-        detail = "Token invalid or expired" if _extract_token(request) else "Not authenticated"
+        detail = "Token invalid or expired" if _extract_token(request) else NOT_AUTHENTICATED_DETAIL
         raise HTTPException(status_code=401, detail=detail)
     if user_id == 0:
         return UserProfile(
@@ -585,7 +731,7 @@ def get_me_compat(
         )
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail=USER_NOT_FOUND_DETAIL)
     try:
         return _to_profile(user)
     except Exception as e:
@@ -636,7 +782,7 @@ def delete_me(
 ):
     """Delete the authenticated user's own account."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     from app.services.auth_service import delete_account
 
     delete_account(db, user_id)
@@ -688,7 +834,7 @@ def list_my_sessions(
 ):
     """List the current user's active sessions."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     if user_id == 0:
         return []
     from app.core.time import utcnow
@@ -725,7 +871,7 @@ def revoke_session(
 ):
     """Revoke a specific session."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     from app.services.user_service import revoke_session as svc_revoke
 
     if not svc_revoke(db, session_id, user_id):
@@ -741,7 +887,7 @@ def revoke_all_other_sessions(
 ):
     """Revoke all sessions except the current one."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     if user_id == 0:
         return
     from app.services.user_service import _hash_token, revoke_all_sessions
@@ -761,7 +907,7 @@ def change_password(
 ):
     """Change the current user's password."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     if user_id == 0:
         raise HTTPException(status_code=403, detail="Service account has no password")
     from app.core.security import verify_password
@@ -769,23 +915,33 @@ def change_password(
 
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail=USER_NOT_FOUND_DETAIL)
     current_or_hash = (
         payload.current_password_hash
         if payload.current_password_hash is not None
         else payload.current_password
     )
-    if not verify_password(current_or_hash, user.hashed_password):
+    if current_or_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail=CURRENT_PASSWORD_OR_HASH_REQUIRED_DETAIL,
+        )
+    if not verify_password(cast(str, current_or_hash), user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     new_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
-    if not _is_client_hash(new_or_hash):
-        _validate_password(new_or_hash)
+    if new_or_hash is None:
+        raise HTTPException(
+            status_code=400,
+            detail=NEW_PASSWORD_OR_HASH_REQUIRED_DETAIL,
+        )
+    if not _is_client_hash(cast(str, new_or_hash)):
+        _validate_password(cast(str, new_or_hash))
     from app.core.security import hash_password
     from app.services.user_service import _hash_token, revoke_all_sessions
 
-    user.hashed_password = hash_password(new_or_hash)
+    user.hashed_password = hash_password(cast(str, new_or_hash))
 
     token = _extract_token(request)
     except_hash = _hash_token(token) if token else None
@@ -824,7 +980,7 @@ async def upload_avatar(
     db: Session = Depends(get_db),
 ):
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     from app.services.auth_service import update_profile
 
     result = await update_profile(
@@ -853,14 +1009,59 @@ class MfaBackupCodesResponse(BaseModel):
     backup_codes: list[str]
 
 
+def _get_fernet():
+    """Return a Fernet instance using the vault key (CB_VAULT_KEY)."""
+    import os
+
+    from cryptography.fernet import Fernet
+
+    key = os.environ.get("CB_VAULT_KEY", "")
+    if not key:
+        raise RuntimeError("CB_VAULT_KEY not set")
+    # Vault key may not be base64; derive a Fernet-compatible key via SHA256
+    fernet_key = hashlib.sha256(key.encode()).digest()
+    import base64
+
+    return Fernet(base64.urlsafe_b64encode(fernet_key))
+
+
+def _encrypt_totp_secret(secret: str) -> str:
+    """Encrypt a TOTP secret using the vault key."""
+    f = _get_fernet()
+    return f.encrypt(secret.encode()).decode()
+
+
+def _decrypt_totp_secret(value: str) -> str:
+    """Decrypt a TOTP secret. Passes through plaintext for backward compat."""
+    if not value.startswith("gAAAAA"):
+        return value
+    f = _get_fernet()
+    return f.decrypt(value.encode()).decode()
+
+
 def _generate_backup_codes() -> list[str]:
     return [secrets.token_hex(5).upper() for _ in range(_BACKUP_CODE_COUNT)]
 
 
 def _store_backup_codes(user: User, raw_codes: list[str]) -> None:
-    from app.core.security import hash_password as _hash
+    """Encrypt and store backup codes using the vault key."""
+    f = _get_fernet()
+    user.backup_codes = f.encrypt(json.dumps(raw_codes).encode()).decode()
 
-    user.backup_codes = json.dumps([_hash(c) for c in raw_codes])
+
+def _load_backup_codes(user: User) -> list[str]:
+    """Load and decrypt backup codes."""
+    if not user.backup_codes:
+        return []
+    raw = user.backup_codes
+    if raw.startswith("gAAAAA"):
+        f = _get_fernet()
+        return json.loads(f.decrypt(raw.encode()).decode())
+    # Backward compat: old format was JSON array of bcrypt hashes
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
 
 
 def _verify_mfa_confirmation_code(user: User, code: str) -> bool:
@@ -896,10 +1097,10 @@ def mfa_setup(
     endpoint rotate it.
     """
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail=USER_NOT_FOUND_DETAIL)
     if user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is already enabled")
 
@@ -980,7 +1181,7 @@ def mfa_verify(
 
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
-        raise HTTPException(status_code=503, detail="Auth not configured")
+        raise HTTPException(status_code=503, detail=AUTH_NOT_CONFIGURED_DETAIL)
 
     try:
         tok = _jwt.decode(
@@ -1059,10 +1260,10 @@ def mfa_disable(
     to prevent disabling MFA without physical possession of the device.
     """
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail=USER_NOT_FOUND_DETAIL)
     if not user.mfa_enabled:
         raise HTTPException(status_code=400, detail="MFA is not enabled")
 
@@ -1089,10 +1290,10 @@ def mfa_regenerate_backup_codes(
 ):
     """Replace existing MFA backup codes after re-verifying user possession."""
     if user_id is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED_DETAIL)
     user = db.get(User, user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise HTTPException(status_code=401, detail=USER_NOT_FOUND_DETAIL)
     if not user.mfa_enabled or not user.totp_secret:
         raise HTTPException(status_code=400, detail="MFA must be enabled first")
 

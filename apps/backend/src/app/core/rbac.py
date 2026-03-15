@@ -119,6 +119,7 @@ def require_role(*roles: str):
     - Service account (user_id=0) and is_superuser bypass all checks.
     - Locked users receive 423 Locked.
     - Insufficient role receives 403 Forbidden.
+    - Role hierarchy is respected: admin can access viewer/editor endpoints.
     """
 
     async def _dep(
@@ -142,7 +143,12 @@ def require_role(*roles: str):
             raise HTTPException(status_code=401, detail="Demo session expired")
         if user.is_superuser:
             return user
-        if role not in roles:
+
+        # Check if user's role meets minimum required role using hierarchy
+        user_level = ROLE_HIERARCHY.get(role, -1)
+        min_required_level = min(ROLE_HIERARCHY.get(r, 999) for r in roles)
+
+        if user_level < min_required_level:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
 

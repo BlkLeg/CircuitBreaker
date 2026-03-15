@@ -44,6 +44,8 @@ export default function NodeTypeFilterBar({
                 borderColor: '#ccc',
                 background: '#eee',
               };
+        // Only access includeTypes and NODE_TYPE_LABELS if type is safe
+        if (!safeType) return null;
         return (
           <button
             key={type}
@@ -52,14 +54,18 @@ export default function NodeTypeFilterBar({
               padding: '3px 8px',
               borderRadius: 4,
               border: `1px solid ${style.borderColor}`,
-              background: includeTypes[type] ? style.background : 'transparent',
-              color: includeTypes[type] ? '#fff' : style.background,
+              background:
+                Object.hasOwn(includeTypes, type) && includeTypes[type]
+                  ? style.background
+                  : 'transparent',
+              color:
+                Object.hasOwn(includeTypes, type) && includeTypes[type] ? '#fff' : style.background,
               fontSize: 11,
               cursor: 'pointer',
               transition: 'all 0.15s',
             }}
           >
-            {NODE_TYPE_LABELS[type]}
+            {Object.hasOwn(NODE_TYPE_LABELS, type) ? NODE_TYPE_LABELS[type] : type}
           </button>
         );
       })}

@@ -11,21 +11,34 @@ export function useIPAMData(toast) {
   const [vlans, setVLANs] = useState([]);
   const [sites, setSites] = useState([]);
   const [networks, setNetworks] = useState([]);
+  const [reservationQueue, setReservationQueue] = useState([]);
+  const [conflicts, setConflicts] = useState([]);
+  const [conflictSummary, setConflictSummary] = useState({});
+  const [dhcpPools, setDHCPPools] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [ipRes, vlanRes, siteRes, netRes] = await Promise.all([
-        ipamApi.listIPs(),
-        ipamApi.listVLANs(),
-        ipamApi.listSites(),
-        networksApi.list(),
-      ]);
+      const [ipRes, vlanRes, siteRes, netRes, queueRes, conflictsRes, summaryRes, dhcpRes] =
+        await Promise.all([
+          ipamApi.listIPs(),
+          ipamApi.listVLANs(),
+          ipamApi.listSites(),
+          networksApi.list(),
+          ipamApi.listReservationQueue().catch(() => ({ data: [] })),
+          ipamApi.listConflicts().catch(() => ({ data: [] })),
+          ipamApi.conflictSummary().catch(() => ({ data: {} })),
+          ipamApi.listDHCPPools().catch(() => ({ data: [] })),
+        ]);
       setIPs(ipRes.data ?? []);
       setVLANs(vlanRes.data ?? []);
       setSites(siteRes.data ?? []);
       setNetworks(netRes.data ?? []);
+      setReservationQueue(queueRes.data ?? []);
+      setConflicts(conflictsRes.data ?? []);
+      setConflictSummary(summaryRes.data ?? {});
+      setDHCPPools(dhcpRes.data ?? []);
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -127,11 +140,72 @@ export function useIPAMData(toast) {
     [load, toast]
   );
 
+  // ── Reservation Queue helpers ─────────────────────────────────────────────
+  const approveReservation = useCallback(
+    async (id) => {
+      await ipamApi.approveReservation(id);
+      toast.success('Reservation approved.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  const rejectReservation = useCallback(
+    async (id) => {
+      await ipamApi.rejectReservation(id);
+      toast.success('Reservation rejected.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  // ── Conflict helpers ──────────────────────────────────────────────────────
+  const resolveConflict = useCallback(
+    async (id, data) => {
+      await ipamApi.resolveConflict(id, data);
+      toast.success('Conflict resolved.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  const dismissConflict = useCallback(
+    async (id) => {
+      await ipamApi.dismissConflict(id);
+      toast.success('Conflict dismissed.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  // ── DHCP helpers ──────────────────────────────────────────────────────────
+  const createDHCPPool = useCallback(
+    async (data) => {
+      await ipamApi.createDHCPPool(data);
+      toast.success('DHCP pool created.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  const deleteDHCPPool = useCallback(
+    async (id) => {
+      await ipamApi.deleteDHCPPool(id);
+      toast.success('DHCP pool deleted.');
+      await load();
+    },
+    [load, toast]
+  );
+
   return {
     ips,
     vlans,
     sites,
     networks,
+    reservationQueue,
+    conflicts,
+    conflictSummary,
+    dhcpPools,
     loading,
     reload: load,
     createIP,
@@ -144,5 +218,11 @@ export function useIPAMData(toast) {
     createSite,
     updateSite,
     deleteSite,
+    approveReservation,
+    rejectReservation,
+    resolveConflict,
+    dismissConflict,
+    createDHCPPool,
+    deleteDHCPPool,
   };
 }

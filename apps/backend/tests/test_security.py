@@ -443,3 +443,206 @@ class TestRBAC:
         assert resp.status_code == 401, (
             f"Unauthenticated {method} {path} returned {resp.status_code} instead of 401"
         )
+
+
+# ---------------------------------------------------------------------------
+# core/security.py — hash_password, verify_password, gravatar_hash, tokens
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityCore:
+    """Unit tests for core/security.py functions."""
+
+    def test_hash_verify_password_round_trip(self):
+        """hash_password + verify_password round-trip succeeds."""
+        from app.core.security import hash_password, verify_password
+
+        plain = "TestPassword123!"
+        hashed = hash_password(plain)
+        assert hashed != plain, "Hash must differ from plaintext"
+        assert verify_password(plain, hashed), "verify_password must return True for correct pw"
+
+    def test_verify_password_rejects_wrong(self):
+        """verify_password returns False for wrong password."""
+        from app.core.security import hash_password, verify_password
+
+        hashed = hash_password("CorrectPassword123!")
+        assert not verify_password("WrongPassword999!", hashed)
+
+    def test_create_token_decode_token_round_trip(self):
+        """create_token + decode_token round-trip returns user_id."""
+        from app.core.security import create_token, decode_token
+
+        secret = os.environ["CB_JWT_SECRET"]
+        user_id = 42
+        token = create_token(user_id, secret, timeout_hours=1)
+        decoded_id = decode_token(token, secret)
+        assert decoded_id == user_id, f"Expected user_id={user_id}, got {decoded_id}"
+
+    def test_decode_token_returns_none_for_bad_token(self):
+        """decode_token returns None for garbage token."""
+        from app.core.security import decode_token
+
+        secret = os.environ["CB_JWT_SECRET"]
+        result = decode_token("not.a.valid.jwt", secret)
+        assert result is None
+
+    def test_decode_token_returns_none_for_wrong_secret(self):
+        """decode_token returns None when secret doesn't match."""
+        from app.core.security import create_token, decode_token
+
+        token = create_token(1, "secret-A-that-is-32-chars-long!", timeout_hours=1)
+        result = decode_token(token, "secret-B-that-is-32-chars-long!")
+        assert result is None
+
+    def test_gravatar_hash_computation(self):
+        """gravatar_hash returns MD5 hex of lowercased trimmed email."""
+        import hashlib
+
+        from app.core.security import gravatar_hash
+
+        email = "  Test@Example.COM  "
+        expected = hashlib.md5(b"test@example.com").hexdigest()
+        assert gravatar_hash(email) == expected
+
+    def test_hash_api_token_deterministic(self):
+        """create_salted_api_token_hash returns consistent hashes."""
+        from app.core.security import (
+            create_salted_api_token_hash,
+            verify_salted_api_token_hash,
+        )
+
+        raw = "test-api-token-value"
+        hashed = create_salted_api_token_hash(raw)
+        assert verify_salted_api_token_hash(raw, hashed)
+        assert not verify_salted_api_token_hash("wrong-token", hashed)
+
+
+# ---------------------------------------------------------------------------
+# core/audit.py — log_audit creates DB entry
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLog:
+    """Tests for core/audit.py log_audit function."""
+
+    def test_log_audit_creates_entry(self, db_session):
+        """log_audit creates a Log entry in the database."""
+        from app.core.audit import log_audit
+        from app.db.models import Log
+
+        initial_count = db_session.query(Log).filter(Log.action == "test_audit_action").count()
+
+        log_audit(
+            db_session,
+            None,  # no request object in unit test
+            user_id=1,
+            action="test_audit_action",
+            resource="test_resource",
+            status="ok",
+            details="Unit test audit entry",
+        )
+        db_session.flush()
+
+        new_count = db_session.query(Log).filter(Log.action == "test_audit_action").count()
+        assert new_count == initial_count + 1, "log_audit should create a new Log entry"
+
+
+# ---------------------------------------------------------------------------
+# core/audit_chain.py — verify_audit_chain
+# ---------------------------------------------------------------------------
+
+
+class TestAuditChain:
+    """Tests for core/audit_chain.py verify_audit_chain function."""
+
+    def test_verify_audit_chain_valid(self, db_session):
+        """verify_audit_chain returns valid=True for an empty or valid chain."""
+        from app.core.audit_chain import verify_audit_chain
+
+        result = verify_audit_chain(db_session)
+        assert isinstance(result, dict)
+        assert "valid" in result
+        assert "checked_count" in result
+        # An empty chain (no logs) should be valid
+        assert result["valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# core/url_validation.py — reject_ssrf_url
+# ---------------------------------------------------------------------------
+
+
+class TestURLValidation:
+    """Tests for core/url_validation.py SSRF protection."""
+
+    def test_reject_ssrf_rejects_javascript_scheme(self):
+        """javascript: URLs must be rejected (non-HTTP scheme)."""
+        from app.core.url_validation import reject_ssrf_url
+
+        with pytest.raises(ValueError):
+            reject_ssrf_url("javascript:alert(1)")
+
+    def test_reject_ssrf_rejects_file_scheme(self):
+        """file:// URLs must be rejected."""
+        from app.core.url_validation import reject_ssrf_url
+
+        with pytest.raises(ValueError):
+            reject_ssrf_url("file:///etc/passwd")
+
+    def test_reject_ssrf_rejects_localhost(self):
+        """http://localhost must be rejected."""
+        from app.core.url_validation import reject_ssrf_url
+
+        with pytest.raises(ValueError):
+            reject_ssrf_url("http://localhost/admin")
+
+    def test_reject_ssrf_rejects_127_0_0_1(self):
+        """http://127.0.0.1 must be rejected."""
+        from app.core.url_validation import reject_ssrf_url
+
+        with pytest.raises(ValueError):
+            reject_ssrf_url("http://127.0.0.1:8080/")
+
+    def test_reject_ssrf_accepts_https(self):
+        """https:// URLs to public hosts must be accepted."""
+        from app.core.url_validation import reject_ssrf_url
+
+        # Should not raise
+        reject_ssrf_url("https://hooks.slack.com/services/T/B/x")
+
+
+# ---------------------------------------------------------------------------
+# Additional RBAC — viewer restrictions on write endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestViewerWriteRestrictions:
+    """Viewer cannot POST to networks, services, or settings."""
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_post_networks(self, client, viewer_headers):
+        resp = await client.post(
+            "/api/v1/networks",
+            headers=viewer_headers,
+            json={"name": "viewer-net", "cidr": "10.99.0.0/24"},
+        )
+        assert resp.status_code == 403, f"Viewer must not POST networks, got {resp.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_post_services(self, client, viewer_headers):
+        resp = await client.post(
+            "/api/v1/services",
+            headers=viewer_headers,
+            json={"name": "viewer-svc"},
+        )
+        assert resp.status_code == 403, f"Viewer must not POST services, got {resp.status_code}"
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_put_settings(self, client, viewer_headers):
+        resp = await client.put(
+            "/api/v1/settings",
+            headers=viewer_headers,
+            json={"site_name": "hacked"},
+        )
+        assert resp.status_code == 403, f"Viewer must not PUT settings, got {resp.status_code}"

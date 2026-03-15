@@ -227,7 +227,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
 
   if (!node) return null;
 
-  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct * 100) : null;
+  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct) : null;
   const memUsed =
     data?.mem_used_gb ?? (data?.mem_used != null ? +(data.mem_used / 1073741824).toFixed(1) : null);
   const memTotal =

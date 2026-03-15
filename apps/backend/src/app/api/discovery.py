@@ -41,6 +41,38 @@ _DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")])
 
 
+@router.get("", response_model=dict)
+def discovery_root(db: Session = Depends(get_db)):
+    """Root discovery endpoint - returns summary of recent scan jobs and discovery status."""
+    recent_jobs = db.scalars(select(ScanJob).order_by(ScanJob.created_at.desc()).limit(10)).all()
+    pending_results = db.scalars(
+        select(ScanResult).where(ScanResult.merge_status == "pending")
+    ).all()
+
+    return {
+        "recent_jobs": [
+            {
+                "id": job.id,
+                "status": job.status,
+                "label": job.label,
+                "target_cidr": job.target_cidr,
+                "created_at": (
+                    job.created_at.isoformat()
+                    if job.created_at and hasattr(job.created_at, "isoformat")
+                    else job.created_at
+                    if job.created_at
+                    else None
+                ),
+                "hosts_found": job.hosts_found,
+            }
+            for job in recent_jobs
+        ],
+        "pending_results_count": len(pending_results),
+        "docker_available": is_docker_socket_available(),
+        "raw_socket_available": _has_raw_socket_privilege(),
+    }
+
+
 def _get_actor(db: Session, user_id: int) -> str:
     """Return display name for audit/triggered_by; sync so it can be used in DB commits."""
     if user_id == 0:
@@ -81,9 +113,10 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
         .first()
     )
     raw_last_scan = getattr(last_completed, "completed_at", None)
+    last_scan: str | None = None
     if isinstance(raw_last_scan, str):
         last_scan = raw_last_scan
-    elif hasattr(raw_last_scan, "isoformat"):
+    elif raw_last_scan is not None and hasattr(raw_last_scan, "isoformat"):
         scan_iso = raw_last_scan.isoformat()
         last_scan = scan_iso if isinstance(scan_iso, str) else None
     else:

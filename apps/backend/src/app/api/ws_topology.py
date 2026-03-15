@@ -204,7 +204,7 @@ async def _ping_loop(ws: WebSocket) -> None:
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
-        pass
+        logger.debug("Topology ping loop cancelled during connection shutdown")
     except Exception as exc:
         logger.debug("Topology WS ping loop error: %s", exc)
 
@@ -213,7 +213,7 @@ async def _ping_loop(ws: WebSocket) -> None:
 async def topology_stream(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -225,14 +225,14 @@ async def topology_stream(websocket: WebSocket) -> None:
 
     try:
         # ── Auth phase: cookie (httpOnly) only ──────────────────────────────
-        raw_token = token_from_websocket_scope(websocket.scope)
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
         if not raw_token:
             logger.warning("Topology WS auth rejected: no session cookie (ip=%s)", client_ip)
             try:
                 await websocket.send_text(json.dumps({"error": "unauthorized"}))
                 await websocket.close(code=1008)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to send auth error to client (already disconnected): %s", exc)
             return
 
         authenticated = False
@@ -298,7 +298,7 @@ async def topology_stream(websocket: WebSocket) -> None:
                 except Exception as e:
                     logger.debug("Topology WS ping parse/send failed: %s", e, exc_info=True)
         except WebSocketDisconnect:
-            pass
+            logger.debug("Topology WebSocket disconnected normally")
         finally:
             ping_task.cancel()
             await topology_ws_manager.disconnect(websocket)

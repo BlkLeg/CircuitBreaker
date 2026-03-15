@@ -30,6 +30,9 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/v1/auth/accept-invite",
     "/api/v1/auth/vault-reset",
     "/api/v1/auth/force-change-password",
+    "/api/v1/auth/forgot-password",
+    "/api/v1/auth/reset-password",
+    "/api/v1/auth/magic-link",
     "/api/v1/auth/mfa/verify",
     "/api/v1/health",
 )

@@ -420,7 +420,7 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
         svc.ip_mode = result["ip_mode"]
         svc.ip_conflict = result["is_conflict"]
-        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+        svc.ip_conflict_json = result["conflict_with"]
     if affected:
         db.commit()
     # CB-STATE-001: recalculate hardware status (respects status_override)
@@ -435,6 +435,14 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
     hw = db.get(Hardware, hardware_id)
     if hw is None:
         raise ValueError(f"Hardware {hardware_id} not found")
+    # Release IPAM reservations if enabled
+    from app.services.settings_service import get_or_create_settings
+
+    settings = get_or_create_settings(db)
+    if settings.ipam_release_on_delete:
+        from app.services.ip_reservation import release_hardware_ips
+
+        release_hardware_ips(db, hardware_id)
     # Block if dependent entities still exist
     blocking: list[str] = []
     cu_count = len(

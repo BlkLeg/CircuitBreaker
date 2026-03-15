@@ -4,6 +4,64 @@ Wraps existing ``IntegrationConfig`` + ``Credential`` models and
 ``CredentialVault`` to provide a single-entry-point for managing
 integration configurations across all provider types (proxmox, docker,
 truenas, unifi, etc.).
+
+INTEGRATION PROVIDER TEST INTERFACE
+====================================
+
+To add a new integration provider that supports the test_config() function,
+implement a test function following this protocol:
+
+Required Function Signature:
+    async def _test_<provider>(db: Session, cfg: IntegrationConfig) -> dict
+    OR
+    def _test_<provider>(cfg: IntegrationConfig) -> dict
+
+Expected Return Value (dict with required keys):
+    {
+        "status": "success" | "error",
+        "message": str,  # Human-readable result description
+        # Optional keys for enriching test results:
+        "details": dict | None,  # Additional diagnostic info
+    }
+
+The test function should:
+1. Extract connection parameters from cfg.config_url and cfg.extra_config
+2. Decrypt credentials from cfg.credential_id if present (using get_vault())
+3. Attempt to connect to the target system (with timeout)
+4. Return success if connection + basic API call succeeds
+5. Return error with specific message if connection fails
+6. Raise exceptions for invalid configuration (caught by caller)
+
+Example Implementation:
+    async def _test_vmware(db: Session, cfg: IntegrationConfig) -> dict:
+        from app.services.credential_vault import get_vault
+        import httpx
+
+        if not cfg.config_url:
+            return {"status": "error", "message": "config_url is required"}
+
+        password = None
+        if cfg.credential_id:
+            cred = db.get(Credential, cfg.credential_id)
+            if cred:
+                password = get_vault().decrypt(cred.encrypted_value)
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{cfg.config_url}/api/version", auth=("root", password))
+                if resp.status_code == 200:
+                    return {"status": "success", "message": "VMware connection successful"}
+                return {"status": "error", "message": f"HTTP {resp.status_code}"}
+        except httpx.ConnectError as exc:
+            return {"status": "error", "message": f"Connection failed: {exc}"}
+
+Then register the provider in test_config():
+    if provider == "vmware":
+        result = await _test_vmware(db, cfg)
+
+Current Supported Providers:
+- proxmox: Full Proxmox VE API connectivity test
+- docker: Docker daemon socket/HTTP connectivity test
 """
 
 from __future__ import annotations
@@ -159,10 +217,9 @@ async def test_config(db: Session, provider: str, config_id: int) -> dict:
         elif provider == "docker":
             result = _test_docker(cfg)
         else:
-            result = {
-                "status": "error",
-                "message": f"Test not implemented for provider '{provider}'",
-            }
+            raise NotImplementedError(f"Test not implemented for provider '{provider}'")
+    except NotImplementedError:
+        raise
     except Exception as exc:
         _logger.warning("Integration test failed for %s config %d: %s", provider, config_id, exc)
         result = {"status": "error", "message": str(exc)}

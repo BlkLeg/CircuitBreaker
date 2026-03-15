@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress as _ipaddress
 import json
 import logging
 from dataclasses import dataclass
@@ -9,7 +10,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import ComputeUnit, Hardware, Service
+from app.core.time import utcnow
+from app.db.models import ComputeUnit, Hardware, IPAddress, IPConflict, Network, Service
 
 _logger = logging.getLogger(__name__)
 
@@ -41,16 +43,19 @@ def _norm(ip: str | None) -> str | None:
     return ip.strip().lower()
 
 
-def _parse_ports_json(raw: str | None) -> list[dict]:
-    """Return the parsed port-entry list from a ports_json TEXT column value."""
+def _parse_ports_json(raw) -> list[dict]:
+    """Return the parsed port-entry list from a ports_json JSONB column value."""
     if not raw:
         return []
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data
-    except (json.JSONDecodeError, TypeError):
-        pass
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, TypeError) as exc:
+            _logger.debug("Failed to parse ports JSON: %s", exc)
     return []
 
 
@@ -448,3 +453,194 @@ def bulk_conflict_map(db: Session) -> dict[tuple[str, int], bool]:
             result[("service", svc.id)] = True
 
     return result
+
+
+# ── IPAM reservation & conflict management ─────────────────────────────────
+
+
+def auto_reserve_ip(
+    db: Session,
+    hardware_id: int,
+    ip_address: str,
+    hostname: str | None,
+    tenant_id: int | None = None,
+) -> IPAddress | None:
+    """Auto-reserve an IP for a hardware node.
+
+    Returns the IPAddress row on success, or None if there is a conflict
+    (IP owned by a different hardware node).
+    """
+    existing = db.execute(
+        select(IPAddress).where(
+            IPAddress.address == ip_address,
+            *([IPAddress.tenant_id == tenant_id] if tenant_id is not None else []),
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        if existing.hardware_id is not None and existing.hardware_id != hardware_id:
+            return None  # conflict — owned by different hardware
+        # Same hardware owns it already — just update hostname
+        existing.hostname = hostname
+        existing.hardware_id = hardware_id
+        existing.status = "allocated"
+        db.flush()
+        return existing
+
+    # New reservation
+    # Find matching network via subnet
+    network_id: int | None = None
+    try:
+        parsed_ip = _ipaddress.ip_address(ip_address)
+        for net in db.execute(select(Network)).scalars().all():
+            if net.cidr:
+                try:
+                    if parsed_ip in _ipaddress.ip_network(net.cidr, strict=False):
+                        network_id = net.id
+                        break
+                except ValueError:
+                    continue
+    except ValueError:
+        pass
+
+    row = IPAddress(
+        address=ip_address,
+        hardware_id=hardware_id,
+        hostname=hostname,
+        status="allocated",
+        network_id=network_id,
+        tenant_id=tenant_id,
+        allocated_at=utcnow(),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def release_hardware_ips(db: Session, hardware_id: int) -> int:
+    """Release all IP reservations for a hardware node.
+
+    Sets status to 'free' and clears hardware_id.
+    Returns the count of freed IPs.
+    """
+    rows = db.execute(select(IPAddress).where(IPAddress.hardware_id == hardware_id)).scalars().all()
+    for row in rows:
+        row.status = "free"
+        row.hardware_id = None
+    db.flush()
+    return len(rows)
+
+
+def record_conflict(
+    db: Session,
+    address: str,
+    entity_a_type: str,
+    entity_a_id: int,
+    entity_b_type: str,
+    entity_b_id: int,
+    conflict_type: str = "ip_overlap",
+    port: int | None = None,
+    protocol: str | None = None,
+    tenant_id: int | None = None,
+) -> IPConflict:
+    """Record an IP conflict (idempotent — returns existing open conflict if present)."""
+    from sqlalchemy import or_
+
+    # Check for existing open conflict for same address + entity pair (either order)
+    existing = db.execute(
+        select(IPConflict).where(
+            IPConflict.address == address,
+            IPConflict.status == "open",
+            or_(
+                (IPConflict.entity_a_type == entity_a_type)
+                & (IPConflict.entity_a_id == entity_a_id)
+                & (IPConflict.entity_b_type == entity_b_type)
+                & (IPConflict.entity_b_id == entity_b_id),
+                (IPConflict.entity_a_type == entity_b_type)
+                & (IPConflict.entity_a_id == entity_b_id)
+                & (IPConflict.entity_b_type == entity_a_type)
+                & (IPConflict.entity_b_id == entity_a_id),
+            ),
+        )
+    ).scalar_one_or_none()
+
+    if existing:
+        return existing
+
+    conflict = IPConflict(
+        address=address,
+        entity_a_type=entity_a_type,
+        entity_a_id=entity_a_id,
+        entity_b_type=entity_b_type,
+        entity_b_id=entity_b_id,
+        conflict_type=conflict_type,
+        port=port,
+        protocol=protocol,
+        status="open",
+        tenant_id=tenant_id,
+    )
+    db.add(conflict)
+    db.flush()
+    return conflict
+
+
+def resolve_conflict(
+    db: Session,
+    conflict_id: int,
+    resolution: str,
+    user_id: int | None = None,
+    notes: str | None = None,
+) -> IPConflict:
+    """Resolve an IP conflict with the given resolution strategy.
+
+    resolution can be:
+    - "reassign": reassign the IP to entity_b (if hardware)
+    - "keep_existing": no data change, just mark resolved
+    - "free_and_assign": free existing IP, create new for entity_b
+    """
+    conflict = db.get(IPConflict, conflict_id)
+    if not conflict:
+        raise ValueError(f"IPConflict {conflict_id} not found")
+
+    conflict.resolution = resolution
+    conflict.resolved_by = user_id
+    conflict.resolved_at = utcnow()
+    conflict.status = "resolved"
+    conflict.notes = notes
+
+    # Execute resolution
+    if resolution == "reassign":
+        ip_row = db.execute(
+            select(IPAddress).where(IPAddress.address == conflict.address)
+        ).scalar_one_or_none()
+        if ip_row and conflict.entity_b_type == "hardware":
+            ip_row.hardware_id = conflict.entity_b_id
+    elif resolution == "keep_existing":
+        pass  # No data change
+    elif resolution == "free_and_assign":
+        ip_row = db.execute(
+            select(IPAddress).where(IPAddress.address == conflict.address)
+        ).scalar_one_or_none()
+        if ip_row:
+            ip_row.status = "free"
+            ip_row.hardware_id = None
+        if conflict.entity_b_type == "hardware":
+            new_ip = IPAddress(
+                address=conflict.address,
+                hardware_id=conflict.entity_b_id,
+                status="allocated",
+                allocated_at=utcnow(),
+                tenant_id=conflict.tenant_id,
+            )
+            db.add(new_ip)
+
+    db.flush()
+    return conflict
+
+
+def list_open_conflicts(db: Session, tenant_id: int | None = None) -> list[IPConflict]:
+    """Return all open IP conflicts, optionally filtered by tenant."""
+    q = select(IPConflict).where(IPConflict.status == "open")
+    if tenant_id is not None:
+        q = q.where(IPConflict.tenant_id == tenant_id)
+    return list(db.execute(q).scalars().all())

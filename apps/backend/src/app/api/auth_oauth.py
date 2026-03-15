@@ -6,7 +6,7 @@ import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -39,18 +39,12 @@ _STAGE_DISCOVERY = "discovery"
 def list_oauth_providers(db: Session = Depends(get_db)):
     """Return the list of enabled OAuth/OIDC providers for the login page."""
     settings = db.query(AppSettings).first()
+    if not settings:
+        return {"providers": []}
+
     providers: list[dict] = []
-    if settings and settings.oauth_providers:
-        for name, cfg in json.loads(settings.oauth_providers).items():
-            if cfg.get("enabled") and cfg.get("client_id"):
-                providers.append({"name": name, "type": "oauth"})
-    if settings and settings.oidc_providers:
-        raw = json.loads(settings.oidc_providers)
-        items = raw if isinstance(raw, list) else raw.values()
-        for p in items:
-            if p.get("enabled") and p.get("client_id"):
-                slug = p.get("slug") or p.get("name", "oidc")
-                providers.append({"name": slug, "label": p.get("label", slug), "type": "oidc"})
+    providers.extend(_enabled_oauth_providers(settings.oauth_providers))
+    providers.extend(_enabled_oidc_providers(settings.oidc_providers))
     return {"providers": providers}
 
 
@@ -59,12 +53,132 @@ def list_oauth_providers(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 
+def _to_provider_dict(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _to_provider_list(raw: object) -> list[dict]:
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        return [item for item in raw.values() if isinstance(item, dict)]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        return _to_provider_list(parsed)
+    return []
+
+
+def _enabled_oauth_providers(raw: object) -> list[dict]:
+    enabled: list[dict] = []
+    for name, cfg in _to_provider_dict(raw).items():
+        if isinstance(cfg, dict) and cfg.get("enabled") and cfg.get("client_id"):
+            enabled.append({"name": name, "type": "oauth"})
+    return enabled
+
+
+def _enabled_oidc_providers(raw: object) -> list[dict]:
+    enabled: list[dict] = []
+    for provider in _to_provider_list(raw):
+        if provider.get("enabled") and provider.get("client_id"):
+            slug = provider.get("slug") or provider.get("name", "oidc")
+            enabled.append({"name": slug, "label": provider.get("label", slug), "type": "oidc"})
+    return enabled
+
+
+def _merge_oauth_provider(existing: dict, cfg: dict) -> tuple[dict, bool]:
+    merged = dict(existing)
+    changed = False
+    if merged.get("enabled") is not True:
+        merged["enabled"] = True
+        changed = True
+    if cfg.get("client_id") and merged.get("client_id") != cfg.get("client_id"):
+        merged["client_id"] = cfg["client_id"]
+        changed = True
+    return merged, changed
+
+
+def _merge_oidc_provider(existing: dict, cfg: dict) -> tuple[dict, bool]:
+    merged = dict(existing)
+    changed = False
+    if merged.get("enabled") is not True:
+        merged["enabled"] = True
+        changed = True
+    for key in ("client_id", "discovery_url", "label", "name", "slug"):
+        if cfg.get(key) and merged.get(key) != cfg.get(key):
+            merged[key] = cfg[key]
+            changed = True
+    return merged, changed
+
+
+def _ensure_oauth_provider_enabled(settings: AppSettings, provider_name: str, cfg: dict) -> bool:
+    providers = _to_provider_dict(settings.oauth_providers)
+    merged, changed = _merge_oauth_provider(providers.get(provider_name) or {}, cfg)
+    providers[provider_name] = merged
+    if changed:
+        settings.oauth_providers = providers
+    return changed
+
+
+def _ensure_oidc_provider_enabled(settings: AppSettings, provider_name: str, cfg: dict) -> bool:
+    items = _to_provider_list(settings.oidc_providers)
+    slug = cfg.get("slug") or cfg.get("name") or provider_name
+    matched = False
+    changed = False
+    updated_items: list[dict] = []
+    for item in items:
+        item_slug = item.get("slug") or item.get("name")
+        if item_slug == slug:
+            merged, item_changed = _merge_oidc_provider(item, cfg)
+            changed = changed or item_changed
+            updated_items.append(merged)
+            matched = True
+        else:
+            updated_items.append(item)
+    if not matched:
+        new_entry = {
+            key: value
+            for key, value in cfg.items()
+            if key in {"slug", "name", "label", "client_id", "discovery_url"}
+        }
+        new_entry["enabled"] = True
+        updated_items.append(new_entry)
+        changed = True
+    if changed:
+        settings.oidc_providers = updated_items
+    return changed
+
+
+def _validated_http_base_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return url.rstrip("/")
+    return None
+
+
+def _sanitize_provider_slug(provider_slug: str) -> str:
+    cleaned = "".join(ch for ch in provider_slug if ch.isalnum() or ch in {"-", "_"})
+    if not cleaned:
+        raise HTTPException(400, "Invalid OIDC provider")
+    return cleaned
+
+
 def _get_oauth_config(db: Session, provider: str) -> dict:
     """Load provider config from AppSettings.oauth_providers JSON."""
     settings = db.query(AppSettings).first()
     if not settings or not settings.oauth_providers:
         raise HTTPException(400, f"OAuth provider '{provider}' not configured")
-    providers = json.loads(settings.oauth_providers)
+    providers = _to_provider_dict(settings.oauth_providers)
     cfg = providers.get(provider)
     if not cfg or not cfg.get("enabled"):
         raise HTTPException(400, f"OAuth provider '{provider}' not enabled")
@@ -75,7 +189,7 @@ def _get_oidc_config(db: Session, provider_slug: str) -> dict:
     settings = db.query(AppSettings).first()
     if not settings or not settings.oidc_providers:
         raise HTTPException(400, f"OIDC provider '{provider_slug}' not configured")
-    providers = json.loads(settings.oidc_providers)
+    providers = settings.oidc_providers
     if isinstance(providers, list):
         cfg = next(
             (
@@ -105,51 +219,11 @@ def _ensure_provider_enabled(
     if not settings:
         return
 
-    changed = False
-    if provider_type == "oauth":
-        providers = json.loads(settings.oauth_providers or "{}")
-        entry = dict(providers.get(provider_name) or {})
-        if entry.get("enabled") is not True:
-            entry["enabled"] = True
-            changed = True
-        if cfg.get("client_id") and entry.get("client_id") != cfg.get("client_id"):
-            entry["client_id"] = cfg["client_id"]
-            changed = True
-        providers[provider_name] = entry
-        if changed:
-            settings.oauth_providers = json.dumps(providers)
-    else:
-        raw = json.loads(settings.oidc_providers or "[]")
-        items = raw if isinstance(raw, list) else list(raw.values())
-        slug = cfg.get("slug") or cfg.get("name") or provider_name
-        matched = False
-        updated_items: list[dict] = []
-        for item in items:
-            item_slug = item.get("slug") or item.get("name")
-            if item_slug == slug:
-                merged = dict(item)
-                if merged.get("enabled") is not True:
-                    merged["enabled"] = True
-                    changed = True
-                for key in ("client_id", "discovery_url", "label", "name", "slug"):
-                    if cfg.get(key) and merged.get(key) != cfg.get(key):
-                        merged[key] = cfg[key]
-                        changed = True
-                updated_items.append(merged)
-                matched = True
-            else:
-                updated_items.append(item)
-        if not matched:
-            new_entry = {
-                k: v
-                for k, v in cfg.items()
-                if k in {"slug", "name", "label", "client_id", "discovery_url"}
-            }
-            new_entry["enabled"] = True
-            updated_items.append(new_entry)
-            changed = True
-        if changed:
-            settings.oidc_providers = json.dumps(updated_items)
+    changed = (
+        _ensure_oauth_provider_enabled(settings, provider_name, cfg)
+        if provider_type == "oauth"
+        else _ensure_oidc_provider_enabled(settings, provider_name, cfg)
+    )
 
     if changed:
         try:
@@ -159,22 +233,14 @@ def _ensure_provider_enabled(
             # Non-critical — don't block login
 
 
-def _get_app_base_url(db: Session, request: Request | None = None) -> str:
+def _get_app_base_url(db: Session) -> str:
     settings = db.query(AppSettings).first()
     api_base_url = getattr(settings, "api_base_url", None) if settings else None
     if api_base_url:
-        return api_base_url.rstrip("/")
-    if request is not None:
-        proto = (
-            (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
-        )
-        host = (
-            (request.headers.get("x-forwarded-host") or request.headers.get("host") or "")
-            .split(",")[0]
-            .strip()
-        )
-        if host:
-            return f"{proto}://{host}".rstrip("/")
+        validated = _validated_http_base_url(api_base_url)
+        if validated:
+            return validated
+        _logger.warning("Invalid api_base_url '%s'; falling back to localhost", api_base_url)
     return "http://localhost:8080"
 
 
@@ -314,10 +380,8 @@ def _bootstrap_redirect_or_none(
         db.commit()
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
-    response = RedirectResponse(
-        url=f"{base_url}/oobe?oauth_token={token}&bootstrap=1&provider={provider_name}",
-        status_code=302,
-    )
+    query = urlencode({"oauth_token": token, "bootstrap": 1, "provider": provider_name})
+    response = RedirectResponse(url=f"{base_url}/oobe?{query}", status_code=302)
     set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
     return response
 
@@ -370,7 +434,7 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
 
     cfg = _get_oauth_config(db, "github")
     _ensure_provider_enabled(db, "github", cfg, provider_type="oauth")
-    base_url = _get_app_base_url(db, request)
+    base_url = _get_app_base_url(db)
 
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
@@ -414,7 +478,7 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
 
     display_name = gh_user.get("name") or gh_user.get("login", "")
     avatar_url = gh_user.get("avatar_url")
-    user, is_new = _upsert_oauth_user(
+    user, _ = _upsert_oauth_user(
         db,
         email,
         display_name,
@@ -440,7 +504,7 @@ def google_authorize(request: Request, db: Session = Depends(get_db)):
     state = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, provider="google", created_at=datetime.now(UTC).isoformat()))
     db.commit()
-    base_url = _get_app_base_url(db, request)
+    base_url = _get_app_base_url(db)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/google/callback"
     params = urlencode(
         {
@@ -464,7 +528,7 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
 
     cfg = _get_oauth_config(db, "google")
     _ensure_provider_enabled(db, "google", cfg, provider_type="oauth")
-    base_url = _get_app_base_url(db, request)
+    base_url = _get_app_base_url(db)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/google/callback"
 
     async with httpx.AsyncClient() as client:
@@ -496,7 +560,7 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
         raise HTTPException(400, "Could not obtain email from Google account")
     display_name = g_user.get("name", "")
     avatar_url = g_user.get("picture")
-    user, is_new = _upsert_oauth_user(
+    user, _ = _upsert_oauth_user(
         db,
         email,
         display_name,
@@ -518,7 +582,11 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
 @router.get("/oauth/oidc/{provider_slug}")
 @limiter.limit(lambda: get_limit("auth"))
 async def oidc_authorize(request: Request, provider_slug: str, db: Session = Depends(get_db)):
+    provider_slug = _sanitize_provider_slug(provider_slug)
     cfg = _get_oidc_config(db, provider_slug)
+    canonical_slug = _sanitize_provider_slug(
+        str(cfg.get("slug") or cfg.get("name") or provider_slug)
+    )
     state = secrets.token_urlsafe(32)
 
     # PKCE
@@ -530,18 +598,14 @@ async def oidc_authorize(request: Request, provider_slug: str, db: Session = Dep
     db.add(
         OAuthState(
             state=state,
-            provider=f"oidc:{provider_slug}:{verifier}",
+            provider=f"oidc:{canonical_slug}:{verifier}",
             created_at=datetime.now(UTC).isoformat(),
         )
     )
     db.commit()
 
-    async with httpx.AsyncClient() as client:
-        disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
-        disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
-
-    base_url = _get_app_base_url(db, request)
-    redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{provider_slug}/callback"
+    base_url = _get_app_base_url(db)
+    redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{canonical_slug}/callback"
     params = urlencode(
         {
             "client_id": cfg["client_id"],
@@ -553,7 +617,21 @@ async def oidc_authorize(request: Request, provider_slug: str, db: Session = Dep
             "code_challenge_method": "S256",
         }
     )
-    return RedirectResponse(f"{disc['authorization_endpoint']}?{params}", status_code=302)
+    authorization_endpoint = str(cfg.get("authorization_endpoint") or "").strip()
+    parsed_auth = urlparse(authorization_endpoint)
+    parsed_discovery = urlparse(str(cfg.get("discovery_url") or ""))
+    if parsed_auth.scheme not in {"http", "https"} or not parsed_auth.netloc:
+        raise HTTPException(
+            400,
+            "OIDC provider is missing a valid authorization_endpoint configuration",
+        )
+    if parsed_discovery.netloc and parsed_auth.netloc != parsed_discovery.netloc:
+        raise HTTPException(400, "OIDC authorization endpoint host mismatch")
+
+    safe_authorization_endpoint = (
+        f"{parsed_auth.scheme}://{parsed_auth.netloc}{parsed_auth.path}".rstrip("/")
+    )
+    return RedirectResponse(f"{safe_authorization_endpoint}?{params}", status_code=302)
 
 
 @router.get("/oauth/oidc/{provider_slug}/callback")
@@ -561,14 +639,22 @@ async def oidc_authorize(request: Request, provider_slug: str, db: Session = Dep
 async def oidc_callback(
     request: Request, provider_slug: str, code: str, state: str, db: Session = Depends(get_db)
 ):
-    oauth_state = _pop_state_or_400(db, state, OAuthState.provider.like(f"oidc:{provider_slug}:%"))
+    requested_slug = _sanitize_provider_slug(provider_slug)
+    oauth_state = _pop_state_or_400(db, state, OAuthState.provider.like("oidc:%"))
 
-    verifier = oauth_state.provider.split(":", 2)[2]
+    state_parts = oauth_state.provider.split(":", 2)
+    if len(state_parts) != 3:
+        raise HTTPException(400, _INVALID_STATE)
 
-    cfg = _get_oidc_config(db, provider_slug)
-    _ensure_provider_enabled(db, provider_slug, cfg, provider_type="oidc")
-    base_url = _get_app_base_url(db, request)
-    redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{provider_slug}/callback"
+    state_slug = _sanitize_provider_slug(state_parts[1])
+    if state_slug != requested_slug:
+        raise HTTPException(400, _INVALID_STATE)
+    verifier = state_parts[2]
+
+    cfg = _get_oidc_config(db, state_slug)
+    _ensure_provider_enabled(db, state_slug, cfg, provider_type="oidc")
+    base_url = _get_app_base_url(db)
+    redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{state_slug}/callback"
 
     async with httpx.AsyncClient() as client:
         disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
@@ -602,7 +688,7 @@ async def oidc_callback(
         raise HTTPException(400, "OIDC provider did not return email")
     display_name = userinfo.get("name") or userinfo.get("preferred_username", "")
     avatar_url = userinfo.get("picture")
-    user, is_new = _upsert_oauth_user(
+    user, _ = _upsert_oauth_user(
         db,
         email,
         display_name,
@@ -610,7 +696,7 @@ async def oidc_callback(
         {"access_token": access_token},
         avatar_url=avatar_url,
     )
-    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
+    bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, state_slug, db, request)
     if bootstrap_redir:
         return bootstrap_redir
     return _issue_jwt_and_redirect(user, base_url, db, request)

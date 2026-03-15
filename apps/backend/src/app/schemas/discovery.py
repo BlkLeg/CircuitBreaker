@@ -150,16 +150,24 @@ class ScanResultOut(BaseModel):
     ip_address: str
     mac_address: str | None
     hostname: str | None
-    open_ports_json: str | None
-    os_family: str | None
-    os_vendor: str | None
-    snmp_sys_name: str | None
-    snmp_sys_descr: str | None
+    open_ports_json: str | None = None
+    os_family: str | None = None
+    os_vendor: str | None = None
+    snmp_sys_name: str | None = None
+    snmp_sys_descr: str | None = None
     vlan_id: int | None = None
     network_id: int | None = None
     # raw_nmap_xml NEVER included
     state: str
-    conflicts_json: str | None
+    conflicts_json: str | None = None
+
+    @field_validator("open_ports_json", "conflicts_json", mode="before")
+    @classmethod
+    def _coerce_json_fields(cls, v):
+        if isinstance(v, (list, dict)):
+            return json.dumps(v)
+        return v
+
     matched_entity_type: str | None
     matched_entity_id: int | None
     merge_status: str

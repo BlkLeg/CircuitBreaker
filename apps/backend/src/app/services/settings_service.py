@@ -60,6 +60,9 @@ _DEFAULTS = dict(
     docker_sync_interval_minutes=5,
     graph_default_layout="dagre",
     map_title="Topology",
+    ipam_auto_reserve=False,
+    ipam_reserve_mode="auto",
+    ipam_release_on_delete=True,
 )
 
 
@@ -99,14 +102,14 @@ def update_settings(
                 if value.get("primary_color") is not None:
                     row.primary_color = value["primary_color"]
                 if value.get("accent_colors") is not None:
-                    row.accent_colors = json.dumps(value["accent_colors"])
+                    row.accent_colors = value["accent_colors"]
                 # favicon_path and login_logo_path are only set via upload endpoints
             continue
         if field == "theme_colors":
-            # Serialise ThemeColors dict → JSON string stored in custom_colors column.
+            # Store ThemeColors dict directly in custom_colors column.
             # Explicitly set to None when null so switching from custom to a named preset
             # clears the stale custom_colors from the DB.
-            row.custom_colors = json.dumps(value) if value is not None else None
+            row.custom_colors = value if value is not None else None
             continue
         if field == "timezone":
             if value is not None and value != "UTC" and value not in zoneinfo.available_timezones():

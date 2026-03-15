@@ -126,9 +126,14 @@ def _to_dict(db: Session, svc: Service) -> dict:
     d = {c.name: getattr(svc, c.name) for c in svc.__table__.columns}
     # Expose structured ports from ports_json, overriding the legacy plain-text ports field
     raw_ports_json = d.pop("ports_json", None)
-    try:
-        d["ports"] = json.loads(raw_ports_json) if raw_ports_json else None
-    except (json.JSONDecodeError, TypeError):
+    if isinstance(raw_ports_json, list):
+        d["ports"] = raw_ports_json
+    elif isinstance(raw_ports_json, str):
+        try:
+            d["ports"] = json.loads(raw_ports_json)
+        except (json.JSONDecodeError, TypeError):
+            d["ports"] = None
+    else:
         d["ports"] = None
     d["tags"] = get_tags_for(db, "service", svc.id)
     d["category_name"] = svc.category_rel.name if svc.category_rel else None
@@ -136,9 +141,15 @@ def _to_dict(db: Session, svc: Service) -> dict:
     # IP conflict classification
     d["ip_mode"] = svc.ip_mode or "explicit"
     d["ip_conflict"] = bool(svc.ip_conflict)
-    try:
-        d["ip_conflict_with"] = json.loads(svc.ip_conflict_json or "[]")
-    except (json.JSONDecodeError, TypeError):
+    conflict_val = svc.ip_conflict_json
+    if isinstance(conflict_val, list):
+        d["ip_conflict_with"] = conflict_val
+    elif isinstance(conflict_val, str):
+        try:
+            d["ip_conflict_with"] = json.loads(conflict_val)
+        except (json.JSONDecodeError, TypeError):
+            d["ip_conflict_with"] = []
+    else:
         d["ip_conflict_with"] = []
     return d
 
@@ -343,7 +354,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         setattr(svc, field, value)
     svc.ip_mode = conflict_result["ip_mode"]
     svc.ip_conflict = conflict_result["is_conflict"]
-    svc.ip_conflict_json = json.dumps(conflict_result["conflict_with"])
+    svc.ip_conflict_json = conflict_result["conflict_with"]
     svc.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "service", svc.id, payload.tags)

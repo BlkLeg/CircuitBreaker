@@ -212,7 +212,9 @@ async def get_dashboard_v2(
                 payload = json.loads(cached_data)
                 groups_models = [DashboardGroupItem.model_validate(g) for g in payload["groups"]]
                 global_model = DashboardGlobalSummary.model_validate(payload["global"])
-                return DashboardV2Response(groups=groups_models, global_=global_model)
+                return DashboardV2Response.model_validate(
+                    {"groups": groups_models, "global": global_model}
+                )
         except Exception:
             pass  # Fallback to DB on cache miss/error
 
@@ -236,7 +238,7 @@ async def get_dashboard_v2(
         except Exception:
             pass
 
-    return DashboardV2Response(groups=groups_models, global_=global_model)
+    return DashboardV2Response.model_validate({"groups": groups_models, "global": global_model})
 
 
 @router.get("/groups/{group_id}/events", response_model=list[StatusEventRead])

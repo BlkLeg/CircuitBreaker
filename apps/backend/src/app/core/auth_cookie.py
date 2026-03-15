@@ -2,6 +2,8 @@
 
 import os
 import secrets
+from collections.abc import Mapping
+from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -67,7 +69,7 @@ def clear_auth_cookie_response(status_code: int = 204) -> Response:
     return response
 
 
-def token_from_websocket_scope(scope: dict) -> str | None:
+def token_from_websocket_scope(scope: Mapping[str, Any]) -> str | None:
     """Extract cb_session token from WebSocket handshake Cookie header."""
     for name, value in scope.get("headers", []):
         if name == b"cookie":
@@ -80,7 +82,7 @@ def token_from_websocket_scope(scope: dict) -> str | None:
     return None
 
 
-def is_websocket_secure(scope: dict) -> bool:
+def is_websocket_secure(scope: Mapping[str, Any]) -> bool:
     """True if the WebSocket handshake is considered secure (e.g. X-Forwarded-Proto: https)."""
     for name, value in scope.get("headers", []):
         if name == b"x-forwarded-proto":

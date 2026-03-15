@@ -18,6 +18,10 @@ import {
   Globe,
   MonitorCheck,
   RectangleHorizontal,
+  Shield,
+  Bell,
+  Users,
+  Webhook,
 } from 'lucide-react';
 import { settingsApi } from '../api/client';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -42,6 +46,10 @@ export const NAV_MAP = {
   '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
   '/status-pages': { icon: MonitorCheck, label: 'Status', labelKey: 'header.status' },
   '/racks': { icon: RectangleHorizontal, label: 'Racks', labelKey: 'header.racks' },
+  '/certificates': { icon: Shield, label: 'Certificates' },
+  '/notifications': { icon: Bell, label: 'Notifications' },
+  '/tenants': { icon: Users, label: 'Tenants' },
+  '/webhooks': { icon: Webhook, label: 'Webhooks' },
 };
 
 export const DEFAULT_ORDER = [
@@ -56,6 +64,10 @@ export const DEFAULT_ORDER = [
   '/ipam',
   '/racks',
   '/status-pages',
+  '/certificates',
+  '/notifications',
+  '/tenants',
+  '/webhooks',
   '/docs',
   '/logs',
   '/settings',
@@ -115,12 +127,13 @@ function Dock({ pendingCount = 0, wsStatus = 'connected' }) {
 
   const hiddenItems = new Set(settings?.dock_hidden_items ?? []);
   const allowSettings = canEdit(user);
-  const allowLogs = isAdmin(user);
+  const allowAdmin = isAdmin(user);
+  const adminOnlyPaths = ['/logs', '/certificates', '/notifications', '/tenants', '/webhooks'];
   const navItems = order
     .filter((path) => {
       if (!NAV_MAP[path] || hiddenItems.has(path)) return false;
       if (path === '/settings' && !allowSettings) return false;
-      if (path === '/logs' && !allowLogs) return false;
+      if (adminOnlyPaths.includes(path) && !allowAdmin) return false;
       return true;
     })
     .map((path) => {

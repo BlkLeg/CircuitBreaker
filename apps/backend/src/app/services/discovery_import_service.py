@@ -105,14 +105,53 @@ def batch_import(
                 existing.last_seen = _now_iso()
                 if mac and existing.mac_address != mac:
                     existing.mac_address = mac
-                if scan_result.hostname and existing.hostname != scan_result.hostname:
-                    existing.hostname = scan_result.hostname
+                if scan_result.hostname and existing.name != scan_result.hostname:
+                    existing.name = scan_result.hostname
                 # Only overwrite discovery-sourced fields to preserve manual edits
                 if getattr(existing, "source", None) == "discovery":
                     for k, v in overrides.items():
                         setattr(existing, k, v)
                 existing.source_scan_result_id = scan_result.id
                 db.flush()
+                # IPAM auto-reserve
+                if ip:
+                    from app.services.settings_service import get_or_create_settings
+
+                    settings = get_or_create_settings(db)
+                    if settings.ipam_auto_reserve:
+                        from app.services.ip_reservation import auto_reserve_ip, record_conflict
+
+                        if settings.ipam_reserve_mode == "auto":
+                            hw_id = existing.id
+                            reserved = auto_reserve_ip(
+                                db,
+                                hw_id,
+                                ip,
+                                scan_result.hostname,
+                                getattr(settings, "tenant_id", None),
+                            )
+                            if reserved is None:
+                                record_conflict(
+                                    db,
+                                    ip,
+                                    "hardware",
+                                    hw_id,
+                                    "hardware",
+                                    0,
+                                    tenant_id=getattr(settings, "tenant_id", None),
+                                )
+                        elif settings.ipam_reserve_mode == "approval":
+                            from app.db.models import IPReservationQueue
+
+                            hw_id = existing.id
+                            queue_entry = IPReservationQueue(
+                                hardware_id=hw_id,
+                                ip_address=ip,
+                                hostname=scan_result.hostname,
+                                status="pending",
+                            )
+                            db.add(queue_entry)
+                            db.flush()
                 response.updated.append(BatchImportCreated(id=existing.id, ip=ip))
             else:
                 ann = annotate_result(scan_result)
@@ -141,6 +180,45 @@ def batch_import(
                     setattr(hw, k, v)
                 db.add(hw)
                 db.flush()
+                # IPAM auto-reserve
+                if ip:
+                    from app.services.settings_service import get_or_create_settings
+
+                    settings = get_or_create_settings(db)
+                    if settings.ipam_auto_reserve:
+                        from app.services.ip_reservation import auto_reserve_ip, record_conflict
+
+                        if settings.ipam_reserve_mode == "auto":
+                            hw_id = hw.id
+                            reserved = auto_reserve_ip(
+                                db,
+                                hw_id,
+                                ip,
+                                scan_result.hostname,
+                                getattr(settings, "tenant_id", None),
+                            )
+                            if reserved is None:
+                                record_conflict(
+                                    db,
+                                    ip,
+                                    "hardware",
+                                    hw_id,
+                                    "hardware",
+                                    0,
+                                    tenant_id=getattr(settings, "tenant_id", None),
+                                )
+                        elif settings.ipam_reserve_mode == "approval":
+                            from app.db.models import IPReservationQueue
+
+                            hw_id = hw.id
+                            queue_entry = IPReservationQueue(
+                                hardware_id=hw_id,
+                                ip_address=ip,
+                                hostname=scan_result.hostname,
+                                status="pending",
+                            )
+                            db.add(queue_entry)
+                            db.flush()
                 response.created.append(BatchImportCreated(id=hw.id, ip=ip))
 
     # Compute layout for newly created nodes only (updated nodes keep their positions)
@@ -162,9 +240,15 @@ def batch_import(
 def _persist_layout(db: Session, positions: dict[int, dict]) -> None:
     """Save positions to the graph layout table (server-side, non-fatal on failure)."""
     try:
-        from app.services.graph_service import save_layout
+        from app.db.models import GraphLayout
 
         str_positions = {str(k): v for k, v in positions.items()}
-        save_layout(db, "default", str_positions)
+        layout = db.query(GraphLayout).filter(GraphLayout.name == "default").first()
+        if layout:
+            layout.layout_data = str_positions
+        else:
+            layout = GraphLayout(name="default", layout_data=str_positions)
+            db.add(layout)
+        db.flush()
     except Exception as exc:
         _logger.warning("Layout persistence failed (non-fatal): %s", exc)

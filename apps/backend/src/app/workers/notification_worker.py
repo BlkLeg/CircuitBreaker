@@ -152,7 +152,7 @@ async def process_alert(msg):
                 await notify_email(provider_config, title, message, severity)
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None):
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()
