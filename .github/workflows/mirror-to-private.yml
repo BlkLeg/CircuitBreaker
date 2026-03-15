@@ -1,0 +1,24 @@
+name: Mirror to Private Repo
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+  delete:                        # mirrors branch/tag deletions too
+  workflow_dispatch:             # manual trigger from Actions tab
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Bare clone public repo
+        run: |
+          git clone --bare https://github.com/BlkLeg/CircuitBreaker.git
+          cd CircuitBreaker.git
+
+      - name: Mirror push to private repo
+        run: |
+          cd CircuitBreaker.git
+          git push --mirror \
+            https://x-access-token:${{ secrets.MIRROR_PAT }}@github.com/BlkLeg/CircuitBreaker-private.git
