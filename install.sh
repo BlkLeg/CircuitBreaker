@@ -4,6 +4,20 @@
 # Docs:  https://github.com/BlkLeg/CircuitBreaker
 set -euo pipefail
 
+# ── Native install dispatch ──────────────────────────────────
+if [ "${CB_INSTALL_MODE:-}" = "native" ]; then
+    # Download and run the native installer
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$SCRIPT_DIR/deploy/native/install.sh" ]; then
+        exec "$SCRIPT_DIR/deploy/native/install.sh" "$@"
+    else
+        echo "Native installer not found locally. Downloading..."
+        curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/deploy/native/install.sh | bash
+        exit $?
+    fi
+fi
+# ─────────────────────────────────────────────────────────────
+
 # ── Config ──────────────────────────────────────────────────
 CB_VERSION="${CB_VERSION:-latest}"
 CB_PORT="${CB_PORT:-80}"

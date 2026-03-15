@@ -1,0 +1,17 @@
+[Unit]
+Description=Circuit Breaker Application
+After=network.target
+
+Wants=circuitbreaker-postgres.service
+Wants=circuitbreaker-pgbouncer.service
+Wants=circuitbreaker-nats.service
+Wants=circuitbreaker-redis.service
+Wants=circuitbreaker-backend.service
+Wants=circuitbreaker-worker@discovery.service
+Wants=circuitbreaker-worker@telemetry.service
+Wants=circuitbreaker-worker@webhook.service
+Wants=circuitbreaker-worker@notification.service
+Wants=circuitbreaker-nginx.service
+
+[Install]
+WantedBy=multi-user.target

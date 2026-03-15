@@ -1,0 +1,30 @@
+[Unit]
+Description=Circuit Breaker — PostgreSQL (embedded or stub)
+After=network.target
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+EnvironmentFile=/etc/circuitbreaker/config.env
+Restart=on-failure
+RestartSec=5
+
+ExecStart=/bin/bash -c '\
+  DB_HOST=$(python3 -c "\
+import os, urllib.parse as u; \
+p = u.urlparse(os.environ.get(\"CB_DB_URL\",\"\")); \
+print(p.hostname or \"\")" 2>/dev/null || true); \
+  case "$DB_HOST" in \
+    127.0.0.1|localhost|"") \
+      exec /usr/lib/postgresql/15/bin/postgres \
+        -D "${CB_DATA_DIR}/pgdata" \
+        -c config_file="${CB_DATA_DIR}/postgresql.conf" ;; \
+    *) \
+      echo "External DB detected ($DB_HOST) — idling"; \
+      exec sleep infinity ;; \
+  esac'
+
+[Install]
+WantedBy=circuitbreaker.target

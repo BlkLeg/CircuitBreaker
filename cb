@@ -7,19 +7,28 @@
 # Usage: cb <command> [options]
 #
 # Commands:
-#   status        Show service / container status
-#   logs [-f]     Show (or follow) logs
-#   restart       Restart Circuit Breaker
-#   update        Pull latest image and restart  (docker mode only)
-#   vault-recover Recover from an uninitialized vault  (after-crash / headless deploy)
-#   version       Show installed version
-#   uninstall     Remove Circuit Breaker from this system
-#   help          Show this help
+#   status          Show service / container status
+#   start           Start Circuit Breaker
+#   stop            Stop Circuit Breaker
+#   restart         Restart Circuit Breaker
+#   logs [-f]       Show (or follow) logs
+#   upgrade [ver]   Pull latest and restart (docker) or run upgrade.sh (native)
+#   update          Alias for upgrade (backward compat)
+#   backup          Create a database backup
+#   restore <file>  Restore a database backup
+#   config set K=V  Set a config value
+#   config get K    Get a config value
+#   migrate         Run database migrations
+#   shell           Open a psql shell
+#   vault-recover   Recover from an uninitialized vault
+#   version         Show installed version
+#   uninstall       Remove Circuit Breaker from this system
+#   help            Show this help
 #
-# Modes (set in ~/.circuit-breaker/install.conf):
+# Modes (auto-detected or set in install.conf):
+#   native   — systemd services managed by circuitbreaker.target
 #   docker   — single container deployed by install.sh
 #   compose  — multi-container stack deployed by docker compose
-#   binary   — native binary managed by systemd
 #
 
 set -eo pipefail
@@ -27,8 +36,15 @@ set -eo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
 _CONF="$CB_CONFIG_DIR/install.conf"
-if [[ ! -f "$_CONF" && -f /etc/circuit-breaker/install.conf ]]; then
-  _CONF="/etc/circuit-breaker/install.conf"
+# Check new naming convention first, then fall back to legacy paths
+if [[ ! -f "$_CONF" ]]; then
+  if [[ -f /etc/circuitbreaker/cb.conf ]]; then
+    _CONF="/etc/circuitbreaker/cb.conf"
+  elif [[ -f /etc/circuitbreaker/install.conf ]]; then
+    _CONF="/etc/circuitbreaker/install.conf"
+  elif [[ -f /etc/circuit-breaker/install.conf ]]; then
+    _CONF="/etc/circuit-breaker/install.conf"
+  fi
 fi
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -46,7 +62,7 @@ _warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*"; }
 _fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
 
 # ── Defaults — overridden by install.conf ─────────────────────────────────────
-CB_MODE="docker"
+CB_MODE=""
 CB_CONTAINER="circuit-breaker"   # primary/app container (single-container or compose backend)
 CB_VOLUME="circuit-breaker-data"
 CB_PORT="8080"
@@ -55,13 +71,17 @@ CB_IMAGE="ghcr.io/blkleg/circuitbreaker:latest"
 #   docker  → same as CB_CONTAINER
 #   compose → cb-backend
 CB_BACKEND_CONTAINER=""
-# CB_DATA_DIR: path to the data directory INSIDE the backend container.
-#   docker  → /data
-#   compose → /app/data
+# CB_DATA_DIR: path to the data directory.
+#   native  → /var/lib/circuitbreaker
+#   docker  → /data (inside container)
+#   compose → /app/data (inside container)
 CB_DATA_DIR=""
 # CB_INSTALL_DIR, CB_COMPOSE_FILE: for compose mode (cb update, uninstall)
 CB_INSTALL_DIR=""
 CB_COMPOSE_FILE=""
+# Native-mode paths
+CB_APP_ROOT="/opt/circuitbreaker"
+CB_NATIVE_CONFIG="/etc/circuitbreaker/config.env"
 
 if [[ -f "$_CONF" ]]; then
   # shellcheck source=/dev/null
@@ -70,12 +90,37 @@ else
   _warn "Install config not found at $_CONF — using defaults."
 fi
 
+# ── Auto-detect mode if not set in install.conf ──────────────────────────────
+_detect_mode() {
+  if systemctl is-active circuitbreaker-backend.service &>/dev/null 2>&1; then
+    echo "native"
+  elif systemctl is-enabled circuitbreaker.target &>/dev/null 2>&1; then
+    echo "native"
+  elif docker ps --filter name=circuitbreaker -q 2>/dev/null | grep -q .; then
+    echo "docker"
+  elif docker ps --filter name=circuit-breaker -q 2>/dev/null | grep -q .; then
+    echo "docker"
+  elif docker ps --filter name=cb- -q 2>/dev/null | grep -q .; then
+    echo "compose"
+  else
+    echo "docker"
+  fi
+}
+
+if [[ -z "$CB_MODE" ]]; then
+  CB_MODE=$(_detect_mode)
+fi
+
 # Apply mode-specific defaults for values not set in install.conf
 if [[ -z "$CB_BACKEND_CONTAINER" ]]; then
   [[ "$CB_MODE" == "compose" ]] && CB_BACKEND_CONTAINER="cb-backend" || CB_BACKEND_CONTAINER="$CB_CONTAINER"
 fi
 if [[ -z "$CB_DATA_DIR" ]]; then
-  [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
+  case "$CB_MODE" in
+    native)  CB_DATA_DIR="/var/lib/circuitbreaker" ;;
+    compose) CB_DATA_DIR="/app/data" ;;
+    *)       CB_DATA_DIR="/data" ;;
+  esac
 fi
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -96,9 +141,275 @@ _gen_fernet_key() {
   openssl rand -base64 32
 }
 
+# ── Native-mode helpers ──────────────────────────────────────────────────────
+_native_config_file() {
+  if [[ -f "$CB_NATIVE_CONFIG" ]]; then
+    echo "$CB_NATIVE_CONFIG"
+  elif [[ -f /etc/circuitbreaker/config.env ]]; then
+    echo "/etc/circuitbreaker/config.env"
+  elif [[ -f /etc/circuit-breaker/env ]]; then
+    echo "/etc/circuit-breaker/env"
+  else
+    echo "$CB_NATIVE_CONFIG"
+  fi
+}
+
+_docker_env_file() {
+  if [[ -f "$CB_DATA_DIR/.env" ]]; then
+    echo "$CB_DATA_DIR/.env"
+  elif [[ -f "$CB_CONFIG_DIR/env" ]]; then
+    echo "$CB_CONFIG_DIR/env"
+  else
+    echo "$CB_DATA_DIR/.env"
+  fi
+}
+
 ###############################################################################
 # COMMANDS
 ###############################################################################
+
+cmd_start() {
+  case "$CB_MODE" in
+    native)
+      _info "Starting Circuit Breaker services..."
+      sudo systemctl start circuitbreaker.target
+      _ok "Started."
+      ;;
+    docker)
+      _require_docker
+      _info "Starting container '${CB_CONTAINER}'..."
+      docker start "$CB_CONTAINER" 2>/dev/null \
+        || _fail "Container '${CB_CONTAINER}' not found. Run install.sh first."
+      _ok "Started."
+      ;;
+    compose)
+      _require_docker
+      local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
+      local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
+      _info "Starting compose stack..."
+      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" up -d)
+      _ok "Started."
+      ;;
+  esac
+}
+
+cmd_stop() {
+  case "$CB_MODE" in
+    native)
+      _info "Stopping Circuit Breaker services..."
+      sudo systemctl stop circuitbreaker.target
+      _ok "Stopped."
+      ;;
+    docker)
+      _require_docker
+      _info "Stopping container '${CB_CONTAINER}'..."
+      docker stop "$CB_CONTAINER" 2>/dev/null || true
+      _ok "Stopped."
+      ;;
+    compose)
+      _require_docker
+      local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
+      local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
+      _info "Stopping compose stack..."
+      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" down)
+      _ok "Stopped."
+      ;;
+  esac
+}
+
+cmd_backup() {
+  local stamp
+  stamp=$(date +%Y%m%d_%H%M%S)
+  case "$CB_MODE" in
+    native)
+      local backup_dir="${CB_DATA_DIR}/backups"
+      mkdir -p "$backup_dir"
+      _info "Backing up database to ${backup_dir}/cb_${stamp}.sql.gz..."
+      pg_dump -U breaker circuitbreaker | gzip > "${backup_dir}/cb_${stamp}.sql.gz"
+      _ok "Backup saved: ${backup_dir}/cb_${stamp}.sql.gz"
+      ;;
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running."
+      _info "Backing up database..."
+      docker exec "$CB_BACKEND_CONTAINER" sh -c \
+        "mkdir -p ${CB_DATA_DIR}/backups && pg_dump -U breaker circuitbreaker | gzip > ${CB_DATA_DIR}/backups/cb_${stamp}.sql.gz"
+      _ok "Backup saved: ${CB_DATA_DIR}/backups/cb_${stamp}.sql.gz"
+      ;;
+  esac
+}
+
+cmd_restore() {
+  local file="${1:-}"
+  [[ -z "$file" ]] && _fail "Usage: cb restore <backup-file>"
+
+  case "$CB_MODE" in
+    native)
+      _info "Restoring database from ${file}..."
+      if [[ "$file" == *.gz ]]; then
+        gunzip -c "$file" | psql -U breaker circuitbreaker
+      else
+        psql -U breaker circuitbreaker < "$file"
+      fi
+      _ok "Database restored."
+      ;;
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running."
+      local basename
+      basename=$(basename "$file")
+      _info "Restoring database from ${basename}..."
+      if [[ "$file" == *.gz ]]; then
+        docker cp "$file" "${CB_BACKEND_CONTAINER}:/tmp/${basename}"
+        docker exec "$CB_BACKEND_CONTAINER" sh -c "gunzip -c /tmp/${basename} | psql -U breaker circuitbreaker && rm -f /tmp/${basename}"
+      else
+        docker cp "$file" "${CB_BACKEND_CONTAINER}:/tmp/${basename}"
+        docker exec "$CB_BACKEND_CONTAINER" sh -c "psql -U breaker circuitbreaker < /tmp/${basename} && rm -f /tmp/${basename}"
+      fi
+      _ok "Database restored."
+      ;;
+  esac
+}
+
+cmd_config() {
+  local subcmd="${1:-}"
+  shift || true
+
+  case "$subcmd" in
+    set)
+      local kv="${1:-}"
+      [[ -z "$kv" || "$kv" != *=* ]] && _fail "Usage: cb config set KEY=VALUE"
+      local key="${kv%%=*}"
+      local val="${kv#*=}"
+      local config_file
+      if [[ "$CB_MODE" == "native" ]]; then
+        config_file=$(_native_config_file)
+      else
+        config_file=$(_docker_env_file)
+      fi
+      if grep -q "^${key}=" "$config_file" 2>/dev/null; then
+        sudo sed -i "s|^${key}=.*|${key}=${val}|" "$config_file"
+      else
+        echo "${key}=${val}" | sudo tee -a "$config_file" >/dev/null
+      fi
+      _ok "Set ${key} in ${config_file}"
+      ;;
+    get)
+      local key="${1:-}"
+      [[ -z "$key" ]] && _fail "Usage: cb config get KEY"
+      local config_file
+      if [[ "$CB_MODE" == "native" ]]; then
+        config_file=$(_native_config_file)
+      else
+        config_file=$(_docker_env_file)
+      fi
+      grep "^${key}=" "$config_file" 2>/dev/null | cut -d= -f2- || _warn "Key '${key}' not found in ${config_file}"
+      ;;
+    *)
+      _fail "Usage: cb config <set|get> ..."
+      ;;
+  esac
+}
+
+cmd_migrate() {
+  case "$CB_MODE" in
+    native)
+      _info "Running migrations..."
+      if [[ -x "${CB_APP_ROOT}/deploy/common/20-migrate.sh" ]]; then
+        sudo -u breaker "${CB_APP_ROOT}/deploy/common/20-migrate.sh"
+      else
+        _fail "Migration script not found at ${CB_APP_ROOT}/deploy/common/20-migrate.sh"
+      fi
+      _ok "Migrations complete."
+      ;;
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running."
+      _info "Running migrations..."
+      docker exec "$CB_BACKEND_CONTAINER" sh -c 'cd /app/backend && alembic upgrade head'
+      _ok "Migrations complete."
+      ;;
+  esac
+}
+
+cmd_shell() {
+  case "$CB_MODE" in
+    native)
+      psql -U breaker circuitbreaker
+      ;;
+    docker|compose)
+      _require_docker
+      _container_running "$CB_BACKEND_CONTAINER" \
+        || _fail "Container '${CB_BACKEND_CONTAINER}' must be running."
+      docker exec -it "$CB_BACKEND_CONTAINER" psql -U breaker circuitbreaker
+      ;;
+  esac
+}
+
+cmd_upgrade() {
+  local version="${1:-}"
+
+  case "$CB_MODE" in
+    native)
+      if [[ -x "${CB_APP_ROOT}/deploy/native/upgrade.sh" ]]; then
+        sudo "${CB_APP_ROOT}/deploy/native/upgrade.sh" ${version:+"$version"}
+      else
+        _fail "Upgrade script not found at ${CB_APP_ROOT}/deploy/native/upgrade.sh"
+      fi
+      ;;
+    docker)
+      # Delegate to existing cmd_update logic
+      _cmd_update_docker "$version"
+      ;;
+    compose)
+      _cmd_update_compose
+      ;;
+  esac
+}
+
+_cmd_update_docker() {
+  local version="${1:-}"
+  _require_docker
+  local image="$CB_IMAGE"
+  [[ -n "$version" ]] && image="${CB_IMAGE%%:*}:${version}"
+  _info "Pulling image: ${image}"
+  docker pull "$image"
+
+  _info "Recreating container '${CB_CONTAINER}'..."
+  docker stop "$CB_CONTAINER" 2>/dev/null || true
+  docker rm   "$CB_CONTAINER" 2>/dev/null || true
+
+  local env_args=()
+  [[ -f "$CB_CONFIG_DIR/env" ]] && env_args=(--env-file "$CB_CONFIG_DIR/env")
+
+  docker run -d \
+    --name  "$CB_CONTAINER" \
+    "${env_args[@]}" \
+    -p      "${CB_PORT}:8080" \
+    -v      "${CB_VOLUME}:/data" \
+    --security-opt seccomp=unconfined \
+    --restart unless-stopped \
+    "$image" \
+    || _fail "Failed to start updated container."
+  _ok "Updated and restarted."
+}
+
+_cmd_update_compose() {
+  _require_docker
+  local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
+  local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
+  if [[ ! -f "$compose_file" ]]; then
+    _fail "Compose file not found at $compose_file. Set CB_INSTALL_DIR or CB_COMPOSE_FILE in install.conf."
+  fi
+  _info "Pulling latest images..."
+  (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" pull)
+  _info "Recreating stack..."
+  (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" up -d)
+  _ok "Updated and restarted."
+}
 
 cmd_status() {
   echo ""
@@ -131,9 +442,28 @@ cmd_status() {
         --format "  {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null \
         | column -t || true
       ;;
-    binary)
+    native|binary)
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl status circuit-breaker --no-pager -l || true
+        echo -e "  ${GR}systemd services:${R}"
+        echo ""
+        for svc in circuitbreaker-postgres circuitbreaker-pgbouncer circuitbreaker-nats circuitbreaker-redis circuitbreaker-backend circuitbreaker-nginx; do
+          local state
+          state=$(systemctl is-active "${svc}.service" 2>/dev/null || echo "inactive")
+          if [[ "$state" == "active" ]]; then
+            echo -e "  ${G}●${R} ${svc}: ${state}"
+          else
+            echo -e "  ${RED}●${R} ${svc}: ${state}"
+          fi
+        done
+        for wtype in discovery telemetry webhook notification; do
+          local state
+          state=$(systemctl is-active "circuitbreaker-worker@${wtype}.service" 2>/dev/null || echo "inactive")
+          if [[ "$state" == "active" ]]; then
+            echo -e "  ${G}●${R} worker@${wtype}: ${state}"
+          else
+            echo -e "  ${RED}●${R} worker@${wtype}: ${state}"
+          fi
+        done
       else
         _warn "systemctl not found — cannot query service status."
       fi
@@ -158,11 +488,11 @@ cmd_logs() {
       # shellcheck disable=SC2086
       docker logs $follow --tail 100 "$CB_BACKEND_CONTAINER"
       ;;
-    binary)
+    native|binary)
       command -v journalctl >/dev/null 2>&1 \
         || _fail "journalctl not found."
       # shellcheck disable=SC2086
-      journalctl -u circuit-breaker --no-pager $follow -n 100
+      journalctl -u "circuitbreaker-*" --no-pager $follow -n 100
       ;;
   esac
 }
@@ -182,56 +512,17 @@ cmd_restart() {
         docker restart "$svc" 2>/dev/null && _ok "Restarted $svc." || _warn "$svc not running — skipped."
       done
       ;;
-    binary)
-      _info "Restarting systemd service..."
-      sudo systemctl restart circuit-breaker
+    native|binary)
+      _info "Restarting systemd services..."
+      sudo systemctl restart circuitbreaker.target
       _ok "Restarted."
       ;;
   esac
 }
 
 cmd_update() {
-  case "$CB_MODE" in
-    docker)
-      _require_docker
-      _info "Pulling latest image: ${CB_IMAGE}"
-      docker pull "$CB_IMAGE"
-
-      _info "Recreating container '${CB_CONTAINER}'..."
-      docker stop "$CB_CONTAINER" 2>/dev/null || true
-      docker rm   "$CB_CONTAINER" 2>/dev/null || true
-
-      local env_args=()
-      [[ -f "$CB_CONFIG_DIR/env" ]] && env_args=(--env-file "$CB_CONFIG_DIR/env")
-
-      docker run -d \
-        --name  "$CB_CONTAINER" \
-        "${env_args[@]}" \
-        -p      "${CB_PORT}:8080" \
-        -v      "${CB_VOLUME}:/data" \
-        --security-opt seccomp=unconfined \
-        --restart unless-stopped \
-        "$CB_IMAGE" \
-        || _fail "Failed to start updated container."
-      _ok "Updated and restarted."
-      ;;
-    compose)
-      _require_docker
-      local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
-      local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
-      if [[ ! -f "$compose_file" ]]; then
-        _fail "Compose file not found at $compose_file. Set CB_INSTALL_DIR or CB_COMPOSE_FILE in install.conf."
-      fi
-      _info "Pulling latest images..."
-      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" pull)
-      _info "Recreating stack..."
-      (cd "$(dirname "$compose_file")" && docker compose -f "$(basename "$compose_file")" up -d)
-      _ok "Updated and restarted."
-      ;;
-    binary)
-      _fail "'cb update' is not supported for binary installs. Re-run install.sh to upgrade."
-      ;;
-  esac
+  # Backward-compat alias for upgrade
+  cmd_upgrade "$@"
 }
 
 # ── vault-recover ─────────────────────────────────────────────────────────────
@@ -305,8 +596,9 @@ cmd_vault_recover() {
       _ok "Vault recovered. Check 'cb status' to confirm the service is healthy."
       ;;
 
-    binary)
-      local env_file="/etc/circuit-breaker/env"
+    native|binary)
+      local env_file
+      env_file=$(_native_config_file)
 
       if grep -q "^CB_VAULT_KEY=" "$env_file" 2>/dev/null; then
         _warn "A vault key already exists in ${env_file}."
@@ -337,8 +629,8 @@ cmd_vault_recover() {
       sudo chmod 640 "$env_file"
 
       _ok "Vault key written to ${env_file}."
-      _info "Restarting service to apply the key..."
-      sudo systemctl restart circuit-breaker
+      _info "Restarting services to apply the key..."
+      sudo systemctl restart circuitbreaker.target
       _ok "Vault recovered."
       ;;
   esac
@@ -358,9 +650,10 @@ cmd_version() {
         _warn "Container '${CB_BACKEND_CONTAINER}' is not running."
       fi
       ;;
-    binary)
-      /usr/local/bin/circuit-breaker --version 2>/dev/null \
-        || cat /etc/circuit-breaker/version 2>/dev/null \
+    native|binary)
+      cat "${CB_APP_ROOT}/VERSION" 2>/dev/null \
+        || cat /etc/circuitbreaker/version 2>/dev/null \
+        || /usr/local/bin/circuit-breaker --version 2>/dev/null \
         || _warn "Version unknown."
       ;;
   esac
@@ -385,11 +678,20 @@ usage() {
   echo -e "  ${GR}Usage:${R}  cb <command> [options]"
   echo ""
   echo -e "  ${G}Commands:${R}"
-  echo -e "    status              Show container / service status"
-  echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
+  echo -e "    status              Show service / container status"
+  echo -e "    start               Start Circuit Breaker"
+  echo -e "    stop                Stop Circuit Breaker"
   echo -e "    restart             Restart Circuit Breaker"
-  echo -e "    update              Pull latest image and restart  ${GR}(docker mode)${R}"
-  echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
+  echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
+  echo -e "    upgrade [ver]       Pull latest and restart"
+  echo -e "    update              Alias for upgrade"
+  echo -e "    backup              Create a database backup"
+  echo -e "    restore <file>      Restore a database backup"
+  echo -e "    config set K=V      Set a config value"
+  echo -e "    config get K        Get a config value"
+  echo -e "    migrate             Run database migrations"
+  echo -e "    shell               Open a psql shell"
+  echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery only)${R}"
   echo -e "    version             Show installed version"
   echo -e "    uninstall           Remove Circuit Breaker from this system"
   echo -e "    help                Show this help"
@@ -405,9 +707,17 @@ usage() {
 
 case "${1:-help}" in
   status)          cmd_status ;;
-  logs)            cmd_logs "${2:-}" ;;
+  start)           cmd_start ;;
+  stop)            cmd_stop ;;
   restart)         cmd_restart ;;
-  update)          cmd_update ;;
+  logs)            cmd_logs "${2:-}" ;;
+  upgrade)         cmd_upgrade "${2:-}" ;;
+  update)          cmd_update "${2:-}" ;;
+  backup)          cmd_backup ;;
+  restore)         cmd_restore "${2:-}" ;;
+  config)          cmd_config "${2:-}" "${3:-}" ;;
+  migrate)         cmd_migrate ;;
+  shell)           cmd_shell ;;
   vault-recover)   cmd_vault_recover ;;
   version)         cmd_version ;;
   uninstall)       cmd_uninstall ;;

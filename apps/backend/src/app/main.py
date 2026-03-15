@@ -1,9 +1,25 @@
+# ── Datadog APM — must remain first import ──────────────────
+try:
+    from ddtrace import patch_all, tracer
+
+    patch_all(fastapi=True, sqlalchemy=True, redis=True, logging=True)
+except Exception:  # pragma: no cover
+
+    class _NoopTracer:
+        @staticmethod
+        def current_span():
+            return None
+
+    tracer = _NoopTracer()
+# ────────────────────────────────────────────────────────────
+
 import logging
 import mimetypes
 import os
 import re
 import sys
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta  # noqa: F401 — used by models imported transitively
 from pathlib import Path, PurePosixPath
@@ -328,7 +344,7 @@ async def lifespan(app: FastAPI):
     _test_paths = [
         _data_dir,
         _data_dir / "uploads",
-        Path(settings.uploads_dir) if not settings.uploads_dir.startswith("/data") else None,
+        Path(settings.uploads_dir) if not settings.uploads_dir.startswith(str(_data_dir)) else None,
     ]
     for _path in filter(None, _test_paths):
         try:
@@ -338,10 +354,10 @@ async def lifespan(app: FastAPI):
             _test_file.unlink()
         except (PermissionError, OSError) as _pe:
             _logger.critical(
-                "STARTUP FAILED: Cannot write to %s. Volume permissions are incorrect. "
-                "Fix: docker run --rm -v circuitbreaker-data:/data alpine "
-                "sh -c 'chown -R 1000:1000 /data'",
+                "STARTUP FAILED: Cannot write to %s. Permissions are incorrect. "
+                "Fix: chown -R 1000:1000 %s",
                 _path,
+                _data_dir,
             )
             raise SystemExit(1) from _pe
     _logger.info("Filesystem validation passed — data dir: %s", _data_dir)
@@ -352,7 +368,7 @@ async def lifespan(app: FastAPI):
 
     # ── Phase 7: Vault key init ────────────────────────────────────────────
     # Must run before any scheduler job or service that encrypts/decrypts.
-    # Fallback chain: env CB_VAULT_KEY → /data/.env → AppSettings.vault_key
+    # Fallback chain: env CB_VAULT_KEY → {CB_DATA_DIR}/.env → AppSettings.vault_key
     try:
         with get_session_context() as _vault_db:
             from app.services import vault_service as _vault_svc
@@ -1140,9 +1156,14 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def unhandled_error_handler(request: Request, exc: Exception):
     from app.schemas.errors import ErrorCodes
 
-    if settings.dev_mode:
-        import traceback
+    span = tracer.current_span()
+    if span:
+        span.set_tag("error", True)
+        span.set_tag("error.msg", str(exc))
+        span.set_tag("error.type", type(exc).__name__)
+        span.set_tag("error.stack", traceback.format_exc())
 
+    if settings.dev_mode:
         return JSONResponse(
             status_code=500,
             content={

@@ -53,19 +53,24 @@ data/
 
 # Host install/uninstall scripts (not needed inside container)
 install.sh
-uninstall.sh
 
-# Markdown files (README and DocsPage needed for native build)
+# Markdown files
 *.md
 !README.md
-!DocsPage.md
 
 # Tests (not needed in the production image)
 apps/backend/tests/
 tests/
 
-# Security reports
-SECURITY_REPORTS/
+# Legacy packaging and tools (not needed in image)
+deploy/legacy-packaging/
+deploy/proxmox/
+deploy/native/
+tools/
+
+# Security reports and testing docs
+docs/security/
+docs/testing/
 
 # CI / GitHub Actions
 .github/

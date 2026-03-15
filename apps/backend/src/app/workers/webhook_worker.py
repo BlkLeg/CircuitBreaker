@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-webhook.healthy")
+_HEALTHY_FILE = Path(os.environ.get("CB_DATA_DIR", "/data")) / "worker-webhook.healthy"
 
 
 def _touch_healthy() -> None:

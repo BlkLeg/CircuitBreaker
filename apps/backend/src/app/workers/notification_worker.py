@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import smtplib
 import time
 from email.message import EmailMessage
@@ -14,7 +15,7 @@ from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-notification.healthy")
+_HEALTHY_FILE = Path(os.environ.get("CB_DATA_DIR", "/data")) / "worker-notification.healthy"
 
 
 def _touch_healthy() -> None:

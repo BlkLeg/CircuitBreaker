@@ -1,7 +1,7 @@
 """PostgreSQL daily backup service.
 
 Runs pg_dump on the configured database and stores compressed .sql.gz files
-under /app/data/backups/. Old files are pruned based on the
+under {CB_DATA_DIR}/backups/. Old files are pruned based on the
 db_backup_retention_days setting (default: 30).
 """
 
@@ -20,7 +20,7 @@ from app.db.session import SessionLocal, db_url
 
 _logger = logging.getLogger(__name__)
 
-BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/app/data/backups"))
+BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", os.environ.get("CB_DATA_DIR", "/data") + "/backups"))
 
 
 def _pg_env_from_url(url: str) -> dict[str, str]:

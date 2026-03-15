@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from app.core.nmap_args import validate_nmap_arguments
 
 logger = logging.getLogger(__name__)
 
-_HEALTHY_FILE = Path("/data/worker-discovery.healthy")
+_HEALTHY_FILE = Path(os.environ.get("CB_DATA_DIR", "/data")) / "worker-discovery.healthy"
 
 
 def _touch_healthy() -> None:

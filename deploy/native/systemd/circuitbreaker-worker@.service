@@ -1,0 +1,21 @@
+[Unit]
+Description=Circuit Breaker — Worker (%i)
+After=circuitbreaker-backend.service
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+EnvironmentFile=/etc/circuitbreaker/config.env
+Environment=PYTHONPATH=/opt/circuitbreaker/backend/src
+WorkingDirectory=/opt/circuitbreaker/backend
+Restart=on-failure
+RestartSec=5
+
+ExecStart=/opt/circuitbreaker/backend/.venv/bin/python \
+  -m app.workers.main \
+  --type %i
+
+[Install]
+WantedBy=circuitbreaker.target

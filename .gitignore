@@ -8,13 +8,15 @@ __pycache__/
 venv/
 dist/
 build/
-site/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 htmlcov/
 .coverage
+
+# MkDocs build output
+site/
 
 # SQLite
 *.db
@@ -23,50 +25,37 @@ htmlcov/
 
 # Node / React
 node_modules/
-docker/node_modules/
-frontend/build/
-frontend/dist/
-frontend/.env.local
-frontend/.env.*.local
+apps/frontend/dist/
+apps/frontend/.env.local
+apps/frontend/.env.*.local
 .npm/
 
-# Env files with real secrets (frontend/.env contains only safe defaults)
+# Env files with real secrets
+.env
+.env.*
+!.env.example
 backend/.env
 backend/.env.*
 docker/.env
-.env.local
-frontend/.env.local
-frontend/.env.*.local
-.env
+apps/backend/.env
+apps/backend/.env.*
 .github/workflows/.env
 .github/workflows/.env.*
 
-# Docker
+# Docker runtime data
 docker/data/
-data/audit/
+docker/circuitbreaker-data/
+circuitbreaker-data/
+data/
 
 # Runtime user data (preserve folder structure via .gitkeep)
 backend/data/uploads/**
 backend/data/user-icons/**
 !backend/data/user-icons/**/
 !backend/data/user-icons/**/.gitkeep
-data/uploads/icons/**
-!data/uploads/icons/**/
-!data/uploads/icons/**/.gitkeep
-data/user-icons/**
-!data/user-icons/**/
-!data/user-icons/**/.gitkeep
-circuitbreaker-data/
-
-# Root runtime uploads (bind-mounted/injected at runtime)
-data/uploads/**
-data/user-icons/**
 
 # Test artifacts
 coverage.xml
-
-# Generated security scan reports (keep STANDING reports untracked naturally)
-SECURITY_REPORTS/security_scan_report*.md
 
 # PyInstaller specs (legacy)
 *.spec
@@ -75,30 +64,32 @@ SECURITY_REPORTS/security_scan_report*.md
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / Editors
 .idea/
 .vscode/
 .cursor/
-.codex/
-*.swp
 .devcontainer/
-# Tool / editor caches
+*.swp
+*~
+
+# AI Agent / Tool artifacts
+.claude/
+.codex/
+.superpowers/
+.aider*
+worktrees/
+
+# Tool caches
 .cache/
-.tools/snyk
+.tools/
 
 # Internal / auto-generated
 .INTERNAL/
-.claude/worktrees/
-.cursor/
-.codex/
-.devcontainer/
-.superpowers/
-circuitbreaker-data/
 
-# Snyk Security Extension - AI Rules (auto-generated)
+# Snyk Security Extension
 .github/instructions/snyk_rules.instructions.md
 
-# TLS / Certificates and Web Server Data (Caddy)
+# TLS / Certificates
 *.key
 *.pem
 *.crt
@@ -107,13 +98,14 @@ circuitbreaker-data/
 *.pfx
 certs/
 certificates/
+caddy-root-ca.crt
+
+# Caddy runtime data
 caddy/data/
 caddy/config/
 docker/caddy_data/
 docker/caddy_config/
-docker/circuitbreaker-data/
 
-# Agents
-.cursor/
-.claude/
-.codex/
+# Development
+docker-compose.datadog.yml
+.env.datadog

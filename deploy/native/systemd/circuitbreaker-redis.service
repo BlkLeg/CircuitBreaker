@@ -1,0 +1,33 @@
+[Unit]
+Description=Circuit Breaker — Redis
+After=network.target
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+EnvironmentFile=/etc/circuitbreaker/config.env
+Restart=on-failure
+RestartSec=5
+
+ExecStart=/bin/bash -c '\
+  REDIS_PASS=""; \
+  if [ -f "$CB_DATA_DIR/.redis_pass" ]; then \
+    REDIS_PASS=$(cat "$CB_DATA_DIR/.redis_pass"); \
+  fi; \
+  if [ -n "$REDIS_PASS" ]; then \
+    exec redis-server \
+      --bind 127.0.0.1 \
+      --port 6379 \
+      --dir "$CB_DATA_DIR/redis" \
+      --requirepass "$REDIS_PASS"; \
+  else \
+    exec redis-server \
+      --bind 127.0.0.1 \
+      --port 6379 \
+      --dir "$CB_DATA_DIR/redis"; \
+  fi'
+
+[Install]
+WantedBy=circuitbreaker.target

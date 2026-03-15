@@ -7,6 +7,7 @@ Let's Encrypt renewal delegates to certbot (if installed) via subprocess.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -151,7 +152,7 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
 
     if cert.type == "letsencrypt":
         try:
-            tmp_root = Path("/data/tmp")
+            tmp_root = Path(os.environ.get("CB_DATA_DIR", "/data")) / "tmp"
             tmp_root.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=str(tmp_root)) as tmp_dir:
                 cert_path = Path(tmp_dir) / "cb_cert.pem"

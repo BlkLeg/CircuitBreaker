@@ -1,0 +1,27 @@
+[Unit]
+Description=Circuit Breaker — Backend API (Uvicorn)
+After=circuitbreaker-postgres.service circuitbreaker-pgbouncer.service circuitbreaker-nats.service circuitbreaker-redis.service
+Requires=circuitbreaker-postgres.service circuitbreaker-pgbouncer.service
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+EnvironmentFile=/etc/circuitbreaker/config.env
+Environment=PYTHONPATH=/opt/circuitbreaker/backend/src
+WorkingDirectory=/opt/circuitbreaker/backend
+Restart=on-failure
+RestartSec=5
+
+ExecStartPre=/opt/circuitbreaker/deploy/common/entrypoint.sh
+
+ExecStart=/opt/circuitbreaker/backend/.venv/bin/uvicorn \
+  app.main:app \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --workers 2 \
+  --no-access-log
+
+[Install]
+WantedBy=circuitbreaker.target

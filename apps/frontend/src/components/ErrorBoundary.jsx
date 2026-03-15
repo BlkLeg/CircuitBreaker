@@ -1,4 +1,5 @@
 import React from 'react';
+import { datadogRum } from '@datadog/browser-rum';
 
 /**
  * Catches unexpected render-phase errors for the wrapped subtree and shows a
@@ -20,6 +21,10 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
+    datadogRum.addError(error, {
+      source: 'react-error-boundary',
+      componentStack: info?.componentStack ?? '',
+    });
     // Log to the browser console so devs can see the full stack
     console.error('[ErrorBoundary] Uncaught render error:', error, info);
   }

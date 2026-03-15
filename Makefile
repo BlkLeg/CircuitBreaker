@@ -137,7 +137,7 @@ snyk-monitor: ## Monitor this repository in Snyk for ongoing vulnerability alert
 
 security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Hadolint, Checkov, Trivy fs+config, npm audit). Saves CI minutes by catching issues locally.
 	@echo "Starting full security scan..."
-	@bash scripts/security_scan.sh
+	@bash tools/security_scan.sh
 
 # ==============================================================================
 # LOCAL POSTGRES (dev)
@@ -217,7 +217,7 @@ db-seed-default-team: ## Seed Default Team (id=1) in mono container; run after c
 
 lock: ## Regenerate apps/backend/requirements.txt from poetry.lock
 	@echo "Regenerating apps/backend/requirements.txt from poetry.lock..."
-	@python3 scripts/gen_requirements.py
+	@python3 tools/gen_requirements.py
 	@echo "✅ requirements.txt updated — commit the file alongside poetry.lock."
 
 compose-build: ## Build mono image only (no up). Use before compose-up to force rebuild.
@@ -323,6 +323,58 @@ preflight: test frontend-build ## Run tests, build frontend, build mono image
 	@echo "See PRE_PKG.md for manual matrix/signoff steps."
 
 # ==============================================================================
+# NATIVE DEVELOPMENT (primary dev target)
+# ==============================================================================
+.PHONY: dev-deps dev-init dev-stop build-all docker-up docker-down docker-logs test-install
+
+dev-deps: ## Install system deps for native development (Debian/Ubuntu)
+	@echo "Installing system dependencies..."
+	@sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+		postgresql postgresql-client pgbouncer redis-server nginx \
+		python3 python3-venv python3-pip nodejs npm curl jq openssl
+	@echo "Checking for NATS..."
+	@command -v nats-server >/dev/null 2>&1 || { \
+		echo "Installing nats-server..."; \
+		curl -fsSL https://github.com/nats-io/nats-server/releases/latest/download/nats-server-v2.10.24-linux-amd64.tar.gz | \
+		sudo tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/nats-server'; \
+	}
+	@echo "✅ System dependencies installed."
+
+dev-init: ## Init local DB, venv, run migrations for native development
+	@echo "Setting up native development environment..."
+	@test -d .venv || python3 -m venv .venv
+	@.venv/bin/pip install -r $(BACKEND_DIR)/requirements.txt -r $(BACKEND_DIR)/requirements-pg.txt 2>/dev/null || \
+		.venv/bin/pip install -r $(BACKEND_DIR)/requirements.txt
+	@cd $(FRONTEND_DIR) && npm ci
+	@echo "Running migrations..."
+	@cd $(BACKEND_DIR) && CB_DB_URL="$${CB_DB_URL:-$(CB_DB_URL_DEV)}" PYTHONPATH=src $(CURDIR)/.venv/bin/alembic upgrade head 2>/dev/null || \
+		echo "⚠️  Migrations skipped (start Postgres first: make postgres-up)"
+	@echo "✅ Dev environment ready. Run: make dev"
+
+dev-stop: ## Stop native dev servers
+	@lsof -ti tcp:$(BACKEND_PORT)  | xargs kill -9 2>/dev/null || true
+	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
+	@echo "Dev servers stopped."
+
+build-all: frontend-build build ## Build frontend + Docker image
+
+docker-up: dev-stop-install ## Start Docker stack (alias for compose-up)
+	@$(MAKE) compose-up
+
+docker-down: ## Stop Docker stack (alias for compose-down)
+	@$(MAKE) compose-down
+
+docker-logs: ## Tail Docker logs (alias for logs)
+	@$(MAKE) logs
+
+test-install: ## Test native install in a Debian container
+	@echo "Testing native install in a Debian 12 container..."
+	@docker run --rm -it debian:12 bash -c "\
+		apt-get update && apt-get install -y curl && \
+		curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | CB_INSTALL_MODE=native bash && \
+		curl -sf http://localhost:8080/api/v1/health | grep -q healthy && echo '✅ Install test passed' || echo '❌ Install test failed'"
+
+# ==============================================================================
 # RELEASE & NATIVE BUILDS
 # ==============================================================================
 .PHONY: build-native build-native-docker docker-multiarch test-pi-local release-dry-run deb rpm package-all
@@ -333,7 +385,7 @@ build-native: frontend-build ## Build a packaged native archive for the current 
 	@.venv/bin/python -c "import pip" >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
 	@.venv/bin/python -m pip install pyinstaller
 	@echo "Running native packaging..."
-	@.venv/bin/python scripts/build_native_release.py --clean
+	@.venv/bin/python tools/build_native_release.py --clean
 	@echo "✅ Native package(s) created in dist/native/"
 
 deb: build-native ## Build .deb package (requires nfpm)
@@ -397,7 +449,7 @@ docker-mono-release: setup-buildx ## Build mono, run E2E test, then push (recomm
 		--build-arg APP_VERSION=$(VERSION) \
 		-t $(DOCKER_REPO):mono-$(TAG) .
 	@echo "Step 2/3: Running E2E test..."
-	@CB_MONO_IMAGE="$(DOCKER_REPO):mono-$(TAG)" ./scripts/test-mono-e2e.sh
+	@CB_MONO_IMAGE="$(DOCKER_REPO):mono-$(TAG)" ./tools/test-mono-e2e.sh
 	@echo "Step 3/3: E2E passed. Pushing multi-arch..."
 	docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 \
 		-f Dockerfile.mono \
@@ -406,7 +458,7 @@ docker-mono-release: setup-buildx ## Build mono, run E2E test, then push (recomm
 	@echo "Done. Pull with: $(DOCKER_REPO):mono-$(TAG)"
 
 test-mono-e2e: ## Run E2E test for mono container (starts container, health + frontend check, teardown)
-	@./scripts/test-mono-e2e.sh
+	@./tools/test-mono-e2e.sh
 
 test-pi-local: ## Test the ARM64 mono image locally using emulation (build or pull mono image first)
 	@echo "Testing ARM64 mono image $(DOCKER_REPO):mono-$(RELEASE_TAG)..."

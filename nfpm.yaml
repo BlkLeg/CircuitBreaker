@@ -33,13 +33,13 @@ contents:
     dst: /usr/local/share/circuit-breaker/VERSION
 
   # Default config template
-  - src: packaging/config.toml.default
+  - src: deploy/legacy-packaging/config.toml.default
     dst: /usr/local/share/circuit-breaker/config.toml.default
     file_info:
       mode: 0644
 
   # systemd unit
-  - src: packaging/circuit-breaker.service
+  - src: deploy/legacy-packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service
     file_info:
       mode: 0644
@@ -63,8 +63,8 @@ contents:
       mode: 0755
 
 scripts:
-  postinstall: packaging/postinstall.sh
-  preremove: packaging/preremove.sh
+  postinstall: deploy/legacy-packaging/postinstall.sh
+  preremove: deploy/legacy-packaging/preremove.sh
 
 overrides:
   deb:

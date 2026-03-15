@@ -109,10 +109,21 @@ COPY apps/backend/migrations ./migrations
 # Copy built frontend assets from frontend builder
 COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
-# Mono-specific configs and init scripts
-COPY docker/supervisord.mono.conf /etc/supervisor/conf.d/supervisord.conf
+# Shared deploy scripts (used by both Docker and native systemd installs)
+COPY deploy/common /opt/circuitbreaker/deploy/common
+RUN chmod +x /opt/circuitbreaker/deploy/common/*.sh
+
+# Config templates
+COPY config/ /opt/circuitbreaker/config/
+
+# Docker-specific supervisord config
+COPY deploy/docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Nginx and pgbouncer configs (kept for Docker backward compat)
 COPY docker/nginx.mono.conf /etc/nginx/nginx.conf
 COPY docker/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
+
+# Legacy Docker init scripts (kept for backward compat during transition)
 COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh docker/run-postgres-if-embedded.sh /docker/
 RUN chmod +x /docker/*.sh
 
@@ -130,7 +141,10 @@ ENV PYTHONPATH=/app/backend/src \
     CB_ALEMBIC_INI=/app/backend/alembic.ini \
     ALEMBIC_CONFIG=/app/backend/alembic.ini \
     STATIC_DIR=/app/frontend/dist \
+    CB_DEPLOY_MODE=docker \
     CB_DATA_DIR=/data \
+    CB_APP_ROOT=/app \
+    CB_LOG_DIR=/data \
     UPLOADS_DIR=/data/uploads \
     NATS_URL=nats://127.0.0.1:4222 \
     CB_REDIS_URL=redis://127.0.0.1:6379/0

@@ -27,7 +27,10 @@ _logger = logging.getLogger(__name__)
 
 _redis: aioredis.Redis | None = None
 _url: str = os.environ.get("CB_REDIS_URL", "redis://localhost:6379/0")
-_password_file: str = os.environ.get("CB_REDIS_PASSWORD_FILE", "/data/.redis_pass")
+_password_file: str = os.environ.get(
+    "CB_REDIS_PASSWORD_FILE",
+    os.environ.get("CB_DATA_DIR", "/data") + "/.redis_pass",
+)
 
 _RECONNECT_COOLDOWN_S = 10.0
 _last_reconnect_attempt: float = 0.0
@@ -38,7 +41,7 @@ def _resolve_redis_password(url: str) -> str | None:
 
     Priority:
     1) Explicit ``CB_REDIS_PASSWORD`` environment variable
-    2) Embedded single-container password file (``/data/.redis_pass`` by default)
+    2) Embedded single-container password file (``{CB_DATA_DIR}/.redis_pass`` by default)
        when connecting to localhost/loopback.
     """
     parsed = urlparse(url)

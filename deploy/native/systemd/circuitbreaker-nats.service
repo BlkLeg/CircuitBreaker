@@ -1,0 +1,21 @@
+[Unit]
+Description=Circuit Breaker — NATS Server (JetStream)
+After=network.target
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+EnvironmentFile=/etc/circuitbreaker/config.env
+Restart=on-failure
+RestartSec=5
+
+ExecStart=/bin/bash -c '\
+  exec nats-server \
+    --jetstream \
+    --store_dir "$CB_DATA_DIR/nats" \
+    --auth "$NATS_AUTH_TOKEN"'
+
+[Install]
+WantedBy=circuitbreaker.target

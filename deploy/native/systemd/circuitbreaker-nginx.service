@@ -1,0 +1,24 @@
+[Unit]
+Description=Circuit Breaker — Nginx Reverse Proxy
+After=circuitbreaker-backend.service
+PartOf=circuitbreaker.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/circuitbreaker/config.env
+Restart=on-failure
+RestartSec=5
+
+ExecStartPre=/bin/bash -c '\
+  if [ -f /etc/circuitbreaker/nginx.conf.template ]; then \
+    envsubst "$$CB_DOMAIN $$CB_SSL_CERT $$CB_SSL_KEY" \
+      < /etc/circuitbreaker/nginx.conf.template \
+      > /etc/circuitbreaker/nginx.conf; \
+  fi'
+
+ExecStart=/usr/sbin/nginx -g 'daemon off;' -c /etc/circuitbreaker/nginx.conf
+
+[Install]
+WantedBy=circuitbreaker.target

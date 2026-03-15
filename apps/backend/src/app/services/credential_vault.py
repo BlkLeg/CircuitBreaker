@@ -29,7 +29,7 @@ class CredentialVault:
         if self._fernet is None:
             raise RuntimeError(
                 "Vault is not initialized. CB_VAULT_KEY was not found in the "
-                "environment, /data/.env, or the database. Run OOBE to generate a key."
+                "environment, {CB_DATA_DIR}/.env, or the database. Run OOBE to generate a key."
             )
         return self._fernet.encrypt(plaintext.encode()).decode()
 
@@ -37,7 +37,7 @@ class CredentialVault:
         if self._fernet is None:
             raise RuntimeError(
                 "Vault is not initialized. CB_VAULT_KEY was not found in the "
-                "environment, /data/.env, or the database. Run OOBE to generate a key."
+                "environment, {CB_DATA_DIR}/.env, or the database. Run OOBE to generate a key."
             )
         return self._fernet.decrypt(ciphertext.encode()).decode()
 

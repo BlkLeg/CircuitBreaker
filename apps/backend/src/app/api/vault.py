@@ -68,7 +68,7 @@ def rotate_vault_key(
 ):
     """Re-generate the vault key and re-encrypt all secrets in-place.
 
-    The new key is immediately written to /data/.env and the database.
+    The new key is immediately written to {CB_DATA_DIR}/.env and the database.
     The in-memory vault singleton is hot-swapped; no restart is required.
     """
     vault_service.rotate_vault_key(db)
