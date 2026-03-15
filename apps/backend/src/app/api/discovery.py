@@ -9,10 +9,12 @@ from app.core.audit import log_audit
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
 from app.core.scheduler import get_scheduler
-from app.db.models import ListenerEvent, ScanJob, ScanLog, ScanResult, User
+from app.core.security import require_write_auth
+from app.db.models import Hardware, ListenerEvent, ScanJob, ScanLog, ScanResult, User
 from app.db.session import get_db
 from app.schemas.discovery import (
     AdHocScanRequest,
+    BatchImportRequest,
     BulkMergeRequest,
     BulkSuggestRequest,
     DiscoveryProfileCreate,
@@ -37,6 +39,38 @@ _logger = logging.getLogger(__name__)
 
 _DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 router = APIRouter(tags=["discovery"], dependencies=[require_scope("read", "*")])
+
+
+@router.get("", response_model=dict)
+def discovery_root(db: Session = Depends(get_db)):
+    """Root discovery endpoint - returns summary of recent scan jobs and discovery status."""
+    recent_jobs = db.scalars(select(ScanJob).order_by(ScanJob.created_at.desc()).limit(10)).all()
+    pending_results = db.scalars(
+        select(ScanResult).where(ScanResult.merge_status == "pending")
+    ).all()
+
+    return {
+        "recent_jobs": [
+            {
+                "id": job.id,
+                "status": job.status,
+                "label": job.label,
+                "target_cidr": job.target_cidr,
+                "created_at": (
+                    job.created_at.isoformat()
+                    if job.created_at and hasattr(job.created_at, "isoformat")
+                    else job.created_at
+                    if job.created_at
+                    else None
+                ),
+                "hosts_found": job.hosts_found,
+            }
+            for job in recent_jobs
+        ],
+        "pending_results_count": len(pending_results),
+        "docker_available": is_docker_socket_available(),
+        "raw_socket_available": _has_raw_socket_privilege(),
+    }
 
 
 def _get_actor(db: Session, user_id: int) -> str:
@@ -79,9 +113,10 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
         .first()
     )
     raw_last_scan = getattr(last_completed, "completed_at", None)
+    last_scan: str | None = None
     if isinstance(raw_last_scan, str):
         last_scan = raw_last_scan
-    elif hasattr(raw_last_scan, "isoformat"):
+    elif raw_last_scan is not None and hasattr(raw_last_scan, "isoformat"):
         scan_iso = raw_last_scan.isoformat()
         last_scan = scan_iso if isinstance(scan_iso, str) else None
     else:
@@ -400,8 +435,13 @@ def get_proxmox_run(
     return ProxmoxDiscoverRunOut.model_validate(run)
 
 
-@router.get("/jobs/{job_id}/results", response_model=list[ScanResultOut])
-def get_job_results(job_id: int, limit: int = 100, db: Session = Depends(get_db)):
+@router.get("/jobs/{job_id}/results")
+def get_job_results(
+    job_id: int,
+    limit: int = 100,
+    with_inference: bool = False,
+    db: Session = Depends(get_db),
+):
     job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -411,7 +451,60 @@ def get_job_results(job_id: int, limit: int = 100, db: Session = Depends(get_db)
         .order_by(ScanResult.created_at.desc())
         .limit(limit)
     ).all()
-    return results
+
+    if not with_inference:
+        return [ScanResultOut.model_validate(r) for r in results]
+
+    from app.schemas.discovery import InferredScanResultOut
+    from app.services.inference_service import annotate_result
+
+    # Build existing IP/MAC lookup maps (fresh, not from stale ScanJob.hosts_new)
+    existing_by_ip: dict[str, int] = {
+        h.ip_address: h.id
+        for h in db.query(Hardware.ip_address, Hardware.id)
+        .filter(Hardware.ip_address.isnot(None))
+        .all()
+    }
+    existing_by_mac: dict[str, int] = {
+        h.mac_address: h.id
+        for h in db.query(Hardware.mac_address, Hardware.id)
+        .filter(Hardware.mac_address.isnot(None))
+        .all()
+    }
+
+    enriched = []
+    for r in results:
+        ann = annotate_result(r)
+        hw_id = existing_by_mac.get(r.mac_address) if r.mac_address else None
+        if hw_id is None:
+            hw_id = existing_by_ip.get(r.ip_address) if r.ip_address else None
+        out = InferredScanResultOut.model_validate(r)
+        out.inferred_vendor = ann.vendor
+        out.inferred_role = ann.role
+        out.inferred_icon_slug = ann.vendor_icon_slug
+        out.confidence = ann.confidence
+        out.signals_used = ann.signals_used
+        out.exists_in_hardware = hw_id is not None
+        out.existing_hardware_id = hw_id
+        out.is_new = hw_id is None
+        enriched.append(out)
+    return enriched
+
+
+@router.post("/jobs/{job_id}/batch-import")
+def batch_import_results(
+    job_id: int,
+    payload: BatchImportRequest,
+    _user=require_write_auth,
+    db: Session = Depends(get_db),
+):
+    """Batch import selected scan results as Hardware nodes. Requires write role."""
+    from app.services.discovery_import_service import batch_import
+
+    job = db.get(ScanJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Scan job not found")
+    return batch_import(db, job_id, payload, actor="api")
 
 
 @router.get("/jobs/{job_id}/logs", response_model=list[ScanLogOut])

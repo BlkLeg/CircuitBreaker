@@ -6,6 +6,7 @@ import { authApi } from '../api/auth.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
 import OAuthProviderIcon from '../components/auth/OAuthProviderIcon.jsx';
+import logger from '../utils/logger';
 
 const PROVIDER_LABELS = {
   github: 'GitHub',
@@ -100,7 +101,7 @@ function LoginPage() {
       .getOAuthProviders()
       .then((res) => setOauthProviders(res.data.providers || []))
       .catch((err) => {
-        console.error('Failed to fetch OAuth providers:', err);
+        logger.error('Failed to fetch OAuth providers:', err);
       });
   }, []);
 
@@ -119,7 +120,7 @@ function LoginPage() {
         navigate('/map', { replace: true });
       })
       .catch((err) => {
-        console.error('OAuth token exchange failed:', err);
+        logger.error('OAuth token exchange failed:', err);
         setError('OAuth login failed. Please try again.');
       });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

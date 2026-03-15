@@ -127,12 +127,10 @@ def load_vault_key(db: Session) -> str | None:
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Could not verify CB_VAULT_KEY against database hash (reason: %s) — "
-                "accepting env var key as-is.",
+                "falling through to file / database sources.",
                 type(exc).__name__,
             )
-            _key_source = "environment"
-            _active_key = env_key
-            return env_key
+            # Fall through — do NOT short-circuit; data/.env or DB key may be correct.
     elif env_key:
         _logger.warning(
             "CB_VAULT_KEY environment variable is set but is not a valid Fernet key "
@@ -258,8 +256,8 @@ def rotate_vault_key(db: Session) -> None:
         _cfg_p = db.get(AppSettings, 1)
         if _cfg_p and _cfg_p.smtp_password_enc:
             _probe, _probe_label = _cfg_p.smtp_password_enc, "AppSettings.smtp_password_enc"
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not probe AppSettings for vault integrity check: %s", exc)
     if _probe is None:
         try:
             _pp = (
@@ -270,15 +268,15 @@ def rotate_vault_key(db: Session) -> None:
             if _pp:
                 _probe = _pp.snmp_community_encrypted
                 _probe_label = f"DiscoveryProfile(id={_pp.id})"
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _logger.debug("Could not probe DiscoveryProfile for vault integrity check: %s", exc)
     if _probe is None:
         try:
             _pc = db.query(Credential).first()
             if _pc and _pc.encrypted_value:
                 _probe, _probe_label = _pc.encrypted_value, f"Credential(id={_pc.id})"
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _logger.debug("Could not probe Credential for vault integrity check: %s", exc)
     if _probe is not None:
         try:
             vault.decrypt(_probe)
@@ -372,8 +370,8 @@ def rotate_vault_key(db: Session) -> None:
             entity_id=1,
             details=f"new_key_hash_prefix={_sha256(new_key_str)[:16]}",
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not write audit log for vault rotation (non-fatal): %s", exc)
 
 
 def initialize_vault_key(db: Session) -> None:
@@ -422,8 +420,8 @@ def initialize_vault_key(db: Session) -> None:
             entity_id=getattr(cfg, "id", 1),
             details=f"new_key_hash_prefix={_sha256(new_key_str)[:16]}",
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not write audit log for vault initialization (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -439,20 +437,20 @@ def _count_encrypted_secrets(db: Session) -> int:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.smtp_password_enc:
             count += 1
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not check AppSettings for encrypted secrets: %s", exc)
     try:
         count += (
             db.query(DiscoveryProfile)
             .filter(DiscoveryProfile.snmp_community_encrypted.isnot(None))
             .count()
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not count encrypted DiscoveryProfile secrets: %s", exc)
     try:
         count += db.query(Credential).count()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not count Credential secrets: %s", exc)
     return count
 
 
@@ -470,8 +468,8 @@ def _resolve_vault_status(db: Session) -> str:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.vault_key_hash and current_key:
             return "healthy" if _sha256(current_key) == cfg.vault_key_hash else "degraded"
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not check vault status against database: %s", exc)
     return "healthy"
 
 
@@ -484,8 +482,8 @@ def get_vault_status(db: Session) -> dict:
         cfg = db.get(AppSettings, 1)
         if cfg and cfg.vault_key_rotated_at:
             last_rotated = cfg.vault_key_rotated_at.isoformat()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _logger.debug("Could not retrieve last vault rotation timestamp: %s", exc)
 
     return {
         "status": _resolve_vault_status(db),

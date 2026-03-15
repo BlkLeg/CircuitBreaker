@@ -17,8 +17,8 @@ def _touch_healthy() -> None:
     try:
         _HEALTHY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _HEALTHY_FILE.write_text(str(time.time()))
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("Failed to write healthy heartbeat file (non-fatal): %s", exc)
 
 
 async def _run_masscan(cidr: str) -> list[str]:
@@ -89,14 +89,14 @@ async def process_job(msg, semaphore: asyncio.Semaphore):
             )
             try:
                 await msg.nak()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to NAK timed-out message (non-fatal): %s", exc)
         except Exception as e:
             logger.error("Error processing discovery job: %s", e)
             try:
                 await msg.nak()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to NAK failed message (non-fatal): %s", exc)
 
 
 async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
@@ -119,7 +119,7 @@ async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
         return False
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None):
     # Retry connecting to NATS with backoff — exiting would cause a Docker restart loop.
     backoff = 2
     while not nats_client.is_connected:
@@ -152,7 +152,7 @@ async def run_worker(shutdown_event: asyncio.Event = None):
             else:
                 await asyncio.sleep(10)
         except TimeoutError:
-            pass
+            logger.debug("Watchdog wakeup (no shutdown signal)")
 
         _touch_healthy()
         now_connected = nats_client.is_connected

@@ -76,9 +76,11 @@ else
   fi
 
   echo "[migrate] Ensuring circuitbreaker database exists..."
-  if ! psql "postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname = 'circuitbreaker'" | grep -q 1; then
-    psql "postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/postgres" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "circuitbreaker" OWNER breaker'
+  export PGPASSWORD="${CB_DB_PASSWORD}"
+  if ! psql -h "${PGHOST}" -p "${PGPORT}" -U breaker -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'circuitbreaker'" | grep -q 1; then
+    psql -h "${PGHOST}" -p "${PGPORT}" -U breaker -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "circuitbreaker" OWNER breaker'
   fi
+  unset PGPASSWORD
 
   export CB_DB_URL="postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/circuitbreaker"
 fi

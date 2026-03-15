@@ -31,10 +31,25 @@ class TenantMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             try:
-                from app.core.security import decode_access_token
+                import jwt as pyjwt
 
-                payload = decode_access_token(auth_header.split(" ", 1)[1])
-                tenant_id = payload.get("tenant_id")
+                from app.core.security import SESSION_AUDIENCE
+                from app.db.session import get_db
+                from app.services.settings_service import get_or_create_settings
+
+                db = next(get_db())
+                try:
+                    cfg = get_or_create_settings(db)
+                    if cfg.jwt_secret:
+                        payload = pyjwt.decode(
+                            auth_header.split(" ", 1)[1],
+                            cfg.jwt_secret,
+                            algorithms=["HS256"],
+                            audience=[SESSION_AUDIENCE],
+                        )
+                        tenant_id = payload.get("tenant_id")
+                finally:
+                    db.close()
             except Exception:  # noqa: BLE001
                 pass
 

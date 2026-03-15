@@ -20,6 +20,7 @@
     "i18next": "^25.5.2",
     "i18next-browser-languagedetector": "^8.2.0",
     "i18next-http-backend": "^3.0.2",
+    "lottie-react": "^2.4.1",
     "lucide-react": "^0.574.0",
     "mitt": "^3.0.1",
     "plotly.js-dist-min": "^2.35.2",

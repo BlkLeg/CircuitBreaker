@@ -28,7 +28,10 @@ def _is_cb_service(service: Service) -> bool:
     labels: dict = {}
     if service.docker_labels:
         try:
-            labels = json.loads(service.docker_labels)
+            if isinstance(service.docker_labels, dict):
+                labels = service.docker_labels
+            else:
+                labels = json.loads(service.docker_labels)
         except Exception:
             pass
 

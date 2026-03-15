@@ -25,6 +25,7 @@ The server sends a ping every 30 seconds for keep-alive.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -203,7 +204,7 @@ async def _ping_loop(ws: WebSocket) -> None:
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
-        pass
+        logger.debug("Topology ping loop cancelled during connection shutdown")
     except Exception as exc:
         logger.debug("Topology WS ping loop error: %s", exc)
 
@@ -212,7 +213,7 @@ async def _ping_loop(ws: WebSocket) -> None:
 async def topology_stream(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -223,27 +224,22 @@ async def topology_stream(websocket: WebSocket) -> None:
     client_ip = _extract_client_ip(websocket)
 
     try:
-        # ── Auth phase: cookie (httpOnly) or first message (legacy token) ─────
-        raw_token = token_from_websocket_scope(websocket.scope)
+        # ── Auth phase: cookie (httpOnly) only ──────────────────────────────
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
         if not raw_token:
+            logger.warning("Topology WS auth rejected: no session cookie (ip=%s)", client_ip)
             try:
-                raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
-            except TimeoutError:
-                logger.warning("Topology WS auth timeout (ip=%s)", client_ip)
-                try:
-                    await websocket.send_text(json.dumps({"error": "auth_timeout"}))
-                    await websocket.close(code=1008)
-                except Exception as e:
-                    logger.debug("Topology WS auth_timeout close failed: %s", e, exc_info=True)
-                return
-            except WebSocketDisconnect:
-                return
+                await websocket.send_text(json.dumps({"error": "unauthorized"}))
+                await websocket.close(code=1008)
+            except Exception as exc:
+                logger.debug("Failed to send auth error to client (already disconnected): %s", exc)
+            return
 
         authenticated = False
         user_id: int | None = None
         api_token = _get_api_token()
 
-        if api_token and raw_token == api_token:
+        if api_token and raw_token and hmac.compare_digest(raw_token, api_token):
             authenticated = True
             user_id = 0
         else:
@@ -302,7 +298,7 @@ async def topology_stream(websocket: WebSocket) -> None:
                 except Exception as e:
                     logger.debug("Topology WS ping parse/send failed: %s", e, exc_info=True)
         except WebSocketDisconnect:
-            pass
+            logger.debug("Topology WebSocket disconnected normally")
         finally:
             ping_task.cancel()
             await topology_ws_manager.disconnect(websocket)

@@ -19,7 +19,8 @@ OS_ARCH       := $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m
 DOCKER_REPO   ?= $(shell git config --get remote.origin.url | sed 's/.*://;s/\.git$$//' | sed 's/^/ghcr.io\//' | tr '[:upper:]' '[:lower:]')
 SNYK_BIN      ?= $(CURDIR)/.tools/snyk
 SNYK_PATH     ?= $(CURDIR)
-COMPOSE_FILE  ?= docker/docker-compose.yml
+# Single source of truth for deployment (used by install.sh, make up, CI).
+COMPOSE_FILE  ?= docker-compose.yml
 # Default data dir for compose-clean when .env is not present
 CB_DATA_DIR   ?= ./circuitbreaker-data
 # Local Postgres for development (make postgres-up, make migrate, make postgres-down)
@@ -171,9 +172,43 @@ migrate: ## Run Alembic migrations (requires Postgres; set CB_DB_URL or use afte
 	@echo "✅ Migrations complete."
 
 # ==============================================================================
-# DOCKER & COMPOSE
+# DOCKER & COMPOSE (same docker-compose.yml as production; override CB_IMAGE for dev)
 # ==============================================================================
-.PHONY: lock setup-buildx compose-build compose-up compose-down compose-clean compose-reset-db compose-fresh compose-up-local tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-local docker-mono-release install-cb
+ENV_FILE := $(if $(wildcard .env.local),.env.local,.env)
+.PHONY: lock setup-buildx up down reset logs shell build compose-build compose-up compose-down compose-clean compose-reset-db compose-fresh compose-up-local tunnel-up tunnel-down preflight dev-stop-install db-seed-default-team test-mono-e2e docker-mono docker-mono-local docker-mono-release install-cb install-local secrets health
+
+up: dev-stop-install ## Start stack with locally built image (CB_IMAGE=...:dev). Copy .env.example to .env.local first.
+	CB_IMAGE=$(DOCKER_REPO):dev docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --build
+
+down: ## Stop stack (keep volumes)
+	docker compose -f $(COMPOSE_FILE) down
+
+reset: ## Full teardown — remove containers and volumes (destructive)
+	docker compose -f $(COMPOSE_FILE) down -v --remove-orphans
+	@docker volume rm circuitbreaker-data 2>/dev/null || true
+
+logs: ## Tail container logs
+	docker compose -f $(COMPOSE_FILE) logs -f --tail=100
+
+shell: ## Open shell in running app container
+	docker compose -f $(COMPOSE_FILE) exec circuitbreaker sh
+
+build: ## Build mono image locally as $(DOCKER_REPO):dev
+	@echo "Building mono image as $(DOCKER_REPO):dev..."
+	docker build -f Dockerfile.mono -t $(DOCKER_REPO):dev .
+	@echo "Run 'make up' to start the stack."
+
+secrets: ## Generate fresh secrets for .env.local
+	@echo "CB_JWT_SECRET=$$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+	@echo "CB_VAULT_KEY=$$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
+	@echo "CB_DB_PASSWORD=$$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+	@echo "NATS_AUTH_TOKEN=$$(openssl rand -base64 32)"
+
+health: ## Hit health endpoint (requires stack running)
+	@curl -sf "http://localhost:$${CB_PORT:-80}/api/v1/health" | jq .
+
+install-local: ## Run install.sh locally (same as one-liner users run)
+	@bash install.sh
 
 db-seed-default-team: ## Seed Default Team (id=1) in mono container; run after compose-up
 	@echo "Seeding Default Team..."
@@ -295,6 +330,7 @@ preflight: test frontend-build ## Run tests, build frontend, build mono image
 build-native: frontend-build ## Build a packaged native archive for the current OS/ARCH
 	@echo "Building packaged native release for $(OS_ARCH)..."
 	@echo "Ensuring pyinstaller is installed..."
+	@.venv/bin/python -c "import pip" >/dev/null 2>&1 || .venv/bin/python -m ensurepip --upgrade
 	@.venv/bin/python -m pip install pyinstaller
 	@echo "Running native packaging..."
 	@.venv/bin/python scripts/build_native_release.py --clean
@@ -384,3 +420,43 @@ release-dry-run: build-native ## Run a dry-run of the release process
 	@echo "\nDRY RUN: Would create release with assets in dist/native/"
 	@ls -l dist/native
 	@echo "\n✅ Release dry-run complete."
+
+# ==============================================================================
+# SECURITY VERIFICATION
+# ==============================================================================
+.PHONY: check-user check-security
+
+check-user: ## Verify mono container is NOT running as root
+	@echo "→ Checking container user..."
+	@docker compose exec circuitbreaker id
+	@docker compose exec circuitbreaker whoami
+	@echo ""
+	@echo "→ Checking image user config..."
+	@docker inspect $$(docker compose ps -q circuitbreaker 2>/dev/null || echo "circuitbreaker") \
+		--format 'Image user: {{.Config.User}}' 2>/dev/null || echo "Container not running"
+	@echo ""
+	@echo "→ Checking /data permissions..."
+	@docker compose exec circuitbreaker ls -la /data | head -10
+	@echo ""
+	@echo "→ Verifying read-only root filesystem..."
+	@docker compose exec circuitbreaker sh -c \
+		"touch /test_root_write 2>&1 || echo 'GOOD: root filesystem is read-only'"
+
+check-security: check-user ## Full security posture check
+	@echo ""
+	@echo "→ Checking capabilities..."
+	@docker compose exec circuitbreaker sh -c "cat /proc/self/status | grep CapEff"
+	@echo ""
+	@echo "→ Checking no-new-privileges..."
+	@docker compose exec circuitbreaker sh -c "cat /proc/self/status | grep NoNewPrivs"
+	@echo "  Expected: NoNewPrivs: 1"
+	@echo ""
+	@echo "→ Verifying /tmp is writable..."
+	@docker compose exec circuitbreaker sh -c \
+		"touch /tmp/test && rm /tmp/test && echo 'GOOD: /tmp writable'"
+	@echo ""
+	@echo "→ Verifying /data is writable..."
+	@docker compose exec circuitbreaker sh -c \
+		"touch /data/.test && rm /data/.test && echo 'GOOD: /data writable'"
+	@echo ""
+	@echo "✅ Security verification complete."

@@ -14,6 +14,7 @@ import socket
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ from app.db.models import Hardware, HardwareMonitor, ScanResult, UptimeEvent
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_PROBE_METHODS = ["icmp", "tcp", "http"]
 _HTTP_PROBE_PORTS = [80, 443, 8080, 8443]
 _TCP_FALLBACK_PORTS = [22, 80, 443, 8080]
 
@@ -38,7 +40,7 @@ _TLS_WARNING_LOGGED = False
 def probe_icmp(ip: str, timeout: float = 1.5) -> tuple[bool, float | None]:
     """ICMP ping. Returns (reachable, latency_ms)."""
     try:
-        import ping3  # optional dep
+        import ping3  # type: ignore[import-not-found, import-untyped]
 
         t0 = time.monotonic()
         result = ping3.ping(ip, timeout=timeout, unit="ms")
@@ -76,8 +78,8 @@ def probe_tcp(ip: str, ports: list[int], timeout: float = 1.0) -> tuple[bool, fl
                 s.close()
                 return True, round(latency, 2)
             s.close()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("TCP connect to %s:%d failed: %s", ip, port, exc)
     return False, None
 
 
@@ -110,8 +112,8 @@ def probe_http(
             latency = (time.monotonic() - t0) * 1000
             if resp.status_code < 600:
                 return True, round(latency, 2)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("HTTP probe to %s failed: %s", url, exc)
     return False, None
 
 
@@ -124,31 +126,23 @@ def probe_snmp(
     except ValueError:
         return False, None
     try:
-        from pysnmp.hlapi import (
-            CommunityData,
-            ContextData,
-            ObjectIdentity,
-            ObjectType,
-            SnmpEngine,
-            UdpTransportTarget,
-            getCmd,
-        )
+        from pysnmp import hlapi  # type: ignore[import-untyped]
 
         t0 = time.monotonic()
         error_indication, error_status, _, _var_binds = next(
-            getCmd(
-                SnmpEngine(),
-                CommunityData(community),
-                UdpTransportTarget((ip, 161), timeout=timeout, retries=0),
-                ContextData(),
-                ObjectType(ObjectIdentity("1.3.6.1.2.1.1.3.0")),  # sysUpTime
+            hlapi.getCmd(
+                hlapi.SnmpEngine(),
+                hlapi.CommunityData(community),
+                hlapi.UdpTransportTarget((ip, 161), timeout=timeout, retries=0),
+                hlapi.ContextData(),
+                hlapi.ObjectType(hlapi.ObjectIdentity("1.3.6.1.2.1.1.3.0")),  # sysUpTime
             )
         )
         latency = (time.monotonic() - t0) * 1000
         if not error_indication and not error_status:
             return True, round(latency, 2)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("SNMP probe to %s failed: %s", ip, exc)
     return False, None
 
 
@@ -167,30 +161,11 @@ def check_host(
     Returns ("up", latency, method) or ("down", None, last_method_tried).
     """
     last_method = methods[0] if methods else "icmp"
-
     for method in methods:
         last_method = method
-        if method == "icmp":
-            ok, latency = probe_icmp(ip)
-            if ok:
-                return "up", latency, "icmp"
-
-        elif method == "tcp":
-            ports = tcp_ports or _TCP_FALLBACK_PORTS
-            ok, latency = probe_tcp(ip, ports)
-            if ok:
-                return "up", latency, "tcp"
-
-        elif method == "http":
-            ok, latency = probe_http(ip)
-            if ok:
-                return "up", latency, "http"
-
-        elif method == "snmp" and snmp_community:
-            ok, latency = probe_snmp(ip, snmp_community)
-            if ok:
-                return "up", latency, "snmp"
-
+        ok, latency = _run_probe_method(ip, method, tcp_ports, snmp_community)
+        if ok:
+            return "up", latency, method
     return "down", None, last_method
 
 
@@ -211,13 +186,157 @@ def _get_tcp_ports_for_hardware(db: Session, hardware_id: int) -> list[int]:
     )
     if result and result.open_ports_json:
         try:
-            ports = json.loads(result.open_ports_json)
+            ports = (
+                result.open_ports_json
+                if isinstance(result.open_ports_json, list)
+                else json.loads(result.open_ports_json)
+            )
             if ports and isinstance(ports[0], dict):
                 return [p["port"] for p in ports if "port" in p]
             return [int(p) for p in ports]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to parse open ports for hardware %d: %s", hardware_id, exc)
     return _TCP_FALLBACK_PORTS
+
+
+def _run_probe_method(
+    ip: str,
+    method: str,
+    tcp_ports: list[int] | None,
+    snmp_community: str | None,
+) -> tuple[bool, float | None]:
+    if method == "icmp":
+        return probe_icmp(ip)
+    if method == "tcp":
+        return probe_tcp(ip, tcp_ports or _TCP_FALLBACK_PORTS)
+    if method == "http":
+        return probe_http(ip)
+    if method == "snmp" and snmp_community:
+        return probe_snmp(ip, snmp_community)
+    return False, None
+
+
+def _normalize_probe_methods(probe_methods: list[Any] | str | None) -> list[str]:
+    """Accept legacy JSON strings and current JSONB lists for probe methods."""
+    if isinstance(probe_methods, list):
+        return [str(method) for method in probe_methods]
+    if isinstance(probe_methods, str):
+        try:
+            parsed = json.loads(probe_methods)
+        except json.JSONDecodeError:
+            return list(_DEFAULT_PROBE_METHODS)
+        if isinstance(parsed, list):
+            return [str(method) for method in parsed]
+    return list(_DEFAULT_PROBE_METHODS)
+
+
+def _probe_methods_for_write(probe_methods: list[str] | None) -> list[Any]:
+    return list(probe_methods or _DEFAULT_PROBE_METHODS)
+
+
+def _get_snmp_community(db: Session) -> str | None:
+    try:
+        from app.services.settings_service import get_or_create_settings
+
+        settings = get_or_create_settings(db)
+        return settings.discovery_snmp_community or None
+    except Exception as exc:
+        logger.debug("Failed to retrieve SNMP community from settings: %s", exc)
+    return None
+
+
+def _publish_monitor_telemetry(
+    hardware_id: int,
+    status: str,
+    latency: float | None,
+    method_used: str,
+    checked_at: str,
+) -> None:
+    try:
+        import asyncio
+
+        from app.core.nats_client import get_nc
+
+        nc = get_nc()
+        if not (nc and nc.is_connected):
+            return
+        payload = {
+            "hardware_id": hardware_id,
+            "status": status,
+            "latency_ms": latency,
+            "probe_method": method_used,
+            "checked_at": checked_at,
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                nc.publish(f"telemetry.raw.{hardware_id}", json.dumps(payload).encode())
+            )
+        except RuntimeError:
+            logger.debug("No running event loop available for NATS publish (synchronous context)")
+    except Exception as exc:
+        logger.debug("Failed to publish telemetry to NATS: %s", exc)
+
+
+def _should_write_uptime_event(monitor: HardwareMonitor, status: str) -> bool:
+    if monitor.last_status != status:
+        return True
+    if not monitor.last_checked_at:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(monitor.last_checked_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return datetime.now(UTC) - last_dt > timedelta(hours=24)
+
+
+def _update_monitor_state(
+    monitor: HardwareMonitor,
+    status: str,
+    latency: float | None,
+    now: str,
+) -> None:
+    monitor.consecutive_failures = 0 if status == "up" else (monitor.consecutive_failures or 0) + 1
+    monitor.last_status = status
+    monitor.last_checked_at = now
+    monitor.latency_ms = latency
+    monitor.updated_at = now
+
+
+def _update_hardware_state(hw: Hardware, status: str, now: str) -> None:
+    hw.status = "online" if status == "up" else "offline"
+    if status == "up":
+        hw.last_seen = now
+
+
+def _update_uptime_pct_24h(db: Session, monitor: HardwareMonitor, status: str) -> None:
+    try:
+        from app.db.models import DailyUptimeStats
+
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        yesterday_str = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+        stats = db.scalars(
+            select(DailyUptimeStats).where(
+                DailyUptimeStats.hardware_id == monitor.hardware_id,
+                DailyUptimeStats.date.in_([today_str, yesterday_str]),
+            )
+        ).all()
+        total_mins = sum(s.total_minutes for s in stats)
+        up_mins = sum(s.uptime_minutes for s in stats)
+        if total_mins > 0:
+            monitor.uptime_pct_24h = round((up_mins / total_mins) * 100, 1)
+            return
+        monitor.uptime_pct_24h = 100.0 if status == "up" else 0.0
+    except Exception as exc:
+        logger.debug("Failed to calculate 24h uptime from rollups: %s", exc)
+
+
+def _prune_old_uptime_events(db: Session, hardware_id: int) -> None:
+    prune_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    db.query(UptimeEvent).filter(
+        UptimeEvent.hardware_id == hardware_id,
+        UptimeEvent.checked_at < prune_cutoff,
+    ).delete()
 
 
 def run_monitor(db: Session, monitor: HardwareMonitor) -> None:
@@ -226,159 +345,33 @@ def run_monitor(db: Session, monitor: HardwareMonitor) -> None:
     if not hw or not hw.ip_address:
         return
 
-    methods = json.loads(monitor.probe_methods or '["icmp","tcp","http"]')
+    methods = _normalize_probe_methods(monitor.probe_methods)
     tcp_ports = _get_tcp_ports_for_hardware(db, monitor.hardware_id)
-
-    snmp_community = None
-    try:
-        from app.services.settings_service import get_or_create_settings
-
-        settings = get_or_create_settings(db)
-        snmp_community = settings.discovery_snmp_community or None
-    except Exception:
-        pass
-
+    snmp_community = _get_snmp_community(db)
     status, latency, method_used = check_host(
-        hw.ip_address, methods, tcp_ports=tcp_ports, snmp_community=snmp_community
+        hw.ip_address,
+        methods,
+        tcp_ports=tcp_ports,
+        snmp_community=snmp_community,
     )
-
     now = utcnow_iso()
 
-    # NATS Telemetry Publisher
-    try:
-        import asyncio
-
-        from app.core.nats_client import get_nc
-
-        nc = get_nc()
-        if nc and nc.is_connected:
-            payload = {
-                "hardware_id": monitor.hardware_id,
-                "status": status,
-                "latency_ms": latency,
-                "probe_method": method_used,
-                "checked_at": now,
-            }
-            # Fire and forget publishing to NATS
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    nc.publish(f"telemetry.raw.{monitor.hardware_id}", json.dumps(payload).encode())
-                )
-            except RuntimeError:
-                # No running loop (e.g., synchronous thread)
-                pass
-    except Exception as exc:
-        logger.debug("Failed to publish telemetry to NATS: %s", exc)
-
-    # Write event to history ONLY if status changed or it's a daily heartbeat
-    # For daily heartbeat, checking if last_checked_at is older than 24h
-    write_event = False
-    if monitor.last_status != status:
-        write_event = True
-    elif monitor.last_checked_at:
-        try:
-            last_dt = datetime.fromisoformat(monitor.last_checked_at.replace("Z", "+00:00"))
-            if datetime.now(UTC) - last_dt > timedelta(hours=24):
-                write_event = True
-        except ValueError:
-            write_event = True  # bad format, write just in case
-    else:
-        write_event = True
-
-    if write_event:
-        event = UptimeEvent(
-            hardware_id=monitor.hardware_id,
-            status=status,
-            latency_ms=latency,
-            probe_method=method_used,
-            checked_at=now,
-        )
-        db.add(event)
-
-    # Update monitor state
-    if status == "up":
-        monitor.consecutive_failures = 0
-    else:
-        monitor.consecutive_failures = (monitor.consecutive_failures or 0) + 1
-
-    monitor.last_status = status
-    monitor.last_checked_at = now
-    monitor.latency_ms = latency
-    monitor.updated_at = now
-
-    # Propagate to Hardware.status and last_seen
-    hw.status = "online" if status == "up" else "offline"
-    if status == "up":
-        hw.last_seen = now
-
-    # Compute 24h uptime percentage from daily rollups (last 2 days to cover 24h rolling)
-    try:
-        from app.db.models import DailyUptimeStats
-
-        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
-        yesterday_str = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        stats = db.scalars(
-            select(DailyUptimeStats).where(
-                DailyUptimeStats.hardware_id == monitor.hardware_id,
-                DailyUptimeStats.date.in_([today_str, yesterday_str]),
+    _publish_monitor_telemetry(monitor.hardware_id, status, latency, method_used, now)
+    if _should_write_uptime_event(monitor, status):
+        db.add(
+            UptimeEvent(
+                hardware_id=monitor.hardware_id,
+                status=status,
+                latency_ms=latency,
+                probe_method=method_used,
+                checked_at=now,
             )
-        ).all()
-
-        total_mins = sum(s.total_minutes for s in stats)
-        up_mins = sum(s.uptime_minutes for s in stats)
-
-        # If we have daily stats, use them
-        if total_mins > 0:
-            monitor.uptime_pct_24h = round((up_mins / total_mins) * 100, 1)
-        else:
-            # Fallback for new monitors without rollups yet
-            monitor.uptime_pct_24h = 100.0 if status == "up" else 0.0
-
-    except Exception as exc:
-        logger.debug("Failed to calculate 24h uptime from rollups: %s", exc)
-
-    # Prune events older than 7 days to keep the table tidy
-    prune_cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-    db.query(UptimeEvent).filter(
-        UptimeEvent.hardware_id == monitor.hardware_id,
-        UptimeEvent.checked_at < prune_cutoff,
-    ).delete()
-
+        )
+    _update_monitor_state(monitor, status, latency, now)
+    _update_hardware_state(hw, status, now)
+    _update_uptime_pct_24h(db, monitor, status)
+    _prune_old_uptime_events(db, monitor.hardware_id)
     db.commit()
-
-
-# ── Batch runner (APScheduler entry point) ────────────────────────────────────
-
-
-def run_all_monitors(db: Session) -> None:
-    """Poll all enabled monitors. Called by the APScheduler job."""
-    monitors = db.scalars(select(HardwareMonitor).where(HardwareMonitor.enabled.is_(True))).all()
-    for monitor in monitors:
-        try:
-            run_monitor(db, monitor)
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Monitor check failed for hardware_id=%s: %s", monitor.hardware_id, exc)
-
-
-def run_all_monitors_job() -> None:
-    """APScheduler-compatible wrapper — opens its own DB session."""
-    from app.db.session import SessionLocal
-
-    db = SessionLocal()
-    try:
-        run_all_monitors(db)
-    except Exception as exc:
-        db.rollback()
-        logger.error("run_all_monitors_job failed: %s", exc)
-        raise
-    finally:
-        db.close()
-
-
-# ── CRUD helpers ──────────────────────────────────────────────────────────────
 
 
 def get_monitor(db: Session, hardware_id: int) -> HardwareMonitor | None:
@@ -397,7 +390,7 @@ def create_monitor(
         hardware_id=hardware_id,
         enabled=enabled,
         interval_secs=interval_secs,
-        probe_methods=json.dumps(probe_methods or ["icmp", "tcp", "http"]),
+        probe_methods=_probe_methods_for_write(probe_methods),
         last_status="unknown",
         consecutive_failures=0,
         created_at=now,
@@ -425,7 +418,7 @@ def update_monitor(
     if interval_secs is not None:
         monitor.interval_secs = interval_secs
     if probe_methods is not None:
-        monitor.probe_methods = json.dumps(probe_methods)
+        monitor.probe_methods = _probe_methods_for_write(probe_methods)
     monitor.updated_at = utcnow_iso()
     db.commit()
     db.refresh(monitor)
@@ -450,3 +443,18 @@ def get_history(db: Session, hardware_id: int, limit: int = 100) -> list[UptimeE
             .limit(limit)
         ).all()
     )
+
+
+def run_all_monitors_job() -> None:
+    """Scheduled job: probe every enabled monitor. Runs outside request context."""
+    from app.db.session import get_session_context
+
+    with get_session_context() as db:
+        monitors = list(
+            db.scalars(select(HardwareMonitor).where(HardwareMonitor.enabled.is_(True))).all()
+        )
+        for monitor in monitors:
+            try:
+                run_monitor(db, monitor)
+            except Exception:
+                logger.exception("Monitor probe failed for hardware_id=%s", monitor.hardware_id)

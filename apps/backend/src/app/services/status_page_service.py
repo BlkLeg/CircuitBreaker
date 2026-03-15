@@ -4,7 +4,9 @@ import json
 import logging
 from datetime import timedelta
 
+from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -50,7 +52,13 @@ def create_status_page(db: Session, data: StatusPageCreate) -> StatusPage:
         config=json.dumps(data.config) if data.config is not None else None,
     )
     db.add(page)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Status page with this slug already exists"
+        ) from exc
     db.refresh(page)
     return page
 
@@ -102,8 +110,8 @@ def create_status_group(db: Session, data: StatusGroupCreate) -> StatusGroup:
     group = StatusGroup(
         status_page_id=data.status_page_id,
         name=data.name,
-        nodes=json.dumps(data.nodes),
-        services=json.dumps(data.services),
+        nodes=data.nodes,
+        services=data.services,
     )
     db.add(group)
     db.commit()
@@ -121,17 +129,17 @@ def update_status_group(
     if data.name is not None:
         group.name = data.name
     if data.nodes is not None:
-        group.nodes = json.dumps(data.nodes)
+        group.nodes = data.nodes
     if data.services is not None:
-        group.services = json.dumps(data.services)
+        group.services = data.services
     if add_node is not None:
-        nodes = json.loads(group.nodes) if group.nodes else []
+        nodes = list(group.nodes) if group.nodes else []
         if isinstance(add_node, dict) and "type" in add_node and "id" in add_node:
             key = (add_node["type"], add_node["id"])
             existing_keys = {(n.get("type"), n.get("id")) for n in nodes if isinstance(n, dict)}
             if key not in existing_keys:
                 nodes.append(add_node)
-                group.nodes = json.dumps(nodes)
+                group.nodes = nodes
     db.commit()
     db.refresh(group)
     return group
@@ -153,8 +161,8 @@ def resolve_group_entity_ids(group: StatusGroup) -> tuple[list[int], list[int], 
     """Return (hardware_ids, compute_unit_ids, service_ids) for the group's nodes and services."""
     hardware_ids: list[int] = []
     compute_unit_ids: list[int] = []
-    service_ids: list[int] = list(json.loads(group.services)) if group.services else []
-    nodes = json.loads(group.nodes) if group.nodes else []
+    service_ids: list[int] = list(group.services) if group.services else []
+    nodes = list(group.nodes) if group.nodes else []
     for n in nodes:
         if not isinstance(n, dict):
             continue
@@ -223,8 +231,8 @@ def append_history(
         overall_status=overall_status,
         uptime_pct=uptime_pct,
         avg_ping=avg_ping,
-        metrics=json.dumps(metrics) if metrics is not None else None,
-        raw_telemetry=json.dumps(raw_telemetry) if raw_telemetry is not None else None,
+        metrics=metrics,
+        raw_telemetry=raw_telemetry,
     )
     db.add(row)
     db.commit()
@@ -238,7 +246,7 @@ def prune_history_older_than(db: Session, days: int = 30) -> int:
     from sqlalchemy import delete
 
     result = db.execute(delete(StatusHistory).where(StatusHistory.timestamp < cutoff))
-    deleted = result.rowcount
+    deleted: int = result.rowcount  # type: ignore[attr-defined]
     db.commit()
     if deleted:
         _logger.info("Pruned %d status_history rows older than %d days", deleted, days)
@@ -284,7 +292,7 @@ def get_dashboard_snapshots(db: Session) -> tuple[list[StatusPage], list[Dashboa
         overall = latest.overall_status if latest else "unknown"
         uptime = latest.uptime_pct if latest else 0.0
         avg_ping = latest.avg_ping if latest else None
-        metrics = json.loads(latest.metrics) if latest and latest.metrics else None
+        metrics = latest.metrics if latest and latest.metrics else None
         snapshots.append(
             DashboardGroupSnapshot(
                 id=g.id,
@@ -566,19 +574,19 @@ def list_available_entities(
     # 1. Hardware
     if entity_type in (None, "hardware"):
         hw_query = select(Hardware)
-        for hw in db.execute(hw_query).scalars().all():
-            if passes_filters(hw.name, hw.role, hw.status):
+        for hw_row in db.execute(hw_query).scalars().all():
+            if passes_filters(hw_row.name, hw_row.role, hw_row.status):
                 entities.append(
                     {
-                        "id": hw.id,
-                        "name": hw.name,
+                        "id": hw_row.id,
+                        "name": hw_row.name,
                         "type": "hardware",
-                        "role": hw.role,
-                        "status": hw.status or "unknown",
-                        "source": hw.source or "manual",
-                        "last_seen": hw.last_seen,
+                        "role": hw_row.role,
+                        "status": hw_row.status or "unknown",
+                        "source": hw_row.source or "manual",
+                        "last_seen": hw_row.last_seen,
                         "telemetry_summary": None,  # Can be expanded later from telemetry_data
-                        "already_grouped": hw.id in assigned_hardware_ids,
+                        "already_grouped": hw_row.id in assigned_hardware_ids,
                     }
                 )
 

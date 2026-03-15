@@ -40,6 +40,21 @@ from app.services.credential_vault import get_vault
 
 _logger = logging.getLogger(__name__)
 
+
+def _ensure_dict(val: Any) -> dict:
+    """Coerce a JSONB field that may be a legacy JSON string into a dict."""
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {}
+
+
 # Reuse one Proxmox client per integration to avoid urllib3 connection pool exhaustion
 # (many clients to the same host each create a pool; one client per host reuses connections).
 _proxmox_client_cache: dict[int, ProxmoxIntegration] = {}
@@ -108,7 +123,7 @@ def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
             f"Cannot decrypt credentials for integration {config.id}. "
             "The vault key may have changed."
         ) from exc
-    extra = json.loads(config.extra_config) if config.extra_config else {}
+    extra = _ensure_dict(config.extra_config)
     verify_ssl = extra.get("verify_ssl", False)
 
     cert_path, key_path = _resolve_tls_cert(db, config)
@@ -230,9 +245,9 @@ def update_integration(
             config.credential_id = cred.id
 
     if verify_ssl is not None:
-        extra = json.loads(config.extra_config) if config.extra_config else {}
+        extra = _ensure_dict(config.extra_config)
         extra["verify_ssl"] = verify_ssl
-        config.extra_config = json.dumps(extra)
+        config.extra_config = extra
 
     db.commit()
     db.refresh(config)
@@ -543,7 +558,7 @@ async def _import_storage_without_hardware(
 
 
 async def discover_and_import(
-    db: Session, config: IntegrationConfig, *, queue_for_review: bool = True
+    db: Session, config: IntegrationConfig, *, queue_for_review: bool = False
 ) -> dict:
     """Full cluster discovery: nodes, VMs, CTs, networks."""
     config.last_sync_status = "syncing"
@@ -839,7 +854,7 @@ async def discover_and_import(
 def _upsert_node(
     db: Session,
     config: IntegrationConfig,
-    cluster: HardwareCluster,
+    cluster: HardwareCluster | None,
     node_name: str,
     node_res: dict,
 ) -> Hardware:
@@ -858,17 +873,15 @@ def _upsert_node(
     mem = node_res.get("mem", 0)
     uptime = node_res.get("uptime", 0)
 
-    telemetry = json.dumps(
-        {
-            "cpu_pct": round(cpu_pct * 100, 1) if cpu_pct else 0,
-            "mem_used_bytes": mem,
-            "mem_total_bytes": maxmem,
-            "mem_used_gb": round(mem / (1024**3), 1) if mem else 0,
-            "mem_total_gb": round(maxmem / (1024**3), 1) if maxmem else 0,
-            "uptime_s": uptime,
-            "status": status_str,
-        }
-    )
+    telemetry = {
+        "cpu_pct": round(cpu_pct * 100, 1) if cpu_pct else 0,
+        "mem_used_bytes": mem,
+        "mem_total_bytes": maxmem,
+        "mem_used_gb": round(mem / (1024**3), 1) if mem else 0,
+        "mem_total_gb": round(maxmem / (1024**3), 1) if maxmem else 0,
+        "uptime_s": uptime,
+        "status": status_str,
+    }
 
     if not hw:
         hw = Hardware(
@@ -890,6 +903,9 @@ def _upsert_node(
         db.flush()
 
         # Add to cluster
+        if cluster is None:
+            db.flush()
+            return hw
         member = HardwareClusterMember(
             cluster_id=cluster.id,
             member_type="hardware",
@@ -943,17 +959,15 @@ def _upsert_vm(
     mem = vm_res.get("mem", 0)
     maxdisk = vm_res.get("maxdisk", 0)
 
-    pve_status = json.dumps(
-        {
-            "status": status_str,
-            "cpu_pct": round(cpu * 100, 1) if cpu else 0,
-            "mem_used_bytes": mem,
-            "mem_total_bytes": maxmem,
-            "disk_total_bytes": maxdisk,
-            "netin": vm_res.get("netin", 0),
-            "netout": vm_res.get("netout", 0),
-        }
-    )
+    pve_status = {
+        "status": status_str,
+        "cpu_pct": round(cpu * 100, 1) if cpu else 0,
+        "mem_used_bytes": mem,
+        "mem_total_bytes": maxmem,
+        "disk_total_bytes": maxdisk,
+        "netin": vm_res.get("netin", 0),
+        "netout": vm_res.get("netout", 0),
+    }
 
     cb_status = "active" if status_str == "running" else "inactive"
 
@@ -1213,6 +1227,8 @@ async def refresh_proxmox_storage(db: Session) -> None:
                 .all()
             )
             for hw in nodes:
+                if not hw.proxmox_node_name:
+                    continue
                 try:
                     storage_list = await client.get_node_storage(hw.proxmox_node_name)
                 except Exception as e:
@@ -1419,12 +1435,12 @@ async def poll_rrd_telemetry(db: Session) -> None:
                 except Exception as e:
                     _logger.debug("RRD poll failed for node %s: %s", node, e)
                     continue
-                if not isinstance(raw, list):
-                    continue
+                if not isinstance(raw, list):  # type: ignore[unreachable]
+                    continue  # type: ignore[unreachable]
                 # PVE returns list of dicts: time (unix), cpu, mem, maxmem, diskread, diskwrite, netin, netout, etc.
                 for point in raw:
-                    if not isinstance(point, dict):
-                        continue
+                    if not isinstance(point, dict):  # type: ignore[unreachable]
+                        continue  # type: ignore[unreachable]
                     ts_unix = point.get("time")
                     if ts_unix is None:
                         continue
@@ -1696,9 +1712,9 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     try:
         from app.core.circuit_breaker import call_with_circuit_breaker
 
-        cs_list = await call_with_circuit_breaker(
+        cs_list: list[dict] | None = await call_with_circuit_breaker(
             f"proxmox:{integration_id}:cluster",
-            lambda: client.get_cluster_status(),
+            client.get_cluster_status,
             fallback=[],
         )
         for item in cs_list or []:
@@ -1739,15 +1755,15 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     uptime_str = ""
     if nodes:
         try:
-            td = json.loads(nodes[0].telemetry_data or "{}") if nodes[0].telemetry_data else {}
+            td = _ensure_dict(nodes[0].telemetry_data)
             uptime_s = td.get("uptime_s", 0)
             if uptime_s:
                 d = int(uptime_s) // 86400
                 h = (int(uptime_s) % 86400) // 3600
                 m = (int(uptime_s) % 3600) // 60
                 uptime_str = f"{d}d {h}h {m}m"
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Failed to calculate uptime string for cluster overview: %s", exc)
 
     # Time-series from TelemetryTimeseries (last 24h)
     since_ts = utcnow() - timedelta(hours=24)
@@ -1776,10 +1792,10 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
         .scalars()
         .all()
     )
-    cpu_series: dict[str, list[dict[str, float | str]]] = {}
-    mem_series: dict[str, list[dict[str, float | str]]] = {}
-    netin_series: dict[str, list[dict[str, float | str]]] = {}
-    netout_series: dict[str, list[dict[str, float | str]]] = {}
+    cpu_series: dict[str, list[dict]] = {}
+    mem_series: dict[str, list[dict]] = {}
+    netin_series: dict[str, list[dict]] = {}
+    netout_series: dict[str, list[dict]] = {}
     for r in rows:
         node_name = node_id_to_name.get(r.entity_id, f"hw-{r.entity_id}")
         ts_str = r.ts.isoformat() if r.ts else ""
@@ -1817,14 +1833,14 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
             if not any(hid in node_ids for hid in hw_ids):
                 continue
             events = svc_status.list_events_for_group(db, g.id, since_param="7d", limit=50)
-            for e in events:
-                ts = e.get("ts") or e.get("timestamp", "")
-                msg = e.get("message", "")
+            for evt in events:
+                ts = evt.get("ts") or evt.get("timestamp", "")
+                msg = evt.get("message", "")
                 key = (str(ts), msg)
                 if key in seen_problems:
                     continue
                 seen_problems.add(key)
-                severity = e.get("severity", "info")
+                severity = evt.get("severity", "info")
                 problems_list.append(
                     {
                         "time": ts[:19] if isinstance(ts, str) and len(ts) > 19 else str(ts),

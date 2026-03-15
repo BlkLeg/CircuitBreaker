@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 try:
     import aiosmtplib
 except ImportError:  # pragma: no cover - exercised in runtime fallback paths
-    aiosmtplib = None
+    aiosmtplib = None  # type: ignore[assignment]
 
 from app.services.credential_vault import get_vault
 
@@ -243,12 +243,12 @@ class SmtpService:
             return {"status": "error", "message": str(exc)}
         except Exception as exc:
             _log.warning("SMTP test email failed: %s", exc)
-            msg = str(exc)
+            err_msg = str(exc)
             if "localhost" in (getattr(self.cfg, "smtp_host", "") or "").lower():
-                msg += (
+                err_msg += (
                     " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
                 )
-            return {"status": "error", "message": msg}
+            return {"status": "error", "message": err_msg}
 
     async def send_invite(self, to_email: str, token: str, invited_by: str, base_url: str) -> None:
         """Send an invite email with a clickable accept link."""

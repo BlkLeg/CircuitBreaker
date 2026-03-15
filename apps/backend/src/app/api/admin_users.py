@@ -26,6 +26,10 @@ _logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin-users"])
 
+TEMP_SECRET_SPECIAL_CHARS = "!@#$%^&*"
+EMAIL_EXISTS_DETAIL = "A user with this email already exists."
+USER_NOT_FOUND_DETAIL = "User not found"
+
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -108,12 +112,12 @@ class CreateLocalUserResponse(BaseModel):
 
 def _generate_temp_password() -> str:
     """Generate a cryptographically secure 12-character temp password."""
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    chars = string.ascii_letters + string.digits + TEMP_SECRET_SPECIAL_CHARS
     return (
         secrets.choice(string.ascii_uppercase)
         + secrets.choice(string.ascii_lowercase)
         + secrets.choice(string.digits)
-        + secrets.choice("!@#$%^&*")
+        + secrets.choice(TEMP_SECRET_SPECIAL_CHARS)
         + "".join(secrets.choice(chars) for _ in range(8))
     )
 
@@ -138,12 +142,14 @@ def list_users(
             .filter(UserSession.revoked == False)  # noqa: E712
             .filter(UserSession.expires_at > utcnow())
         ).count()
+        # Only expose gravatar_hash for the requesting user (self); null it out for other users
+        gravatar_hash_value = u.gravatar_hash if u.id == user.id else None
         result.append(
             UserListItem(
                 id=u.id,
                 email=u.email,
                 display_name=u.display_name,
-                gravatar_hash=u.gravatar_hash,
+                gravatar_hash=gravatar_hash_value,
                 role=getattr(u, "role", None) or ("admin" if u.is_admin else "viewer"),
                 is_active=u.is_active,
                 last_login=u.last_login,
@@ -187,9 +193,7 @@ def create_user(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=409, detail="A user with this email already exists."
-        ) from None
+        raise HTTPException(status_code=409, detail=EMAIL_EXISTS_DETAIL) from None
     db.refresh(new_user)
     return {
         "id": new_user.id,
@@ -225,16 +229,18 @@ def create_local_user(
     role = payload.role if payload.role in ("admin", "editor", "viewer") else "viewer"
 
     if payload.generate_password:
-        temp_password: str | None = _generate_temp_password()
+        temp_password = _generate_temp_password()
         client_hash = client_hash_password(temp_password)
         hashed = hash_password(client_hash)
     else:
-        if not payload.manual_password:
+        manual_password = payload.manual_password
+        if manual_password is None:
             raise HTTPException(
-                status_code=400, detail="manual_password is required when generate_password=False"
+                status_code=400,
+                detail="manual credential is required when automatic generation is disabled",
             )
-        _validate_password(payload.manual_password)
-        client_hash = client_hash_password(payload.manual_password)
+        _validate_password(manual_password)
+        client_hash = client_hash_password(manual_password)
         hashed = hash_password(client_hash)
         temp_password = None  # never expose manual passwords
 
@@ -258,9 +264,7 @@ def create_local_user(
         db.flush()  # get new_user.id before audit log
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=409, detail="A user with this email already exists."
-        ) from None
+        raise HTTPException(status_code=409, detail=EMAIL_EXISTS_DETAIL) from None
 
     audit = Log(
         level="info",
@@ -311,7 +315,7 @@ def update_user(
     """Update user role or is_active."""
     target = db.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_NOT_FOUND_DETAIL)
     if target.id == 0:
         raise HTTPException(status_code=403, detail="Cannot modify service account")
     if payload.role is not None:
@@ -337,7 +341,7 @@ def delete_user(
     """Soft-delete user (is_active=False) or, when permanent=true, remove the user entirely."""
     target = db.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_NOT_FOUND_DETAIL)
     if target.id == 0:
         raise HTTPException(status_code=403, detail="Cannot delete service account")
     if permanent:
@@ -363,7 +367,7 @@ def unlock_user_endpoint(
     """Unlock a user after failed login lockout."""
     target = unlock_user(db, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_NOT_FOUND_DETAIL)
     return {"id": target.id, "status": "unlocked"}
 
 
@@ -382,14 +386,18 @@ def masquerade_user(
         raise HTTPException(status_code=403, detail="Masquerade is disabled")
     target = db.get(User, user_id)
     if not target:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=USER_NOT_FOUND_DETAIL)
     if not target.is_active:
         raise HTTPException(status_code=400, detail="Cannot masquerade as inactive user")
-    # Short-lived token (15 min)
+    # Short-lived token (15 min) with masquerade claims for audit trail
     token = create_token(
         target.id,
         cfg.jwt_secret,  # type: ignore[arg-type]
         timeout_hours=15 / 60,  # type: ignore[arg-type]  # 15 minutes as fraction of hour
+        extra_claims={
+            "is_masquerade": True,
+            "masquerade_by": user.id,
+        },
     )
     log_audit(
         db,
@@ -431,15 +439,15 @@ def get_user_actions(
             dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp >= dt)
             count_q = count_q.where(Log.timestamp >= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            _logger.debug("Invalid start_time format '%s' (ignored): %s", start_time, exc)
     if end_time:
         try:
             dt = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
             q = q.where(Log.timestamp <= dt)
             count_q = count_q.where(Log.timestamp <= dt)
-        except ValueError:
-            pass
+        except ValueError as exc:
+            _logger.debug("Invalid end_time format '%s' (ignored): %s", end_time, exc)
     if action:
         q = q.where(Log.action == action)
         count_q = count_q.where(Log.action == action)
@@ -505,7 +513,9 @@ async def create_invite_endpoint(
     invite.email_status = email_status
     invite.email_error = email_error
     if email_status == "sent":
-        invite.email_sent_at = datetime.utcnow().isoformat()
+        from app.core.time import utcnow_iso
+
+        invite.email_sent_at = utcnow_iso()
     db.commit()
 
     return InviteCreateResponse(
@@ -571,3 +581,96 @@ def update_invite(
         db.refresh(invite)
         return {"id": invite_id, "expires": invite.expires.isoformat()}
     raise HTTPException(status_code=400, detail="Invalid action")
+
+
+# ── Admin Password Reset ──────────────────────────────────────────────────
+
+
+class AdminResetPasswordRequest(BaseModel):
+    send_email: bool = False
+    custom_password: str | None = None
+
+
+@router.post("/users/{user_id}/reset-password")
+def admin_reset_password(
+    user_id: int,
+    payload: AdminResetPasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = require_role("admin"),
+):
+    """Admin-initiated password reset: generate a temporary password and force change on next login."""
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail=USER_NOT_FOUND_DETAIL)
+    if not getattr(target, "hashed_password", None):
+        raise HTTPException(status_code=400, detail="User does not have a local password")
+
+    if payload.custom_password:
+        if len(payload.custom_password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        temp_password = payload.custom_password
+    else:
+        alphabet = string.ascii_letters + string.digits + TEMP_SECRET_SPECIAL_CHARS
+        temp_password = "".join(secrets.choice(alphabet) for _ in range(20))
+
+    target.hashed_password = hash_password(temp_password)
+    target.force_password_change = True
+    target.login_attempts = 0
+    target.locked_until = None
+    db.commit()
+    db.refresh(target)
+
+    return {
+        "force_password_change": True,
+        "temporary_password": temp_password,
+    }
+
+
+# ── Resend Invite ─────────────────────────────────────────────────────────
+
+
+@router.post("/invites/{invite_id}/resend")
+async def resend_invite(
+    invite_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = require_role("admin"),
+):
+    """Resend an existing invite email via SMTP."""
+    invite = db.get(UserInvite, invite_id)
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+
+    cfg = get_or_create_settings(db)
+    if not (cfg.smtp_enabled and cfg.smtp_host and cfg.smtp_from_email):
+        raise HTTPException(status_code=400, detail="SMTP is not configured")
+
+    from app.services.smtp_service import (
+        SmtpService,
+        public_base_from_request_headers,
+        resolve_public_base_url,
+    )
+
+    header_fallback = public_base_from_request_headers(
+        request.headers, str(request.base_url).rstrip("/")
+    )
+    base_url = resolve_public_base_url(cfg, header_fallback)
+    admin_email = user.email
+
+    try:
+        await SmtpService(cfg).send_invite(invite.email, invite.token, admin_email, base_url)
+    except Exception as exc:
+        invite.email_status = "failed"
+        invite.email_error = str(exc)
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Failed to send email: {exc}") from exc
+
+    invite.email_status = "sent"
+    from app.core.time import utcnow_iso
+
+    invite.email_sent_at = utcnow_iso()
+    invite.email_error = None
+    db.commit()
+
+    return {"id": invite_id, "email_status": "sent"}

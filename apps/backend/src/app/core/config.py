@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     dev_mode: bool = False
     database_url: str = ""  # Must be a postgresql:// URL; set via CB_DB_URL env var
     db_pool_url: str | None = None  # pgbouncer URL; falls back to database_url
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def resolve_database_url(cls, v: str) -> str:
+        from urllib.parse import quote_plus
+
+        url = os.environ.get("CB_DB_URL", "").strip() or (v or "").strip()
+        if url:
+            return url
+        # Auto-construct embedded PostgreSQL URL from CB_DB_PASSWORD
+        db_password = os.environ.get("CB_DB_PASSWORD", "").strip()
+        if db_password:
+            return f"postgresql://breaker:{quote_plus(db_password)}@127.0.0.1:5432/circuitbreaker"
+        return ""
+
     redis_url: str = "redis://localhost:6379/0"
     airgap: bool = False
     docker_host: str = ""

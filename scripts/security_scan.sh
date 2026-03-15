@@ -86,7 +86,8 @@ echo "## 7. Trivy (Filesystem)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy filesystem..."
 if command -v docker > /dev/null 2>&1; then
-    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs . >> "$REPORT_FILE" 2>&1 || true
+    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy fs \
+        --ignorefile /workspace/.trivyignore . >> "$REPORT_FILE" 2>&1 || true
 else
     echo "Docker not found, skipping Trivy fs." >> "$REPORT_FILE"
 fi
@@ -96,7 +97,8 @@ echo "## 8. Trivy (Config / IaC)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy config..."
 if command -v docker > /dev/null 2>&1; then
-    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config /workspace >> "$REPORT_FILE" 2>&1 || true
+    docker run --rm -v "$(pwd):/workspace" -w /workspace aquasec/trivy config \
+        --ignorefile /workspace/.trivyignore /workspace >> "$REPORT_FILE" 2>&1 || true
 else
     echo "Docker not found, skipping Trivy config." >> "$REPORT_FILE"
 fi

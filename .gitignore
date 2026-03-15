@@ -43,6 +43,7 @@ frontend/.env.*.local
 
 # Docker
 docker/data/
+data/audit/
 
 # Runtime user data (preserve folder structure via .gitkeep)
 backend/data/uploads/**
@@ -55,6 +56,7 @@ data/uploads/icons/**
 data/user-icons/**
 !data/user-icons/**/
 !data/user-icons/**/.gitkeep
+circuitbreaker-data/
 
 # Root runtime uploads (bind-mounted/injected at runtime)
 data/uploads/**
@@ -105,3 +107,8 @@ caddy/config/
 docker/caddy_data/
 docker/caddy_config/
 docker/circuitbreaker-data/
+
+# Agents
+.cursor/
+.claude/
+.codex/

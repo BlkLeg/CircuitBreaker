@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.services.catalog_service import (
     fuzzy_search_catalog,
@@ -24,7 +24,7 @@ def list_devices(vendor_key: str):
 def get_device(vendor_key: str, model_key: str):
     spec = get_device_spec(vendor_key, model_key)
     if not spec:
-        return {}
+        raise HTTPException(status_code=404, detail="Device not found")
     return spec
 
 

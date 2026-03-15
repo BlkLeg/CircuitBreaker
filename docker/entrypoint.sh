@@ -2,6 +2,11 @@
 # Entrypoint: fix /app/data ownership, then exec the app as the non-root user (breaker26).
 set -e
 
+# Auto-construct embedded PostgreSQL URL from CB_DB_PASSWORD when CB_DB_URL is not set
+if [ -z "${CB_DB_URL:-}" ] && [ -n "${CB_DB_PASSWORD:-}" ]; then
+  export CB_DB_URL="postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker"
+fi
+
 if [ -z "${CB_VAULT_KEY}" ]; then
     if [ ! -f /data/.env ] || ! grep -q "CB_VAULT_KEY" /data/.env 2>/dev/null; then
         echo "WARN [vault]: No CB_VAULT_KEY found in environment or /data/.env."

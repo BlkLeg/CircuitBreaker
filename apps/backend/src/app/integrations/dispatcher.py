@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Protocol
 
 from app.integrations.apc_ups import APCUPSClient
 from app.integrations.idrac import IDRACClient
@@ -9,9 +10,15 @@ from app.services.credential_vault import CredentialVault
 
 _logger = logging.getLogger(__name__)
 
+
+class _HardwareClient(Protocol):
+    def poll(self) -> dict: ...
+    def get_status(self, data: dict) -> str: ...
+
+
 # Reuse ILO/IDRAC clients per (profile, host, username) to avoid connection pool exhaustion.
 _HW_CLIENT_CACHE_MAX = 64
-_hw_client_cache: dict[tuple[str, str, str], object] = {}
+_hw_client_cache: dict[tuple[str, str, str], _HardwareClient] = {}
 
 PROFILE_MAP = {
     "idrac6": IDRACClient,
@@ -50,42 +57,47 @@ def poll_hardware(hardware, vault: CredentialVault) -> dict:
         return {}
 
     profile = config.get("profile")
-    ClientClass = PROFILE_MAP.get(profile)
-    if not ClientClass:
+    client_class = PROFILE_MAP.get(profile)
+    if not client_class:
         return {"error": f"Unknown telemetry profile: {profile}", "status": "unknown"}
 
     host = config["host"]
     password = vault.decrypt(config["password"]) if config.get("password") else None
 
     try:
-        if profile in ("ilo4", "ilo5", "ilo6"):
-            cache_key = (profile, host, config.get("username") or "")
-            client = _hw_client_cache.get(cache_key)
-            if client is None:
-                client = ClientClass(host, config.get("username"), password)
-                if len(_hw_client_cache) >= _HW_CLIENT_CACHE_MAX:
-                    _hw_client_cache.clear()
-                _hw_client_cache[cache_key] = client
-        elif profile in ("apc_ups", "cyberpower_ups"):
-            client = ClientClass(host, config.get("snmp_community", "public"))
-        elif profile in ("snmp_generic", "ipmi_generic"):
-            client = ClientClass(
-                host, config.get("snmp_community", "public"), config.get("custom_oids", {})
-            )
-        else:
-            client = ClientClass(host, config.get("snmp_community", "public"))
-
+        client = _build_client(profile, host, config, password, client_class)
         data = client.poll()
         status = client.get_status(data)
         result = {"data": data, "status": status}
-
         _fire_and_forget_publish(hardware.id, result)
         return result
-
     except Exception as e:
         error_result = {"error": str(e), "status": "unknown"}
         _fire_and_forget_publish(hardware.id, error_result, ttl=30)
         return error_result
+
+
+def _build_client(
+    profile: str,
+    host: str,
+    config: dict,
+    password: str | None,
+    client_class: type,
+) -> _HardwareClient:
+    if profile in ("ilo4", "ilo5", "ilo6"):
+        cache_key = (profile, host, config.get("username") or "")
+        client = _hw_client_cache.get(cache_key)
+        if client is None:
+            client = client_class(host, config.get("username"), password)
+            if len(_hw_client_cache) >= _HW_CLIENT_CACHE_MAX:
+                _hw_client_cache.clear()
+            _hw_client_cache[cache_key] = client
+        return client
+    if profile in ("snmp_generic", "ipmi_generic"):
+        return client_class(
+            host, config.get("snmp_community", "public"), config.get("custom_oids", {})
+        )
+    return client_class(host, config.get("snmp_community", "public"))
 
 
 def _fire_and_forget_publish(hardware_id: int, result: dict, ttl: int | None = None) -> None:

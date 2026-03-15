@@ -60,7 +60,7 @@ class ProxmoxConfigOut(BaseModel):
     sync_interval_s: int
     last_sync_at: datetime | None = None
     last_sync_status: str | None = None
-    verify_ssl: bool = False
+    verify_ssl: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

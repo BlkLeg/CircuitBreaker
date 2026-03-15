@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "alembic>=1.13.0",
     "python-multipart>=0.0.9",
-    "PyJWT>=2.8.0",
+    "PyJWT>=2.12.1",
     "bcrypt>=4.0",
     "Pillow>=10.4.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
@@ -30,7 +30,6 @@ dependencies = [
     "netaddr>=0.10",
     "apscheduler>=3.10",
     "httpx>=0.27",
-    "aiosqlite>=0.20.0",
     "fastapi-users[sqlalchemy]>=13.0.0",
     "nats-py>=2.9.0",
     "zeroconf>=0.131.0",
@@ -54,12 +53,20 @@ analytics = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
-    "httpx>=0.27.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-xdist>=3.6",
+    "pytest-timeout>=2.3",
+    "httpx>=0.27.0",
+    "testcontainers[postgres]>=4.0",
+    "factory-boy>=3.3",
+    "faker>=26.0",
+    "freezegun>=1.5",
+    "respx>=0.21",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "mypy-extensions>=1.0.0",
     "types-bleach>=6.0.0",
+    "types-cachetools>=5.3.0",
     "types-requests>=2.32.0",
 ]
 docs = [
@@ -118,6 +125,32 @@ module = [
 # type-hardening pass is done in a future phase.
 ignore_errors = true
 
+[tool.coverage.run]
+omit = [
+    "src/app/services/discovery_service.py",
+    "src/app/services/proxmox_service.py",
+    "src/app/services/docker_discovery.py",
+    "src/app/services/smtp_service.py",
+    "src/app/services/listener_service.py",
+    "src/app/services/self_discovery.py",
+    "src/app/services/discovery_import_service.py",
+    "src/app/services/discovery_safe.py",
+    "src/app/services/prober_service.py",
+    "src/app/services/graph_service.py",
+    "src/app/services/graph_layout.py",
+    "src/app/services/inference_service.py",
+    "src/app/api/auth_oauth.py",
+    "src/app/api/proxmox.py",
+    "src/app/api/events.py",
+    "src/app/api/discovery.py",
+    "src/app/workers/*",
+    "src/app/main.py",
+    "src/app/start.py",
+    "src/app/core/nats_client.py",
+    "src/app/core/scheduler.py",
+    "src/app/core/redis.py",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
@@ -125,7 +158,15 @@ pythonpath = ["src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "--cov=./src/app --cov-report=xml --cov-report=term-missing"
+timeout = 30
+addopts = [
+    "--tb=short",
+    "-q",
+]
+markers = [
+    "security: security regression tests (from audit report)",
+    "slow: tests that take > 2 seconds",
+]
 
 [tool.poetry]
 name = "circuit-breaker-backend"

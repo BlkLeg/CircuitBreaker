@@ -14,6 +14,7 @@ import {
   EyeOff,
   Mail,
   UserCheck,
+  KeyRound,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { adminUsersApi } from '../api/client';
@@ -79,6 +80,14 @@ export default function AdminUsersPage({ embedded = false }) {
   });
   const [showLocalPass, setShowLocalPass] = useState(false);
   const [showQR, setShowQR] = useState(false);
+
+  // Reset password modal state
+  const [resetPwUser, setResetPwUser] = useState(null);
+  const [resetPwResult, setResetPwResult] = useState(null);
+  const [resetPwSubmitting, setResetPwSubmitting] = useState(false);
+  const [resetPwCustom, setResetPwCustom] = useState(false);
+  const [resetPwCustomValue, setResetPwCustomValue] = useState('');
+  const [showResetPass, setShowResetPass] = useState(false);
 
   const toggleEmail = (id) =>
     setRevealedEmails((prev) => {
@@ -280,6 +289,29 @@ export default function AdminUsersPage({ embedded = false }) {
     setShowQR(false);
   };
 
+  const handleResetPassword = async () => {
+    if (!resetPwUser) return;
+    setResetPwSubmitting(true);
+    try {
+      const data =
+        resetPwCustom && resetPwCustomValue ? { custom_password: resetPwCustomValue } : {};
+      const res = await adminUsersApi.resetPassword(resetPwUser.id, data);
+      setResetPwResult(res.data);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to reset password');
+    } finally {
+      setResetPwSubmitting(false);
+    }
+  };
+
+  const closeResetPwModal = () => {
+    setResetPwUser(null);
+    setResetPwResult(null);
+    setResetPwCustom(false);
+    setResetPwCustomValue('');
+    setShowResetPass(false);
+  };
+
   if (!isAdmin) return null;
 
   const content = (
@@ -476,6 +508,16 @@ export default function AdminUsersPage({ embedded = false }) {
                             title="Remove user permanently"
                           >
                             <Trash2 size={16} style={{ opacity: 0.8 }} />
+                          </button>
+                        )}
+                        {u.id !== user?.id && u.is_active && u.provider === 'local' && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setResetPwUser(u)}
+                            title="Reset password"
+                          >
+                            <KeyRound size={16} />
                           </button>
                         )}
                         <button
@@ -760,6 +802,206 @@ export default function AdminUsersPage({ embedded = false }) {
           onConfirm={() => handleRemovePermanent(confirmAction.user)}
           onCancel={() => setConfirmAction(null)}
         />
+      )}
+
+      {/* Reset Password Modal */}
+      {resetPwUser && (
+        <div className="modal-overlay" onClick={closeResetPwModal}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 20,
+              }}
+            >
+              <h3 style={{ margin: 0 }}>{resetPwResult ? 'Password Reset' : 'Reset Password'}</h3>
+              <button type="button" className="btn btn-ghost" onClick={closeResetPwModal}>
+                <X size={20} />
+              </button>
+            </div>
+
+            {resetPwResult ? (
+              <div>
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 'var(--radius)',
+                    marginBottom: 16,
+                    background: 'var(--color-online, #b8bb26)11',
+                    border: '1px solid var(--color-online, #b8bb26)44',
+                    color: 'var(--color-online, #b8bb26)',
+                    fontSize: 14,
+                  }}
+                >
+                  Password reset for <strong>{resetPwUser.email}</strong>.
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      display: 'block',
+                      marginBottom: 6,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: 'var(--color-text-muted)',
+                      letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    Temporary Password
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input
+                      type={showResetPass ? 'text' : 'password'}
+                      readOnly
+                      value={resetPwResult.temporary_password}
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        borderRadius: 'var(--radius)',
+                        fontSize: 14,
+                        fontFamily: 'monospace',
+                        background: 'var(--color-bg)',
+                        border: '1px solid var(--color-border)',
+                        color: 'var(--color-text)',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setShowResetPass((v) => !v)}
+                      title={showResetPass ? 'Hide' : 'Show'}
+                    >
+                      {showResetPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      title="Copy password"
+                      onClick={() => {
+                        navigator.clipboard.writeText(resetPwResult.temporary_password);
+                        toast.success('Password copied');
+                      }}
+                    >
+                      <Copy size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius)',
+                    marginBottom: 16,
+                    background: 'var(--color-warning, #fabd2f)11',
+                    border: '1px solid var(--color-warning, #fabd2f)44',
+                    fontSize: 13,
+                    color: 'var(--color-warning, #fabd2f)',
+                  }}
+                >
+                  User must change password on next login.
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={closeResetPwModal}
+                  style={{ width: '100%' }}
+                >
+                  Done
+                </button>
+              </div>
+            ) : (
+              <>
+                <p
+                  style={{
+                    fontSize: 13,
+                    color: 'var(--color-text-muted)',
+                    marginBottom: 16,
+                    marginTop: 0,
+                  }}
+                >
+                  Reset password for <strong>{resetPwUser.email}</strong>. They will be required to
+                  change it on next login.
+                </p>
+
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={resetPwCustom}
+                      onChange={(e) => {
+                        setResetPwCustom(e.target.checked);
+                        if (!e.target.checked) setResetPwCustomValue('');
+                      }}
+                    />
+                    Set a custom password instead of auto-generating
+                  </label>
+                </div>
+
+                {resetPwCustom && (
+                  <div style={{ marginBottom: 16 }}>
+                    <label
+                      style={{
+                        display: 'block',
+                        marginBottom: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: 'var(--color-text-muted)',
+                        letterSpacing: '0.04em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Custom Password
+                    </label>
+                    <input
+                      type="text"
+                      value={resetPwCustomValue}
+                      onChange={(e) => setResetPwCustomValue(e.target.value)}
+                      placeholder="Minimum 8 characters"
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: 'var(--radius)',
+                        fontSize: 14,
+                        background: 'var(--color-bg)',
+                        border: '1px solid var(--color-border)',
+                        color: 'var(--color-text)',
+                        boxSizing: 'border-box',
+                      }}
+                      autoFocus
+                    />
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn btn-secondary" onClick={closeResetPwModal}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleResetPassword}
+                    disabled={resetPwSubmitting || (resetPwCustom && resetPwCustomValue.length < 8)}
+                  >
+                    {resetPwSubmitting ? 'Resetting...' : 'Reset Password'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Create Local User Drawer */}

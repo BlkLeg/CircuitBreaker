@@ -48,13 +48,13 @@ async function fetchHealth() {
  *   offlineSince   — timestamp (ms) when offline started, or null
  */
 export function useServerLifecycle() {
-  const [state, setState] = useState('starting');
+  const [state, setState] = useState('checking');
   const [previousState, setPreviousState] = useState(null);
   const [checks, setChecks] = useState(null);
   const [offlineSince, setOfflineSince] = useState(null);
 
   const timerRef = useRef(null);
-  const currentState = useRef('starting');
+  const currentState = useRef('checking');
 
   const scheduleNext = useCallback((nextState) => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -64,7 +64,9 @@ export function useServerLifecycle() {
       const resolved = health?.state ?? 'offline';
 
       if (resolved !== currentState.current) {
-        setPreviousState(currentState.current);
+        if (currentState.current !== 'checking') {
+          setPreviousState(currentState.current);
+        }
         currentState.current = resolved;
         setState(resolved);
 

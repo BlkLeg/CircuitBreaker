@@ -9,7 +9,15 @@ import {
   servicesApi,
   hardwareApi,
   storageApi,
+  ipamApi,
 } from '../../api/client';
+import {
+  getMonitor,
+  createMonitor,
+  updateMonitor,
+  getMonitorHistory,
+  runImmediateCheck,
+} from '../../api/monitor';
 import {
   Server,
   Layers,
@@ -30,6 +38,68 @@ import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import PortEditor from './PortEditor';
 
+function VLANsSection({ hardwareId }) {
+  const [trunks, setTrunks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!hardwareId) return;
+    ipamApi
+      .listTrunks({ hardware_id: hardwareId })
+      .then((r) => setTrunks(r.data ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [hardwareId]);
+
+  if (loading) return <p className="text-muted">Loading VLANs…</p>;
+
+  return (
+    <div className="detail-section">
+      <h4 style={{ marginBottom: 12 }}>VLAN Trunk Memberships</h4>
+      {trunks.length === 0 ? (
+        <p className="text-muted">No VLAN trunk assignments.</p>
+      ) : (
+        <div className="list-group">
+          {trunks.map((t) => (
+            <div
+              key={t.id}
+              className="list-item"
+              style={{
+                padding: 8,
+                borderBottom: '1px solid var(--color-border)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span>VLAN #{t.vlan_id}</span>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {t.port_label && (
+                  <span className="text-muted" style={{ fontSize: 12 }}>
+                    {t.port_label}
+                  </span>
+                )}
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    background: t.tagged ? '#3b82f620' : '#f59e0b20',
+                    color: t.tagged ? '#3b82f6' : '#f59e0b',
+                    fontWeight: 600,
+                  }}
+                >
+                  {t.tagged ? 'Tagged' : 'Untagged'}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HardwareDetail({ hardware, isOpen, onClose }) {
   const { settings } = useSettings();
   const vendorIconMode = settings?.vendor_icon_mode ?? 'custom_files';
@@ -42,6 +112,10 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   const [hwClusters, setHwClusters] = useState([]);
   const [ports, setPorts] = useState([]);
   const [editPortsMode, setEditPortsMode] = useState(false);
+  const [monitor, setMonitor] = useState(null);
+  const [monitorHistory, setMonitorHistory] = useState([]);
+  const [monitorLoading, setMonitorLoading] = useState(false);
+  const [checkingNow, setCheckingNow] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!hardware) return;
@@ -75,12 +149,61 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
     }
   }, [hardware]);
 
+  const fetchMonitor = useCallback(async () => {
+    if (!hardware?.id) return;
+    setMonitorLoading(true);
+    try {
+      const monRes = await getMonitor(hardware.id);
+      setMonitor(monRes.data);
+      const histRes = await getMonitorHistory(hardware.id, 20);
+      setMonitorHistory(histRes.data || []);
+    } catch (err) {
+      if (err.response?.status === 404) {
+        setMonitor(null);
+        setMonitorHistory([]);
+      } else {
+        logger.error('Failed to fetch monitor data:', err);
+      }
+    } finally {
+      setMonitorLoading(false);
+    }
+  }, [hardware]);
+
+  const handleCheckNow = useCallback(async () => {
+    if (!hardware?.id || checkingNow) return;
+    setCheckingNow(true);
+    try {
+      await runImmediateCheck(hardware.id);
+      setTimeout(() => fetchMonitor(), 1500);
+    } catch (err) {
+      logger.error('Failed to trigger immediate check:', err);
+    } finally {
+      setCheckingNow(false);
+    }
+  }, [hardware, checkingNow, fetchMonitor]);
+
+  const handleToggleMonitorEnabled = useCallback(async () => {
+    if (!monitor) return;
+    try {
+      await updateMonitor(hardware.id, { enabled: !monitor.enabled });
+      fetchMonitor();
+    } catch (err) {
+      logger.error('Failed to toggle monitor:', err);
+    }
+  }, [monitor, hardware, fetchMonitor]);
+
   useEffect(() => {
     if (isOpen) fetchData();
   }, [isOpen, fetchData]);
   useEffect(() => {
     if (isOpen) setActiveTab('overview');
   }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen && activeTab === 'uptime') {
+      fetchMonitor();
+    }
+  }, [isOpen, activeTab, fetchMonitor]);
 
   // Must be declared before any early return — React Rules of Hooks
   const connectedDevicesSummary = useMemo(() => {
@@ -182,6 +305,18 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
           onClick={() => setActiveTab('vulnerabilities')}
         >
           Vulnerabilities
+        </button>
+        <button
+          className={`tab ${activeTab === 'uptime' ? 'active' : ''}`}
+          onClick={() => setActiveTab('uptime')}
+        >
+          Uptime
+        </button>
+        <button
+          className={`tab ${activeTab === 'vlans' ? 'active' : ''}`}
+          onClick={() => setActiveTab('vlans')}
+        >
+          VLANs
         </button>
         <button
           className={`tab ${activeTab === 'docs' ? 'active' : ''}`}
@@ -753,6 +888,179 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         {activeTab === 'vulnerabilities' && (
           <VulnerabilityPanel entityType="hardware" entityId={hardware.id} />
         )}
+
+        {activeTab === 'uptime' && (
+          <div className="detail-section">
+            {monitorLoading ? (
+              <div style={{ padding: 20, textAlign: 'center', color: 'var(--color-text-muted)' }}>
+                Loading monitor data...
+              </div>
+            ) : !monitor ? (
+              <div style={{ padding: 20, textAlign: 'center' }}>
+                <p style={{ marginBottom: 12, color: 'var(--color-text-muted)' }}>
+                  No uptime monitor configured for this hardware.
+                </p>
+                <button
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    try {
+                      await createMonitor({
+                        hardware_id: hardware.id,
+                        enabled: true,
+                        probe_methods: ['icmp'],
+                        check_interval_s: 60,
+                      });
+                      fetchMonitor();
+                    } catch (err) {
+                      logger.error('Failed to create monitor:', err);
+                    }
+                  }}
+                >
+                  Create Monitor
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="field-group">
+                  <span className="field-label">Status</span>
+                  <div>
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        padding: '4px 8px',
+                        borderRadius: 4,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        background:
+                          monitor.last_status === 'up'
+                            ? 'var(--color-success-bg, #d4edda)'
+                            : monitor.last_status === 'down'
+                              ? 'var(--color-danger-bg, #f8d7da)'
+                              : 'var(--color-border)',
+                        color:
+                          monitor.last_status === 'up'
+                            ? 'var(--color-success, #155724)'
+                            : monitor.last_status === 'down'
+                              ? 'var(--color-danger, #721c24)'
+                              : 'var(--color-text-muted)',
+                      }}
+                    >
+                      {monitor.last_status?.toUpperCase() || 'UNKNOWN'}
+                    </span>
+                  </div>
+                </div>
+                <div className="field-group">
+                  <span className="field-label">Enabled</span>
+                  <div>
+                    <label
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={monitor.enabled || false}
+                        onChange={handleToggleMonitorEnabled}
+                      />
+                      <span>{monitor.enabled ? 'Yes' : 'No'}</span>
+                    </label>
+                  </div>
+                </div>
+                <div className="field-group">
+                  <span className="field-label">Probe Methods</span>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {Array.isArray(monitor.probe_methods) &&
+                      monitor.probe_methods.map((method) => (
+                        <span
+                          key={method}
+                          style={{
+                            padding: '4px 8px',
+                            background: 'var(--color-surface)',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: 4,
+                            fontSize: 12,
+                            textTransform: 'uppercase',
+                          }}
+                        >
+                          {method}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+                <div className="field-group">
+                  <span className="field-label">Check Interval</span>
+                  <div>{monitor.check_interval_s || 60}s</div>
+                </div>
+                {monitor.last_check_at && (
+                  <div className="field-group">
+                    <span className="field-label">Last Check</span>
+                    <div>{new Date(monitor.last_check_at).toLocaleString()}</div>
+                  </div>
+                )}
+                {monitor.response_time_ms != null && (
+                  <div className="field-group">
+                    <span className="field-label">Response Time</span>
+                    <div>{monitor.response_time_ms}ms</div>
+                  </div>
+                )}
+                <div style={{ marginTop: 16 }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleCheckNow}
+                    disabled={checkingNow}
+                  >
+                    {checkingNow ? 'Checking...' : 'Check Now'}
+                  </button>
+                </div>
+
+                {monitorHistory.length > 0 && (
+                  <div style={{ marginTop: 24 }}>
+                    <h4 style={{ marginBottom: 12, fontSize: 14, fontWeight: 600 }}>
+                      Recent History
+                    </h4>
+                    <table
+                      className="entity-table"
+                      style={{ width: '100%', fontSize: 12, tableLayout: 'fixed' }}
+                    >
+                      <thead>
+                        <tr>
+                          <th style={{ width: '40%' }}>Timestamp</th>
+                          <th style={{ width: '20%' }}>Status</th>
+                          <th style={{ width: '40%' }}>Response Time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monitorHistory.map((event, idx) => (
+                          <tr key={idx}>
+                            <td>{new Date(event.timestamp).toLocaleString()}</td>
+                            <td>
+                              <span
+                                style={{
+                                  color:
+                                    event.status === 'up'
+                                      ? 'var(--color-success, #28a745)'
+                                      : event.status === 'down'
+                                        ? 'var(--color-danger, #dc3545)'
+                                        : 'var(--color-text-muted)',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {event.status?.toUpperCase()}
+                              </span>
+                            </td>
+                            <td>
+                              {event.response_time_ms != null ? `${event.response_time_ms}ms` : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'vlans' && <VLANsSection hardwareId={hardware.id} />}
 
         {activeTab === 'docs' && <DocsPanel entityType="hardware" entityId={hardware.id} />}
       </div>

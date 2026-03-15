@@ -1190,7 +1190,7 @@ async def run_scan_job(job_id: int):
                 ip_address=ip,
                 mac_address=mac_address,
                 hostname=hostname or snmp_data.get("sys_name"),
-                open_ports_json=json.dumps(open_ports) if open_ports else None,
+                open_ports_json=open_ports or None,
                 os_family=os_family,
                 os_vendor=os_vendor,
                 os_accuracy=os_accuracy,
@@ -1248,7 +1248,7 @@ async def run_scan_job(job_id: int):
 
                 if conflict_fields:
                     res.state = "conflict"
-                    res.conflicts_json = json.dumps(conflict_fields)
+                    res.conflicts_json = conflict_fields
                     hosts_conflict += 1
                 else:
                     res.state = "matched"
@@ -1323,25 +1323,51 @@ async def run_scan_job(job_id: int):
                     if container_ip
                     else None
                 )
-                if matched_hw:
-                    docker_res.matched_entity_type = "hardware"
-                    docker_res.matched_entity_id = matched_hw.id
-                    docker_res.state = "matched"
-                    hosts_updated += 1
+                # Dedup: merge into existing result if same IP already found in this job
+                existing = (
+                    db.query(ScanResult)
+                    .filter(
+                        ScanResult.scan_job_id == job.id,
+                        ScanResult.ip_address == container_ip,
+                    )
+                    .first()
+                    if container_ip
+                    else None
+                )
+                if existing:
+                    existing.hostname = existing.hostname or docker_res.hostname
+                    existing.os_family = existing.os_family or docker_res.os_family
+                    existing.os_vendor = existing.os_vendor or docker_res.os_vendor
+                    existing.raw_nmap_xml = docker_res.raw_nmap_xml or existing.raw_nmap_xml
+                    existing.source_type = (existing.source_type or "nmap") + "+docker"
+                    if matched_hw and not existing.matched_entity_id:
+                        existing.matched_entity_type = "hardware"
+                        existing.matched_entity_id = matched_hw.id
+                        existing.state = "matched"
+                    db.commit()
+                    db.refresh(existing)
+                    result_obj = existing
                 else:
-                    hosts_new += 1
-                hosts_found += 1
-                db.add(docker_res)
-                db.commit()
-                db.refresh(docker_res)
+                    if matched_hw:
+                        docker_res.matched_entity_type = "hardware"
+                        docker_res.matched_entity_id = matched_hw.id
+                        docker_res.state = "matched"
+                        hosts_updated += 1
+                    else:
+                        hosts_new += 1
+                    hosts_found += 1
+                    db.add(docker_res)
+                    db.commit()
+                    db.refresh(docker_res)
+                    result_obj = docker_res
                 await _emit_ws_event(
                     "result_added",
                     {
                         "job_id": job.id,
-                        "result": ScanResultOut.model_validate(docker_res).model_dump(),
+                        "result": ScanResultOut.model_validate(result_obj).model_dump(),
                     },
                 )
-                results_list.append(docker_res)
+                results_list.append(result_obj)
 
         # B3: run auto-merge BEFORE marking job completed so any exception
         # doesn't overwrite a completed job with "failed"
@@ -1492,7 +1518,11 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
         # Link services based on open ports
         if result.open_ports_json:
             try:
-                ports = json.loads(result.open_ports_json)
+                ports = (
+                    result.open_ports_json
+                    if isinstance(result.open_ports_json, list)
+                    else json.loads(result.open_ports_json)
+                )
                 for p in ports:
                     port_num = int(p["port"])
                     if port_num in PORT_SERVICE_MAP:
@@ -1503,14 +1533,12 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
                             slug=_make_service_slug(db, svc_name, hw.id),
                             status="running",
                             hardware_id=hw.id,
-                            ports_json=json.dumps(
-                                [
-                                    {
-                                        "port": port_num,
-                                        "protocol": p.get("protocol", "tcp"),
-                                    }
-                                ]
-                            ),
+                            ports_json=[
+                                {
+                                    "port": port_num,
+                                    "protocol": p.get("protocol", "tcp"),
+                                }
+                            ],
                         )
                         db.add(svc)
                 db.commit()
@@ -1648,13 +1676,18 @@ def purge_old_scan_results() -> None:
     run_with_advisory_lock("discovery_purge", job_fn=_purge_old_scan_results_impl)
 
 
-def _build_ports_list(open_ports_json: str | None) -> list:
+def _build_ports_list(open_ports_json) -> list:
     """Build the ports suggestion list returned to the frontend after accepting a new host."""
     if not open_ports_json:
         return []
-    try:
-        ports = json.loads(open_ports_json)
-    except Exception:
+    if isinstance(open_ports_json, list):
+        ports = open_ports_json
+    elif isinstance(open_ports_json, str):
+        try:
+            ports = json.loads(open_ports_json)
+        except Exception:
+            return []
+    else:
         return []
     result = []
     for p in ports:
@@ -1775,15 +1808,13 @@ def _upsert_proxmox_node_entity(
     maxmem = payload.get("maxmem", 0) or 0
     mem = payload.get("mem", 0) or 0
     uptime = payload.get("uptime", 0) or 0
-    telemetry = json.dumps(
-        {
-            "cpu_pct": round(float(cpu_pct) * 100, 1) if cpu_pct else 0,
-            "mem_used_bytes": mem,
-            "mem_total_bytes": maxmem,
-            "uptime_s": uptime,
-            "status": status_str,
-        }
-    )
+    telemetry = {
+        "cpu_pct": round(float(cpu_pct) * 100, 1) if cpu_pct else 0,
+        "mem_used_bytes": mem,
+        "mem_total_bytes": maxmem,
+        "uptime_s": uptime,
+        "status": status_str,
+    }
     now_dt = datetime.fromisoformat(now_iso) if "T" in now_iso else datetime.now(UTC)
 
     if not hw:
@@ -1814,7 +1845,7 @@ def _upsert_proxmox_node_entity(
         hw.vendor_icon_slug = hw.vendor_icon_slug or "proxmox-dark"
         hw.telemetry_data = telemetry
         hw.telemetry_status = "healthy" if status_str == "online" else "unknown"
-        hw.telemetry_last_polled = now_iso
+        hw.telemetry_last_polled = now_dt
         if payload.get("ip"):
             hw.ip_address = payload.get("ip")
         hw.last_seen = now_iso
@@ -1934,6 +1965,7 @@ def _merge_proxmox_result(
         raise HTTPException(status_code=400, detail="Invalid Proxmox discovery payload")
 
     kind = str(payload.get("kind") or "").strip().lower()
+    entity: Hardware | ComputeUnit
     if kind == "node":
         entity = _upsert_proxmox_node_entity(db, payload, now_iso)
         result.matched_entity_type = "hardware"

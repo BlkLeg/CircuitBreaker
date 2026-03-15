@@ -41,16 +41,19 @@ const SettingsContext = createContext({
   settings: DEFAULTS,
   reloadSettings: async () => {},
   loading: true,
+  apiLoaded: false,
 });
 
 export function SettingsProvider({ children }) {
   const [settings, setSettings] = useState(DEFAULTS);
   const [loading, setLoading] = useState(true);
+  const [apiLoaded, setApiLoaded] = useState(false);
 
   const reloadSettings = useCallback(async () => {
     try {
       const res = await settingsApi.get();
       setSettings(res.data);
+      setApiLoaded(true);
     } catch (err) {
       logger.error('Failed to load settings:', err);
     } finally {
@@ -64,6 +67,7 @@ export function SettingsProvider({ children }) {
 
   // Apply theme to <html data-theme="..."> whenever it changes
   useEffect(() => {
+    if (!apiLoaded) return;
     const root = document.documentElement;
     const theme = settings.theme ?? 'dark';
     if (theme === 'auto') {
@@ -72,12 +76,13 @@ export function SettingsProvider({ children }) {
     } else {
       root.dataset.theme = theme;
     }
-  }, [settings.theme]);
+  }, [settings.theme, apiLoaded]);
 
   // Apply theme colors (preset or custom) via CSS variables whenever theme settings change.
   // settings.theme is included so switching light/dark re-triggers applyTheme, allowing
   // it to removeProperty bg/surface overrides in light mode.
   useEffect(() => {
+    if (!apiLoaded) return;
     let colors;
     const preset = settings.theme_preset;
     if (preset && preset !== 'custom' && THEME_PRESETS[preset]) {
@@ -99,7 +104,7 @@ export function SettingsProvider({ children }) {
       colors = THEME_PRESETS[DEFAULT_PRESET];
     }
     applyTheme(colors, preset ?? DEFAULT_PRESET);
-  }, [settings.theme_preset, settings.theme_colors, settings.branding, settings.theme]);
+  }, [settings.theme_preset, settings.theme_colors, settings.branding, settings.theme, apiLoaded]);
 
   // Apply font family and font size preferences instantly via CSS variables.
   useAppFont(settings?.ui_font ?? 'inter', settings?.ui_font_size ?? 'medium');
@@ -135,8 +140,8 @@ export function SettingsProvider({ children }) {
   }, [settings.language]);
 
   const contextValue = useMemo(
-    () => ({ settings, reloadSettings, loading }),
-    [settings, reloadSettings, loading]
+    () => ({ settings, reloadSettings, loading, apiLoaded }),
+    [settings, reloadSettings, loading, apiLoaded]
   );
 
   return <SettingsContext.Provider value={contextValue}>{children}</SettingsContext.Provider>;

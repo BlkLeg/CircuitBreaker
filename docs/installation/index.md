@@ -22,30 +22,25 @@ Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker a
 
 | Method | Best for | HTTPS | Effort |
 |---|---|---|---|
-| [Quick Install (Script)](quick-install.md) | Most Linux users — fastest path | Auto via Caddy | Low |
-| [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md) | Full capability (discovery, webhooks) — no build | Auto via Caddy | Low |
-| [Docker Compose — Prebuilt Single](docker-compose.md) | Minimal single-container, behind existing proxy | BYO | Low |
+| [Quick Install (Script)](quick-install.md) | Most Linux users — fastest path to the standard deployment | Auto via Caddy | Low |
+| [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md) | The same standard deployment, managed manually | Auto via Caddy | Low |
 | [Docker Compose — From Source](docker-compose-source.md) | Contributors or custom builds | Auto via Caddy | Medium |
-| [Single Docker Container](manual-docker.md) | Minimal setups, scripting, behind an existing reverse proxy | BYO | Low |
 
 ---
 
 ## Which Method Should I Choose?
 
 **I just want to get Circuit Breaker running as fast as possible with full capability (discovery, webhooks, HTTPS).**
-→ Use the [Quick Install script](quick-install.md). Choose option 2 (Compose stack). One command, no build, under 60 seconds.
+→ Use the [Quick Install script](quick-install.md). One command, no build, under 60 seconds.
 
-**I want a full compose stack (backend, workers, Caddy) without building from source.**
-→ Use [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md). Pull-only, zero build.
-
-**I want a minimal single container to drop into my stack.**
-→ Use [Docker Compose — Prebuilt Single](docker-compose.md). No repo clone needed, pull-and-go.
+**I want to manage the compose files directly but still get the same supported Docker experience.**
+→ Use [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md). It is the manual equivalent of the installer.
 
 **I want to build Circuit Breaker from source (or contribute to development).**
 → Use [Docker Compose — From Source](docker-compose-source.md). Clones the repo and builds images locally.
 
-**I have my own reverse proxy (nginx, Traefik, Caddy) and just want a single container to proxy to.**
-→ Use the [Single Docker Container](manual-docker.md) method and point your proxy at port 8080.
+**I have a very custom environment and still want a reduced or proxy-managed container flow.**
+→ See the advanced references: [Advanced Compose Reference](docker-compose.md) and [Advanced Single Container Reference](manual-docker.md). These are not the standard supported install path.
 
 ---
 
@@ -66,5 +61,7 @@ Regardless of method, your next steps are:
 - [Configuration Reference](configuration.md)
 - [Upgrading](upgrading.md)
 - [Uninstalling](uninstalling.md)
+- [Advanced Compose Reference](docker-compose.md)
+- [Advanced Single Container Reference](manual-docker.md)
 - [Deployment & Security](../deployment-security.md)
 - [Remote Access & Tunnels](../remote-access.md)

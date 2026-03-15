@@ -43,6 +43,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo \
     zlib1g \
     libffi8 \
+    && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
+    && if [ -d /etc/ssl/private ] && [ -n "$(find /etc/ssl/private -maxdepth 1 -type f -print -quit)" ]; then \
+        echo "Unexpected private key material found in /etc/ssl/private"; \
+        find /etc/ssl/private -maxdepth 1 -type f; \
+        exit 1; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 # Create breaker26 user/group (matches entrypoint.sh and frontend image).

@@ -1,10 +1,83 @@
-# Root-level docker-compose.yml — single-container stack.
+# Circuit Breaker — single deployment file
+# Used by: install.sh, make up, make dev, CI smoke tests
+# Docs: https://github.com/BlkLeg/CircuitBreaker
 #
-# Usage (from repo root):
-#   docker compose up -d          # start
-#   docker compose down            # stop
-#   docker compose down -v         # stop + remove volume data
+# One image: Postgres + NATS + Redis + backend + workers + nginx (mono).
+# Required env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN
+# Optional: CB_DATA_DIR, CB_PORT_HTTP, CB_PORT_HTTPS, CB_TAG, CB_IMAGE (override for local dev)
 #
-# Required: CB_DB_PASSWORD and CB_VAULT_KEY (export or .env). See README.
-include:
-  - path: docker/docker-compose.yml
+# Docker socket: optional override for discovery —
+#   docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d
+
+name: circuitbreaker
+
+services:
+  circuitbreaker:
+    image: ${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:mono-${CB_TAG:-latest}}
+    build:
+      context: .
+      dockerfile: Dockerfile.mono
+    container_name: circuitbreaker
+    restart: unless-stopped
+    ports:
+      - "${CB_PORT:-80}:8080"
+      - "${CB_PORT_HTTPS:-443}:8443"
+    volumes:
+      - "${CB_DATA_DIR:-./circuitbreaker-data}:/data:z"
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+      - /run:size=10M
+      - /var/log:size=50M
+      - /var/lib/nginx:size=10M
+      - /var/lib/postgresql:size=10M
+    security_opt:
+      - no-new-privileges:true
+    # Mono container needs elevated caps for embedded services:
+    # - NET_RAW: SNMP/ICMP polling for telemetry integrations
+    # - NET_BIND_SERVICE: bind to ports 80/443 (if CB_PORT < 1024)
+    # - CHOWN/FOWNER/DAC_OVERRIDE: entrypoint volume ownership fix at startup
+    # - SETUID/SETGID: supervisor drops privileges for postgres/nginx/nats/redis
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+      - NET_BIND_SERVICE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    environment:
+      - CB_DB_PASSWORD=${CB_DB_PASSWORD:?Set CB_DB_PASSWORD}
+      - CB_VAULT_KEY=${CB_VAULT_KEY:?Set CB_VAULT_KEY}
+      - CB_JWT_SECRET=${CB_JWT_SECRET:?Set CB_JWT_SECRET}
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN:?Set NATS_AUTH_TOKEN for internal bus auth}
+      - CB_REDIS_URL=${CB_REDIS_URL:-}
+      - CB_REDIS_URL_SET_BY_USER=${CB_REDIS_URL:+1}
+      - CB_AIRGAP=${CB_AIRGAP:-false}
+      - CB_DOCKER_HOST=${CB_DOCKER_HOST:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+        compress: "true"

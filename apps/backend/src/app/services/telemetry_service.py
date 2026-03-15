@@ -216,7 +216,9 @@ async def write_telemetry(
     row = HardwareLiveMetric(
         hardware_id=hardware_id,
         collected_at=now,
-        cpu_pct=_as_float(data.get("cpu_pct") or data.get("cpu")),
+        cpu_pct=_as_float(
+            data.get("cpu_pct") if data.get("cpu_pct") is not None else data.get("cpu")
+        ),
         mem_pct=_derive_mem_pct(data),
         mem_used_mb=_as_float(data.get("mem_used_mb")) or _bytes_to_mb(data.get("mem_used")),
         mem_total_mb=_as_float(data.get("mem_total_mb")) or _bytes_to_mb(data.get("mem_total")),

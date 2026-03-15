@@ -313,8 +313,9 @@ export function useDiscoveryStream() {
     };
   }, [connect, clearRetry, clearSyncTimer]);
 
-  // Keep pendingCount in sync with the status endpoint on mount
+  // Keep pendingCount in sync with the status endpoint on mount (only if authenticated)
   useEffect(() => {
+    if (!user && !token) return;
     getDiscoveryStatus()
       .then((res) => {
         if (typeof res.data?.pending_results === 'number') {
@@ -322,9 +323,9 @@ export function useDiscoveryStream() {
         }
       })
       .catch((err) => {
-        console.error('Discovery pending count sync failed:', err);
+        console.debug('Discovery pending count sync failed:', err);
       });
-  }, []);
+  }, [user, token]);
 
   // Badge refresh: re-fetch count whenever something emits 'badge:refresh'
   useEffect(() => {
@@ -377,7 +378,7 @@ export function useDiscoveryStream() {
         getDiscoveryStatus()
           .then((res) => syncPendingCount(res, setPendingCount, actionsPendingRef))
           .catch((err) => {
-            console.warn('Background pending count sync failed:', err);
+            console.debug('Background pending count sync failed:', err);
           });
       }, 30000); // 30 second sync interval
     } else {

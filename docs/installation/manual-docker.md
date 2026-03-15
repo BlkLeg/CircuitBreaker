@@ -1,6 +1,8 @@
-# Single Docker Container
+# Advanced Single Container Reference
 
-Run Circuit Breaker as a single Docker container with a `docker run` command. This is the most minimal setup — no Compose file, no Caddy, no extra services. Pair it with your own reverse proxy for HTTPS.
+Run Circuit Breaker as a single Docker container with a `docker run` command when you explicitly want a custom proxy-managed deployment.
+
+This is an advanced reference, not the primary supported install path. For the standard tested Docker experience, use [Quick Install (Script)](quick-install.md) or [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md).
 
 ---
 
@@ -11,7 +13,7 @@ Run Circuit Breaker as a single Docker container with a `docker run` command. Th
 
 ---
 
-## Minimal Run Command
+## Example Run Command
 
 ```bash
 docker run -d \
@@ -69,7 +71,7 @@ docker run -d \
 Generate a key with:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+openssl rand -base64 32
 ```
 
 If `CB_VAULT_KEY` is not set, Circuit Breaker auto-generates one during the [first-run wizard](first-run.md) and writes it to `/data/.env` inside the volume. This persists as long as the volume is not deleted.

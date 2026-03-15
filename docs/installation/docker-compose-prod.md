@@ -1,8 +1,8 @@
 # Docker Compose — Prebuilt Full Stack
 
-Deploy Circuit Breaker with the full compose stack (backend, frontend, workers, Caddy, NATS) using prebuilt GHCR images. No clone or build required—typically completes in under 60 seconds.
+Deploy Circuit Breaker with the standard prebuilt Docker stack from GHCR. No clone or build required and it matches the supported experience delivered by the quick installer.
 
-This mode provides full capability: discovery workers, webhooks, notifications, and HTTPS via Caddy.
+This is the manual equivalent of the quick installer: same full capability, same discovery and worker support, and the same recommended Docker experience.
 
 ---
 
@@ -10,7 +10,7 @@ This mode provides full capability: discovery workers, webhooks, notifications, 
 
 - Linux (macOS/Windows with Docker Desktop also supported)
 - **Docker Engine 20+** with Compose plugin v2
-- Ports **80** and **443** available (Caddy)
+- Ports **80** and **443** available (nginx in container)
 - Outbound internet access to pull from `ghcr.io`
 
 ---
@@ -23,7 +23,7 @@ This mode provides full capability: discovery workers, webhooks, notifications, 
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash
 ```
 
-Choose **option 2 (Compose stack)** when prompted.
+If the interactive installer asks which Docker path to use, choose the full Docker or Compose option.
 
 Non-interactive:
 
@@ -35,18 +35,18 @@ CB_MODE=compose CB_YES=1 curl -fsSL https://raw.githubusercontent.com/BlkLeg/cir
 
 ```bash
 # 1. Create install directory
-mkdir -p ~/.circuit-breaker && cd ~/.circuit-breaker
+mkdir -p ~/.circuitbreaker && cd ~/.circuitbreaker
 
-# 2. Download compose files
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/docker-compose.prod.yml -o docker-compose.prod.yml
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/Caddyfile -o Caddyfile
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker/.env.example -o .env
+# 2. Download compose and env template
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/.env.example -o .env
+# Edit .env: CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN
 
-# 3. Start stack
-docker compose -f docker-compose.prod.yml up -d
+# 3. Edit .env, then start the standard stack
+docker compose up -d
 ```
 
-Access at **https://localhost** or **https://\<host-ip\>**. Trust the Caddy CA when prompted.
+Access at **http://localhost** or **https://localhost** (self-signed cert at first run). Trust the certificate when prompted.
 
 ---
 
@@ -61,7 +61,7 @@ CB_TAG=v1.2.0 curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker
 Or with manual setup:
 
 ```bash
-CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
+CB_TAG=v1.2.0 docker compose up -d
 ```
 
 ---
@@ -69,9 +69,9 @@ CB_TAG=v1.2.0 docker compose -f docker-compose.prod.yml up -d
 ## Upgrade
 
 ```bash
-cd ~/.circuit-breaker
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+cd ~/.circuitbreaker
+docker compose pull
+docker compose up -d
 ```
 
 Or use the `cb` command (after `install.sh`):

@@ -62,7 +62,7 @@ If `CB_VAULT_KEY` is not set, Circuit Breaker generates a key during the first-r
 Generate a key before first launch and set it in your environment:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+openssl rand -base64 32
 ```
 
 In `docker-compose.yml`:

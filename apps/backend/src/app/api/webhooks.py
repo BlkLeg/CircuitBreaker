@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, HttpUrl
+from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -86,6 +86,13 @@ class WebhookRuleCreate(BaseModel):
     enabled: bool = True
     secret: str | None = None
 
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: HttpUrl) -> str:
+        url_str = str(value).strip().rstrip("/")
+        reject_ssrf_url(url_str)
+        return url_str
+
 
 class WebhookRuleUpdate(BaseModel):
     label: str | None = None
@@ -95,6 +102,15 @@ class WebhookRuleUpdate(BaseModel):
     retries: int | None = None
     enabled: bool | None = None
     secret: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: HttpUrl | None) -> str | None:
+        if value is None:
+            return None
+        url_str = str(value).strip().rstrip("/")
+        reject_ssrf_url(url_str)
+        return url_str
 
 
 class WebhookRuleOut(BaseModel):
@@ -155,8 +171,8 @@ def _rule_to_out(rule: WebhookRule, status_by_id: dict[int, str]) -> WebhookRule
         id=rule.id,
         label=rule.name,
         url=rule.target_url,
-        events_enabled=_json_loads(rule.events_enabled, []),
-        headers=_mask_headers(_json_loads(rule.headers_json, None)),
+        events_enabled=rule.events_enabled or [],
+        headers=_mask_headers(rule.headers_json),
         retries=max(0, int(rule.retries or 0)),
         enabled=rule.enabled,
         created_at=created,
@@ -231,8 +247,8 @@ def create_webhook(
         name=rule_in.label.strip(),
         target_url=str(rule_in.url),
         topics=",".join(rule_in.events_enabled),
-        events_enabled=json.dumps(rule_in.events_enabled),
-        headers_json=json.dumps(rule_in.headers or {}),
+        events_enabled=rule_in.events_enabled,
+        headers_json=rule_in.headers or {},
         retries=max(0, min(rule_in.retries, 5)),
         enabled=rule_in.enabled,
         secret=rule_in.secret,
@@ -265,10 +281,10 @@ def update_webhook(
         rule.target_url = str(updates["url"])
     if "events_enabled" in updates:
         events = updates["events_enabled"] or []
-        rule.events_enabled = json.dumps(events)
+        rule.events_enabled = events
         rule.topics = ",".join(events)
     if "headers" in updates:
-        rule.headers_json = json.dumps(updates["headers"] or {})
+        rule.headers_json = updates["headers"] or {}
     if "retries" in updates and updates["retries"] is not None:
         rule.retries = max(0, min(int(updates["retries"]), 5))
     if "enabled" in updates:
@@ -299,7 +315,7 @@ async def test_webhook(
     }
     payload_bytes = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
-    for key, value in (_json_loads(rule.headers_json, {}) or {}).items():
+    for key, value in (rule.headers_json or {}).items():
         headers[str(key)] = str(value)
     if rule.secret:
         sig = hmac.new(rule.secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()

@@ -1,6 +1,7 @@
 """Read-only IP conflict check endpoint — powers real-time inline validation."""
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -42,4 +43,4 @@ def check_ip(request: Request, payload: IpCheckRequest, db: Session = Depends(ge
         exclude_entity_type=payload.exclude_entity_type,
         exclude_entity_id=payload.exclude_entity_id,
     )
-    return {"conflicts": [c.to_dict() for c in conflicts]}
+    return JSONResponse(content={"conflicts": [c.to_dict() for c in conflicts]})

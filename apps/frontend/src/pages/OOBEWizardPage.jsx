@@ -23,6 +23,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext.jsx';
 import { applyTheme } from '../theme/applyTheme';
 import { DEFAULT_PRESET, PRESET_LABELS, THEME_PRESETS } from '../theme/presets';
+import logger from '../utils/logger';
 import { FONT_OPTIONS, FONT_SIZE_OPTIONS } from '../lib/fonts';
 import { gravatarHash } from '../utils/md5.js';
 import { sanitizeImageSrc } from '../utils/validation.js';
@@ -195,7 +196,7 @@ function OOBEWizardPage({ onCompleted }) {
         }
       })
       .catch((err) => {
-        console.warn('Failed to fetch onboarding step:', err);
+        logger.warn('Failed to fetch onboarding step:', err);
       })
       .finally(() => setOnboardingLoaded(true));
   }, []);
@@ -226,7 +227,7 @@ function OOBEWizardPage({ onCompleted }) {
       if (saved.weatherLocation) setWeatherLocation(saved.weatherLocation);
       if (saved.externalAppUrl) setExternalAppUrl(saved.externalAppUrl);
     } catch (err) {
-      console.warn('OOBE state restore failed (defaults used):', err);
+      logger.warn('OOBE state restore failed (defaults used):', err);
     }
     sessionStorage.removeItem('oobe_state');
 
@@ -249,7 +250,7 @@ function OOBEWizardPage({ onCompleted }) {
         }
       })
       .catch((err) => {
-        console.warn('Failed to fetch OAuth profile during OOBE:', err);
+        logger.warn('Failed to fetch OAuth profile during OOBE:', err);
       });
 
     // Clean token from URL without triggering a re-render loop
@@ -257,7 +258,7 @@ function OOBEWizardPage({ onCompleted }) {
     // Skip account creation step — go straight to theme
     setStep(3);
     authApi.setOnboardingStep('theme').catch((err) => {
-      console.warn('Failed to persist onboarding step (theme):', err);
+      logger.warn('Failed to persist onboarding step (theme):', err);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -312,7 +313,7 @@ function OOBEWizardPage({ onCompleted }) {
       setLocationResults(results);
       setLocationDropdownOpen(results.length > 0);
     } catch (err) {
-      console.warn('OOBE location search failed:', err);
+      logger.warn('OOBE location search failed:', err);
       setLocationResults([]);
     } finally {
       setLocationSearching(false);
@@ -375,7 +376,7 @@ function OOBEWizardPage({ onCompleted }) {
     const name = OOBE_STEP_NAMES[nextStepNum - 1];
     if (name) {
       authApi.setOnboardingStep(name).catch((err) => {
-        console.warn('Failed to persist onboarding step:', err);
+        logger.warn('Failed to persist onboarding step:', err);
       });
     }
   };
@@ -478,7 +479,7 @@ function OOBEWizardPage({ onCompleted }) {
         });
       }
     } catch (err) {
-      console.error('OOBE OAuth provider save failed:', err);
+      logger.error('OOBE OAuth provider save failed:', err);
       setError('Failed to save OAuth provider settings. Please try again.');
       setOauthSetupSaving(false);
       return;
@@ -567,7 +568,7 @@ function OOBEWizardPage({ onCompleted }) {
           const photoRes = await authApi.updateProfile(fd, token);
           user = photoRes.data;
         } catch (err) {
-          console.warn('OOBE profile photo upload failed (account created):', err);
+          logger.warn('OOBE profile photo upload failed (account created):', err);
         }
       }
 
@@ -609,7 +610,7 @@ function OOBEWizardPage({ onCompleted }) {
       setVaultKeyCopied(true);
       setTimeout(() => setVaultKeyCopied(false), 2500);
     } catch (err) {
-      console.warn('Clipboard write failed, user can manually select:', err);
+      logger.warn('Clipboard write failed, user can manually select:', err);
     }
   };
 
@@ -1185,7 +1186,7 @@ function OOBEWizardPage({ onCompleted }) {
                                     ? `${globalThis.location.origin}/api/v1/auth/oauth/oidc/oidc/callback`
                                     : `${globalThis.location.origin}/api/v1/auth/oauth/${oauthSetupProvider}/callback`;
                                 navigator.clipboard.writeText(uri).catch((err) => {
-                                  console.warn('Clipboard write failed:', err);
+                                  logger.warn('Clipboard write failed:', err);
                                 });
                               }}
                             >

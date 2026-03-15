@@ -50,8 +50,16 @@ const client = axios.create({
   withCredentials: true,
 });
 
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];
+
 // Session is sent via httpOnly cookie (cb_session). Do not attach token from storage.
 // Strip accidental plaintext password when password_hash is already present (defense in depth).
+// Inject X-CSRF-Token header for all mutating requests using the cb_csrf cookie.
 client.interceptors.request.use((config) => {
   if (
     config.data &&
@@ -65,6 +73,10 @@ client.interceptors.request.use((config) => {
   }
   if (config.data instanceof FormData) {
     delete config.headers['Content-Type'];
+  }
+  if (CSRF_METHODS.includes(config.method?.toLowerCase())) {
+    const csrf = getCookie('cb_csrf');
+    if (csrf) config.headers['X-CSRF-Token'] = csrf;
   }
   return config;
 });
@@ -151,6 +163,8 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
+  getPorts: (id) => client.get(`/hardware/${id}/ports`),
+  updatePort: (id, portId, data) => client.patch(`/hardware/${id}/ports/${portId}`, data),
   addConnection: (sourceId, targetId) =>
     client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
   removeConnection: (connectionId) => client.delete(`/hardware-connections/${connectionId}`),
@@ -330,6 +344,7 @@ export const adminUsersApi = {
     client.delete(`/admin/users/${id}`, { params: permanent ? { permanent: true } : {} }),
   unlockUser: (id) => client.post(`/admin/users/${id}/unlock`),
   masquerade: (id) => client.post(`/admin/users/${id}/masquerade`),
+  resetPassword: (id, data = {}) => client.post(`/admin/users/${id}/reset-password`, data),
   getUserActions: (id, params) => client.get(`/admin/user-actions/${id}`, { params }),
   createInvite: (data) => client.post('/admin/invites', data),
   listInvites: (params) => client.get('/admin/invites', { params }),
@@ -470,6 +485,40 @@ export const ipamApi = {
   createSite: (data) => client.post('/sites', data),
   updateSite: (id, data) => client.patch(`/sites/${id}`, data),
   deleteSite: (id) => client.delete(`/sites/${id}`),
+  // Reservation Queue
+  listReservationQueue: (params) => client.get('/ipam/reservation-queue', { params }),
+  approveReservation: (id) => client.post(`/ipam/reservation-queue/${id}/approve`),
+  rejectReservation: (id) => client.post(`/ipam/reservation-queue/${id}/reject`),
+  // Conflicts
+  listConflicts: (params) => client.get('/ipam/conflicts', { params }),
+  conflictSummary: () => client.get('/ipam/conflicts/summary'),
+  resolveConflict: (id, data) => client.post(`/ipam/conflicts/${id}/resolve`, data),
+  dismissConflict: (id) => client.post(`/ipam/conflicts/${id}/dismiss`),
+  // DHCP
+  listDHCPPools: () => client.get('/ipam/dhcp/pools'),
+  createDHCPPool: (data) => client.post('/ipam/dhcp/pools', data),
+  updateDHCPPool: (id, data) => client.patch(`/ipam/dhcp/pools/${id}`, data),
+  deleteDHCPPool: (id) => client.delete(`/ipam/dhcp/pools/${id}`),
+  listDHCPLeases: (poolId) => client.get(`/ipam/dhcp/pools/${poolId}/leases`),
+  importDHCPLeases: (poolId, data) => client.post(`/ipam/dhcp/pools/${poolId}/leases/import`, data),
+  dhcpPoolUtilization: (poolId) => client.get(`/ipam/dhcp/pools/${poolId}/utilization`),
+  // Subnet
+  calculateSubnet: (cidr) => client.get('/ipam/subnet/calculate', { params: { cidr } }),
+  networkUtilization: (networkId) => client.get(`/ipam/subnet/networks/${networkId}/utilization`),
+  networkHeatmap: (networkId) => client.get(`/ipam/subnet/networks/${networkId}/heatmap`),
+  subnetSplit: (data) => client.post('/ipam/subnet/split', data),
+  // VLAN associations
+  vlanNetworks: (vlanId) => client.get(`/vlans/${vlanId}/networks`),
+  associateVlanNetwork: (vlanId, networkId) =>
+    client.post(`/vlans/${vlanId}/networks/${networkId}`),
+  dissociateVlanNetwork: (vlanId, networkId) =>
+    client.delete(`/vlans/${vlanId}/networks/${networkId}`),
+  vlanHardware: (vlanId) => client.get(`/vlans/${vlanId}/hardware`),
+  vlanMatrix: () => client.get('/vlans/matrix'),
+  // Trunks
+  listTrunks: (params) => client.get('/ipam/trunks', { params }),
+  createTrunk: (data) => client.post('/ipam/trunks', data),
+  deleteTrunk: (id) => client.delete(`/ipam/trunks/${id}`),
 };
 
 export const topologiesApi = {
@@ -508,6 +557,62 @@ export const racksApi = {
 
 export const eventsApi = {
   status: () => client.get('/events/status'),
+};
+
+export const discoveryApi = {
+  getJobs: (params) => client.get('/discovery/jobs', { params }),
+  getJob: (id) => client.get(`/discovery/jobs/${id}`),
+  getResultsWithInference: (jobId) =>
+    client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
+  batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
+};
+
+export const certificatesApi = {
+  list: () => client.get('/certificates'),
+  get: (id) => client.get(`/certificates/${id}`),
+  create: (data) => client.post('/certificates', data),
+  update: (id, data) => client.put(`/certificates/${id}`, data),
+  delete: (id) => client.delete(`/certificates/${id}`),
+  renew: (id) => client.post(`/certificates/${id}/renew`),
+};
+
+export const tenantsApi = {
+  list: (params) => client.get('/tenants', { params }),
+  get: (id) => client.get(`/tenants/${id}`),
+  create: (data) => client.post('/tenants', data),
+  update: (id, data) => client.patch(`/tenants/${id}`, data),
+  delete: (id) => client.delete(`/tenants/${id}`),
+  listMembers: (id) => client.get(`/tenants/${id}/members`),
+  addMember: (id, data) => client.post(`/tenants/${id}/members`, data),
+  updateMember: (tenantId, userId, data) =>
+    client.patch(`/tenants/${tenantId}/members/${userId}`, data),
+  removeMember: (tenantId, userId) => client.delete(`/tenants/${tenantId}/members/${userId}`),
+};
+
+export const notificationsApi = {
+  listSinks: () => client.get('/notifications/sinks'),
+  getSink: (id) => client.get(`/notifications/sinks/${id}`),
+  createSink: (data) => client.post('/notifications/sinks', data),
+  updateSink: (id, data) => client.patch(`/notifications/sinks/${id}`, data),
+  deleteSink: (id) => client.delete(`/notifications/sinks/${id}`),
+  testSink: (id) => client.post(`/notifications/sinks/${id}/test`),
+  listRoutes: () => client.get('/notifications/routes'),
+  createRoute: (data) => client.post('/notifications/routes', data),
+  updateRoute: (id, data) => client.patch(`/notifications/routes/${id}`, data),
+  deleteRoute: (id) => client.delete(`/notifications/routes/${id}`),
+};
+
+export const webhooksApi = {
+  list: (params) => client.get('/webhooks', { params }),
+  get: (id) => client.get(`/webhooks/${id}`),
+  create: (data) => client.post('/webhooks', data),
+  update: (id, data) => client.patch(`/webhooks/${id}`, data),
+  delete: (id) => client.delete(`/webhooks/${id}`),
+  test: (id, payload) => client.post(`/webhooks/${id}/test`, payload),
+  listDeliveries: (webhookId, params) =>
+    client.get(`/webhooks/${webhookId}/deliveries`, { params }),
+  getDelivery: (deliveryId) => client.get(`/webhook-deliveries/${deliveryId}`),
+  retryDelivery: (deliveryId) => client.post(`/webhook-deliveries/${deliveryId}/retry`),
 };
 
 export default client;

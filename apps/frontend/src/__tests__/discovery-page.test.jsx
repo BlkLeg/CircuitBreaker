@@ -1,7 +1,16 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import DiscoveryPage from '../pages/DiscoveryPage.jsx';
+
+function renderDiscoveryPage() {
+  return render(
+    <MemoryRouter>
+      <DiscoveryPage />
+    </MemoryRouter>
+  );
+}
 
 // Mock api client
 vi.mock('../api/client', () => {
@@ -72,13 +81,14 @@ vi.mock('../hooks/useDiscoveryStream.js', () => ({
 
 // Mock child components to keep tests focused
 vi.mock('../components/discovery/DiscoverySidebar.jsx', () => ({
-  default: ({ filter, onFilterChange, jobCounts, pendingReviewCount }) =>
+  default: ({ filter, onFilterChange, pendingReviewCount }) =>
     React.createElement(
       'nav',
       { 'data-testid': 'discovery-sidebar' },
       React.createElement('span', { 'data-testid': 'filter-label' }, filter),
       React.createElement('span', { 'data-testid': 'pending-count' }, String(pendingReviewCount)),
-      React.createElement('button', { onClick: () => onFilterChange('all') }, 'All Scans')
+      React.createElement('button', { onClick: () => onFilterChange('all') }, 'All Scans'),
+      React.createElement('button', { onClick: () => onFilterChange('new-scan') }, 'New Scan')
     ),
 }));
 
@@ -110,12 +120,17 @@ vi.mock('../components/discovery/ScanProfilesPanel.jsx', () => ({
   default: () => React.createElement('div', null, 'ScanProfiles'),
 }));
 
-vi.mock('./DiscoveryHistoryPage.jsx', () => ({
+vi.mock('../pages/DiscoveryHistoryPage.jsx', () => ({
   default: () => React.createElement('div', null, 'DiscoveryHistory'),
 }));
 
 vi.mock('../components/discovery/NewScanPage.jsx', () => ({
-  default: () => React.createElement('div', null, 'NewScan'),
+  default: () =>
+    React.createElement(
+      'div',
+      { 'data-testid': 'new-scan-page' },
+      React.createElement('button', { type: 'button' }, 'Start Scan')
+    ),
 }));
 
 vi.mock('../components/discovery/ReviewQueuePanel.jsx', () => ({
@@ -150,17 +165,16 @@ describe('DiscoveryPage', () => {
   });
 
   it('renders discovery page with sidebar and main content', async () => {
-    render(<DiscoveryPage />);
+    renderDiscoveryPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('discovery-sidebar')).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId('scan-table')).toBeInTheDocument();
-    expect(screen.getByTestId('status-bar')).toBeInTheDocument();
+    expect(screen.getByText('DiscoveryHistory')).toBeInTheDocument();
   });
 
-  it('renders scan table with jobs', async () => {
+  it('loads jobs and keeps default Discovery history view', async () => {
     discoveryApi.getJobs.mockResolvedValueOnce({
       data: [
         { id: 1, target: '192.168.1.0/24', status: 'completed', hosts_found: 5 },
@@ -168,16 +182,16 @@ describe('DiscoveryPage', () => {
       ],
     });
 
-    render(<DiscoveryPage />);
+    renderDiscoveryPage();
 
     await waitFor(() => {
-      expect(screen.getByTestId('job-1')).toBeInTheDocument();
+      expect(discoveryApi.getJobs).toHaveBeenCalled();
     });
 
-    expect(screen.getByTestId('job-2')).toBeInTheDocument();
+    expect(screen.getByText('DiscoveryHistory')).toBeInTheDocument();
   });
 
-  it('shows status bar with correct counts', async () => {
+  it('keeps all filter selected by default', async () => {
     discoveryApi.getJobs.mockResolvedValueOnce({
       data: [
         { id: 1, target: '192.168.1.0/24', status: 'completed', hosts_found: 5 },
@@ -185,20 +199,33 @@ describe('DiscoveryPage', () => {
       ],
     });
 
-    render(<DiscoveryPage />);
+    renderDiscoveryPage();
 
     await waitFor(() => {
-      expect(screen.getByText('2 scans, 1 active')).toBeInTheDocument();
+      expect(screen.getByTestId('filter-label')).toHaveTextContent('all');
     });
   });
 
   it('displays pending review count in sidebar', async () => {
     discoveryApi.getPendingResults.mockResolvedValueOnce({ data: { total: 7 } });
 
-    render(<DiscoveryPage />);
+    renderDiscoveryPage();
 
     await waitFor(() => {
       expect(screen.getByTestId('pending-count')).toHaveTextContent('7');
     });
+  });
+
+  it('shows start scan action after switching to New Scan', async () => {
+    renderDiscoveryPage();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('discovery-sidebar')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'New Scan' }));
+
+    expect(screen.getByTestId('new-scan-page')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start Scan' })).toBeInTheDocument();
   });
 });

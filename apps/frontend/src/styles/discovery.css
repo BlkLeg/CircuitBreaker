@@ -71,6 +71,7 @@ select.cb-input {
   inset: 0;
   z-index: 900;
   background: rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
@@ -241,6 +242,7 @@ select.cb-input {
   grid-template-columns: 220px 1fr;
   height: calc(100vh - var(--header-height, 60px) - 56px);
   overflow: hidden;
+  min-width: 0;
 }
 
 /* ── Sidebar ──────────────────────────────────────────────────────────────── */
@@ -306,6 +308,8 @@ select.cb-input {
     background 0.12s,
     color 0.12s,
     border-color 0.12s;
+  -webkit-user-select: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -414,7 +418,9 @@ select.cb-input {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
+  min-width: 0;
 }
 
 /* ── Toolbar ──────────────────────────────────────────────────────────────── */
@@ -1433,6 +1439,7 @@ select.cb-input {
   background: var(--color-surface, #161b27);
   font-size: 10px;
   color: var(--color-text-muted, #6b7a9e);
+  -webkit-user-select: none;
   user-select: none;
   flex-shrink: 0;
 }

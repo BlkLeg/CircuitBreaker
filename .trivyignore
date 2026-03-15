@@ -1,0 +1,28 @@
+# .trivyignore — Trivy filesystem scan suppressions
+#
+# Each entry suppresses a path (glob) from secret and config scanning.
+# Only suppress paths that have been reviewed and confirmed as either:
+#   (a) false positives from third-party library documentation, or
+#   (b) runtime-generated artifacts that are gitignored and never committed.
+
+# ── Third-party virtual environments ──────────────────────────────────────────
+# The fastapi_users library (bearer.py) embeds a hardcoded example JWT token in
+# its OpenAPI schema documentation. The compiled .pyc bytecode therefore triggers
+# secret scanners.  These directories contain ONLY third-party packages and are
+# already covered by *.pem / .venv / *.pyc rules in .gitignore.
+.venv/
+apps/backend/.venv/
+
+# ── Runtime-generated TLS certificates ────────────────────────────────────────
+# docker/data/tls/ and docker/circuitbreaker-data/tls/ hold self-signed EC
+# certificates created on first container start by entrypoint-mono.sh:
+#   openssl req -x509 -nodes -days 365 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1
+# They are ephemeral development certificates, never committed to git (covered by
+# docker/data/ and docker/circuitbreaker-data/ rules in .gitignore).
+docker/data/tls/
+docker/circuitbreaker-data/tls/
+
+# ── Claude agent worktrees ────────────────────────────────────────────────────
+# .claude/worktrees/ contains agent checkout copies that duplicate source files
+# already scanned from their canonical locations.
+.claude/worktrees/

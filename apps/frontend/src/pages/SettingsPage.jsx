@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useTimezone } from '../context/TimezoneContext.jsx';
 import { useToast } from '../components/common/Toast';
 import { syncDocker } from '../api/discovery.js';
+import logger from '../utils/logger';
 
 // Components
 import IconLibraryManager from '../components/settings/IconLibraryManager';
@@ -90,7 +91,7 @@ function CveSecuritySection({ form, set }) {
       .status()
       .then((r) => setCveStatus(r.data))
       .catch((err) => {
-        console.error('CVE status load failed:', err);
+        logger.error('CVE status load failed:', err);
       });
   }, []);
 
@@ -103,12 +104,12 @@ function CveSecuritySection({ form, set }) {
           .status()
           .then((r) => setCveStatus(r.data))
           .catch((err) => {
-            console.error('CVE status refresh failed:', err);
+            logger.error('CVE status refresh failed:', err);
           });
         setSyncing(false);
       }, 2000);
     } catch (err) {
-      console.error('CVE sync trigger failed:', err);
+      logger.error('CVE sync trigger failed:', err);
       setSyncing(false);
     }
   };
@@ -288,6 +289,10 @@ export default function SettingsPage() {
       login_lockout_minutes: ctxSettings.login_lockout_minutes ?? 15,
       invite_expiry_days: ctxSettings.invite_expiry_days ?? 7,
       masquerade_enabled: ctxSettings.masquerade_enabled ?? true,
+      // IPAM
+      ipam_auto_reserve: ctxSettings.ipam_auto_reserve ?? false,
+      ipam_reserve_mode: ctxSettings.ipam_reserve_mode ?? 'auto',
+      ipam_release_on_delete: ctxSettings.ipam_release_on_delete ?? true,
     };
     setForm(initialForm);
     setOrigForm(initialForm);
@@ -1213,6 +1218,55 @@ export default function SettingsPage() {
                     Use routes to control which severities each sink receives.
                   </p>
                   <NotificationsManager />
+                </SettingSection>
+
+                <SettingSection title="IPAM">
+                  <SettingField
+                    label="Auto-Reserve IPs"
+                    hint="Automatically create IP address records when hardware is discovered."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">IPAM auto-reserve</span>
+                      <input
+                        type="checkbox"
+                        checked={form.ipam_auto_reserve}
+                        onChange={(e) => set('ipam_auto_reserve', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
+
+                  {form.ipam_auto_reserve && (
+                    <SettingField
+                      label="Reserve Mode"
+                      hint="Auto: reserve immediately. Approval: queue for manual review."
+                    >
+                      <select
+                        className="form-control"
+                        value={form.ipam_reserve_mode}
+                        onChange={(e) => set('ipam_reserve_mode', e.target.value)}
+                        style={{ width: 160 }}
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="approval">Approval</option>
+                      </select>
+                    </SettingField>
+                  )}
+
+                  <SettingField
+                    label="Release on Delete"
+                    hint="Automatically free IP reservations when hardware is deleted."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">Release IPs on delete</span>
+                      <input
+                        type="checkbox"
+                        checked={form.ipam_release_on_delete}
+                        onChange={(e) => set('ipam_release_on_delete', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
                 </SettingSection>
 
                 <SettingSection title="Proxmox VE">

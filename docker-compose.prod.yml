@@ -1,6 +1,0 @@
-# Root-level docker-compose.prod.yml — same as main stack.
-#
-# Usage: docker compose -f docker-compose.prod.yml up -d
-# Required: CB_DB_PASSWORD, CB_VAULT_KEY (export or .env).
-include:
-  - path: docker/docker-compose.yml

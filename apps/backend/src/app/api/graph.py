@@ -1,7 +1,7 @@
 import hashlib
 import json
 import logging
-from typing import Any
+from typing import Any, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -44,6 +44,22 @@ from app.services.ip_reservation import bulk_conflict_map
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["graph"], dependencies=[require_scope("read", "*")])
+
+
+class TopologyContext(TypedDict):
+    """Shared context for topology graph building to avoid passing many parameters."""
+
+    db: Session
+    include_set: set[str]
+    conflict_map: dict[tuple[str, int], bool]
+    entity_tags_map: dict[tuple[str, int], list[str]]
+    entity_docs_map: dict[tuple[str, int], list[dict]]
+    cu_storage_pools: dict[int, list[str]]
+    cu_networks: dict[int, list[int]]
+    hw_networks: dict[int, list[int]]
+    environment: str | None
+    environment_id: int | None
+    rack_id: int | None
 
 
 def _preload_edge_maps(db: Session) -> dict:
@@ -260,66 +276,813 @@ class PlaceNodeInput(BaseModel):
     environment: str = "default"
 
 
-def build_topology_graph(
-    db: Session,
-    environment: str | None = None,
-    environment_id: int | None = None,
-    rack_id: int | None = None,
-    include: str = "hardware,compute,services,storage,networks,misc,external",
-) -> dict:
-    """Pure callable graph builder — shared by /graph/topology and /topologies/{id}."""
-    include_set = {i.strip().lower() for i in include.split(",")}
+def _get_tags(ctx: TopologyContext, entity_type: str, entity_id: int) -> list[str]:
+    """Retrieve tags for an entity from the pre-computed context map."""
+    return ctx["entity_tags_map"].get((entity_type, entity_id), [])
+
+
+def _get_docs(ctx: TopologyContext, entity_type: str, entity_id: int) -> list[dict]:
+    """Retrieve docs for an entity from the pre-computed context map."""
+    return ctx["entity_docs_map"].get((entity_type, entity_id), [])
+
+
+def _process_storage(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process storage entities and return (nodes, edges)."""
     nodes: list[dict] = []
     edges: list[dict] = []
 
-    # Bulk-compute IP conflict flags once per request to avoid N individual queries
-    conflict_map = bulk_conflict_map(db)  # (etype, eid) -> bool
+    if "storage" not in ctx["include_set"]:
+        return nodes, edges
 
-    # Helper to fetch tags for a set of entities
-    # Optimization: Loading tags for all entities can be N+1 if not careful.
-    # For v1 homelab scale, we can just fetch them or rely on lazy loading if eager is set.
-    # Let's do a simple bulk fetch approach if performance matters, but for now simple attribute access
-    # (relying on SQLAlchemy lazy/eager loading) is fine.
-    # But wait, our models don't have `tags` relationship explicitly defined in `models.py` snippet I saw?
-    # Checking models.py... EntityTag exists.
-    # Let's add a helper to get tags or simple ignore them for now if relation isn't easy.
-    # Actually, `EntityTag` is there. Let's pre-fetch all entity tags to avoid N+1.
+    db = ctx["db"]
 
-    entity_tags_map: dict[Any, Any] = {}
-    # Bulk-fetch all (entity_type, entity_id, tag_name) rows in a single query
-    # to avoid N+1 per entity.
+    proxmox_hw_lookup: dict[tuple[int, str], Hardware] = {}
+    for hw in db.execute(select(Hardware)).scalars():
+        if hw.integration_config_id and hw.proxmox_node_name:
+            proxmox_hw_lookup[(hw.integration_config_id, hw.proxmox_node_name.strip())] = hw
+
+    for st in db.execute(select(Storage).options(joinedload(Storage.hardware))).unique().scalars():
+        inferred_hw_id = st.hardware_id
+        inferred_vendor = st.hardware.vendor if st.hardware else None
+        inferred_icon = st.hardware.vendor_icon_slug if st.hardware else None
+
+        if inferred_hw_id is None and st.integration_config_id and st.name and "@" in st.name:
+            node_name = st.name.rsplit("@", 1)[-1].strip()
+            fallback_hw = proxmox_hw_lookup.get((st.integration_config_id, node_name))
+            if fallback_hw is not None:
+                inferred_hw_id = fallback_hw.id
+                inferred_vendor = fallback_hw.vendor
+                inferred_icon = fallback_hw.vendor_icon_slug
+
+        nodes.append(
+            {
+                "id": f"st-{st.id}",
+                "type": "storage",
+                "ref_id": st.id,
+                "label": st.name,
+                "kind": st.kind,
+                "capacity_gb": st.capacity_gb,
+                "used_gb": st.used_gb,
+                "vendor": inferred_vendor,
+                "icon_slug": inferred_icon,
+                "tags": _get_tags(ctx, "storage", st.id),
+                "hardware_id": inferred_hw_id,
+                "integration_config_id": st.integration_config_id,
+            }
+        )
+
+        if inferred_hw_id and "hardware" in ctx["include_set"]:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-hw-st-{st.id}",
+                    source=f"hw-{inferred_hw_id}",
+                    target=f"st-{st.id}",
+                    relation="has_storage",
+                )
+            )
+
+    return nodes, edges
+
+
+def _process_misc(ctx: TopologyContext) -> list[dict]:
+    """Process misc items and return nodes."""
+    if "misc" not in ctx["include_set"]:
+        return []
+
+    nodes: list[dict] = []
+    db = ctx["db"]
+
+    for m in db.execute(select(MiscItem)).scalars():
+        nodes.append(
+            {
+                "id": f"misc-{m.id}",
+                "type": "misc",
+                "ref_id": m.id,
+                "label": m.name,
+                "tags": _get_tags(ctx, "misc", m.id),
+            }
+        )
+
+    return nodes
+
+
+def _process_external(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process external nodes and return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "external" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+    environment = ctx["environment"]
+
+    for ext in db.execute(select(ExternalNode)).scalars():
+        if environment and ext.environment and ext.environment != environment:
+            continue
+        nodes.append(
+            {
+                "id": f"ext-{ext.id}",
+                "type": "external",
+                "ref_id": ext.id,
+                "label": f"{ext.name} ({ext.provider})" if ext.provider else ext.name,
+                "icon_slug": ext.icon_slug,
+                "tags": _get_tags(ctx, "external", ext.id),
+                "meta": {
+                    "provider": ext.provider,
+                    "kind": ext.kind,
+                    "region": ext.region,
+                    "ip_address": ext.ip_address,
+                },
+            }
+        )
+
+    if "networks" in ctx["include_set"]:
+        for link in db.execute(select(ExternalNodeNetwork)).scalars().all():  # type: ignore[assignment]
+            edges.append(
+                build_edge_dict(
+                    id=f"e-ext-net-{link.id}",
+                    source=f"ext-{link.external_node_id}",  # type: ignore[attr-defined]
+                    target=f"net-{link.network_id}",  # type: ignore[attr-defined]
+                    relation="connects_to",
+                    connection_type=getattr(link, "connection_type", None),
+                    bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
+                )
+            )
+
+    if "services" in ctx["include_set"]:
+        for svc_ext in db.execute(select(ServiceExternalNode)).scalars().all():
+            edges.append(
+                build_edge_dict(
+                    id=f"e-svc-ext-{svc_ext.id}",
+                    source=f"svc-{svc_ext.service_id}",
+                    target=f"ext-{svc_ext.external_node_id}",
+                    relation="depends_on",
+                    connection_type=getattr(svc_ext, "connection_type", None),
+                    bandwidth_mbps=getattr(svc_ext, "bandwidth_mbps", None),
+                )
+            )
+
+    return nodes, edges
+
+
+def _process_docker(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process docker networks and containers, return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "docker" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+
+    docker_nets = (
+        db.execute(
+            select(Network).where(Network.is_docker_network == True)  # noqa: E712
+        )
+        .scalars()
+        .all()
+    )
+    docker_net_ids = {n.id for n in docker_nets}
+    for dnet in docker_nets:
+        nodes.append(
+            {
+                "id": f"net-{dnet.id}",
+                "type": "docker_network",
+                "ref_id": dnet.id,
+                "label": dnet.name,
+                "cidr": dnet.cidr,
+                "icon_slug": dnet.icon_slug,
+                "docker_driver": dnet.docker_driver,
+                "tags": _get_tags(ctx, "networks", dnet.id),
+            }
+        )
+
+    docker_svcs = (
+        db.execute(
+            select(Service).where(Service.is_docker_container == True)  # noqa: E712
+        )
+        .scalars()
+        .all()
+    )
+    for dsvc in docker_svcs:
+        nodes.append(
+            {
+                "id": f"svc-{dsvc.id}",
+                "type": "docker_container",
+                "ref_id": dsvc.id,
+                "label": dsvc.name,
+                "status": dsvc.status,
+                "ip_address": dsvc.ip_address,
+                "docker_image": dsvc.docker_image,
+                "compute_id": dsvc.compute_id,
+                "hardware_id": dsvc.hardware_id,
+                "docker_labels": dsvc.docker_labels,
+                "tags": _get_tags(ctx, "services", dsvc.id),
+            }
+        )
+
+        if dsvc.compute_id and dsvc.compute_id in ctx["cu_networks"]:
+            for net_id in ctx["cu_networks"][dsvc.compute_id]:
+                if net_id in docker_net_ids:
+                    edges.append(
+                        build_edge_dict(
+                            id=f"e-docker-cn-{dsvc.id}-{net_id}",
+                            source=f"svc-{dsvc.id}",
+                            target=f"net-{net_id}",
+                            relation="on_network",
+                        )
+                    )
+        elif dsvc.hardware_id and dsvc.hardware_id in ctx["hw_networks"]:
+            for net_id in ctx["hw_networks"][dsvc.hardware_id]:
+                if net_id in docker_net_ids:
+                    edges.append(
+                        build_edge_dict(
+                            id=f"e-docker-hn-{dsvc.id}-{net_id}",
+                            source=f"svc-{dsvc.id}",
+                            target=f"net-{net_id}",
+                            relation="on_network",
+                        )
+                    )
+
+    return nodes, edges
+
+
+def _build_service_node(svc: Service, ctx: TopologyContext) -> dict:
+    """Build a single service node dict with IP resolution and port parsing."""
+    effective_ip = (
+        svc.ip_address
+        or (svc.compute_unit.ip_address if svc.compute_unit else None)
+        or (svc.hardware.ip_address if svc.hardware else None)
+    )
+    parsed_ports = []
+    if svc.ports_json:
+        if isinstance(svc.ports_json, list):
+            parsed_ports = svc.ports_json
+        elif isinstance(svc.ports_json, str):  # type: ignore[unreachable]
+            try:
+                maybe_ports = json.loads(svc.ports_json)
+                if isinstance(maybe_ports, list):
+                    parsed_ports = maybe_ports
+            except Exception:
+                parsed_ports = []
+
+    return {
+        "id": f"svc-{svc.id}",
+        "type": "service",
+        "ref_id": svc.id,
+        "label": svc.name,
+        "icon_slug": svc.custom_icon or svc.icon_slug,
+        "ip_address": effective_ip,
+        "ports": parsed_ports,
+        "compute_id": svc.compute_id,
+        "hardware_id": svc.hardware_id,
+        "status": svc.status or "unknown",
+        "status_override": None,
+        "tags": _get_tags(ctx, "services", svc.id),
+        "docs": _get_docs(ctx, "service", svc.id),
+        "ip_conflict": bool(svc.ip_conflict),
+    }
+
+
+def _build_service_edges(
+    services: list[Service], service_ids: set[int], ctx: TopologyContext
+) -> list[dict]:
+    """Build all service-related edges."""
+    edges: list[dict] = []
+    db = ctx["db"]
+
+    for svc in services:
+        if svc.compute_id and "compute" in ctx["include_set"]:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-cu-svc-{svc.id}",
+                    source=f"cu-{svc.compute_id}",
+                    target=f"svc-{svc.id}",
+                    relation="runs",
+                )
+            )
+        elif svc.hardware_id and "hardware" in ctx["include_set"]:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-hw-svc-{svc.id}",
+                    source=f"hw-{svc.hardware_id}",
+                    target=f"svc-{svc.id}",
+                    relation="hosts",
+                )
+            )
+
+        if "networks" in ctx["include_set"]:
+            seen_nets: set[int] = set()
+            if svc.compute_id:
+                for net_id in ctx["cu_networks"].get(svc.compute_id, []):
+                    if net_id not in seen_nets:
+                        seen_nets.add(net_id)
+                        edges.append(
+                            build_edge_dict(
+                                id=f"e-svc-net-{svc.id}-{net_id}",
+                                source=f"svc-{svc.id}",
+                                target=f"net-{net_id}",
+                                relation="on_network",
+                            )
+                        )
+            elif svc.hardware_id:
+                for net_id in ctx["hw_networks"].get(svc.hardware_id, []):
+                    if net_id not in seen_nets:
+                        seen_nets.add(net_id)
+                        edges.append(
+                            build_edge_dict(
+                                id=f"e-svc-net-{svc.id}-{net_id}",
+                                source=f"svc-{svc.id}",
+                                target=f"net-{net_id}",
+                                relation="on_network",
+                            )
+                        )
+
+    deps = db.execute(select(ServiceDependency)).scalars().all()
+    for dep in deps:
+        if dep.service_id in service_ids and dep.depends_on_id in service_ids:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-dep-{dep.id}",
+                    source=f"svc-{dep.service_id}",
+                    target=f"svc-{dep.depends_on_id}",
+                    relation="depends_on",
+                    connection_type=getattr(dep, "connection_type", None),
+                    bandwidth_mbps=getattr(dep, "bandwidth_mbps", None),
+                )
+            )
+
+    if "storage" in ctx["include_set"]:
+        links = db.execute(select(ServiceStorage)).scalars().all()
+        for link in links:
+            if link.service_id in service_ids:
+                edges.append(
+                    build_edge_dict(
+                        id=f"e-ss-{link.id}",
+                        source=f"svc-{link.service_id}",
+                        target=f"st-{link.storage_id}",
+                        relation="uses",
+                        connection_type=getattr(link, "connection_type", None),
+                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
+                    )
+                )
+
+    if "misc" in ctx["include_set"]:
+        links = db.execute(select(ServiceMisc)).scalars().all()  # type: ignore[assignment]
+        for link in links:
+            if link.service_id in service_ids:
+                edges.append(
+                    build_edge_dict(
+                        id=f"e-sm-{link.id}",
+                        source=f"svc-{link.service_id}",
+                        target=f"misc-{link.misc_id}",  # type: ignore[attr-defined]
+                        relation="integrates_with",
+                        connection_type=getattr(link, "connection_type", None),
+                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
+                    )
+                )
+
+    return edges
+
+
+def _process_services(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process services and return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "services" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+    environment_id = ctx["environment_id"]
+    environment = ctx["environment"]
+
+    q = select(Service).options(  # type: ignore[assignment]
+        joinedload(Service.compute_unit),
+        joinedload(Service.hardware),
+    )
+    if environment_id is not None:
+        q = q.where(Service.environment_id == environment_id)
+    elif environment:
+        q = q.where(Service.environment == environment)
+
+    services: list[Service] = db.execute(q).unique().scalars().all()  # type: ignore[assignment]
+    service_ids = {s.id for s in services}
+
+    for svc in services:
+        nodes.append(_build_service_node(svc, ctx))
+
+    edges.extend(_build_service_edges(services, service_ids, ctx))
+
+    return nodes, edges
+
+
+def _process_compute(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process compute units and return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "compute" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+    environment_id = ctx["environment_id"]
+    environment = ctx["environment"]
+
+    q = select(ComputeUnit)
+    if environment_id is not None:
+        q = q.where(ComputeUnit.environment_id == environment_id)
+    elif environment:
+        q = q.where(ComputeUnit.environment == environment)
+
+    for cu in db.execute(q).scalars():
+        pools = ctx["cu_storage_pools"].get(cu.id, [])
+        storage_allocated = None
+        if cu.disk_gb or pools:
+            storage_allocated = {
+                "disk_gb": cu.disk_gb,
+                "storage_pools": pools,
+            }
+        nodes.append(
+            {
+                "id": f"cu-{cu.id}",
+                "type": "compute",
+                "ref_id": cu.id,
+                "label": cu.name,
+                "kind": cu.kind,
+                "icon_slug": cu.icon_slug,
+                "ip_address": cu.ip_address,
+                "storage_allocated": storage_allocated,
+                "status": cu.status or "unknown",
+                "status_override": cu.status_override or None,
+                "download_speed_mbps": cu.download_speed_mbps,
+                "upload_speed_mbps": cu.upload_speed_mbps,
+                "tags": _get_tags(ctx, "compute", cu.id),
+                "docs": _get_docs(ctx, "compute_unit", cu.id),
+                "ip_conflict": ctx["conflict_map"].get(("compute_unit", cu.id), False),
+                "proxmox_vmid": cu.proxmox_vmid,
+                "proxmox_type": cu.proxmox_type,
+                "proxmox_status": (
+                    cu.proxmox_status
+                    if isinstance(cu.proxmox_status, dict)
+                    else (json.loads(cu.proxmox_status) if cu.proxmox_status else None)
+                ),
+                "hardware_id": cu.hardware_id,
+                "integration_config_id": cu.integration_config_id,
+            }
+        )
+
+        if "hardware" in ctx["include_set"]:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-hw-cu-{cu.id}",
+                    source=f"hw-{cu.hardware_id}",
+                    target=f"cu-{cu.id}",
+                    relation="hosts",
+                )
+            )
+
+    return nodes, edges
+
+
+def _build_hardware_node(
+    hw: Hardware, ctx: TopologyContext, monitor_map: dict[int, HardwareMonitor]
+) -> dict:
+    """Build a single hardware node dict with all metadata."""
+    storage_summary = None
+    if hw.storage_items:
+        total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
+        used_gb = sum(s.used_gb or 0 for s in hw.storage_items)
+        kinds = list(dict.fromkeys(s.kind for s in hw.storage_items if s.kind))
+        primary_pool = hw.storage_items[0].name if hw.storage_items else None
+        storage_summary = {
+            "total_gb": total_gb,
+            "used_gb": used_gb if any(s.used_gb is not None for s in hw.storage_items) else None,
+            "types": kinds,
+            "primary_pool": primary_pool,
+            "count": len(hw.storage_items),
+        }
+
+    telemetry_data = None
+    if hw.telemetry_data:
+        try:
+            if isinstance(hw.telemetry_data, dict):
+                telemetry_data = hw.telemetry_data
+            else:
+                telemetry_data = json.loads(hw.telemetry_data)  # type: ignore[unreachable]
+        except (json.JSONDecodeError, TypeError) as exc:
+            _logger.debug("Failed to parse telemetry_data for hardware %d: %s", hw.id, exc)
+
+    monitor = monitor_map.get(hw.id)
+
+    return {
+        "id": f"hw-{hw.id}",
+        "type": "hardware",
+        "ref_id": hw.id,
+        "label": hw.name,
+        "vendor": hw.vendor,
+        "role": hw.role or "hardware",
+        "icon_slug": hw.custom_icon or hw.vendor_icon_slug,
+        "ip_address": hw.ip_address,
+        "storage_summary": storage_summary,
+        "tags": _get_tags(ctx, "hardware", hw.id),
+        "docs": _get_docs(ctx, "hardware", hw.id),
+        "status": hw.status or "unknown",
+        "status_override": hw.status_override or None,
+        "telemetry_status": hw.telemetry_status or "unknown",
+        "telemetry_data": telemetry_data,
+        "telemetry_last_polled": hw.telemetry_last_polled.isoformat()
+        if hw.telemetry_last_polled
+        else None,
+        "u_height": hw.u_height,
+        "rack_unit": hw.rack_unit,
+        "rack_id": hw.rack_id,
+        "rack_name": hw.rack.name if hw.rack else None,
+        "download_speed_mbps": hw.download_speed_mbps,
+        "upload_speed_mbps": hw.upload_speed_mbps,
+        "ip_conflict": ctx["conflict_map"].get(("hardware", hw.id), False),
+        "monitor_status": monitor.last_status if monitor else None,
+        "monitor_latency_ms": monitor.latency_ms if monitor else None,
+        "monitor_last_checked_at": monitor.last_checked_at if monitor else None,
+        "monitor_uptime_pct_24h": monitor.uptime_pct_24h if monitor else None,
+        "proxmox_node_name": hw.proxmox_node_name,
+        "integration_config_id": hw.integration_config_id,
+    }
+
+
+def _build_hardware_edges(
+    hw_list: list[Hardware],
+    ctx: TopologyContext,
+    included_cluster_ids: set[int],
+    hw_node_ids: set[str],
+) -> list[dict]:
+    """Build all hardware-related edges."""
+    edges: list[dict] = []
+    db = ctx["db"]
+
+    for hw in hw_list:
+        if hw.rack_id:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-rack-{hw.rack_id}-hw-{hw.id}",
+                    source=f"rack-{hw.rack_id}",
+                    target=f"hw-{hw.id}",
+                    relation="rack_member",
+                )
+            )
+
+    svc_node_ids = {f"svc-{row[0]}" for row in db.execute(select(Service.id)).all()}
+    for member in db.execute(select(HardwareClusterMember)).scalars().all():
+        cluster_node_id = f"cluster-{member.cluster_id}"
+        if member.cluster_id not in included_cluster_ids:
+            continue
+        member_type = getattr(member, "member_type", "hardware") or "hardware"
+        if member_type == "service" and getattr(member, "service_id", None):
+            target_node_id = f"svc-{member.service_id}"
+            edge_id = f"e-cluster-{member.cluster_id}-svc-{member.service_id}"
+            if target_node_id in svc_node_ids:
+                edges.append(
+                    build_edge_dict(
+                        id=edge_id,
+                        source=cluster_node_id,
+                        target=target_node_id,
+                        relation="cluster_member",
+                    )
+                )
+        elif member.hardware_id:
+            hw_node_id = f"hw-{member.hardware_id}"
+            if hw_node_id in hw_node_ids:
+                edges.append(
+                    build_edge_dict(
+                        id=f"e-cluster-{member.cluster_id}-hw-{member.hardware_id}",
+                        source=cluster_node_id,
+                        target=hw_node_id,
+                        relation="cluster_member",
+                    )
+                )
+
+    for hconn in db.execute(select(HardwareConnection)).scalars().all():
+        src_node_id = f"hw-{hconn.source_hardware_id}"
+        tgt_node_id = f"hw-{hconn.target_hardware_id}"
+        if src_node_id in hw_node_ids and tgt_node_id in hw_node_ids:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-hh-{hconn.id}",
+                    source=src_node_id,
+                    target=tgt_node_id,
+                    relation="connects_to",
+                    connection_type=getattr(hconn, "connection_type", None),
+                    bandwidth_mbps=getattr(hconn, "bandwidth_mbps", None),
+                )
+            )
+
+    return edges
+
+
+def _process_hardware(
+    ctx: TopologyContext, included_cluster_ids: set[int]
+) -> tuple[list[dict], list[dict]]:
+    """Process hardware entities and return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "hardware" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+    rack_id = ctx["rack_id"]
+
+    hw_query = select(Hardware).options(
+        selectinload(Hardware.storage_items),
+        joinedload(Hardware.rack),
+    )
+    if rack_id is not None:
+        hw_query = hw_query.where(Hardware.rack_id == rack_id)
+
+    _all_hw = db.execute(hw_query).unique().scalars().all()
+    _all_hw_ids = [hw.id for hw in _all_hw]
+    _monitors = (
+        (db.query(HardwareMonitor).filter(HardwareMonitor.hardware_id.in_(_all_hw_ids)).all())
+        if _all_hw_ids
+        else []
+    )
+    _monitor_map = {m.hardware_id: m for m in _monitors}
+
+    for hw in _all_hw:
+        nodes.append(_build_hardware_node(hw, ctx, _monitor_map))
+
+    hw_node_ids = {f"hw-{hw.id}" for hw in _all_hw}
+    edges.extend(_build_hardware_edges(list(_all_hw), ctx, included_cluster_ids, hw_node_ids))
+
+    return nodes, edges
+
+
+def _process_clusters_and_racks(ctx: TopologyContext) -> tuple[list[dict], set[int]]:
+    """Process clusters and racks, return (nodes, included_cluster_ids)."""
+    nodes: list[dict] = []
+    included_cluster_ids: set[int] = set()
+
+    if "hardware" not in ctx["include_set"]:
+        return nodes, included_cluster_ids
+
+    db = ctx["db"]
+    environment = ctx["environment"]
+
+    clusters = db.execute(select(HardwareCluster)).scalars().all()
+    for cluster in clusters:
+        if environment and cluster.environment and cluster.environment != environment:
+            continue
+        if not cluster.members:
+            continue
+        included_cluster_ids.add(cluster.id)
+        nodes.append(
+            {
+                "id": f"cluster-{cluster.id}",
+                "type": "cluster",
+                "ref_id": cluster.id,
+                "label": cluster.name,
+                "icon_slug": cluster.icon_slug,
+                "environment": cluster.environment,
+                "member_count": len(cluster.members),
+                "cluster_type": cluster.type or "manual",
+                "docs": _get_docs(ctx, "hardware_cluster", cluster.id),
+            }
+        )
+
+    racks = db.execute(select(Rack)).scalars().all()
+    for rack in racks:
+        member_count = len(rack.hardware)
+        if member_count == 0:
+            continue
+        nodes.append(
+            {
+                "id": f"rack-{rack.id}",
+                "type": "rack",
+                "ref_id": rack.id,
+                "label": rack.name,
+                "height_u": rack.height_u,
+                "location": rack.location,
+                "member_count": member_count,
+            }
+        )
+
+    return nodes, included_cluster_ids
+
+
+def _process_networks(ctx: TopologyContext) -> tuple[list[dict], list[dict]]:
+    """Process networks and return (nodes, edges)."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    if "networks" not in ctx["include_set"]:
+        return nodes, edges
+
+    db = ctx["db"]
+
+    for net in db.execute(select(Network)).scalars():
+        nodes.append(
+            {
+                "id": f"net-{net.id}",
+                "type": "network",
+                "ref_id": net.id,
+                "label": net.name,
+                "cidr": net.cidr,
+                "icon_slug": net.icon_slug,
+                "tags": _get_tags(ctx, "networks", net.id),
+            }
+        )
+
+    if "compute" in ctx["include_set"]:
+        cns = db.execute(select(ComputeNetwork)).scalars().all()
+        for cn in cns:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-cn-{cn.id}",
+                    source=f"cu-{cn.compute_id}",
+                    target=f"net-{cn.network_id}",
+                    relation="connects_to",
+                    connection_type=getattr(cn, "connection_type", None),
+                    bandwidth_mbps=getattr(cn, "bandwidth_mbps", None),
+                )
+            )
+
+    if "hardware" in ctx["include_set"]:
+        for net in db.execute(
+            select(Network).where(Network.gateway_hardware_id.isnot(None))
+        ).scalars():
+            edges.append(
+                build_edge_dict(
+                    id=f"e-gw-{net.id}",
+                    source=f"hw-{net.gateway_hardware_id}",
+                    target=f"net-{net.id}",
+                    relation="routes",
+                )
+            )
+
+        hns = db.execute(select(HardwareNetwork)).scalars().all()
+        for hn in hns:
+            edges.append(
+                build_edge_dict(
+                    id=f"e-hn-{hn.id}",
+                    source=f"hw-{hn.hardware_id}",
+                    target=f"net-{hn.network_id}",
+                    relation="on_network",
+                    connection_type=getattr(hn, "connection_type", None),
+                    bandwidth_mbps=getattr(hn, "bandwidth_mbps", None),
+                )
+            )
+
+    all_peers = db.execute(select(NetworkPeer)).scalars().all()
+    for peer in all_peers:
+        edges.append(
+            build_edge_dict(
+                id=f"e-np-{peer.network_a_id}-{peer.network_b_id}",
+                source=f"net-{peer.network_a_id}",
+                target=f"net-{peer.network_b_id}",
+                relation="peers_with",
+            )
+        )
+
+    return nodes, edges
+
+
+def _build_topology_context(
+    db: Session,
+    environment: str | None,
+    environment_id: int | None,
+    rack_id: int | None,
+    include: str,
+) -> TopologyContext:
+    """Build shared context with pre-computed maps for topology graph generation."""
+    include_set = {i.strip().lower() for i in include.split(",")}
+
+    conflict_map = bulk_conflict_map(db)
+
+    entity_tags_map: dict[tuple[str, int], list[str]] = {}
     link_rows = db.execute(
         select(EntityTag.entity_type, EntityTag.entity_id, Tag.name).join(
             Tag, EntityTag.tag_id == Tag.id
         )
     ).all()
-
     for etype, eid, tname in link_rows:
         key = (etype, eid)
         if key not in entity_tags_map:
             entity_tags_map[key] = []
         entity_tags_map[key].append(tname)
 
-    def get_tags(etype, eid):
-        return entity_tags_map.get((etype, eid), [])
-
-    entity_docs_map: dict[Any, Any] = {}
+    entity_docs_map: dict[tuple[str, int], list[dict]] = {}
     doc_rows = db.execute(
         select(EntityDoc.entity_type, EntityDoc.entity_id, Doc.title, Doc.id).join(
             Doc, EntityDoc.doc_id == Doc.id
         )
     ).all()
-
     for etype, eid, dtitle, did in doc_rows:
         key = (etype, eid)
         if key not in entity_docs_map:
             entity_docs_map[key] = []
         entity_docs_map[key].append({"id": did, "title": dtitle})
 
-    def get_docs(etype, eid):
-        return entity_docs_map.get((etype, eid), [])
-
-    # Pre-build compute_id → [storage_pool_names] via service→storage relationships
     cu_storage_pools: dict[int, list[str]] = {}
     svc_storage_rows = db.execute(
         select(Service.compute_id, Storage.name)
@@ -333,8 +1096,6 @@ def build_topology_graph(
         if st_name not in cu_storage_pools[cu_id]:
             cu_storage_pools[cu_id].append(st_name)
 
-    # Pre-build lookup maps for service→network implicit edges
-    # (compute_id → [network_id, ...]) and (hardware_id → [network_id, ...])
     cu_networks: dict[int, list[int]] = {}
     hw_networks: dict[int, list[int]] = {}
     if "networks" in include_set and "services" in include_set:
@@ -349,648 +1110,67 @@ def build_topology_graph(
         ):
             hw_networks.setdefault(net.gateway_hardware_id, []).append(net.id)  # type: ignore[arg-type]
 
-    # 1. Networks — emitted first so layout engines (Dagre/ELK) rank them as roots
-    if "networks" in include_set:
-        for net in db.execute(select(Network)).scalars():
-            nodes.append(
-                {
-                    "id": f"net-{net.id}",
-                    "type": "network",
-                    "ref_id": net.id,
-                    "label": net.name,
-                    "cidr": net.cidr,
-                    "icon_slug": net.icon_slug,
-                    "tags": get_tags("networks", net.id),
-                }
-            )
+    return TopologyContext(
+        db=db,
+        include_set=include_set,
+        conflict_map=conflict_map,
+        entity_tags_map=entity_tags_map,
+        entity_docs_map=entity_docs_map,
+        cu_storage_pools=cu_storage_pools,
+        cu_networks=cu_networks,
+        hw_networks=hw_networks,
+        environment=environment,
+        environment_id=environment_id,
+        rack_id=rack_id,
+    )
 
-        # Compute → Network membership edges
-        if "compute" in include_set:
-            cns = db.execute(select(ComputeNetwork)).scalars().all()
-            for cn in cns:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-cn-{cn.id}",
-                        source=f"cu-{cn.compute_id}",
-                        target=f"net-{cn.network_id}",
-                        relation="connects_to",
-                        connection_type=getattr(cn, "connection_type", None),
-                        bandwidth_mbps=getattr(cn, "bandwidth_mbps", None),
-                    )
-                )
 
-        # Hardware → Network gateway edges
-        if "hardware" in include_set:
-            for net in db.execute(
-                select(Network).where(Network.gateway_hardware_id.isnot(None))
-            ).scalars():
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-gw-{net.id}",
-                        source=f"hw-{net.gateway_hardware_id}",
-                        target=f"net-{net.id}",
-                        relation="routes",
-                    )
-                )
+def build_topology_graph(
+    db: Session,
+    environment: str | None = None,
+    environment_id: int | None = None,
+    rack_id: int | None = None,
+    include: str = "hardware,compute,services,storage,networks,misc,external",
+) -> dict:
+    """Pure callable graph builder — shared by /graph/topology and /topologies/{id}."""
+    ctx = _build_topology_context(db, environment, environment_id, rack_id, include)
 
-        # Hardware → Network membership edges
-        if "hardware" in include_set:
-            hns = db.execute(select(HardwareNetwork)).scalars().all()
-            for hn in hns:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-hn-{hn.id}",
-                        source=f"hw-{hn.hardware_id}",
-                        target=f"net-{hn.network_id}",
-                        relation="on_network",
-                        connection_type=getattr(hn, "connection_type", None),
-                        bandwidth_mbps=getattr(hn, "bandwidth_mbps", None),
-                    )
-                )
+    nodes: list[dict] = []
+    edges: list[dict] = []
 
-        # Network ↔ Network peer edges
-        all_peers = db.execute(select(NetworkPeer)).scalars().all()
-        for peer in all_peers:
-            edges.append(
-                build_edge_dict(
-                    id=f"e-np-{peer.network_a_id}-{peer.network_b_id}",
-                    source=f"net-{peer.network_a_id}",
-                    target=f"net-{peer.network_b_id}",
-                    relation="peers_with",
-                )
-            )
+    net_nodes, net_edges = _process_networks(ctx)
+    nodes.extend(net_nodes)
+    edges.extend(net_edges)
 
-    # 2. Clusters (emitted before hardware so layout engines rank them as roots)
-    if "hardware" in include_set:
-        clusters = db.execute(select(HardwareCluster)).scalars().all()
-        included_cluster_ids: set[int] = set()
-        for cluster in clusters:
-            if environment and cluster.environment and cluster.environment != environment:
-                continue
-            if not cluster.members:
-                continue
-            included_cluster_ids.add(cluster.id)
-            nodes.append(
-                {
-                    "id": f"cluster-{cluster.id}",
-                    "type": "cluster",
-                    "ref_id": cluster.id,
-                    "label": cluster.name,
-                    "icon_slug": cluster.icon_slug,
-                    "environment": cluster.environment,
-                    "member_count": len(cluster.members),
-                    "cluster_type": cluster.type or "manual",
-                    "docs": get_docs("hardware_cluster", cluster.id),
-                }
-            )
+    if "hardware" in ctx["include_set"]:
+        cluster_nodes, included_cluster_ids = _process_clusters_and_racks(ctx)
+        nodes.extend(cluster_nodes)
 
-    # 2b. Racks (group nodes)
-    if "hardware" in include_set:
-        racks = db.execute(select(Rack)).scalars().all()
-        for rack in racks:
-            member_count = len(rack.hardware)
-            if member_count == 0:
-                continue
-            nodes.append(
-                {
-                    "id": f"rack-{rack.id}",
-                    "type": "rack",
-                    "ref_id": rack.id,
-                    "label": rack.name,
-                    "height_u": rack.height_u,
-                    "location": rack.location,
-                    "member_count": member_count,
-                }
-            )
+        hw_nodes, hw_edges = _process_hardware(ctx, included_cluster_ids)
+        nodes.extend(hw_nodes)
+        edges.extend(hw_edges)
 
-    # 3. Hardware
-    if "hardware" in include_set:
-        hw_query = select(Hardware).options(
-            selectinload(Hardware.storage_items),
-            joinedload(Hardware.rack),
-        )
-        if rack_id is not None:
-            hw_query = hw_query.where(Hardware.rack_id == rack_id)
+    cu_nodes, cu_edges = _process_compute(ctx)
+    nodes.extend(cu_nodes)
+    edges.extend(cu_edges)
 
-        # Execute once; reuse list for monitor batch-load and node iteration.
-        _all_hw = db.execute(hw_query).unique().scalars().all()
-        _all_hw_ids = [hw.id for hw in _all_hw]
-        _monitors = (
-            (db.query(HardwareMonitor).filter(HardwareMonitor.hardware_id.in_(_all_hw_ids)).all())
-            if _all_hw_ids
-            else []
-        )
-        _monitor_map = {m.hardware_id: m for m in _monitors}
+    svc_nodes, svc_edges = _process_services(ctx)
+    nodes.extend(svc_nodes)
+    edges.extend(svc_edges)
 
-        for hw in _all_hw:
-            # Build storage_summary by aggregating attached storage items
-            storage_summary = None
-            if hw.storage_items:
-                total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
-                used_gb = sum(s.used_gb or 0 for s in hw.storage_items)
-                kinds = list(
-                    dict.fromkeys(s.kind for s in hw.storage_items if s.kind)
-                )  # preserves order, deduped
-                primary_pool = hw.storage_items[0].name if hw.storage_items else None
-                storage_summary = {
-                    "total_gb": total_gb,
-                    "used_gb": used_gb
-                    if any(s.used_gb is not None for s in hw.storage_items)
-                    else None,
-                    "types": kinds,
-                    "primary_pool": primary_pool,
-                    "count": len(hw.storage_items),
-                }
-            telemetry_data = None
-            if hw.telemetry_data:
-                try:
-                    telemetry_data = json.loads(hw.telemetry_data)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            nodes.append(
-                {
-                    "id": f"hw-{hw.id}",
-                    "type": "hardware",
-                    "ref_id": hw.id,
-                    "label": hw.name,
-                    "vendor": hw.vendor,
-                    # COALESCE(h.role, n.type): guarantee role is always populated so the
-                    # frontend shape selector always has a value to match against.
-                    "role": hw.role or "hardware",
-                    "icon_slug": hw.custom_icon or hw.vendor_icon_slug,
-                    "ip_address": hw.ip_address,
-                    "storage_summary": storage_summary,
-                    "tags": get_tags("hardware", hw.id),
-                    "docs": get_docs("hardware", hw.id),
-                    "status": hw.status or "unknown",
-                    "status_override": hw.status_override or None,
-                    "telemetry_status": hw.telemetry_status or "unknown",
-                    "telemetry_data": telemetry_data,
-                    "telemetry_last_polled": hw.telemetry_last_polled.isoformat()
-                    if hw.telemetry_last_polled
-                    else None,
-                    "u_height": hw.u_height,
-                    "rack_unit": hw.rack_unit,
-                    "rack_id": hw.rack_id,
-                    "rack_name": hw.rack.name if hw.rack else None,
-                    "download_speed_mbps": hw.download_speed_mbps,
-                    "upload_speed_mbps": hw.upload_speed_mbps,
-                    "ip_conflict": conflict_map.get(("hardware", hw.id), False),
-                    "monitor_status": _monitor_map[hw.id].last_status
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_latency_ms": _monitor_map[hw.id].latency_ms
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_last_checked_at": _monitor_map[hw.id].last_checked_at
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_uptime_pct_24h": _monitor_map[hw.id].uptime_pct_24h
-                    if hw.id in _monitor_map
-                    else None,
-                    "proxmox_node_name": hw.proxmox_node_name,
-                    "integration_config_id": hw.integration_config_id,
-                }
-            )
-            # Rack → Hardware member edges
-            if hw.rack_id:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-rack-{hw.rack_id}-hw-{hw.id}",
-                        source=f"rack-{hw.rack_id}",
-                        target=f"hw-{hw.id}",
-                        relation="rack_member",
-                    )
-                )
+    st_nodes, st_edges = _process_storage(ctx)
+    nodes.extend(st_nodes)
+    edges.extend(st_edges)
 
-        # Cluster → Hardware/Service member edges
-        # Build hw set from already-loaded data; fetch only Service PKs (no full rows).
-        hw_node_ids = {f"hw-{hw.id}" for hw in _all_hw}
-        svc_node_ids = {f"svc-{row[0]}" for row in db.execute(select(Service.id)).all()}
-        for member in db.execute(select(HardwareClusterMember)).scalars().all():
-            cluster_node_id = f"cluster-{member.cluster_id}"
-            if member.cluster_id not in included_cluster_ids:
-                continue
-            member_type = getattr(member, "member_type", "hardware") or "hardware"
-            if member_type == "service" and getattr(member, "service_id", None):
-                target_node_id = f"svc-{member.service_id}"
-                edge_id = f"e-cluster-{member.cluster_id}-svc-{member.service_id}"
-                if target_node_id in svc_node_ids:
-                    edges.append(
-                        build_edge_dict(
-                            id=edge_id,
-                            source=cluster_node_id,
-                            target=target_node_id,
-                            relation="cluster_member",
-                        )
-                    )
-            elif member.hardware_id:
-                hw_node_id = f"hw-{member.hardware_id}"
-                if hw_node_id in hw_node_ids:
-                    edges.append(
-                        build_edge_dict(
-                            id=f"e-cluster-{member.cluster_id}-hw-{member.hardware_id}",
-                            source=cluster_node_id,
-                            target=hw_node_id,
-                            relation="cluster_member",
-                        )
-                    )
+    nodes.extend(_process_misc(ctx))
 
-        # Hardware → Hardware direct connection edges
-        for hconn in db.execute(select(HardwareConnection)).scalars().all():
-            src_node_id = f"hw-{hconn.source_hardware_id}"
-            tgt_node_id = f"hw-{hconn.target_hardware_id}"
-            if src_node_id in hw_node_ids and tgt_node_id in hw_node_ids:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-hh-{hconn.id}",
-                        source=src_node_id,
-                        target=tgt_node_id,
-                        relation="connects_to",
-                        connection_type=getattr(hconn, "connection_type", None),
-                        bandwidth_mbps=getattr(hconn, "bandwidth_mbps", None),
-                    )
-                )
+    ext_nodes, ext_edges = _process_external(ctx)
+    nodes.extend(ext_nodes)
+    edges.extend(ext_edges)
 
-    # 5. Compute
-    if "compute" in include_set:
-        q = select(ComputeUnit)
-        if environment_id is not None:
-            q = q.where(ComputeUnit.environment_id == environment_id)
-        elif environment:
-            q = q.where(ComputeUnit.environment == environment)
-        for cu in db.execute(q).scalars():
-            pools = cu_storage_pools.get(cu.id, [])
-            storage_allocated = None
-            if cu.disk_gb or pools:
-                storage_allocated = {
-                    "disk_gb": cu.disk_gb,
-                    "storage_pools": pools,
-                }
-            nodes.append(
-                {
-                    "id": f"cu-{cu.id}",
-                    "type": "compute",
-                    "ref_id": cu.id,
-                    "label": cu.name,
-                    "kind": cu.kind,
-                    "icon_slug": cu.icon_slug,
-                    "ip_address": cu.ip_address,
-                    "storage_allocated": storage_allocated,
-                    "status": cu.status or "unknown",
-                    "status_override": cu.status_override or None,
-                    "download_speed_mbps": cu.download_speed_mbps,
-                    "upload_speed_mbps": cu.upload_speed_mbps,
-                    "tags": get_tags("compute", cu.id),
-                    "docs": get_docs("compute_unit", cu.id),
-                    "ip_conflict": conflict_map.get(("compute_unit", cu.id), False),
-                    "proxmox_vmid": cu.proxmox_vmid,
-                    "proxmox_type": cu.proxmox_type,
-                    "proxmox_status": (
-                        json.loads(cu.proxmox_status) if cu.proxmox_status else None
-                    ),
-                    "hardware_id": cu.hardware_id,
-                    "integration_config_id": cu.integration_config_id,
-                }
-            )
-            # Link to Hardware
-            if "hardware" in include_set:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-hw-cu-{cu.id}",
-                        source=f"hw-{cu.hardware_id}",
-                        target=f"cu-{cu.id}",
-                        relation="hosts",
-                    )
-                )
-
-    # 6. Services
-    if "services" in include_set:
-        q = select(Service).options(  # type: ignore[assignment]
-            joinedload(Service.compute_unit),
-            joinedload(Service.hardware),
-        )
-        if environment_id is not None:
-            q = q.where(Service.environment_id == environment_id)
-        elif environment:
-            q = q.where(Service.environment == environment)
-        services: list[Any] = db.execute(q).unique().scalars().all()  # type: ignore[assignment]
-        service_ids = {s.id for s in services}
-
-        for svc in services:
-            effective_ip = (
-                svc.ip_address
-                or (svc.compute_unit.ip_address if svc.compute_unit else None)
-                or (svc.hardware.ip_address if svc.hardware else None)
-            )
-            parsed_ports = []
-            if svc.ports_json:
-                try:
-                    maybe_ports = json.loads(svc.ports_json)
-                    if isinstance(maybe_ports, list):
-                        parsed_ports = maybe_ports
-                except Exception:
-                    parsed_ports = []
-            nodes.append(
-                {
-                    "id": f"svc-{svc.id}",
-                    "type": "service",
-                    "ref_id": svc.id,
-                    "label": svc.name,
-                    "icon_slug": svc.custom_icon or svc.icon_slug,
-                    "ip_address": effective_ip,
-                    "ports": parsed_ports,
-                    "compute_id": svc.compute_id,
-                    "hardware_id": svc.hardware_id,
-                    "status": svc.status or "unknown",
-                    "status_override": None,
-                    "tags": get_tags("services", svc.id),
-                    "docs": get_docs("service", svc.id),
-                    "ip_conflict": bool(svc.ip_conflict),
-                }
-            )
-            # Link to Compute
-            if svc.compute_id and "compute" in include_set:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-cu-svc-{svc.id}",
-                        source=f"cu-{svc.compute_id}",
-                        target=f"svc-{svc.id}",
-                        relation="runs",
-                    )
-                )
-            # Link to Hardware (direct)
-            elif svc.hardware_id and "hardware" in include_set:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-hw-svc-{svc.id}",
-                        source=f"hw-{svc.hardware_id}",
-                        target=f"svc-{svc.id}",
-                        relation="hosts",
-                    )
-                )
-
-            # Service → Network implicit edges
-            # A service is considered on any network its host compute unit or hardware belongs to
-            if "networks" in include_set:
-                seen_nets: set[int] = set()
-                if svc.compute_id:
-                    for net_id in cu_networks.get(svc.compute_id, []):
-                        if net_id not in seen_nets:
-                            seen_nets.add(net_id)
-                            edges.append(
-                                build_edge_dict(
-                                    id=f"e-svc-net-{svc.id}-{net_id}",
-                                    source=f"svc-{svc.id}",
-                                    target=f"net-{net_id}",
-                                    relation="on_network",
-                                )
-                            )
-                elif svc.hardware_id:
-                    for net_id in hw_networks.get(svc.hardware_id, []):
-                        if net_id not in seen_nets:
-                            seen_nets.add(net_id)
-                            edges.append(
-                                build_edge_dict(
-                                    id=f"e-svc-net-{svc.id}-{net_id}",
-                                    source=f"svc-{svc.id}",
-                                    target=f"net-{net_id}",
-                                    relation="on_network",
-                                )
-                            )
-
-        # Service → Service dependencies
-        deps = db.execute(select(ServiceDependency)).scalars().all()
-        for dep in deps:
-            if dep.service_id in service_ids and dep.depends_on_id in service_ids:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-dep-{dep.id}",
-                        source=f"svc-{dep.service_id}",
-                        target=f"svc-{dep.depends_on_id}",
-                        relation="depends_on",
-                        connection_type=getattr(dep, "connection_type", None),
-                        bandwidth_mbps=getattr(dep, "bandwidth_mbps", None),
-                    )
-                )
-
-        # Service → Storage
-        if "storage" in include_set:
-            links = db.execute(select(ServiceStorage)).scalars().all()
-            for link in links:
-                if link.service_id in service_ids:
-                    edges.append(
-                        build_edge_dict(
-                            id=f"e-ss-{link.id}",
-                            source=f"svc-{link.service_id}",
-                            target=f"st-{link.storage_id}",
-                            relation="uses",
-                            connection_type=getattr(link, "connection_type", None),
-                            bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
-                        )
-                    )
-
-        # Service → Misc
-        if "misc" in include_set:
-            links = db.execute(select(ServiceMisc)).scalars().all()  # type: ignore[assignment]
-            for link in links:
-                if link.service_id in service_ids:
-                    edges.append(
-                        build_edge_dict(
-                            id=f"e-sm-{link.id}",
-                            source=f"svc-{link.service_id}",
-                            target=f"misc-{link.misc_id}",  # type: ignore[attr-defined]
-                            relation="integrates_with",
-                            connection_type=getattr(link, "connection_type", None),
-                            bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
-                        )
-                    )
-
-    # 6. Storage
-    if "storage" in include_set:
-        proxmox_hw_lookup: dict[tuple[int, str], Hardware] = {}
-        for hw in db.execute(select(Hardware)).scalars():
-            if hw.integration_config_id and hw.proxmox_node_name:
-                proxmox_hw_lookup[(hw.integration_config_id, hw.proxmox_node_name.strip())] = hw
-
-        for st in (
-            db.execute(select(Storage).options(joinedload(Storage.hardware))).unique().scalars()
-        ):
-            inferred_hw_id = st.hardware_id
-            inferred_vendor = st.hardware.vendor if st.hardware else None
-            inferred_icon = st.hardware.vendor_icon_slug if st.hardware else None
-
-            # Queue-mode Proxmox storage can arrive before node rows are accepted.
-            # Infer node association from "<pool>@<node>" naming so the map links it.
-            if inferred_hw_id is None and st.integration_config_id and st.name and "@" in st.name:
-                node_name = st.name.rsplit("@", 1)[-1].strip()
-                fallback_hw = proxmox_hw_lookup.get((st.integration_config_id, node_name))
-                if fallback_hw is not None:
-                    inferred_hw_id = fallback_hw.id
-                    inferred_vendor = fallback_hw.vendor
-                    inferred_icon = fallback_hw.vendor_icon_slug
-
-            nodes.append(
-                {
-                    "id": f"st-{st.id}",
-                    "type": "storage",
-                    "ref_id": st.id,
-                    "label": st.name,
-                    "kind": st.kind,
-                    "capacity_gb": st.capacity_gb,
-                    "used_gb": st.used_gb,
-                    "vendor": inferred_vendor,
-                    "icon_slug": inferred_icon,
-                    "tags": get_tags("storage", st.id),
-                    "hardware_id": inferred_hw_id,
-                    "integration_config_id": st.integration_config_id,
-                }
-            )
-            # Edge: Storage → Hardware (attached_to)
-            if inferred_hw_id and "hardware" in include_set:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-hw-st-{st.id}",
-                        source=f"hw-{inferred_hw_id}",
-                        target=f"st-{st.id}",
-                        relation="has_storage",
-                    )
-                )
-
-    # 7. Misc
-    if "misc" in include_set:
-        for m in db.execute(select(MiscItem)).scalars():
-            nodes.append(
-                {
-                    "id": f"misc-{m.id}",
-                    "type": "misc",
-                    "ref_id": m.id,
-                    "label": m.name,
-                    "tags": get_tags("misc", m.id),
-                }
-            )
-
-    # 8. External Nodes (off-prem / cloud)
-    if "external" in include_set:
-        for ext in db.execute(select(ExternalNode)).scalars():
-            if environment and ext.environment and ext.environment != environment:
-                continue
-            nodes.append(
-                {
-                    "id": f"ext-{ext.id}",
-                    "type": "external",
-                    "ref_id": ext.id,
-                    "label": f"{ext.name} ({ext.provider})" if ext.provider else ext.name,
-                    "icon_slug": ext.icon_slug,
-                    "tags": get_tags("external", ext.id),
-                    "meta": {
-                        "provider": ext.provider,
-                        "kind": ext.kind,
-                        "region": ext.region,
-                        "ip_address": ext.ip_address,
-                    },
-                }
-            )
-
-        # External → Network edges
-        if "networks" in include_set:
-            for link in db.execute(select(ExternalNodeNetwork)).scalars().all():  # type: ignore[assignment]
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-ext-net-{link.id}",
-                        source=f"ext-{link.external_node_id}",  # type: ignore[attr-defined]
-                        target=f"net-{link.network_id}",  # type: ignore[attr-defined]
-                        relation="connects_to",
-                        connection_type=getattr(link, "connection_type", None),
-                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
-                    )
-                )
-
-        # Service → External edges
-        if "services" in include_set:
-            for link in db.execute(select(ServiceExternalNode)).scalars().all():  # type: ignore[assignment]
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-svc-ext-{link.id}",
-                        source=f"svc-{link.service_id}",
-                        target=f"ext-{link.external_node_id}",  # type: ignore[attr-defined]
-                        relation="depends_on",
-                        connection_type=getattr(link, "connection_type", None),
-                        bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
-                    )
-                )
-
-    # ── Docker networks + containers ──────────────────────────────────────────
-    if "docker" in include_set:
-        docker_nets = (
-            db.execute(
-                select(Network).where(Network.is_docker_network == True)  # noqa: E712
-            )
-            .scalars()
-            .all()
-        )
-        docker_net_ids = {n.id for n in docker_nets}
-        for dnet in docker_nets:
-            nodes.append(
-                {
-                    "id": f"net-{dnet.id}",
-                    "type": "docker_network",
-                    "ref_id": dnet.id,
-                    "label": dnet.name,
-                    "cidr": dnet.cidr,
-                    "icon_slug": dnet.icon_slug,
-                    "docker_driver": dnet.docker_driver,
-                    "tags": get_tags("networks", dnet.id),
-                }
-            )
-
-        docker_svcs = (
-            db.execute(
-                select(Service).where(Service.is_docker_container == True)  # noqa: E712
-            )
-            .scalars()
-            .all()
-        )
-        for dsvc in docker_svcs:
-            nodes.append(
-                {
-                    "id": f"svc-{dsvc.id}",
-                    "type": "docker_container",
-                    "ref_id": dsvc.id,
-                    "label": dsvc.name,
-                    "status": dsvc.status,
-                    "ip_address": dsvc.ip_address,
-                    "docker_image": dsvc.docker_image,
-                    "compute_id": dsvc.compute_id,
-                    "hardware_id": dsvc.hardware_id,
-                    "docker_labels": dsvc.docker_labels,
-                    "tags": get_tags("services", dsvc.id),
-                }
-            )
-
-            # Container → its host network edge (via ip or compute/hardware networks)
-            if dsvc.compute_id and dsvc.compute_id in cu_networks:
-                for net_id in cu_networks[dsvc.compute_id]:
-                    if net_id in docker_net_ids:
-                        edges.append(
-                            build_edge_dict(
-                                id=f"e-docker-cn-{dsvc.id}-{net_id}",
-                                source=f"svc-{dsvc.id}",
-                                target=f"net-{net_id}",
-                                relation="on_network",
-                            )
-                        )
-            elif dsvc.hardware_id and dsvc.hardware_id in hw_networks:
-                for net_id in hw_networks[dsvc.hardware_id]:
-                    if net_id in docker_net_ids:
-                        edges.append(
-                            build_edge_dict(
-                                id=f"e-docker-hn-{dsvc.id}-{net_id}",
-                                source=f"svc-{dsvc.id}",
-                                target=f"net-{net_id}",
-                                relation="on_network",
-                            )
-                        )
+    docker_nodes, docker_edges = _process_docker(ctx)
+    nodes.extend(docker_nodes)
+    edges.extend(docker_edges)
 
     return {"nodes": nodes, "edges": edges}
 
@@ -1056,7 +1236,7 @@ async def save_layout(
             select(GraphLayout).where(GraphLayout.name == data.name)
         ).scalar_one_or_none()
         if layout:
-            layout.layout_data = data.layout_data
+            layout.layout_data = json.loads(data.layout_data)
         else:
             layout = GraphLayout(name=data.name, layout_data=data.layout_data)
             db.add(layout)

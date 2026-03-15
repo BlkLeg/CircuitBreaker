@@ -81,7 +81,15 @@ def place_node_safe(db: Session, node_id: str, environment: str = "default") -> 
     layout_name = f"env_{environment}" if environment and environment != "default" else "default"
     layout = db.query(GraphLayout).filter(GraphLayout.name == layout_name).first()
 
-    nodes = _extract_layout_nodes(layout.layout_data if layout else None)
+    layout_data = None
+    if layout:
+        if isinstance(layout.layout_data, dict):
+            layout_data = json.dumps(layout.layout_data)
+        elif isinstance(layout.layout_data, str):
+            layout_data = layout.layout_data
+        else:
+            layout_data = None
+    nodes = _extract_layout_nodes(layout_data)
 
     # Calculate centroid of existing nodes, or use default viewport center
     if nodes:

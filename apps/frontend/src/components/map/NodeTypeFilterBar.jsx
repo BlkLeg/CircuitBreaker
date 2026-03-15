@@ -12,6 +12,8 @@ const HW_ROLE_CHIPS = [
  * Toolbar row: node-type toggle buttons + Docker toggle + hardware sub-role chips.
  * All filter state is owned by the parent; this component is presentation-only.
  */
+import PropTypes from 'prop-types';
+
 export default function NodeTypeFilterBar({
   includeTypes,
   setIncludeTypes,
@@ -33,7 +35,17 @@ export default function NodeTypeFilterBar({
       </span>
 
       {FILTER_NODE_TYPES.map((type) => {
-        const style = NODE_STYLES[type];
+        // Only allow known keys to prevent object injection
+        const safeType = FILTER_NODE_TYPES.includes(type) ? type : null;
+        const style =
+          safeType && Object.hasOwn(NODE_STYLES, safeType)
+            ? NODE_STYLES[safeType]
+            : {
+                borderColor: '#ccc',
+                background: '#eee',
+              };
+        // Only access includeTypes and NODE_TYPE_LABELS if type is safe
+        if (!safeType) return null;
         return (
           <button
             key={type}
@@ -42,14 +54,18 @@ export default function NodeTypeFilterBar({
               padding: '3px 8px',
               borderRadius: 4,
               border: `1px solid ${style.borderColor}`,
-              background: includeTypes[type] ? style.background : 'transparent',
-              color: includeTypes[type] ? '#fff' : style.background,
+              background:
+                Object.hasOwn(includeTypes, type) && includeTypes[type]
+                  ? style.background
+                  : 'transparent',
+              color:
+                Object.hasOwn(includeTypes, type) && includeTypes[type] ? '#fff' : style.background,
               fontSize: 11,
               cursor: 'pointer',
               transition: 'all 0.15s',
             }}
           >
-            {NODE_TYPE_LABELS[type]}
+            {Object.hasOwn(NODE_TYPE_LABELS, type) ? NODE_TYPE_LABELS[type] : type}
           </button>
         );
       })}
@@ -107,3 +123,10 @@ export default function NodeTypeFilterBar({
     </>
   );
 }
+
+NodeTypeFilterBar.propTypes = {
+  includeTypes: PropTypes.object.isRequired,
+  setIncludeTypes: PropTypes.func.isRequired,
+  hwRoleFilter: PropTypes.string,
+  setHwRoleFilter: PropTypes.func.isRequired,
+};

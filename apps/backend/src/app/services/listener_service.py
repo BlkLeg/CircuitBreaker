@@ -22,7 +22,7 @@ from app.db.session import SessionLocal
 _logger = logging.getLogger(__name__)
 
 try:
-    from zeroconf import ServiceBrowser, Zeroconf
+    from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 
     _ZEROCONF_AVAILABLE = True
 except ImportError:
@@ -112,34 +112,33 @@ class ListenerService:
             loop = asyncio.get_running_loop()
             self._zeroconf = await loop.run_in_executor(None, Zeroconf)
 
-            class _Handler:
-                def __init__(inner_self):
-                    pass
-
-                def add_service(inner_self, zc, type_, name):
+            class _Handler(ServiceListener):
+                def add_service(inner_self, zc: Zeroconf, type_: str, name: str) -> None:
                     asyncio.run_coroutine_threadsafe(
                         self._handle_mdns_service(zc, type_, name), loop
                     )
 
-                def remove_service(inner_self, zc, type_, name):
+                def remove_service(inner_self, zc: Zeroconf, type_: str, name: str) -> None:
                     pass
 
-                def update_service(inner_self, zc, type_, name):
+                def update_service(inner_self, zc: Zeroconf, type_: str, name: str) -> None:
                     asyncio.run_coroutine_threadsafe(
                         self._handle_mdns_service(zc, type_, name), loop
                     )
 
-            await loop.run_in_executor(
-                None, lambda: ServiceBrowser(self._zeroconf, _MDNS_SERVICES, _Handler())
-            )
-            self.mdns_active = True
-            _logger.info("mDNS browser started for %d service types.", len(_MDNS_SERVICES))
+            zc_instance = self._zeroconf
+            if zc_instance is not None:
+                await loop.run_in_executor(
+                    None, lambda: ServiceBrowser(zc_instance, _MDNS_SERVICES, _Handler())
+                )
+                self.mdns_active = True
+                _logger.info("mDNS browser started for %d service types.", len(_MDNS_SERVICES))
 
             # Keep alive until cancelled
             while self.is_running:
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
-            pass
+            _logger.debug("mDNS listener cancelled during shutdown")
         except Exception as exc:
             _logger.warning("mDNS listener error: %s", exc)
         finally:
@@ -156,8 +155,8 @@ class ListenerService:
             if info.addresses:
                 try:
                     ip = socket.inet_ntoa(info.addresses[0])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("Failed to convert mDNS service address for %s: %s", name, exc)
 
             port = info.port
             props: dict = {}
@@ -168,8 +167,8 @@ class ListenerService:
                     else v
                     for k, v in (info.properties or {}).items()
                 }
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Failed to decode mDNS service properties for %s: %s", name, exc)
 
             await self._record_event(
                 source="mdns",
@@ -207,8 +206,8 @@ class ListenerService:
                 send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
                 send_sock.sendto(_SSDP_M_SEARCH.encode(), (_SSDP_ADDR, _SSDP_PORT))
                 send_sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("Failed to send SSDP M-SEARCH (non-fatal): %s", exc)
 
             while self.is_running:
                 try:
@@ -222,7 +221,7 @@ class ListenerService:
                     _logger.debug("SSDP recv error: %s", exc)
                     await asyncio.sleep(1)
         except asyncio.CancelledError:
-            pass
+            _logger.debug("SSDP listener cancelled during shutdown")
         except Exception as exc:
             _logger.warning("SSDP listener error: %s", exc)
         finally:
@@ -303,8 +302,8 @@ class ListenerService:
                     port=port,
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("Failed to publish listener event to NATS (non-fatal): %s", exc)
 
 
 # Singleton instance imported by main.py

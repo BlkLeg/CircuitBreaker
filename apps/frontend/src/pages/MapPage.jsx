@@ -12,7 +12,15 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useNavigate } from 'react-router-dom';
-import { graphApi, environmentsApi, settingsApi, proxmoxApi, hardwareApi } from '../api/client';
+import {
+  graphApi,
+  environmentsApi,
+  settingsApi,
+  proxmoxApi,
+  hardwareApi,
+  discoveryApi,
+} from '../api/client';
+import ScanImportModal from '../components/ScanImportModal';
 import { createMonitor, updateMonitor, runImmediateCheck } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -40,6 +48,7 @@ import LegendPanel from '../components/map/LegendPanel';
 import NodeTypeFilterBar from '../components/map/NodeTypeFilterBar';
 import { useToast } from '../components/common/Toast';
 import { X } from 'lucide-react';
+import logger from '../utils/logger';
 import {
   CONNECTION_TYPE_OPTIONS,
   normalizeConnectionType,
@@ -160,6 +169,8 @@ function MapInternal() {
     [onEdgesChangeBase]
   );
 
+  const dirtyRef = useRef(false);
+
   const handleNodesChange = useCallback(
     (changes) => {
       onNodesChange(changes);
@@ -176,7 +187,6 @@ function MapInternal() {
   const [cloudViewEnabled, setCloudViewEnabled] = useState(false);
   const [useSigma, setUseSigma] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
-  const dirtyRef = useRef(false);
   // Track node IDs that have been auto-placed this session so fetchData re-runs
   // don't re-tag the same nodes as _needsAutoPlace before the layout is saved.
   const autoPlacedIdsRef = useRef(new Set());
@@ -426,6 +436,24 @@ function MapInternal() {
     forcing: false,
   });
 
+  // Scan import banner + modal state
+  const [scanImportPending, setScanImportPending] = useState(null);
+  const [scanImportModalOpen, setScanImportModalOpen] = useState(false);
+
+  useEffect(() => {
+    const handler = async (e) => {
+      const { scanId, newCount } = e.detail;
+      try {
+        const { data: results } = await discoveryApi.getResultsWithInference(scanId);
+        setScanImportPending({ scanId, newCount: results.filter((r) => r.is_new).length, results });
+      } catch {
+        setScanImportPending({ scanId, newCount, results: null });
+      }
+    };
+    globalThis.addEventListener('scan:import-ready', handler);
+    return () => globalThis.removeEventListener('scan:import-ready', handler);
+  }, []);
+
   const clearBoundaryPointerListeners = useCallback(() => {
     if (boundaryPointerMoveRef.current) {
       globalThis.removeEventListener('pointermove', boundaryPointerMoveRef.current);
@@ -447,6 +475,23 @@ function MapInternal() {
       labelPointerUpRef.current = null;
     }
   }, []);
+
+  const {
+    contextMenu,
+    setContextMenu,
+    contextMenuOpenRef,
+    openNodeContextMenu,
+    closeNodeContextMenu,
+    edgeMenu,
+    setEdgeMenu,
+    boundaryMenu,
+    setBoundaryMenu,
+    openBoundaryContextMenu,
+    visualLineMenu,
+    setVisualLineMenu,
+    openVisualLineContextMenu,
+    closeAllMenus,
+  } = useContextMenuState();
 
   // Esc key to dismiss context menus
   useEffect(() => {
@@ -546,23 +591,6 @@ function MapInternal() {
   const layoutEngineRef = { current: layoutEngine };
 
   const {
-    contextMenu,
-    setContextMenu,
-    contextMenuOpenRef,
-    openNodeContextMenu,
-    closeNodeContextMenu,
-    edgeMenu,
-    setEdgeMenu,
-    boundaryMenu,
-    setBoundaryMenu,
-    openBoundaryContextMenu,
-    visualLineMenu,
-    setVisualLineMenu,
-    openVisualLineContextMenu,
-    closeAllMenus,
-  } = useContextMenuState();
-
-  const {
     scheduleTelemetrySidebar,
     cancelTelemetrySidebar,
     scheduleTagDebounce,
@@ -593,7 +621,7 @@ function MapInternal() {
       .list()
       .then((r) => setEnvironmentsList(r.data))
       .catch((err) => {
-        console.error('Environments list load failed:', err);
+        logger.error('Environments list load failed:', err);
       });
   }, []);
 
@@ -1365,7 +1393,7 @@ function MapInternal() {
         hardwareApi
           .update(targetNode._refId, { upload_speed_mbps: value, download_speed_mbps: value })
           .catch((err) => {
-            console.warn('Failed to save hardware uplink speed:', err);
+            logger.warn('Failed to save hardware uplink speed:', err);
           });
       } else {
         const overrides = { ...(settings?.graph_uplink_overrides ?? {}), [nodeId]: value };
@@ -1373,7 +1401,7 @@ function MapInternal() {
           .update({ graph_uplink_overrides: overrides })
           .then(() => reloadSettings())
           .catch((err) => {
-            console.warn('Failed to save uplink override preference:', err);
+            logger.warn('Failed to save uplink override preference:', err);
           });
       }
     },
@@ -1712,6 +1740,39 @@ function MapInternal() {
           }}
         >
           <style>{`@keyframes tm-pulse { 0%,100% { opacity:1; } 50% { opacity:0.55; } }`}</style>
+          {/* Scan import banner */}
+          {scanImportPending && !scanImportModalOpen && (
+            <div className="scan-import-banner">
+              <span>
+                🔍 {scanImportPending.newCount} new device
+                {scanImportPending.newCount !== 1 ? 's' : ''} discovered
+              </span>
+              <button className="btn-link" onClick={() => setScanImportModalOpen(true)}>
+                Review &amp; Import →
+              </button>
+              <button
+                className="btn-icon"
+                onClick={() => setScanImportPending(null)}
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {/* Scan import modal */}
+          {scanImportModalOpen && scanImportPending && (
+            <ScanImportModal
+              scanId={scanImportPending.scanId}
+              results={scanImportPending.results || []}
+              onClose={() => setScanImportModalOpen(false)}
+              onImported={async () => {
+                setScanImportModalOpen(false);
+                setScanImportPending(null);
+                await fetchData();
+                fitView({ duration: 600 });
+              }}
+            />
+          )}
           {/* Header + Toolbar */}
           <div
             className="page-header"

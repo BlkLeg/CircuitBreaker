@@ -10,6 +10,7 @@ import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
 import Dock from './components/Dock';
+import CollapsibleSidebar from './components/CollapsibleSidebar';
 import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
 import AuthModal from './components/auth/AuthModal.jsx';
@@ -21,7 +22,9 @@ import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
+import LoadingScreen from './components/common/LoadingScreen.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
+import { useIsMobile } from './hooks/useIsMobile';
 
 // Heavy pages lazy-loaded so their chunks are only downloaded when first visited.
 const DocsPage = React.lazy(() => import('./pages/DocsPage'));
@@ -44,12 +47,23 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
 const StatusPagesPage = React.lazy(() => import('./pages/StatusPagesPage'));
 const RackPage = React.lazy(() => import('./pages/RackPage'));
+const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
+const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
+const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
+const WebhooksPage = React.lazy(() => import('./pages/WebhooksPage'));
+
+const SIDEBAR_WIDTH_EXPANDED = 240;
+const SIDEBAR_WIDTH_COLLAPSED = 60;
+const SIDEBAR_TRANSITION_MS = 200;
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const isMobile = useIsMobile();
   const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
   const toast = useToast();
   const location = useLocation();
+  const sidebarOffset = sidebarCollapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED;
   const pathnameRef = useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
@@ -97,10 +111,25 @@ function AppInner() {
     <div className="app-shell">
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
+      <CollapsibleSidebar
+        pendingCount={pendingCount}
+        onToggle={(collapsed) => setSidebarCollapsed(collapsed)}
+      />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
-      <div className="page-content">
+      <div
+        className="page-content"
+        style={
+          !isMobile
+            ? {
+                marginLeft: sidebarOffset,
+                width: `calc(100% - ${sidebarOffset}px)`,
+                transition: `margin-left ${SIDEBAR_TRANSITION_MS}ms ease, width ${SIDEBAR_TRANSITION_MS}ms ease`,
+              }
+            : undefined
+        }
+      >
         <ErrorBoundary>
-          <React.Suspense fallback={null}>
+          <React.Suspense fallback={<LoadingScreen />}>
             <Routes>
               <Route path="/" element={<Navigate to="/map" replace />} />
               <Route path="/hardware" element={<HardwarePage />} />
@@ -171,6 +200,38 @@ function AppInner() {
                   </RequireAdmin>
                 }
               />
+              <Route
+                path="/certificates"
+                element={
+                  <RequireAdmin>
+                    <CertificatesPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route
+                path="/notifications"
+                element={
+                  <RequireAdmin>
+                    <NotificationsPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route
+                path="/tenants"
+                element={
+                  <RequireAdmin>
+                    <TenantsPage />
+                  </RequireAdmin>
+                }
+              />
+              <Route
+                path="/webhooks"
+                element={
+                  <RequireAdmin>
+                    <WebhooksPage />
+                  </RequireAdmin>
+                }
+              />
               <Route path="/invite/accept" element={<InviteAcceptPage />} />
               <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
@@ -178,7 +239,7 @@ function AppInner() {
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock pendingCount={pendingCount} wsStatus={wsStatus} />
+      {isMobile && <Dock pendingCount={pendingCount} wsStatus={wsStatus} />}
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />
     </div>
@@ -212,7 +273,7 @@ function NavigateToLogin() {
 function AppRoutes() {
   const BOOTSTRAP_RETRY_SECONDS = 10;
   const { isAuthenticated, authReady } = useAuth();
-  const { settings } = useSettings();
+  const { settings, reloadSettings } = useSettings();
   const branding = settings?.branding;
   const [bootstrapLoading, setBootstrapLoading] = useState(true);
   const [needsBootstrap, setNeedsBootstrap] = useState(false);
@@ -277,8 +338,14 @@ function AppRoutes() {
     return () => globalThis.clearInterval(intervalId);
   }, [bootstrapError, fetchBootstrapStatus]);
 
+  // Reload settings after login so theme/timezone reflect server-side preferences
+  // instead of the DEFAULTS that were set while unauthenticated.
+  useEffect(() => {
+    if (isAuthenticated) reloadSettings();
+  }, [isAuthenticated, reloadSettings]);
+
   if (bootstrapLoading || !authReady) {
-    return <div className="login-root" />;
+    return <LoadingScreen />;
   }
 
   // Server startup errors are now handled by ServerLifecycleBanner higher up the tree.
@@ -333,7 +400,7 @@ function AppRoutes() {
   if (!isAuthenticated) {
     return (
       <ErrorBoundary>
-        <React.Suspense fallback={<div className="login-root" />}>
+        <React.Suspense fallback={<LoadingScreen />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
@@ -350,7 +417,7 @@ function AppRoutes() {
 
   return (
     <ErrorBoundary>
-      <React.Suspense fallback={<div className="login-root" />}>
+      <React.Suspense fallback={<LoadingScreen />}>
         <Routes>
           <Route path="/login" element={<Navigate to="/map" replace />} />
           <Route path="/*" element={<AppInner />} />

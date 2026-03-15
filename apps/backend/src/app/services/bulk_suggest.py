@@ -107,10 +107,12 @@ _OS_VENDOR_HINTS: list[tuple[str, str]] = [
 ]
 
 
-def _parse_ports(open_ports_json: str | None) -> list[dict]:
-    """Parse open_ports_json string into a list of port dicts."""
+def _parse_ports(open_ports_json: list | str | None) -> list[dict]:
+    """Parse open_ports_json (JSONB list or legacy string) into a list of port dicts."""
     if not open_ports_json:
         return []
+    if isinstance(open_ports_json, list):
+        return open_ports_json
     try:
         return json.loads(open_ports_json)
     except (json.JSONDecodeError, TypeError):
