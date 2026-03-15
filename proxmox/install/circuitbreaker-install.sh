@@ -169,8 +169,8 @@ info "Generating secrets..."
 JWT_SECRET=$(openssl rand -hex 32)
 VAULT_KEY=$(python3 -c \
     "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
-NATS_TOKEN=$(openssl rand -base64 32 | tr -d '\n')
-REDIS_PASS=$(openssl rand -base64 32 | tr -d '\n')
+NATS_TOKEN=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)
+REDIS_PASS=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
 # Persist Redis password for service use
 printf '%s' "$REDIS_PASS" > "${CB_DATA_DIR}/.redis_pass"
@@ -284,6 +284,10 @@ sudo -u "${CB_USER}" \
     upgrade head
 ok "Migrations complete"
 
+# OOBE marker — parity with docker/30-oobe.sh
+touch "${CB_DATA_DIR}/.oobe-complete"
+chown ${CB_USER}:${CB_GROUP} "${CB_DATA_DIR}/.oobe-complete"
+
 # ── 15. systemd: NATS server ────────────────────────────────
 info "Installing systemd services..."
 cat > /etc/systemd/system/nats-server.service <<EOF
@@ -357,6 +361,10 @@ User=${CB_USER}
 Group=${CB_GROUP}
 WorkingDirectory=${CB_DIR}/apps/backend/src
 EnvironmentFile=/etc/circuitbreaker.env
+# Vault key auto-sync — if the app rotates CB_VAULT_KEY it writes to
+# the data-dir .env; this overlay takes precedence over the base config
+# (parity with docker/entrypoint-mono.sh lines 204-211).
+EnvironmentFile=-${CB_DATA_DIR}/.env
 
 ExecStart=${CB_DIR}/.venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 \
@@ -398,6 +406,7 @@ User=${CB_USER}
 Group=${CB_GROUP}
 WorkingDirectory=${CB_DIR}/apps/backend/src
 EnvironmentFile=/etc/circuitbreaker.env
+EnvironmentFile=-${CB_DATA_DIR}/.env
 ExecStart=${CB_DIR}/.venv/bin/python -m app.workers.main --type=%i
 
 NoNewPrivileges=true
@@ -422,6 +431,15 @@ info "Configuring nginx..."
 rm -f /etc/nginx/sites-enabled/default
 
 cat > /etc/nginx/sites-available/circuitbreaker <<'NGINXEOF'
+# Gzip compression — parity with Docker mono nginx.mono.conf
+gzip on;
+gzip_vary on;
+gzip_proxied any;
+gzip_comp_level 6;
+gzip_min_length 1024;
+gzip_types text/plain text/css text/javascript application/javascript
+           application/json application/xml image/svg+xml font/woff2;
+
 # HTTP — health check exempt from redirect, everything else → HTTPS
 server {
     listen 80;

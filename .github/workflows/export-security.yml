@@ -1,0 +1,19 @@
+name: Export Security Alerts
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: austenstone/security-export@main
+        id: export
+        with:
+          github-token: ${{ secrets.PAT }}
+          repository: BlkLeg/CircuitBreaker
+
+      - uses: austenstone/json-to-csv@main
+        with:
+          json-artifact-name: ${{ steps.export.outputs.artifact-name }}
+          create-artifact: true
+          artifact-name: "circuit-breaker-security-alerts"

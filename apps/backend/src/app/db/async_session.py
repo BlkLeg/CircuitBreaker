@@ -13,12 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import settings
 
-_sync_url: str = (
-    os.environ.get("CB_DB_POOL_URL")
-    or os.environ.get("CB_DB_URL")
-    or settings.db_pool_url
-    or settings.database_url
-)
+_sync_url: str = os.environ.get("CB_DB_POOL_URL") or settings.db_pool_url or settings.database_url
 
 # PostgreSQL: replace sync driver with asyncpg
 _pg_async = "postgresql+asyncpg://"

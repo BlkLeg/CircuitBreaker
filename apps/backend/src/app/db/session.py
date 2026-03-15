@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 from sqlalchemy import MetaData, create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -18,11 +19,18 @@ _logger = logging.getLogger(__name__)
 
 db_url = os.environ.get("CB_DB_URL", settings.database_url)
 
-if not db_url.startswith("postgresql"):
+if not db_url or not db_url.startswith("postgresql"):
+    # Redact credentials before including URL in error message
+    _safe = db_url
+    if _safe:
+        _p = urlparse(_safe)
+        if _p.password:
+            _safe = _safe.replace(f":{_p.password}@", ":***@", 1)
     raise RuntimeError(
-        f"CB_DB_URL must start with 'postgresql://' (got: {db_url!r}). "
-        "SQLite is no longer supported as of v0.2.0. "
-        "Set CB_DB_URL=postgresql://breaker:YOUR_PASSWORD@postgres:5432/circuitbreaker"
+        "No PostgreSQL connection configured. "
+        "For embedded Postgres, set CB_DB_PASSWORD. "
+        "For external Postgres, set CB_DB_URL=postgresql://user:pass@host:5432/dbname. "
+        f"(got: {_safe!r})"
     )
 
 # Prefer pgbouncer pool URL if available (port 6432); fall back to direct connection.
