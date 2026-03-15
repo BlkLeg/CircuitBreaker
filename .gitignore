@@ -89,6 +89,11 @@ Thumbs.db
 # Internal / auto-generated
 .INTERNAL/
 .claude/worktrees/
+.cursor/
+.codex/
+.devcontainer/
+.superpowers/
+circuitbreaker-data/
 
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
