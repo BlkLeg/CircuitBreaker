@@ -1352,7 +1352,9 @@ stage6_setup_python() {
   source /etc/circuitbreaker/.env
   echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
   su -s /bin/bash breaker -c "
+    set -a
     source /etc/circuitbreaker/.env
+    set +a
     cd /opt/circuitbreaker/apps/backend
     /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
   " >> "$LOG_FILE" 2>&1
