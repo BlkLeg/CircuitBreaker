@@ -1686,6 +1686,7 @@ run_upgrade() {
   
   # Deploy code
   stage5_deploy_code
+  write_wait_for_services_script
   
   # Show changelog
   if [[ "$old_head" != "unknown" ]]; then
