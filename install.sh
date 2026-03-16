@@ -1628,6 +1628,11 @@ cmd_uninstall() {
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
     circuitbreaker.target caddy 2>/dev/null || true
 
+  echo "Killing any remaining CircuitBreaker processes..."
+  pkill -u breaker 2>/dev/null || true
+  sleep 2
+  pkill -9 -u breaker 2>/dev/null || true
+
   echo "Removing systemd unit files..."
   rm -f /etc/systemd/system/circuitbreaker-*.service
   rm -f /etc/systemd/system/circuitbreaker.target
