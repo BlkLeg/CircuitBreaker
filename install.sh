@@ -31,7 +31,7 @@ cb_header() {
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
   echo "  ║         Circuit Breaker Installer        ║"
-  echo "  ║                 $(cb_version)                   ║"
+  echo "  ║                 $(cb_version)            ║"
   echo "  ╚══════════════════════════════════════════╝"
   echo -e "${RESET}"
 }
@@ -300,7 +300,7 @@ stage1_bootstrap() {
     ["/opt/circuitbreaker/apps/frontend"]="root:root:755"
     ["/opt/circuitbreaker/scripts"]="root:root:755"
     ["/opt/circuitbreaker/apps/frontend/dist"]="root:root:755"
-    ["${CB_DATA_DIR}"]="breaker:breaker:750"
+    ["${CB_DATA_DIR}"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/nats"]="breaker:breaker:750"
     ["${CB_DATA_DIR}/redis"]="breaker:breaker:750"
     ["${CB_DATA_DIR}/uploads"]="breaker:breaker:750"
@@ -545,7 +545,7 @@ TimeoutSec=0
 Restart=on-failure
 RestartSec=5s
 StartLimitBurst=3
-StartLimitIntervalSec=60s
+StartLimitInterval=60s
 NoNewPrivileges=yes
 ProtectSystem=false
 ReadWritePaths=${CB_DATA_DIR}/postgres
@@ -646,7 +646,7 @@ ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 
 Restart=on-failure
 RestartSec=5s
 StartLimitBurst=3
-StartLimitIntervalSec=60s
+StartLimitInterval=60s
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${CB_DATA_DIR}
@@ -745,7 +745,12 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1
+    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1; then
+      echo ""
+      echo "  Last 20 lines from install log:"
+      tail -20 "$LOG_FILE" | sed 's/^/  /'
+      cb_fail "PostgreSQL initialization failed" "Check: tail -50 ${LOG_FILE}"
+    fi
     cb_ok "Database initialized"
   else
     cb_ok "Database already initialized"
