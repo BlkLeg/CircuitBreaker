@@ -732,7 +732,15 @@ stage3_configure_postgres() {
   systemctl stop postgresql 2>/dev/null || true
   systemctl stop circuitbreaker-postgres 2>/dev/null || true
   "$PG_BIN_DIR/pg_ctl" stop -D "${CB_DATA_DIR}/postgres" 2>/dev/null || true
+  pkill -9 postgres 2>/dev/null || true
   sleep 2
+  
+  # Verify port 5432 is free
+  if lsof -i :5432 &>/dev/null; then
+    cb_warn "Port 5432 still in use, attempting to free it..."
+    lsof -ti :5432 | xargs kill -9 2>/dev/null || true
+    sleep 2
+  fi
   cb_ok "Stopped existing instances"
   
   # Create postgres data directory with correct ownership (postgres user now exists)
@@ -826,6 +834,20 @@ EOF
 stage3_configure_pgbouncer() {
   cb_section "Configuring pgbouncer"
   
+  # Stop any existing pgbouncer processes
+  cb_step "Stopping any existing pgbouncer processes"
+  systemctl stop circuitbreaker-pgbouncer 2>/dev/null || true
+  pkill -9 pgbouncer 2>/dev/null || true
+  sleep 2
+  
+  # Verify port 6432 is free
+  if lsof -i :6432 &>/dev/null; then
+    cb_warn "Port 6432 still in use, attempting to free it..."
+    lsof -ti :6432 | xargs kill -9 2>/dev/null || true
+    sleep 2
+  fi
+  cb_ok "Cleaned up existing pgbouncer processes"
+  
   # Compute MD5 hash - CRITICAL: format is md5(password+username)
   cb_step "Generating pgbouncer authentication hash"
   local pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
@@ -887,7 +909,24 @@ EOF
   
   # Verify connection through pgbouncer
   cb_step "Verifying pgbouncer connection"
-  if ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>/dev/null; then
+  echo "  → Attempting connection: psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker"
+  if ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Connection failed. Debugging information:"
+    echo "  → Checking userlist.txt:"
+    cat /etc/pgbouncer/userlist.txt
+    echo ""
+    echo "  → Expected MD5 format: \"breaker\" \"md5<hash>\""
+    echo "  → Hash should be md5(password+username)"
+    echo ""
+    echo "  → Checking pgbouncer status:"
+    systemctl status circuitbreaker-pgbouncer --no-pager || true
+    echo ""
+    echo "  → Last 30 lines from pgbouncer journal:"
+    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
+    echo ""
+    echo "  → Testing direct PostgreSQL connection (port 5432):"
+    PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 5432 -U breaker -d circuitbreaker -c '\q' 2>&1 || true
     cb_fail "pgbouncer connection failed" "Check userlist.txt hash. Run: cb doctor"
   fi
   cb_ok "pgbouncer connection verified"
@@ -895,6 +934,22 @@ EOF
 
 stage3_configure_redis() {
   cb_section "Configuring Redis"
+  
+  # Stop any existing Redis
+  cb_step "Stopping existing Redis instances"
+  systemctl stop redis 2>/dev/null || true
+  systemctl stop redis-server 2>/dev/null || true
+  systemctl stop circuitbreaker-redis 2>/dev/null || true
+  pkill -9 redis-server 2>/dev/null || true
+  sleep 1
+  
+  # Verify port 6379 is free
+  if lsof -i :6379 &>/dev/null; then
+    cb_warn "Port 6379 still in use, attempting to free it..."
+    lsof -ti :6379 | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+  cb_ok "Cleaned up existing Redis processes"
   
   cb_step "Writing Redis configuration"
   mkdir -p /etc/redis
@@ -965,6 +1020,20 @@ EOF
 
 stage3_configure_nats() {
   cb_section "Configuring NATS"
+  
+  # Stop any existing NATS
+  cb_step "Stopping existing NATS instances"
+  systemctl stop circuitbreaker-nats 2>/dev/null || true
+  pkill -9 nats-server 2>/dev/null || true
+  sleep 1
+  
+  # Verify port 4222 is free
+  if lsof -i :4222 &>/dev/null; then
+    cb_warn "Port 4222 still in use, attempting to free it..."
+    lsof -ti :4222 | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
+  cb_ok "Cleaned up existing NATS processes"
   
   cb_step "Writing NATS configuration"
   cat > /etc/nats/nats.conf <<EOF
