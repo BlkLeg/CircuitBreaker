@@ -1247,7 +1247,9 @@ write_wait_for_services_script() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+set -a
 source /etc/circuitbreaker/.env
+set +a
 
 MAX_WAIT=60
 INTERVAL=2
@@ -1735,7 +1737,6 @@ main() {
   stage1_bootstrap
   stage2_dependencies
   stage4_write_systemd_units
-  write_wait_for_services_script
   
   # Configure services
   stage3_configure_postgres
@@ -1746,6 +1747,7 @@ main() {
   
   # Deploy and build
   stage5_deploy_code
+  write_wait_for_services_script
   stage6_setup_python
   stage7_build_frontend
   
