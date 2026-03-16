@@ -290,8 +290,11 @@ stage1_bootstrap() {
     cb_ok "User 'breaker' created"
   fi
 
-  # Create directory tree with exact permissions
+  # Create directory structure
   cb_step "Creating directory structure"
+  echo "    Application: /opt/circuitbreaker"
+  echo "    Data: ${CB_DATA_DIR}"
+  echo "    Config: /etc/circuitbreaker"
   
   declare -A DIRS=(
     ["/opt/circuitbreaker"]="root:root:755"
@@ -301,12 +304,11 @@ stage1_bootstrap() {
     ["/opt/circuitbreaker/scripts"]="root:root:755"
     ["/opt/circuitbreaker/apps/frontend/dist"]="root:root:755"
     ["${CB_DATA_DIR}"]="breaker:breaker:755"
-    ["${CB_DATA_DIR}/nats"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/redis"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/uploads"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/tls"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/logs"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/backups"]="breaker:breaker:750"
+    ["${CB_DATA_DIR}/nats"]="breaker:breaker:755"
+    ["${CB_DATA_DIR}/uploads"]="breaker:breaker:755"
+    ["${CB_DATA_DIR}/tls"]="breaker:breaker:755"
+    ["${CB_DATA_DIR}/logs"]="breaker:breaker:777"
+    ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
     ["/etc/circuitbreaker"]="root:breaker:750"
     ["/etc/nats"]="root:root:755"
     ["/etc/pgbouncer"]="root:root:755"
@@ -418,9 +420,9 @@ stage2_dependencies() {
   cb_ok "Network tools installed"
 
   # Group 3: PostgreSQL 15 from PGDG
-  cb_step "Installing PostgreSQL 15 from PGDG repository"
+  cb_step "Installing PostgreSQL 15 from official PGDG repository"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg >> "$LOG_FILE" 2>&1
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc 2>/dev/null | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg 2>/dev/null
     echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
@@ -443,7 +445,9 @@ stage2_dependencies() {
   if ! "$PG_BIN_DIR/pg_ctl" --version 2>/dev/null | grep -q " 15"; then
     cb_fail "PostgreSQL 15 verification failed" "Check: $PG_BIN_DIR/pg_ctl --version"
   fi
-  cb_ok "PostgreSQL 15 installed"
+  local pg_version=$("$PG_BIN_DIR/pg_ctl" --version | grep -oP '\d+\.\d+' | head -1)
+  echo "    Binary path: $PG_BIN_DIR"
+  cb_ok "PostgreSQL ${pg_version} installed"
 
   # Group 4: pgbouncer, Redis, nginx
   cb_step "Installing pgbouncer, Redis, and nginx"
@@ -461,7 +465,7 @@ stage2_dependencies() {
   cb_ok "pgbouncer, Redis, nginx installed"
 
   # Group 5: NATS Server binary
-  cb_step "Installing NATS Server"
+  cb_step "Installing NATS Server (JetStream)"
   local nats_version=$(curl -s https://api.github.com/repos/nats-io/nats-server/releases/latest | jq -r '.tag_name' | tr -d v)
   if [[ -z "$nats_version" ]] || [[ "$nats_version" == "null" ]]; then
     cb_fail "Failed to fetch NATS version from GitHub" "Check internet connectivity"
@@ -481,6 +485,7 @@ stage2_dependencies() {
   if ! /usr/local/bin/nats-server --version &>/dev/null; then
     cb_fail "NATS Server verification failed" "Check: /usr/local/bin/nats-server --version"
   fi
+  echo "    Install path: /usr/local/bin/nats-server"
   cb_ok "NATS Server ${nats_version} installed"
 
   # Group 6: Python 3.12
@@ -499,7 +504,8 @@ stage2_dependencies() {
   if ! python3.12 --version &>/dev/null; then
     cb_fail "Python 3.12 verification failed" "Check: python3.12 --version"
   fi
-  cb_ok "Python 3.12 installed"
+  local py_version=$(python3.12 --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+')
+  cb_ok "Python ${py_version} installed"
 
   # Group 7: Node 20 LTS
   cb_step "Installing Node.js 20 LTS"
@@ -524,6 +530,8 @@ stage2_dependencies() {
 stage4_write_systemd_units() {
   cb_section "Writing systemd Service Units"
   cb_step "Creating systemd unit files"
+  echo "    All services will log to systemd journal"
+  echo "    View with: journalctl -u circuitbreaker-<service>"
 
   # circuitbreaker-postgres.service
   cat > /etc/systemd/system/circuitbreaker-postgres.service <<EOF
@@ -642,7 +650,7 @@ Group=breaker
 WorkingDirectory=/opt/circuitbreaker/apps/backend
 EnvironmentFile=/etc/circuitbreaker/.env
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
-ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --no-access-log
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
 Restart=on-failure
 RestartSec=5s
 StartLimitBurst=3
@@ -748,6 +756,7 @@ stage3_configure_postgres() {
   mkdir -p "${CB_DATA_DIR}/postgres"
   chown postgres:postgres "${CB_DATA_DIR}/postgres"
   chmod 700 "${CB_DATA_DIR}/postgres"
+  echo "    Data directory: ${CB_DATA_DIR}/postgres (postgres:postgres 700)"
   cb_ok "PostgreSQL data directory created"
   
   # Initialize database
@@ -799,19 +808,12 @@ EOF
   
   # Start PostgreSQL
   cb_step "Starting PostgreSQL"
-  echo "  → systemctl start circuitbreaker-postgres"
-  if ! timeout 15 systemctl start circuitbreaker-postgres 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
-    systemctl status circuitbreaker-postgres --no-pager || true
+  if ! systemctl start circuitbreaker-postgres >> "$LOG_FILE" 2>&1; then
     cb_fail "PostgreSQL failed to start" "Check: journalctl -u circuitbreaker-postgres -n 50"
   fi
   sleep 3
   
   if ! nc -z 127.0.0.1 5432 2>/dev/null; then
-    echo ""
-    echo "  Port 5432 not listening. Checking service status..."
-    systemctl status circuitbreaker-postgres --no-pager || true
     cb_fail "PostgreSQL not listening on port 5432" "Check: journalctl -u circuitbreaker-postgres -n 50"
   fi
   cb_ok "PostgreSQL started"
@@ -849,8 +851,9 @@ stage3_configure_pgbouncer() {
   cb_ok "Cleaned up existing pgbouncer processes"
   
   # Compute MD5 hash - CRITICAL: format is md5(password+username)
-  cb_step "Generating pgbouncer authentication hash"
+  cb_step "Configuring pgbouncer connection pooler"
   local pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
+  echo "    Pool port: 6432, Backend: PostgreSQL 5432"
   
   mkdir -p /etc/pgbouncer
   
@@ -880,54 +883,27 @@ ignore_startup_parameters = extra_float_digits
 EOF
   
   chown postgres:postgres /etc/pgbouncer/pgbouncer.ini
-  cb_ok "pgbouncer configuration written"
+  chmod 640 /etc/pgbouncer/pgbouncer.ini
+  cb_ok "Configuration written"
   
   # Start pgbouncer
   cb_step "Starting pgbouncer"
-  echo "  → systemctl start circuitbreaker-pgbouncer"
-  if ! timeout 10 systemctl start circuitbreaker-pgbouncer 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
+  if ! systemctl start circuitbreaker-pgbouncer >> "$LOG_FILE" 2>&1; then
     systemctl status circuitbreaker-pgbouncer --no-pager || true
-    echo ""
-    echo "  Last 30 lines from journal:"
-    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
+    journalctl -u circuitbreaker-pgbouncer -n 20 --no-pager || true
     cb_fail "pgbouncer failed to start" "Check: journalctl -u circuitbreaker-pgbouncer -n 50"
   fi
   sleep 2
   
   if ! nc -z 127.0.0.1 6432 2>/dev/null; then
-    echo ""
-    echo "  Port 6432 not listening. Checking service status..."
-    systemctl status circuitbreaker-pgbouncer --no-pager || true
-    echo ""
-    echo "  Last 30 lines from journal:"
-    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
     cb_fail "pgbouncer not listening on port 6432" "Check: journalctl -u circuitbreaker-pgbouncer -n 50"
   fi
   cb_ok "pgbouncer started"
   
   # Verify connection through pgbouncer
   cb_step "Verifying pgbouncer connection"
-  echo "  → Attempting connection: psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker"
-  if ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Connection failed. Debugging information:"
-    echo "  → Checking userlist.txt:"
-    cat /etc/pgbouncer/userlist.txt
-    echo ""
-    echo "  → Expected MD5 format: \"breaker\" \"md5<hash>\""
-    echo "  → Hash should be md5(password+username)"
-    echo ""
-    echo "  → Checking pgbouncer status:"
-    systemctl status circuitbreaker-pgbouncer --no-pager || true
-    echo ""
-    echo "  → Last 30 lines from pgbouncer journal:"
-    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
-    echo ""
-    echo "  → Testing direct PostgreSQL connection (port 5432):"
-    PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 5432 -U breaker -d circuitbreaker -c '\q' 2>&1 || true
-    cb_fail "pgbouncer connection failed" "Check userlist.txt hash. Run: cb doctor"
+  if ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' >> "$LOG_FILE" 2>&1; then
+    cb_fail "pgbouncer connection failed" "Check: journalctl -u circuitbreaker-pgbouncer -n 50"
   fi
   cb_ok "pgbouncer connection verified"
 }
@@ -953,6 +929,19 @@ stage3_configure_redis() {
   
   cb_step "Writing Redis configuration"
   mkdir -p /etc/redis
+  
+  # Create Redis data directory with correct ownership
+  local redis_user="redis"
+  if id redis &>/dev/null; then
+    redis_user="redis"
+  elif id _redis &>/dev/null; then
+    redis_user="_redis"
+  fi
+  
+  mkdir -p "${CB_DATA_DIR}/redis"
+  chown "${redis_user}:${redis_user}" "${CB_DATA_DIR}/redis"
+  chmod 755 "${CB_DATA_DIR}/redis"
+  echo "    Redis data: ${CB_DATA_DIR}/redis (${redis_user}:${redis_user})"
   
   cat > /etc/redis/redis.conf <<EOF
 bind 127.0.0.1
@@ -989,23 +978,17 @@ EOF
   
   chown "${redis_user}:${redis_user}" /etc/redis/redis.conf
   chmod 640 /etc/redis/redis.conf
-  cb_ok "Redis configuration written"
+  echo "    Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
+  cb_ok "Configuration written"
   
   # Start Redis
   cb_step "Starting Redis"
-  echo "  → systemctl start circuitbreaker-redis"
-  if ! timeout 10 systemctl start circuitbreaker-redis 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
-    systemctl status circuitbreaker-redis --no-pager || true
+  if ! systemctl start circuitbreaker-redis >> "$LOG_FILE" 2>&1; then
     cb_fail "Redis failed to start" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   sleep 2
   
   if ! nc -z 127.0.0.1 6379 2>/dev/null; then
-    echo ""
-    echo "  Port 6379 not listening. Checking service status..."
-    systemctl status circuitbreaker-redis --no-pager || true
     cb_fail "Redis not listening on port 6379" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis started"
@@ -1061,31 +1044,21 @@ EOF
   
   chown breaker:breaker /etc/nats/nats.conf
   chmod 640 /etc/nats/nats.conf
-  cb_ok "NATS configuration written"
+  echo "    Port: 4222, Store: ${CB_DATA_DIR}/nats"
+  cb_ok "Configuration written"
   
   # Start NATS
   cb_step "Starting NATS"
-  echo "  → systemctl start circuitbreaker-nats"
-  if ! timeout 10 systemctl start circuitbreaker-nats 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
-    systemctl status circuitbreaker-nats --no-pager || true
+  if ! systemctl start circuitbreaker-nats >> "$LOG_FILE" 2>&1; then
     cb_fail "NATS failed to start" "Check: journalctl -u circuitbreaker-nats -n 50"
   fi
   sleep 2
   
   if ! nc -z 127.0.0.1 4222 2>/dev/null; then
-    echo ""
-    echo "  Port 4222 not listening. Checking service status..."
-    systemctl status circuitbreaker-nats --no-pager || true
     cb_fail "NATS not listening on port 4222" "Check: journalctl -u circuitbreaker-nats -n 50"
   fi
   cb_ok "NATS started"
   
-  cb_step "Verifying NATS connection"
-  if ! nc -z 127.0.0.1 4222 2>/dev/null; then
-    cb_fail "NATS connection failed" "Check: journalctl -u circuitbreaker-nats -n 50"
-  fi
   cb_ok "NATS connection verified"
 }
 
@@ -1265,6 +1238,8 @@ EOF
 write_wait_for_services_script() {
   cb_section "Creating Service Health Check Script"
   cb_step "Writing wait-for-services.sh"
+  echo "    Location: /opt/circuitbreaker/scripts/wait-for-services.sh"
+  echo "    Purpose: Pre-start verification for backend API"
   
   mkdir -p /opt/circuitbreaker/scripts
   
@@ -1311,34 +1286,33 @@ EOF
 # ============================================================================
 
 stage5_deploy_code() {
-  cb_section "Deploying Code"
+  cb_section "Deploying Application Code"
   
   if [[ -d /opt/circuitbreaker/.git ]]; then
     cb_step "Updating existing repository"
-    echo "  → git fetch origin"
-    git -C /opt/circuitbreaker fetch origin 2>&1 | tee -a "$LOG_FILE"
-    echo "  → git checkout $CB_BRANCH"
-    git -C /opt/circuitbreaker checkout "$CB_BRANCH" 2>&1 | tee -a "$LOG_FILE"
-    echo "  → git pull origin $CB_BRANCH"
-    git -C /opt/circuitbreaker pull origin "$CB_BRANCH" 2>&1 | tee -a "$LOG_FILE"
-    cb_ok "Repository updated to branch: $CB_BRANCH"
+    echo "    Branch: $CB_BRANCH"
+    git -C /opt/circuitbreaker fetch origin >> "$LOG_FILE" 2>&1
+    git -C /opt/circuitbreaker checkout "$CB_BRANCH" >> "$LOG_FILE" 2>&1
+    git -C /opt/circuitbreaker pull origin "$CB_BRANCH" >> "$LOG_FILE" 2>&1
+    cb_ok "Repository updated"
   else
-    cb_step "Cloning repository"
-    echo "  → git clone --branch $CB_BRANCH --depth 1"
-    echo "     https://github.com/BlkLeg/CircuitBreaker.git"
+    cb_step "Cloning repository from GitHub"
+    echo "    Repo: github.com/BlkLeg/CircuitBreaker"
+    echo "    Branch: $CB_BRANCH"
+    echo "    Location: /opt/circuitbreaker"
     if ! git clone --branch "$CB_BRANCH" --depth 1 \
       https://github.com/BlkLeg/CircuitBreaker.git \
-      /opt/circuitbreaker 2>&1 | tee -a "$LOG_FILE"; then
+      /opt/circuitbreaker >> "$LOG_FILE" 2>&1; then
       cb_fail "Git clone failed" "Check: tail -50 ${LOG_FILE}"
     fi
-    cb_ok "Repository cloned from branch: $CB_BRANCH"
+    cb_ok "Repository cloned"
   fi
   
   # Fix ownership
   chown -R breaker:breaker /opt/circuitbreaker/apps/backend
   chown -R root:root /opt/circuitbreaker/apps/frontend
   
-  cb_ok "Code deployed"
+  cb_ok "Code deployed to /opt/circuitbreaker"
 }
 
 # ============================================================================
@@ -1350,6 +1324,7 @@ stage6_setup_python() {
   
   # Create virtual environment
   cb_step "Creating Python virtual environment"
+  echo "    Location: /opt/circuitbreaker/apps/backend/venv"
   python3.12 -m venv /opt/circuitbreaker/apps/backend/venv >> "$LOG_FILE" 2>&1
   chown -R breaker:breaker /opt/circuitbreaker/apps/backend/venv
   cb_ok "Virtual environment created"
@@ -1371,19 +1346,14 @@ stage6_setup_python() {
   cb_ok "Python dependencies installed"
   
   # Run database migrations
-  cb_step "Running database migrations"
-  echo "  → alembic upgrade head"
+  cb_step "Running database migrations (alembic upgrade head)"
   source /etc/circuitbreaker/.env
-  if ! su -s /bin/sh breaker -c "
+  echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
+  su -s /bin/sh breaker -c "
     source /etc/circuitbreaker/.env
     cd /opt/circuitbreaker/apps/backend
     /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
-  " 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Last 30 lines from install log:"
-    tail -30 "$LOG_FILE" | sed 's/^/  /'
-    cb_fail "Database migrations failed" "Check: tail -100 ${LOG_FILE}"
-  fi
+  " >> "$LOG_FILE" 2>&1
   
   # Verify migrations ran
   local migration_count=$(PGPASSWORD="$CB_DB_PASSWORD" psql \
@@ -1391,7 +1361,8 @@ stage6_setup_python() {
     "SELECT COUNT(*) FROM alembic_version" 2>/dev/null || echo "0")
   
   if [[ "$migration_count" -gt 0 ]]; then
-    cb_ok "Database migrations completed ($migration_count applied)"
+    echo "    Migrations applied: $migration_count"
+    cb_ok "Database schema ready"
   else
     cb_fail "Database migrations did not run" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
   fi
@@ -1404,23 +1375,17 @@ stage6_setup_python() {
 stage7_build_frontend() {
   cb_section "Frontend Build"
   
-  cb_step "Installing Node.js dependencies"
+  cb_step "Installing Node.js dependencies (may take 1-2 minutes)"
   cd /opt/circuitbreaker/apps/frontend
-  echo "  → npm ci (this may take a few minutes...)"
-  if ! npm ci 2>&1 | tee -a "${CB_DATA_DIR}/logs/install.log"; then
-    echo ""
-    echo "  Last 30 lines from install log:"
-    tail -30 "${CB_DATA_DIR}/logs/install.log" | sed 's/^/  /'
+  echo "    Running: npm ci"
+  if ! npm ci >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
     cb_fail "npm install failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
   fi
   cb_ok "Node dependencies installed"
   
-  cb_step "Building frontend application"
-  echo "  → npm run build (this may take a few minutes...)"
-  if ! npm run build 2>&1 | tee -a "${CB_DATA_DIR}/logs/install.log"; then
-    echo ""
-    echo "  Last 30 lines from install log:"
-    tail -30 "${CB_DATA_DIR}/logs/install.log" | sed 's/^/  /'
+  cb_step "Building frontend application (React + Vite, may take 1-2 minutes)"
+  echo "    Running: npm run build"
+  if ! npm run build >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
     cb_fail "Frontend build failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
   fi
   
@@ -1428,13 +1393,13 @@ stage7_build_frontend() {
   if [[ ! -f /opt/circuitbreaker/apps/frontend/dist/index.html ]]; then
     cb_fail "Frontend build produced no output" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
   fi
-  cb_ok "Frontend built successfully"
   
   # Fix permissions
   chown -R root:root /opt/circuitbreaker/apps/frontend/dist
   chmod -R 755 /opt/circuitbreaker/apps/frontend/dist
   
-  cb_ok "Frontend ready to serve"
+  echo "    Output: /opt/circuitbreaker/apps/frontend/dist/"
+  cb_ok "Frontend built successfully"
 }
 
 # ============================================================================
@@ -1446,14 +1411,7 @@ stage8_start_services() {
   
   # Start backend
   cb_step "Starting backend API"
-  echo "  → systemctl start circuitbreaker-backend"
-  if ! timeout 30 systemctl start circuitbreaker-backend 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
-    systemctl status circuitbreaker-backend --no-pager || true
-    echo ""
-    echo "  Last 50 lines from journal:"
-    journalctl -u circuitbreaker-backend -n 50 --no-pager || true
+  if ! systemctl start circuitbreaker-backend >> "$LOG_FILE" 2>&1; then
     cb_fail "Backend failed to start" "Check: journalctl -u circuitbreaker-backend -n 100"
   fi
   
@@ -1471,28 +1429,21 @@ stage8_start_services() {
   
   # Start workers
   cb_step "Starting worker processes"
-  for worker in discovery webhook notification telemetry; do
-    echo "  → Starting worker: $worker"
-    systemctl start "circuitbreaker-worker@${worker}" 2>&1 | tee -a "$LOG_FILE" || true
-  done
+  systemctl start "circuitbreaker-worker@discovery" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@webhook" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@notification" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
   sleep 2
   cb_ok "Workers started"
   
   # Start nginx
   cb_step "Starting nginx"
-  echo "  → systemctl start nginx"
-  if ! timeout 10 systemctl start nginx 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Startup failed or timed out. Checking status..."
-    systemctl status nginx --no-pager || true
+  if ! systemctl start nginx >> "$LOG_FILE" 2>&1; then
     cb_fail "nginx failed to start" "Check: journalctl -u nginx -n 50"
   fi
   sleep 1
   
   if ! nc -z 127.0.0.1 "$CB_PORT" 2>/dev/null; then
-    echo ""
-    echo "  Port $CB_PORT not listening. Checking service status..."
-    systemctl status nginx --no-pager || true
     cb_fail "nginx not listening on port $CB_PORT" "Check: journalctl -u nginx -n 50"
   fi
   cb_ok "nginx started"
@@ -1511,8 +1462,10 @@ stage8_start_services() {
 # ============================================================================
 
 stage9_install_cb_cli() {
-  cb_section "Installing CB CLI"
-  cb_step "Writing /usr/local/bin/cb"
+  cb_section "Installing Management CLI"
+  cb_step "Installing cb command-line tool"
+  echo "    Location: /usr/local/bin/cb"
+  echo "    Commands: status, doctor, logs, restart, backup, update, version, uninstall"
   
   cat > /usr/local/bin/cb <<'EOF'
 #!/usr/bin/env bash
@@ -1673,11 +1626,21 @@ stage10_final_output() {
   if [[ "$NO_TLS" == "false" ]]; then
     echo -e "  │            https://${detected_ip}:443"
   fi
-  echo -e "  │  Logs:     cb logs"
-  echo -e "  │  Status:   cb status"
-  echo -e "  │  Help:     cb doctor"
   echo -e "  │  Version:  ${version}"
+  echo -e "  ├──────────────────────────────────────────────┤"
+  echo -e "  │  Logs:     cb logs                           │"
+  echo -e "  │            ${CB_DATA_DIR}/logs/"
+  echo -e "  │  Status:   cb status"
+  echo -e "  │  Health:   cb doctor"
   echo -e "  └──────────────────────────────────────────────┘"
+  echo ""
+  echo -e "  ${BOLD}Centralized Logs:${RESET}"
+  echo -e "    ${CB_DATA_DIR}/logs/install.log       (this install)"
+  echo -e "    journalctl -u circuitbreaker-backend  (API logs)"
+  echo -e "    journalctl -u circuitbreaker-worker@* (worker logs)"
+  echo -e "    journalctl -u circuitbreaker-postgres (database)"
+  echo -e "    journalctl -u circuitbreaker-redis    (cache)"
+  echo -e "    journalctl -u circuitbreaker-nats     (messaging)"
   echo ""
   echo -e "  First run? Open the URL above to complete setup."
   echo ""
