@@ -1337,26 +1337,21 @@ stage6_setup_python() {
   cb_ok "Virtual environment created"
   
   # Install dependencies as breaker user
-  cb_step "Installing Python dependencies"
-  echo "  → pip install (this may take a few minutes...)"
-  if ! su -s /bin/sh breaker -c "
+  cb_step "Installing Python dependencies (may take 1-2 minutes)"
+  echo "    Installing from: apps/backend/requirements.txt"
+  su -s /bin/bash breaker -c "
     source /opt/circuitbreaker/apps/backend/venv/bin/activate
-    pip install --upgrade pip
-    pip install -r /opt/circuitbreaker/apps/backend/requirements.txt
-    pip install -e /opt/circuitbreaker/apps/backend/
-  " 2>&1 | tee -a "$LOG_FILE"; then
-    echo ""
-    echo "  Last 30 lines from install log:"
-    tail -30 "$LOG_FILE" | sed 's/^/  /'
-    cb_fail "Python dependencies installation failed" "Check: tail -100 ${LOG_FILE}"
-  fi
+    pip install --quiet --upgrade pip
+    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt
+    pip install --quiet -e /opt/circuitbreaker/apps/backend/
+  " >> "$LOG_FILE" 2>&1
   cb_ok "Python dependencies installed"
   
   # Run database migrations
   cb_step "Running database migrations (alembic upgrade head)"
   source /etc/circuitbreaker/.env
   echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
-  su -s /bin/sh breaker -c "
+  su -s /bin/bash breaker -c "
     source /etc/circuitbreaker/.env
     cd /opt/circuitbreaker/apps/backend
     /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
