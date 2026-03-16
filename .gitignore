@@ -35,15 +35,25 @@ backend/.env
 backend/.env.*
 docker/.env
 .env.local
+.env.*
 frontend/.env.local
 frontend/.env.*.local
 .env
+.envrc
 .github/workflows/.env
 .github/workflows/.env.*
+!.env.example
 
 # Docker
 docker/data/
 data/audit/
+circuitbreaker-data/
+data/
+dump.rdb
+
+# Local DB sidecar files
+*.db-shm
+*.db-wal
 
 # Runtime user data (preserve folder structure via .gitkeep)
 backend/data/uploads/**
@@ -84,6 +94,16 @@ Thumbs.db
 # Tool / editor caches
 .cache/
 .tools/snyk
+.promptfoo/
+.aider*
+.cursor/
+.codex/
+.claude/
+.superpowers/
+docker-compose.datadog.yml
+
+# AI/generated frontend tool data
+apps/frontend/src/data/
 
 # Internal / auto-generated
 .INTERNAL/
