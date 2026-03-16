@@ -1296,6 +1296,13 @@ stage5_deploy_code() {
     git -C /opt/circuitbreaker pull origin "$CB_BRANCH" >> "$LOG_FILE" 2>&1
     cb_ok "Repository updated"
   else
+    # Remove non-git directory if it exists
+    if [[ -d /opt/circuitbreaker ]] && [[ ! -d /opt/circuitbreaker/.git ]]; then
+      cb_step "Removing incomplete installation directory"
+      rm -rf /opt/circuitbreaker/apps /opt/circuitbreaker/scripts
+      cb_ok "Cleaned up"
+    fi
+    
     cb_step "Cloning repository from GitHub"
     echo "    Repo: github.com/BlkLeg/CircuitBreaker"
     echo "    Branch: $CB_BRANCH"
