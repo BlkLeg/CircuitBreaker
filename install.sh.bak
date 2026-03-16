@@ -23,14 +23,7 @@ CB_EMAIL=""
 UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
-
-# PyInstaller paths
-BACKEND_BIN_DIR="/opt/circuitbreaker/backend"
-BACKEND_BINARY="$BACKEND_BIN_DIR/circuitbreaker-backend"
-BACKEND_APP_DIR="/opt/circuitbreaker/apps/backend"
-
-# Control flags
-SKIP_MIGRATIONS=false
+FORCE_DEPS=false
 
 # UI Functions
 cb_version() {
@@ -86,7 +79,7 @@ show_help() {
   echo "  --branch <name>      Git branch to install from (default: main)"
   echo "  --unattended         Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --upgrade            Force upgrade mode even if install not detected"
-  echo "  --skip-migrations    Skip database migrations (for schema-only updates)"
+  echo "  --force-deps         Force reinstall dependencies in upgrade mode"
   echo "  --help               Show this help message"
   echo ""
   exit 0
@@ -130,8 +123,8 @@ while [[ $# -gt 0 ]]; do
       UPGRADE_MODE=true
       shift
       ;;
-    --skip-migrations)
-      SKIP_MIGRATIONS=true
+    --force-deps)
+      FORCE_DEPS=true
       shift
       ;;
     --help)
@@ -144,28 +137,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-# ============================================================================
-# PYINSTALLER & HELPER FUNCTIONS
-# ============================================================================
-
-# Get latest GitHub release version
-get_latest_release_version() {
-  curl -sL https://api.github.com/repos/BlkLeg/CircuitBreaker/releases/latest 2>/dev/null \
-    | grep '"tag_name"' \
-    | sed -E 's/.*"([^"]+)".*/\1/' \
-    || echo "main"
-}
-
-# Detect architecture for PyInstaller download
-detect_pyinstaller_arch() {
-  case "$(uname -m)" in
-    x86_64)  echo "x86_64" ;;
-    aarch64) echo "aarch64" ;;
-    armv7l)  echo "armv7l" ;;
-    *)       cb_fail "Unsupported architecture: $(uname -m)" "PyInstaller binaries only available for x86_64, aarch64, armv7l" ;;
-  esac
-}
 
 # Global vars set during execution
 PKG_MGR=""
@@ -460,7 +431,7 @@ EOF
 # ============================================================================
 
 stage2_dependencies() {
-  if [[ "$UPGRADE_MODE" == "true" ]]; then
+  if [[ "$UPGRADE_MODE" == "true" ]] && [[ "$FORCE_DEPS" == "false" ]]; then
     cb_section "Dependencies"
     cb_ok "Skipping dependency installation (upgrade mode)"
     return
@@ -583,17 +554,16 @@ stage2_dependencies() {
       add-apt-repository -y ppa:deadsnakes/ppa >> "$LOG_FILE" 2>&1
       $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     fi
-    # PyInstaller binary is self-contained, but install minimal Python for alembic migrations
-    $PKG_MGR install -y -q python3.12 >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q python3.12 python3.12-venv python3.12-dev >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q python3.12 >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q python3.12 python3.12-devel >> "$LOG_FILE" 2>&1
   fi
   
   if ! python3.12 --version &>/dev/null; then
     cb_fail "Python 3.12 verification failed" "Check: python3.12 --version"
   fi
   local py_version=$(python3.12 --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+')
-  cb_ok "Python ${py_version} installed (for migrations)"
+  cb_ok "Python ${py_version} installed"
 
   # Group 7: Node 20 LTS
   cb_step "Installing Node.js 20 LTS"
@@ -735,10 +705,10 @@ Requires=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbr
 Type=exec
 User=breaker
 Group=breaker
-WorkingDirectory=/opt/circuitbreaker/backend
+WorkingDirectory=/opt/circuitbreaker/apps/backend
 EnvironmentFile=/etc/circuitbreaker/.env
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
-ExecStart=/opt/circuitbreaker/backend/circuitbreaker-backend
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
 Restart=on-failure
 RestartSec=5s
 StartLimitBurst=3
@@ -766,9 +736,9 @@ Requires=circuitbreaker-backend.service
 Type=simple
 User=breaker
 Group=breaker
-WorkingDirectory=/opt/circuitbreaker/backend
+WorkingDirectory=/opt/circuitbreaker/apps/backend
 EnvironmentFile=/etc/circuitbreaker/.env
-ExecStart=/opt/circuitbreaker/backend/circuitbreaker-backend --worker %i
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
 Restart=on-failure
 RestartSec=10s
 NoNewPrivileges=yes
@@ -1391,73 +1361,54 @@ stage5_deploy_code() {
 }
 
 # ============================================================================
-# STAGE 6: BACKEND BINARY SETUP (PYINSTALLER)
+# STAGE 6: PYTHON SETUP & MIGRATIONS
 # ============================================================================
 
-stage6_download_backend_binary() {
-  cb_section "Backend Binary Setup"
+stage6_setup_python() {
+  cb_section "Python Backend Setup"
   
-  # Detect architecture
-  local arch=$(detect_pyinstaller_arch)
-  cb_step "Detecting architecture"
-  echo "    Architecture: $arch"
+  # Create virtual environment
+  cb_step "Creating Python virtual environment"
+  echo "    Location: /opt/circuitbreaker/apps/backend/venv"
+  python3.12 -m venv /opt/circuitbreaker/apps/backend/venv >> "$LOG_FILE" 2>&1
+  chown -R breaker:breaker /opt/circuitbreaker/apps/backend/venv
+  cb_ok "Virtual environment created"
   
-  # Get version from VERSION file
-  local version=$(cat /opt/circuitbreaker/VERSION 2>/dev/null || echo "latest")
+  # Install dependencies as breaker user
+  cb_step "Installing Python dependencies (may take 1-2 minutes)"
+  echo "    Installing from: apps/backend/requirements.txt"
+  su -s /bin/bash breaker -c "
+    source /opt/circuitbreaker/apps/backend/venv/bin/activate
+    pip install --quiet --upgrade pip
+    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt
+    pip install --quiet -e /opt/circuitbreaker/apps/backend/
+  " >> "$LOG_FILE" 2>&1
+  cb_ok "Python dependencies installed"
   
-  # Construct download URL
-  local download_url="https://github.com/BlkLeg/CircuitBreaker/releases/download/${version}/circuitbreaker-backend-${arch}"
-  
-  cb_step "Downloading pre-built backend binary"
-  echo "    Version: $version"
-  echo "    URL: $download_url"
-  
-  # Create backend directory
-  mkdir -p "$BACKEND_BIN_DIR"
-  
-  # Download binary silently
-  if ! curl -fSL "$download_url" -o "$BACKEND_BINARY" >> "$LOG_FILE" 2>&1; then
-    cb_fail "Failed to download backend binary" "Check: curl -I $download_url"
-  fi
-  
-  # Make executable
-  chmod +x "$BACKEND_BINARY"
-  chown breaker:breaker "$BACKEND_BINARY"
-  
-  cb_ok "Backend binary installed ($version)"
-}
-
-# ============================================================================
-# STAGE 6B: DATABASE MIGRATIONS
-# ============================================================================
-
-stage6b_run_migrations() {
-  cb_section "Database Migrations"
-  
-  # Skip if --skip-migrations flag set
-  if [[ "$SKIP_MIGRATIONS" == "true" ]]; then
-    cb_ok "Skipping migrations (--skip-migrations flag set)"
-    return
-  fi
-  
-  cb_step "Running database migrations"
-  echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
-  
+  # Run database migrations
+  cb_step "Running database migrations (alembic upgrade head)"
   source /etc/circuitbreaker/.env
-  
-  # PyInstaller binary includes alembic, use --migrate flag
-  if ! su -s /bin/bash breaker -c "
+  echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
+  su -s /bin/bash breaker -c "
     set -a
     source /etc/circuitbreaker/.env
     set +a
-    $BACKEND_BINARY --migrate
-  " >> "$LOG_FILE" 2>&1; then
-    cb_fail "Database migrations failed" "Check: tail -100 ${LOG_FILE} and journalctl -u circuitbreaker-postgres -n 50"
-  fi
+    cd /opt/circuitbreaker/apps/backend
+    /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
+  " >> "$LOG_FILE" 2>&1
   
-  cb_ok "Database schema ready"
+  # Verify migrations ran
+  local migration_count=$(PGPASSWORD="$CB_DB_PASSWORD" psql \
+    -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -tAc \
+    "SELECT COUNT(*) FROM alembic_version" 2>/dev/null || echo "0")
+  
+  if [[ "$migration_count" -gt 0 ]]; then
+    echo "    Migrations applied: $migration_count"
+    cb_ok "Database schema ready"
+  else
+    cb_fail "Database migrations did not run" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  fi
 }
-
 
 # ============================================================================
 # STAGE 7: FRONTEND BUILD
@@ -1466,15 +1417,15 @@ stage6b_run_migrations() {
 stage7_build_frontend() {
   cb_section "Frontend Build"
   
-  cb_step "Installing Node.js dependencies"
+  cb_step "Installing Node.js dependencies (may take 1-2 minutes)"
   cd /opt/circuitbreaker/apps/frontend
-  echo "    Running: npm ci --prefer-offline"
-  if ! npm ci --prefer-offline --no-audit --no-fund >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
+  echo "    Running: npm ci"
+  if ! npm ci >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
     cb_fail "npm install failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
   fi
   cb_ok "Node dependencies installed"
   
-  cb_step "Building frontend (Vite)"
+  cb_step "Building frontend application (React + Vite, may take 1-2 minutes)"
   echo "    Running: npm run build"
   if ! npm run build >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
     cb_fail "Frontend build failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
@@ -1506,21 +1457,25 @@ stage8_start_services() {
     cb_fail "Backend failed to start" "Check: journalctl -u circuitbreaker-backend -n 100"
   fi
   
-  # Wait for backend health endpoint (optimized for speed)
-  local max_wait=15
+  # Wait for backend health endpoint
+  local max_wait=30
   local elapsed=0
   until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"ready"'; do
-    sleep 1
-    elapsed=$((elapsed + 1))
+    sleep 2
+    elapsed=$((elapsed + 2))
     if [[ $elapsed -ge $max_wait ]]; then
       cb_fail "Backend API did not start" "Run: cb doctor"
     fi
   done
   cb_ok "Backend API started"
   
-  # Start workers (parallel for speed)
+  # Start workers
   cb_step "Starting worker processes"
-  systemctl start "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@discovery" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@webhook" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@notification" >> "$LOG_FILE" 2>&1
+  systemctl start "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
+  sleep 2
   cb_ok "Workers started"
   
   # Start/reload Caddy
@@ -1530,6 +1485,7 @@ stage8_start_services() {
   else
     systemctl start caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy failed to start" "Check: journalctl -u caddy -n 50"
   fi
+  sleep 1
 
   local caddy_port=443
   [[ "$NO_TLS" == "true" ]] && caddy_port="$CB_PORT"
@@ -1875,9 +1831,8 @@ run_upgrade() {
     git -C /opt/circuitbreaker log --oneline "${old_head}..HEAD" 2>/dev/null || echo "  (changelog unavailable)"
   fi
   
-  # Update backend binary
-  stage6_download_backend_binary
-  stage6b_run_migrations
+  # Update Python dependencies
+  stage6_setup_python
   
   # Rebuild frontend
   stage7_build_frontend
@@ -1885,14 +1840,14 @@ run_upgrade() {
   # Restart services
   cb_step "Restarting all services"
   systemctl start circuitbreaker.target >> "$LOG_FILE" 2>&1
-  sleep 2
+  sleep 5
   
-  # Wait for backend (optimized for speed)
-  local max_wait=15
+  # Wait for backend
+  local max_wait=30
   local elapsed=0
   until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"ready"'; do
-    sleep 1
-    elapsed=$((elapsed + 1))
+    sleep 2
+    elapsed=$((elapsed + 2))
     if [[ $elapsed -ge $max_wait ]]; then
       cb_fail "Backend did not start after upgrade" "Run: cb doctor"
     fi
@@ -1932,8 +1887,7 @@ main() {
   # Deploy and build
   stage5_deploy_code
   write_wait_for_services_script
-  stage6_download_backend_binary
-  stage6b_run_migrations
+  stage6_setup_python
   stage7_build_frontend
   
   # Start everything
