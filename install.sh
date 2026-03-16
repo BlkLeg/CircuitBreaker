@@ -565,12 +565,12 @@ After=circuitbreaker-postgres.service
 Requires=circuitbreaker-postgres.service
 
 [Service]
-Type=forking
+Type=simple
 User=postgres
-ExecStart=/usr/sbin/pgbouncer -d /etc/pgbouncer/pgbouncer.ini
+ExecStart=/usr/sbin/pgbouncer /etc/pgbouncer/pgbouncer.ini
 ExecReload=/bin/kill -HUP \$MAINPID
-PIDFile=/run/pgbouncer/pgbouncer.pid
 RuntimeDirectory=pgbouncer
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
@@ -791,10 +791,19 @@ EOF
   
   # Start PostgreSQL
   cb_step "Starting PostgreSQL"
-  systemctl start circuitbreaker-postgres >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start circuitbreaker-postgres"
+  if ! timeout 15 systemctl start circuitbreaker-postgres 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status circuitbreaker-postgres --no-pager || true
+    cb_fail "PostgreSQL failed to start" "Check: journalctl -u circuitbreaker-postgres -n 50"
+  fi
   sleep 3
   
   if ! nc -z 127.0.0.1 5432 2>/dev/null; then
+    echo ""
+    echo "  Port 5432 not listening. Checking service status..."
+    systemctl status circuitbreaker-postgres --no-pager || true
     cb_fail "PostgreSQL not listening on port 5432" "Check: journalctl -u circuitbreaker-postgres -n 50"
   fi
   cb_ok "PostgreSQL started"
@@ -846,8 +855,6 @@ max_client_conn = 100
 default_pool_size = 20
 server_reset_query = DISCARD ALL
 ignore_startup_parameters = extra_float_digits
-logfile = ${CB_DATA_DIR}/logs/pgbouncer.log
-pidfile = /run/pgbouncer/pgbouncer.pid
 EOF
   
   chown postgres:postgres /etc/pgbouncer/pgbouncer.ini
@@ -855,10 +862,25 @@ EOF
   
   # Start pgbouncer
   cb_step "Starting pgbouncer"
-  systemctl start circuitbreaker-pgbouncer >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start circuitbreaker-pgbouncer"
+  if ! timeout 10 systemctl start circuitbreaker-pgbouncer 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status circuitbreaker-pgbouncer --no-pager || true
+    echo ""
+    echo "  Last 30 lines from journal:"
+    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
+    cb_fail "pgbouncer failed to start" "Check: journalctl -u circuitbreaker-pgbouncer -n 50"
+  fi
   sleep 2
   
   if ! nc -z 127.0.0.1 6432 2>/dev/null; then
+    echo ""
+    echo "  Port 6432 not listening. Checking service status..."
+    systemctl status circuitbreaker-pgbouncer --no-pager || true
+    echo ""
+    echo "  Last 30 lines from journal:"
+    journalctl -u circuitbreaker-pgbouncer -n 30 --no-pager || true
     cb_fail "pgbouncer not listening on port 6432" "Check: journalctl -u circuitbreaker-pgbouncer -n 50"
   fi
   cb_ok "pgbouncer started"
@@ -916,10 +938,19 @@ EOF
   
   # Start Redis
   cb_step "Starting Redis"
-  systemctl start circuitbreaker-redis >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start circuitbreaker-redis"
+  if ! timeout 10 systemctl start circuitbreaker-redis 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status circuitbreaker-redis --no-pager || true
+    cb_fail "Redis failed to start" "Check: journalctl -u circuitbreaker-redis -n 50"
+  fi
   sleep 2
   
   if ! nc -z 127.0.0.1 6379 2>/dev/null; then
+    echo ""
+    echo "  Port 6379 not listening. Checking service status..."
+    systemctl status circuitbreaker-redis --no-pager || true
     cb_fail "Redis not listening on port 6379" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis started"
@@ -965,10 +996,19 @@ EOF
   
   # Start NATS
   cb_step "Starting NATS"
-  systemctl start circuitbreaker-nats >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start circuitbreaker-nats"
+  if ! timeout 10 systemctl start circuitbreaker-nats 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status circuitbreaker-nats --no-pager || true
+    cb_fail "NATS failed to start" "Check: journalctl -u circuitbreaker-nats -n 50"
+  fi
   sleep 2
   
   if ! nc -z 127.0.0.1 4222 2>/dev/null; then
+    echo ""
+    echo "  Port 4222 not listening. Checking service status..."
+    systemctl status circuitbreaker-nats --no-pager || true
     cb_fail "NATS not listening on port 4222" "Check: journalctl -u circuitbreaker-nats -n 50"
   fi
   cb_ok "NATS started"
@@ -1206,15 +1246,22 @@ stage5_deploy_code() {
   
   if [[ -d /opt/circuitbreaker/.git ]]; then
     cb_step "Updating existing repository"
-    git -C /opt/circuitbreaker fetch origin >> "$LOG_FILE" 2>&1
-    git -C /opt/circuitbreaker checkout "$CB_BRANCH" >> "$LOG_FILE" 2>&1
-    git -C /opt/circuitbreaker pull origin "$CB_BRANCH" >> "$LOG_FILE" 2>&1
+    echo "  → git fetch origin"
+    git -C /opt/circuitbreaker fetch origin 2>&1 | tee -a "$LOG_FILE"
+    echo "  → git checkout $CB_BRANCH"
+    git -C /opt/circuitbreaker checkout "$CB_BRANCH" 2>&1 | tee -a "$LOG_FILE"
+    echo "  → git pull origin $CB_BRANCH"
+    git -C /opt/circuitbreaker pull origin "$CB_BRANCH" 2>&1 | tee -a "$LOG_FILE"
     cb_ok "Repository updated to branch: $CB_BRANCH"
   else
     cb_step "Cloning repository"
-    git clone --branch "$CB_BRANCH" --depth 1 \
+    echo "  → git clone --branch $CB_BRANCH --depth 1"
+    echo "     https://github.com/BlkLeg/CircuitBreaker.git"
+    if ! git clone --branch "$CB_BRANCH" --depth 1 \
       https://github.com/BlkLeg/CircuitBreaker.git \
-      /opt/circuitbreaker >> "$LOG_FILE" 2>&1
+      /opt/circuitbreaker 2>&1 | tee -a "$LOG_FILE"; then
+      cb_fail "Git clone failed" "Check: tail -50 ${LOG_FILE}"
+    fi
     cb_ok "Repository cloned from branch: $CB_BRANCH"
   fi
   
@@ -1240,22 +1287,34 @@ stage6_setup_python() {
   
   # Install dependencies as breaker user
   cb_step "Installing Python dependencies"
-  su -s /bin/sh breaker -c "
+  echo "  → pip install (this may take a few minutes...)"
+  if ! su -s /bin/sh breaker -c "
     source /opt/circuitbreaker/apps/backend/venv/bin/activate
-    pip install --quiet --upgrade pip
-    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt
-    pip install --quiet -e /opt/circuitbreaker/apps/backend/
-  " >> "$LOG_FILE" 2>&1
+    pip install --upgrade pip
+    pip install -r /opt/circuitbreaker/apps/backend/requirements.txt
+    pip install -e /opt/circuitbreaker/apps/backend/
+  " 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Last 30 lines from install log:"
+    tail -30 "$LOG_FILE" | sed 's/^/  /'
+    cb_fail "Python dependencies installation failed" "Check: tail -100 ${LOG_FILE}"
+  fi
   cb_ok "Python dependencies installed"
   
   # Run database migrations
   cb_step "Running database migrations"
+  echo "  → alembic upgrade head"
   source /etc/circuitbreaker/.env
-  su -s /bin/sh breaker -c "
+  if ! su -s /bin/sh breaker -c "
     source /etc/circuitbreaker/.env
     cd /opt/circuitbreaker/apps/backend
     /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
-  " >> "$LOG_FILE" 2>&1
+  " 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Last 30 lines from install log:"
+    tail -30 "$LOG_FILE" | sed 's/^/  /'
+    cb_fail "Database migrations failed" "Check: tail -100 ${LOG_FILE}"
+  fi
   
   # Verify migrations ran
   local migration_count=$(PGPASSWORD="$CB_DB_PASSWORD" psql \
@@ -1278,13 +1337,23 @@ stage7_build_frontend() {
   
   cb_step "Installing Node.js dependencies"
   cd /opt/circuitbreaker/apps/frontend
-  npm ci --silent >> "${CB_DATA_DIR}/logs/install.log" 2>&1 \
-    || cb_fail "npm install failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  echo "  → npm ci (this may take a few minutes...)"
+  if ! npm ci 2>&1 | tee -a "${CB_DATA_DIR}/logs/install.log"; then
+    echo ""
+    echo "  Last 30 lines from install log:"
+    tail -30 "${CB_DATA_DIR}/logs/install.log" | sed 's/^/  /'
+    cb_fail "npm install failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  fi
   cb_ok "Node dependencies installed"
   
   cb_step "Building frontend application"
-  npm run build --silent >> "${CB_DATA_DIR}/logs/install.log" 2>&1 \
-    || cb_fail "Frontend build failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  echo "  → npm run build (this may take a few minutes...)"
+  if ! npm run build 2>&1 | tee -a "${CB_DATA_DIR}/logs/install.log"; then
+    echo ""
+    echo "  Last 30 lines from install log:"
+    tail -30 "${CB_DATA_DIR}/logs/install.log" | sed 's/^/  /'
+    cb_fail "Frontend build failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  fi
   
   # Verify build output
   if [[ ! -f /opt/circuitbreaker/apps/frontend/dist/index.html ]]; then
@@ -1308,7 +1377,16 @@ stage8_start_services() {
   
   # Start backend
   cb_step "Starting backend API"
-  systemctl start circuitbreaker-backend >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start circuitbreaker-backend"
+  if ! timeout 30 systemctl start circuitbreaker-backend 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status circuitbreaker-backend --no-pager || true
+    echo ""
+    echo "  Last 50 lines from journal:"
+    journalctl -u circuitbreaker-backend -n 50 --no-pager || true
+    cb_fail "Backend failed to start" "Check: journalctl -u circuitbreaker-backend -n 100"
+  fi
   
   # Wait for backend health endpoint
   local max_wait=30
@@ -1324,19 +1402,28 @@ stage8_start_services() {
   
   # Start workers
   cb_step "Starting worker processes"
-  systemctl start "circuitbreaker-worker@discovery" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@webhook" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@notification" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
+  for worker in discovery webhook notification telemetry; do
+    echo "  → Starting worker: $worker"
+    systemctl start "circuitbreaker-worker@${worker}" 2>&1 | tee -a "$LOG_FILE" || true
+  done
   sleep 2
   cb_ok "Workers started"
   
   # Start nginx
   cb_step "Starting nginx"
-  systemctl start nginx >> "$LOG_FILE" 2>&1
+  echo "  → systemctl start nginx"
+  if ! timeout 10 systemctl start nginx 2>&1 | tee -a "$LOG_FILE"; then
+    echo ""
+    echo "  Startup failed or timed out. Checking status..."
+    systemctl status nginx --no-pager || true
+    cb_fail "nginx failed to start" "Check: journalctl -u nginx -n 50"
+  fi
   sleep 1
   
   if ! nc -z 127.0.0.1 "$CB_PORT" 2>/dev/null; then
+    echo ""
+    echo "  Port $CB_PORT not listening. Checking service status..."
+    systemctl status nginx --no-pager || true
     cb_fail "nginx not listening on port $CB_PORT" "Check: journalctl -u nginx -n 50"
   fi
   cb_ok "nginx started"
