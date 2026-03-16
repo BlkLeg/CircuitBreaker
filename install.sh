@@ -10,12 +10,16 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 RESET='\033[0m'
 
 # Default values
-CB_PORT=80
+CB_PORT=8088
 CB_DATA_DIR=/var/lib/circuitbreaker
 CB_BRANCH=main
+CB_FQDN="circuitbreaker.lab"
+CB_CERT_TYPE="self-signed"
+CB_EMAIL=""
 UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
@@ -66,7 +70,10 @@ show_help() {
   echo "Usage: bash install.sh [OPTIONS]"
   echo ""
   echo "Options:"
-  echo "  --port <number>      HTTP port (default: 80)"
+  echo "  --port <number>      HTTP port (default: 8088)"
+  echo "  --fqdn <domain>      Fully qualified domain name (optional)"
+  echo "  --cert-type <type>   Certificate type: self-signed or letsencrypt (default: self-signed)"
+  echo "  --email <address>    Email for Let's Encrypt notifications (required if --cert-type letsencrypt)"
   echo "  --data-dir <path>    Data directory (default: /var/lib/circuitbreaker)"
   echo "  --no-tls             Skip TLS cert generation"
   echo "  --branch <name>      Git branch to install from (default: main)"
@@ -82,6 +89,18 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --port)
       CB_PORT="$2"
+      shift 2
+      ;;
+    --fqdn)
+      CB_FQDN="$2"
+      shift 2
+      ;;
+    --cert-type)
+      CB_CERT_TYPE="$2"
+      shift 2
+      ;;
+    --email)
+      CB_EMAIL="$2"
       shift 2
       ;;
     --data-dir)
@@ -258,7 +277,7 @@ stage0_preflight() {
   if [[ "$UNATTENDED" == "false" ]] && [[ "$UPGRADE_MODE" == "false" ]]; then
     cb_section "Configuration"
     
-    echo -e "  ${CYAN}HTTP Port${RESET} (default: 80): "
+    echo -e "  ${CYAN}HTTP Port${RESET} (default: 8088): "
     read -t 10 -r port_input || port_input=""
     if [[ -n "$port_input" ]]; then
       CB_PORT="$port_input"
@@ -271,6 +290,35 @@ stage0_preflight() {
       CB_DATA_DIR="$dir_input"
     fi
     cb_ok "Data Directory: $CB_DATA_DIR"
+    
+    echo -e "  ${CYAN}Domain (FQDN)${RESET} (optional, press Enter to skip): "
+    read -t 15 -r fqdn_input || fqdn_input=""
+    if [[ -n "$fqdn_input" ]]; then
+      CB_FQDN="$fqdn_input"
+      cb_ok "Domain: $CB_FQDN"
+      
+      echo -e "  ${CYAN}TLS Certificate${RESET}"
+      echo -e "    1) Self-signed (default)"
+      echo -e "    2) Let's Encrypt (requires port 80 accessible from internet)"
+      read -t 10 -r -p "  Choice [1-2]: " cert_choice || cert_choice="1"
+      if [[ "$cert_choice" == "2" ]]; then
+        CB_CERT_TYPE="letsencrypt"
+        echo -e "  ${CYAN}Email for Let's Encrypt${RESET} (required): "
+        read -t 15 -r email_input || email_input=""
+        if [[ -z "$email_input" ]]; then
+          cb_warn "Email required for Let's Encrypt, falling back to self-signed"
+          CB_CERT_TYPE="self-signed"
+        else
+          CB_EMAIL="$email_input"
+          cb_ok "Certificate: Let's Encrypt (email: $CB_EMAIL)"
+        fi
+      else
+        cb_ok "Certificate: Self-signed"
+      fi
+    else
+      cb_ok "Domain: Not configured (using IP)"
+      cb_ok "Certificate: Self-signed"
+    fi
   fi
 }
 
@@ -364,7 +412,8 @@ LOG_DIR=${CB_DATA_DIR}/logs
 
 # ===== Application =====
 CB_PORT=${CB_PORT}
-CB_APP_URL=http://${detected_ip}
+CB_FQDN=${CB_FQDN}
+CB_APP_URL=http://${CB_FQDN:-$detected_ip}
 CB_AUTH_ENABLED=false
 CB_ENV=production
 EOF
@@ -449,20 +498,29 @@ stage2_dependencies() {
   echo "    Binary path: $PG_BIN_DIR"
   cb_ok "PostgreSQL ${pg_version} installed"
 
-  # Group 4: pgbouncer, Redis, nginx
-  cb_step "Installing pgbouncer, Redis, and nginx"
+  # Group 4: pgbouncer, Redis, Caddy
+  cb_step "Installing pgbouncer, Redis, and Caddy"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
-    $PKG_MGR install -y -q pgbouncer redis-server nginx >> "$LOG_FILE" 2>&1
+    # Add official Caddy stable APT repository
+    $PKG_MGR install -y -q debian-keyring debian-archive-keyring apt-transport-https >> "$LOG_FILE" 2>&1
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null \
+      | gpg --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null \
+      > /etc/apt/sources.list.d/caddy-stable.list
+    $PKG_MGR update -q >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q pgbouncer redis-server caddy >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1
+    # Enable official Caddy COPR repository for RHEL/Fedora
+    dnf copr enable -y @caddy/caddy >> "$LOG_FILE" 2>&1 || true
+    $PKG_MGR install -y -q pgbouncer redis caddy >> "$LOG_FILE" 2>&1
   fi
-  
-  for bin in pgbouncer redis-server redis-cli nginx; do
+
+  for bin in pgbouncer redis-server redis-cli caddy; do
     if ! command -v "$bin" &>/dev/null && ! command -v "${bin%-*}" &>/dev/null; then
       cb_fail "$bin not found after install" "Check: $PKG_MGR install logs"
     fi
   done
-  cb_ok "pgbouncer, Redis, nginx installed"
+  cb_ok "pgbouncer, Redis, Caddy installed"
 
   # Group 5: NATS Server binary
   cb_step "Installing NATS Server (JetStream)"
@@ -708,11 +766,13 @@ Wants=circuitbreaker-worker@discovery.service
 Wants=circuitbreaker-worker@webhook.service
 Wants=circuitbreaker-worker@notification.service
 Wants=circuitbreaker-worker@telemetry.service
+Wants=caddy.service
 After=circuitbreaker-postgres.service
 After=circuitbreaker-pgbouncer.service
 After=circuitbreaker-redis.service
 After=circuitbreaker-nats.service
 After=circuitbreaker-backend.service
+After=caddy.service
 
 [Install]
 WantedBy=multi-user.target
@@ -723,7 +783,8 @@ EOF
   systemctl enable circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
-    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
+    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    caddy >> "$LOG_FILE" 2>&1
   
   cb_ok "Systemd units created and enabled"
 }
@@ -1062,173 +1123,132 @@ EOF
   cb_ok "NATS connection verified"
 }
 
-stage3_configure_nginx() {
-  cb_section "Configuring nginx"
-  
-  # TLS certificate generation
-  if [[ "$NO_TLS" == "false" ]]; then
-    cb_step "Generating self-signed TLS certificate"
-    openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
-      -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
-      -out "${CB_DATA_DIR}/tls/fullchain.pem" \
-      -subj "/CN=circuitbreaker/O=CircuitBreaker" >> "$LOG_FILE" 2>&1
-    chown breaker:breaker "${CB_DATA_DIR}/tls"/*.pem
-    chmod 640 "${CB_DATA_DIR}/tls"/*.pem
-    cb_ok "TLS certificate generated"
-  fi
-  
-  # Write nginx configuration
-  cb_step "Writing nginx configuration"
-  
-  local nginx_config=""
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    nginx_config="/etc/nginx/sites-available/circuitbreaker"
-  else
-    nginx_config="/etc/nginx/conf.d/circuitbreaker.conf"
-  fi
-  
-  cat > "$nginx_config" <<EOF
-server {
-    listen ${CB_PORT} default_server;
-    server_name _;
-    
-    root /opt/circuitbreaker/apps/frontend/dist;
-    index index.html;
-    
-    client_max_body_size 50M;
-    
-    gzip on;
-    gzip_types text/css application/javascript application/json image/svg+xml;
-    gzip_vary on;
-    
-    # SPA routing - serve index.html for all routes
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
-    
-    # API proxy
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-    
-    # WebSocket proxy
-    location /ws/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_connect_timeout 7d;
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
-    }
-    
-    # Static assets
-    location /user-icons/ {
-        proxy_pass http://127.0.0.1:8000;
-    }
-    
-    location /branding/ {
-        proxy_pass http://127.0.0.1:8000;
-    }
-    
-    location /uploads/ {
-        proxy_pass http://127.0.0.1:8000;
-    }
-}
-EOF
-  
-  # Add HTTPS server block if TLS enabled
-  if [[ "$NO_TLS" == "false" ]]; then
-    cat >> "$nginx_config" <<EOF
+stage3_configure_caddy() {
+  cb_section "Configuring Caddy"
 
-server {
-    listen 443 ssl http2;
-    server_name _;
-    
-    ssl_certificate ${CB_DATA_DIR}/tls/fullchain.pem;
-    ssl_certificate_key ${CB_DATA_DIR}/tls/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-    
-    root /opt/circuitbreaker/apps/frontend/dist;
-    index index.html;
-    
-    client_max_body_size 50M;
-    
-    gzip on;
-    gzip_types text/css application/javascript application/json image/svg+xml;
-    gzip_vary on;
-    
-    location / {
-        try_files \$uri \$uri/ /index.html;
+  local cert_path="${CB_DATA_DIR}/tls"
+  local site_address
+  local tls_line=""
+
+  # TLS certificate generation / directive setup
+  if [[ "$NO_TLS" == "false" ]]; then
+    if [[ "$CB_CERT_TYPE" == "letsencrypt" ]]; then
+      if [[ -n "$CB_FQDN" ]] && [[ -n "$CB_EMAIL" ]]; then
+        cb_step "Validating Let's Encrypt prerequisites for $CB_FQDN"
+
+        local fqdn_ip
+        local server_ip
+        fqdn_ip=$(dig +short "$CB_FQDN" 2>/dev/null | tail -n1)
+        server_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+')
+
+        if [[ -z "$fqdn_ip" ]]; then
+          cb_warn "DNS lookup failed for $CB_FQDN, falling back to self-signed certificate"
+          CB_CERT_TYPE="self-signed"
+        elif [[ "$fqdn_ip" != "$server_ip" ]]; then
+          cb_warn "DNS mismatch: $CB_FQDN resolves to $fqdn_ip but server IP is $server_ip"
+          cb_warn "Let's Encrypt requires DNS to point to this server, falling back to self-signed"
+          CB_CERT_TYPE="self-signed"
+        else
+          cb_ok "DNS validation passed — Caddy will obtain and renew the certificate automatically"
+          tls_line="tls ${CB_EMAIL}"
+        fi
+      else
+        cb_warn "Let's Encrypt requires both --fqdn and --email, falling back to self-signed"
+        CB_CERT_TYPE="self-signed"
+      fi
+    fi
+
+    # Generate self-signed certificate if Let's Encrypt is not in use
+    if [[ "$CB_CERT_TYPE" == "self-signed" ]]; then
+      cb_step "Generating self-signed TLS certificate"
+      local cert_cn="${CB_FQDN:-circuitbreaker}"
+      openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+        -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
+        -out "${CB_DATA_DIR}/tls/fullchain.pem" \
+        -subj "/CN=${cert_cn}/O=CircuitBreaker" >> "$LOG_FILE" 2>&1
+      chown breaker:breaker "${CB_DATA_DIR}/tls"/*.pem
+      chmod 640 "${CB_DATA_DIR}/tls"/*.pem
+      tls_line="tls ${cert_path}/fullchain.pem ${cert_path}/privkey.pem"
+      cb_ok "Self-signed TLS certificate generated"
+    fi
+
+    site_address="${CB_FQDN:-circuitbreaker.lab}"
+  else
+    # Plain HTTP mode
+    site_address="http://${CB_FQDN:-circuitbreaker.lab}:${CB_PORT}"
+  fi
+
+  # Write Caddyfile
+  cb_step "Writing Caddy configuration"
+  mkdir -p /etc/caddy
+
+  cat > /etc/caddy/Caddyfile <<EOF
+{
+    admin off
+}
+
+${site_address} {
+    ${tls_line}
+
+    # Security headers
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'strict-dynamic'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Strict-Transport-Security "max-age=63072000; includeSubDomains"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+        -Server
     }
-    
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+
+    # Long-term caching for hashed static assets
+    @staticAssets path_regexp \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$
+    header @staticAssets Cache-Control "public, max-age=31536000, immutable"
+
+    # API + WebSocket streams
+    # Caddy automatically handles WebSocket upgrades (Upgrade/Connection headers)
+    # flush_interval -1 disables buffering for SSE (/api/v1/events/stream)
+    handle /api/* {
+        reverse_proxy localhost:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            flush_interval -1
+        }
     }
-    
-    location /ws/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+
+    handle /user-icons/* {
+        reverse_proxy localhost:8000
     }
-    
-    location /user-icons/ {
-        proxy_pass http://127.0.0.1:8000;
+
+    handle /branding/* {
+        reverse_proxy localhost:8000
     }
-    
-    location /branding/ {
-        proxy_pass http://127.0.0.1:8000;
+
+    handle /uploads/* {
+        reverse_proxy localhost:8000
     }
-    
-    location /uploads/ {
-        proxy_pass http://127.0.0.1:8000;
+
+    # Frontend SPA — catch-all falls back to index.html for client-side routing
+    handle {
+        root * /opt/circuitbreaker/apps/frontend/dist
+        try_files {path} /index.html
+        file_server
     }
 }
 EOF
+
+  cb_ok "Caddy configuration written"
+
+  # Validate Caddyfile
+  cb_step "Validating Caddy configuration"
+  if ! caddy validate --config /etc/caddy/Caddyfile 2>/dev/null; then
+    cb_fail "Caddy config invalid" "Check: caddy validate --config /etc/caddy/Caddyfile"
   fi
-  
-  # Enable site on Debian/Ubuntu
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    ln -sf /etc/nginx/sites-available/circuitbreaker /etc/nginx/sites-enabled/circuitbreaker
-    rm -f /etc/nginx/sites-enabled/default
-  else
-    rm -f /etc/nginx/conf.d/default.conf
-  fi
-  
-  cb_ok "nginx configuration written"
-  
-  # Verify nginx configuration
-  cb_step "Verifying nginx configuration"
-  if ! nginx -t 2>/dev/null; then
-    cb_fail "nginx config invalid" "Check: nginx -t"
-  fi
-  cb_ok "nginx configuration verified"
-  
-  cb_ok "nginx configured (will start after frontend build)"
+  cb_ok "Caddy configuration validated"
+
+  cb_ok "Caddy configured (will start after frontend build)"
 }
 
 # ============================================================================
@@ -1424,7 +1444,7 @@ stage8_start_services() {
   # Wait for backend health endpoint
   local max_wait=30
   local elapsed=0
-  until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"status"'; do
+  until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"ready"'; do
     sleep 2
     elapsed=$((elapsed + 2))
     if [[ $elapsed -ge $max_wait ]]; then
@@ -1442,17 +1462,21 @@ stage8_start_services() {
   sleep 2
   cb_ok "Workers started"
   
-  # Start nginx
-  cb_step "Starting nginx"
-  if ! systemctl start nginx >> "$LOG_FILE" 2>&1; then
-    cb_fail "nginx failed to start" "Check: journalctl -u nginx -n 50"
+  # Start/reload Caddy
+  cb_step "Starting Caddy"
+  if systemctl is-active caddy &>/dev/null; then
+    systemctl reload caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy reload failed" "Check: caddy validate --config /etc/caddy/Caddyfile && journalctl -u caddy -n 50"
+  else
+    systemctl start caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy failed to start" "Check: journalctl -u caddy -n 50"
   fi
   sleep 1
-  
-  if ! nc -z 127.0.0.1 "$CB_PORT" 2>/dev/null; then
-    cb_fail "nginx not listening on port $CB_PORT" "Check: journalctl -u nginx -n 50"
+
+  local caddy_port=443
+  [[ "$NO_TLS" == "true" ]] && caddy_port="$CB_PORT"
+  if ! nc -z 127.0.0.1 "$caddy_port" 2>/dev/null; then
+    cb_fail "Caddy not listening on port $caddy_port" "Check: journalctl -u caddy -n 50"
   fi
-  cb_ok "nginx started"
+  cb_ok "Caddy started"
   
   # Detect primary IP and update .env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
@@ -1526,7 +1550,7 @@ cmd_doctor() {
   check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASS\" PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
   check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
   check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
-  check "nginx (${CB_PORT})" "nc -z 127.0.0.1 ${CB_PORT:-80}" "nginx -t && journalctl -u nginx -n 30"
+  check "caddy (443)"        "nc -z 127.0.0.1 443"             "caddy validate --config /etc/caddy/Caddyfile && journalctl -u caddy -n 30"
   echo ""
   [[ $FAILED -eq 0 ]] && echo "  All systems operational." \
                        || echo "  $FAILED check(s) failed. Fix top-down — each service depends on the one above."
@@ -1541,7 +1565,7 @@ cmd_logs() {
     -u circuitbreaker-nats \
     -u circuitbreaker-backend \
     -u "circuitbreaker-worker@*" \
-    -u nginx
+    -u caddy
 }
 
 cmd_restart() {
@@ -1572,7 +1596,7 @@ cmd_version() {
 cmd_uninstall() {
   read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
   [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
-  systemctl stop circuitbreaker.target nginx 2>/dev/null || true
+  systemctl stop circuitbreaker.target caddy 2>/dev/null || true
   systemctl disable circuitbreaker.target 2>/dev/null || true
   rm -f /etc/systemd/system/circuitbreaker-*.service
   rm -f /etc/systemd/system/circuitbreaker.target
@@ -1622,24 +1646,71 @@ EOF
 # ============================================================================
 
 stage10_final_output() {
-  local detected_ip=$(grep CB_HOST_IP /etc/circuitbreaker/.env 2>/dev/null | cut -d= -f2 || echo "localhost")
+  source /etc/circuitbreaker/.env
+  local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
   local version=$(cat /opt/circuitbreaker/VERSION 2>/dev/null || echo "unknown")
   
   cb_section "Circuit Breaker is running!"
   echo ""
-  echo -e "  ┌──────────────────────────────────────────────┐"
-  echo -e "  │  URL:      http://${detected_ip}:${CB_PORT}"
+  
+  # Build list of accessible URLs
+  echo -e "  ${BOLD}${GREEN}Access URLs:${RESET}"
+  echo ""
+  
   if [[ "$NO_TLS" == "false" ]]; then
-    echo -e "  │            https://${detected_ip}:443"
+    # HTTPS is available
+    if [[ -n "$CB_FQDN" ]]; then
+      echo -e "  ${GREEN}✓${RESET}  https://${CB_FQDN}/ ${BOLD}(PRIMARY - Use this for account creation)${RESET}"
+      if [[ "$CB_CERT_TYPE" == "letsencrypt" ]]; then
+        echo -e "     ${DIM}Certificate: Let's Encrypt (trusted)${RESET}"
+      else
+        echo -e "     ${DIM}Certificate: Self-signed (accept browser warning)${RESET}"
+      fi
+    else
+      echo -e "  ${GREEN}✓${RESET}  https://${detected_ip}/ ${BOLD}(PRIMARY - Use this for account creation)${RESET}"
+      echo -e "     ${DIM}Certificate: Self-signed (accept browser warning)${RESET}"
+    fi
+    
+    # HTTP fallback (but warn about limitations)
+    if [[ -n "$CB_FQDN" ]]; then
+      echo -e "  ${YELLOW}⚠${RESET}  http://${CB_FQDN}:${CB_PORT}/ ${DIM}(Limited - no account creation)${RESET}"
+    fi
+    echo -e "  ${YELLOW}⚠${RESET}  http://${detected_ip}:${CB_PORT}/ ${DIM}(Limited - no account creation)${RESET}"
+  else
+    # No TLS - HTTP only
+    if [[ -n "$CB_FQDN" ]]; then
+      echo -e "  ${GREEN}✓${RESET}  http://${CB_FQDN}:${CB_PORT}/"
+    fi
+    echo -e "  ${GREEN}✓${RESET}  http://${detected_ip}:${CB_PORT}/"
+    echo -e "  ${RED}⚠  WARNING: No HTTPS - account creation may not work!${RESET}"
   fi
+  
+  echo ""
+  echo -e "  ┌──────────────────────────────────────────────┐"
   echo -e "  │  Version:  ${version}"
+  if [[ -n "$CB_FQDN" ]]; then
+    echo -e "  │  Domain:   ${CB_FQDN}"
+  fi
+  if [[ "$NO_TLS" == "false" ]]; then
+    echo -e "  │  TLS:      ${CB_CERT_TYPE}"
+  fi
   echo -e "  ├──────────────────────────────────────────────┤"
-  echo -e "  │  Logs:     cb logs                           │"
-  echo -e "  │            ${CB_DATA_DIR}/logs/"
   echo -e "  │  Status:   cb status"
   echo -e "  │  Health:   cb doctor"
+  echo -e "  │  Logs:     cb logs"
   echo -e "  └──────────────────────────────────────────────┘"
   echo ""
+  
+  if [[ "$NO_TLS" == "false" ]]; then
+    echo -e "  ${YELLOW}${BOLD}⚠  CRITICAL: Account creation requires HTTPS${RESET}"
+    echo -e "     Modern browsers block crypto APIs on insecure HTTP connections."
+    echo -e "     ${BOLD}Always use the HTTPS URL above${RESET} when creating accounts."
+    if [[ "$CB_CERT_TYPE" == "self-signed" ]]; then
+      echo -e "     You will see a certificate warning - click 'Advanced' → 'Proceed'."
+    fi
+    echo ""
+  fi
+  
   echo -e "  ${BOLD}Centralized Logs:${RESET}"
   echo -e "    ${CB_DATA_DIR}/logs/install.log       (this install)"
   echo -e "    journalctl -u circuitbreaker-backend  (API logs)"
@@ -1648,7 +1719,7 @@ stage10_final_output() {
   echo -e "    journalctl -u circuitbreaker-redis    (cache)"
   echo -e "    journalctl -u circuitbreaker-nats     (messaging)"
   echo ""
-  echo -e "  First run? Open the URL above to complete setup."
+  echo -e "  ${GREEN}${BOLD}Installation complete!${RESET} Open the HTTPS URL above to get started."
   echo ""
 }
 
@@ -1708,7 +1779,7 @@ run_upgrade() {
   # Wait for backend
   local max_wait=30
   local elapsed=0
-  until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"status"'; do
+  until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"ready"'; do
     sleep 2
     elapsed=$((elapsed + 2))
     if [[ $elapsed -ge $max_wait ]]; then
@@ -1716,7 +1787,8 @@ run_upgrade() {
     fi
   done
   cb_ok "Services restarted"
-  
+
+  stage9_install_cb_cli
   stage10_final_output
 }
 
@@ -1744,7 +1816,7 @@ main() {
   stage3_configure_pgbouncer
   stage3_configure_redis
   stage3_configure_nats
-  stage3_configure_nginx
+  stage3_configure_caddy
   
   # Deploy and build
   stage5_deploy_code
