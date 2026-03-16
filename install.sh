@@ -1123,6 +1123,20 @@ EOF
   cb_ok "NATS connection verified"
 }
 
+ensure_hosts_entry() {
+  local fqdn="${CB_FQDN:-}"
+  [[ -z "$fqdn" ]] && return 0
+
+  if grep -qF "$fqdn" /etc/hosts 2>/dev/null; then
+    cb_ok "/etc/hosts entry for $fqdn already present"
+    return 0
+  fi
+
+  cb_step "Adding $fqdn to /etc/hosts"
+  echo "127.0.0.1  $fqdn" >> /etc/hosts
+  cb_ok "$fqdn → 127.0.0.1 added to /etc/hosts"
+}
+
 stage3_configure_caddy() {
   cb_section "Configuring Caddy"
 
@@ -1247,6 +1261,8 @@ EOF
     cb_fail "Caddy config invalid" "Check: caddy validate --config /etc/caddy/Caddyfile"
   fi
   cb_ok "Caddy configuration validated"
+
+  ensure_hosts_entry
 
   cb_ok "Caddy configured (will start after frontend build)"
 }
@@ -1596,16 +1612,59 @@ cmd_version() {
 cmd_uninstall() {
   read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
   [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
-  systemctl stop circuitbreaker.target caddy 2>/dev/null || true
-  systemctl disable circuitbreaker.target 2>/dev/null || true
+
+  echo "Stopping and disabling all services..."
+  systemctl stop \
+    circuitbreaker-postgres circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
+    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    caddy 2>/dev/null || true
+
+  systemctl disable \
+    circuitbreaker-postgres circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
+    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    circuitbreaker.target caddy 2>/dev/null || true
+
+  echo "Removing systemd unit files..."
   rm -f /etc/systemd/system/circuitbreaker-*.service
   rm -f /etc/systemd/system/circuitbreaker.target
   systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+
+  echo "Removing application files..."
   rm -rf /opt/circuitbreaker /etc/circuitbreaker /etc/nats
   rm -rf "${CB_DATA_DIR}"
-  userdel breaker 2>/dev/null || true
+
+  echo "Removing Caddy configuration..."
+  rm -f /etc/caddy/Caddyfile
+
+  echo "Removing NATS binary..."
+  rm -f /usr/local/bin/nats-server
+
+  echo "Removing CB CLI..."
   rm -f /usr/local/bin/cb
-  echo "Circuit Breaker removed."
+
+  echo "Removing system user..."
+  userdel -r breaker 2>/dev/null || userdel breaker 2>/dev/null || true
+
+  echo "Removing /etc/hosts entry..."
+  if [[ -n "${CB_FQDN:-}" ]]; then
+    sed -i "/[[:space:]]${CB_FQDN}$/d" /etc/hosts
+  fi
+
+  echo "Removing Caddy apt repository..."
+  rm -f /etc/apt/sources.list.d/caddy-stable.list
+  rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  apt-get remove -y caddy 2>/dev/null || dnf remove -y caddy 2>/dev/null || true
+
+  echo "Removing NodeSource repository..."
+  rm -f /etc/apt/sources.list.d/nodesource.list
+  rm -f /usr/share/keyrings/nodesource.gpg
+
+  echo "Circuit Breaker fully removed."
 }
 
 case "${1:-help}" in
@@ -1734,6 +1793,8 @@ run_upgrade() {
   
   # Source environment variables
   source /etc/circuitbreaker/.env
+
+  ensure_hosts_entry
   
   # Backup before upgrade (while services are still running)
   cb_step "Creating pre-upgrade backup"
