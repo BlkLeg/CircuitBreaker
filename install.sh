@@ -301,7 +301,6 @@ stage1_bootstrap() {
     ["/opt/circuitbreaker/scripts"]="root:root:755"
     ["/opt/circuitbreaker/apps/frontend/dist"]="root:root:755"
     ["${CB_DATA_DIR}"]="breaker:breaker:750"
-    ["${CB_DATA_DIR}/postgres"]="postgres:postgres:700"
     ["${CB_DATA_DIR}/nats"]="breaker:breaker:750"
     ["${CB_DATA_DIR}/redis"]="breaker:breaker:750"
     ["${CB_DATA_DIR}/uploads"]="breaker:breaker:750"
@@ -310,6 +309,7 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:750"
     ["/etc/circuitbreaker"]="root:breaker:750"
     ["/etc/nats"]="root:root:755"
+    ["/etc/pgbouncer"]="root:root:755"
   )
   
   for dir in "${!DIRS[@]}"; do
@@ -329,10 +329,8 @@ stage1_bootstrap() {
     cb_step "Generating secrets"
     
     local jwt_secret=$(openssl rand -hex 64)
-    local vault_key=$(python3.12 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || echo "")
-    if [[ -z "$vault_key" ]]; then
-      cb_fail "Failed to generate Vault key" "Python cryptography module required"
-    fi
+    # Generate Fernet key: 32 random bytes, base64-encoded (URL-safe)
+    local vault_key=$(openssl rand -base64 32 | tr '/+' '_-')
     local db_password=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     local redis_pass=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     local nats_token=$(openssl rand -base64 48 | tr -d '/+=' )
@@ -736,6 +734,13 @@ stage3_configure_postgres() {
   "$PG_BIN_DIR/pg_ctl" stop -D "${CB_DATA_DIR}/postgres" 2>/dev/null || true
   sleep 2
   cb_ok "Stopped existing instances"
+  
+  # Create postgres data directory with correct ownership (postgres user now exists)
+  cb_step "Creating PostgreSQL data directory"
+  mkdir -p "${CB_DATA_DIR}/postgres"
+  chown postgres:postgres "${CB_DATA_DIR}/postgres"
+  chmod 700 "${CB_DATA_DIR}/postgres"
+  cb_ok "PostgreSQL data directory created"
   
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
@@ -1526,19 +1531,25 @@ run_upgrade() {
   cb_section "Upgrade Mode"
   cb_ok "Detected existing installation"
   
-  # Stop services
+  # Source environment variables
+  source /etc/circuitbreaker/.env
+  
+  # Backup before upgrade (while services are still running)
+  cb_step "Creating pre-upgrade backup"
+  local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
+  if systemctl is-active circuitbreaker-pgbouncer &>/dev/null; then
+    PGPASSWORD="$CB_DB_PASSWORD" pg_dump \
+      -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$backup_file" 2>/dev/null || true
+    cb_ok "Backup saved: $backup_file"
+  else
+    cb_warn "Database not running - skipping backup"
+  fi
+  
+  # Stop services after backup
   cb_step "Stopping services"
   systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
   sleep 2
   cb_ok "Services stopped"
-  
-  # Backup before upgrade
-  cb_step "Creating pre-upgrade backup"
-  source /etc/circuitbreaker/.env
-  local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
-  PGPASSWORD="$CB_DB_PASSWORD" pg_dump \
-    -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$backup_file" 2>/dev/null || true
-  cb_ok "Backup saved: $backup_file"
   
   # Record current HEAD for changelog
   local old_head=$(git -C /opt/circuitbreaker rev-parse HEAD 2>/dev/null || echo "unknown")
