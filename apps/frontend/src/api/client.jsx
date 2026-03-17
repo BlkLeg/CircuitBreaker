@@ -29,6 +29,11 @@ function buildUserMessage(status, data, error) {
   const message = Array.isArray(detail)
     ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
     : detail || error.message;
+
+  if (status === 401 && !isSessionExpiryCandidate(error)) {
+    return message;
+  }
+
   logger.error(`API ${status}:`, message);
   return message;
 }

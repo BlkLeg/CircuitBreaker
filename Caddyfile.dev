@@ -1,0 +1,44 @@
+{
+	# Local development - always use self-signed certs
+	local_certs
+	admin off
+}
+
+# HTTP redirect to HTTPS
+http://circuitbreaker.lab {
+	redir https://{host}{uri} 307
+}
+
+# HTTPS with local CA cert
+circuitbreaker.lab {
+	tls internal
+
+	# Backend API and WebSocket streams
+	# Caddy automatically handles WebSocket upgrade requests
+	reverse_proxy /api/ localhost:8000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	reverse_proxy /user-icons/ localhost:8000
+	reverse_proxy /branding/ localhost:8000
+	reverse_proxy /uploads/ localhost:8000
+
+	# Everything else goes to Vite dev server (hot reload)
+	reverse_proxy localhost:5173 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	encode gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none'"
+		-Server
+	}
+}

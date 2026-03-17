@@ -23,7 +23,7 @@ SNYK_PATH     ?= $(CURDIR)
 COMPOSE_FILE  ?= docker-compose.yml
 # Default data dir for compose-clean when .env is not present
 CB_DATA_DIR   ?= ./circuitbreaker-data
-# Local Postgres for development (make postgres-up, make migrate, make postgres-down)
+# Local services for development (make services-up, make migrate, make services-down)
 POSTGRES_DEV_NAME   ?= cb-postgres-dev
 POSTGRES_DEV_PORT   ?= 5432
 POSTGRES_DEV_USER   ?= breaker
@@ -31,6 +31,19 @@ POSTGRES_DEV_DB     ?= circuitbreaker
 POSTGRES_DEV_PASS   ?= breaker
 POSTGRES_DEV_IMAGE  ?= postgres:16-alpine
 CB_DB_URL_DEV       ?= postgresql://$(POSTGRES_DEV_USER):$(POSTGRES_DEV_PASS)@localhost:$(POSTGRES_DEV_PORT)/$(POSTGRES_DEV_DB)
+# Redis for local dev
+REDIS_DEV_NAME      ?= cb-redis-dev
+REDIS_DEV_PORT      ?= 6379
+REDIS_DEV_IMAGE     ?= redis:7-alpine
+CB_REDIS_URL_DEV    ?= redis://localhost:$(REDIS_DEV_PORT)/0
+# NATS for local dev
+NATS_DEV_NAME       ?= cb-nats-dev
+NATS_DEV_PORT       ?= 4222
+NATS_DEV_IMAGE      ?= nats:2.10-alpine
+NATS_AUTH_TOKEN_DEV ?= dev-token-local-only
+CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
+# Caddy for local dev
+CADDY_PID_FILE      ?= $(CURDIR)/.caddy.pid
 
 # ==============================================================================
 # CORE TARGETS
@@ -41,9 +54,15 @@ help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN{FS=":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-dev: stop ## Start backend + frontend for local development
+dev: stop ## Start backend + frontend for local development (run 'make services-up' first)
 	@echo "Starting backend  → http://localhost:$(BACKEND_PORT)"
-	@cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
+	@cd $(BACKEND_DIR) && \
+		CB_DATA_DIR="$${CB_DATA_DIR:-$(CURDIR)/apps/backend/.dev-data}" \
+		CB_DB_URL="$${CB_DB_URL:-$(CB_DB_URL_DEV)}" \
+		CB_REDIS_URL="$${CB_REDIS_URL:-$(CB_REDIS_URL_DEV)}" \
+		NATS_URL="$${NATS_URL:-$(CB_NATS_URL_DEV)}" \
+		NATS_AUTH_TOKEN="$${NATS_AUTH_TOKEN:-$(NATS_AUTH_TOKEN_DEV)}" \
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT) &
 	@echo "Starting frontend → http://localhost:$(FRONTEND_PORT)"
 	@cd $(FRONTEND_DIR) && npm start &
 
@@ -55,7 +74,13 @@ stop: ## Kill any process holding the dev ports
 backend: ## Kill port $(BACKEND_PORT) and restart the backend
 	@lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 2>/dev/null || true
 	@echo "Starting backend → http://localhost:$(BACKEND_PORT)"
-	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
+	cd $(BACKEND_DIR) && \
+		CB_DATA_DIR="$${CB_DATA_DIR:-$(CURDIR)/apps/backend/.dev-data}" \
+		CB_DB_URL="$${CB_DB_URL:-$(CB_DB_URL_DEV)}" \
+		CB_REDIS_URL="$${CB_REDIS_URL:-$(CB_REDIS_URL_DEV)}" \
+		NATS_URL="$${NATS_URL:-$(CB_NATS_URL_DEV)}" \
+		NATS_AUTH_TOKEN="$${NATS_AUTH_TOKEN:-$(NATS_AUTH_TOKEN_DEV)}" \
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 frontend: ## Kill port $(FRONTEND_PORT) and restart the frontend
 	@lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 2>/dev/null || true
@@ -140,31 +165,137 @@ security-scan: ## Run full security scan (Bandit, Semgrep, Gitleaks, ESLint, Had
 	@bash scripts/security_scan.sh
 
 # ==============================================================================
-# LOCAL POSTGRES (dev)
+# LOCAL SERVICES (dev) - PostgreSQL, Redis, NATS
 # ==============================================================================
-.PHONY: postgres-up postgres-down migrate
+.PHONY: services-up services-down services-status postgres-up postgres-down redis-up redis-down nats-up nats-down caddy-up caddy-down caddy-status caddy-reload dev-full migrate
 
-postgres-up: ## Start a local Postgres container for development (port $(POSTGRES_DEV_PORT))
+services-up: postgres-up redis-up nats-up ## Start all local dev services (Postgres, Redis, NATS)
+	@echo ""
+	@echo "✅ All services running:"
+	@echo "   PostgreSQL: localhost:$(POSTGRES_DEV_PORT)"
+	@echo "   Redis:      localhost:$(REDIS_DEV_PORT)"
+	@echo "   NATS:       localhost:$(NATS_DEV_PORT)"
+	@echo ""
+	@echo "Run 'make migrate' to initialize the database, then 'make dev' to start the app."
+
+services-down: postgres-down redis-down nats-down ## Stop and remove all local dev services
+
+services-status: ## Check status of local dev services
+	@echo "=== Local Development Services ==="
+	@docker ps --filter "name=cb-.*-dev" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || echo "No services running"
+
+postgres-up: ## Start local Postgres container (port $(POSTGRES_DEV_PORT))
 	@if docker inspect $(POSTGRES_DEV_NAME) >/dev/null 2>&1; then \
-		echo "Postgres container '$(POSTGRES_DEV_NAME)' already exists. Start with: docker start $(POSTGRES_DEV_NAME)"; \
-		docker start $(POSTGRES_DEV_NAME) 2>/dev/null || true; \
+		docker start $(POSTGRES_DEV_NAME) 2>/dev/null && echo "✅ Postgres started (already exists)" || { echo "❌ Failed to start existing Postgres container"; exit 1; }; \
 	else \
-		echo "Starting Postgres at localhost:$(POSTGRES_DEV_PORT) (user=$(POSTGRES_DEV_USER), db=$(POSTGRES_DEV_DB))..."; \
-		docker run -d --name $(POSTGRES_DEV_NAME) -p $(POSTGRES_DEV_PORT):5432 \
+		if lsof -Pi :$(POSTGRES_DEV_PORT) -sTCP:LISTEN -t >/dev/null 2>&1; then \
+			echo "❌ Port $(POSTGRES_DEV_PORT) already in use. Stop the existing Postgres service first."; \
+			echo "   Check with: lsof -i :$(POSTGRES_DEV_PORT)"; \
+			exit 1; \
+		fi; \
+		echo "Starting Postgres at localhost:$(POSTGRES_DEV_PORT)..."; \
+		if docker run -d --name $(POSTGRES_DEV_NAME) -p $(POSTGRES_DEV_PORT):5432 \
 			-e POSTGRES_USER=$(POSTGRES_DEV_USER) \
 			-e POSTGRES_PASSWORD=$(POSTGRES_DEV_PASS) \
 			-e POSTGRES_DB=$(POSTGRES_DEV_DB) \
-			$(POSTGRES_DEV_IMAGE); \
-		echo "✅ Postgres running. Run 'make migrate' then set CB_DB_URL=$(CB_DB_URL_DEV)' for the backend."; \
+			$(POSTGRES_DEV_IMAGE) >/dev/null 2>&1; then \
+			echo "✅ Postgres running"; \
+		else \
+			echo "❌ Failed to start Postgres container"; \
+			exit 1; \
+		fi; \
 	fi
 
-postgres-down: ## Stop and remove the local Postgres container
-	@if docker inspect $(POSTGRES_DEV_NAME) >/dev/null 2>&1; then \
-		docker stop $(POSTGRES_DEV_NAME) && docker rm $(POSTGRES_DEV_NAME); \
-		echo "✅ Postgres container stopped and removed."; \
+postgres-down: ## Stop and remove local Postgres container
+	@docker stop $(POSTGRES_DEV_NAME) 2>/dev/null && docker rm $(POSTGRES_DEV_NAME) 2>/dev/null && echo "✅ Postgres stopped" || echo "Postgres not running"
+
+redis-up: ## Start local Redis container (port $(REDIS_DEV_PORT))
+	@if docker inspect $(REDIS_DEV_NAME) >/dev/null 2>&1; then \
+		docker start $(REDIS_DEV_NAME) 2>/dev/null && echo "✅ Redis started (already exists)" || { echo "❌ Failed to start existing Redis container"; exit 1; }; \
 	else \
-		echo "No container '$(POSTGRES_DEV_NAME)' found."; \
+		if lsof -Pi :$(REDIS_DEV_PORT) -sTCP:LISTEN -t >/dev/null 2>&1; then \
+			echo "❌ Port $(REDIS_DEV_PORT) already in use. Stop the existing Redis service first."; \
+			echo "   Check with: lsof -i :$(REDIS_DEV_PORT)"; \
+			exit 1; \
+		fi; \
+		echo "Starting Redis at localhost:$(REDIS_DEV_PORT)..."; \
+		if docker run -d --name $(REDIS_DEV_NAME) -p $(REDIS_DEV_PORT):6379 $(REDIS_DEV_IMAGE) >/dev/null 2>&1; then \
+			echo "✅ Redis running"; \
+		else \
+			echo "❌ Failed to start Redis container"; \
+			exit 1; \
+		fi; \
 	fi
+
+redis-down: ## Stop and remove local Redis container
+	@docker stop $(REDIS_DEV_NAME) 2>/dev/null && docker rm $(REDIS_DEV_NAME) 2>/dev/null && echo "✅ Redis stopped" || echo "Redis not running"
+
+nats-up: ## Start local NATS container (port $(NATS_DEV_PORT))
+	@if docker inspect $(NATS_DEV_NAME) >/dev/null 2>&1; then \
+		docker start $(NATS_DEV_NAME) 2>/dev/null && echo "✅ NATS started (already exists)" || { echo "❌ Failed to start existing NATS container"; exit 1; }; \
+	else \
+		if lsof -Pi :$(NATS_DEV_PORT) -sTCP:LISTEN -t >/dev/null 2>&1; then \
+			echo "❌ Port $(NATS_DEV_PORT) already in use. Stop the existing NATS service first."; \
+			echo "   Check with: lsof -i :$(NATS_DEV_PORT)"; \
+			exit 1; \
+		fi; \
+		echo "Starting NATS at localhost:$(NATS_DEV_PORT)..."; \
+		if docker run -d --name $(NATS_DEV_NAME) -p $(NATS_DEV_PORT):4222 $(NATS_DEV_IMAGE) -js --auth $(NATS_AUTH_TOKEN_DEV) >/dev/null 2>&1; then \
+			echo "✅ NATS running (JetStream enabled)"; \
+		else \
+			echo "❌ Failed to start NATS container"; \
+			exit 1; \
+		fi; \
+	fi
+
+nats-down: ## Stop and remove local NATS container
+	@docker stop $(NATS_DEV_NAME) 2>/dev/null && docker rm $(NATS_DEV_NAME) 2>/dev/null && echo "✅ NATS stopped" || echo "NATS not running"
+
+caddy-up: ## Start Caddy reverse proxy for dev (https://circuitbreaker.lab)
+	@if [ -f "$(CADDY_PID_FILE)" ] && kill -0 $$(cat $(CADDY_PID_FILE)) 2>/dev/null; then \
+		echo "✅ Caddy already running (PID $$(cat $(CADDY_PID_FILE)))"; \
+	else \
+		echo "Starting Caddy for https://circuitbreaker.lab..."; \
+		caddy start --config Caddyfile.dev --pidfile $(CADDY_PID_FILE); \
+		if [ $$? -eq 0 ]; then \
+			echo "✅ Caddy started → https://circuitbreaker.lab"; \
+			echo "   Note: Accept self-signed cert warning in browser on first visit"; \
+			echo "   Or trust CA cert: http://circuitbreaker.lab/caddy-root-ca.crt"; \
+		else \
+			echo "❌ Failed to start Caddy"; \
+			exit 1; \
+		fi \
+	fi
+
+caddy-down: ## Stop Caddy reverse proxy
+	@if [ -f "$(CADDY_PID_FILE)" ]; then \
+		caddy stop --config Caddyfile.dev; \
+		rm -f $(CADDY_PID_FILE); \
+		echo "✅ Caddy stopped"; \
+	else \
+		echo "ℹ️  Caddy not running"; \
+	fi
+
+caddy-status: ## Check Caddy status
+	@if [ -f "$(CADDY_PID_FILE)" ] && kill -0 $$(cat $(CADDY_PID_FILE)) 2>/dev/null; then \
+		echo "✅ Caddy running (PID $$(cat $(CADDY_PID_FILE)))"; \
+		echo "   Access: https://circuitbreaker.lab"; \
+	else \
+		echo "❌ Caddy not running"; \
+		exit 1; \
+	fi
+
+caddy-reload: ## Reload Caddyfile.dev without downtime
+	@caddy reload --config Caddyfile.dev
+
+dev-full: services-up caddy-up dev ## Full dev stack: services + Caddy + backend + frontend
+	@echo ""
+	@echo "🚀 Full dev environment running:"
+	@echo "   Backend:  http://localhost:$(BACKEND_PORT)"
+	@echo "   Frontend: http://localhost:$(FRONTEND_PORT)"
+	@echo "   Caddy:    https://circuitbreaker.lab (production-like)"
+	@echo ""
+	@echo "Use https://circuitbreaker.lab for end-user simulation"
 
 migrate: ## Run Alembic migrations (requires Postgres; set CB_DB_URL or use after make postgres-up)
 	@echo "Running migrations..."

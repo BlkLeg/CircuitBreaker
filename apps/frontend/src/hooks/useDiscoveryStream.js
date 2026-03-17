@@ -43,6 +43,27 @@ const CAP_RETRY_DELAY = 60000; // 60 seconds — wait longer when the cap is hit
 // Errors that should not trigger an immediate reconnect loop.
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
+function closeSocketSafely(socket) {
+  if (!socket) return;
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.addEventListener(
+      'open',
+      () => {
+        try {
+          socket.close();
+        } catch {
+          // Ignore late-close failures during teardown.
+        }
+      },
+      { once: true }
+    );
+    return;
+  }
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.close();
+  }
+}
+
 export function getDiscoveryWsUrl(locationLike = globalThis.location) {
   const proto = locationLike.protocol === 'https:' ? 'wss' : 'ws';
   const host = locationLike.host;
@@ -87,6 +108,7 @@ export function useDiscoveryStream() {
   const syncTimerRef = useRef(null); // periodic sync timer
   const actionsPendingRef = useRef(new Set()); // track pending actions for optimistic updates
   const reconnectedRef = useRef(false); // true after the first successful connect
+  const handshakeCompleteRef = useRef(false); // true once status:connected is received
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) {
@@ -120,6 +142,7 @@ export function useDiscoveryStream() {
 
     const ws = new WebSocket(getDiscoveryWsUrl());
     wsRef.current = ws;
+    handshakeCompleteRef.current = false;
 
     ws.onopen = () => {
       setWsStatus('connecting');
@@ -141,6 +164,7 @@ export function useDiscoveryStream() {
         setConnected(true);
         setWsStatus('connected');
         attemptRef.current = 0;
+        handshakeCompleteRef.current = true;
         // On reconnect (not the initial connect), reconcile pending count and job state
         if (reconnectedRef.current) reconcileOnReconnect(setPendingCount);
         reconnectedRef.current = true;
@@ -151,7 +175,7 @@ export function useDiscoveryStream() {
       if (msg.error && HARD_STOP_ERRORS.has(msg.error)) {
         setConnected(false);
         intentionalRef.current = true;
-        ws.close();
+        closeSocketSafely(ws);
         return;
       }
 
@@ -159,7 +183,7 @@ export function useDiscoveryStream() {
       if (msg.error === 'connection_limit_exceeded') {
         setConnected(false);
         intentionalRef.current = false; // allow retry after delay
-        ws.close();
+        closeSocketSafely(ws);
         retryTimerRef.current = setTimeout(() => {
           attemptRef.current = 0;
           connect();
@@ -282,8 +306,11 @@ export function useDiscoveryStream() {
     };
 
     ws.onerror = () => {
-      // onclose fires after onerror — reconnect logic lives there
-      ws.close();
+      // Defensive: explicitly ensure onclose fires even if browser doesn't trigger it.
+      // This covers pre-handshake errors where the close chain may be unreliable.
+      if (wsRef.current === ws && ws.readyState !== WebSocket.CLOSED) {
+        closeSocketSafely(ws);
+      }
     };
   }, [clearRetry, user, token]);
 
@@ -295,7 +322,9 @@ export function useDiscoveryStream() {
       if (document.visibilityState === 'visible' && !intentionalRef.current) {
         const ws = wsRef.current;
         const isActive =
-          ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+          ws &&
+          (ws.readyState === WebSocket.OPEN ||
+            (ws.readyState === WebSocket.CONNECTING && handshakeCompleteRef.current));
         if (!isActive) {
           attemptRef.current = 0;
           connect();
@@ -309,7 +338,8 @@ export function useDiscoveryStream() {
       clearRetry();
       clearSyncTimer();
       intentionalRef.current = true;
-      wsRef.current?.close();
+      handshakeCompleteRef.current = false;
+      closeSocketSafely(wsRef.current);
     };
   }, [connect, clearRetry, clearSyncTimer]);
 

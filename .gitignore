@@ -13,6 +13,7 @@ site/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+apps/frontend/.ruff_cache/
 htmlcov/
 .coverage
 

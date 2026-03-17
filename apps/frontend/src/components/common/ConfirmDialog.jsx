@@ -69,7 +69,7 @@ function ConfirmDialog({ open, message, onConfirm, onCancel }) {
 ConfirmDialog.propTypes = {
   open: PropTypes.bool.isRequired,
   message: PropTypes.string.isRequired,
-  onConfirm: PropTypes.func.isRequired,
+  onConfirm: PropTypes.func,
   onCancel: PropTypes.func.isRequired,
 };
 

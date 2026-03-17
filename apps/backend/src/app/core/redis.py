@@ -65,7 +65,7 @@ def _resolve_redis_password(url: str) -> str | None:
     return None
 
 
-async def _try_connect(connect_timeout: int = 5, socket_timeout: int = 5) -> aioredis.Redis | None:
+async def _try_connect(connect_timeout: int = 5) -> aioredis.Redis | None:
     """Attempt a Redis connection.  Returns the client or ``None``."""
     try:
         password = _resolve_redis_password(_url)
@@ -75,8 +75,6 @@ async def _try_connect(connect_timeout: int = 5, socket_timeout: int = 5) -> aio
             decode_responses=True,
             max_connections=20,
             socket_connect_timeout=connect_timeout,
-            socket_timeout=socket_timeout,
-            retry_on_timeout=True,
         )
         await client.ping()
         return client
@@ -131,7 +129,7 @@ async def get_redis() -> aioredis.Redis | None:
         return None
 
     _last_reconnect_attempt = now
-    client = await _try_connect(connect_timeout=2, socket_timeout=2)
+    client = await _try_connect(connect_timeout=2)
     if client is not None:
         _redis = client
         _logger.info("Redis reconnected (%s)", _url)

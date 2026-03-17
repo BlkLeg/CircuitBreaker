@@ -82,15 +82,15 @@ const DEFAULT_PAGE_SIZE = 25;
 function EntityTable({
   columns,
   data,
-  onEdit,
-  onDelete,
-  onRowClick,
-  editableColumns,
-  onCellSave,
-  selectable,
-  selectedIds,
-  onSelectionChange,
-  bulkActions,
+  onEdit = undefined,
+  onDelete = undefined,
+  onRowClick = undefined,
+  editableColumns = undefined,
+  onCellSave = undefined,
+  selectable = false,
+  selectedIds = undefined,
+  onSelectionChange = undefined,
+  bulkActions = undefined,
   defaultPageSize = DEFAULT_PAGE_SIZE,
   pageSizeOptions = PAGE_SIZE_OPTIONS,
 }) {
@@ -402,8 +402,8 @@ EntityTable.propTypes = {
     })
   ).isRequired,
   data: PropTypes.arrayOf(PropTypes.object).isRequired,
-  onEdit: PropTypes.func.isRequired,
-  onDelete: PropTypes.func.isRequired,
+  onEdit: PropTypes.func,
+  onDelete: PropTypes.func,
   onRowClick: PropTypes.func,
   editableColumns: PropTypes.oneOfType([
     PropTypes.arrayOf(PropTypes.string),
@@ -422,18 +422,6 @@ EntityTable.propTypes = {
   ),
   defaultPageSize: PropTypes.number,
   pageSizeOptions: PropTypes.arrayOf(PropTypes.number),
-};
-
-EntityTable.defaultProps = {
-  onRowClick: undefined,
-  editableColumns: undefined,
-  onCellSave: undefined,
-  selectable: false,
-  selectedIds: undefined,
-  onSelectionChange: undefined,
-  bulkActions: undefined,
-  defaultPageSize: DEFAULT_PAGE_SIZE,
-  pageSizeOptions: PAGE_SIZE_OPTIONS,
 };
 
 export default EntityTable;

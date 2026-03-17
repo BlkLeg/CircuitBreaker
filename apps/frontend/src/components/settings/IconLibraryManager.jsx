@@ -31,7 +31,7 @@ const GROUP_ORDER = [
   'Other',
 ];
 
-function IconGrid({ icons, onDelete }) {
+function IconGrid({ icons, onDelete = null }) {
   return (
     <div
       style={{
@@ -125,10 +125,6 @@ function IconGrid({ icons, onDelete }) {
 IconGrid.propTypes = {
   icons: PropTypes.arrayOf(PropTypes.object).isRequired,
   onDelete: PropTypes.func,
-};
-
-IconGrid.defaultProps = {
-  onDelete: null,
 };
 
 function SectionLabel({ children, count }) {

@@ -24,6 +24,7 @@ UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
 FORCE_DEPS=false
+DOCKER_AVAILABLE=false
 
 # UI Functions
 cb_version() {
@@ -371,6 +372,11 @@ stage1_bootstrap() {
   
   cb_ok "Directory structure created"
 
+  # File descriptor limits for the breaker user
+  if ! grep -q "breaker.*nofile" /etc/security/limits.conf 2>/dev/null; then
+    printf '\nbreaker soft nofile 65536\nbreaker hard nofile 65536\n' >> /etc/security/limits.conf
+  fi
+
   # Secret generation
   if [[ -f /etc/circuitbreaker/.env ]]; then
     cb_ok "Secrets already exist — preserving"
@@ -400,7 +406,8 @@ CB_REDIS_PASS=${redis_pass}
 NATS_AUTH_TOKEN=${nats_token}
 
 # ===== Connection Strings =====
-CB_DB_URL=postgresql://breaker:${db_password}@127.0.0.1:6432/circuitbreaker
+CB_DB_URL=postgresql://breaker:${db_password}@127.0.0.1:5432/circuitbreaker
+CB_DB_POOL_URL=postgresql://breaker:${db_password}@127.0.0.1:6432/circuitbreaker
 CB_REDIS_URL=redis://:${redis_pass}@127.0.0.1:6379/0
 NATS_URL=nats://127.0.0.1:4222
 
@@ -443,9 +450,9 @@ stage2_dependencies() {
   cb_step "Installing base tools"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q curl jq openssl netcat-openbsd git wget gnupg2 ca-certificates lsb-release >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q curl jq openssl netcat-openbsd git wget gnupg2 ca-certificates lsb-release libcap2-bin >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q curl jq openssl nmap-ncat git wget gnupg2 ca-certificates >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q curl jq openssl nmap-ncat git wget gnupg2 ca-certificates libcap >> "$LOG_FILE" 2>&1
   fi
   cb_ok "Base tools installed"
 
@@ -579,6 +586,16 @@ stage2_dependencies() {
     cb_fail "Node 20 verification failed" "Check: node --version"
   fi
   cb_ok "Node.js $(node --version) installed"
+
+  # Docker detection — enables container telemetry proxy when Docker is present
+  cb_step "Checking for Docker daemon"
+  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+    cb_ok "Docker detected — socket proxy will be configured"
+  else
+    DOCKER_AVAILABLE=false
+    cb_warn "Docker not found — container telemetry will be unavailable"
+  fi
 }
 
 # ============================================================================
@@ -633,6 +650,7 @@ Requires=circuitbreaker-postgres.service
 [Service]
 Type=simple
 User=postgres
+Slice=circuitbreaker.slice
 ExecStart=/usr/sbin/pgbouncer /etc/pgbouncer/pgbouncer.ini
 ExecReload=/bin/kill -HUP \$MAINPID
 RuntimeDirectory=pgbouncer
@@ -657,6 +675,7 @@ After=network.target
 [Service]
 Type=notify
 User=redis
+Slice=circuitbreaker.slice
 ExecStart=/usr/bin/redis-server /etc/redis/redis.conf
 Restart=on-failure
 RestartSec=5s
@@ -680,12 +699,14 @@ After=network.target
 [Service]
 Type=simple
 User=breaker
+Slice=circuitbreaker.slice
 ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats.conf
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
 ReadWritePaths=${CB_DATA_DIR}/nats
 MemoryMax=512M
+LimitNOFILE=65536
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cb-nats
@@ -705,18 +726,24 @@ Requires=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbr
 Type=exec
 User=breaker
 Group=breaker
+Slice=circuitbreaker.slice
 WorkingDirectory=/opt/circuitbreaker/apps/backend
 EnvironmentFile=/etc/circuitbreaker/.env
+RuntimeDirectory=circuitbreaker
+RuntimeDirectoryMode=0750
+ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker/.env > /run/circuitbreaker/vault.env 2>/dev/null || true'
+EnvironmentFile=-/run/circuitbreaker/vault.env
+ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
 ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
 Restart=on-failure
-RestartSec=5s
-StartLimitBurst=3
-StartLimitInterval=60s
+RestartSec=10s
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${CB_DATA_DIR}
 MemoryMax=1G
+LimitNOFILE=65536
+CPUQuota=200%
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cb-backend
@@ -736,8 +763,15 @@ Requires=circuitbreaker-backend.service
 Type=simple
 User=breaker
 Group=breaker
+Slice=circuitbreaker.slice
 WorkingDirectory=/opt/circuitbreaker/apps/backend
 EnvironmentFile=/etc/circuitbreaker/.env
+RuntimeDirectory=circuitbreaker
+RuntimeDirectoryMode=0750
+ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker/.env > /run/circuitbreaker/vault.env 2>/dev/null || true'
+EnvironmentFile=-/run/circuitbreaker/vault.env
+Environment="DB_POOL_SIZE=3"
+Environment="DB_MAX_OVERFLOW=2"
 ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
 Restart=on-failure
 RestartSec=10s
@@ -745,6 +779,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${CB_DATA_DIR}
 MemoryMax=512M
+LimitNOFILE=65536
+CPUQuota=50%
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cb-worker-%i
@@ -767,6 +803,7 @@ Wants=circuitbreaker-worker@webhook.service
 Wants=circuitbreaker-worker@notification.service
 Wants=circuitbreaker-worker@telemetry.service
 Wants=caddy.service
+Wants=circuitbreaker-healthcheck.timer
 After=circuitbreaker-postgres.service
 After=circuitbreaker-pgbouncer.service
 After=circuitbreaker-redis.service
@@ -778,14 +815,157 @@ After=caddy.service
 WantedBy=multi-user.target
 EOF
 
+  # Supporting scripts for systemd units
+  mkdir -p /opt/circuitbreaker/scripts
+
+  # healthcheck.sh — liveness probe called by circuitbreaker-healthcheck.timer
+  cat > /opt/circuitbreaker/scripts/healthcheck.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source /etc/circuitbreaker/.env
+set +a
+
+LOCK_FILE="/run/cb-healthcheck.lock"
+LOG_FILE="${CB_DATA_DIR}/logs/healthcheck.log"
+
+# Rate-limit restarts: skip if a restart was triggered within the last 60s
+if [[ -f "$LOCK_FILE" ]]; then
+  last=$(cat "$LOCK_FILE" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  if (( now - last < 60 )); then
+    echo "$(date -Iseconds) restart already in progress — skipping" >> "$LOG_FILE"
+    exit 0
+  fi
+fi
+
+if curl -sf --max-time 5 http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "$(date -Iseconds) health check failed — restarting circuitbreaker-backend" >> "$LOG_FILE"
+date +%s > "$LOCK_FILE"
+systemctl restart circuitbreaker-backend
+EOF
+  chmod 700 /opt/circuitbreaker/scripts/healthcheck.sh
+  chown root:root /opt/circuitbreaker/scripts/healthcheck.sh
+
+  # validate-secrets.sh — pre-start guard called as ExecStartPre in backend.service
+  cat > /opt/circuitbreaker/scripts/validate-secrets.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source /etc/circuitbreaker/.env
+set +a
+
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
+PLACEHOLDERS="CHANGE_ME changeme placeholder todo test secret password"
+
+check_secret() {
+  local name="$1" value="$2" min_len="${3:-0}"
+  [[ -z "$value" ]] && fail "$name is not set or empty"
+  for p in $PLACEHOLDERS; do
+    [[ "${value,,}" == "${p,,}" ]] && fail "$name contains placeholder value: $value"
+  done
+  if (( min_len > 0 )) && (( ${#value} < min_len )); then
+    fail "$name is too short (${#value} chars, minimum $min_len)"
+  fi
+}
+
+check_secret "CB_JWT_SECRET"   "${CB_JWT_SECRET:-}"   64
+check_secret "CB_VAULT_KEY"    "${CB_VAULT_KEY:-}"    32
+check_secret "NATS_AUTH_TOKEN" "${NATS_AUTH_TOKEN:-}"  0
+check_secret "CB_DB_PASSWORD"  "${CB_DB_PASSWORD:-}"   0
+EOF
+  chmod 700 /opt/circuitbreaker/scripts/validate-secrets.sh
+  chown root:root /opt/circuitbreaker/scripts/validate-secrets.sh
+
+  # circuitbreaker-healthcheck.service
+  cat > /etc/systemd/system/circuitbreaker-healthcheck.service <<EOF
+[Unit]
+Description=Circuit Breaker Liveness Check
+After=circuitbreaker-backend.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/circuitbreaker/scripts/healthcheck.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-healthcheck
+EOF
+
+  # circuitbreaker-healthcheck.timer
+  cat > /etc/systemd/system/circuitbreaker-healthcheck.timer <<EOF
+[Unit]
+Description=Circuit Breaker Liveness Check Timer
+Requires=circuitbreaker-backend.service
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  # circuitbreaker.slice — aggregate memory cap across all CB services
+  cat > /etc/systemd/system/circuitbreaker.slice <<EOF
+[Unit]
+Description=Circuit Breaker Service Slice
+
+[Slice]
+MemoryMax=3G
+MemoryHigh=2G
+EOF
+
+  # circuitbreaker-docker-proxy.service — only written when Docker is present
+  # --privileged is required by tecnativa/docker-socket-proxy to bind to the Docker socket.
+  # Port 2375 is bound to 127.0.0.1 only — never 0.0.0.0 (unauthenticated Docker API).
+  if [[ "$DOCKER_AVAILABLE" == "true" ]]; then
+    cat > /etc/systemd/system/circuitbreaker-docker-proxy.service <<'UNITEOF'
+[Unit]
+Description=Circuit Breaker Docker Socket Proxy
+Documentation=https://github.com/Tecnativa/docker-socket-proxy
+After=docker.service
+Requires=docker.service
+Before=circuitbreaker-backend.service
+
+[Service]
+Type=simple
+User=root
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=65536
+Slice=circuitbreaker.slice
+ExecStartPre=-/usr/bin/docker rm -f cb-docker-proxy
+ExecStart=/usr/bin/docker run --rm --name cb-docker-proxy --privileged -p 127.0.0.1:2375:2375 -v /var/run/docker.sock:/var/run/docker.sock:ro --env-file /etc/circuitbreaker/docker-proxy.env tecnativa/docker-socket-proxy:latest
+ExecStop=/usr/bin/docker stop cb-docker-proxy
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-docker-proxy
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+  fi
+
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.target >> "$LOG_FILE" 2>&1
-  systemctl enable circuitbreaker-postgres circuitbreaker-pgbouncer \
+  systemctl enable circuitbreaker.slice \
+    circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    circuitbreaker-healthcheck.timer \
     caddy >> "$LOG_FILE" 2>&1
-  
+  [[ "$DOCKER_AVAILABLE" == "true" ]] && \
+    systemctl enable circuitbreaker-docker-proxy >> "$LOG_FILE" 2>&1 || true
+
   cb_ok "Systemd units created and enabled"
 }
 
@@ -990,7 +1170,12 @@ stage3_configure_redis() {
   
   cb_step "Writing Redis configuration"
   mkdir -p /etc/redis
-  
+
+  local ram_mb
+  ram_mb=$(free -m | awk '/^Mem:/{print $2}')
+  local redis_maxmem="256mb"
+  [[ "$ram_mb" -lt 2048 ]] && redis_maxmem="128mb"
+
   # Create Redis data directory with correct ownership
   local redis_user="redis"
   if id redis &>/dev/null; then
@@ -1025,7 +1210,7 @@ rdbcompression yes
 rdbchecksum yes
 dbfilename dump.rdb
 dir ${CB_DATA_DIR}/redis
-maxmemory 256mb
+maxmemory ${redis_maxmem}
 maxmemory-policy allkeys-lru
 appendonly no
 EOF
@@ -1083,7 +1268,7 @@ stage3_configure_nats() {
   cat > /etc/nats/nats.conf <<EOF
 # Circuit Breaker NATS Configuration
 port: 4222
-http_port: 8222
+http: 127.0.0.1:8222
 
 authorization {
   token: "${NATS_AUTH_TOKEN}"
@@ -1192,6 +1377,10 @@ stage3_configure_caddy() {
     site_address="http://${CB_FQDN:-circuitbreaker.lab}:${CB_PORT}"
   fi
 
+  # HSTS is only safe over HTTPS; omit it when NO_TLS=true
+  local hsts_header=""
+  [[ "$NO_TLS" == "false" ]] && hsts_header='Strict-Transport-Security "max-age=63072000; includeSubDomains"'
+
   # Write Caddyfile
   cb_step "Writing Caddy configuration"
   mkdir -p /etc/caddy
@@ -1204,13 +1393,15 @@ stage3_configure_caddy() {
 ${site_address} {
     ${tls_line}
 
+    encode gzip
+
     # Security headers
     header {
         Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'strict-dynamic'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
-        Strict-Transport-Security "max-age=63072000; includeSubDomains"
+        ${hsts_header}
         Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
         -Server
     }
@@ -1218,17 +1409,24 @@ ${site_address} {
     # Long-term caching for hashed static assets
     @staticAssets path_regexp \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$
     header @staticAssets Cache-Control "public, max-age=31536000, immutable"
+    header /index.html Cache-Control "no-cache, no-store, must-revalidate"
 
     # API + WebSocket streams
     # Caddy automatically handles WebSocket upgrades (Upgrade/Connection headers)
     # flush_interval -1 disables buffering for SSE (/api/v1/events/stream)
     handle /api/* {
-        reverse_proxy localhost:8000 {
+        reverse_proxy 127.0.0.1:8000 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
             flush_interval -1
+            transport http {
+                dial_timeout 5s
+                response_header_timeout 0
+                read_idle_timeout 3600s
+                write_timeout 3600s
+            }
         }
     }
 
@@ -1268,6 +1466,94 @@ EOF
 }
 
 # ============================================================================
+# STAGE 3: DOCKER SOCKET PROXY
+# ============================================================================
+
+stage3_configure_docker_proxy() {
+  if [[ "$DOCKER_AVAILABLE" != "true" ]]; then
+    cb_warn "Skipping Docker socket proxy (Docker not available)"
+    # Ensure .env has DOCKER_PROXY_ENABLED=false for the CLI runtime check
+    if ! grep -q "^DOCKER_PROXY_ENABLED=" /etc/circuitbreaker/.env; then
+      printf '\n# ===== Docker socket proxy =====\nDOCKER_HOST=\nDOCKER_PROXY_ENABLED=false\n' \
+        >> /etc/circuitbreaker/.env
+    fi
+    return
+  fi
+
+  cb_section "Configuring Docker Socket Proxy"
+
+  # Pull the proxy image
+  cb_step "Pulling docker-socket-proxy image"
+  docker pull tecnativa/docker-socket-proxy:latest >> "$LOG_FILE" 2>&1 || \
+    cb_fail "Failed to pull docker-socket-proxy image" \
+            "Check: docker pull tecnativa/docker-socket-proxy"
+  cb_ok "Image pulled"
+
+  # Write proxy allowlist env file — only permits read-only telemetry endpoints
+  cb_step "Writing Docker proxy allowlist"
+  cat > /etc/circuitbreaker/docker-proxy.env <<'PROXYENV'
+# Docker socket proxy allowlist — read-only telemetry endpoints only
+# See: https://github.com/Tecnativa/docker-socket-proxy
+
+# Permitted — endpoints the CB backend calls for container telemetry
+CONTAINERS=1
+INFO=1
+VERSION=1
+NETWORKS=1
+VOLUMES=1
+IMAGES=1
+STATS=1
+
+# Blocked — all write and privileged operations
+AUTH=0
+BUILD=0
+COMMIT=0
+CONFIGS=0
+CONTAINERS_CREATE=0
+CONTAINERS_DELETE=0
+CONTAINERS_EXEC=0
+CONTAINERS_KILL=0
+CONTAINERS_PAUSE=0
+CONTAINERS_RENAME=0
+CONTAINERS_RESTART=0
+CONTAINERS_START=0
+CONTAINERS_STOP=0
+CONTAINERS_UNPAUSE=0
+CONTAINERS_UPDATE=0
+EVENTS=0
+EXEC=0
+NODES=0
+PLUGINS=0
+POST=0
+PRUNE=0
+SECRETS=0
+SERVICES=0
+SESSION=0
+SWARM=0
+SYSTEM=0
+TASKS=0
+PROXYENV
+  chmod 640 /etc/circuitbreaker/docker-proxy.env
+  chown root:breaker /etc/circuitbreaker/docker-proxy.env
+  cb_ok "Allowlist written to /etc/circuitbreaker/docker-proxy.env"
+
+  # Inject DOCKER_HOST into .env (idempotent — skip if already present)
+  if ! grep -q "^DOCKER_PROXY_ENABLED=" /etc/circuitbreaker/.env; then
+    cat >> /etc/circuitbreaker/.env <<'ENVEOF'
+
+# ===== Docker socket proxy =====
+DOCKER_HOST=tcp://127.0.0.1:2375
+DOCKER_PROXY_ENABLED=true
+ENVEOF
+    cb_ok "DOCKER_HOST injected into .env"
+  else
+    cb_ok "Docker env vars already present — skipping"
+  fi
+
+  cb_ok "Docker socket proxy configured"
+}
+
+# ============================================================================
 # WAIT-FOR-SERVICES SCRIPT
 # ============================================================================
 
@@ -1304,13 +1590,58 @@ wait_port() {
 }
 
 wait_port "pgbouncer"  127.0.0.1 6432
-wait_port "redis"      127.0.0.1 6379
-wait_port "nats"       127.0.0.1 4222
+
+# Redis: authenticated PING — port-open is not enough when requirepass is set
+echo "Waiting for Redis to accept authenticated connections..."
+elapsed=0
+while ! redis-cli -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASS}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
+  sleep $INTERVAL
+  elapsed=$((elapsed + INTERVAL))
+  if [[ $elapsed -ge $MAX_WAIT ]]; then
+    echo "FATAL: Redis did not accept authenticated connections within ${MAX_WAIT}s" >&2
+    exit 1
+  fi
+done
+
+# NATS: JetStream health endpoint — TCP-open does not mean JetStream is initialised
+echo "Waiting for NATS JetStream to become ready..."
+elapsed=0
+while ! curl -sf http://127.0.0.1:8222/healthz >/dev/null 2>&1; do
+  sleep $INTERVAL
+  elapsed=$((elapsed + INTERVAL))
+  if [[ $elapsed -ge $MAX_WAIT ]]; then
+    echo "FATAL: NATS JetStream did not become ready within ${MAX_WAIT}s" >&2
+    exit 1
+  fi
+done
 
 # Actual DB connection test - port open ≠ DB accepting connections
-PGPASSWORD="$CB_DB_PASSWORD" psql \
-  -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>/dev/null \
-  || { echo "FATAL: Cannot connect to DB through pgbouncer" >&2; exit 1; }
+echo "Waiting for DB to accept connections..."
+elapsed=0
+while ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>/dev/null; do
+  sleep $INTERVAL
+  elapsed=$((elapsed + INTERVAL))
+  if [[ $elapsed -ge $MAX_WAIT ]]; then
+    echo "FATAL: Cannot connect to DB through pgbouncer within ${MAX_WAIT}s" >&2
+    exit 1
+  fi
+done
+
+# Docker socket proxy — only check when Docker is enabled
+if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
+  echo "Waiting for Docker socket proxy..."
+  elapsed=0
+  while ! curl -sf http://127.0.0.1:2375/version &>/dev/null; do
+    sleep $INTERVAL
+    elapsed=$((elapsed + INTERVAL))
+    if [[ $elapsed -ge $MAX_WAIT ]]; then
+      echo "FATAL: Docker socket proxy not responding within ${MAX_WAIT}s" >&2
+      echo "Check: journalctl -u circuitbreaker-docker-proxy -n 30" >&2
+      exit 1
+    fi
+  done
+  echo "Docker proxy ready (${elapsed}s)"
+fi
 EOF
   
   chmod 755 /opt/circuitbreaker/scripts/wait-for-services.sh
@@ -1380,7 +1711,7 @@ stage6_setup_python() {
   su -s /bin/bash breaker -c "
     source /opt/circuitbreaker/apps/backend/venv/bin/activate
     pip install --quiet --upgrade pip
-    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt
+    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt -r /opt/circuitbreaker/apps/backend/requirements-pg.txt
     pip install --quiet -e /opt/circuitbreaker/apps/backend/
   " >> "$LOG_FILE" 2>&1
   cb_ok "Python dependencies installed"
@@ -1407,6 +1738,17 @@ stage6_setup_python() {
     cb_ok "Database schema ready"
   else
     cb_fail "Database migrations did not run" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  fi
+
+  cb_step "Granting NET_RAW capability to venv Python interpreter"
+  if command -v setcap &>/dev/null; then
+    setcap cap_net_raw+ep \
+      /opt/circuitbreaker/apps/backend/venv/bin/python3.12 \
+      >> "$LOG_FILE" 2>&1 || \
+      cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
+    cb_ok "NET_RAW capability granted"
+  else
+    cb_warn "setcap not found — install libcap2-bin and re-run"
   fi
 }
 
@@ -1530,6 +1872,8 @@ SERVICES=(
   "circuitbreaker-worker@notification"
   "circuitbreaker-worker@telemetry"
 )
+[[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]] && \
+  SERVICES+=("circuitbreaker-docker-proxy")
 
 cmd_status() {
   echo ""
@@ -1566,6 +1910,11 @@ cmd_doctor() {
   check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASS\" PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
   check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
   check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
+  if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
+    check "Docker proxy (2375)" \
+      "curl -sf http://127.0.0.1:2375/version" \
+      "journalctl -u circuitbreaker-docker-proxy -n 30"
+  fi
   check "caddy (443)"        "nc -z 127.0.0.1 443"             "caddy validate --config /etc/caddy/Caddyfile && journalctl -u caddy -n 30"
   echo ""
   [[ $FAILED -eq 0 ]] && echo "  All systems operational." \
@@ -1613,6 +1962,10 @@ cmd_uninstall() {
   read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
   [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
 
+  echo "Stopping Docker proxy container..."
+  docker stop cb-docker-proxy 2>/dev/null || true
+  docker rm cb-docker-proxy 2>/dev/null || true
+
   echo "Stopping and disabling all services..."
   systemctl stop \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
@@ -1626,6 +1979,7 @@ cmd_uninstall() {
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    circuitbreaker-docker-proxy \
     circuitbreaker.target caddy 2>/dev/null || true
 
   echo "Killing any remaining CircuitBreaker processes..."
@@ -1824,7 +2178,9 @@ run_upgrade() {
   # Deploy code
   stage5_deploy_code
   write_wait_for_services_script
-  
+  stage4_write_systemd_units
+  stage3_configure_docker_proxy
+
   # Show changelog
   if [[ "$old_head" != "unknown" ]]; then
     cb_section "Changes in this update"
@@ -1833,7 +2189,12 @@ run_upgrade() {
   
   # Update Python dependencies
   stage6_setup_python
-  
+  # Re-apply NET_RAW after venv rebuild (setcap is wiped when venv is recreated)
+  setcap cap_net_raw+ep \
+    /opt/circuitbreaker/apps/backend/venv/bin/python3.12 \
+    >> "$LOG_FILE" 2>&1 || \
+    cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
+
   # Rebuild frontend
   stage7_build_frontend
   
@@ -1883,7 +2244,8 @@ main() {
   stage3_configure_redis
   stage3_configure_nats
   stage3_configure_caddy
-  
+  stage3_configure_docker_proxy
+
   # Deploy and build
   stage5_deploy_code
   write_wait_for_services_script

@@ -21,7 +21,13 @@ const chipBase =
 const tagInputClass =
   'tw-min-w-[6rem] tw-w-24 tw-bg-cb-bg tw-border tw-border-cb-border tw-text-cb-text tw-rounded tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary placeholder:tw-text-cb-text-muted';
 
-function TagsCell({ tags, allTags, onTagsChange, onTagColorChange, disabled }) {
+function TagsCell({
+  tags = [],
+  allTags = [],
+  onTagsChange,
+  onTagColorChange = () => {},
+  disabled = false,
+}) {
   const [adding, setAdding] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [colorPickerFor, setColorPickerFor] = useState(null);
@@ -191,13 +197,6 @@ TagsCell.propTypes = {
   onTagsChange: PropTypes.func.isRequired,
   onTagColorChange: PropTypes.func,
   disabled: PropTypes.bool,
-};
-
-TagsCell.defaultProps = {
-  tags: [],
-  allTags: [],
-  onTagColorChange: () => {},
-  disabled: false,
 };
 
 export default TagsCell;

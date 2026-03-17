@@ -68,12 +68,12 @@ const _selectStyle = {
 export default function MapToolbar({
   layout,
   onChange,
-  onPreset,
-  viewOptions,
-  onViewOptionsChange,
-  onFullscreen,
-  isFullscreen,
-  style,
+  onPreset = null,
+  viewOptions = { edgeMode: 'smoothstep', edgeLabelVisible: true, nodeSpacing: 1 },
+  onViewOptionsChange = null,
+  onFullscreen = null,
+  isFullscreen = false,
+  style = {},
 }) {
   const standardLayouts = LAYOUTS.filter((l) => l.group === 'Standard');
   const advancedLayouts = LAYOUTS.filter((l) => l.group === 'Advanced');
@@ -219,15 +219,6 @@ MapToolbar.propTypes = {
   onFullscreen: PropTypes.func,
   isFullscreen: PropTypes.bool,
   style: PropTypes.object,
-};
-
-MapToolbar.defaultProps = {
-  onPreset: null,
-  viewOptions: { edgeMode: 'smoothstep', edgeLabelVisible: true, nodeSpacing: 1 },
-  onViewOptionsChange: null,
-  onFullscreen: null,
-  isFullscreen: false,
-  style: {},
 };
 
 export { LAYOUTS, PRESETS, EDGE_MODES, NODE_SPACINGS };

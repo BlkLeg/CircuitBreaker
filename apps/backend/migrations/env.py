@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import context
 
 from app.db.models import Base
-from app.db.session import db_url, engine
+from app.db.session import db_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -61,15 +61,16 @@ def _widen_alembic_version_column(connection: sa.engine.Connection) -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    connectable = engine
+    """Run migrations using a direct DB connection (bypasses pgbouncer)."""
+    from sqlalchemy import create_engine as _create_engine
 
-    with connectable.connect() as connection:
+    migration_engine = _create_engine(db_url)
+    with migration_engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
-
         with context.begin_transaction():
             _widen_alembic_version_column(connection)
             context.run_migrations()
+    migration_engine.dispose()
 
 
 if context.is_offline_mode():

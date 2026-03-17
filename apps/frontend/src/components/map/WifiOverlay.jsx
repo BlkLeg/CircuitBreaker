@@ -4,9 +4,12 @@ import { useStore, useReactFlow } from 'reactflow';
 import { AnimatePresence, motion } from 'framer-motion';
 
 const getScaledPosition = (node, viewport, project) => {
+  const basePosition = node.positionAbsolute || node.position || { x: 0, y: 0 };
+  const width = node.width || 0;
+  const height = node.height || 0;
   const { x, y } = project({
-    x: node.positionAbsolute.x + node.width / 2,
-    y: node.positionAbsolute.y + node.height / 2,
+    x: basePosition.x + width / 2,
+    y: basePosition.y + height / 2,
   });
   return {
     x: x * viewport.zoom,
@@ -116,7 +119,11 @@ WifiOverlay.propTypes = {
       positionAbsolute: PropTypes.shape({
         x: PropTypes.number.isRequired,
         y: PropTypes.number.isRequired,
-      }).isRequired,
+      }),
+      position: PropTypes.shape({
+        x: PropTypes.number,
+        y: PropTypes.number,
+      }),
       width: PropTypes.number,
       height: PropTypes.number,
       data: PropTypes.shape({

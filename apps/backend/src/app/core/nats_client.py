@@ -74,7 +74,7 @@ class NATSClient:
 
             connect_kw: dict[str, Any] = dict(
                 connect_timeout=3,
-                max_reconnect_attempts=60,
+                max_reconnect_attempts=-1,
                 reconnect_time_wait=5,
                 disconnected_cb=_on_disconnected,
                 reconnected_cb=_on_reconnected,

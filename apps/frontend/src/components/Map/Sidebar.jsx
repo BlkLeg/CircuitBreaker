@@ -317,16 +317,16 @@ function SidebarTelemetryBlock({ node }) {
 SidebarTelemetryBlock.propTypes = { node: PropTypes.object };
 
 export default function Sidebar({
-  node,
-  anchor,
-  relationships,
-  sysinfo,
-  status,
+  node = null,
+  anchor = null,
+  relationships = [],
+  sysinfo = [],
+  status = null,
   onClose,
-  onUplinkChange,
-  onOpenInHud,
-  onBoundsChange,
-  onMonitorAction,
+  onUplinkChange = undefined,
+  onOpenInHud = undefined,
+  onBoundsChange = undefined,
+  onMonitorAction = undefined,
 }) {
   const [speed, setSpeed] = useState(1000);
   const [position, setPosition] = useState({ x: 24, y: 84 });
@@ -1059,16 +1059,4 @@ Sidebar.propTypes = {
   onBoundsChange: PropTypes.func,
   /** Called with 'monitor_create' | 'monitor_toggle' | 'monitor_check_now' for hardware nodes */
   onMonitorAction: PropTypes.func,
-};
-
-Sidebar.defaultProps = {
-  node: null,
-  anchor: null,
-  relationships: [],
-  sysinfo: [],
-  status: null,
-  onUplinkChange: undefined,
-  onOpenInHud: undefined,
-  onBoundsChange: undefined,
-  onMonitorAction: undefined,
 };

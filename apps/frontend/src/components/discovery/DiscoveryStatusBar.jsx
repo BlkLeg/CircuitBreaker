@@ -17,8 +17,8 @@ export default function DiscoveryStatusBar({
   activeCount,
   totalFound,
   conflictCount,
-  effectiveMode,
-  dockerAvailable,
+  effectiveMode = null,
+  dockerAvailable = false,
 }) {
   return (
     <div className="discovery-status-bar">
@@ -67,9 +67,4 @@ DiscoveryStatusBar.propTypes = {
   conflictCount: PropTypes.number.isRequired,
   effectiveMode: PropTypes.string,
   dockerAvailable: PropTypes.bool,
-};
-
-DiscoveryStatusBar.defaultProps = {
-  effectiveMode: null,
-  dockerAvailable: false,
 };

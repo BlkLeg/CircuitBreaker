@@ -160,7 +160,7 @@ function entityTypeLabel(type) {
 
 function DocRowMenu({
   doc,
-  menuPos,
+  menuPos = null,
   onPin,
   onSetCategory,
   onDuplicate,
@@ -263,13 +263,9 @@ DocRowMenu.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-DocRowMenu.defaultProps = {
-  menuPos: null,
-};
-
 // ── Right panel (outline + backlinks) ─────────────────────────────────────
 
-function DocRightPanel({ docId, bodyMd, linksRevision = 0 }) {
+function DocRightPanel({ docId = null, bodyMd = '', linksRevision = 0 }) {
   const [entities, setEntities] = useState([]);
   const [entitiesLoading, setEntitiesLoading] = useState(false);
   const headings = useMemo(() => parseHeadings(bodyMd), [bodyMd]);
@@ -360,15 +356,9 @@ DocRightPanel.propTypes = {
   linksRevision: PropTypes.number,
 };
 
-DocRightPanel.defaultProps = {
-  docId: null,
-  bodyMd: '',
-  linksRevision: 0,
-};
-
 // ── Icon picker (emoji swatch beside title) ───────────────────────────────
 
-function DocIconPicker({ value, onChange }) {
+function DocIconPicker({ value = '', onChange }) {
   const [open, setOpen] = useState(false);
   const [Picker, setPicker] = useState(null);
   const [pickerData, setPickerData] = useState(null);
@@ -438,10 +428,6 @@ function DocIconPicker({ value, onChange }) {
 DocIconPicker.propTypes = {
   value: PropTypes.string,
   onChange: PropTypes.func.isRequired,
-};
-
-DocIconPicker.defaultProps = {
-  value: '',
 };
 
 // ── Main page ──────────────────────────────────────────────────────────────

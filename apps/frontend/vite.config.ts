@@ -81,8 +81,14 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
+      host: true,
+      allowedHosts: ['localhost', '127.0.0.1', 'circuitbreaker.lab'],
       proxy: {
-        '/api': apiTarget,
+        '/api': {
+          target: apiTarget,
+          changeOrigin: true,
+          ws: true,
+        },
         '/user-icons': apiTarget,
         '/branding': apiTarget,
         '/uploads': apiTarget,

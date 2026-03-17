@@ -71,7 +71,7 @@ const resolveCoordinates = async (location) => {
   return null;
 };
 
-const HeaderWidgets = ({ settings }) => {
+const HeaderWidgets = ({ settings = {} }) => {
   const showHeaderWidgets = settings?.showHeaderWidgets ?? settings?.show_header_widgets ?? true;
   const showTimeWidget = settings?.showTimeWidget ?? settings?.show_time_widget ?? true;
   const showWeatherWidget = settings?.showWeatherWidget ?? settings?.show_weather_widget ?? true;
@@ -249,10 +249,6 @@ HeaderWidgets.propTypes = {
     show_weather_widget: PropTypes.bool,
     weather_location: PropTypes.string,
   }),
-};
-
-HeaderWidgets.defaultProps = {
-  settings: null,
 };
 
 export default HeaderWidgets;
