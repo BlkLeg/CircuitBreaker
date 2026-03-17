@@ -39,7 +39,7 @@ pillow==12.1.1
 python-magic==0.4.27
 prometheus-client==0.24.1
 ptyprocess==0.7.0
-pyasn1==0.6.2
+pyasn1==0.6.3
 pycparser==3.0
 pydantic==2.12.5
 pydantic-core==2.41.5
