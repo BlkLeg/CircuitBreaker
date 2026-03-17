@@ -879,6 +879,31 @@ def get_me(db: Session, user_id: int) -> UserProfile:
     return _to_profile(user)
 
 
+def _process_avatar(data: bytes) -> tuple[bytes, str]:
+    """Validate, resize, and encode an avatar image (sync, safe to run in executor).
+
+    Returns (processed_bytes, pillow_format_string).
+    Raises on corrupt/unreadable images; resize failure falls back to original bytes.
+    """
+    import io
+
+    from PIL import Image
+
+    probe = Image.open(io.BytesIO(data))
+    probe.verify()  # raises on corrupt or malicious files
+    detected_format = probe.format or "PNG"
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.thumbnail((256, 256))
+        buf = io.BytesIO()
+        img.save(buf, format=detected_format)
+        return buf.getvalue(), detected_format
+    except Exception:
+        _logger.warning("Pillow resize failed; saving original photo as-is")
+        return data, detected_format
+
+
 async def update_profile(
     db: Session,
     user_id: int,
@@ -902,10 +927,9 @@ async def update_profile(
 
         # Validate actual file content — do NOT trust client Content-Type header.
         # Use python-magic for primary MIME detection, Pillow for structural validation.
-        import io
+        import asyncio
 
         import magic as _magic
-        from PIL import Image, UnidentifiedImageError
 
         detected_mime = _magic.from_buffer(data[:2048], mime=True)
         if detected_mime not in _ALLOWED_TYPES:
@@ -913,11 +937,11 @@ async def update_profile(
                 status_code=422, detail=f"File type '{detected_mime}' is not allowed"
             )
 
+        # Pillow verify + resize is CPU-bound (50–500 ms on large images); run in executor.
         try:
-            probe = Image.open(io.BytesIO(data))
-            probe.verify()  # Raises on corrupt or malicious files
-            detected_format = probe.format  # e.g. "JPEG", "PNG"
-        except (UnidentifiedImageError, Exception) as exc:
+            loop = asyncio.get_running_loop()
+            data, detected_format = await loop.run_in_executor(None, _process_avatar, data)
+        except Exception as exc:
             raise HTTPException(status_code=422, detail="File is not a valid image") from exc
 
         detected_mime = _PILLOW_FORMAT_TO_MIME.get(detected_format or "", "")
@@ -925,16 +949,6 @@ async def update_profile(
             raise HTTPException(
                 status_code=422, detail=f"Image format {detected_format} is not allowed"
             )
-
-        # Re-open after verify() (verify() exhausts internal state) and resize
-        try:
-            img = Image.open(io.BytesIO(data))
-            img.thumbnail((256, 256))
-            buf = io.BytesIO()
-            img.save(buf, format=detected_format)
-            data = buf.getvalue()
-        except Exception:
-            _logger.warning("Pillow resize failed; saving original photo as-is")
 
         # Reject path traversal in client filename
         if profile_photo.filename and (

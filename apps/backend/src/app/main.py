@@ -85,6 +85,7 @@ from app.core.rate_limit import limiter
 from app.core.sql_hardening import build_audit_partition_sql
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
+from app.db.async_session import AsyncSessionLocal
 from app.db.session import engine, get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
@@ -700,11 +701,11 @@ async def lifespan(app: FastAPI):
     )
 
     async def _proxmox_node_poll():
-        with get_session_context() as _pdb:
+        async with AsyncSessionLocal() as _pdb:
             await poll_node_telemetry(_pdb)
 
     async def _proxmox_vm_poll():
-        with get_session_context() as _pdb:
+        async with AsyncSessionLocal() as _pdb:
             await poll_vm_telemetry(_pdb)
 
     async def _proxmox_full_sync():
@@ -750,7 +751,7 @@ async def lifespan(app: FastAPI):
             _pxmx_rrd_s = int(os.environ.get("PROXMOX_RRD_POLL_SECONDS", "300"))
 
             async def _proxmox_rrd_poll():
-                with get_session_context() as _pdb:
+                async with AsyncSessionLocal() as _pdb:
                     await poll_rrd_telemetry(_pdb)
 
             scheduler.add_job(
@@ -762,7 +763,7 @@ async def lifespan(app: FastAPI):
             )
 
             async def _proxmox_storage_refresh():
-                with get_session_context() as _pdb:
+                async with AsyncSessionLocal() as _pdb:
                     await refresh_proxmox_storage(_pdb)
 
             scheduler.add_job(
@@ -813,11 +814,11 @@ async def lifespan(app: FastAPI):
             _logger.info("ARP prober scheduled every %d minutes.", prober_interval)
 
     # ── Certificate auto-renewal (daily at 3:45 AM) ─────────────────────
-    async def _cert_renewal_job():
+    def _cert_renewal_job():
         from app.services.certificate_service import check_and_renew_expiring
 
         with get_session_context() as cert_db:
-            await check_and_renew_expiring(cert_db)
+            check_and_renew_expiring(cert_db)
 
     scheduler.add_job(
         _cert_renewal_job,

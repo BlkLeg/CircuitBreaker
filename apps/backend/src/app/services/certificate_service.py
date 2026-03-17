@@ -230,7 +230,7 @@ def _publish_renewal(cert: Certificate) -> None:
         pass
 
 
-async def check_and_renew_expiring(db: Session) -> int:
+def check_and_renew_expiring(db: Session) -> int:
     """Check all auto_renew certs expiring within 30 days and renew them.
 
     Returns the count of renewed certificates.

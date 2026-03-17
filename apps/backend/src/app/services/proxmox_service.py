@@ -11,6 +11,8 @@ import threading
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.nats_client import nats_client
@@ -112,6 +114,78 @@ def _get_client(db: Session, config: IntegrationConfig) -> ProxmoxIntegration:
     verify_ssl = extra.get("verify_ssl", False)
 
     cert_path, key_path = _resolve_tls_cert(db, config)
+
+    client = build_client_from_token(
+        config.config_url,
+        token,
+        verify_ssl=verify_ssl,
+        client_cert=cert_path,
+        client_key=key_path,
+    )
+    with _proxmox_client_cache_lock:
+        _proxmox_client_cache[config_id] = client
+    return client
+
+
+async def _resolve_tls_cert_async(
+    db: AsyncSession, config: IntegrationConfig
+) -> tuple[str | None, str | None]:
+    """Async variant of _resolve_tls_cert for use in polling coroutines."""
+    cert_id = getattr(config, "tls_cert_id", None)
+    if not cert_id:
+        return None, None
+
+    from app.db.models import Certificate
+
+    cert_row = await db.get(Certificate, cert_id)
+    if not cert_row:
+        return None, None
+
+    import os
+    import tempfile
+
+    vault = get_vault()
+    cert_pem = cert_row.cert_pem
+    try:
+        key_pem = vault.decrypt(cert_row.key_pem)
+    except Exception:
+        key_pem = cert_row.key_pem
+
+    prefix = f"cb_mtls_{config.id}_"
+    cert_path = os.path.join(tempfile.gettempdir(), f"{prefix}cert.pem")
+    key_path = os.path.join(tempfile.gettempdir(), f"{prefix}key.pem")
+
+    with open(cert_path, "w") as f:
+        f.write(cert_pem)
+    with open(key_path, "w") as f:
+        f.write(key_pem)
+    os.chmod(key_path, 0o600)
+
+    return cert_path, key_path
+
+
+async def _get_client_async(db: AsyncSession, config: IntegrationConfig) -> ProxmoxIntegration:
+    """Async variant of _get_client for use in polling coroutines (uses AsyncSession for cache misses)."""
+    config_id = config.id
+    with _proxmox_client_cache_lock:
+        if config_id in _proxmox_client_cache:
+            return _proxmox_client_cache[config_id]
+    vault = get_vault()
+    cred = await db.get(Credential, config.credential_id)
+    if not cred:
+        raise ValueError(f"Credential {config.credential_id} not found for integration {config.id}")
+
+    try:
+        token = vault.decrypt(cred.encrypted_value)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot decrypt credentials for integration {config.id}. "
+            "The vault key may have changed."
+        ) from exc
+    extra = json.loads(config.extra_config) if config.extra_config else {}
+    verify_ssl = extra.get("verify_ssl", False)
+
+    cert_path, key_path = await _resolve_tls_cert_async(db, config)
 
     client = build_client_from_token(
         config.config_url,
@@ -1190,28 +1264,28 @@ def get_sync_status(db: Session, config: IntegrationConfig) -> dict:
 # ── Storage refresh (used/total for cluster overview) ──────────────────────────
 
 
-async def refresh_proxmox_storage(db: Session) -> None:
+async def refresh_proxmox_storage(db: AsyncSession) -> None:
     """Update used_gb/capacity_gb for all Proxmox Storage rows from PVE nodes.
     Lighter than full sync; run on a schedule so cluster overview has fresh storage data."""
     configs = (
-        db.query(IntegrationConfig)
-        .filter(
-            IntegrationConfig.type == "proxmox",
-            IntegrationConfig.auto_sync.is_(True),
+        await db.execute(
+            select(IntegrationConfig).where(
+                IntegrationConfig.type == "proxmox",
+                IntegrationConfig.auto_sync.is_(True),
+            )
         )
-        .all()
-    )
+    ).scalars().all()
     for config in configs:
         try:
-            client = _get_client(db, config)
+            client = await _get_client_async(db, config)
             nodes = (
-                db.query(Hardware)
-                .filter(
-                    Hardware.integration_config_id == config.id,
-                    Hardware.proxmox_node_name.isnot(None),
+                await db.execute(
+                    select(Hardware).where(
+                        Hardware.integration_config_id == config.id,
+                        Hardware.proxmox_node_name.isnot(None),
+                    )
                 )
-                .all()
-            )
+            ).scalars().all()
             for hw in nodes:
                 try:
                     storage_list = await client.get_node_storage(hw.proxmox_node_name)
@@ -1225,38 +1299,38 @@ async def refresh_proxmox_storage(db: Session) -> None:
                     total_bytes = st_data.get("total", 0)
                     used_bytes = st_data.get("used", 0)
                     existing = (
-                        db.query(Storage)
-                        .filter(
-                            Storage.proxmox_storage_name == name,
-                            Storage.hardware_id == hw.id,
-                            Storage.integration_config_id == config.id,
+                        await db.execute(
+                            select(Storage).where(
+                                Storage.proxmox_storage_name == name,
+                                Storage.hardware_id == hw.id,
+                                Storage.integration_config_id == config.id,
+                            )
                         )
-                        .first()
-                    )
+                    ).scalar_one_or_none()
                     if existing:
                         existing.capacity_gb = (
                             round(total_bytes / (1024**3)) if total_bytes else None
                         )
                         existing.used_gb = round(used_bytes / (1024**3)) if used_bytes else None
-            db.commit()
+            await db.commit()
         except Exception as e:
             _logger.warning("Storage refresh failed for integration %d: %s", config.id, e)
-            db.rollback()
+            await db.rollback()
 
 
 # ── Telemetry polling ────────────────────────────────────────────────────────
 
 
-async def poll_node_telemetry(db: Session) -> None:
+async def poll_node_telemetry(db: AsyncSession) -> None:
     """Poll all active Proxmox nodes for CPU/RAM/load metrics (parallel per integration)."""
     configs = (
-        db.query(IntegrationConfig)
-        .filter(
-            IntegrationConfig.type == "proxmox",
-            IntegrationConfig.auto_sync.is_(True),
+        await db.execute(
+            select(IntegrationConfig).where(
+                IntegrationConfig.type == "proxmox",
+                IntegrationConfig.auto_sync.is_(True),
+            )
         )
-        .all()
-    )
+    ).scalars().all()
 
     from app.core.circuit_breaker import get_breaker
 
@@ -1269,15 +1343,15 @@ async def poll_node_telemetry(db: Session) -> None:
             )
             continue
         try:
-            client = _get_client(db, config)
+            client = await _get_client_async(db, config)
             nodes = (
-                db.query(Hardware)
-                .filter(
-                    Hardware.integration_config_id == config_id,
-                    Hardware.proxmox_node_name.isnot(None),
+                await db.execute(
+                    select(Hardware).where(
+                        Hardware.integration_config_id == config_id,
+                        Hardware.proxmox_node_name.isnot(None),
+                    )
                 )
-                .all()
-            )
+            ).scalars().all()
 
             async def _fetch_node(hw: Hardware, _client=client):
                 return hw, await _client.get_node_status(hw.proxmox_node_name)  # type: ignore[arg-type]
@@ -1381,35 +1455,35 @@ async def poll_node_telemetry(db: Session) -> None:
                 except Exception as e:
                     _logger.debug("Telemetry apply failed for node %s: %s", hw.proxmox_node_name, e)
 
-            db.commit()
+            await db.commit()
             breaker.record_success()
         except Exception as e:
             breaker.record_failure()
             _logger.warning("Telemetry poll failed for integration %d: %s", config_id, e)
 
 
-async def poll_rrd_telemetry(db: Session) -> None:
+async def poll_rrd_telemetry(db: AsyncSession) -> None:
     """Poll RRD data for each Proxmox node and store in TelemetryTimeseries (source=proxmox_rrd).
     Provides time-series for CPU, memory, disk, network, io_delay for cluster overview charts."""
     configs = (
-        db.query(IntegrationConfig)
-        .filter(
-            IntegrationConfig.type == "proxmox",
-            IntegrationConfig.auto_sync.is_(True),
+        await db.execute(
+            select(IntegrationConfig).where(
+                IntegrationConfig.type == "proxmox",
+                IntegrationConfig.auto_sync.is_(True),
+            )
         )
-        .all()
-    )
+    ).scalars().all()
     for config in configs:
         try:
-            client = _get_client(db, config)
+            client = await _get_client_async(db, config)
             nodes = (
-                db.query(Hardware)
-                .filter(
-                    Hardware.integration_config_id == config.id,
-                    Hardware.proxmox_node_name.isnot(None),
+                await db.execute(
+                    select(Hardware).where(
+                        Hardware.integration_config_id == config.id,
+                        Hardware.proxmox_node_name.isnot(None),
+                    )
                 )
-                .all()
-            )
+            ).scalars().all()
             for hw in nodes:
                 node = hw.proxmox_node_name
                 if not node:
@@ -1493,44 +1567,46 @@ async def poll_rrd_telemetry(db: Session) -> None:
                                     ts=ts,
                                 )
                             )
-            db.commit()
+            await db.commit()
         except Exception as e:
             _logger.warning("RRD telemetry poll failed for integration %d: %s", config.id, e)
-            db.rollback()
+            await db.rollback()
 
 
-async def poll_vm_telemetry(db: Session) -> None:
+async def poll_vm_telemetry(db: AsyncSession) -> None:
     """Poll all active Proxmox VMs/CTs for live stats (parallel per integration)."""
     configs = (
-        db.query(IntegrationConfig)
-        .filter(
-            IntegrationConfig.type == "proxmox",
-            IntegrationConfig.auto_sync.is_(True),
+        await db.execute(
+            select(IntegrationConfig).where(
+                IntegrationConfig.type == "proxmox",
+                IntegrationConfig.auto_sync.is_(True),
+            )
         )
-        .all()
-    )
+    ).scalars().all()
 
     for config in configs:
         config_id = config.id
         try:
-            client = _get_client(db, config)
+            client = await _get_client_async(db, config)
             compute_units = (
-                db.query(ComputeUnit)
-                .filter(
-                    ComputeUnit.integration_config_id == config_id,
-                    ComputeUnit.proxmox_vmid.isnot(None),
+                await db.execute(
+                    select(ComputeUnit).where(
+                        ComputeUnit.integration_config_id == config_id,
+                        ComputeUnit.proxmox_vmid.isnot(None),
+                    )
                 )
-                .all()
-            )
+            ).scalars().all()
 
             # Batch-load hardware for this integration to avoid N+1 per VM.
             hw_map = {
                 hw.id: hw
-                for hw in db.query(Hardware)
-                .filter(
-                    Hardware.integration_config_id == config_id,
-                )
-                .all()
+                for hw in (
+                    await db.execute(
+                        select(Hardware).where(
+                            Hardware.integration_config_id == config_id,
+                        )
+                    )
+                ).scalars().all()
             }
 
             async def _fetch_vm(cu: ComputeUnit, _hw_map=hw_map, _client=client):
@@ -1617,7 +1693,7 @@ async def poll_vm_telemetry(db: Session) -> None:
                 except Exception as e:
                     _logger.debug("Telemetry apply failed for VM %s: %s", cu.proxmox_vmid, e)
 
-            db.commit()
+            await db.commit()
         except Exception as e:
             _logger.warning("VM telemetry poll failed for integration %d: %s", config_id, e)
 
@@ -1628,8 +1704,6 @@ async def poll_vm_telemetry(db: Session) -> None:
 async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, Any]:
     """Build cluster overview payload for Proxmox dashboard: cluster info, problems, time-series, storage.
     Uses live PVE API for cluster status and DB for telemetry/storage/events."""
-    from sqlalchemy import select
-
     from app.services import status_page_service as svc_status
 
     config = db.get(IntegrationConfig, integration_id)

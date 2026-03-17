@@ -41,7 +41,7 @@ def reload_discovery_jobs(db):
     Job IDs follow the pattern: "discovery_profile_{profile_id}"
     """
     from app.db.models import DiscoveryProfile
-    from app.services.discovery_service import purge_old_scan_results, run_scan_job_by_profile
+    from app.services.discovery_scheduler import purge_old_scan_results, run_scan_job_by_profile
 
     # Remove all existing discovery jobs
     scheduler = get_scheduler()
