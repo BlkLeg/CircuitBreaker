@@ -1,6 +1,6 @@
 """Safe Markdown → HTML rendering pipeline."""
 
-import bleach  # type: ignore[import-untyped]
+import bleach
 from markdown_it import MarkdownIt
 
 _md = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])

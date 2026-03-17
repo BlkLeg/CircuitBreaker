@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.auth_cookie import auth_response_with_cookie
@@ -21,12 +22,12 @@ router = APIRouter(tags=["bootstrap"])
 
 
 @router.get("/status", response_model=BootstrapStatusResponse)
-def get_bootstrap_status(db: Annotated[Session, Depends(get_db)]):
+def get_bootstrap_status(db: Annotated[Session, Depends(get_db)]) -> BootstrapStatusResponse:
     return auth_service.bootstrap_status(db)
 
 
 @router.get("/onboarding", response_model=OnboardingStepResponse)
-def get_onboarding_step(db: Annotated[Session, Depends(get_db)]):
+def get_onboarding_step(db: Annotated[Session, Depends(get_db)]) -> OnboardingStepResponse:
     """Return current OOBE step (public, no auth). Used for resume and Back to start."""
     return auth_service.get_onboarding_or_fallback(db)
 
@@ -35,7 +36,7 @@ def get_onboarding_step(db: Annotated[Session, Depends(get_db)]):
 def set_onboarding_step(
     payload: OnboardingStepUpdateRequest,
     db: Annotated[Session, Depends(get_db)],
-):
+) -> OnboardingStepResponse:
     """Set OOBE step (public, no auth). Used when advancing or going Back to start."""
     return auth_service.set_onboarding_step(db, payload.step)
 
@@ -46,11 +47,11 @@ def initialize_bootstrap(
     request: Request,
     payload: BootstrapInitializeRequest,
     db: Annotated[Session, Depends(get_db)],
-):
+) -> Response:
     cfg = get_or_create_settings(db)
-    password_or_hash = (
+    password_or_hash: str = (
         payload.password_hash if payload.password_hash is not None else payload.password
-    )
+    ) or ""
     result = auth_service.bootstrap_initialize(
         db=db,
         cfg=cfg,
@@ -84,6 +85,6 @@ def initialize_bootstrap_oauth(
     request: Request,
     payload: BootstrapInitializeOAuthRequest,
     db: Annotated[Session, Depends(get_db)],
-):
+) -> BootstrapInitializeResponse:
     cfg = get_or_create_settings(db)
     return auth_service.bootstrap_initialize_oauth(db=db, cfg=cfg, payload=payload)

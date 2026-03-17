@@ -47,8 +47,16 @@ def is_cidr_allowed(cidr: str, allowed_networks: list[str]) -> bool:
     for allowed in allowed_networks:
         try:
             parent = ipaddress.ip_network(allowed, strict=False)
-            if target.subnet_of(parent):
-                return True
+            if isinstance(target, ipaddress.IPv4Network) and isinstance(
+                parent, ipaddress.IPv4Network
+            ):
+                if target.subnet_of(parent):
+                    return True
+            elif isinstance(target, ipaddress.IPv6Network) and isinstance(
+                parent, ipaddress.IPv6Network
+            ):
+                if target.subnet_of(parent):
+                    return True
         except (ValueError, TypeError):
             continue
     return False

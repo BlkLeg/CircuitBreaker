@@ -11,14 +11,14 @@ LAYOUTS: list[dict] = [
     {
         "id": "dagre",
         "label": "Dagre (Hierarchical)",
-        "description": "Top-down hierarchy using the Dagre algorithm. Best for parent-child relationships.",
+        "description": "Top-down hierarchy using the Dagre algorithm. Best for parent-child trees.",
         "category": "standard",
         "icon": "layout-dashboard",
     },
     {
         "id": "force",
         "label": "Force Directed",
-        "description": "Physics-based layout that clusters connected nodes. Good for organic topology views.",
+        "description": "Physics-based layout that clusters connected nodes. Good for organic topologies.",  # noqa: E501
         "category": "standard",
         "icon": "atom",
     },
@@ -47,7 +47,7 @@ LAYOUTS: list[dict] = [
     {
         "id": "radial",
         "label": "Radial Services",
-        "description": "Service-centric radial layout. Core services in the centre, dependencies as spokes.",
+        "description": "Service-centric radial layout. Core services in centre, deps as spokes.",
         "category": "advanced",
         "icon": "radar",
         "docker_optimised": True,
@@ -55,7 +55,7 @@ LAYOUTS: list[dict] = [
     {
         "id": "elk_layered",
         "label": "VLAN Flow",
-        "description": "Left-to-right layered layout (ELK). Ideal for visualising VLAN / network segmentation.",
+        "description": "Left-to-right layered layout (ELK). Ideal for VLAN segmentation views.",
         "category": "advanced",
         "icon": "arrow-right-circle",
         "docker_optimised": False,
@@ -71,7 +71,7 @@ LAYOUTS: list[dict] = [
     {
         "id": "grid_rack",
         "label": "Rack Grid",
-        "description": "Grid layout respecting rack unit (U) positions. Best when all nodes are rack-mounted.",
+        "description": "Grid layout respecting rack unit (U) positions. Best when all nodes are racked.",  # noqa: E501
         "category": "advanced",
         "icon": "server",
         "docker_optimised": False,
@@ -79,7 +79,7 @@ LAYOUTS: list[dict] = [
     {
         "id": "concentric",
         "label": "Concentric Rings",
-        "description": "Onion-ring layout: external nodes → hardware → services → storage, from outside in.",
+        "description": "Onion-ring layout: external -> hardware -> services -> storage.",
         "category": "advanced",
         "icon": "circle",
         "docker_optimised": False,

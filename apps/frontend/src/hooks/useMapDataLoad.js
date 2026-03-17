@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-object-injection -- internal node/type keys */
 import { useCallback } from 'react';
 import { graphApi } from '../api/client';
 import {
@@ -78,19 +77,19 @@ export function useMapDataLoad({
   toast,
 }) {
   const getIncludeCSV = useCallback((types) => {
-    const MAP = {
-      hardware: 'hardware',
-      compute: 'compute',
-      service: 'services',
-      storage: 'storage',
-      network: 'networks',
-      misc: 'misc',
-      external: 'external',
-    };
+    const MAP = new Map([
+      ['hardware', 'hardware'],
+      ['compute', 'compute'],
+      ['service', 'services'],
+      ['storage', 'storage'],
+      ['network', 'networks'],
+      ['misc', 'misc'],
+      ['external', 'external'],
+    ]);
     return (
-      Object.entries(types)
+      Array.from(types.entries())
         .filter(([, v]) => v)
-        .map(([k]) => MAP[k])
+        .map(([k]) => MAP.get(k))
         .filter(Boolean)
         .join(',') || 'hardware'
     );
@@ -173,7 +172,7 @@ export function useMapDataLoad({
           data: {},
           position: { x: 0, y: 0 },
           style: { ...BASE_NODE_STYLE },
-          hidden: n.type === 'cluster' && !includeTypes.cluster,
+          hidden: n.type === 'cluster' && !includeTypes.get('cluster'),
           originalType: n.type,
           _tags: n.tags || [],
           _refId: n.ref_id,
@@ -187,7 +186,7 @@ export function useMapDataLoad({
           role: n.role || null,
           iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role, n.cluster_type),
           icon_slug: n.icon_slug ?? null,
-          glowColor: NODE_STYLES[n.type]?.glowColor,
+          glowColor: NODE_STYLES.get(n.type)?.glowColor,
           rank,
           ip_address: n.ip_address || null,
           ports: Array.isArray(n.ports) ? n.ports : [],

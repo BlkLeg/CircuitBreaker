@@ -29,6 +29,7 @@ import hmac
 import json
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -61,8 +62,6 @@ class TopologyConnectionManager:
         self._buffer: list[dict] = []
         self._batch_lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
-        self._buffer: list[dict] = []  # type: ignore[no-redef]
-        self._batch_lock = asyncio.Lock()  # type: ignore[no-redef]
 
     async def connect(
         self,
@@ -120,7 +119,7 @@ class TopologyConnectionManager:
                     len(self._connections),
                 )
 
-    async def _flush_buffer(self):
+    async def _flush_buffer(self) -> None:
         async with self._batch_lock:
             if not self._buffer:
                 self._flush_task = None
@@ -163,7 +162,7 @@ class TopologyConnectionManager:
                 self._flush_task = asyncio.create_task(self._flush_buffer())
                 return
 
-        async def _delayed_flush():
+        async def _delayed_flush() -> None:
             await asyncio.sleep(0.250)
             await self._flush_buffer()
 
@@ -196,24 +195,26 @@ def _extract_client_ip(websocket: WebSocket) -> str:
     return "unknown"
 
 
-async def _ping_loop(ws: WebSocket) -> None:
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     try:
         while True:
             await asyncio.sleep(30)
             if ws.application_state == WebSocketState.DISCONNECTED:
+                main_task.cancel()
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
         pass
     except Exception as exc:
         logger.debug("Topology WS ping loop error: %s", exc)
+        main_task.cancel()
 
 
 @router.websocket("/stream")
 async def topology_stream(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -225,7 +226,7 @@ async def topology_stream(websocket: WebSocket) -> None:
 
     try:
         # ── Auth phase: cookie (httpOnly) only ──────────────────────────────
-        raw_token = token_from_websocket_scope(websocket.scope)
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
         if not raw_token:
             logger.warning("Topology WS auth rejected: no session cookie (ip=%s)", client_ip)
             try:
@@ -286,7 +287,9 @@ async def topology_stream(websocket: WebSocket) -> None:
         await websocket.send_text(json.dumps({"status": "connected"}))
 
         # ── Keep-alive + receive loop ───────────────────────────────────────
-        ping_task = asyncio.create_task(_ping_loop(websocket))
+        _current_task = asyncio.current_task()
+        assert _current_task is not None
+        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
 
         try:
             while True:
@@ -313,6 +316,6 @@ async def topology_stream(websocket: WebSocket) -> None:
 
 
 @router.get("/ws/status")
-async def topology_ws_status(user=require_role("admin")) -> dict:
+async def topology_ws_status(user: Any = require_role("admin")) -> dict[str, Any]:
     """Admin-facing endpoint: live topology WebSocket connection metrics."""
     return topology_ws_manager.status_snapshot()

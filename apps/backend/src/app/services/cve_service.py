@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Any
 
 import httpx
 from sqlalchemy import func
@@ -282,7 +283,7 @@ def _record_sync_timestamp() -> None:
 
 
 def _resolve_entity(
-    db, entity_type: str, entity_id: int
+    db: Any, entity_type: str, entity_id: int
 ) -> tuple[str | None, str | None, str | None]:
     """Extract vendor/product/version from an entity for CVE lookup."""
     if entity_type == "hardware":

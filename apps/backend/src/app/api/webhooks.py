@@ -133,7 +133,11 @@ class WebhookDeliveryOut(BaseModel):
     ok: bool
 
 
-def _json_loads(text: str | None, fallback: Any) -> Any:
+def _json_loads(text: str | list | dict | None, fallback: Any) -> Any:
+    if text is None:
+        return fallback
+    if isinstance(text, (list, dict)):
+        return text
     if not text:
         return fallback
     try:
@@ -180,7 +184,7 @@ def _delivery_to_out(row: WebhookDelivery) -> WebhookDeliveryOut:
 
 
 @router.get("/event-groups")
-def list_event_groups(current_user=require_role("viewer")):
+def list_event_groups(current_user: Any = require_role("viewer")) -> dict[str, Any]:
     return {"groups": WEBHOOK_EVENT_GROUPS}
 
 
@@ -189,8 +193,8 @@ def list_webhooks(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=200),
     db: Session = Depends(get_db),
-    current_user=require_role("viewer"),
-):
+    current_user: Any = require_role("viewer"),
+) -> WebhookListResponse:
     base_q = db.query(WebhookRule).order_by(WebhookRule.id.desc())
     total = base_q.count()
     items = base_q.offset((page - 1) * per_page).limit(per_page).all()
@@ -221,8 +225,8 @@ def list_webhooks(
 def create_webhook(
     rule_in: WebhookRuleCreate,
     db: Session = Depends(get_db),
-    current_user=require_role("editor"),
-):
+    current_user: Any = require_role("editor"),
+) -> WebhookRuleOut:
     try:
         reject_ssrf_url(str(rule_in.url))
     except ValueError as e:
@@ -231,8 +235,8 @@ def create_webhook(
         name=rule_in.label.strip(),
         target_url=str(rule_in.url),
         topics=",".join(rule_in.events_enabled),
-        events_enabled=json.dumps(rule_in.events_enabled),
-        headers_json=json.dumps(rule_in.headers or {}),
+        events_enabled=rule_in.events_enabled,
+        headers_json=rule_in.headers or {},
         retries=max(0, min(rule_in.retries, 5)),
         enabled=rule_in.enabled,
         secret=rule_in.secret,
@@ -248,8 +252,8 @@ def update_webhook(
     rule_id: int,
     rule_in: WebhookRuleUpdate,
     db: Session = Depends(get_db),
-    current_user=require_role("editor"),
-):
+    current_user: Any = require_role("editor"),
+) -> WebhookRuleOut:
     rule = db.query(WebhookRule).filter(WebhookRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -265,10 +269,10 @@ def update_webhook(
         rule.target_url = str(updates["url"])
     if "events_enabled" in updates:
         events = updates["events_enabled"] or []
-        rule.events_enabled = json.dumps(events)
+        rule.events_enabled = events
         rule.topics = ",".join(events)
     if "headers" in updates:
-        rule.headers_json = json.dumps(updates["headers"] or {})
+        rule.headers_json = updates["headers"] or {}
     if "retries" in updates and updates["retries"] is not None:
         rule.retries = max(0, min(int(updates["retries"]), 5))
     if "enabled" in updates:
@@ -283,8 +287,8 @@ def update_webhook(
 
 @router.post("/{rule_id}/test")
 async def test_webhook(
-    rule_id: int, db: Session = Depends(get_db), current_user=require_role("editor")
-):
+    rule_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> dict[str, Any]:
     rule = db.query(WebhookRule).filter(WebhookRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -343,8 +347,8 @@ async def test_webhook(
 def list_webhook_deliveries(
     rule_id: int,
     db: Session = Depends(get_db),
-    current_user=require_role("viewer"),
-):
+    current_user: Any = require_role("viewer"),
+) -> list[WebhookDeliveryOut]:
     rule = db.query(WebhookRule).filter(WebhookRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -362,8 +366,8 @@ def list_webhook_deliveries(
 def list_deliveries(
     rule_id: int | None = None,
     db: Session = Depends(get_db),
-    current_user=require_role("viewer"),
-):
+    current_user: Any = require_role("viewer"),
+) -> list[WebhookDeliveryOut]:
     q = db.query(WebhookDelivery)
     if rule_id is not None:
         q = q.filter(WebhookDelivery.rule_id == rule_id)
@@ -373,8 +377,8 @@ def list_deliveries(
 
 @router.delete("/{rule_id}")
 def delete_webhook(
-    rule_id: int, db: Session = Depends(get_db), current_user=require_role("editor")
-):
+    rule_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> dict[str, str]:
     rule = db.query(WebhookRule).filter(WebhookRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)

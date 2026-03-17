@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-object-injection -- internal node/type keys */
 /**
  * Pure data transformation helpers for the topology map.
  * No React dependencies — safe to import from any module.
@@ -69,7 +68,7 @@ export function buildNodeSysinfoRows(node) {
   const type = node?.originalType;
   if (!type) return [];
 
-  const fields = ENTITY_FIELDS[type] || [];
+  const fields = ENTITY_FIELDS.get(type) || [];
   return fields
     .map((field) => {
       const rawValue = node?.data?.[field.key];

@@ -70,7 +70,7 @@ export default function SigmaMap({ envFilter, includeTypes }) {
     const loadGraph = async () => {
       try {
         setLoading(true);
-        const includeCSV = Object.entries(includeTypes)
+        const includeCSV = Array.from(includeTypes.entries())
           .filter(([, v]) => v)
           .map(([k]) => k)
           .join(',');

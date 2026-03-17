@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import UTC
+from typing import cast
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, params
 from sqlalchemy.orm import Session
 
 from app.core.security import get_optional_user
@@ -110,10 +111,10 @@ def _is_demo_expired(user: User) -> bool:
     expiry = demo_expires
     if getattr(expiry, "tzinfo", None) is None:
         expiry = expiry.replace(tzinfo=UTC)
-    return expiry <= utcnow()
+    return bool(expiry <= utcnow())
 
 
-def require_role(*roles: str):
+def require_role(*roles: str) -> params.Depends:
     """FastAPI dependency that checks user role against allowed roles.
 
     - Service account (user_id=0) and is_superuser bypass all checks.
@@ -146,10 +147,10 @@ def require_role(*roles: str):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
 
-    return Depends(_dep)
+    return cast(params.Depends, Depends(_dep))
 
 
-def require_scope(action: str, resource: str):
+def require_scope(action: str, resource: str) -> params.Depends:
     """FastAPI dependency for scope-based authorization."""
 
     async def _dep(
@@ -181,4 +182,4 @@ def require_scope(action: str, resource: str):
 
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
-    return Depends(_dep)
+    return cast(params.Depends, Depends(_dep))

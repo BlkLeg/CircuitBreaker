@@ -1,5 +1,6 @@
 import ipaddress
 import json
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -81,7 +82,7 @@ class DiscoveryProfileOut(BaseModel):
 
     @field_validator("scan_types", mode="before")
     @classmethod
-    def parse_scan_types(cls, v):
+    def parse_scan_types(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -91,7 +92,7 @@ class DiscoveryProfileOut(BaseModel):
 
     @field_validator("docker_network_types", mode="before")
     @classmethod
-    def parse_docker_network_types(cls, v):
+    def parse_docker_network_types(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -101,7 +102,7 @@ class DiscoveryProfileOut(BaseModel):
 
     @field_validator("vlan_ids", mode="before")
     @classmethod
-    def parse_vlan_ids(cls, v):
+    def parse_vlan_ids(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -135,7 +136,7 @@ class ScanJobOut(BaseModel):
 
     @field_validator("vlan_ids", "network_ids", mode="before")
     @classmethod
-    def parse_json_ids(cls, v):
+    def parse_json_ids(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -169,10 +170,10 @@ class ScanResultOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-def _datetime_to_str(v):
+def _datetime_to_str(v: Any) -> str:
     """Coerce datetime to ISO string for API output."""
     if hasattr(v, "isoformat"):
-        return v.isoformat()
+        return str(v.isoformat())
     return str(v) if v is not None else ""
 
 
@@ -189,7 +190,7 @@ class ScanLogOut(BaseModel):
 
     @field_validator("timestamp", "created_at", mode="before")
     @classmethod
-    def coerce_datetime_to_str(cls, v):
+    def coerce_datetime_to_str(cls, v: Any) -> str:
         if isinstance(v, str):
             return v
         return _datetime_to_str(v)

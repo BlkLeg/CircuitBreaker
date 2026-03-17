@@ -1,5 +1,7 @@
 """Admin endpoints for database health and backup management."""
 
+from typing import Any
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -25,7 +27,7 @@ class DbHealthResponse(BaseModel):
 
 
 @router.get("/db/health", response_model=DbHealthResponse)
-def db_health(_=require_role("admin")):
+def db_health(_: Any = require_role("admin")) -> DbHealthResponse:
     """Return database health metrics. Admin-only."""
     dialect = "postgresql"
 
@@ -85,7 +87,7 @@ def db_health(_=require_role("admin")):
 
 
 @router.post("/db/backup")
-def trigger_backup(_=require_role("admin")):
+def trigger_backup(_: Any = require_role("admin")) -> dict[str, Any]:
     """Trigger an immediate pg_dump backup."""
     backup_postgres()
     info = latest_backup_info()

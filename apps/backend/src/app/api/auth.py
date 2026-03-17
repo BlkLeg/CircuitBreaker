@@ -18,6 +18,7 @@ import json
 import logging
 import secrets
 from datetime import timedelta
+from typing import Annotated, Any
 
 import jwt as _jwt
 import pyotp
@@ -76,7 +77,7 @@ class AcceptInviteRequest(BaseModel):
     display_name: str | None = None
 
     @model_validator(mode="after")
-    def require_password_or_hash(self):
+    def require_password_or_hash(self) -> "AcceptInviteRequest":
         if not self.password and not self.password_hash:
             raise ValueError("Either password or password_hash is required")
         if self.password and self.password_hash:
@@ -96,7 +97,7 @@ def accept_invite_endpoint(
     request: Request,
     payload: AcceptInviteRequest,
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Claim an invite and create a user account. Public endpoint."""
     from app.schemas.auth import AuthResponse
     from app.services.auth_service import _make_token, _to_profile
@@ -106,6 +107,8 @@ def accept_invite_endpoint(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
+    if password_or_hash is None:
+        raise HTTPException(status_code=422, detail="password or password_hash is required")
     user = svc_accept_invite(db, payload.token, password_or_hash, payload.display_name)
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
@@ -119,7 +122,7 @@ def register_user(
     request: Request,
     payload: RegisterRequest,
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Register a new user. Gated by AppSettings.registration_open."""
     from app.services.auth_service import register as svc_register
 
@@ -129,6 +132,8 @@ def register_user(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
+    if password_or_hash is None:
+        raise HTTPException(status_code=422, detail="password or password_hash is required")
     result = svc_register(db, payload.email, password_or_hash, cfg, payload.display_name)
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
@@ -149,7 +154,7 @@ class ResetPasswordRequest(BaseModel):
     password_hash: str | None = None
 
     @model_validator(mode="after")
-    def require_password_or_hash(self):
+    def require_password_or_hash(self) -> "ResetPasswordRequest":
         if not self.password and not self.password_hash:
             raise ValueError("Either password or password_hash is required")
         if self.password and self.password_hash:
@@ -169,7 +174,7 @@ async def forgot_password(
     response: Response,
     payload: ForgotPasswordRequest,
     db: Session = Depends(get_db),
-):
+) -> None:
     """Email-based reset is disabled; users must use vault-key recovery."""
     _logger.info("[auth] forgot-password requested while email reset is disabled")
     raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
@@ -182,7 +187,7 @@ async def reset_password(
     response: Response,
     payload: ResetPasswordRequest,
     db: Session = Depends(get_db),
-):
+) -> None:
     """Email-based reset is disabled; users must use vault-key recovery."""
     _logger.info("[auth] reset-password requested while email reset is disabled")
     raise HTTPException(status_code=410, detail=_EMAIL_RESET_DISABLED_DETAIL)
@@ -198,7 +203,7 @@ async def reset_password(
 def create_demo_session(
     request: Request,
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Create a one-hour demo read-only session."""
     cfg = get_or_create_settings(db)
     if not cfg.jwt_secret:
@@ -248,7 +253,7 @@ def login_compat(
     request: Request,
     payload: LoginRequest,
     db: Session = Depends(get_db),
-):
+) -> dict[str, Any] | Response:
     """JSON login returning {token, user} for legacy clients.
 
     When the user has force_password_change=True, returns
@@ -266,6 +271,8 @@ def login_compat(
     password_or_hash = (
         payload.password_hash if payload.password_hash is not None else payload.password
     )
+    if password_or_hash is None:
+        raise HTTPException(status_code=422, detail="password or password_hash is required")
 
     # Early check for force_password_change before creating a full session.
     email_norm = payload.email.strip().lower()
@@ -318,7 +325,7 @@ class ForceChangePasswordRequest(BaseModel):
     new_password_hash: str | None = None
 
     @model_validator(mode="after")
-    def require_new_password_or_hash(self):
+    def require_new_password_or_hash(self) -> "ForceChangePasswordRequest":
         if not self.new_password and not self.new_password_hash:
             raise ValueError("Either new_password or new_password_hash is required")
         if self.new_password and self.new_password_hash:
@@ -332,7 +339,7 @@ def force_change_password(
     request: Request,
     payload: ForceChangePasswordRequest,
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Redeem a change_token (from force_password_change login) and set a new password.
 
     Returns a normal {token, user} auth response so the user is logged in immediately
@@ -369,6 +376,8 @@ def force_change_password(
     new_password_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
+    if new_password_or_hash is None:
+        raise HTTPException(status_code=422, detail="new_password or new_password_hash is required")
     reset_local_user_password(
         db, user, new_password_or_hash, source="force_change", update_last_login=True
     )
@@ -410,9 +419,9 @@ class CreateAPITokenResponse(BaseModel):
 def create_api_token(
     request: Request,
     payload: CreateAPITokenRequest,
+    current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+) -> CreateAPITokenResponse:
     """Create a long-lived API token. The raw token is returned once; store it securely."""
 
     cfg = get_or_create_settings(db)
@@ -451,9 +460,9 @@ def create_api_token(
 @limiter.limit(lambda: get_limit("auth"))
 def list_api_tokens(
     request: Request,
+    current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+) -> list[APITokenItem]:
     """List API tokens created by the current user (admin)."""
     tokens = (
         db.query(APIToken)
@@ -478,9 +487,9 @@ def list_api_tokens(
 def revoke_api_token(
     request: Request,
     token_id: int,
+    current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+) -> None:
     """Revoke an API token. Only the creating admin can revoke their tokens."""
     api_token = (
         db.query(APIToken)
@@ -502,7 +511,7 @@ def vault_reset_password(
     request: Request,
     payload: VaultResetRequest,
     db: Session = Depends(get_db),
-):
+) -> Response:
     from app.services.auth_service import vault_reset_password as svc_vault_reset_password
 
     cfg = get_or_create_settings(db)
@@ -511,6 +520,8 @@ def vault_reset_password(
     new_password_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
+    if new_password_or_hash is None:
+        raise HTTPException(status_code=422, detail="new_password or new_password_hash is required")
     result = svc_vault_reset_password(
         db,
         payload.email,
@@ -519,6 +530,10 @@ def vault_reset_password(
         cfg,
         request=request,
     )
+    from app.schemas.auth import AuthResponse as _AuthResponse
+
+    if not isinstance(result, _AuthResponse):
+        raise HTTPException(status_code=500, detail="Unexpected response from vault reset")
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 
@@ -569,7 +584,7 @@ def get_me_compat(
     request: Request,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> UserProfile:
     """Backward-compat endpoint returning the current user's profile."""
     if user_id is None:
         detail = "Token invalid or expired" if _extract_token(request) else "Not authenticated"
@@ -600,7 +615,7 @@ def get_me_compat(
 
 @router.post("/logout", status_code=204, tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
-def logout(request: Request, db: Session = Depends(get_db)):
+def logout(request: Request, db: Session = Depends(get_db)) -> Response:
     """Revoke the caller's session (Bearer or cookie) and clear the session cookie."""
     from app.db.models import UserSession
 
@@ -633,7 +648,7 @@ def delete_me(
     request: Request,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Delete the authenticated user's own account."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -669,7 +684,7 @@ class ChangePasswordRequest(BaseModel):
     new_password_hash: str | None = None
 
     @model_validator(mode="after")
-    def require_passwords_or_hashes(self):
+    def require_passwords_or_hashes(self) -> "ChangePasswordRequest":
         if not self.current_password and not self.current_password_hash:
             raise ValueError("Either current_password or current_password_hash is required")
         if self.current_password and self.current_password_hash:
@@ -685,7 +700,7 @@ class ChangePasswordRequest(BaseModel):
 def list_my_sessions(
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> list[SessionItem]:
     """List the current user's active sessions."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -722,7 +737,7 @@ def revoke_session(
     session_id: int,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> None:
     """Revoke a specific session."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -738,7 +753,7 @@ def revoke_all_other_sessions(
     request: Request,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> None:
     """Revoke all sessions except the current one."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -758,7 +773,7 @@ def change_password(
     payload: ChangePasswordRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> None:
     """Change the current user's password."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -775,11 +790,17 @@ def change_password(
         if payload.current_password_hash is not None
         else payload.current_password
     )
+    if current_or_hash is None:
+        raise HTTPException(
+            status_code=422, detail="current_password or current_password_hash is required"
+        )
     if not verify_password(current_or_hash, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     new_or_hash = (
         payload.new_password_hash if payload.new_password_hash is not None else payload.new_password
     )
+    if new_or_hash is None:
+        raise HTTPException(status_code=422, detail="new_password or new_password_hash is required")
     if not _is_client_hash(new_or_hash):
         _validate_password(new_or_hash)
     from app.core.security import hash_password
@@ -822,7 +843,7 @@ async def upload_avatar(
     profile_photo: UploadFile | None = File(None),
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> UserProfile:
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
     from app.services.auth_service import update_profile
@@ -888,7 +909,7 @@ def mfa_setup(
     request: Request,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> dict[str, str]:
     """Generate a new TOTP secret and return the provisioning URI.
 
     The caller must confirm the secret by calling /mfa/verify before it is
@@ -921,7 +942,7 @@ def mfa_activate(
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Confirm a newly generated TOTP secret and enable MFA."""
     from app.services.auth_service import _make_token, _to_profile
     from app.services.user_service import record_session, revoke_token_session
@@ -969,7 +990,7 @@ def mfa_verify(
     request: Request,
     payload: MfaVerifyRequest,
     db: Session = Depends(get_db),
-):
+) -> Response:
     """Exchange a valid TOTP code + mfa_token for a full session JWT.
 
     Also used to *activate* MFA after a fresh /mfa/setup call: if the user is
@@ -1052,7 +1073,7 @@ def mfa_disable(
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> dict[str, str]:
     """Disable MFA for the authenticated user.
 
     Requires either a valid TOTP code or one of the user's backup codes
@@ -1086,7 +1107,7 @@ def mfa_regenerate_backup_codes(
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
-):
+) -> MfaBackupCodesResponse:
     """Replace existing MFA backup codes after re-verifying user possession."""
     if user_id is None:
         raise HTTPException(status_code=401, detail="Not authenticated")

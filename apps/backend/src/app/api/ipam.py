@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -38,7 +39,7 @@ def list_ip_addresses(
     network_id: int | None = Query(None),
     status: str | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> Any:
     q = select(IPAddress)
     if network_id is not None:
         q = q.where(IPAddress.network_id == network_id)
@@ -52,8 +53,8 @@ def list_ip_addresses(
 def create_ip_address(
     payload: IPAddressCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     existing = db.execute(
         select(IPAddress).where(IPAddress.address == payload.address)
     ).scalar_one_or_none()
@@ -76,7 +77,7 @@ def create_ip_address(
 
 
 @ipam_router.get("/{ip_id}", response_model=IPAddressRead)
-def get_ip_address(ip_id: int, db: Session = Depends(get_db)):
+def get_ip_address(ip_id: int, db: Session = Depends(get_db)) -> Any:
     row = db.get(IPAddress, ip_id)
     if not row:
         raise HTTPException(status_code=404, detail="IP address not found")
@@ -88,8 +89,8 @@ def update_ip_address(
     ip_id: int,
     payload: IPAddressUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = db.get(IPAddress, ip_id)
     if not row:
         raise HTTPException(status_code=404, detail="IP address not found")
@@ -107,8 +108,8 @@ def update_ip_address(
 def delete_ip_address(
     ip_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     row = db.get(IPAddress, ip_id)
     if not row:
         raise HTTPException(status_code=404, detail="IP address not found")
@@ -120,8 +121,8 @@ def delete_ip_address(
 def scan_network_addresses(
     network_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     """Auto-populate IPAM entries from a network's CIDR range."""
     import ipaddress as _ip
 
@@ -167,7 +168,7 @@ vlan_router = APIRouter(tags=["vlans"])
 
 
 @vlan_router.get("", response_model=list[VLANRead])
-def list_vlans(db: Session = Depends(get_db)):
+def list_vlans(db: Session = Depends(get_db)) -> Any:
     return db.execute(select(VLAN).order_by(VLAN.vlan_id)).scalars().all()
 
 
@@ -175,8 +176,8 @@ def list_vlans(db: Session = Depends(get_db)):
 def create_vlan(
     payload: VLANCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = VLAN(**payload.model_dump())
     db.add(row)
     db.commit()
@@ -185,7 +186,7 @@ def create_vlan(
 
 
 @vlan_router.get("/{vlan_pk}", response_model=VLANRead)
-def get_vlan(vlan_pk: int, db: Session = Depends(get_db)):
+def get_vlan(vlan_pk: int, db: Session = Depends(get_db)) -> Any:
     row = db.get(VLAN, vlan_pk)
     if not row:
         raise HTTPException(status_code=404, detail="VLAN not found")
@@ -197,8 +198,8 @@ def update_vlan(
     vlan_pk: int,
     payload: VLANUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = db.get(VLAN, vlan_pk)
     if not row:
         raise HTTPException(status_code=404, detail="VLAN not found")
@@ -213,8 +214,8 @@ def update_vlan(
 def delete_vlan(
     vlan_pk: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     row = db.get(VLAN, vlan_pk)
     if not row:
         raise HTTPException(status_code=404, detail="VLAN not found")
@@ -228,7 +229,7 @@ site_router = APIRouter(tags=["sites"])
 
 
 @site_router.get("", response_model=list[SiteRead])
-def list_sites(db: Session = Depends(get_db)):
+def list_sites(db: Session = Depends(get_db)) -> Any:
     return db.execute(select(Site).order_by(Site.name)).scalars().all()
 
 
@@ -236,8 +237,8 @@ def list_sites(db: Session = Depends(get_db)):
 def create_site(
     payload: SiteCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = Site(**payload.model_dump())
     db.add(row)
     db.commit()
@@ -246,7 +247,7 @@ def create_site(
 
 
 @site_router.get("/{site_id}", response_model=SiteRead)
-def get_site(site_id: int, db: Session = Depends(get_db)):
+def get_site(site_id: int, db: Session = Depends(get_db)) -> Any:
     row = db.get(Site, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -258,8 +259,8 @@ def update_site(
     site_id: int,
     payload: SiteUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = db.get(Site, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -274,8 +275,8 @@ def update_site(
 def delete_site(
     site_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     row = db.get(Site, site_id)
     if not row:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -298,7 +299,7 @@ def list_node_relations(
     target_id: int | None = Query(None),
     relation_type: str | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> Any:
     q = select(NodeRelation)
     if source_type:
         q = q.where(NodeRelation.source_type == source_type)
@@ -317,8 +318,8 @@ def list_node_relations(
 def create_node_relation(
     payload: NodeRelationCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     row = NodeRelation(**payload.model_dump())
     db.add(row)
     db.commit()
@@ -330,8 +331,8 @@ def create_node_relation(
 def delete_node_relation(
     rel_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     row = db.get(NodeRelation, rel_id)
     if not row:
         raise HTTPException(status_code=404, detail="Relation not found")

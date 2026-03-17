@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -62,7 +63,7 @@ def _write_delivery(
     rule_id: int,
     subject: str,
     payload: str,
-    resp,
+    resp: Any,
     error: Exception | None,
     response_time_ms: int | None,
 ) -> None:
@@ -83,7 +84,10 @@ def _write_delivery(
 
 def _effective_events(rule: WebhookRule) -> list[str]:
     try:
-        return json.loads(rule.events_enabled or "[]")
+        events = rule.events_enabled or "[]"
+        if isinstance(events, list):
+            return list(events)
+        return list(json.loads(events))
     except Exception:
         return [t.strip() for t in (rule.topics or "").split(",") if t.strip()]
 
@@ -91,7 +95,10 @@ def _effective_events(rule: WebhookRule) -> list[str]:
 def _build_headers(rule: WebhookRule, payload_bytes: bytes) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     try:
-        custom_headers = json.loads(rule.headers_json or "{}")
+        headers_json = rule.headers_json or "{}"
+        custom_headers = (
+            headers_json if isinstance(headers_json, dict) else json.loads(headers_json)
+        )
     except Exception:
         custom_headers = {}
     for key, value in custom_headers.items():
@@ -176,7 +183,7 @@ def _normalize_webhook_body(subject: str, payload_obj: dict) -> tuple[bytes, str
     return text.encode("utf-8"), text
 
 
-async def process_event(msg):
+async def process_event(msg: Any) -> None:
     subject = msg.subject
     # Skip JetStream internal subjects (e.g. $JS.API.STREAM.INFO.KV_dashboard_cache)
     if subject.startswith("$JS."):
@@ -205,15 +212,14 @@ async def process_event(msg):
             await _dispatch_with_retries(client, rule, subject, body_bytes, body_text)
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()
-        if nats_client.is_connected:
-            break
-        logger.warning("Waiting for NATS... retrying in %ds", backoff)
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        if not nats_client.is_connected:
+            logger.warning("Waiting for NATS... retrying in %ds", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     await nats_client.subscribe(">", handler=process_event)
     logger.info("Webhook worker started and listening on all events")
@@ -229,7 +235,8 @@ async def run_worker(shutdown_event: asyncio.Event = None):
             pass
 
         _touch_healthy()
-        if not nats_client.is_connected:
+        still_connected: bool = nats_client.is_connected
+        if not still_connected:
             logger.warning("Webhook worker: NATS not connected — waiting for auto-reconnect")
 
 

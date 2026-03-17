@@ -1,6 +1,6 @@
 import hashlib
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import text
@@ -48,7 +48,7 @@ async def upload_user_icon(
     file: Annotated[UploadFile, File()],
     user_id: Annotated[int | None, Depends(require_write_auth)],
     db: Annotated[Session, Depends(get_db)],
-):
+) -> dict[str, Any]:
     if file.content_type not in _ALLOWED_TYPES - {_ICON_TYPE}:
         raise HTTPException(status_code=400, detail="Invalid image format")
 
@@ -79,8 +79,13 @@ async def upload_user_icon(
     db.execute(
         text(
             """
-            INSERT INTO user_icons (slug, name, category, user_id, filename, original_name, mime_type, size_bytes, hash, uploaded_at)
-            VALUES (:slug, :name, :category, :user_id, :filename, :original_name, :mime_type, :size_bytes, :hash, CURRENT_TIMESTAMP)
+            INSERT INTO user_icons (
+                slug, name, category, user_id, filename,
+                original_name, mime_type, size_bytes, hash, uploaded_at
+            ) VALUES (
+                :slug, :name, :category, :user_id, :filename,
+                :original_name, :mime_type, :size_bytes, :hash, CURRENT_TIMESTAMP
+            )
             """
         ),
         {
@@ -110,7 +115,7 @@ async def upload_favicon(
     file: Annotated[UploadFile, File()],
     _: Annotated[int | None, require_role("admin")],
     db: Annotated[Session, Depends(get_db)],
-):
+) -> dict[str, str]:
     if file.content_type not in _ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Invalid image format")
 

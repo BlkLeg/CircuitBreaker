@@ -26,6 +26,8 @@ Auth: optional — authenticated via get_optional_user.
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator, AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from starlette.responses import StreamingResponse
@@ -46,10 +48,10 @@ _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
 # ── NATS-backed SSE ──────────────────────────────────────────────────────────
 
 
-def _nats_event_generator(queue: asyncio.Queue):
+def _nats_event_generator(queue: asyncio.Queue[Any]) -> AsyncIterator[str]:
     """Async generator that reads from an asyncio.Queue populated by NATS callbacks."""
 
-    async def _gen():
+    async def _gen() -> AsyncGenerator[str, None]:
         yield ": keepalive\n\n"
         while True:
             try:
@@ -69,57 +71,69 @@ def _nats_event_generator(queue: asyncio.Queue):
 # ── DB-poll fallback SSE ─────────────────────────────────────────────────────
 
 
-def _db_poll_generator():
-    """Poll the logs / notifications tables every 2 s as a fallback stream."""
+def _db_poll_generator() -> AsyncIterator[str]:
+    """Poll the logs / notifications tables every 2 s as a fallback stream.
 
-    async def _gen():
+    All SQLAlchemy calls run in a thread via run_in_executor so the asyncio
+    event loop is never blocked by synchronous DB I/O.
+    """
+
+    async def _gen() -> AsyncGenerator[str, None]:
         yield ": keepalive\n\n"
         last_log_id: int = 0
+        loop = asyncio.get_running_loop()
 
         # Seed last_log_id to avoid replaying old history on connect
-        try:
-            with SessionLocal() as db:
-                from sqlalchemy import func, select
+        def _seed() -> int | None:
+            from sqlalchemy import func, select
 
-                max_id = db.execute(select(func.max(Log.id))).scalar_one_or_none()
-                if max_id:
-                    last_log_id = max_id
+            with SessionLocal() as db:
+                return db.execute(select(func.max(Log.id))).scalar_one_or_none()
+
+        try:
+            max_id = await loop.run_in_executor(None, _seed)
+            if max_id:
+                last_log_id = max_id
         except Exception:
             pass
 
         while True:
             await asyncio.sleep(2)
             try:
-                with SessionLocal() as db:
+
+                def _poll(_last: int = last_log_id) -> Any:
                     from sqlalchemy import select
 
-                    rows = (
-                        db.execute(
-                            select(Log).where(Log.id > last_log_id).order_by(Log.id.asc()).limit(20)
+                    with SessionLocal() as db:
+                        return (
+                            db.execute(
+                                select(Log).where(Log.id > _last).order_by(Log.id.asc()).limit(20)
+                            )
+                            .scalars()
+                            .all()
                         )
-                        .scalars()
-                        .all()
+
+                rows = await loop.run_in_executor(None, _poll)
+                for row in rows:
+                    payload = {
+                        "id": row.id,
+                        "action": row.action,
+                        "category": row.category,
+                        "entity_type": row.entity_type,
+                        "entity_id": row.entity_id,
+                        "entity_name": row.entity_name,
+                        "actor": row.actor,
+                        "details": row.details,
+                        "created_at_utc": row.created_at_utc,
+                        "severity": row.severity or row.level,
+                    }
+                    event_type = (
+                        "alert"
+                        if row.severity in ("warning", "error", "critical")
+                        else "notification"
                     )
-                    for row in rows:
-                        payload = {
-                            "id": row.id,
-                            "action": row.action,
-                            "category": row.category,
-                            "entity_type": row.entity_type,
-                            "entity_id": row.entity_id,
-                            "entity_name": row.entity_name,
-                            "actor": row.actor,
-                            "details": row.details,
-                            "created_at_utc": row.created_at_utc,
-                            "severity": row.severity or row.level,
-                        }
-                        event_type = (
-                            "alert"
-                            if row.severity in ("warning", "error", "critical")
-                            else "notification"
-                        )
-                        yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
-                        last_log_id = max(last_log_id, row.id)
+                    yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+                    last_log_id = max(last_log_id, row.id)
             except Exception as exc:
                 logger.debug("SSE DB poll error: %s", exc)
                 yield ": error\n\n"
@@ -131,7 +145,7 @@ def _db_poll_generator():
 
 
 @router.get("/stream")
-async def events_stream(_user=Depends(get_optional_user)):
+async def events_stream(_user: Any = Depends(get_optional_user)) -> StreamingResponse:
     """Stream real-time notification and alert events via SSE.
 
     Automatically selects NATS-backed delivery when available, falling back
@@ -140,7 +154,7 @@ async def events_stream(_user=Depends(get_optional_user)):
     if nats_client.is_connected:
         queue: asyncio.Queue = asyncio.Queue(maxsize=512)
 
-        async def _nats_cb(msg) -> None:
+        async def _nats_cb(msg: Any) -> None:
             try:
                 data = json.loads(msg.data.decode())
             except Exception:
@@ -178,7 +192,7 @@ async def events_stream(_user=Depends(get_optional_user)):
             if sub:
                 subscriptions.append(sub)
 
-        async def _cleanup_generator():
+        async def _cleanup_generator() -> AsyncGenerator[str, None]:
             try:
                 async for chunk in _nats_event_generator(queue):
                     yield chunk

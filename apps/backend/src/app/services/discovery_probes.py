@@ -13,7 +13,7 @@ from app.services.discovery_network import PORT_SERVICE_MAP  # noqa: F401 — re
 try:
     import nmap
 except ImportError:
-    nmap = None
+    nmap = None  # type: ignore[assignment]
 
 try:
     from pysnmp.entity.engine import SnmpEngine
@@ -30,6 +30,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _ARP_CAPABLE: bool | None = None
+_BANNER_GRAB_TIMEOUT: float = 2.0
 
 
 def _arp_available() -> bool:
@@ -222,7 +223,7 @@ async def _run_snmp_probe(ip: str, community: str, version: str = "2c", port: in
     return result
 
 
-async def _run_banner_grab(ip: str, ports: list[int], timeout: float = 2.0) -> dict[int, str]:
+async def _run_banner_grab(ip: str, ports: list[int]) -> dict[int, str]:
     """Async TCP banner grab — connects to each port and reads the first 256 bytes."""
     banners: dict[int, str] = {}
     sem = asyncio.Semaphore(10)
@@ -231,9 +232,9 @@ async def _run_banner_grab(ip: str, ports: list[int], timeout: float = 2.0) -> d
         async with sem:
             try:
                 reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, port), timeout=timeout
+                    asyncio.open_connection(ip, port), timeout=_BANNER_GRAB_TIMEOUT
                 )
-                data = await asyncio.wait_for(reader.read(512), timeout=timeout)
+                data = await asyncio.wait_for(reader.read(512), timeout=_BANNER_GRAB_TIMEOUT)
                 writer.close()
                 try:
                     await writer.wait_closed()

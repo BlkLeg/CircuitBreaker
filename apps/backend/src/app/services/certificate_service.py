@@ -210,7 +210,7 @@ def _publish_renewal(cert: Certificate) -> None:
     """Publish renewed cert to Redis for real-time consumers."""
     import asyncio
 
-    async def _pub():
+    async def _pub() -> None:
         from app.core.redis import get_redis
 
         r = await get_redis()

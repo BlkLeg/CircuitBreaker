@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -29,7 +31,7 @@ def list_networks(
     q: str | None = Query(None),
     gateway_hardware_id: int | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> list[Any]:
     return networks_service.list_networks(
         db,
         tag=tag,
@@ -46,7 +48,7 @@ def create_network(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> Any:
     try:
         result = networks_service.create_network(db, payload)
     except ValueError as exc:
@@ -68,7 +70,7 @@ def create_network(
 
 
 @router.get("/{network_id}", response_model=Network)
-def get_network(network_id: int, db: Session = Depends(get_db)):
+def get_network(network_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return networks_service.get_network(db, network_id)
     except ValueError as exc:
@@ -82,7 +84,7 @@ def patch_network(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> Any:
     try:
         result = networks_service.update_network(db, network_id, payload)
         log_audit(
@@ -109,7 +111,7 @@ def delete_network(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> None:
     try:
         networks_service.delete_network(db, network_id)
         log_audit(
@@ -133,7 +135,7 @@ def delete_network(
 
 
 @router.get("/{network_id}/members", response_model=list[ComputeNetworkRead])
-def list_members(network_id: int, db: Session = Depends(get_db)):
+def list_members(network_id: int, db: Session = Depends(get_db)) -> list[Any]:
     return networks_service.list_compute_members(db, network_id)
 
 
@@ -142,8 +144,8 @@ def add_member(
     network_id: int,
     payload: ComputeNetworkLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return networks_service.add_compute_member(
             db, network_id, payload.compute_id, payload.ip_address
@@ -159,8 +161,11 @@ def add_member(
 
 @router.delete("/{network_id}/members/{compute_id}", status_code=204)
 def remove_member(
-    network_id: int, compute_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    network_id: int,
+    compute_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         networks_service.remove_compute_member(db, network_id, compute_id)
     except ValueError as exc:
@@ -171,7 +176,7 @@ def remove_member(
 
 
 @router.get("/{network_id}/hardware-members", response_model=list[HardwareNetworkRead])
-def list_hardware_members(network_id: int, db: Session = Depends(get_db)):
+def list_hardware_members(network_id: int, db: Session = Depends(get_db)) -> list[Any]:
     return networks_service.list_hardware_members(db, network_id)
 
 
@@ -180,8 +185,8 @@ def add_hardware_member(
     network_id: int,
     payload: HardwareNetworkLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return networks_service.add_hardware_member(
             db, network_id, payload.hardware_id, payload.ip_address
@@ -197,8 +202,11 @@ def add_hardware_member(
 
 @router.delete("/{network_id}/hardware-members/{hardware_id}", status_code=204)
 def remove_hardware_member(
-    network_id: int, hardware_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    network_id: int,
+    hardware_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         networks_service.remove_hardware_member(db, network_id, hardware_id)
     except ValueError as exc:
@@ -209,7 +217,7 @@ def remove_hardware_member(
 
 
 @router.get("/{network_id}/peers", response_model=list[NetworkPeerRead])
-def list_peers(network_id: int, db: Session = Depends(get_db)):
+def list_peers(network_id: int, db: Session = Depends(get_db)) -> list[Any]:
     return networks_service.list_peers(db, network_id)
 
 
@@ -218,8 +226,8 @@ def add_peer(
     network_id: int,
     payload: NetworkPeerCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return networks_service.add_peer(db, network_id, payload.peer_network_id)
     except ValueError as exc:
@@ -236,8 +244,8 @@ def remove_peer(
     network_id: int,
     peer_network_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         networks_service.remove_peer(db, network_id, peer_network_id)
     except ValueError as exc:

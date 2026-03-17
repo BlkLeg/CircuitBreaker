@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -28,7 +30,7 @@ def list_external_nodes(
     tag: str | None = Query(None),
     q: str | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> Any:
     return svc.list_external_nodes(
         db,
         environment=environment,
@@ -43,8 +45,8 @@ def list_external_nodes(
 def create_external_node(
     payload: ExternalNodeCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return svc.create_external_node(db, payload)
     except IntegrityError as exc:
@@ -55,7 +57,7 @@ def create_external_node(
 
 
 @router.get("/{node_id}", response_model=ExternalNodeRead)
-def get_external_node(node_id: int, db: Session = Depends(get_db)):
+def get_external_node(node_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return svc.get_external_node(db, node_id)
     except ValueError as exc:
@@ -67,8 +69,8 @@ def patch_external_node(
     node_id: int,
     payload: ExternalNodeUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return svc.update_external_node(db, node_id, payload)
     except ValueError as exc:
@@ -84,8 +86,8 @@ def patch_external_node(
 def delete_external_node(
     node_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         svc.delete_external_node(db, node_id)
     except ValueError as exc:
@@ -96,7 +98,7 @@ def delete_external_node(
 
 
 @router.get("/{node_id}/networks", response_model=list[ExternalNodeNetworkRead])
-def list_networks(node_id: int, db: Session = Depends(get_db)):
+def list_networks(node_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return svc.list_networks_for_node(db, node_id)
     except ValueError as exc:
@@ -108,8 +110,8 @@ def link_network(
     node_id: int,
     payload: ExternalNodeNetworkLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return svc.link_network(db, node_id, payload)
     except ValueError as exc:
@@ -123,7 +125,7 @@ def link_network(
 
 
 @router.get("/{node_id}/services", response_model=list[ServiceExternalNodeRead])
-def list_services(node_id: int, db: Session = Depends(get_db)):
+def list_services(node_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return svc.list_services_for_node(db, node_id)
     except ValueError as exc:
@@ -138,7 +140,9 @@ _rel_router = APIRouter(tags=["external-nodes"])
 
 
 @_rel_router.delete("/external-node-networks/{relation_id}", status_code=204)
-def unlink_network(relation_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def unlink_network(
+    relation_id: int, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> None:
     try:
         svc.unlink_network(db, relation_id)
     except ValueError as exc:
@@ -146,7 +150,9 @@ def unlink_network(relation_id: int, db: Session = Depends(get_db), _=Depends(re
 
 
 @_rel_router.delete("/service-external-nodes/{relation_id}", status_code=204)
-def unlink_service(relation_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def unlink_service(
+    relation_id: int, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> None:
     try:
         svc.unlink_service(db, relation_id)
     except ValueError as exc:

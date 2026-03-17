@@ -128,13 +128,13 @@ def docker_discover(
         network_types = ["bridge"]
 
     try:
+        import importlib
         import os
-
-        import docker  # optional dep
 
         docker_host = os.environ.get("CB_DOCKER_HOST", "").strip()
         base_url = docker_host if docker_host else f"unix://{socket_path}"
-        client = docker.DockerClient(base_url=base_url)
+        docker_module = importlib.import_module("docker")
+        client = docker_module.DockerClient(base_url=base_url)
         containers: list[dict] = []
         networks_info = {}
 

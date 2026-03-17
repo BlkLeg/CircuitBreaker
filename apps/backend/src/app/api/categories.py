@@ -1,3 +1,5 @@
+from typing import Annotated, Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,16 +20,16 @@ router = APIRouter(tags=["categories"])
 
 
 @router.get("", response_model=list[CategoryRead])
-def get_categories(db: Session = Depends(get_db)):
+def get_categories(db: Session = Depends(get_db)) -> list[Any]:
     return list_categories(db)
 
 
 @router.post("", response_model=CategoryRead, status_code=201)
 def post_category(
     payload: CategoryCreate,
-    db: Session = Depends(get_db),
-    _user: User = require_role("editor"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("editor")],
+) -> Any:
     try:
         cat = create_category(db, payload.name, payload.color)
     except IntegrityError as exc:
@@ -50,9 +52,9 @@ def post_category(
 def patch_category(
     category_id: int,
     payload: CategoryUpdate,
-    db: Session = Depends(get_db),
-    _user: User = require_role("editor"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("editor")],
+) -> Any:
     try:
         update_category(db, category_id, payload.name, payload.color)
     except ValueError as exc:
@@ -70,9 +72,9 @@ def patch_category(
 @router.delete("/{category_id}", status_code=204)
 def del_category(
     category_id: int,
-    db: Session = Depends(get_db),
-    _user: User = require_role("editor"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("editor")],
+) -> None:
     try:
         delete_category(db, category_id)
     except ValueError as exc:

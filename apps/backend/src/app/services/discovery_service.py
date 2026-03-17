@@ -1,96 +1,80 @@
 import asyncio
 import json
 import logging
-import re
 import time as _time_module
 from datetime import UTC, datetime
-from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
-from app.core.validation import validate_snmp_community
 from app.core.ws_manager import ws_manager
 from app.db.models import (
-    ComputeUnit,
     Hardware,
-    Network,
     ScanJob,
     ScanLog,
     ScanResult,
-    Service,
-    Storage,
 )
 from app.db.session import SessionLocal, get_session_context
-from app.schemas.discovery import ScanJobOut, ScanResultOut
-from app.services.credential_vault import get_vault
+from app.schemas.discovery import ScanResultOut
+from app.services.discovery_merge import (
+    _auto_merge_result,
+    bulk_merge_results,  # noqa: F401
+    enhanced_bulk_merge,  # noqa: F401
+    merge_scan_result,  # noqa: F401
+)
+from app.services.discovery_network import (
+    _NMAP_OVERRIDE_PREFIX,
+    PORT_SERVICE_MAP,
+    _decrypt_community,
+    _match_ip_to_network,
+    _validate_cidr,
+    resolve_vlans_to_cidrs,
+)
+from app.services.discovery_probes import (
+    _ARP_CAPABLE,  # noqa: F401
+    _arp_available,
+    _has_raw_socket_privilege,
+    _run_arp_scan,
+    _run_banner_grab,
+    _run_nmap_scan,
+    _run_snmp_probe,
+    _run_vendor_lookup,
+)
 from app.services.discovery_safe import (
     docker_discover,
     is_docker_socket_available,
     scan_subnet_safe,
 )
-from app.services.discovery_proxmox_merge import (
-    _parse_proxmox_metadata,
-    _reattach_proxmox_storage_to_node,
-    _upsert_proxmox_node_entity,
-    _upsert_proxmox_vm_entity,
-    _merge_proxmox_result,
-)
-from app.services.discovery_network import (
-    PORT_SERVICE_MAP,
-    _MAX_CIDR_PREFIXLEN,
-    _MAX_CIDR_ADDRESSES,
-    _NMAP_OVERRIDE_PREFIX,
-    resolve_vlans_to_cidrs,
-    _match_ip_to_network,
-    _norm_mac,
-    _validate_cidr,
-    _decrypt_community,
+from app.services.discovery_scheduler import (
+    _max_concurrent_scans,
+    _running_scan_count,
+    _schedule_queued_scan_jobs,
+    purge_old_scan_results,  # noqa: F401
+    refresh_ip_pool,  # noqa: F401
+    run_scan_job_by_profile,  # noqa: F401
+    set_main_loop,  # noqa: F401
 )
 from app.services.log_service import write_log
 from app.services.settings_service import get_or_create_settings
-from app.services.discovery_merge import (
-    _auto_merge_result,
-    _build_ports_list,
-    _emit_result_processed_event,
-    _make_service_slug,
-    bulk_merge_results,
-    enhanced_bulk_merge,
-    merge_scan_result,
-)
+
+try:
+    import nmap
+except ImportError:
+    nmap = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 
 _scan_start_gate = asyncio.Lock()
 _ema_eta: dict[int, float] = {}
 _last_progress_snap: dict[int, tuple[float, float]] = {}
 
-
-
-try:
-    import nmap
-except ImportError:
-    nmap = None
-
-logger = logging.getLogger(__name__)
-
-from app.services.discovery_probes import (
-    _ARP_CAPABLE,
-    _arp_available,
-    _has_raw_socket_privilege,
-    _sanitise_nmap_args_for_unpriv,
-    _run_arp_scan,
-    _run_nmap_scan,
-    _run_snmp_probe,
-    _run_banner_grab,
-    _run_vendor_lookup,
-)
-
-
 _REDIS_DISCOVERY_CHANNEL = "cb:discovery:events"
 
 
-async def _emit_ws_event(event_type: str, payload: dict):
+async def _emit_ws_event(event_type: str, payload: dict) -> None:
     """Broadcast a discovery event via Redis pub/sub, WebSocket, and NATS.
 
     Primary delivery: Redis pub/sub (crosses Uvicorn worker boundaries).
@@ -122,7 +106,6 @@ async def _emit_ws_event(event_type: str, payload: dict):
     }
     subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
     await nats_client.publish(subject, {"event_type": event_type, **payload})
-
 
 
 async def _update_job_progress(
@@ -284,18 +267,6 @@ def create_scan_job(
     return job
 
 
-from app.services.discovery_scheduler import (
-    _main_loop,
-    set_main_loop,
-    _running_scan_count,
-    _max_concurrent_scans,
-    _schedule_queued_scan_jobs,
-    run_scan_job_by_profile,
-    purge_old_scan_results,
-    refresh_ip_pool,
-)
-
-
 def _scan_setup(job_id: int) -> dict | None:
     """Phase 1 (sync, runs in executor): Read job config, verify slot, mark running.
     Returns setup dict or None if the job should not run."""
@@ -314,7 +285,9 @@ def _scan_setup(job_id: int) -> dict | None:
         if running_now >= max_allowed:
             logger.info(
                 "Scan job %d: no slot available (running=%d, max=%d), re-queuing",
-                job_id, running_now, max_allowed,
+                job_id,
+                running_now,
+                max_allowed,
             )
             job.status = "queued"
             db.commit()
@@ -339,11 +312,14 @@ def _scan_setup(job_id: int) -> dict | None:
         error_reason: str | None = None
 
         if job.label and job.label.startswith(_NMAP_OVERRIDE_PREFIX):
-            nmap_args = job.label[len(_NMAP_OVERRIDE_PREFIX):]
+            nmap_args = job.label[len(_NMAP_OVERRIDE_PREFIX) :]
 
         if job.profile_id:
             from app.db.models import DiscoveryProfile
-            profile = db.query(DiscoveryProfile).filter(DiscoveryProfile.id == job.profile_id).first()
+
+            profile = (
+                db.query(DiscoveryProfile).filter(DiscoveryProfile.id == job.profile_id).first()
+            )
             if profile:
                 if profile.nmap_arguments:
                     nmap_args = profile.nmap_arguments
@@ -454,7 +430,9 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
             # Match against existing hardware
             matched_hardware = None
             if mac_address:
-                matched_hardware = db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
+                matched_hardware = (
+                    db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
+                )
             if not matched_hardware and ip:
                 matched_hardware = db.query(Hardware).filter(Hardware.ip_address == ip).first()
 
@@ -468,26 +446,30 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                     and matched_hardware.mac_address
                     and mac_address.upper() != matched_hardware.mac_address.upper()
                 ):
-                    conflict_fields.append({
-                        "field": "mac_address",
-                        "stored": matched_hardware.mac_address,
-                        "discovered": mac_address,
-                    })
+                    conflict_fields.append(
+                        {
+                            "field": "mac_address",
+                            "stored": matched_hardware.mac_address,
+                            "discovered": mac_address,
+                        }
+                    )
                 discovered_hostname = hostname or snmp_data.get("sys_name")
                 if (
                     discovered_hostname
                     and matched_hardware.name
                     and discovered_hostname.lower() != matched_hardware.name.lower()
                 ):
-                    conflict_fields.append({
-                        "field": "hostname",
-                        "stored": matched_hardware.name,
-                        "discovered": discovered_hostname,
-                    })
+                    conflict_fields.append(
+                        {
+                            "field": "hostname",
+                            "stored": matched_hardware.name,
+                            "discovered": discovered_hostname,
+                        }
+                    )
 
                 if conflict_fields:
                     res.state = "conflict"
-                    res.conflicts_json = json.dumps(conflict_fields)
+                    res.conflicts_json = json.dumps(conflict_fields)  # type: ignore[assignment]
                     hosts_conflict += 1
                 else:
                     res.state = "matched"
@@ -502,10 +484,14 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
 
         # Auto-merge
         if auto_merge:
-            results_for_merge = db.query(ScanResult).filter(
-                ScanResult.scan_job_id == job_id,
-                ScanResult.merge_status == "pending",
-            ).all()
+            results_for_merge = (
+                db.query(ScanResult)
+                .filter(
+                    ScanResult.scan_job_id == job_id,
+                    ScanResult.merge_status == "pending",
+                )
+                .all()
+            )
             for r in results_for_merge:
                 _auto_merge_result(db, r, actor=setup.get("triggered_by") or "system")
 
@@ -530,7 +516,7 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
 
 
 def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
-    """Phase 4 (sync, runs in executor): Set final job status, write audit log, schedule queued scans."""
+    """Phase 4 (sync, runs in executor): finalize job status, write audit log, schedule queued scans."""  # noqa: E501
     db = SessionLocal()
     try:
         job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
@@ -554,12 +540,14 @@ def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
                 entity_id=job_id,
                 category="discovery",
                 actor=job.triggered_by,
-                details=json.dumps({
-                    "hosts_found": hosts_found,
-                    "hosts_new": stats.get("hosts_new", 0),
-                    "hosts_conflict": stats.get("hosts_conflict", 0),
-                    "cidr": job.target_cidr,
-                }),
+                details=json.dumps(
+                    {
+                        "hosts_found": hosts_found,
+                        "hosts_new": stats.get("hosts_new", 0),
+                        "hosts_conflict": stats.get("hosts_conflict", 0),
+                        "cidr": job.target_cidr,
+                    }
+                ),
             )
         elif final_status == "failed":
             error_text = stats.get("error_text", "")
@@ -584,7 +572,7 @@ def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
         db.close()
 
 
-async def run_scan_job(job_id: int):
+async def run_scan_job(job_id: int) -> None:
     """
     Background worker function that performs the actual network scanning orchestration.
 
@@ -648,9 +636,13 @@ async def run_scan_job(job_id: int):
         if scan_types == ["docker"]:
             socket_path = "/var/run/docker.sock"
             if label and label.startswith("docker:"):
-                socket_path = label[len("docker:"):]
-            await _update_job_progress(job_id, "docker", "Enumerating Docker containers…", percent=10)
-            await _log_scan_event(job_id, "INFO", f"Starting Docker discovery via {socket_path}", "docker")
+                socket_path = label[len("docker:") :]
+            await _update_job_progress(
+                job_id, "docker", "Enumerating Docker containers…", percent=10
+            )
+            await _log_scan_event(
+                job_id, "INFO", f"Starting Docker discovery via {socket_path}", "docker"
+            )
 
             containers = docker_discover(socket_path, docker_network_types, docker_port_scan)
             await _update_job_progress(
@@ -666,22 +658,26 @@ async def run_scan_job(job_id: int):
                 container_ip = container.get("ip") or None
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                raw_results.append({
-                    "ip": container_ip,
-                    "hostname_override": container["name"],
-                    "os_vendor_override": "Docker",
-                    "os_family_override": _vendor,
-                    "source": "docker",
-                    "source_type": "docker",
-                    "raw_nmap_xml": json.dumps({
+                raw_results.append(
+                    {
+                        "ip": container_ip,
+                        "hostname_override": container["name"],
+                        "os_vendor_override": "Docker",
+                        "os_family_override": _vendor,
                         "source": "docker",
-                        "image": _image,
-                        "status": container.get("status"),
-                        "container_id": container.get("container_id"),
-                    }),
-                    "snmp_data": {},
-                    "_docker_meta": container,
-                })
+                        "source_type": "docker",
+                        "raw_nmap_xml": json.dumps(
+                            {
+                                "source": "docker",
+                                "image": _image,
+                                "status": container.get("status"),
+                                "container_id": container.get("container_id"),
+                            }
+                        ),
+                        "snmp_data": {},
+                        "_docker_meta": container,
+                    }
+                )
 
             import_data = await loop.run_in_executor(None, _scan_import, job_id, setup, raw_results)
             for result_data in import_data["results"]:
@@ -714,25 +710,35 @@ async def run_scan_job(job_id: int):
 
         if effective_mode == "safe":
             import ipaddress as _ipaddress
+
             try:
                 _total_hosts = _ipaddress.IPv4Network(target_cidr, strict=False).num_addresses - 2
             except Exception:
                 _total_hosts = 0
             await _update_job_progress(
-                job_id, "ping", f"Pinging {max(_total_hosts, 0)} hosts in {target_cidr}…", percent=10
+                job_id,
+                "ping",
+                f"Pinging {max(_total_hosts, 0)} hosts in {target_cidr}…",
+                percent=10,
             )
             try:
                 safe_results = await loop.run_in_executor(None, scan_subnet_safe, target_cidr)
             except Exception as _scan_exc:
                 logger.warning(
                     "Scan job %d: scan_subnet_safe raised %s: %s",
-                    job_id, type(_scan_exc).__name__, _scan_exc,
+                    job_id,
+                    type(_scan_exc).__name__,
+                    _scan_exc,
                 )
                 safe_results = []
             await _update_job_progress(
                 job_id,
                 "tcp",
-                f"{len(safe_results)} host{'s' if len(safe_results) != 1 else ''} responded — probing TCP ports…",
+                (
+                    f"{len(safe_results)} host"
+                    f"{'s' if len(safe_results) != 1 else ''}"
+                    " responded — probing TCP ports\u2026"
+                ),
                 percent=30,
             )
             for r in safe_results:
@@ -747,45 +753,71 @@ async def run_scan_job(job_id: int):
                     for p in r.get("open_ports", [])
                 ]
                 nmap_results[ip] = {
-                    "mac": None, "hostname": None, "os_family": None,
-                    "os_vendor": None, "open_ports": open_ports, "raw": "",
+                    "mac": None,
+                    "hostname": None,
+                    "os_family": None,
+                    "os_vendor": None,
+                    "open_ports": open_ports,
+                    "raw": "",
                 }
-            logger.info("[safe-mode] job %s: %d hosts found via ping/TCP in %s", job_id, len(active_ips), target_cidr)
+            logger.info(
+                "[safe-mode] job %s: %d hosts found via ping/TCP in %s",
+                job_id,
+                len(active_ips),
+                target_cidr,
+            )
         else:
-            async def _arp_phase():
+
+            async def _arp_phase() -> list[dict]:
                 if "arp" in scan_types and _arp_available():
-                    await _update_job_progress(job_id, "arp", "Running ARP discovery...", percent=12)
+                    await _update_job_progress(
+                        job_id, "arp", "Running ARP discovery...", percent=12
+                    )
                     await _log_scan_event(job_id, "INFO", "Starting ARP discovery phase", "arp")
                     try:
                         results = await _run_arp_scan(target_cidr)
                         await _log_scan_event(
-                            job_id, "SUCCESS",
-                            f"ARP discovery completed. Found {len(results)} responding hosts", "arp",
+                            job_id,
+                            "SUCCESS",
+                            f"ARP discovery completed. Found {len(results)} responding hosts",
+                            "arp",
                             f"Discovered hosts: {[r['ip'] for r in results][:10]}",
                         )
                         return results
                     except Exception as e:
-                        await _log_scan_event(job_id, "ERROR", f"ARP discovery failed: {str(e)}", "arp", str(e))
+                        await _log_scan_event(
+                            job_id, "ERROR", f"ARP discovery failed: {str(e)}", "arp", str(e)
+                        )
                         raise
-                await _log_scan_event(job_id, "INFO", "ARP discovery skipped (not available or not requested)", "arp")
+                await _log_scan_event(
+                    job_id, "INFO", "ARP discovery skipped (not available or not requested)", "arp"
+                )
                 return []
 
-            async def _nmap_phase():
+            async def _nmap_phase() -> dict:
                 if "nmap" in scan_types and not nmap:
                     logger.warning(
                         "Scan job %d: python-nmap unavailable; nmap phase skipped.", job_id
                     )
-                    await _log_scan_event(job_id, "ERROR", "nmap tool unavailable — python-nmap not installed", "nmap")
+                    await _log_scan_event(
+                        job_id, "ERROR", "nmap tool unavailable — python-nmap not installed", "nmap"
+                    )
                     return {}
                 if "nmap" in scan_types:
-                    await _update_job_progress(job_id, "nmap", "Running nmap host discovery...", percent=42)
-                    await _log_scan_event(job_id, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap")
+                    await _update_job_progress(
+                        job_id, "nmap", "Running nmap host discovery...", percent=42
+                    )
+                    await _log_scan_event(
+                        job_id, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap"
+                    )
                     try:
                         results = await _run_nmap_scan(target_cidr, nmap_args)
                         host_count = len(results)
                         await _log_scan_event(
-                            job_id, "SUCCESS",
-                            f"Nmap scan completed. Discovered {host_count} active hosts", "nmap",
+                            job_id,
+                            "SUCCESS",
+                            f"Nmap scan completed. Discovered {host_count} active hosts",
+                            "nmap",
                             f"Hosts found: {list(results.keys())[:10]}",
                         )
                         for ip, host_data in list(results.items())[:5]:
@@ -794,18 +826,24 @@ async def run_scan_job(job_id: int):
                             if open_ports:
                                 port_list = [f"{p['port']}/{p['protocol']}" for p in open_ports[:5]]
                                 await _log_scan_event(
-                                    job_id, "INFO",
-                                    f"Host {ip} ({hostname}): {len(open_ports)} open ports", "nmap",
+                                    job_id,
+                                    "INFO",
+                                    f"Host {ip} ({hostname}): {len(open_ports)} open ports",
+                                    "nmap",
                                     f"Ports: {', '.join(port_list)}",
                                 )
                             else:
                                 await _log_scan_event(
-                                    job_id, "INFO",
-                                    f"Host {ip} ({hostname}): No open ports detected", "nmap",
+                                    job_id,
+                                    "INFO",
+                                    f"Host {ip} ({hostname}): No open ports detected",
+                                    "nmap",
                                 )
                         return results
                     except Exception as e:
-                        await _log_scan_event(job_id, "ERROR", f"Nmap scan failed: {str(e)}", "nmap", str(e))
+                        await _log_scan_event(
+                            job_id, "ERROR", f"Nmap scan failed: {str(e)}", "nmap", str(e)
+                        )
                         raise
                 await _log_scan_event(job_id, "INFO", "Nmap scan skipped (not requested)", "nmap")
                 return {}
@@ -821,16 +859,24 @@ async def run_scan_job(job_id: int):
         n_active = len(active_ips)
         if n_active > 0 and "snmp" in scan_types and snmp_community_plain:
             await _update_job_progress(
-                job_id, "snmp",
+                job_id,
+                "snmp",
                 f"Preparing deep probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58, processed=0, total=n_active,
+                percent=58,
+                processed=0,
+                total=n_active,
             )
-            await _log_scan_event(job_id, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp")
+            await _log_scan_event(
+                job_id, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp"
+            )
         elif n_active > 0 and http_probe and "http" in scan_types:
             await _update_job_progress(
-                job_id, "http",
+                job_id,
+                "http",
                 f"Preparing HTTP probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58, processed=0, total=n_active,
+                percent=58,
+                processed=0,
+                total=n_active,
             )
 
         for index, ip in enumerate(active_ips, start=1):
@@ -865,7 +911,9 @@ async def run_scan_job(job_id: int):
                         async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
                             await client.get(f"http://{ip}")
                     except Exception as e:
-                        logger.debug("Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True)
+                        logger.debug(
+                            "Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True
+                        )
 
             banner_text: str | None = None
             if "deep_dive" in scan_types and open_ports:
@@ -889,46 +937,57 @@ async def run_scan_job(job_id: int):
             else:
                 result_source = "nmap"
 
-            raw_results.append({
-                "ip": ip,
-                "mac_address": mac_address,
-                "hostname": hostname,
-                "os_family": os_family,
-                "os_vendor": os_vendor,
-                "os_accuracy": os_accuracy,
-                "open_ports_json": json.dumps(open_ports) if open_ports else None,
-                "raw_nmap_xml": raw_xml,
-                "banner": banner_text,
-                "source_type": result_source,
-                "snmp_data": snmp_data,
-            })
+            raw_results.append(
+                {
+                    "ip": ip,
+                    "mac_address": mac_address,
+                    "hostname": hostname,
+                    "os_family": os_family,
+                    "os_vendor": os_vendor,
+                    "os_accuracy": os_accuracy,
+                    "open_ports_json": json.dumps(open_ports) if open_ports else None,
+                    "raw_nmap_xml": raw_xml,
+                    "banner": banner_text,
+                    "source_type": result_source,
+                    "snmp_data": snmp_data,
+                }
+            )
 
         # Supplemental Docker discovery
         if docker_discovery_enabled and is_docker_socket_available():
-            await _update_job_progress(job_id, "docker", "Scanning Docker containers...", percent=94)
-            for container in docker_discover(docker_socket_path, docker_network_types, docker_port_scan):
+            await _update_job_progress(
+                job_id, "docker", "Scanning Docker containers...", percent=94
+            )
+            for container in docker_discover(
+                docker_socket_path, docker_network_types, docker_port_scan
+            ):
                 container_ip = container.get("ip") or None
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                raw_results.append({
-                    "ip": container_ip,
-                    "hostname_override": container["name"],
-                    "os_vendor_override": "Docker",
-                    "os_family_override": _vendor,
-                    "source": "docker",
-                    "source_type": "docker",
-                    "raw_nmap_xml": json.dumps({
+                raw_results.append(
+                    {
+                        "ip": container_ip,
+                        "hostname_override": container["name"],
+                        "os_vendor_override": "Docker",
+                        "os_family_override": _vendor,
                         "source": "docker",
-                        "image": _image,
-                        "status": container.get("status"),
-                        "container_id": container.get("container_id"),
-                    }),
-                    "snmp_data": {},
-                })
+                        "source_type": "docker",
+                        "raw_nmap_xml": json.dumps(
+                            {
+                                "source": "docker",
+                                "image": _image,
+                                "status": container.get("status"),
+                                "container_id": container.get("container_id"),
+                            }
+                        ),
+                        "snmp_data": {},
+                    }
+                )
 
         # ── Phase 3: Import results to DB ─────────────────────────────────────
         await _update_job_progress(
-            job_id, "reconcile",
+            job_id,
+            "reconcile",
             f"Saving {len(raw_results)} result(s)…",
             percent=95,
         )
@@ -941,7 +1000,8 @@ async def run_scan_job(job_id: int):
         hosts_found = stats.get("hosts_found", 0)
 
         await _update_job_progress(
-            job_id, "done",
+            job_id,
+            "done",
             f"Scan complete. Found {hosts_found} host{'s' if hosts_found != 1 else ''}.",
             percent=100,
             processed=hosts_found,
@@ -959,17 +1019,19 @@ async def run_scan_job(job_id: int):
         error_stats = {
             "error_text": str(e),
             "error_reason": (
-                "scan_timeout" if isinstance(e, asyncio.TimeoutError)
+                "scan_timeout"
+                if isinstance(e, asyncio.TimeoutError)
                 else f"scan_error: {type(e).__name__}"
             ),
         }
         await loop.run_in_executor(None, _scan_finalize, job_id, error_stats, "failed")
         await asyncio.gather(
             _emit_ws_event("job_update", {"job": {"id": job_id, "status": "failed"}}),
-            _emit_ws_event("job_progress", {"job_id": job_id, "phase": "failed", "message": str(e), "percent": 100}),
+            _emit_ws_event(
+                "job_progress",
+                {"job_id": job_id, "phase": "failed", "message": str(e), "percent": 100},
+            ),
             return_exceptions=True,
         )
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
-
-

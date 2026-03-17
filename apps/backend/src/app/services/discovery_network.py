@@ -129,7 +129,8 @@ def _validate_cidr(cidr: str) -> str:
             raise ValueError("Prefix length /0 is not allowed")
         if net.num_addresses > _MAX_CIDR_ADDRESSES:
             raise ValueError(
-                f"CIDR too large (max {_MAX_CIDR_ADDRESSES} addresses). Use a smaller range (e.g. /24)."
+                f"CIDR too large (max {_MAX_CIDR_ADDRESSES} addresses)."
+                " Use a smaller range (e.g. /24)."
             )
         if net.version == 4 and net.prefixlen < _MAX_CIDR_PREFIXLEN:
             raise ValueError(f"IPv4 CIDR must be /{_MAX_CIDR_PREFIXLEN} or smaller (e.g. /24).")

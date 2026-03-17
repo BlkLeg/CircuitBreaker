@@ -16,25 +16,25 @@ _TYPE_MAP = {
 }
 
 
-async def _run_discovery():
+async def _run_discovery() -> None:
     from app.workers import discovery as discovery_worker
 
     await run_with_graceful_shutdown(discovery_worker.run_worker)
 
 
-async def _run_webhook():
+async def _run_webhook() -> None:
     from app.workers import webhook_worker
 
     await run_with_graceful_shutdown(webhook_worker.run_worker)
 
 
-async def _run_notification():
+async def _run_notification() -> None:
     from app.workers import notification_worker
 
     await run_with_graceful_shutdown(notification_worker.run_worker)
 
 
-async def _run_telemetry():
+async def _run_telemetry() -> None:
     from app.workers import telemetry_collector
 
     await run_with_graceful_shutdown(telemetry_collector.run_worker)
@@ -58,7 +58,10 @@ def main() -> None:
     parser.add_argument(
         "--type",
         required=True,
-        help="Worker type: discovery, webhook, notification, telemetry, or numeric (0=discovery,1=webhook,2=notification,3=telemetry)",
+        help=(
+            "Worker type: discovery, webhook, notification, telemetry, or numeric"
+            " (0=discovery,1=webhook,2=notification,3=telemetry)"
+        ),
     )
     args = parser.parse_args()
 

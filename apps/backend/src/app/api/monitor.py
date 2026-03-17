@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,7 +16,7 @@ router = APIRouter(tags=["monitors"])
 
 
 @router.get("", response_model=list[MonitorRead])
-def list_monitors(db: Session = Depends(get_db)):
+def list_monitors(db: Session = Depends(get_db)) -> Any:
     """List all hardware monitors with their latest status."""
     from sqlalchemy import select
 
@@ -25,7 +26,7 @@ def list_monitors(db: Session = Depends(get_db)):
 
 
 @router.get("/{hardware_id}", response_model=MonitorRead)
-def get_monitor(hardware_id: int, db: Session = Depends(get_db)):
+def get_monitor(hardware_id: int, db: Session = Depends(get_db)) -> Any:
     monitor = monitor_service.get_monitor(db, hardware_id)
     if not monitor:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -37,7 +38,7 @@ def create_monitor(
     payload: MonitorCreate,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
-):
+) -> Any:
     existing = monitor_service.get_monitor(db, payload.hardware_id)
     if existing:
         raise HTTPException(status_code=409, detail="Monitor already exists for this hardware")
@@ -60,7 +61,7 @@ def update_monitor(
     payload: MonitorUpdate,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
-):
+) -> Any:
     monitor = monitor_service.update_monitor(
         db,
         hardware_id,
@@ -78,7 +79,7 @@ def delete_monitor(
     hardware_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
-):
+) -> None:
     if not monitor_service.delete_monitor(db, hardware_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return None
@@ -89,7 +90,7 @@ def get_history(
     hardware_id: int,
     limit: int = 100,
     db: Session = Depends(get_db),
-):
+) -> Any:
     return monitor_service.get_history(db, hardware_id, limit=limit)
 
 
@@ -98,7 +99,7 @@ def run_immediate_check(
     hardware_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
-):
+) -> Any:
     """Trigger an immediate probe for the given hardware device."""
     monitor = monitor_service.get_monitor(db, hardware_id)
     if not monitor:

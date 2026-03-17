@@ -12,6 +12,6 @@ def _sorted_timezones() -> list[str]:
 
 
 @router.get("")
-def get_timezones():
+def get_timezones() -> dict[str, list[str]]:
     """Return a sorted list of all valid IANA timezone strings. No auth required."""
     return {"timezones": _sorted_timezones()}

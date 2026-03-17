@@ -8,7 +8,6 @@ from APScheduler without an async wrapper.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -77,9 +76,11 @@ def sync_docker_topology(
         _last_sync_result = result
         return result
 
+    effective_network_types = network_types or ["bridge"]
+
     raw = docker_discover(
         socket_path=socket_path,
-        network_types=network_types,
+        network_types=effective_network_types,
         enable_port_scan=False,
     )
 
@@ -177,13 +178,13 @@ def sync_docker_topology(
                     slug = f"{base_slug}-{counter}"
                     counter += 1
 
-                labels_json = json.dumps(cdata.get("labels") or {})
+                labels_data = cdata.get("labels") if isinstance(cdata.get("labels"), dict) else {}
                 new_svc = Service(
                     name=name or f"container-{container_id[:8]}",
                     slug=slug,
                     docker_container_id=container_id,
                     docker_image=image,
-                    docker_labels=labels_json,
+                    docker_labels=labels_data,
                     is_docker_container=True,
                     status=_normalise_status(status),
                     ip_address=cdata.get("ip"),
@@ -193,7 +194,9 @@ def sync_docker_topology(
             else:
                 existing_svc.status = _normalise_status(status)
                 existing_svc.docker_image = image
-                existing_svc.docker_labels = json.dumps(cdata.get("labels") or {})
+                existing_svc.docker_labels = (
+                    cdata.get("labels") if isinstance(cdata.get("labels"), dict) else {}
+                )
                 existing_svc.is_docker_container = True
                 if cdata.get("ip"):
                     existing_svc.ip_address = cdata["ip"]
@@ -266,9 +269,10 @@ def get_docker_status(socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
         }
 
     try:
-        import docker
+        import importlib
 
-        client = docker.DockerClient(base_url=base_url)
+        docker_module = importlib.import_module("docker")
+        client = docker_module.DockerClient(base_url=base_url)
         containers = client.containers.list(all=True)
         networks = client.networks.list()
         return {

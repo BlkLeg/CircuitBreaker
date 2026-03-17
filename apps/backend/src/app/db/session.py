@@ -1,9 +1,11 @@
 import logging
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
 
-from sqlalchemy import MetaData, create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
 
@@ -38,16 +40,16 @@ engine = create_engine(
     max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", _default_overflow)),
     pool_recycle=300,
     pool_pre_ping=True,
+    pool_timeout=5,  # Fail fast on pool exhaustion — default 30s would block the event loop
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # ── RLS: set app.current_tenant on every connection checkout ─────────────
-from sqlalchemy import event  # noqa: E402
 
 
 @event.listens_for(engine, "checkout")
-def _set_tenant_on_checkout(dbapi_conn, connection_record, connection_proxy):
+def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_proxy: Any) -> None:
     """Propagate the current tenant from the request context to PostgreSQL."""
     try:
         from app.middleware.tenant_middleware import current_tenant_id
@@ -82,7 +84,7 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=naming_convention)
 
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency: yields a database session and ensures cleanup."""
     db = SessionLocal()
     try:
@@ -95,8 +97,11 @@ def get_db():
 
 
 @contextmanager
-def get_session_context():
-    """Context manager for scheduler jobs and scripts. Yields a session; on exit rolls back on exception and always closes."""
+def get_session_context() -> Generator[Session, None, None]:
+    """Context manager for scheduler jobs and scripts.
+
+    Yields a session; on exit rolls back on exception and always closes.
+    """
     db = SessionLocal()
     try:
         yield db

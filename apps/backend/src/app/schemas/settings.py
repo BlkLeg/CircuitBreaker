@@ -97,7 +97,7 @@ class AppSettingsRead(BaseModel):
     default_environment: str | None = None
     show_experimental_features: bool
     api_base_url: str | None = None
-    map_default_filters: str | None = None  # JSON string
+    map_default_filters: dict | None = None  # JSONB; may arrive as string from legacy writes
     vendor_icon_mode: str
     environments: list[str] = ["prod", "staging", "dev"]
     categories: list[str] = []
@@ -212,7 +212,7 @@ class AppSettingsRead(BaseModel):
         elif raw_accents is None:
             accent_colors = ["#fabd2f", "#b8bb26"]
         else:
-            accent_colors = raw_accents  # type: ignore[unreachable]
+            accent_colors = raw_accents
         self.branding = BrandingConfig(
             app_name=self.app_name or "Circuit Breaker",
             favicon_path=self.favicon_path,
@@ -245,9 +245,19 @@ class AppSettingsRead(BaseModel):
             return v
         return {}
 
+    @field_validator("map_default_filters", mode="before")
+    @classmethod
+    def parse_map_default_filters(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except Exception:
+                return None
+        return v
+
     @field_validator("environments", mode="before")
     @classmethod
-    def parse_environments(cls, v):
+    def parse_environments(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -262,7 +272,7 @@ class AppSettingsRead(BaseModel):
 
     @field_validator("categories", mode="before")
     @classmethod
-    def parse_categories(cls, v):
+    def parse_categories(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -277,7 +287,7 @@ class AppSettingsRead(BaseModel):
 
     @field_validator("locations", mode="before")
     @classmethod
-    def parse_locations(cls, v):
+    def parse_locations(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -292,7 +302,7 @@ class AppSettingsRead(BaseModel):
 
     @field_validator("dock_order", mode="before")
     @classmethod
-    def parse_dock_order(cls, v):
+    def parse_dock_order(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)
@@ -305,7 +315,7 @@ class AppSettingsRead(BaseModel):
 
     @field_validator("dock_hidden_items", mode="before")
     @classmethod
-    def parse_dock_hidden_items(cls, v):
+    def parse_dock_hidden_items(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
                 return json.loads(v)

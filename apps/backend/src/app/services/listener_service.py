@@ -13,6 +13,7 @@ import logging
 import socket
 import struct
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from app.core.nats_client import nats_client
 from app.core.subjects import DISCOVERY_LISTENER_FOUND, discovery_listener_found_payload
@@ -71,10 +72,11 @@ class ListenerService:
         self.is_running: bool = False
         self.mdns_active: bool = False
         self.ssdp_active: bool = False
+        self._stop_event: asyncio.Event = asyncio.Event()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    async def start(self, settings) -> None:
+    async def start(self, settings: Any) -> None:
         """Start listener tasks based on settings flags."""
         if self.is_running:
             return
@@ -92,6 +94,7 @@ class ListenerService:
     async def stop(self) -> None:
         """Cancel all listener tasks and clean up zeroconf."""
         self.is_running = False
+        self._stop_event.set()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -113,31 +116,33 @@ class ListenerService:
             self._zeroconf = await loop.run_in_executor(None, Zeroconf)
 
             class _Handler:
-                def __init__(inner_self):
+                def __init__(inner_self) -> None:
                     pass
 
-                def add_service(inner_self, zc, type_, name):
+                def add_service(inner_self, zc: Any, type_: str, name: str) -> None:
                     asyncio.run_coroutine_threadsafe(
                         self._handle_mdns_service(zc, type_, name), loop
                     )
 
-                def remove_service(inner_self, zc, type_, name):
+                def remove_service(inner_self, zc: Any, type_: str, name: str) -> None:
                     pass
 
-                def update_service(inner_self, zc, type_, name):
+                def update_service(inner_self, zc: Any, type_: str, name: str) -> None:
                     asyncio.run_coroutine_threadsafe(
                         self._handle_mdns_service(zc, type_, name), loop
                     )
 
-            await loop.run_in_executor(
-                None, lambda: ServiceBrowser(self._zeroconf, _MDNS_SERVICES, _Handler())
-            )
+            zc = self._zeroconf
+            if zc:
+                _handler_instance = cast(Any, _Handler())
+                await loop.run_in_executor(
+                    None, lambda: ServiceBrowser(zc, _MDNS_SERVICES, _handler_instance)
+                )
             self.mdns_active = True
             _logger.info("mDNS browser started for %d service types.", len(_MDNS_SERVICES))
 
             # Keep alive until cancelled
-            while self.is_running:
-                await asyncio.sleep(5)
+            await self._stop_event.wait()
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -212,10 +217,11 @@ class ListenerService:
 
             while self.is_running:
                 try:
-                    data, addr = await loop.run_in_executor(None, lambda: sock.recvfrom(4096))
+                    # sock_recvfrom is proper async (epoll/select) — no thread pool needed.
+                    # The old run_in_executor on a non-blocking socket was burning 10 thread
+                    # slots/second returning BlockingIOError immediately.
+                    data, addr = await loop.sock_recvfrom(sock, 4096)
                     await self._handle_ssdp_packet(data.decode(errors="replace"), addr[0])
-                except (BlockingIOError, OSError):
-                    await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
                     break
                 except Exception as exc:

@@ -377,3 +377,228 @@ def _mock_vault(monkeypatch):
     if not vault.is_initialized:
         from cryptography.fernet import Fernet
         vault.reinitialize(Fernet.generate_key().decode())
+
+
+# ── CPU percentage clamping tests ───────────────────────────────────────────
+
+def test_node_cpu_percentage_conversion(db):
+    """Test that node CPU values are correctly converted from decimal to percentage."""
+    from app.db.models import IntegrationConfig, Hardware
+    from app.services.proxmox_service import _upsert_node
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    # Test normal CPU values: 0.3 should become 30%
+    node_res = {
+        "node": "pve1",
+        "status": "online",
+        "cpu": 0.3,
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,
+        "uptime": 12345,
+    }
+
+    hw = _upsert_node(db, config, node_res)
+    telemetry = json.loads(hw.telemetry_data) if hw.telemetry_data else {}
+
+    assert telemetry.get("cpu_pct") == 30.0, "CPU 0.3 should convert to 30%"
+    assert 0 <= telemetry.get("cpu_pct", 0) <= 100, "CPU percentage should be between 0-100"
+
+
+def test_node_cpu_percentage_clamped_at_100(db):
+    """Test that CPU values are clamped to 100% maximum (defensive against API anomalies)."""
+    from app.db.models import IntegrationConfig
+    from app.services.proxmox_service import _upsert_node
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    # Even if API returns > 1.0 (shouldn't happen, but defensive)
+    node_res = {
+        "node": "pve1",
+        "status": "online",
+        "cpu": 1.5,  # Should clamp to 100%
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,
+        "uptime": 12345,
+    }
+
+    hw = _upsert_node(db, config, node_res)
+    telemetry = json.loads(hw.telemetry_data) if hw.telemetry_data else {}
+
+    assert telemetry.get("cpu_pct") == 100.0, "CPU > 1.0 should clamp to 100%"
+    assert telemetry.get("cpu_pct") <= 100, "CPU percentage must never exceed 100%"
+
+
+def test_node_cpu_zero_value(db):
+    """Test that zero CPU value is handled correctly."""
+    from app.db.models import IntegrationConfig
+    from app.services.proxmox_service import _upsert_node
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    node_res = {
+        "node": "pve1",
+        "status": "online",
+        "cpu": 0,
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,
+        "uptime": 12345,
+    }
+
+    hw = _upsert_node(db, config, node_res)
+    telemetry = json.loads(hw.telemetry_data) if hw.telemetry_data else {}
+
+    assert telemetry.get("cpu_pct") == 0.0, "CPU 0 should be 0%"
+
+
+def test_vm_cpu_percentage_conversion(db):
+    """Test that VM CPU values are correctly converted from decimal to percentage."""
+    from app.db.models import IntegrationConfig, Hardware, ComputeUnit
+    from app.services.proxmox_service import _upsert_vm
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    hw = Hardware(name="pve1", role="hypervisor", proxmox_node_name="pve1")
+    db.add(hw)
+    db.flush()
+
+    # Test VM CPU values: 0.5 should become 50%
+    vm_res = {
+        "vmid": 100,
+        "name": "vm-test",
+        "status": "running",
+        "cpu": 0.5,
+        "maxcpu": 4,
+        "mem": 4 * 1024**3,
+        "maxmem": 8 * 1024**3,
+        "maxdisk": 100 * 1024**3,
+    }
+
+    cu = _upsert_vm(db, config, hw, 100, vm_res, "qemu")
+    pve_status = json.loads(cu.proxmox_status) if cu.proxmox_status else {}
+
+    assert pve_status.get("cpu_pct") == 50.0, "CPU 0.5 should convert to 50%"
+    assert 0 <= pve_status.get("cpu_pct", 0) <= 100, "CPU percentage should be between 0-100"
+
+
+def test_vm_cpu_percentage_clamped_at_100(db):
+    """Test that VM CPU values are clamped to 100% maximum."""
+    from app.db.models import IntegrationConfig, Hardware
+    from app.services.proxmox_service import _upsert_vm
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    hw = Hardware(name="pve1", role="hypervisor", proxmox_node_name="pve1")
+    db.add(hw)
+    db.flush()
+
+    # Edge case: CPU value > 1.0 should clamp to 100%
+    vm_res = {
+        "vmid": 101,
+        "name": "vm-test2",
+        "status": "running",
+        "cpu": 2.5,  # Defensive: shouldn't happen but we clamp it
+        "maxcpu": 4,
+        "mem": 4 * 1024**3,
+        "maxmem": 8 * 1024**3,
+        "maxdisk": 100 * 1024**3,
+    }
+
+    cu = _upsert_vm(db, config, hw, 101, vm_res, "qemu")
+    pve_status = json.loads(cu.proxmox_status) if cu.proxmox_status else {}
+
+    assert pve_status.get("cpu_pct") == 100.0, "CPU > 1.0 should clamp to 100%"
+    assert pve_status.get("cpu_pct") <= 100, "CPU percentage must never exceed 100%"
+
+
+def test_telemetry_status_based_on_cpu(db):
+    """Test that telemetry_status is correctly set based on CPU percentage."""
+    from app.db.models import IntegrationConfig
+    from app.services.proxmox_service import _upsert_node
+
+    config = IntegrationConfig(
+        type="proxmox",
+        name="Test",
+        config_url="https://test:8006",
+        credential_id=1,
+    )
+    db.add(config)
+    db.flush()
+
+    # High CPU (> 90%) should mark as critical
+    node_res_critical = {
+        "node": "pve1",
+        "status": "online",
+        "cpu": 0.95,  # 95% — critical
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,  # 25% memory
+        "uptime": 12345,
+    }
+
+    hw_critical = _upsert_node(db, config, node_res_critical)
+    assert hw_critical.telemetry_status == "critical", "CPU > 90% should mark as critical"
+
+    # Medium CPU (70-90%) should mark as degraded
+    node_res_degraded = {
+        "node": "pve2",
+        "status": "online",
+        "cpu": 0.75,  # 75% — degraded
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,  # 25% memory
+        "uptime": 12345,
+    }
+
+    hw_degraded = _upsert_node(db, config, node_res_degraded)
+    assert hw_degraded.telemetry_status == "degraded", "CPU 70-90% should mark as degraded"
+
+    # Low CPU (< 70%) with low memory should mark as healthy
+    node_res_healthy = {
+        "node": "pve3",
+        "status": "online",
+        "cpu": 0.30,  # 30% — healthy
+        "maxmem": 32 * 1024**3,
+        "mem": 8 * 1024**3,  # 25% memory
+        "uptime": 12345,
+    }
+
+    hw_healthy = _upsert_node(db, config, node_res_healthy)
+    assert hw_healthy.telemetry_status == "healthy", "CPU < 70% should mark as healthy"
+
+
+# ── Existing helper ────────────────────────────────────────────────────────
+

@@ -23,7 +23,8 @@ async def run_sync_with_retry[T](
 ) -> T:
     """Run a synchronous callable in a thread and retry on failure with exponential backoff.
 
-    Use for Proxmox/ILO API calls so transient network or server errors do not surface as hard failures.
+    Use for Proxmox/ILO API calls so transient network or server errors do not surface as
+    hard failures.
     """
     last: BaseException | None = None
     for attempt in range(max_attempts):

@@ -83,6 +83,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
 
   const connect = useCallback(() => {
     clearRetry();
+    intentionalRef.current = false;
 
     if (
       wsRef.current &&
@@ -191,9 +192,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
       if (document.visibilityState === 'visible' && !intentionalRef.current) {
         const ws = wsRef.current;
         const isActive =
-          ws &&
-          (ws.readyState === WebSocket.OPEN ||
-            (ws.readyState === WebSocket.CONNECTING && handshakeCompleteRef.current));
+          ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
         if (!isActive) {
           attemptRef.current = 0;
           connect();

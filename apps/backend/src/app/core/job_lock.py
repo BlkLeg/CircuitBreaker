@@ -52,6 +52,10 @@ def run_with_advisory_lock(lock_name: str, *lock_args: object, job_fn: Callable[
 
     If another worker holds the lock, job_fn is not called. Uses a dedicated
     DB session for the lock; job_fn may create its own session(s).
+
+    Note: PostgreSQL session-level advisory locks are tied to the DB connection.
+    The lock session stays open for the duration of job_fn so the lock holds.
+    The connection is always returned to the pool in the outer finally block.
     """
     lock_id = _lock_id_for(lock_name, *lock_args)
     db = SessionLocal()
@@ -61,6 +65,9 @@ def run_with_advisory_lock(lock_name: str, *lock_args: object, job_fn: Callable[
             return
         try:
             job_fn()
+        except Exception as exc:
+            _logger.error("Job %s raised an exception: %s", lock_name, exc, exc_info=True)
+            raise
         finally:
             advisory_unlock(db, lock_id)
     finally:

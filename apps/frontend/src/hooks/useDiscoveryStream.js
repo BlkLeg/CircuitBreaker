@@ -126,6 +126,9 @@ export function useDiscoveryStream() {
 
   const connect = useCallback(() => {
     clearRetry();
+    // Reset intentional-close flag so reconnects work after StrictMode cleanup
+    // or after a server-side disconnect. Auth failures still hard-stop via 1008.
+    intentionalRef.current = false;
 
     // Don't open a second socket if one is already open/connecting
     if (
@@ -322,9 +325,7 @@ export function useDiscoveryStream() {
       if (document.visibilityState === 'visible' && !intentionalRef.current) {
         const ws = wsRef.current;
         const isActive =
-          ws &&
-          (ws.readyState === WebSocket.OPEN ||
-            (ws.readyState === WebSocket.CONNECTING && handshakeCompleteRef.current));
+          ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
         if (!isActive) {
           attemptRef.current = 0;
           connect();

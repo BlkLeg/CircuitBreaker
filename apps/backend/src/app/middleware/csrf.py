@@ -10,6 +10,8 @@ handled by auth layer).
 
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
+from typing import cast
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -39,18 +41,20 @@ class CSRFMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         if request.method not in _MUTATING_METHODS:
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         # Only enforce CSRF when the session cookie is present (authenticated)
         if not request.cookies.get(COOKIE_NAME):
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         # Exempt login-flow endpoints that establish the session
         path = request.url.path
         if any(path.startswith(p) for p in _CSRF_EXEMPT_PREFIXES):
-            return await call_next(request)
+            return cast(Response, await call_next(request))
 
         csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
         csrf_header = request.headers.get("X-CSRF-Token", "")
@@ -79,4 +83,4 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 content={"detail": "CSRF token invalid"},
             )
 
-        return await call_next(request)
+        return cast(Response, await call_next(request))

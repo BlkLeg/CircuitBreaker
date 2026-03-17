@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "circuit-breaker-backend"
 dynamic = ["version"]
-requires-python = ">=3.11,<4"
+requires-python = ">=3.12,<4"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
@@ -87,8 +87,9 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "Q", "I", "UP"]
-ignore = ["E501", "B008"]
+select = ["E", "F", "I", "UP", "ASYNC"]
+ignore = []
+
 
 [tool.ruff.format]
 quote-style = "double"
@@ -96,7 +97,10 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 
 [tool.mypy]
-python_version = "3.11"
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_return_any = true
+python_version = "3.12"
 # Start permissive: ignore missing stubs for third-party libraries so mypy
 # can be adopted gradually without requiring every dependency to ship py.typed.
 ignore_missing_imports = true
@@ -107,7 +111,7 @@ no_implicit_optional = false
 # Warn on unreachable code; skip unused-ignores to avoid false positives
 # while the codebase is being gradually annotated.
 warn_unreachable = true
-warn_unused_ignores = false
+warn_unused_ignores = true
 # Exclude test fixtures and migration files from strict checks.
 exclude = [
     "tests/",

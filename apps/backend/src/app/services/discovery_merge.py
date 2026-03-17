@@ -1,10 +1,10 @@
 """Scan result merging — accept, reject, auto-merge, and bulk operations."""
 
-import asyncio
 import json
 import logging
 import re
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ from app.services.log_service import write_log
 logger = logging.getLogger(__name__)
 
 
-async def _emit_result_processed_event(db: Session, result_id: int, status: str):
+async def _emit_result_processed_event(db: Session, result_id: int, status: str) -> None:
     """Emit WebSocket and NATS event for result processing (accept/reject)."""
     from app.services.discovery_service import _emit_ws_event
 
@@ -98,7 +98,7 @@ def _make_service_slug(db: Session, name: str, hardware_id: int) -> str:
     return candidate
 
 
-def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
+def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -> None:
     """
     Attempt to automatically merge a scan result into the system without manual intervention.
     Called when discovery_auto_merge is true, or via API bulk action.
@@ -152,7 +152,7 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
         # Link services based on open ports
         if result.open_ports_json:
             try:
-                ports = json.loads(result.open_ports_json)
+                ports = json.loads(result.open_ports_json)  # type: ignore[arg-type]
                 for p in ports:
                     port_num = int(p["port"])
                     if port_num in PORT_SERVICE_MAP:
@@ -398,7 +398,7 @@ def merge_scan_result(
                 return {
                     "entity_type": "hardware",
                     "entity_id": hw.id,
-                    "ports": _build_ports_list(result.open_ports_json),
+                    "ports": _build_ports_list(result.open_ports_json),  # type: ignore[arg-type]
                 }
 
             # If we reach here inside the savepoint without matching a branch, commit savepoint
@@ -439,7 +439,7 @@ def bulk_merge_results(db: Session, result_ids: list[int], action: str, actor: s
     return {"accepted": accepted, "rejected": rejected, "skipped": skipped}
 
 
-def enhanced_bulk_merge(db: Session, payload, actor: str = "api") -> dict:
+def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
     """Enhanced bulk merge: accept scan results + optionally create/link cluster,
     network, rack assignment, per-node overrides, and auto-create services.
 

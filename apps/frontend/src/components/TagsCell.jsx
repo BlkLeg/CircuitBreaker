@@ -87,7 +87,7 @@ function TagsCell({
         const meta = tagMap.get(name);
         const isDark =
           meta?.color &&
-          /^#([0-9a-fA-F]{3}){1,2}$/.test(meta.color) &&
+          /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(meta.color) &&
           (Number.parseInt(meta.color.slice(1), 16) & 0xffffff) < 0x888888;
         let chipColor = 'var(--color-cb-text)';
         if (meta?.color) chipColor = isDark ? '#fff' : '#111';

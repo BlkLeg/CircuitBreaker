@@ -11,6 +11,8 @@ Routes:
 
 from __future__ import annotations
 
+from typing import Annotated, Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -39,7 +41,7 @@ def _validate_provider(provider: str) -> str:
 
 
 @router.get("/{provider}/config", response_model=list[IntegrationProviderRead])
-def list_configs(provider: str, db: Session = Depends(get_db)):
+def list_configs(provider: str, db: Session = Depends(get_db)) -> Any:
     _validate_provider(provider)
     return svc.list_configs(db, provider)
 
@@ -49,9 +51,9 @@ def create_config(
     provider: str,
     body: IntegrationProviderCreate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
     _validate_provider(provider)
     cfg = svc.create_config(db, provider, body)
     log_audit(
@@ -66,7 +68,7 @@ def create_config(
 
 
 @router.get("/{provider}/config/{config_id}", response_model=IntegrationProviderRead)
-def get_config(provider: str, config_id: int, db: Session = Depends(get_db)):
+def get_config(provider: str, config_id: int, db: Session = Depends(get_db)) -> Any:
     _validate_provider(provider)
     cfg = svc.get_config(db, provider, config_id)
     if cfg is None:
@@ -80,9 +82,9 @@ def update_config(
     config_id: int,
     body: IntegrationProviderUpdate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
     _validate_provider(provider)
     cfg = svc.update_config(db, provider, config_id, body)
     if cfg is None:
@@ -103,9 +105,9 @@ def delete_config(
     provider: str,
     config_id: int,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     _validate_provider(provider)
     if not svc.delete_config(db, provider, config_id):
         raise HTTPException(status_code=404, detail="Integration config not found")
@@ -125,9 +127,9 @@ async def test_config(
     provider: str,
     config_id: int,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Validate connectivity for an integration without starting a full sync.
 
     Returns ``{"status": "ok"|"error", "message": "...", "latency_ms": N}``.

@@ -8,7 +8,7 @@ const CONNECTING = 0,
 function makeMockWS(initialState = CONNECTING) {
   const ws = {
     readyState: initialState,
-    _listeners: {},
+    _listeners: new Map(),
     onopen: null,
     onmessage: null,
     onclose: null,
@@ -22,12 +22,14 @@ function makeMockWS(initialState = CONNECTING) {
     }),
     send: vi.fn(),
     addEventListener: vi.fn(function (event, cb, opts) {
-      this._listeners[event] = this._listeners[event] || [];
-      this._listeners[event].push({ cb, opts });
+      if (!this._listeners.has(event)) {
+        this._listeners.set(event, []);
+      }
+      this._listeners.get(event).push({ cb, opts });
     }),
     _fireOpen() {
       this.readyState = OPEN;
-      this._listeners['open']?.forEach(({ cb }) => cb());
+      this._listeners.get('open')?.forEach(({ cb }) => cb());
       this.onopen?.();
     },
     _fireMessage(data) {
@@ -53,7 +55,7 @@ function closeSocketSafely(socket) {
       () => {
         try {
           socket.close();
-        } catch (_e) {
+        } catch {
           /* ignore late-close during teardown */
         }
       },
@@ -72,7 +74,7 @@ describe('closeSocketSafely', () => {
     closeSocketSafely(ws);
     expect(ws.close).not.toHaveBeenCalled(); // deferred
     // The event listener added by closeSocketSafely should call close
-    const listener = ws._listeners['open']?.[0]?.cb;
+    const listener = ws._listeners.get('open')?.[0]?.cb;
     expect(listener).toBeDefined();
     listener?.();
     expect(ws.close).toHaveBeenCalled();
@@ -143,7 +145,7 @@ describe('hard-stop errors during CONNECTING state', () => {
     expect(ws.close).not.toHaveBeenCalled(); // deferred
     expect(refs.intentional).toBe(true); // flag set correctly
     // When socket eventually opens, it gets closed
-    const openListener = ws._listeners['open']?.[0]?.cb;
+    const openListener = ws._listeners.get('open')?.[0]?.cb;
     openListener?.();
     expect(ws.close).toHaveBeenCalled();
   });

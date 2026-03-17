@@ -5,6 +5,8 @@ GET /api/v1/capabilities  (no auth required — needed pre-login for OOBE)
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -19,7 +21,7 @@ _DEFAULT_SOCKET = "/var/run/docker.sock"
 
 
 @router.get("")
-async def get_capabilities(db: Session = Depends(get_db)):
+async def get_capabilities(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Return a map of optional subsystem availability and configuration."""
     from app.db.models import AppSettings
 

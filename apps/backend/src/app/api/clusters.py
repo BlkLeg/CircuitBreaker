@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -23,7 +25,7 @@ router = APIRouter(tags=["hardware-clusters"], dependencies=[require_scope("read
 def list_clusters(
     environment: str | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> list[Any]:
     return clusters_service.list_clusters(db, environment=environment)
 
 
@@ -31,8 +33,8 @@ def list_clusters(
 def create_cluster(
     payload: HardwareClusterCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return clusters_service.create_cluster(db, payload)
     except IntegrityError as exc:
@@ -43,7 +45,7 @@ def create_cluster(
 
 
 @router.get("/{cluster_id}")
-def get_cluster(cluster_id: int, db: Session = Depends(get_db)):
+def get_cluster(cluster_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return clusters_service.get_cluster(db, cluster_id)
     except ValueError as exc:
@@ -55,8 +57,8 @@ def update_cluster(
     cluster_id: int,
     payload: HardwareClusterUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return clusters_service.update_cluster(db, cluster_id, payload)
     except ValueError as exc:
@@ -67,8 +69,8 @@ def update_cluster(
 def delete_cluster(
     cluster_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         clusters_service.delete_cluster(db, cluster_id)
     except ValueError as exc:
@@ -79,7 +81,7 @@ def delete_cluster(
 
 
 @router.get("/{cluster_id}/members")
-def list_members(cluster_id: int, db: Session = Depends(get_db)):
+def list_members(cluster_id: int, db: Session = Depends(get_db)) -> list[Any]:
     try:
         return clusters_service.list_members(db, cluster_id)
     except ValueError as exc:
@@ -91,8 +93,8 @@ def add_member(
     cluster_id: int,
     payload: HardwareClusterMemberLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return clusters_service.add_member(db, cluster_id, payload.hardware_id, payload.role)
     except ValueError as exc:
@@ -110,8 +112,8 @@ def update_member(
     member_id: int,
     payload: HardwareClusterMemberUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return clusters_service.update_member(db, cluster_id, member_id, payload.role)
     except ValueError as exc:
@@ -123,8 +125,8 @@ def remove_member(
     cluster_id: int,
     member_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         clusters_service.remove_member(db, cluster_id, member_id)
     except ValueError as exc:

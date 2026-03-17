@@ -11,6 +11,8 @@ Routes:
 
 from __future__ import annotations
 
+from typing import Annotated, Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -30,7 +32,7 @@ router = APIRouter(tags=["certificates"])
 
 
 @router.get("", response_model=list[CertificateRead])
-def list_certificates(db: Session = Depends(get_db)):
+def list_certificates(db: Session = Depends(get_db)) -> list[Any]:
     return svc.list_certificates(db)
 
 
@@ -38,9 +40,9 @@ def list_certificates(db: Session = Depends(get_db)):
 def create_certificate(
     body: CertificateCreate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
     cert = svc.create_certificate(db, body)
     log_audit(
         db,
@@ -56,9 +58,9 @@ def create_certificate(
 @router.get("/{cert_id}", response_model=CertificateDetailRead)
 def get_certificate(
     cert_id: int,
-    db: Session = Depends(get_db),
-    _current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    _current_user: Annotated[User, require_role("admin")],
+) -> Any:
     cert = svc.get_certificate(db, cert_id)
     if cert is None:
         raise HTTPException(status_code=404, detail="Certificate not found")
@@ -70,9 +72,9 @@ def update_certificate(
     cert_id: int,
     body: CertificateUpdate,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
     cert = svc.update_certificate(db, cert_id, body)
     if cert is None:
         raise HTTPException(status_code=404, detail="Certificate not found")
@@ -91,9 +93,9 @@ def update_certificate(
 def delete_certificate(
     cert_id: int,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> dict[str, str]:
     if not svc.delete_certificate(db, cert_id):
         raise HTTPException(status_code=404, detail="Certificate not found")
     log_audit(
@@ -111,9 +113,9 @@ def delete_certificate(
 def renew_certificate(
     cert_id: int,
     request: Request,
-    db: Session = Depends(get_db),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    current_user: Annotated[User, require_role("admin")],
+) -> Any:
     cert = svc.get_certificate(db, cert_id)
     if cert is None:
         raise HTTPException(status_code=404, detail="Certificate not found")

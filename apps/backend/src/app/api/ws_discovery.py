@@ -37,6 +37,7 @@ import asyncio
 import hmac
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -77,17 +78,19 @@ def _warn_if_insecure(websocket: WebSocket) -> None:
         )
 
 
-async def _ping_loop(ws: WebSocket) -> None:
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     try:
         while True:
             await asyncio.sleep(30)
             if ws.application_state == WebSocketState.DISCONNECTED:
+                main_task.cancel()
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        logger.debug(f"Ping loop error: {e}")
+        logger.debug("Discovery WS ping loop error: %s", e)
+        main_task.cancel()
 
 
 async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) -> None:
@@ -118,7 +121,7 @@ async def _redis_discovery_listener(ws: WebSocket, stop_event: asyncio.Event) ->
                     await ws.send_text(msg["data"])
                 except Exception:
                     break
-            await asyncio.sleep(0.05)
+            # No asyncio.sleep() — get_message(timeout=1.0) already yields to the event loop.
     except asyncio.CancelledError:
         pass
     except Exception as exc:
@@ -138,7 +141,7 @@ async def discovery_stream(websocket: WebSocket) -> None:
     # Always accept first — token auth follows as the first message.
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -151,7 +154,7 @@ async def discovery_stream(websocket: WebSocket) -> None:
 
     try:
         # ── Auth phase: cookie (httpOnly) only ──────────────────────────────
-        raw_token = token_from_websocket_scope(websocket.scope)
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
         if not raw_token:
             logger.warning("WS auth rejected: no session cookie (ip=%s)", client_ip)
             try:
@@ -210,7 +213,9 @@ async def discovery_stream(websocket: WebSocket) -> None:
         await websocket.send_text(json.dumps({"status": "connected"}))
 
         # ── Keep-alive + Redis pub/sub listener + receive loop ────────────
-        ping_task = asyncio.create_task(_ping_loop(websocket))
+        _current_task = asyncio.current_task()
+        assert _current_task is not None
+        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
         redis_stop = asyncio.Event()
         redis_task = asyncio.create_task(_redis_discovery_listener(websocket, redis_stop))
 
@@ -241,6 +246,6 @@ async def discovery_stream(websocket: WebSocket) -> None:
 
 
 @router.get("/ws/status")
-async def ws_status(user=require_role("admin")) -> dict:
+async def ws_status(user: Any = require_role("admin")) -> dict[str, Any]:
     """Admin-facing endpoint: live WebSocket connection metrics."""
     return ws_manager.status_snapshot()

@@ -72,7 +72,7 @@ vi.mock('../hooks/useDiscoveryStream.js', () => ({
 
 // Mock child components to keep tests focused
 vi.mock('../components/discovery/DiscoverySidebar.jsx', () => ({
-  default: ({ filter, onFilterChange, jobCounts, pendingReviewCount }) =>
+  default: ({ filter, onFilterChange, pendingReviewCount }) =>
     React.createElement(
       'nav',
       { 'data-testid': 'discovery-sidebar' },

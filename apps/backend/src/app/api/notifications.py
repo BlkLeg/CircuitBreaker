@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -61,9 +62,7 @@ def _sink_to_out(sink: NotificationSink) -> SinkOut:
         id=sink.id,
         name=sink.name,
         provider_type=sink.provider_type,
-        provider_config=json.loads(sink.provider_config)
-        if isinstance(sink.provider_config, str)
-        else sink.provider_config,
+        provider_config=sink.provider_config,
         enabled=sink.enabled,
     )
 
@@ -72,15 +71,17 @@ def _sink_to_out(sink: NotificationSink) -> SinkOut:
 
 
 @router.get("/sinks", response_model=list[SinkOut])
-def list_sinks(db: Session = Depends(get_db), current_user=require_role("viewer")):
+def list_sinks(
+    db: Session = Depends(get_db), current_user: Any = require_role("viewer")
+) -> list[SinkOut]:
     sinks = db.query(NotificationSink).all()
     return [_sink_to_out(s) for s in sinks]
 
 
 @router.post("/sinks", response_model=SinkOut)
 def create_sink(
-    sink_in: SinkCreate, db: Session = Depends(get_db), current_user=require_role("editor")
-):
+    sink_in: SinkCreate, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> SinkOut:
     sink = NotificationSink(
         name=sink_in.name,
         provider_type=sink_in.provider_type,
@@ -98,8 +99,8 @@ def update_sink(
     sink_id: int,
     sink_in: SinkUpdate,
     db: Session = Depends(get_db),
-    current_user=require_role("editor"),
-):
+    current_user: Any = require_role("editor"),
+) -> SinkOut:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
@@ -115,7 +116,9 @@ def update_sink(
 
 
 @router.delete("/sinks/{sink_id}")
-def delete_sink(sink_id: int, db: Session = Depends(get_db), current_user=require_role("editor")):
+def delete_sink(
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> dict[str, str]:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
@@ -125,7 +128,9 @@ def delete_sink(sink_id: int, db: Session = Depends(get_db), current_user=requir
 
 
 @router.put("/sinks/{sink_id}/toggle", response_model=SinkOut)
-def toggle_sink(sink_id: int, db: Session = Depends(get_db), current_user=require_role("editor")):
+def toggle_sink(
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> SinkOut:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
@@ -135,11 +140,11 @@ def toggle_sink(sink_id: int, db: Session = Depends(get_db), current_user=requir
     return _sink_to_out(sink)
 
 
-def _ok_from_resp(resp) -> dict:
+def _ok_from_resp(resp: Any) -> dict[str, Any]:
     return {"ok": resp.status_code < 400, "error": None if resp.status_code < 400 else resp.text}
 
 
-async def _test_webhook_sink(webhook_url: str | None, body: dict) -> dict:
+async def _test_webhook_sink(webhook_url: str | None, body: dict[str, Any]) -> dict[str, Any]:
     if not webhook_url:
         return {"ok": False, "error": _WEBHOOK_URL_NOT_CONFIGURED}
     async with httpx.AsyncClient() as client:
@@ -147,7 +152,7 @@ async def _test_webhook_sink(webhook_url: str | None, body: dict) -> dict:
     return _ok_from_resp(resp)
 
 
-async def _test_email_sink(config: dict, db: Session) -> dict:
+async def _test_email_sink(config: dict[str, Any], db: Session) -> dict[str, Any]:
     try:
         from app.services.settings_service import get_or_create_settings
         from app.services.smtp_service import SmtpService
@@ -167,17 +172,13 @@ async def _test_email_sink(config: dict, db: Session) -> dict:
 
 @router.post("/sinks/{sink_id}/test")
 async def test_sink(
-    sink_id: int, db: Session = Depends(get_db), current_user=require_role("editor")
-):
+    sink_id: int, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> dict[str, Any]:
     sink = db.query(NotificationSink).filter(NotificationSink.id == sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
 
-    config = (
-        json.loads(sink.provider_config)
-        if isinstance(sink.provider_config, str)
-        else sink.provider_config
-    )
+    config = sink.provider_config
     provider_type = sink.provider_type
     webhook_url = config.get("webhook_url")
 
@@ -204,14 +205,14 @@ async def test_sink(
 
 
 @router.get("/routes", response_model=list[RouteOut])
-def list_routes(db: Session = Depends(get_db), current_user=require_role("viewer")):
+def list_routes(db: Session = Depends(get_db), current_user: Any = require_role("viewer")) -> Any:
     return db.query(NotificationRoute).all()
 
 
 @router.post("/routes", response_model=RouteOut)
 def create_route(
-    route_in: RouteCreate, db: Session = Depends(get_db), current_user=require_role("editor")
-):
+    route_in: RouteCreate, db: Session = Depends(get_db), current_user: Any = require_role("editor")
+) -> Any:
     sink = db.query(NotificationSink).filter(NotificationSink.id == route_in.sink_id).first()
     if not sink:
         raise HTTPException(status_code=404, detail=_SINK_NOT_FOUND)
@@ -227,7 +228,11 @@ def create_route(
 
 
 @router.delete("/routes/{route_id}")
-def delete_route(route_id: int, db: Session = Depends(get_db), current_user=require_role("editor")):
+def delete_route(
+    route_id: int,
+    db: Session = Depends(get_db),
+    current_user: Any = require_role("editor"),
+) -> dict[str, str]:
     route = db.query(NotificationRoute).filter(NotificationRoute.id == route_id).first()
     if not route:
         raise HTTPException(status_code=404, detail=_ROUTE_NOT_FOUND)

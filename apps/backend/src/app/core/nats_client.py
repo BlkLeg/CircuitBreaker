@@ -86,7 +86,11 @@ class NATSClient:
                 from urllib.parse import quote_plus, urlparse
 
                 parsed = urlparse(connect_url)
-                netloc = f"{quote_plus(NATS_USER)}:{quote_plus(NATS_PASSWORD)}@{parsed.hostname or 'localhost'}:{parsed.port or 4222}"
+                netloc = (
+                    f"{quote_plus(NATS_USER)}:{quote_plus(NATS_PASSWORD)}"
+                    f"@{parsed.hostname or 'localhost'}:{parsed.port or 4222}"
+                )
+
                 connect_url = f"{parsed.scheme}://{netloc}"
             if NATS_TLS:
                 connect_kw["tls"] = True

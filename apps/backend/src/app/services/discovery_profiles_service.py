@@ -9,13 +9,13 @@ from app.core.scheduler import reload_discovery_jobs
 from app.core.time import utcnow_iso
 from app.db.models import DiscoveryProfile
 from app.schemas.discovery import DiscoveryProfileCreate, DiscoveryProfileUpdate
-from app.services.credential_vault import get_vault
+from app.services.credential_vault import CredentialVault, get_vault
 from app.services.log_service import write_log
 
 logger = logging.getLogger(__name__)
 
 
-def _get_vault():
+def _get_vault() -> CredentialVault:
     return get_vault()
 
 
@@ -153,7 +153,8 @@ def update_profile(
 def delete_profile(db: Session, profile_id: int, actor: str) -> None:
     profile = get_profile(db, profile_id)
 
-    # Must nullify foreign keys first based on cascading rules (Assuming cascade in db not setup automatically for now, but jobs is set back_populates)
+    # Must nullify foreign keys first based on cascading rules
+    # (Assuming cascade in db not setup automatically for now, but jobs is set back_populates)
     from app.db.models import ScanJob
 
     jobs = db.query(ScanJob).filter(ScanJob.profile_id == profile_id).all()

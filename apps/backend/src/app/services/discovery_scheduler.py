@@ -31,7 +31,7 @@ def _running_scan_count(db: Session) -> int:
     return db.query(ScanJob).filter(ScanJob.status == "running").count()
 
 
-def _max_concurrent_scans(settings) -> int:
+def _max_concurrent_scans(settings: object) -> int:
     return max(1, int(getattr(settings, "max_concurrent_scans", 2) or 2))
 
 
@@ -54,7 +54,7 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
         asyncio.create_task(run_scan_job(queued.id))
 
 
-async def _run_profile_job_async(profile_id: int):
+async def _run_profile_job_async(profile_id: int) -> None:
     """Internal async helper to create and run a profile job."""
     from app.services.discovery_service import run_scan_job  # lazy import
 
@@ -155,7 +155,7 @@ def purge_old_scan_results() -> None:
     run_with_advisory_lock("discovery_purge", job_fn=_purge_old_scan_results_impl)
 
 
-def refresh_ip_pool():
+def refresh_ip_pool() -> None:
     """
     Scheduled job to refresh IP statuses in the live_metrics table.
     Checks reachability of known IP addresses and updates last_seen and status.

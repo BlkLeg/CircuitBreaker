@@ -18,7 +18,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import redis.asyncio as aioredis
@@ -76,7 +78,7 @@ async def _try_connect(connect_timeout: int = 5) -> aioredis.Redis | None:
             max_connections=20,
             socket_connect_timeout=connect_timeout,
         )
-        await client.ping()
+        await cast(Awaitable[Any], client.ping())
         return client
     except Exception:
         return None
@@ -114,12 +116,12 @@ async def get_redis() -> aioredis.Redis | None:
 
     if _redis is not None:
         try:
-            await _redis.ping()
+            await cast(Awaitable[Any], _redis.ping())
             return _redis
         except Exception:
             _logger.warning("Redis connection lost — will attempt reconnect")
             try:
-                await _redis.aclose()
+                await cast(Awaitable[Any], _redis.aclose())
             except Exception:
                 pass
             _redis = None
@@ -143,7 +145,7 @@ async def close_redis() -> None:
     global _redis
     if _redis is not None:
         try:
-            await _redis.aclose()
+            await cast(Awaitable[Any], _redis.aclose())
         except Exception as exc:
             _logger.debug("Redis close error: %s", exc)
         finally:
@@ -156,6 +158,6 @@ async def redis_health() -> bool:
     if _redis is None:
         return False
     try:
-        return await _redis.ping()
+        return bool(await cast(Awaitable[Any], _redis.ping()))
     except Exception:
         return False

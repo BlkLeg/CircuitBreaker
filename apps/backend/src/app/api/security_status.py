@@ -17,7 +17,7 @@ class SecurityStatus(BaseModel):
 
 
 @router.get("/status", response_model=SecurityStatus)
-def get_security_status(db: Session = Depends(get_db)):
+def get_security_status(db: Session = Depends(get_db)) -> SecurityStatus:
     """Public endpoint: returns current auth state.
 
     Authentication is always enabled once OOBE is complete.

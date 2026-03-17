@@ -67,10 +67,10 @@ class MonitorRead(BaseModel):
     def parse_probe_methods(cls, v: Any) -> list[str]:
         if isinstance(v, str):
             try:
-                return json.loads(v)
+                return list(json.loads(v))
             except Exception:
                 return ["icmp", "tcp", "http"]
-        return v or []
+        return list(v) if v else []
 
 
 class UptimeEventRead(BaseModel):

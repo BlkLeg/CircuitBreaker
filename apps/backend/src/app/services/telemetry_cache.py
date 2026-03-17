@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any, cast
 
 import redis.asyncio as aioredis
 
@@ -56,7 +57,7 @@ async def get_cached_telemetry(entity_id: int) -> dict | None:
         raw = await r.get(key)
         if raw is None:
             return None
-        return json.loads(raw)
+        return cast(dict[Any, Any], json.loads(raw))
     except aioredis.ConnectionError as exc:
         _logger.warning("telemetry cache read failed (connection): %s", exc)
         return None
@@ -106,7 +107,7 @@ async def get_cached_metric(ip: str) -> dict | None:
         raw = await r.get(key)
         if raw is None:
             return None
-        return json.loads(raw)
+        return cast(dict[Any, Any], json.loads(raw))
     except aioredis.ConnectionError as exc:
         _logger.warning("metric cache read failed (connection): %s", exc)
         return None

@@ -93,7 +93,7 @@ vi.mock('../components/settings/SettingsNav', () => {
   ];
   return {
     SETTINGS_TABS,
-    default: ({ activeTab, onTabChange, tabs }) =>
+    default: ({ onTabChange, tabs }) =>
       React.createElement(
         'nav',
         { 'data-testid': 'settings-nav' },

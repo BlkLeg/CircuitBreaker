@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import timedelta
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -102,8 +103,8 @@ def create_status_group(db: Session, data: StatusGroupCreate) -> StatusGroup:
     group = StatusGroup(
         status_page_id=data.status_page_id,
         name=data.name,
-        nodes=json.dumps(data.nodes),
-        services=json.dumps(data.services),
+        nodes=data.nodes,
+        services=data.services,
     )
     db.add(group)
     db.commit()
@@ -121,17 +122,17 @@ def update_status_group(
     if data.name is not None:
         group.name = data.name
     if data.nodes is not None:
-        group.nodes = json.dumps(data.nodes)
+        group.nodes = data.nodes
     if data.services is not None:
-        group.services = json.dumps(data.services)
+        group.services = data.services
     if add_node is not None:
-        nodes = json.loads(group.nodes) if group.nodes else []
+        nodes = list(group.nodes) if group.nodes else []
         if isinstance(add_node, dict) and "type" in add_node and "id" in add_node:
             key = (add_node["type"], add_node["id"])
             existing_keys = {(n.get("type"), n.get("id")) for n in nodes if isinstance(n, dict)}
             if key not in existing_keys:
                 nodes.append(add_node)
-                group.nodes = json.dumps(nodes)
+                group.nodes = nodes
     db.commit()
     db.refresh(group)
     return group
@@ -153,8 +154,8 @@ def resolve_group_entity_ids(group: StatusGroup) -> tuple[list[int], list[int], 
     """Return (hardware_ids, compute_unit_ids, service_ids) for the group's nodes and services."""
     hardware_ids: list[int] = []
     compute_unit_ids: list[int] = []
-    service_ids: list[int] = list(json.loads(group.services)) if group.services else []
-    nodes = json.loads(group.nodes) if group.nodes else []
+    service_ids: list[int] = list(group.services) if group.services else []
+    nodes = group.nodes if group.nodes else []
     for n in nodes:
         if not isinstance(n, dict):
             continue
@@ -238,7 +239,7 @@ def prune_history_older_than(db: Session, days: int = 30) -> int:
     from sqlalchemy import delete
 
     result = db.execute(delete(StatusHistory).where(StatusHistory.timestamp < cutoff))
-    deleted = result.rowcount
+    deleted = int(cast(Any, result).rowcount or 0)
     db.commit()
     if deleted:
         _logger.info("Pruned %d status_history rows older than %d days", deleted, days)
@@ -284,7 +285,7 @@ def get_dashboard_snapshots(db: Session) -> tuple[list[StatusPage], list[Dashboa
         overall = latest.overall_status if latest else "unknown"
         uptime = latest.uptime_pct if latest else 0.0
         avg_ping = latest.avg_ping if latest else None
-        metrics = json.loads(latest.metrics) if latest and latest.metrics else None
+        metrics = latest.metrics if latest and latest.metrics else None
         snapshots.append(
             DashboardGroupSnapshot(
                 id=g.id,
@@ -303,15 +304,15 @@ def get_dashboard_snapshots(db: Session) -> tuple[list[StatusPage], list[Dashboa
 # ── Dashboard v2 payload (groups + global + history per group) ─────────────────
 
 
-def _parse_metrics(v):
+def _parse_metrics(v: Any) -> dict | None:
     """Parse metrics from JSON string or return dict as-is."""
     if v is None:
         return None
     if isinstance(v, dict):
-        return v
+        return cast(dict, v)
     if isinstance(v, str) and v.strip():
         try:
-            return json.loads(v)
+            return cast(dict, json.loads(v))
         except json.JSONDecodeError:
             return None
     return None
@@ -544,8 +545,8 @@ def list_available_entities(
     assigned_service_ids = set()
 
     for g in groups:
-        hw, _, svcs = resolve_group_entity_ids(g)
-        assigned_hardware_ids.update(hw)
+        hw_ids, _, svcs = resolve_group_entity_ids(g)
+        assigned_hardware_ids.update(hw_ids)
         assigned_service_ids.update(svcs)
 
     # Now fetch target entities
@@ -554,7 +555,7 @@ def list_available_entities(
     entities = []
 
     # Helper to check if entity passes basic string filters
-    def passes_filters(name_val, role_val, status_val):
+    def passes_filters(name_val: str | None, role_val: str | None, status_val: str | None) -> bool:
         if q and q.lower() not in (name_val or "").lower():
             return False
         if role and role.lower() != (role_val or "").lower():

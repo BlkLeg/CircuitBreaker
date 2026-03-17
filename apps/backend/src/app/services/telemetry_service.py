@@ -54,7 +54,7 @@ def _derive_mem_pct(data: dict[str, Any]) -> float | None:
         return mem_pct
     used = _as_float(data.get("mem_used"))
     total = _as_float(data.get("mem_total"))
-    if used is None or total in (None, 0):
+    if used is None or total is None or total == 0:
         return None
     return round((used / total) * 100.0, 2)
 
@@ -65,7 +65,7 @@ def _derive_disk_pct(data: dict[str, Any]) -> float | None:
         return disk_pct
     used = _as_float(data.get("rootfs_used") or data.get("disk_used_bytes"))
     total = _as_float(data.get("rootfs_total") or data.get("disk_total_bytes"))
-    if used is None or total in (None, 0):
+    if used is None or total is None or total == 0:
         return None
     return round((used / total) * 100.0, 2)
 

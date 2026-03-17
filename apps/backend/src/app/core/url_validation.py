@@ -49,7 +49,10 @@ def reject_ssrf_url(url: str) -> None:
 
 
 def reject_ssrf_url_proxmox(url: str) -> None:
-    """Raise ValueError if the URL host is loopback or link-local. Allows private (RFC1918) for LAN Proxmox."""
+    """Raise ValueError if the URL host is loopback or link-local.
+
+    Allows private (RFC1918) for LAN Proxmox.
+    """
     _reject_ssrf_impl(
         url, _is_forbidden_ip_proxmox, "Proxmox URL must not target loopback or link-local IPs"
     )
@@ -82,6 +85,6 @@ def _reject_ssrf_impl(url: str, is_forbidden: Callable[[str], bool], msg: str) -
     except (socket.gaierror, OSError) as e:
         raise ValueError(f"Cannot resolve URL host: {e}") from e
     for _family, _type, _proto, _canonname, sockaddr in infos:
-        ip_str = sockaddr[0] if sockaddr else None
+        ip_str = str(sockaddr[0]) if sockaddr else None
         if ip_str and is_forbidden(ip_str):
             raise ValueError(msg)

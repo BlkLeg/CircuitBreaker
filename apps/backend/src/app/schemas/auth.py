@@ -39,7 +39,7 @@ class RegisterRequest(BaseModel):
     display_name: str | None = None
 
     @model_validator(mode="after")
-    def require_password_or_hash(self):
+    def require_password_or_hash(self) -> "RegisterRequest":
         if not self.password and not self.password_hash:
             raise ValueError("Either password or password_hash is required")
         if self.password and self.password_hash:
@@ -53,7 +53,7 @@ class LoginRequest(BaseModel):
     password_hash: str | None = None
 
     @model_validator(mode="after")
-    def require_password_or_hash(self):
+    def require_password_or_hash(self) -> "LoginRequest":
         if not self.password and not self.password_hash:
             raise ValueError("Either password or password_hash is required")
         if self.password and self.password_hash:
@@ -68,7 +68,7 @@ class VaultResetRequest(BaseModel):
     new_password_hash: str | None = None
 
     @model_validator(mode="after")
-    def require_new_password_or_hash(self):
+    def require_new_password_or_hash(self) -> "VaultResetRequest":
         if not self.new_password and not self.new_password_hash:
             raise ValueError("Either new_password or new_password_hash is required")
         if self.new_password and self.new_password_hash:
@@ -116,7 +116,7 @@ class OnboardingStepUpdateRequest(BaseModel):
     step: str
 
     @model_validator(mode="after")
-    def step_must_be_valid(self):
+    def step_must_be_valid(self) -> "OnboardingStepUpdateRequest":
         if self.step not in ONBOARDING_STEPS:
             raise ValueError(f"step must be one of {sorted(ONBOARDING_STEPS)}")
         return self
@@ -145,7 +145,7 @@ class BootstrapInitializeRequest(BaseModel):
     smtp_tls: bool | None = True
 
     @model_validator(mode="after")
-    def require_password_or_hash(self):
+    def require_password_or_hash(self) -> "BootstrapInitializeRequest":
         if not self.password and not self.password_hash:
             raise ValueError("Either password or password_hash is required")
         if self.password and self.password_hash:

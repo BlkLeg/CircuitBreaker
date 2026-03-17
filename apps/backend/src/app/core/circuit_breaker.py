@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from cachetools import TTLCache
 
@@ -117,7 +117,8 @@ def get_breaker(key: str, **kwargs: Any) -> CircuitBreaker:
     with _breakers_lock:
         if key not in _breakers:
             _breakers[key] = CircuitBreaker(key, **kwargs)
-        return _breakers[key]
+        breaker = _breakers[key]
+        return cast(CircuitBreaker, breaker)
 
 
 class CircuitOpenError(Exception):
@@ -135,7 +136,10 @@ async def call_with_circuit_breaker(
     failure_window_sec: int = DEFAULT_FAILURE_WINDOW_SEC,
     open_duration_sec: int = DEFAULT_OPEN_DURATION_SEC,
 ) -> Any:
-    """Run the async call through the circuit breaker. Returns fallback if circuit is open or call fails."""
+    """Run the async call through the circuit breaker.
+
+    Returns fallback if circuit is open or call fails.
+    """
     breaker = get_breaker(
         key,
         failure_threshold=failure_threshold,

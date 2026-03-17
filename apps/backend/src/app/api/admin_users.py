@@ -4,6 +4,7 @@ import logging
 import secrets
 import string
 from datetime import datetime
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -123,9 +124,9 @@ def _generate_temp_password() -> str:
 
 @router.get("/users", response_model=list[UserListItem])
 def list_users(
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> list[UserListItem]:
     """List all users with role, status, last_login, session count."""
     users = db.query(User).filter(User.id > 0).all()
     from app.core.time import utcnow
@@ -160,9 +161,9 @@ def list_users(
 @router.post("/users")
 def create_user(
     payload: UserCreateRequest,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Create a user directly (admin only)."""
     from app.core.security import gravatar_hash, hash_password
     from app.core.time import utcnow_iso
@@ -204,9 +205,9 @@ def create_user(
 @router.post("/users/local", response_model=CreateLocalUserResponse)
 def create_local_user(
     payload: CreateLocalUserRequest,
-    db: Session = Depends(get_db),
-    actor: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, require_role("admin")],
+) -> CreateLocalUserResponse:
     """Create a user instantly without an email invite (admin only).
 
     When generate_password=True a secure temp password is returned once in the
@@ -227,8 +228,9 @@ def create_local_user(
     role = payload.role if payload.role in ("admin", "editor", "viewer") else "viewer"
 
     if payload.generate_password:
-        temp_password: str | None = _generate_temp_password()
-        client_hash = client_hash_password(temp_password)
+        _temp = _generate_temp_password()
+        temp_password: str | None = _temp
+        client_hash = client_hash_password(_temp)
         hashed = hash_password(client_hash)
     else:
         if not payload.manual_password:
@@ -296,9 +298,9 @@ def create_local_user(
     return CreateLocalUserResponse(
         user_id=new_user.id,
         email=new_user.email,
-        display_name=new_user.display_name,  # type: ignore[arg-type]
+        display_name=new_user.display_name or "",
         role=new_user.role,
-        temp_password=temp_password,  # type: ignore[arg-type]
+        temp_password=temp_password,
         force_change=True,
     )
 
@@ -307,9 +309,9 @@ def create_local_user(
 def update_user(
     user_id: int,
     payload: UserUpdateRequest,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Update user role or is_active."""
     target = db.get(User, user_id)
     if not target:
@@ -332,10 +334,10 @@ def update_user(
 @router.delete("/users/{user_id}", status_code=204)
 def delete_user(
     user_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
     permanent: bool = Query(False, description="If true, remove the user entirely (hard delete)."),
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+) -> None:
     """Soft-delete user (is_active=False) or, when permanent=true, remove the user entirely."""
     target = db.get(User, user_id)
     if not target:
@@ -359,9 +361,9 @@ def delete_user(
 @router.post("/users/{user_id}/unlock")
 def unlock_user_endpoint(
     user_id: int,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Unlock a user after failed login lockout."""
     target = unlock_user(db, user_id)
     if not target:
@@ -373,9 +375,9 @@ def unlock_user_endpoint(
 def masquerade_user(
     request: Request,
     user_id: int,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> MasqueradeResponse:
     """Issue a short-lived masquerade token (admin login-as)."""
     from app.core.audit import log_audit
 
@@ -404,7 +406,10 @@ def masquerade_user(
         action="admin_masquerade",
         resource=f"user:{target.id}",
         status="ok",
-        details=f"Admin masquerade as user_id={target.id} ({target.email or target.display_name or 'unknown'})",
+        details=(
+            f"Admin masquerade as user_id={target.id}"
+            f" ({target.email or target.display_name or 'unknown'})"
+        ),
     )
     db.commit()
     return MasqueradeResponse(
@@ -420,14 +425,14 @@ def masquerade_user(
 @router.get("/user-actions/{user_id}")
 def get_user_actions(
     user_id: int,
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    user: Annotated[User, require_role("admin")],
+    db: Annotated[Session, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     start_time: str | None = None,
     end_time: str | None = None,
     action: str | None = None,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+) -> dict[str, Any]:
     """Filtered audit log for a specific user."""
     q = select(Log).where(Log.actor_id == user_id).order_by(Log.timestamp.desc())
     count_q = select(func.count()).select_from(Log).where(Log.actor_id == user_id)
@@ -476,9 +481,9 @@ def get_user_actions(
 async def create_invite_endpoint(
     payload: InviteCreateRequest,
     request: Request,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> InviteCreateResponse:
     """Generate an invite (email + role) and auto-send via SMTP if configured."""
     if payload.role not in ("admin", "editor", "viewer"):
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -525,10 +530,10 @@ async def create_invite_endpoint(
 
 @router.get("/invites", response_model=list[InviteListItem])
 def list_invites(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
     status: str | None = Query(None),
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+) -> list[InviteListItem]:
     """List invites (default: pending only)."""
     q = db.query(UserInvite).order_by(UserInvite.created_at.desc())
     if status:
@@ -558,9 +563,9 @@ class InviteUpdateRequest(BaseModel):
 def update_invite(
     invite_id: int,
     payload: InviteUpdateRequest,
-    db: Session = Depends(get_db),
-    user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Revoke or extend an invite."""
     invite = db.get(UserInvite, invite_id)
     if not invite:

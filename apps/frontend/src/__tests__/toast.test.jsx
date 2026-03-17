@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, act } from '@testing-library/react';
+import { fireEvent, render, screen, act } from '@testing-library/react';
 import { ToastProvider, useToast } from '../components/common/Toast';
 
 // Helper component that exposes toast methods via buttons

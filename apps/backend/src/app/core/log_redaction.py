@@ -38,18 +38,25 @@ def sanitize_log_text(value: str) -> str:
 
 
 class LogRedactionFilter(logging.Filter):
-    """Filter that rewrites log records in-place to remove sensitive values."""
+    """Filter that rewrites log records in-place to remove sensitive values.
+
+    Sanitizes msg (the format string) and each arg individually so that
+    formatters that rely on record.args (e.g. uvicorn's AccessFormatter)
+    continue to work correctly.  Pre-rendering and clearing args breaks
+    those formatters.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
-            rendered = record.getMessage()
-            record.msg = sanitize_log_text(rendered)
-            record.args = ()
-            return True
+            record.msg = sanitize_log_text(record.msg)
         if record.args and isinstance(record.args, tuple):
             record.args = tuple(
                 sanitize_log_text(item) if isinstance(item, str) else item for item in record.args
             )
+        elif record.args and isinstance(record.args, dict):
+            record.args = {
+                k: sanitize_log_text(v) if isinstance(v, str) else v for k, v in record.args.items()
+            }
         return True
 
 

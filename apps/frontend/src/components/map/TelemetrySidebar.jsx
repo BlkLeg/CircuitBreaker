@@ -89,31 +89,31 @@ function isHealthyStatus(data) {
   return HEALTHY_STATUSES.has(status) || HEALTHY_TELEMETRY.has(telemetry);
 }
 
-const NODE_STYLES = {
-  cluster: { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }, // violet
-  hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }, // steel blue
-  compute: { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' }, // green
-  service: { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' }, // orange
-  storage: { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' }, // purple
-  network: { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }, // cyan
-  misc: { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }, // gray
-  external: { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }, // sky blue
-  docker_network: { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }, // docker teal
-  docker_container: { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }, // docker blue
-};
+const NODE_STYLES = new Map([
+  ['cluster', { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }], // violet
+  ['hardware', { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }], // steel blue
+  ['compute', { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' }], // green
+  ['service', { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' }], // orange
+  ['storage', { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' }], // purple
+  ['network', { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }], // cyan
+  ['misc', { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }], // gray
+  ['external', { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }], // sky blue
+  ['docker_network', { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }], // docker teal
+  ['docker_container', { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }], // docker blue
+]);
 
-const NODE_TYPE_LABELS = {
-  cluster: 'Cluster',
-  hardware: 'Hardware',
-  compute: 'Compute',
-  service: 'Service',
-  storage: 'Storage',
-  network: 'Network',
-  misc: 'Misc',
-  external: 'External',
-  docker_network: 'Docker Net',
-  docker_container: 'Container',
-};
+const NODE_TYPE_LABELS = new Map([
+  ['cluster', 'Cluster'],
+  ['hardware', 'Hardware'],
+  ['compute', 'Compute'],
+  ['service', 'Service'],
+  ['storage', 'Storage'],
+  ['network', 'Network'],
+  ['misc', 'Misc'],
+  ['external', 'External'],
+  ['docker_network', 'Docker Net'],
+  ['docker_container', 'Container'],
+]);
 
 export default function TelemetrySidebar({ node, position, onClose, onBoundsChange }) {
   const [data, setData] = useState(null);
@@ -303,11 +303,11 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
                   height: 8,
                   borderRadius: '50%',
                   background:
-                    NODE_STYLES[node?.originalType]?.glowColor || 'var(--color-text-muted)',
-                  boxShadow: `0 0 6px ${NODE_STYLES[node?.originalType]?.glowColor || 'transparent'}`,
+                    NODE_STYLES.get(node?.originalType)?.glowColor || 'var(--color-text-muted)',
+                  boxShadow: `0 0 6px ${NODE_STYLES.get(node?.originalType)?.glowColor || 'transparent'}`,
                 }}
               />
-              <span>{NODE_TYPE_LABELS[node?.originalType] || node?.originalType}</span>
+              <span>{NODE_TYPE_LABELS.get(node?.originalType) || node?.originalType}</span>
             </div>
             {node?.originalType === 'hardware' && node?._hwRole && (
               <>

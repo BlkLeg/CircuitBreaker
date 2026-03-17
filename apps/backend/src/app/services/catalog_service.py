@@ -2,6 +2,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 
 from app.db import duckdb_client
 
@@ -14,7 +15,7 @@ _DUCKDB_CATALOG_LOADED = False
 @lru_cache(maxsize=1)
 def load_catalog() -> dict:
     with open(CATALOG_PATH) as f:
-        return json.load(f)
+        return cast(dict, json.load(f))
 
 
 def _ensure_duckdb_catalog() -> bool:
@@ -82,7 +83,7 @@ def get_vendor_devices(vendor_key: str) -> list[dict]:
 
 def get_device_spec(vendor_key: str, model_key: str) -> dict | None:
     catalog = load_catalog()
-    return catalog.get(vendor_key, {}).get("devices", {}).get(model_key)
+    return cast(dict | None, catalog.get(vendor_key, {}).get("devices", {}).get(model_key))
 
 
 def fuzzy_search_catalog(query: str) -> list[dict]:

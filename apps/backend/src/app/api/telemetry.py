@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import desc
@@ -22,7 +23,7 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["telemetry"])
 
 
-def _safe_json(val) -> dict | None:
+def _safe_json(val: Any) -> dict[str, Any] | None:
     """Parse a JSON string to dict, returning None on any failure."""
     if val is None:
         return None
@@ -30,7 +31,7 @@ def _safe_json(val) -> dict | None:
         return val
     if isinstance(val, str):
         try:
-            return json.loads(val)
+            return cast(dict, json.loads(val))
         except (json.JSONDecodeError, TypeError):
             return None
     return None
@@ -42,9 +43,9 @@ async def get_telemetry(
     request: Request,
     response: Response,
     hardware_id: int,
-    db: Session = Depends(get_db),
+    db: Annotated[Session, Depends(get_db)],
     _user_id: int = Depends(require_auth_always),
-):
+) -> TelemetryResponse:
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if hw is None:
         raise HTTPException(status_code=404, detail="Hardware not found")
@@ -56,10 +57,10 @@ def configure_telemetry(
     hardware_id: int,
     config: TelemetryConfig,
     request: Request,
-    db: Session = Depends(get_db),
-    vault: CredentialVault = Depends(get_vault),
-    current_user: User = require_scope("write", "telemetry"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    vault: Annotated[CredentialVault, Depends(get_vault)],
+    current_user: Annotated[User, require_scope("write", "telemetry")],
+) -> dict[str, Any]:
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if not hw:
         raise HTTPException(status_code=404, detail="Hardware not found")
@@ -85,10 +86,10 @@ def configure_telemetry(
 async def poll_now(
     hardware_id: int,
     request: Request,
-    db: Session = Depends(get_db),
-    vault: CredentialVault = Depends(get_vault),
-    current_user: User = require_role("admin"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    vault: Annotated[CredentialVault, Depends(get_vault)],
+    current_user: Annotated[User, require_role("admin")],
+) -> dict[str, Any]:
     """Manual on-demand poll."""
     hw = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if not hw:
@@ -128,9 +129,9 @@ _ENTITY_TYPES = {"hardware", "compute_unit", "storage"}
 def get_entity_telemetry(
     entity_type: str,
     entity_id: int,
-    db: Session = Depends(get_db),
-    _user: User = require_scope("read", "*"),
-):
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_scope("read", "*")],
+) -> dict[str, Any]:
     if entity_type not in _ENTITY_TYPES:
         raise HTTPException(status_code=400, detail=f"entity_type must be one of {_ENTITY_TYPES}")
 

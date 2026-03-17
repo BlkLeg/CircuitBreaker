@@ -2,8 +2,10 @@
 
 import json
 import logging
+from typing import Any
 
 from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.db.models import (
@@ -28,7 +30,9 @@ _CPU_HIGH_PCT = 90
 _DOWN_MINUTES_ALERT = 5
 
 
-def _entity_status(db, group: StatusGroup) -> tuple[list[str], float, list[dict], float | None]:
+def _entity_status(
+    db: Session, group: StatusGroup
+) -> tuple[list[str], float, list[dict], float | None]:
     """Return (list of status strings, uptime_pct_approx, metrics list, avg_ping)."""
     hw_ids, cu_ids, svc_ids = svc.resolve_group_entity_ids(group)
     statuses: list[str] = []
@@ -45,7 +49,11 @@ def _entity_status(db, group: StatusGroup) -> tuple[list[str], float, list[dict]
             statuses.append(s)
             if hw.telemetry_data:
                 try:
-                    data = json.loads(hw.telemetry_data)
+                    data = (
+                        hw.telemetry_data
+                        if isinstance(hw.telemetry_data, dict)
+                        else json.loads(hw.telemetry_data)
+                    )
                     if isinstance(data, dict):
                         metrics.append({"type": "hardware", "id": hid, "data": data})
                 except Exception as e:
@@ -114,7 +122,7 @@ def _overall_status(statuses: list[str], uptime_pct: float) -> str:
 def _detect_events(
     group_id: int,
     overall: str,
-    metrics_list: list[dict],
+    metrics_list: list[Any],
     previous_row: StatusHistory | None,
 ) -> list[dict]:
     """Build events for threshold breaches: cpu > 90%, down > 5 min."""
@@ -155,7 +163,10 @@ def _detect_events(
 
 
 def _run_status_poll_job_impl() -> None:
-    """Poll all status groups, compute metrics, append history, prune old (called under advisory lock)."""
+    """Poll all status groups, compute metrics, append history, prune old.
+
+    Called under advisory lock.
+    """
     db = SessionLocal()
     broadcast_payload: list[dict] = []
     try:

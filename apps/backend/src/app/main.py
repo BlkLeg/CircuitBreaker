@@ -208,8 +208,10 @@ def run_alembic_upgrade():
     from app.db.session import engine
 
     # Resolve alembic.ini relative to this file so it works regardless of CWD.
-    # Mono/backend Docker: main.py at /app/backend/src/app/main.py and alembic.ini at /app/backend/alembic.ini.
-    # Repo: main.py at <root>/apps/backend/src/app/main.py and alembic.ini at <root>/apps/backend/alembic.ini.
+    # Mono/backend Docker: main.py at /app/backend/src/app/main.py,
+    # alembic.ini at /app/backend/alembic.ini.
+    # Repo: main.py at <root>/apps/backend/src/app/main.py,
+    # alembic.ini at <root>/apps/backend/alembic.ini.
     _p = Path(__file__).resolve()
     _alembic_candidates: list[str | Path | None] = [
         os.environ.get("ALEMBIC_CONFIG"),
@@ -271,10 +273,17 @@ def _assert_required_schema() -> None:
 async def lifespan(app: FastAPI):
     """Run startup and shutdown tasks.
 
-    Migrations are run by the process entrypoint before workers spawn; do not run them here
-    to avoid concurrent Alembic execution from multiple workers (crashes).
+    Migrations run here when CB_AUTO_MIGRATE=true (default) or when no external
+    entrypoint has already applied them.  In multi-worker production deployments
+    the Docker entrypoint calls run_alembic_upgrade() before spawning workers to
+    avoid concurrent DDL; the guard here is a safe fallback for bare uvicorn / dev.
     """
     import asyncio
+    import concurrent.futures
+
+    asyncio.get_event_loop().set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=32)
+    )
 
     from app.core.nats_client import nats_client
     from app.core.server_state import ServerState, set_state
@@ -306,6 +315,22 @@ async def lifespan(app: FastAPI):
             )
             raise SystemExit(1) from _pe
     _logger.info("Filesystem validation passed — data dir: %s", _data_dir)
+
+    # ── Phase 1b: Auto-migrate ─────────────────────────────────────────────
+    # Run pending Alembic migrations before any schema check.  Safe for both
+    # single-worker dev (make dev) and multi-worker prod: if another worker
+    # already applied the migrations the upgrade call is an instant no-op.
+    # Set CB_AUTO_MIGRATE=false to disable (e.g. when entrypoint pre-migrates).
+    if os.environ.get("CB_AUTO_MIGRATE", "true").lower() != "false":
+        try:
+            run_alembic_upgrade()
+            _logger.info("Alembic migrations applied (or already at head).")
+        except Exception as _me:  # noqa: BLE001
+            _logger.warning(
+                "Auto-migrate failed (schema may be stale): %s — "
+                "run 'make migrate' or 'alembic upgrade head' manually.",
+                _me,
+            )
 
     _assert_required_schema()
 
@@ -357,6 +382,7 @@ async def lifespan(app: FastAPI):
     # Subscribe to topology subjects and fan out to topology WS clients.
     # Also subscribe to notification subjects for SSE fan-out (events.py handles
     # its own subscriptions; this bridge feeds the topology WS manager).
+    _lifespan_subs: list = []  # track for explicit unsubscribe on shutdown
     if nats_client.is_connected:
         import json as _json
 
@@ -387,7 +413,9 @@ async def lifespan(app: FastAPI):
             _subj.TOPOLOGY_CABLE_REMOVED,
             _subj.TOPOLOGY_NODE_STATUS_CHANGED,
         ):
-            await nats_client.subscribe(_topo_subject, _topo_handler)
+            _sub = await nats_client.subscribe(_topo_subject, _topo_handler)
+            if _sub:
+                _lifespan_subs.append(_sub)
         _logger.info("NATS → topology WS bridge subscribed.")
 
         # ── NATS → discovery WebSocket bridge ─────────────────────────────
@@ -455,7 +483,9 @@ async def lifespan(app: FastAPI):
             _subj.DISCOVERY_SCAN_FAILED,
             _subj.DISCOVERY_DEVICE_FOUND,
         ):
-            await nats_client.subscribe(_disc_subject, _discovery_scan_handler)
+            _sub = await nats_client.subscribe(_disc_subject, _discovery_scan_handler)
+            if _sub:
+                _lifespan_subs.append(_sub)
         _logger.info("NATS → discovery WS bridge subscribed.")
 
     # ── CVE database (separate SQLite file) ───────────────────────────────
@@ -503,6 +533,36 @@ async def lifespan(app: FastAPI):
         _purge_hardware_live_metrics,
         trigger=CronTrigger(hour=3, minute=5),
         id="purge_hardware_live_metrics",
+        replace_existing=True,
+    )
+
+    # Daily purge of old telemetry_timeseries rows — unbounded table, grows fast
+    def _purge_telemetry_timeseries() -> None:
+        with get_session_context() as _tdb:
+            from sqlalchemy import text as _text
+
+            from app.db.models import AppSettings as _AS
+
+            cfg = _tdb.query(_AS).first()
+            retention_days = getattr(cfg, "telemetry_retention_days", None) or 30
+            result = _tdb.execute(
+                _text(
+                    "DELETE FROM telemetry_timeseries WHERE ts < NOW() - (:days * INTERVAL '1 day')"
+                ),
+                {"days": retention_days},
+            )
+            removed = result.rowcount
+            if removed:
+                _logger.info(
+                    "Purged %d rows from telemetry_timeseries (retention=%dd).",
+                    removed,
+                    retention_days,
+                )
+
+    scheduler.add_job(
+        _purge_telemetry_timeseries,
+        trigger=CronTrigger(hour=3, minute=20),
+        id="purge_telemetry_timeseries",
         replace_existing=True,
     )
 
@@ -701,22 +761,34 @@ async def lifespan(app: FastAPI):
     )
 
     async def _proxmox_node_poll():
-        async with AsyncSessionLocal() as _pdb:
-            await poll_node_telemetry(_pdb)
+        try:
+            async with asyncio.timeout(25):
+                async with AsyncSessionLocal() as _pdb:
+                    await poll_node_telemetry(_pdb)
+        except TimeoutError:
+            _logger.warning("proxmox_node_poll timed out (25s) — skipping cycle")
 
     async def _proxmox_vm_poll():
-        async with AsyncSessionLocal() as _pdb:
-            await poll_vm_telemetry(_pdb)
+        try:
+            async with asyncio.timeout(100):
+                async with AsyncSessionLocal() as _pdb:
+                    await poll_vm_telemetry(_pdb)
+        except TimeoutError:
+            _logger.warning("proxmox_vm_poll timed out (100s) — skipping cycle")
 
     async def _proxmox_full_sync():
-        with get_session_context() as _pdb:
-            configs = list_integrations(_pdb)
-            for cfg in configs:
-                if cfg.auto_sync:
-                    try:
-                        await discover_and_import(_pdb, cfg, queue_for_review=False)
-                    except Exception as exc:
-                        _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
+        try:
+            async with asyncio.timeout(270):
+                with get_session_context() as _pdb:
+                    configs = list_integrations(_pdb)
+                    for cfg in configs:
+                        if cfg.auto_sync:
+                            try:
+                                await discover_and_import(_pdb, cfg, queue_for_review=False)
+                            except Exception as exc:
+                                _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
+        except TimeoutError:
+            _logger.warning("proxmox_full_sync timed out (270s) — skipping cycle")
 
     with get_session_context() as pxmx_db:
         from sqlalchemy import func
@@ -740,6 +812,8 @@ async def lifespan(app: FastAPI):
                 id="proxmox_node_telemetry",
                 replace_existing=True,
                 max_instances=1,
+                coalesce=True,
+                misfire_grace_time=15,
             )
             scheduler.add_job(
                 _proxmox_vm_poll,
@@ -747,12 +821,18 @@ async def lifespan(app: FastAPI):
                 id="proxmox_vm_telemetry",
                 replace_existing=True,
                 max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
             )
             _pxmx_rrd_s = int(os.environ.get("PROXMOX_RRD_POLL_SECONDS", "300"))
 
             async def _proxmox_rrd_poll():
-                async with AsyncSessionLocal() as _pdb:
-                    await poll_rrd_telemetry(_pdb)
+                try:
+                    async with asyncio.timeout(270):
+                        async with AsyncSessionLocal() as _pdb:
+                            await poll_rrd_telemetry(_pdb)
+                except TimeoutError:
+                    _logger.warning("proxmox_rrd_poll timed out (270s) — skipping cycle")
 
             scheduler.add_job(
                 _proxmox_rrd_poll,
@@ -763,8 +843,12 @@ async def lifespan(app: FastAPI):
             )
 
             async def _proxmox_storage_refresh():
-                async with AsyncSessionLocal() as _pdb:
-                    await refresh_proxmox_storage(_pdb)
+                try:
+                    async with asyncio.timeout(270):
+                        async with AsyncSessionLocal() as _pdb:
+                            await refresh_proxmox_storage(_pdb)
+                except TimeoutError:
+                    _logger.warning("proxmox_storage_refresh timed out (270s) — skipping cycle")
 
             scheduler.add_job(
                 _proxmox_storage_refresh,
@@ -875,13 +959,14 @@ async def lifespan(app: FastAPI):
     # ── Webhook and notification workers (skip when running with dedicated worker
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
     _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
+    _worker_tasks: list = []
     if _run_inprocess_workers:
         from app.workers import discovery as discovery_worker
         from app.workers import notification_worker, webhook_worker
 
-        asyncio.create_task(webhook_worker.run_worker())
-        asyncio.create_task(notification_worker.run_worker())
-        asyncio.create_task(discovery_worker.run_worker())
+        _worker_tasks.append(asyncio.create_task(webhook_worker.run_worker()))
+        _worker_tasks.append(asyncio.create_task(notification_worker.run_worker()))
+        _worker_tasks.append(asyncio.create_task(discovery_worker.run_worker()))
         _logger.info("Webhook, notification, and discovery workers started (in-process).")
     else:
         _logger.info(
@@ -908,14 +993,29 @@ async def lifespan(app: FastAPI):
     await listener_service.stop()
 
     async def shutdown_scheduler():
-        scheduler.shutdown(wait=True)
-        await asyncio.sleep(1)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: scheduler.shutdown(wait=True))
 
     try:
         await asyncio.wait_for(shutdown_scheduler(), timeout=10.0)
         _logger.info("Scheduler shutdown complete")
     except TimeoutError:
-        _logger.warning("Scheduler shutdown timed out after 10s")
+        _logger.warning("Scheduler shutdown timed out after 10s — forcing stop")
+        scheduler.shutdown(wait=False)
+
+    # ── Cancel in-process worker tasks ────────────────────────────────────
+    for _wt in _worker_tasks:
+        _wt.cancel()
+    if _worker_tasks:
+        await asyncio.gather(*_worker_tasks, return_exceptions=True)
+        _logger.info("In-process workers stopped.")
+
+    # ── Unsubscribe NATS lifespan subscriptions ────────────────────────────
+    for _ls in _lifespan_subs:
+        try:
+            await _ls.unsubscribe()
+        except Exception:
+            pass
 
     # ── Graceful NATS disconnect ───────────────────────────────────────────
     await nats_client.disconnect()

@@ -1,4 +1,6 @@
-import requests  # type: ignore[import-untyped]
+from typing import Any
+
+import requests
 import urllib3
 
 urllib3.disable_warnings()
@@ -31,11 +33,11 @@ class ILOClient:
         """Returns path to system CA bundle or None to use default."""
         return None  # Use requests' default CA bundle
 
-    def _get(self, path: str) -> dict:
+    def _get(self, path: str) -> dict[Any, Any]:
         try:
             r = self._session.get(f"{self.base}{path}", timeout=10)
             r.raise_for_status()
-            return r.json()
+            return dict(r.json())
         except requests.ConnectionError as exc:
             raise ConnectionError(f"Cannot reach iLO at {self.base}: {exc}") from exc
         except requests.HTTPError:

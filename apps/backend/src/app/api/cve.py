@@ -18,7 +18,7 @@ def search_cves(
     severity: str | None = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-):
+) -> dict:
     results, total = cve_service.search_cves(
         query=q,
         vendor=vendor,
@@ -31,18 +31,18 @@ def search_cves(
 
 
 @router.get("/entity/{entity_type}/{entity_id}")
-def cves_for_entity(entity_type: str, entity_id: int):
+def cves_for_entity(entity_type: str, entity_id: int) -> dict:
     items = cve_service.cves_for_entity(entity_type, entity_id)
     return {"items": items, "total": len(items)}
 
 
 @router.post("/sync", dependencies=[Depends(require_write_auth)])
-def trigger_sync(background_tasks: BackgroundTasks):
+def trigger_sync(background_tasks: BackgroundTasks) -> dict:
     """Trigger an immediate NVD CVE feed sync in the background."""
     background_tasks.add_task(cve_service.sync_nvd_feed)
     return {"status": "sync_started"}
 
 
 @router.get("/status")
-def cve_status():
+def cve_status() -> dict:
     return cve_service.get_status()

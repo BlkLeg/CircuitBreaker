@@ -106,7 +106,9 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
                 except Exception as exc:
                     logger.debug("Telemetry WS forward failed: %s", exc)
                     break
-            await asyncio.sleep(0.05)
+            # No asyncio.sleep() here — get_message(timeout=1.0) already yields
+            # to the event loop for up to 1s. An extra 50ms sleep was causing
+            # ~20 wakeups/second per connection, starving the event loop under load.
     except asyncio.CancelledError:
         pass
     except Exception as exc:
@@ -119,24 +121,27 @@ async def _redis_listener(ws: WebSocket, channels: set[str], stop_event: asyncio
             pass
 
 
-async def _ping_loop(ws: WebSocket) -> None:
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     try:
         while True:
             await asyncio.sleep(30)
             if ws.application_state == WebSocketState.DISCONNECTED:
+                main_task.cancel()
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
     except asyncio.CancelledError:
         pass
     except Exception:
-        pass
+        # Send failed — client disconnected. Cancel the receive loop immediately
+        # so the handler's finally block runs without waiting 30s for the next ping.
+        main_task.cancel()
 
 
 @router.websocket("/stream")
 async def telemetry_stream(websocket: WebSocket) -> None:
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -148,7 +153,7 @@ async def telemetry_stream(websocket: WebSocket) -> None:
 
     try:
         # ── Auth phase ──────────────────────────────────────────────────
-        raw_token = token_from_websocket_scope(websocket.scope)
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
         if not raw_token:
             try:
                 raw_token = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
@@ -212,7 +217,9 @@ async def telemetry_stream(websocket: WebSocket) -> None:
         subscribed_channels: set[str] = set()
         stop_event = asyncio.Event()
         listener_task: asyncio.Task | None = None
-        ping_task = asyncio.create_task(_ping_loop(websocket))
+        _current_task = asyncio.current_task()
+        assert _current_task is not None
+        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
 
         try:
             while True:

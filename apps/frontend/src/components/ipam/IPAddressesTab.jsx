@@ -10,12 +10,12 @@ import ConfirmDialog from '../common/ConfirmDialog';
 import SearchBox from '../SearchBox';
 import { SkeletonTable } from '../common/SkeletonTable';
 
-const STATUS_BADGE = {
-  free: '#3b82f6',
-  allocated: '#22c55e',
-  reserved: '#f59e0b',
-  dhcp: '#a78bfa',
-};
+const STATUS_BADGE = new Map([
+  ['available', '#6b7280'],
+  ['allocated', '#22c55e'],
+  ['reserved', '#f59e0b'],
+  ['dhcp', '#a78bfa'],
+]);
 
 const COLUMNS = (networks) => [
   { key: 'address', label: 'Address' },
@@ -23,7 +23,7 @@ const COLUMNS = (networks) => [
     key: 'status',
     label: 'Status',
     render: (v) => (
-      <span style={{ fontWeight: 600, color: STATUS_BADGE[v] ?? 'inherit' }}>{v ?? '—'}</span>
+      <span style={{ fontWeight: 600, color: STATUS_BADGE.get(v) ?? 'inherit' }}>{v ?? '—'}</span>
     ),
   },
   { key: 'hostname', label: 'Hostname', render: (v) => v || '—' },

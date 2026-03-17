@@ -3,13 +3,12 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Read the canonical VERSION file from the repo root at build time.
 // This value is baked into the JS bundle as import.meta.env.VITE_APP_VERSION.
 const ROOT_DIR = fileURLToPath(new URL('../..', import.meta.url));
-const APP_VERSION = readFileSync(resolve(ROOT_DIR, 'VERSION'), 'utf8').trim();
+const APP_VERSION = readFileSync('../../VERSION', 'utf8').trim();
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ROOT_DIR, '');

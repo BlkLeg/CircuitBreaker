@@ -238,7 +238,7 @@ def vault_reset_password(
     new_password_or_hash: str,
     cfg: AppSettings,
     *,
-    request=None,
+    request: Any = None,
     auto_login: bool = True,
 ) -> AuthResponse | User:
     from app.services.log_service import write_log
@@ -816,7 +816,7 @@ def login(
     password_or_hash: str,
     cfg: AppSettings,
     ip_address: str | None = None,
-    request=None,
+    request: Any = None,
 ) -> AuthResponse:
     from app.services.log_service import write_log
     from app.services.user_service import record_failed_login, record_session, reset_login_attempts

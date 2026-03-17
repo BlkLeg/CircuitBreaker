@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 import urllib3
 
@@ -66,10 +66,10 @@ class ProxmoxIntegration:
 
     def _get(self, path: str) -> Any:
         """Synchronous GET — always call via ``asyncio.to_thread``."""
-        return self._px.get(path)
+        return cast(Any, self._px.get(path))
 
     def _post(self, path: str, **kwargs: Any) -> Any:
-        return self._px.post(path, **kwargs)
+        return cast(Any, self._px.post(path, **kwargs))
 
     # ── public async API ──────────────────────────────────────────────────
 
@@ -77,9 +77,9 @@ class ProxmoxIntegration:
         """Return PVE version and cluster name."""
 
         def _sync() -> dict:
-            version_info = self._px.get("version")
+            version_info = cast(dict, self._px.get("version"))
             try:
-                cluster_status = self._px.get("cluster/status")
+                cluster_status = cast(list, self._px.get("cluster/status"))
                 cluster_name = next(
                     (
                         item.get("name", "unknown")
@@ -104,9 +104,9 @@ class ProxmoxIntegration:
         """Fetch full cluster resource inventory."""
 
         def _sync() -> dict:
-            resources = self._px.get("cluster/resources")
+            resources = cast(list, self._px.get("cluster/resources"))
             try:
-                cluster_status = self._px.get("cluster/status")
+                cluster_status = cast(list, self._px.get("cluster/status"))
             except Exception as exc:
                 _logger.warning("Could not fetch cluster/status during discovery: %s", exc)
                 cluster_status = []
@@ -120,28 +120,28 @@ class ProxmoxIntegration:
         PVEAuditor can read this; used for cluster overview dashboard."""
 
         def _sync() -> list:
-            return self._px.get("cluster/status")
+            return cast(list, self._px.get("cluster/status"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_status(self, node: str) -> dict:
         def _sync() -> dict:
-            return self._px.get(f"nodes/{node}/status")
+            return cast(dict, self._px.get(f"nodes/{node}/status"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_vm_config(self, node: str, vmid: int, vm_type: str = "qemu") -> dict:
         def _sync() -> dict:
-            return self._px.get(f"nodes/{node}/{vm_type}/{vmid}/config")
+            return cast(dict, self._px.get(f"nodes/{node}/{vm_type}/{vmid}/config"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_vm_status(self, node: str, vmid: int, vm_type: str = "qemu") -> dict:
         def _sync() -> dict:
-            return self._px.get(f"nodes/{node}/{vm_type}/{vmid}/status/current")
+            return cast(dict, self._px.get(f"nodes/{node}/{vm_type}/{vmid}/status/current"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
@@ -150,7 +150,7 @@ class ProxmoxIntegration:
         """Return the effective permissions for the current token."""
 
         def _sync() -> dict:
-            return self._px.get("access/permissions")
+            return cast(dict, self._px.get("access/permissions"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
@@ -159,7 +159,7 @@ class ProxmoxIntegration:
         """List VMs or LXCs on a specific node (fallback for limited tokens)."""
 
         def _sync() -> list[dict]:
-            return self._px.get(f"nodes/{node}/{vm_type}")
+            return cast(list, self._px.get(f"nodes/{node}/{vm_type}"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
@@ -168,21 +168,21 @@ class ProxmoxIntegration:
         """List storage pools on a specific node."""
 
         def _sync() -> list[dict]:
-            return self._px.get(f"nodes/{node}/storage")
+            return cast(list, self._px.get(f"nodes/{node}/storage"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_networks(self, node: str) -> list[dict]:
         def _sync() -> list[dict]:
-            return self._px.get(f"nodes/{node}/network")
+            return cast(list, self._px.get(f"nodes/{node}/network"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
 
     async def get_node_rrddata(self, node: str, timeframe: str = "hour") -> list[dict]:
         def _sync() -> list[dict]:
-            return self._px.get(f"nodes/{node}/rrddata", timeframe=timeframe)
+            return cast(list, self._px.get(f"nodes/{node}/rrddata", timeframe=timeframe))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")
@@ -193,7 +193,7 @@ class ProxmoxIntegration:
         """Execute a VM/CT lifecycle action. Returns the UPID task string."""
 
         def _sync() -> str:
-            return self._px.post(f"nodes/{node}/{vm_type}/{vmid}/status/{action}")
+            return cast(str, self._px.post(f"nodes/{node}/{vm_type}/{vmid}/status/{action}"))
 
         async with self._semaphore:
             return await run_sync_with_retry(_sync, log_context="Proxmox")

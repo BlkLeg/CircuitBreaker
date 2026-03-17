@@ -33,46 +33,59 @@ export default function NodeTypeFilterBar({
       </span>
 
       {FILTER_NODE_TYPES.map((type) => {
-        const style = NODE_STYLES[type];
+        const style = NODE_STYLES.get(type);
+        const isActive = includeTypes.get(type);
         return (
           <button
             key={type}
-            onClick={() => setIncludeTypes((prev) => ({ ...prev, [type]: !prev[type] }))}
+            onClick={() =>
+              setIncludeTypes((prev) => {
+                const next = new Map(prev);
+                next.set(type, !prev.get(type));
+                return next;
+              })
+            }
             style={{
               padding: '3px 8px',
               borderRadius: 4,
-              border: `1px solid ${style.borderColor}`,
-              background: includeTypes[type] ? style.background : 'transparent',
-              color: includeTypes[type] ? '#fff' : style.background,
+              border: `1px solid ${style?.borderColor}`,
+              background: isActive ? style?.background : 'transparent',
+              color: isActive ? '#fff' : style?.background,
               fontSize: 11,
               cursor: 'pointer',
               transition: 'all 0.15s',
             }}
           >
-            {NODE_TYPE_LABELS[type]}
+            {NODE_TYPE_LABELS.get(type)}
           </button>
         );
       })}
 
       {/* Docker toggle — single button controlling both docker_network + docker_container */}
       <button
-        onClick={() => setIncludeTypes((prev) => ({ ...prev, docker: !prev.docker }))}
+        onClick={() =>
+          setIncludeTypes((prev) => {
+            const next = new Map(prev);
+            next.set('docker', !prev.get('docker'));
+            return next;
+          })
+        }
         style={{
           padding: '3px 8px',
           borderRadius: 4,
-          border: '1px solid #1cb8d8',
-          background: includeTypes.docker ? '#0b6e8e' : 'transparent',
-          color: includeTypes.docker ? '#fff' : '#1cb8d8',
+          border: '1px solid #0b6e8e',
+          background: includeTypes.get('docker') ? '#0b6e8e' : 'transparent',
+          color: includeTypes.get('docker') ? '#fff' : '#0b6e8e',
           fontSize: 11,
           cursor: 'pointer',
           transition: 'all 0.15s',
         }}
       >
-        Docker
+        🐳 Docker
       </button>
 
       {/* Hardware sub-role chips */}
-      {includeTypes.hardware && (
+      {includeTypes.get('hardware') && (
         <>
           <span
             style={{

@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from datetime import UTC, timedelta
+from typing import Any
 
 import bcrypt
 import jwt
@@ -24,7 +25,8 @@ from app.db.session import get_db
 
 _logger = logging.getLogger(__name__)
 
-# Session validation cache: token_hash -> (user_id, expiry_ts). TTL 10s so revocation is effective quickly.
+# Session validation cache: token_hash -> (user_id, expiry_ts).
+# TTL 10s so revocation is effective quickly.
 _SESSION_CACHE_TTL_S = 10
 _session_cache: dict[str, tuple[int, float]] = {}
 _session_cache_lock = threading.Lock()
@@ -36,7 +38,10 @@ def _hash_token_for_cache(token: str) -> str:
 
 
 def hash_api_token(raw_token: str, secret: str) -> str:
-    """Legacy HMAC-SHA256(secret, raw_token). Only used for fallback verification of old unsalted hashes."""
+    """Legacy HMAC-SHA256(secret, raw_token).
+
+    Only used for fallback verification of old unsalted hashes.
+    """
     return hmac.new(secret.encode(), raw_token.encode(), hashlib.sha256).hexdigest()
 
 
@@ -189,6 +194,18 @@ def decode_token(token: str, secret: str) -> int | None:
         return payload.get("user_id")
     except jwt.PyJWTError:
         return None
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    """Decode a JWT payload without signature verification.
+
+    Used only for extracting non-auth claims (e.g. tenant_id for RLS context).
+    Full signature verification is handled by FastAPI-Users auth middleware.
+    """
+    try:
+        return jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return {}
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,9 @@ Audit logs are append-only.  No update or delete path exists through this servic
 import json
 import logging
 import sys
+from typing import Any
+
+from sqlalchemy.orm import Session
 
 from app.core.time import utcnow, utcnow_iso
 
@@ -43,7 +46,7 @@ def _mask_key(k: str) -> str:
     return result
 
 
-def sanitise_diff(obj):
+def sanitise_diff(obj: Any) -> Any:
     """Recursively walk *obj* and replace the value of any sensitive key with
     ``"***REDACTED***"``.  The key name is also masked so that sensitive
     substrings (e.g. 'password') do not leak into audit log strings.
@@ -81,7 +84,7 @@ def _sanitise_log_string(value: str | None) -> str | None:
 
 
 def write_log(
-    db,
+    db: Session | None,
     action: str,
     entity_type: str | None = None,
     entity_id: int | None = None,
@@ -132,7 +135,7 @@ def write_log(
 
         _now_iso = utcnow_iso()
 
-        def _do_write(session):
+        def _do_write(session: Session) -> None:
             import hashlib
 
             from sqlalchemy import select
@@ -221,7 +224,7 @@ def _publish_audit_to_redis(
 
         from app.core.redis import get_redis
 
-        async def _pub():
+        async def _pub() -> None:
             r = await get_redis()
             if r is None:
                 return

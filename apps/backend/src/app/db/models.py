@@ -108,6 +108,7 @@ class Hardware(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    hostname: Mapped[str | None] = mapped_column(String, nullable=True)
     role: Mapped[str | None] = mapped_column(String)
     vendor: Mapped[str | None] = mapped_column(String)
     vendor_icon_slug: Mapped[str | None] = mapped_column(String)
@@ -823,7 +824,6 @@ class AppSettings(Base):
     default_environment: Mapped[str | None] = mapped_column(String)
     show_experimental_features: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     api_base_url: Mapped[str | None] = mapped_column(String)
-    map_default_filters: Mapped[str | None] = mapped_column(Text)  # JSON string
     vendor_icon_mode: Mapped[str] = mapped_column(String, nullable=False, default="custom_files")
     environments: Mapped[str | None] = mapped_column(
         Text, default='["prod","staging","dev"]'

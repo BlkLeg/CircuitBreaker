@@ -4,6 +4,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 _scheduler = AsyncIOScheduler()
@@ -19,21 +20,21 @@ def get_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
-def start_scheduler():
+def start_scheduler() -> None:
     scheduler = get_scheduler()
     if not scheduler.running:
         scheduler.start()
         logger.info("APScheduler started")
 
 
-def shutdown_scheduler():
+def shutdown_scheduler() -> None:
     scheduler = get_scheduler()
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("APScheduler stopped")
 
 
-def reload_discovery_jobs(db):
+def reload_discovery_jobs(db: Session) -> None:
     """
     Read all enabled discovery_profiles with a schedule_cron.
     Remove any stale APScheduler jobs whose profile no longer exists
@@ -72,7 +73,8 @@ def reload_discovery_jobs(db):
                 misfire_grace_time=300,
             )
             logger.info(
-                f"Scheduled discovery profile {profile.id} ({profile.name}): {profile.schedule_cron}"
+                f"Scheduled discovery profile {profile.id}"
+                f" ({profile.name}): {profile.schedule_cron}"
             )
         except Exception as e:
             logger.error(f"Failed to schedule profile {profile.id}: {e}")

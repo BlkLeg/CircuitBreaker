@@ -56,8 +56,15 @@ const client = axios.create({
 });
 
 function getCookie(name) {
-  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-  return match ? decodeURIComponent(match[1]) : null;
+  const prefix = name + '=';
+  const cookies = document.cookie.split(';');
+  for (const cookie of cookies) {
+    const c = cookie.trim();
+    if (c.indexOf(prefix) === 0) {
+      return decodeURIComponent(c.substring(prefix.length, c.length));
+    }
+  }
+  return null;
 }
 
 const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];

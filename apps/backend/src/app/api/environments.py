@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -18,14 +20,14 @@ _NOT_FOUND = "Environment not found"
 
 
 @router.get("", response_model=list[EnvironmentRead])
-def get_environments(db: Session = Depends(get_db)):
+def get_environments(db: Session = Depends(get_db)) -> Any:
     return list_environments(db)
 
 
 @router.post("", response_model=EnvironmentRead, status_code=201)
 def post_environment(
-    payload: EnvironmentCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    payload: EnvironmentCreate, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> Any:
     try:
         env = create_environment(db, payload.name, payload.color)
     except IntegrityError as exc:
@@ -49,8 +51,8 @@ def patch_environment(
     environment_id: int,
     payload: EnvironmentUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         update_environment(db, environment_id, payload.name, payload.color)
     except ValueError as exc:
@@ -67,8 +69,8 @@ def patch_environment(
 
 @router.delete("/{environment_id}", status_code=204)
 def del_environment(
-    environment_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    environment_id: int, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> None:
     try:
         delete_environment(db, environment_id)
     except ValueError as exc:

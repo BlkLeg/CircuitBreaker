@@ -146,9 +146,9 @@ def _upsert_proxmox_node_entity(
         hw.status = "active" if status_str == "online" else "inactive"
         hw.vendor = "Proxmox"
         hw.vendor_icon_slug = hw.vendor_icon_slug or "proxmox-dark"
-        hw.telemetry_data = telemetry
+        hw.telemetry_data = telemetry  # type: ignore[assignment]
         hw.telemetry_status = "healthy" if status_str == "online" else "unknown"
-        hw.telemetry_last_polled = now_iso
+        hw.telemetry_last_polled = now_iso  # type: ignore[assignment]
         if payload.get("ip"):
             hw.ip_address = payload.get("ip")
         hw.last_seen = now_iso
@@ -263,13 +263,14 @@ def _merge_proxmox_result(
 ) -> dict:
     from fastapi import HTTPException
 
-    from app.services.discovery_service import _emit_result_processed_event
+    from app.services.discovery_merge import _emit_result_processed_event
 
     payload = _parse_proxmox_metadata(result)
     if payload is None:
         raise HTTPException(status_code=400, detail="Invalid Proxmox discovery payload")
 
     kind = str(payload.get("kind") or "").strip().lower()
+    entity: Hardware | ComputeUnit
     if kind == "node":
         entity = _upsert_proxmox_node_entity(db, payload, now_iso)
         result.matched_entity_type = "hardware"

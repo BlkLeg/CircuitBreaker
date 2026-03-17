@@ -5,6 +5,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -26,8 +27,10 @@ def _touch_healthy() -> None:
         pass
 
 
-async def notify_slack(provider_config, title, message, severity):
-    config = json.loads(provider_config)
+async def notify_slack(
+    provider_config: dict[str, Any], title: str, message: str, severity: str
+) -> None:
+    config = provider_config
     webhook_url = config.get("webhook_url")
     if not webhook_url:
         return
@@ -45,8 +48,10 @@ async def notify_slack(provider_config, title, message, severity):
         await client.post(webhook_url, json=payload)
 
 
-async def notify_email(provider_config, title, message, severity):
-    config = json.loads(provider_config)
+async def notify_email(
+    provider_config: dict[str, Any], title: str, message: str, severity: str
+) -> None:
+    config = provider_config
     # config: {"smtp_host": "...", "smtp_port": 587, "user": "...", "pass": "...", "to": "..."}
     try:
         msg = EmailMessage()
@@ -59,8 +64,8 @@ async def notify_email(provider_config, title, message, severity):
         loop = asyncio.get_event_loop()
         _SMTP_TIMEOUT_S = 30.0
 
-        def _send():
-            with smtplib.SMTP(config.get("smtp_host"), config.get("smtp_port", 587)) as s:
+        def _send() -> None:
+            with smtplib.SMTP(str(config.get("smtp_host", "")), config.get("smtp_port", 587)) as s:
                 if config.get("user") and config.get("pass"):
                     s.starttls()
                     s.login(config["user"], config["pass"])
@@ -71,8 +76,10 @@ async def notify_email(provider_config, title, message, severity):
         logger.error(f"Failed to send email: {e}")
 
 
-async def notify_discord(provider_config, title, message, severity):
-    config = json.loads(provider_config)
+async def notify_discord(
+    provider_config: dict[str, Any], title: str, message: str, severity: str
+) -> None:
+    config = provider_config
     webhook_url = config.get("webhook_url")
     if not webhook_url:
         return
@@ -96,8 +103,10 @@ async def notify_discord(provider_config, title, message, severity):
         await client.post(webhook_url, json=payload, timeout=10.0)
 
 
-async def notify_teams(provider_config, title, message, severity):
-    config = json.loads(provider_config)
+async def notify_teams(
+    provider_config: dict[str, Any], title: str, message: str, severity: str
+) -> None:
+    config = provider_config
     webhook_url = config.get("webhook_url")
     if not webhook_url:
         return
@@ -119,7 +128,7 @@ async def notify_teams(provider_config, title, message, severity):
         await client.post(webhook_url, json=payload, timeout=10.0)
 
 
-async def process_alert(msg):
+async def process_alert(msg: Any) -> None:
     subject = msg.subject
     try:
         data = json.loads(msg.data.decode())
@@ -152,15 +161,14 @@ async def process_alert(msg):
                 await notify_email(provider_config, title, message, severity)
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     backoff = 1
     while not nats_client.is_connected:
         await nats_client.connect()
-        if nats_client.is_connected:
-            break
-        logger.warning("Waiting for NATS... retrying in %ds", backoff)
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        if not nats_client.is_connected:
+            logger.warning("Waiting for NATS... retrying in %ds", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     await nats_client.subscribe("alert.>", handler=process_alert)
     logger.info("Notification worker started and listening on alert.>")
@@ -176,7 +184,8 @@ async def run_worker(shutdown_event: asyncio.Event = None):
             pass
 
         _touch_healthy()
-        if not nats_client.is_connected:
+        still_connected: bool = nats_client.is_connected
+        if not still_connected:
             logger.warning("Notification worker: NATS not connected — waiting for auto-reconnect")
 
 
