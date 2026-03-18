@@ -55,13 +55,54 @@ stage1_bootstrap() {
   # Secret generation
   if [[ -f /etc/circuitbreaker/.env ]]; then
     cb_ok "Secrets already exist — preserving"
+    # Temporarily disable set -u to check for missing vars
+    set +u
     source /etc/circuitbreaker/.env
+    set -u
+    
+    local appended="false"
+    if [[ -z "${CB_JWT_SECRET:-}" ]]; then
+      CB_JWT_SECRET=$(openssl rand -hex 64)
+      echo "CB_JWT_SECRET=${CB_JWT_SECRET}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if [[ -z "${CB_VAULT_KEY:-}" ]]; then
+      CB_VAULT_KEY=$(openssl rand -base64 32 | tr '/+' '_-')
+      echo "CB_VAULT_KEY=${CB_VAULT_KEY}" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if [[ -z "${CB_DB_PASSWORD:-}" ]]; then
+      CB_DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+      echo "CB_DB_PASSWORD=${CB_DB_PASSWORD}" >> /etc/circuitbreaker/.env
+      echo "CB_DB_URL=postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker" >> /etc/circuitbreaker/.env
+      echo "CB_DB_POOL_URL=postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:6432/circuitbreaker" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if [[ -z "${CB_REDIS_PASSWORD:-}" ]]; then
+      CB_REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+      echo "CB_REDIS_PASSWORD=${CB_REDIS_PASSWORD}" >> /etc/circuitbreaker/.env
+      echo "CB_REDIS_URL=redis://:${CB_REDIS_PASSWORD}@127.0.0.1:6379/0" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+    if [[ -z "${CB_NATS_TOKEN:-}" ]]; then
+      CB_NATS_TOKEN=$(openssl rand -base64 48 | tr -d '/+=')
+      echo "CB_NATS_TOKEN=${CB_NATS_TOKEN}" >> /etc/circuitbreaker/.env
+      echo "CB_NATS_URL=nats://127.0.0.1:4222" >> /etc/circuitbreaker/.env
+      appended="true"
+    fi
+
+    if [[ "$appended" == "true" ]]; then
+      cb_ok "Added missing secrets to existing .env"
+    fi
+    # Re-source to ensure everything is in the environment
+    set +u
+    source /etc/circuitbreaker/.env
+    set -u
   else
     cb_step "Generating secrets"
     
     # Export as environment variables so cb_render_template can access them
     export CB_JWT_SECRET=$(openssl rand -hex 64)
-    # Generate Fernet key: 32 random bytes, base64-encoded (URL-safe)
     export CB_VAULT_KEY=$(openssl rand -base64 32 | tr '/+' '_-')
     export CB_DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
     export CB_REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
@@ -69,7 +110,6 @@ stage1_bootstrap() {
     
     export CB_DETECTED_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
     
-    # Render template from .env.template
     if ! cb_render_template "/opt/circuitbreaker/deploy/misc/.env.template" "/etc/circuitbreaker/.env"; then
       cb_fail "Failed to render .env template" "Check: /opt/circuitbreaker/deploy/misc/.env.template exists"
     fi
@@ -78,8 +118,19 @@ stage1_bootstrap() {
     chown root:breaker /etc/circuitbreaker/.env
     
     cb_ok "Secrets generated and saved"
+    set +u
     source /etc/circuitbreaker/.env
+    set -u
   fi
+
+  # Detect Redis user (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis')
+  export CB_REDIS_USER="redis"
+  if id redis &>/dev/null; then
+    CB_REDIS_USER="redis"
+  elif id _redis &>/dev/null; then
+    CB_REDIS_USER="_redis"
+  fi
+  export CB_DATA_DIR
 }
 
 stage0_preflight() {
@@ -438,20 +489,13 @@ stage3_configure_redis() {
   [[ "$ram_mb" -lt 2048 ]] && redis_maxmem="128mb"
 
   # Create Redis data directory with correct ownership
-  local redis_user="redis"
-  if id redis &>/dev/null; then
-    redis_user="redis"
-  elif id _redis &>/dev/null; then
-    redis_user="_redis"
-  fi
-  
   mkdir -p "${CB_DATA_DIR}/redis"
-  chown "${redis_user}:${redis_user}" "${CB_DATA_DIR}/redis"
+  chown "${CB_REDIS_USER}:${CB_REDIS_USER}" "${CB_DATA_DIR}/redis"
   chmod 755 "${CB_DATA_DIR}/redis"
-  echo "    Redis data: ${CB_DATA_DIR}/redis (${redis_user}:${redis_user})"
+  echo "    Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
   
   cb_render_template "/opt/circuitbreaker/deploy/config/redis.conf" "/etc/redis/redis.conf"
-  chown "${redis_user}:${redis_user}" /etc/redis/redis.conf
+  chown "${CB_REDIS_USER}:${CB_REDIS_USER}" /etc/redis/redis.conf
   chmod 640 /etc/redis/redis.conf
   echo "    Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
   cb_ok "Configuration written"

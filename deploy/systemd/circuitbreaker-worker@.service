@@ -19,8 +19,6 @@ Environment="DB_MAX_OVERFLOW=2"
 ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
 Restart=on-failure
 RestartSec=10s
-ProtectSystem=strict
-ReadWritePaths=${CB_DATA_DIR}
 MemoryMax=512M
 LimitNOFILE=65536
 CPUQuota=50%

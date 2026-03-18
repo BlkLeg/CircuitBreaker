@@ -22,6 +22,6 @@ check_secret() {
 
 check_secret "CB_JWT_SECRET"   "${CB_JWT_SECRET:-}"   64
 check_secret "CB_VAULT_KEY"    "${CB_VAULT_KEY:-}"    32
-check_secret "NATS_AUTH_TOKEN" "${NATS_AUTH_TOKEN:-}"  0
+check_secret "CB_NATS_TOKEN"   "${CB_NATS_TOKEN:-}"    0
 check_secret "CB_DB_PASSWORD"  "${CB_DB_PASSWORD:-}"   0
-check_secret "CB_REDIS_PASS"   "${CB_REDIS_PASS:-}"    0
+check_secret "CB_REDIS_PASSWORD" "${CB_REDIS_PASSWORD:-}" 0

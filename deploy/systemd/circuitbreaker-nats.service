@@ -10,7 +10,6 @@ ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats.conf
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=yes
-ReadWritePaths=${CB_DATA_DIR}/nats
 MemoryMax=512M
 LimitNOFILE=65536
 StandardOutput=journal
