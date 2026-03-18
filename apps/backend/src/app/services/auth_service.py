@@ -926,12 +926,12 @@ async def update_profile(
             raise HTTPException(status_code=413, detail="Profile photo must be ≤ 5 MB")
 
         # Validate actual file content — do NOT trust client Content-Type header.
-        # Use python-magic for primary MIME detection, Pillow for structural validation.
+        # Use native upload validation for primary MIME detection, Pillow for structural validation.
         import asyncio
 
-        import magic as _magic
+        from app.core.upload_validation import infer_image_type_from_magic
 
-        detected_mime = _magic.from_buffer(data[:2048], mime=True)
+        detected_mime = infer_image_type_from_magic(data[:2048])
         if detected_mime not in _ALLOWED_TYPES:
             raise HTTPException(
                 status_code=422, detail=f"File type '{detected_mime}' is not allowed"
