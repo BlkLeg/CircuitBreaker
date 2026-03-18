@@ -53,7 +53,7 @@ cmd_doctor() {
   check "PostgreSQL (5432)"  "nc -z 127.0.0.1 5432"           "journalctl -u circuitbreaker-postgres -n 30"
   check "pgbouncer (6432)"   "nc -z 127.0.0.1 6432"           "journalctl -u circuitbreaker-pgbouncer -n 30"
   check "DB connection"      "PGPASSWORD=\"$CB_DB_PASSWORD\" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q'" "Check pgbouncer userlist.txt hash"
-  check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASS\" --no-auth-warning PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
+  check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASSWORD\" --no-auth-warning PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
   check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
   check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
   if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then

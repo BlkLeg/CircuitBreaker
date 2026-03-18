@@ -543,7 +543,9 @@ stage3_configure_nats() {
   cb_ok "Cleaned up existing NATS processes"
   
   cb_step "Writing NATS configuration"
-  cb_render_template "/opt/circuitbreaker/deploy/config/nats.conf" "/etc/nats/nats.conf"  
+  mkdir -p /etc/nats
+  cb_render_template "/opt/circuitbreaker/deploy/config/nats.conf" "/etc/nats/nats.conf"
+  
   chown breaker:breaker /etc/nats/nats.conf
   chmod 640 /etc/nats/nats.conf
   echo "    Port: 4222, Store: ${CB_DATA_DIR}/nats"
@@ -1240,8 +1242,8 @@ stage2_dependencies() {
   cb_ok "Node.js $(node --version) installed"
 
   # Docker detection — enables container telemetry proxy when Docker is present
-  cb_step "Checking for Docker daemon"
-  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  cb_step "Checking for Docker"
+  if command -v docker &>/dev/null; then
     DOCKER_AVAILABLE=true
     cb_ok "Docker detected — socket proxy will be configured"
   else
@@ -1348,7 +1350,7 @@ https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "
     cb_ok "Docker CE installed"
   fi
 
-  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  if command -v docker &>/dev/null; then
     DOCKER_AVAILABLE=true
   fi
 

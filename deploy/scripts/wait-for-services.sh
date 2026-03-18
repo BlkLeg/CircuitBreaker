@@ -26,7 +26,7 @@ wait_port "pgbouncer"  127.0.0.1 6432
 # Redis: authenticated PING — port-open is not enough when requirepass is set
 echo "Waiting for Redis to accept authenticated connections..."
 elapsed=0
-while ! redis-cli -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASS}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
+while ! redis-cli -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
   sleep $INTERVAL
   elapsed=$((elapsed + INTERVAL))
   if [[ $elapsed -ge $MAX_WAIT ]]; then
