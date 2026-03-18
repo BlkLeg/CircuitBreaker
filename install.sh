@@ -25,6 +25,7 @@ UPGRADE_MODE=false
 NO_TLS=false
 FORCE_DEPS=false
 DOCKER_AVAILABLE=false
+INSTALL_DOCKER=false
 
 # UI Functions
 cb_version() {
@@ -36,7 +37,7 @@ cb_header() {
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
   echo "  ║         Circuit Breaker Installer        ║"
-  echo "  ║                 $(cb_version)            ║"
+  echo "  ║                 $(cb_version)              ║"
   echo "  ╚══════════════════════════════════════════╝"
   echo -e "${RESET}"
 }
@@ -81,6 +82,7 @@ show_help() {
   echo "  --unattended         Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --upgrade            Force upgrade mode even if install not detected"
   echo "  --force-deps         Force reinstall dependencies in upgrade mode"
+  echo "  --docker             Install Docker CE and enable container telemetry proxy"
   echo "  --help               Show this help message"
   echo ""
   exit 0
@@ -126,6 +128,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-deps)
       FORCE_DEPS=true
+      shift
+      ;;
+    --docker)
+      INSTALL_DOCKER=true
       shift
       ;;
     --help)
@@ -215,8 +221,14 @@ stage0_preflight() {
           ;;
       esac
       ;;
+    arch)
+      OS_NAME="Arch Linux"
+      PKG_MGR="pacman"
+      PG_BIN_DIR="/usr/bin"
+      cb_ok "Arch Linux detected"
+      ;;
     *)
-      cb_fail "Unsupported OS: $OS_ID" "Supported: Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux"
+      cb_fail "Unsupported OS: $OS_ID" "Supported: Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux, Arch"
       ;;
   esac
 
@@ -450,6 +462,9 @@ stage2_dependencies() {
   if [[ "$PKG_MGR" == "apt-get" ]]; then
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q curl jq openssl netcat-openbsd git wget gnupg2 ca-certificates lsb-release libcap2-bin >> "$LOG_FILE" 2>&1
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -Sy --noconfirm --needed \
+      curl jq openssl openbsd-netcat git wget gnupg ca-certificates libcap >> "$LOG_FILE" 2>&1
   else
     $PKG_MGR install -y -q curl jq openssl nmap-ncat git wget gnupg2 ca-certificates libcap >> "$LOG_FILE" 2>&1
   fi
@@ -461,6 +476,13 @@ stage2_dependencies() {
     $PKG_MGR install -y -q nmap snmp >> "$LOG_FILE" 2>&1
     if [[ "$ARCH" != "arm7" ]]; then
       $PKG_MGR install -y -q ipmitool >> "$LOG_FILE" 2>&1
+    else
+      cb_warn "Skipping ipmitool on arm7 (often unavailable)"
+    fi
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -S --noconfirm --needed nmap net-snmp >> "$LOG_FILE" 2>&1
+    if [[ "$ARCH" != "arm7" ]]; then
+      pacman -S --noconfirm --needed ipmitool >> "$LOG_FILE" 2>&1
     else
       cb_warn "Skipping ipmitool on arm7 (often unavailable)"
     fi
@@ -482,6 +504,9 @@ stage2_dependencies() {
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
     PG_BIN_DIR="/usr/lib/postgresql/15/bin"
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -S --noconfirm --needed postgresql >> "$LOG_FILE" 2>&1
+    # PG_BIN_DIR already set to /usr/bin in OS detection
   else
     local pg_repo_rpm=""
     case "$OS_ID" in
@@ -496,8 +521,8 @@ stage2_dependencies() {
     $PKG_MGR install -y -q postgresql15-server postgresql15 >> "$LOG_FILE" 2>&1
     PG_BIN_DIR="/usr/pgsql-15/bin"
   fi
-  
-  if ! "$PG_BIN_DIR/pg_ctl" --version 2>/dev/null | grep -q " 15"; then
+
+  if [[ "$PKG_MGR" != "pacman" ]] && ! "$PG_BIN_DIR/pg_ctl" --version 2>/dev/null | grep -q " 15"; then
     cb_fail "PostgreSQL 15 verification failed" "Check: $PG_BIN_DIR/pg_ctl --version"
   fi
   local pg_version=$("$PG_BIN_DIR/pg_ctl" --version | grep -oP '\d+\.\d+' | head -1)
@@ -515,6 +540,8 @@ stage2_dependencies() {
       > /etc/apt/sources.list.d/caddy-stable.list
     $PKG_MGR update -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q pgbouncer redis-server caddy >> "$LOG_FILE" 2>&1
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -S --noconfirm --needed pgbouncer redis caddy >> "$LOG_FILE" 2>&1
   else
     # Enable official Caddy COPR repository for RHEL/Fedora
     dnf copr enable -y @caddy/caddy >> "$LOG_FILE" 2>&1 || true
@@ -561,6 +588,9 @@ stage2_dependencies() {
       $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     fi
     $PKG_MGR install -y -q python3.12 python3.12-venv python3.12-dev >> "$LOG_FILE" 2>&1
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    # Arch ships Python 3.12+ as the default python package; venv module is included
+    pacman -S --noconfirm --needed python python-pip >> "$LOG_FILE" 2>&1
   else
     $PKG_MGR install -y -q python3.12 python3.12-devel >> "$LOG_FILE" 2>&1
   fi
@@ -576,15 +606,40 @@ stage2_dependencies() {
   if [[ "$PKG_MGR" == "apt-get" ]]; then
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q nodejs >> "$LOG_FILE" 2>&1
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    # Arch extra repo ships current Node (typically >= 20); NodeSource does not support Arch
+    pacman -S --noconfirm --needed nodejs npm >> "$LOG_FILE" 2>&1
   else
     curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q nodejs >> "$LOG_FILE" 2>&1
   fi
-  
-  if ! node --version 2>/dev/null | grep -q "^v20"; then
-    cb_fail "Node 20 verification failed" "Check: node --version"
+
+  if ! node --version 2>/dev/null | grep -qE "^v(1[89]|[2-9][0-9])"; then
+    cb_fail "Node 18+ verification failed" "Check: node --version (got: $(node --version 2>/dev/null || echo none))"
   fi
   cb_ok "Node.js $(node --version) installed"
+
+  # Optionally install Docker CE when --docker flag is passed
+  if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
+    cb_step "Installing Docker CE"
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update -q >> "$LOG_FILE" 2>&1
+      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    elif [[ "$PKG_MGR" == "pacman" ]]; then
+      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
+    else
+      dnf config-manager --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
+      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    fi
+    systemctl enable --now docker >> "$LOG_FILE" 2>&1
+    cb_ok "Docker CE installed"
+  fi
 
   # Docker detection — enables container telemetry proxy when Docker is present
   cb_step "Checking for Docker daemon"
@@ -1747,11 +1802,13 @@ stage6_setup_python() {
 
   cb_step "Granting NET_RAW capability to venv Python interpreter"
   if command -v setcap &>/dev/null; then
-    setcap cap_net_raw+ep \
-      /opt/circuitbreaker/apps/backend/venv/bin/python3.12 \
-      >> "$LOG_FILE" 2>&1 || \
+    _py_real=$(realpath /opt/circuitbreaker/apps/backend/venv/bin/python3.12 2>/dev/null \
+               || echo /opt/circuitbreaker/apps/backend/venv/bin/python3.12)
+    if setcap cap_net_raw+ep "$_py_real" >> "$LOG_FILE" 2>&1; then
+      cb_ok "NET_RAW capability granted"
+    else
       cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
-    cb_ok "NET_RAW capability granted"
+    fi
   else
     cb_warn "setcap not found — install libcap2-bin and re-run"
   fi
@@ -2195,10 +2252,12 @@ run_upgrade() {
   # Update Python dependencies
   stage6_setup_python
   # Re-apply NET_RAW after venv rebuild (setcap is wiped when venv is recreated)
-  setcap cap_net_raw+ep \
-    /opt/circuitbreaker/apps/backend/venv/bin/python3.12 \
-    >> "$LOG_FILE" 2>&1 || \
-    cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
+  if command -v setcap &>/dev/null; then
+    _py_real=$(realpath /opt/circuitbreaker/apps/backend/venv/bin/python3.12 2>/dev/null \
+               || echo /opt/circuitbreaker/apps/backend/venv/bin/python3.12)
+    setcap cap_net_raw+ep "$_py_real" >> "$LOG_FILE" 2>&1 || \
+      cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
+  fi
 
   # Rebuild frontend
   stage7_build_frontend

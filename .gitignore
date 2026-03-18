@@ -52,7 +52,7 @@ frontend/.env.*.local
 docker/data/
 data/audit/
 circuitbreaker-data/
-data/
+/data/
 dump.rdb
 
 # Local DB sidecar files
@@ -108,7 +108,7 @@ Thumbs.db
 docker-compose.datadog.yml
 
 # AI/generated frontend tool data
-apps/frontend/src/data/
+# apps/frontend/src/data/ — removed; navigation.js is a tracked source file
 
 # Internal / auto-generated
 .INTERNAL/
