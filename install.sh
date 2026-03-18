@@ -457,6 +457,18 @@ stage2_dependencies() {
 
   cb_section "Installing Dependencies"
 
+  # Group 0: SSH server — ensures remote access after install on bare LXC/VM templates
+  cb_step "Ensuring SSH server is available"
+  if [[ "$PKG_MGR" == "apt-get" ]]; then
+    $PKG_MGR install -y -q openssh-server >> "$LOG_FILE" 2>&1
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -S --noconfirm --needed openssh >> "$LOG_FILE" 2>&1
+  else
+    $PKG_MGR install -y -q openssh-server >> "$LOG_FILE" 2>&1
+  fi
+  systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
+  cb_ok "SSH server enabled"
+
   # Group 1: Base tools
   cb_step "Installing base tools"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
@@ -1413,23 +1425,27 @@ stage3_configure_caddy() {
 
     # Generate self-signed certificate if Let's Encrypt is not in use
     if [[ "$CB_CERT_TYPE" == "self-signed" ]]; then
-      cb_step "Generating self-signed TLS certificate"
       local cert_cn="${CB_FQDN:-circuitbreaker}"
       local cert_ip
       cert_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || true)
-      local san="DNS:${cert_cn}"
-      [[ -n "$cert_ip" ]] && san="${san},IP:${cert_ip}"
-      openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
-        -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
-        -out "${CB_DATA_DIR}/tls/fullchain.pem" \
-        -subj "/CN=${cert_cn}/O=CircuitBreaker" \
-        -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1
+      if [[ ! -f "${CB_DATA_DIR}/tls/fullchain.pem" ]]; then
+        cb_step "Generating self-signed TLS certificate"
+        local san="DNS:${cert_cn}"
+        [[ -n "$cert_ip" ]] && san="${san},IP:${cert_ip}"
+        openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+          -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
+          -out "${CB_DATA_DIR}/tls/fullchain.pem" \
+          -subj "/CN=${cert_cn}/O=CircuitBreaker" \
+          -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1
+        cb_ok "Self-signed TLS certificate generated"
+      else
+        cb_ok "TLS certificate already exists — reusing"
+      fi
       chown root:caddy "${CB_DATA_DIR}/tls"/*.pem
       chmod 640 "${CB_DATA_DIR}/tls"/*.pem
       chown root:caddy "${CB_DATA_DIR}/tls"
       chmod 750 "${CB_DATA_DIR}/tls"
       tls_line="tls ${cert_path}/fullchain.pem ${cert_path}/privkey.pem"
-      cb_ok "Self-signed TLS certificate generated"
     fi
 
     if [[ -n "${cert_ip:-}" ]]; then
@@ -1462,7 +1478,7 @@ ${site_address} {
 
     # Security headers
     header {
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'strict-dynamic'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
@@ -2247,6 +2263,9 @@ run_upgrade() {
   write_wait_for_services_script
   stage4_write_systemd_units
 
+  # Always regenerate Caddyfile on upgrade (picks up CSP/config changes; certs preserved if existing)
+  stage3_configure_caddy
+
   # Install Docker CE if --docker was passed and Docker is not present
   if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
     cb_step "Installing Docker CE"
@@ -2295,14 +2314,6 @@ https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_C
   # Rebuild frontend
   stage7_build_frontend
   
-  # Re-apply TLS cert permissions (fixes certs from older installs lacking chown)
-  if [[ -d "${CB_DATA_DIR}/tls" ]]; then
-    chown root:caddy "${CB_DATA_DIR}/tls" 2>/dev/null || true
-    chmod 750 "${CB_DATA_DIR}/tls" 2>/dev/null || true
-    chown root:caddy "${CB_DATA_DIR}/tls"/*.pem 2>/dev/null || true
-    chmod 640 "${CB_DATA_DIR}/tls"/*.pem 2>/dev/null || true
-  fi
-
   # Restart services
   cb_step "Restarting all services"
   systemctl start circuitbreaker.target >> "$LOG_FILE" 2>&1
