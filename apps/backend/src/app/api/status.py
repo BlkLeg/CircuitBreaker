@@ -171,7 +171,9 @@ def list_history(
 
 @router.get("/dashboard", response_model=DashboardResponse)
 def get_dashboard_legacy(db: Session = Depends(get_db)) -> DashboardResponse:
-    """Legacy dashboard response (pages + groups + history_sample) for Settings and older clients."""
+    """Legacy dashboard response (pages + groups + history_sample) for Settings
+    and older clients.
+    """
     pages, snapshots = svc.get_dashboard_snapshots(db)
     page_reads = [_page_read(p) for p in pages]
     history_by_group = svc.get_latest_history_per_group(db, limit_per_group=100)
