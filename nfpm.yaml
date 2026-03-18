@@ -81,3 +81,10 @@ overrides:
       - postgresql-server
       - redis
       - nats-server
+  apk:
+    depends:
+      - postgresql16
+      - redis
+      - nginx
+    recommends:
+      - nats-server
