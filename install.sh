@@ -625,36 +625,52 @@ stage2_dependencies() {
   fi
   cb_ok "Node.js $(node --version) installed"
 
-  # Optionally install Docker CE when --docker flag is passed
-  if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
-    cb_step "Installing Docker CE"
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-        > /etc/apt/sources.list.d/docker.list
-      apt-get update -q >> "$LOG_FILE" 2>&1
-      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-    elif [[ "$PKG_MGR" == "pacman" ]]; then
-      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
-    else
-      dnf config-manager --add-repo \
-        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
-      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-    fi
-    systemctl enable --now docker >> "$LOG_FILE" 2>&1
-    cb_ok "Docker CE installed"
-  fi
-
   # Docker detection — enables container telemetry proxy when Docker is present
   cb_step "Checking for Docker daemon"
   if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     DOCKER_AVAILABLE=true
     cb_ok "Docker detected — socket proxy will be configured"
   else
-    DOCKER_AVAILABLE=false
-    cb_warn "Docker not found — container telemetry will be unavailable"
+    # Offer to install Docker if not present and --docker wasn't already passed
+    if [[ "$INSTALL_DOCKER" != "true" ]]; then
+      if [[ "$UNATTENDED" == "false" ]]; then
+        echo -e "  ${YELLOW}Docker not found.${RESET} Docker enables container telemetry."
+        read -t 15 -r -p "  Install Docker CE? [y/N]: " docker_input || docker_input=""
+        if [[ "$docker_input" =~ ^[Yy]$ ]]; then
+          INSTALL_DOCKER=true
+        fi
+      else
+        cb_warn "Docker not found — pass --docker to install it (enables container telemetry)"
+      fi
+    fi
+
+    # Install Docker if requested (by flag or interactive prompt)
+    if [[ "$INSTALL_DOCKER" == "true" ]]; then
+      cb_step "Installing Docker CE"
+      if [[ "$PKG_MGR" == "apt-get" ]]; then
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+          | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+          > /etc/apt/sources.list.d/docker.list
+        apt-get update -q >> "$LOG_FILE" 2>&1
+        apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+      elif [[ "$PKG_MGR" == "pacman" ]]; then
+        pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
+      else
+        dnf config-manager --add-repo \
+          https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
+        dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+      fi
+      systemctl enable --now docker >> "$LOG_FILE" 2>&1
+      cb_ok "Docker CE installed"
+      DOCKER_AVAILABLE=true
+    else
+      DOCKER_AVAILABLE=false
+      if [[ "$UNATTENDED" == "false" ]]; then
+        cb_warn "Docker skipped — container telemetry will be unavailable"
+      fi
+    fi
   fi
 }
 
@@ -2375,6 +2391,34 @@ run_upgrade() {
   # Deploy code
   stage5_deploy_code
   write_wait_for_services_script
+
+  # Docker install + detection must run BEFORE stage4 writes conditional systemd units
+  # (stage4 checks DOCKER_AVAILABLE to decide whether to write the docker-proxy unit)
+  if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
+    cb_step "Installing Docker CE"
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update -q >> "$LOG_FILE" 2>&1
+      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    elif [[ "$PKG_MGR" == "pacman" ]]; then
+      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
+    else
+      dnf config-manager --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
+      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    fi
+    systemctl enable --now docker >> "$LOG_FILE" 2>&1
+    cb_ok "Docker CE installed"
+  fi
+
+  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+  fi
+
   stage4_write_systemd_units
 
   # --- Caddy → Nginx migration (one-time) ---
@@ -2402,33 +2446,6 @@ run_upgrade() {
 
   # Always regenerate Nginx config on upgrade (picks up CSP/config changes; certs preserved if existing)
   stage3_configure_nginx
-
-  # Install Docker CE if --docker was passed and Docker is not present
-  if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
-    cb_step "Installing Docker CE"
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-        > /etc/apt/sources.list.d/docker.list
-      apt-get update -q >> "$LOG_FILE" 2>&1
-      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-    elif [[ "$PKG_MGR" == "pacman" ]]; then
-      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
-    else
-      dnf config-manager --add-repo \
-        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
-      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-    fi
-    systemctl enable --now docker >> "$LOG_FILE" 2>&1
-    cb_ok "Docker CE installed"
-  fi
-
-  # Docker detection — sets DOCKER_AVAILABLE for stage3_configure_docker_proxy
-  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    DOCKER_AVAILABLE=true
-  fi
 
   stage3_configure_docker_proxy
 
@@ -2490,7 +2507,11 @@ main() {
   stage1_bootstrap
   stage2_dependencies
 
-  # Configure services
+  # Systemd units (must exist before stage3 starts services)
+  write_wait_for_services_script
+  stage4_write_systemd_units
+
+  # Configure services (postgres/pgbouncer/redis/nats start within these)
   stage3_configure_postgres
   stage3_configure_pgbouncer
   stage3_configure_redis
@@ -2502,10 +2523,6 @@ main() {
   stage5_deploy_code
   stage6_setup_python
   stage7_build_frontend
-
-  # Systemd units + helper scripts (after all paths exist)
-  write_wait_for_services_script
-  stage4_write_systemd_units
 
   # Start everything
   stage8_start_services
