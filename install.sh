@@ -1467,10 +1467,6 @@ stage3_configure_caddy() {
   mkdir -p /etc/caddy
 
   cat > /etc/caddy/Caddyfile <<EOF
-{
-    admin off
-}
-
 ${site_address} {
     ${tls_line}
 
@@ -1900,13 +1896,9 @@ stage8_start_services() {
   sleep 2
   cb_ok "Workers started"
   
-  # Start/reload Caddy
+  # Start/restart Caddy
   cb_step "Starting Caddy"
-  if systemctl is-active caddy &>/dev/null; then
-    systemctl reload caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy reload failed" "Check: caddy validate --config /etc/caddy/Caddyfile && journalctl -u caddy -n 50"
-  else
-    systemctl start caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy failed to start" "Check: journalctl -u caddy -n 50"
-  fi
+  systemctl restart caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy failed to start" "Check: journalctl -u caddy -n 50"
   sleep 1
 
   local caddy_port=443
