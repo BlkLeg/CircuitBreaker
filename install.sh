@@ -889,74 +889,6 @@ After=nginx.service
 WantedBy=multi-user.target
 EOF
 
-  # Supporting scripts for systemd units
-  mkdir -p /opt/circuitbreaker/scripts
-
-  # healthcheck.sh — liveness probe called by circuitbreaker-healthcheck.timer
-  cat > /opt/circuitbreaker/scripts/healthcheck.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-set -a
-source /etc/circuitbreaker/.env
-set +a
-
-LOCK_FILE="/run/cb-healthcheck.lock"
-LOG_FILE="${CB_DATA_DIR}/logs/healthcheck.log"
-
-# Rate-limit restarts: skip if a restart was triggered within the last 60s
-if [[ -f "$LOCK_FILE" ]]; then
-  last=$(cat "$LOCK_FILE" 2>/dev/null || echo 0)
-  now=$(date +%s)
-  if (( now - last < 60 )); then
-    echo "$(date -Iseconds) restart already in progress — skipping" >> "$LOG_FILE"
-    exit 0
-  fi
-fi
-
-if curl -sf --max-time 5 http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
-  exit 0
-fi
-
-echo "$(date -Iseconds) health check failed — restarting circuitbreaker-backend" >> "$LOG_FILE"
-date +%s > "$LOCK_FILE"
-systemctl restart circuitbreaker-backend
-EOF
-  chmod 700 /opt/circuitbreaker/scripts/healthcheck.sh
-  chown root:root /opt/circuitbreaker/scripts/healthcheck.sh
-
-  # validate-secrets.sh — pre-start guard called as ExecStartPre in backend.service
-  cat > /opt/circuitbreaker/scripts/validate-secrets.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-set -a
-source /etc/circuitbreaker/.env
-set +a
-
-fail() { echo "ERROR: $*" >&2; exit 1; }
-
-PLACEHOLDERS="CHANGE_ME changeme placeholder todo test secret password"
-
-check_secret() {
-  local name="$1" value="$2" min_len="${3:-0}"
-  [[ -z "$value" ]] && fail "$name is not set or empty"
-  for p in $PLACEHOLDERS; do
-    [[ "${value,,}" == "${p,,}" ]] && fail "$name contains placeholder value: $value"
-  done
-  if (( min_len > 0 )) && (( ${#value} < min_len )); then
-    fail "$name is too short (${#value} chars, minimum $min_len)"
-  fi
-}
-
-check_secret "CB_JWT_SECRET"   "${CB_JWT_SECRET:-}"   64
-check_secret "CB_VAULT_KEY"    "${CB_VAULT_KEY:-}"    32
-check_secret "NATS_AUTH_TOKEN" "${NATS_AUTH_TOKEN:-}"  0
-check_secret "CB_DB_PASSWORD"  "${CB_DB_PASSWORD:-}"   0
-EOF
-  chmod 750 /opt/circuitbreaker/scripts/validate-secrets.sh
-  chown root:breaker /opt/circuitbreaker/scripts/validate-secrets.sh
-
   # circuitbreaker-healthcheck.service
   cat > /etc/systemd/system/circuitbreaker-healthcheck.service <<EOF
 [Unit]
@@ -1847,6 +1779,84 @@ EOF
 }
 
 # ============================================================================
+# SERVICE SCRIPTS (healthcheck + validate-secrets)
+# ============================================================================
+
+write_service_scripts() {
+  cb_section "Writing Service Scripts"
+  mkdir -p /opt/circuitbreaker/scripts
+
+  # healthcheck.sh — liveness probe called by circuitbreaker-healthcheck.timer
+  cb_step "Writing healthcheck.sh"
+  cat > /opt/circuitbreaker/scripts/healthcheck.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source /etc/circuitbreaker/.env
+set +a
+
+LOCK_FILE="/run/cb-healthcheck.lock"
+LOG_FILE="${CB_DATA_DIR}/logs/healthcheck.log"
+
+# Rate-limit restarts: skip if a restart was triggered within the last 60s
+if [[ -f "$LOCK_FILE" ]]; then
+  last=$(cat "$LOCK_FILE" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  if (( now - last < 60 )); then
+    echo "$(date -Iseconds) restart already in progress — skipping" >> "$LOG_FILE"
+    exit 0
+  fi
+fi
+
+if curl -sf --max-time 5 http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "$(date -Iseconds) health check failed — restarting circuitbreaker-backend" >> "$LOG_FILE"
+date +%s > "$LOCK_FILE"
+systemctl restart circuitbreaker-backend
+EOF
+  chmod 700 /opt/circuitbreaker/scripts/healthcheck.sh
+  chown root:root /opt/circuitbreaker/scripts/healthcheck.sh
+
+  # validate-secrets.sh — pre-start guard called as ExecStartPre in backend.service
+  cb_step "Writing validate-secrets.sh"
+  cat > /opt/circuitbreaker/scripts/validate-secrets.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+set -a
+source /etc/circuitbreaker/.env
+set +a
+
+fail() { echo "ERROR: $*" >&2; exit 1; }
+
+PLACEHOLDERS="CHANGE_ME changeme placeholder todo test secret password"
+
+check_secret() {
+  local name="$1" value="$2" min_len="${3:-0}"
+  [[ -z "$value" ]] && fail "$name is not set or empty"
+  for p in $PLACEHOLDERS; do
+    [[ "${value,,}" == "${p,,}" ]] && fail "$name contains placeholder value: $value"
+  done
+  if (( min_len > 0 )) && (( ${#value} < min_len )); then
+    fail "$name is too short (${#value} chars, minimum $min_len)"
+  fi
+}
+
+check_secret "CB_JWT_SECRET"   "${CB_JWT_SECRET:-}"   64
+check_secret "CB_VAULT_KEY"    "${CB_VAULT_KEY:-}"    32
+check_secret "NATS_AUTH_TOKEN" "${NATS_AUTH_TOKEN:-}"  0
+check_secret "CB_DB_PASSWORD"  "${CB_DB_PASSWORD:-}"   0
+EOF
+  chmod 750 /opt/circuitbreaker/scripts/validate-secrets.sh
+  chown root:breaker /opt/circuitbreaker/scripts/validate-secrets.sh
+
+  cb_ok "Service scripts created"
+}
+
+# ============================================================================
 # STAGE 5: CODE DEPLOYMENT
 # ============================================================================
 
@@ -2391,6 +2401,7 @@ run_upgrade() {
   # Deploy code
   stage5_deploy_code
   write_wait_for_services_script
+  write_service_scripts
 
   # Docker install + detection must run BEFORE stage4 writes conditional systemd units
   # (stage4 checks DOCKER_AVAILABLE to decide whether to write the docker-proxy unit)
@@ -2507,8 +2518,7 @@ main() {
   stage1_bootstrap
   stage2_dependencies
 
-  # Systemd units (must exist before stage3 starts services)
-  write_wait_for_services_script
+  # Systemd unit files (must exist before stage3 starts services)
   stage4_write_systemd_units
 
   # Configure services (postgres/pgbouncer/redis/nats start within these)
@@ -2521,6 +2531,10 @@ main() {
 
   # Deploy and build
   stage5_deploy_code
+
+  # Service scripts written AFTER stage5 (stage5 rm -rf's /opt/circuitbreaker/scripts on fresh install)
+  write_wait_for_services_script
+  write_service_scripts
   stage6_setup_python
   stage7_build_frontend
 
