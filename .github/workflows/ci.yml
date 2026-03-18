@@ -87,6 +87,7 @@ jobs:
         env:
           CB_DB_URL: postgresql://root:${{ secrets.CB_TEST_DB_PASSWORD }}@localhost:5432/circuitbreaker
           CB_REDIS_URL: redis://localhost:6379/0
+          CB_DATA_DIR: /tmp/cb-data
 
       - name: Frontend tests
         run: cd apps/frontend && npm test
