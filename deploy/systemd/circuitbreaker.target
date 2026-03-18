@@ -1,0 +1,22 @@
+[Unit]
+Description=Circuit Breaker (all services)
+Wants=circuitbreaker-postgres.service
+Wants=circuitbreaker-pgbouncer.service
+Wants=circuitbreaker-redis.service
+Wants=circuitbreaker-nats.service
+Wants=circuitbreaker-backend.service
+Wants=circuitbreaker-worker@discovery.service
+Wants=circuitbreaker-worker@webhook.service
+Wants=circuitbreaker-worker@notification.service
+Wants=circuitbreaker-worker@telemetry.service
+Wants=nginx.service
+Wants=circuitbreaker-healthcheck.timer
+After=circuitbreaker-postgres.service
+After=circuitbreaker-pgbouncer.service
+After=circuitbreaker-redis.service
+After=circuitbreaker-nats.service
+After=circuitbreaker-backend.service
+After=nginx.service
+
+[Install]
+WantedBy=multi-user.target

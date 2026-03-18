@@ -1,0 +1,23 @@
+[Unit]
+Description=Circuit Breaker Docker Socket Proxy
+Documentation=https://github.com/Tecnativa/docker-socket-proxy
+After=docker.service
+Requires=docker.service
+Before=circuitbreaker-backend.service
+
+[Service]
+Type=simple
+User=root
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=65536
+Slice=circuitbreaker.slice
+ExecStartPre=-/usr/bin/docker rm -f cb-docker-proxy
+ExecStart=/usr/bin/docker run --rm --name cb-docker-proxy -p 127.0.0.1:2375:2375 -v /var/run/docker.sock:/var/run/docker.sock:ro --env-file /etc/circuitbreaker/docker-proxy.env tecnativa/docker-socket-proxy:latest
+ExecStop=/usr/bin/docker stop cb-docker-proxy
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-docker-proxy
+
+[Install]
+WantedBy=multi-user.target

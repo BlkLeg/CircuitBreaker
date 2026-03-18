@@ -1,0 +1,20 @@
+[Unit]
+Description=Circuit Breaker Redis
+After=network.target
+
+[Service]
+Type=notify
+User=redis
+Slice=circuitbreaker.slice
+ExecStart=/usr/bin/redis-server /etc/redis/redis.conf
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ReadWritePaths=${CB_DATA_DIR}/redis
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-redis
+
+[Install]
+WantedBy=multi-user.target

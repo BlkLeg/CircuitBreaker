@@ -1,0 +1,32 @@
+[Unit]
+Description=Circuit Breaker Worker (%i)
+After=circuitbreaker-backend.service
+Requires=circuitbreaker-backend.service
+
+[Service]
+Type=simple
+User=breaker
+Group=breaker
+Slice=circuitbreaker.slice
+WorkingDirectory=/opt/circuitbreaker/apps/backend
+EnvironmentFile=/etc/circuitbreaker/.env
+RuntimeDirectory=circuitbreaker
+RuntimeDirectoryMode=0750
+ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker/.env > /run/circuitbreaker/vault.env 2>/dev/null || true'
+EnvironmentFile=-/run/circuitbreaker/vault.env
+Environment="DB_POOL_SIZE=3"
+Environment="DB_MAX_OVERFLOW=2"
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
+Restart=on-failure
+RestartSec=10s
+ProtectSystem=strict
+ReadWritePaths=${CB_DATA_DIR}
+MemoryMax=512M
+LimitNOFILE=65536
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-worker-%i
+
+[Install]
+WantedBy=multi-user.target
