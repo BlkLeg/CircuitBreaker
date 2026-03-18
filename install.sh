@@ -541,31 +541,25 @@ stage2_dependencies() {
   echo "    Binary path: $PG_BIN_DIR"
   cb_ok "PostgreSQL ${pg_version} installed"
 
-  # Group 4: pgbouncer, Redis, Caddy
-  cb_step "Installing pgbouncer, Redis, and Caddy"
+  # Group 4: pgbouncer, Redis, Nginx
+  cb_step "Installing pgbouncer, Redis, and Nginx"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
-    # Add official Caddy stable APT repository
-    $PKG_MGR install -y -q debian-keyring debian-archive-keyring apt-transport-https >> "$LOG_FILE" 2>&1
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null \
-      | gpg --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null \
-      > /etc/apt/sources.list.d/caddy-stable.list
-    $PKG_MGR update -q >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q pgbouncer redis-server caddy >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q pgbouncer redis-server nginx >> "$LOG_FILE" 2>&1
   elif [[ "$PKG_MGR" == "pacman" ]]; then
-    pacman -S --noconfirm --needed pgbouncer redis caddy >> "$LOG_FILE" 2>&1
+    pacman -S --noconfirm --needed pgbouncer redis nginx >> "$LOG_FILE" 2>&1
   else
-    # Enable official Caddy COPR repository for RHEL/Fedora
-    dnf copr enable -y @caddy/caddy >> "$LOG_FILE" 2>&1 || true
-    $PKG_MGR install -y -q pgbouncer redis caddy >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q pgbouncer redis nginx >> "$LOG_FILE" 2>&1
   fi
 
-  for bin in pgbouncer redis-server redis-cli caddy; do
+  # Stop nginx immediately — package auto-starts with default config
+  systemctl stop nginx >> "$LOG_FILE" 2>&1 || true
+
+  for bin in pgbouncer redis-server redis-cli nginx; do
     if ! command -v "$bin" &>/dev/null && ! command -v "${bin%-*}" &>/dev/null; then
       cb_fail "$bin not found after install" "Check: $PKG_MGR install logs"
     fi
   done
-  cb_ok "pgbouncer, Redis, Caddy installed"
+  cb_ok "pgbouncer, Redis, Nginx installed"
 
   # Group 5: NATS Server binary
   cb_step "Installing NATS Server (JetStream)"
@@ -866,14 +860,14 @@ Wants=circuitbreaker-worker@discovery.service
 Wants=circuitbreaker-worker@webhook.service
 Wants=circuitbreaker-worker@notification.service
 Wants=circuitbreaker-worker@telemetry.service
-Wants=caddy.service
+Wants=nginx.service
 Wants=circuitbreaker-healthcheck.timer
 After=circuitbreaker-postgres.service
 After=circuitbreaker-pgbouncer.service
 After=circuitbreaker-redis.service
 After=circuitbreaker-nats.service
 After=circuitbreaker-backend.service
-After=caddy.service
+After=nginx.service
 
 [Install]
 WantedBy=multi-user.target
@@ -1026,7 +1020,7 @@ UNITEOF
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
     circuitbreaker-healthcheck.timer \
-    caddy >> "$LOG_FILE" 2>&1
+    nginx >> "$LOG_FILE" 2>&1
   [[ "$DOCKER_AVAILABLE" == "true" ]] && \
     systemctl enable circuitbreaker-docker-proxy >> "$LOG_FILE" 2>&1 || true
 
@@ -1386,14 +1380,13 @@ ensure_hosts_entry() {
   cb_ok "$fqdn → 127.0.0.1 added to /etc/hosts"
 }
 
-stage3_configure_caddy() {
-  cb_section "Configuring Caddy"
+stage3_configure_nginx() {
+  cb_section "Configuring Nginx"
 
   local cert_path="${CB_DATA_DIR}/tls"
-  local site_address
-  local tls_line=""
+  local use_tls=true
 
-  # TLS certificate generation / directive setup
+  # TLS certificate generation
   if [[ "$NO_TLS" == "false" ]]; then
     if [[ "$CB_CERT_TYPE" == "letsencrypt" ]]; then
       if [[ -n "$CB_FQDN" ]] && [[ -n "$CB_EMAIL" ]]; then
@@ -1412,8 +1405,8 @@ stage3_configure_caddy() {
           cb_warn "Let's Encrypt requires DNS to point to this server, falling back to self-signed"
           CB_CERT_TYPE="self-signed"
         else
-          cb_ok "DNS validation passed — Caddy will obtain and renew the certificate automatically"
-          tls_line="tls ${CB_EMAIL}"
+          cb_ok "DNS validation passed for $CB_FQDN"
+          # Let's Encrypt certs are expected to already be at cert_path (e.g. via certbot)
         fi
       else
         cb_warn "Let's Encrypt requires both --fqdn and --email, falling back to self-signed"
@@ -1439,102 +1432,217 @@ stage3_configure_caddy() {
       else
         cb_ok "TLS certificate already exists — reusing"
       fi
-      chown root:caddy "${CB_DATA_DIR}/tls"/*.pem
-      chmod 640 "${CB_DATA_DIR}/tls"/*.pem
-      chown root:caddy "${CB_DATA_DIR}/tls"
-      chmod 750 "${CB_DATA_DIR}/tls"
-      tls_line="tls ${cert_path}/fullchain.pem ${cert_path}/privkey.pem"
     fi
 
-    if [[ -n "${cert_ip:-}" ]]; then
-      site_address="${CB_FQDN:-circuitbreaker.lab}, https://${cert_ip}"
-    else
-      site_address="${CB_FQDN:-circuitbreaker.lab}"
-    fi
+    # Nginx master runs as root — simple permissions suffice
+    chmod 600 "${CB_DATA_DIR}/tls"/*.pem
+    chmod 700 "${CB_DATA_DIR}/tls"
   else
-    # Plain HTTP mode
-    site_address="http://${CB_FQDN:-circuitbreaker.lab}:${CB_PORT}"
+    use_tls=false
   fi
 
-  # HSTS is only safe over HTTPS; omit it when NO_TLS=true
-  local hsts_header=""
-  [[ "$NO_TLS" == "false" ]] && hsts_header='Strict-Transport-Security "max-age=63072000; includeSubDomains"'
+  # Write Nginx configuration
+  cb_step "Writing Nginx configuration"
 
-  # Write Caddyfile
-  cb_step "Writing Caddy configuration"
-  mkdir -p /etc/caddy
+  # Build server_name directive
+  local server_name="${CB_FQDN:-_}"
+  local cert_ip
+  cert_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || true)
 
-  cat > /etc/caddy/Caddyfile <<EOF
-${site_address} {
-    ${tls_line}
+  if [[ "$use_tls" == "true" ]]; then
+    # TLS mode: HTTPS server + HTTP→HTTPS redirect
+    cat > /etc/nginx/conf.d/circuitbreaker.conf <<NGINXEOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
 
-    encode gzip
+map \$uri \$cb_cache_control {
+    ~*\.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)\$  "public, max-age=31536000, immutable";
+    /index.html  "no-cache, no-store, must-revalidate";
+    default  "";
+}
+
+# HTTP → HTTPS redirect
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${server_name};
+
+    ssl_certificate     ${cert_path}/fullchain.pem;
+    ssl_certificate_key ${cert_path}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript
+               text/xml application/xml application/xml+rss text/javascript;
+    gzip_min_length 256;
+    server_tokens off;
 
     # Security headers
-    header {
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        Referrer-Policy "strict-origin-when-cross-origin"
-        ${hsts_header}
-        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
-        -Server
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()" always;
+    add_header Cache-Control \$cb_cache_control;
+
+    # API + WebSocket + SSE
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
-    # Long-term caching for hashed static assets
-    @staticAssets path_regexp \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$
-    header @staticAssets Cache-Control "public, max-age=31536000, immutable"
-    header /index.html Cache-Control "no-cache, no-store, must-revalidate"
-
-    # API + WebSocket streams
-    # Caddy automatically handles WebSocket upgrades (Upgrade/Connection headers)
-    # flush_interval -1 disables buffering for SSE (/api/v1/events/stream)
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8000 {
-            header_up Host {host}
-            header_up X-Real-IP {remote_host}
-            flush_interval -1
-            transport http {
-                dial_timeout 5s
-                response_header_timeout 0
-                write_timeout 3600s
-            }
-        }
+    # Backend-served assets
+    location /user-icons/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    handle /user-icons/* {
-        reverse_proxy localhost:8000
+    location /branding/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    handle /branding/* {
-        reverse_proxy localhost:8000
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    handle /uploads/* {
-        reverse_proxy localhost:8000
-    }
-
-    # Frontend SPA — catch-all falls back to index.html for client-side routing
-    handle {
-        root * /opt/circuitbreaker/apps/frontend/dist
-        try_files {path} /index.html
-        file_server
+    # Frontend SPA
+    location / {
+        root /opt/circuitbreaker/apps/frontend/dist;
+        try_files \$uri \$uri/ /index.html;
     }
 }
-EOF
+NGINXEOF
+  else
+    # NO_TLS mode: plain HTTP on CB_PORT
+    cat > /etc/nginx/conf.d/circuitbreaker.conf <<NGINXEOF
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
 
-  cb_ok "Caddy configuration written"
+map \$uri \$cb_cache_control {
+    ~*\.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)\$  "public, max-age=31536000, immutable";
+    /index.html  "no-cache, no-store, must-revalidate";
+    default  "";
+}
 
-  # Validate Caddyfile
-  cb_step "Validating Caddy configuration"
-  if ! caddy validate --config /etc/caddy/Caddyfile 2>/dev/null; then
-    cb_fail "Caddy config invalid" "Check: caddy validate --config /etc/caddy/Caddyfile"
+server {
+    listen ${CB_PORT};
+    listen [::]:${CB_PORT};
+    server_name ${server_name};
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript
+               text/xml application/xml application/xml+rss text/javascript;
+    gzip_min_length 256;
+    server_tokens off;
+
+    # Security headers (no HSTS in plain HTTP mode)
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()" always;
+    add_header Cache-Control \$cb_cache_control;
+
+    # API + WebSocket + SSE
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Backend-served assets
+    location /user-icons/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /branding/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /uploads/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    # Frontend SPA
+    location / {
+        root /opt/circuitbreaker/apps/frontend/dist;
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+NGINXEOF
   fi
-  cb_ok "Caddy configuration validated"
+
+  cb_ok "Nginx configuration written"
+
+  # Remove default site that conflicts on port 80/443
+  rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+
+  # Validate config
+  cb_step "Validating Nginx configuration"
+  if ! nginx -t >> "$LOG_FILE" 2>&1; then
+    cb_fail "Nginx config validation failed" "Check: nginx -t"
+  fi
+  cb_ok "Nginx configuration validated"
 
   ensure_hosts_entry
 
-  cb_ok "Caddy configured (will start after frontend build)"
+  cb_ok "Nginx configured (will start after frontend build)"
 }
 
 # ============================================================================
@@ -1911,17 +2019,17 @@ stage8_start_services() {
   sleep 2
   cb_ok "Workers started"
   
-  # Start/restart Caddy
-  cb_step "Starting Caddy"
-  systemctl restart caddy >> "$LOG_FILE" 2>&1 || cb_fail "Caddy failed to start" "Check: journalctl -u caddy -n 50"
+  # Start/restart Nginx
+  cb_step "Starting Nginx"
+  systemctl restart nginx >> "$LOG_FILE" 2>&1 || cb_fail "Nginx failed to start" "Check: nginx -t && journalctl -u nginx -n 50"
   sleep 1
 
-  local caddy_port=443
-  [[ "$NO_TLS" == "true" ]] && caddy_port="$CB_PORT"
-  if ! nc -z 127.0.0.1 "$caddy_port" 2>/dev/null; then
-    cb_fail "Caddy not listening on port $caddy_port" "Check: journalctl -u caddy -n 50"
+  local nginx_port=443
+  [[ "$NO_TLS" == "true" ]] && nginx_port="$CB_PORT"
+  if ! nc -z 127.0.0.1 "$nginx_port" 2>/dev/null; then
+    cb_fail "Nginx not listening on port $nginx_port" "Check: nginx -t && journalctl -u nginx -n 50"
   fi
-  cb_ok "Caddy started"
+  cb_ok "Nginx started"
   
   # Detect primary IP and update .env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
@@ -1958,6 +2066,7 @@ SERVICES=(
   "circuitbreaker-worker@webhook"
   "circuitbreaker-worker@notification"
   "circuitbreaker-worker@telemetry"
+  "nginx"
 )
 [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]] && \
   SERVICES+=("circuitbreaker-docker-proxy")
@@ -2005,7 +2114,7 @@ cmd_doctor() {
       "curl -sf http://127.0.0.1:2375/version" \
       "journalctl -u circuitbreaker-docker-proxy -n 30"
   fi
-  check "caddy (443)"        "nc -z 127.0.0.1 443"             "caddy validate --config /etc/caddy/Caddyfile && journalctl -u caddy -n 30"
+  check "nginx (443)"        "nc -z 127.0.0.1 443"             "nginx -t && journalctl -u nginx -n 30"
   echo ""
   [[ $FAILED -eq 0 ]] && echo "  All systems operational." \
                        || echo "  $FAILED check(s) failed. Fix top-down — each service depends on the one above."
@@ -2020,7 +2129,7 @@ cmd_logs() {
     -u circuitbreaker-nats \
     -u circuitbreaker-backend \
     -u "circuitbreaker-worker@*" \
-    -u caddy
+    -u nginx
 }
 
 cmd_restart() {
@@ -2062,7 +2171,7 @@ cmd_uninstall() {
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
-    caddy 2>/dev/null || true
+    nginx 2>/dev/null || true
 
   systemctl disable \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
@@ -2070,7 +2179,7 @@ cmd_uninstall() {
     "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
     "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
     circuitbreaker-docker-proxy \
-    circuitbreaker.target caddy 2>/dev/null || true
+    circuitbreaker.target nginx 2>/dev/null || true
 
   echo "Killing any remaining CircuitBreaker processes..."
   pkill -u breaker 2>/dev/null || true
@@ -2087,8 +2196,8 @@ cmd_uninstall() {
   rm -rf /opt/circuitbreaker /etc/circuitbreaker /etc/nats
   rm -rf "${CB_DATA_DIR}"
 
-  echo "Removing Caddy configuration..."
-  rm -f /etc/caddy/Caddyfile
+  echo "Removing Nginx configuration..."
+  rm -f /etc/nginx/conf.d/circuitbreaker.conf
 
   echo "Removing NATS binary..."
   rm -f /usr/local/bin/nats-server
@@ -2104,10 +2213,8 @@ cmd_uninstall() {
     sed -i "/[[:space:]]${CB_FQDN}$/d" /etc/hosts
   fi
 
-  echo "Removing Caddy apt repository..."
-  rm -f /etc/apt/sources.list.d/caddy-stable.list
-  rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  apt-get remove -y caddy 2>/dev/null || dnf remove -y caddy 2>/dev/null || true
+  echo "Removing Nginx package..."
+  apt-get remove -y nginx 2>/dev/null || dnf remove -y nginx 2>/dev/null || pacman -R --noconfirm nginx 2>/dev/null || true
 
   echo "Removing NodeSource repository..."
   rm -f /etc/apt/sources.list.d/nodesource.list
@@ -2270,8 +2377,8 @@ run_upgrade() {
   write_wait_for_services_script
   stage4_write_systemd_units
 
-  # Always regenerate Caddyfile on upgrade (picks up CSP/config changes; certs preserved if existing)
-  stage3_configure_caddy
+  # Always regenerate Nginx config on upgrade (picks up CSP/config changes; certs preserved if existing)
+  stage3_configure_nginx
 
   # Install Docker CE if --docker was passed and Docker is not present
   if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
@@ -2365,7 +2472,7 @@ main() {
   stage3_configure_pgbouncer
   stage3_configure_redis
   stage3_configure_nats
-  stage3_configure_caddy
+  stage3_configure_nginx
   stage3_configure_docker_proxy
 
   # Deploy and build
