@@ -1426,6 +1426,8 @@ stage3_configure_caddy() {
         -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1
       chown root:caddy "${CB_DATA_DIR}/tls"/*.pem
       chmod 640 "${CB_DATA_DIR}/tls"/*.pem
+      chown root:caddy "${CB_DATA_DIR}/tls"
+      chmod 750 "${CB_DATA_DIR}/tls"
       tls_line="tls ${cert_path}/fullchain.pem ${cert_path}/privkey.pem"
       cb_ok "Self-signed TLS certificate generated"
     fi
@@ -1952,6 +1954,9 @@ cmd_status() {
 }
 
 cmd_doctor() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo /usr/local/bin/cb doctor
+  fi
   echo ""
   echo "  Circuit Breaker Health Check"
   echo "  ─────────────────────────────────────────"
@@ -2241,6 +2246,34 @@ run_upgrade() {
   stage5_deploy_code
   write_wait_for_services_script
   stage4_write_systemd_units
+
+  # Install Docker CE if --docker was passed and Docker is not present
+  if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
+    cb_step "Installing Docker CE"
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+        > /etc/apt/sources.list.d/docker.list
+      apt-get update -q >> "$LOG_FILE" 2>&1
+      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    elif [[ "$PKG_MGR" == "pacman" ]]; then
+      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
+    else
+      dnf config-manager --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
+      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+    fi
+    systemctl enable --now docker >> "$LOG_FILE" 2>&1
+    cb_ok "Docker CE installed"
+  fi
+
+  # Docker detection — sets DOCKER_AVAILABLE for stage3_configure_docker_proxy
+  if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    DOCKER_AVAILABLE=true
+  fi
+
   stage3_configure_docker_proxy
 
   # Show changelog
@@ -2262,11 +2295,19 @@ run_upgrade() {
   # Rebuild frontend
   stage7_build_frontend
   
+  # Re-apply TLS cert permissions (fixes certs from older installs lacking chown)
+  if [[ -d "${CB_DATA_DIR}/tls" ]]; then
+    chown root:caddy "${CB_DATA_DIR}/tls" 2>/dev/null || true
+    chmod 750 "${CB_DATA_DIR}/tls" 2>/dev/null || true
+    chown root:caddy "${CB_DATA_DIR}/tls"/*.pem 2>/dev/null || true
+    chmod 640 "${CB_DATA_DIR}/tls"/*.pem 2>/dev/null || true
+  fi
+
   # Restart services
   cb_step "Restarting all services"
   systemctl start circuitbreaker.target >> "$LOG_FILE" 2>&1
   sleep 5
-  
+
   # Wait for backend
   local max_wait=30
   local elapsed=0
