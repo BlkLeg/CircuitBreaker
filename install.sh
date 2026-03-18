@@ -804,7 +804,6 @@ ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
 ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level info
 Restart=on-failure
 RestartSec=10s
-NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${CB_DATA_DIR}
 MemoryMax=1G
@@ -841,7 +840,6 @@ Environment="DB_MAX_OVERFLOW=2"
 ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
 Restart=on-failure
 RestartSec=10s
-NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=${CB_DATA_DIR}
 MemoryMax=512M
@@ -1307,7 +1305,7 @@ EOF
   
   # Verify Redis
   cb_step "Verifying Redis connection"
-  if ! redis-cli -a "$CB_REDIS_PASS" PING 2>/dev/null | grep -q PONG; then
+  if ! redis-cli -a "$CB_REDIS_PASS" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
     cb_fail "Redis not responding" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis connection verified"
@@ -1775,19 +1773,26 @@ stage6_setup_python() {
   # Create virtual environment
   cb_step "Creating Python virtual environment"
   echo "    Location: /opt/circuitbreaker/apps/backend/venv"
-  python3.12 -m venv /opt/circuitbreaker/apps/backend/venv >> "$LOG_FILE" 2>&1
+  if ! python3.12 -m venv /opt/circuitbreaker/apps/backend/venv >> "$LOG_FILE" 2>&1; then
+    cb_fail "Python venv creation failed" "Is python3.12 installed? Check: python3.12 --version"
+  fi
   chown -R breaker:breaker /opt/circuitbreaker/apps/backend/venv
   cb_ok "Virtual environment created"
   
   # Install dependencies as breaker user
   cb_step "Installing Python dependencies (may take 1-2 minutes)"
   echo "    Installing from: apps/backend/requirements.txt"
-  su -s /bin/bash breaker -c "
+  if ! su -s /bin/bash breaker -c "
     source /opt/circuitbreaker/apps/backend/venv/bin/activate
     pip install --quiet --upgrade pip
     pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt -r /opt/circuitbreaker/apps/backend/requirements-pg.txt
     pip install --quiet -e /opt/circuitbreaker/apps/backend/
-  " >> "$LOG_FILE" 2>&1
+  " >> "$LOG_FILE" 2>&1; then
+    cb_fail "Python dependency install failed" "Check: tail -100 ${CB_DATA_DIR}/logs/install.log"
+  fi
+  if [[ ! -x /opt/circuitbreaker/apps/backend/venv/bin/uvicorn ]]; then
+    cb_fail "uvicorn not found after pip install" "Check: tail -100 ${CB_DATA_DIR}/logs/install.log"
+  fi
   cb_ok "Python dependencies installed"
   
   # Run database migrations
@@ -1868,7 +1873,17 @@ stage7_build_frontend() {
 
 stage8_start_services() {
   cb_section "Starting Application Services"
-  
+
+  # Pre-flight: verify critical paths exist before starting services
+  for required_file in \
+    /opt/circuitbreaker/scripts/validate-secrets.sh \
+    /opt/circuitbreaker/scripts/wait-for-services.sh \
+    /opt/circuitbreaker/apps/backend/venv/bin/uvicorn; do
+    if [[ ! -x "$required_file" ]]; then
+      cb_fail "Missing: $required_file" "A previous stage may have failed — check install.log"
+    fi
+  done
+
   # Start backend
   cb_step "Starting backend API"
   if ! systemctl start circuitbreaker-backend >> "$LOG_FILE" 2>&1; then
@@ -1982,7 +1997,7 @@ cmd_doctor() {
   check "PostgreSQL (5432)"  "nc -z 127.0.0.1 5432"           "journalctl -u circuitbreaker-postgres -n 30"
   check "pgbouncer (6432)"   "nc -z 127.0.0.1 6432"           "journalctl -u circuitbreaker-pgbouncer -n 30"
   check "DB connection"      "PGPASSWORD=\"$CB_DB_PASSWORD\" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q'" "Check pgbouncer userlist.txt hash"
-  check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASS\" PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
+  check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASS\" --no-auth-warning PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
   check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
   check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
   if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
@@ -2344,8 +2359,7 @@ main() {
   # Fresh install flow
   stage1_bootstrap
   stage2_dependencies
-  stage4_write_systemd_units
-  
+
   # Configure services
   stage3_configure_postgres
   stage3_configure_pgbouncer
@@ -2356,10 +2370,13 @@ main() {
 
   # Deploy and build
   stage5_deploy_code
-  write_wait_for_services_script
   stage6_setup_python
   stage7_build_frontend
-  
+
+  # Systemd units + helper scripts (after all paths exist)
+  write_wait_for_services_script
+  stage4_write_systemd_units
+
   # Start everything
   stage8_start_services
   stage9_install_cb_cli
