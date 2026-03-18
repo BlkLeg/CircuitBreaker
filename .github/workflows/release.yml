@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.3, without the v prefix)"
+        required: true
+
+permissions:
+  contents: write    # create GitHub Release, upload assets
+  packages: write    # push Docker image to GHCR
+  pages: write       # deploy GitHub Pages (install redirect)
+  id-token: write    # OIDC for pages deployment
+
+jobs:
+  # ── Derive version ────────────────────────────────────────────────────────────
+  version:
+    name: Derive Version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Derive version string
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Strip leading 'v' from tag
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Build all packages ────────────────────────────────────────────────────────
+  build:
+    name: Build Packages
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  # ── Create GitHub Release + push Docker ──────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: [version, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist/release/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist/release/
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push Docker image
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          docker build -f Dockerfile.mono \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          gh release create "v${VERSION}" \
+            --title "Circuit Breaker v${VERSION}" \
+            --generate-notes \
+            dist/release/*
+
+  # ── Deploy install redirect to GitHub Pages ───────────────────────────────────
+  deploy-redirect:
+    name: Deploy Install Redirect
+    needs: release
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Generate redirect page
+        run: |
+          mkdir -p _site
+          cat > _site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/setup.sh">
+            <title>Circuit Breaker Installer</title>
+          </head>
+          <body>
+            <p>Redirecting to Circuit Breaker installer…
+              <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/setup.sh">Click here if not redirected.</a>
+            </p>
+          </body>
+          </html>
+          EOF
+          echo "install.circuitbreaker.app" > _site/CNAME
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site/
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
