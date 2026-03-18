@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Ruff check
+        run: cd apps/backend && ../../.venv/bin/ruff check src/app
+
+      - name: Mypy
+        run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/mypy src/app
+
+      - name: ESLint
+        run: cd apps/frontend && npm run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: breaker
+          POSTGRES_PASSWORD: breaker
+          POSTGRES_DB: circuitbreaker
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Backend tests
+        run: |
+          cd apps/backend
+          PYTHONPATH=src ../../.venv/bin/pytest ../../tests/integration -q
+        env:
+          CB_DB_URL: postgresql://breaker:breaker@localhost:5432/circuitbreaker
+          CB_REDIS_URL: redis://localhost:6379/0
+
+      - name: Frontend tests
+        run: cd apps/frontend && npm test

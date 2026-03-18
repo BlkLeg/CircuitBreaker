@@ -27,6 +27,8 @@ NATS_DEV_PORT       ?= 4222
 NATS_AUTH_TOKEN_DEV ?= dev-token-local-only
 CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
 
+DOCKER_REGISTRY   ?= ghcr.io/blkleg/circuitbreaker
+
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
@@ -91,9 +93,43 @@ deps-native-down:  ## Stop native systemd deps
 	sudo systemctl stop circuitbreaker-nats circuitbreaker-redis circuitbreaker-pgbouncer circuitbreaker-postgres
 
 # ==============================================================================
+# BUILD & RELEASE
+# ==============================================================================
+.PHONY: build build-deps build-release build-from-source release-local docker-build docker-push
+
+build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+	.venv/bin/python scripts/build_native_release.py --clean
+
+build-deps: ## Install build toolchain (nfpm, appimagetool, Python 3.12, Node 20)
+	bash scripts/install-build-deps.sh
+
+build-release: ## Install build deps then build all packages
+	$(MAKE) --no-print-directory build-deps
+	$(MAKE) --no-print-directory build
+
+build-from-source: ## Full power-user path: deps + venv + build (clean machine → artifacts)
+	$(MAKE) --no-print-directory build-deps
+	$(MAKE) --no-print-directory install
+	$(MAKE) --no-print-directory build
+
+release-local: ## build-release + tag current HEAD with VERSION
+	$(MAKE) --no-print-directory build-release
+	git tag -a "v$$(cat VERSION)" -m "Release v$$(cat VERSION)"
+	@echo "Tagged v$$(cat VERSION). Push with: git push origin v$$(cat VERSION)"
+
+docker-build: ## Build the mono Docker image locally
+	docker build -f Dockerfile.mono -t $(DOCKER_REGISTRY):$$(cat VERSION) .
+
+docker-push: ## Push mono image to GHCR (requires docker login to ghcr.io first)
+	docker push $(DOCKER_REGISTRY):$$(cat VERSION)
+	docker tag $(DOCKER_REGISTRY):$$(cat VERSION) $(DOCKER_REGISTRY):latest
+	docker push $(DOCKER_REGISTRY):latest
+
+# ==============================================================================
 # CODE QUALITY & TESTING
 # ==============================================================================
-.PHONY: lint format test build
+.PHONY: lint format test
 
 lint: ## Run backend and frontend linters
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app
@@ -107,7 +143,3 @@ format: ## Format backend and frontend code
 test: ## Run tests natively
 	cd $(BACKEND_DIR) && PYTHONPATH=src $(CURDIR)/.venv/bin/pytest ../../tests/integration -q
 	cd $(FRONTEND_DIR) && npm test
-
-build: ## Build native app
-	cd $(FRONTEND_DIR) && npm ci && npm run build
-	.venv/bin/python scripts/build_native_release.py --clean
