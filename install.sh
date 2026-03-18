@@ -2377,6 +2377,29 @@ run_upgrade() {
   write_wait_for_services_script
   stage4_write_systemd_units
 
+  # --- Caddy → Nginx migration (one-time) ---
+  if ! command -v nginx &>/dev/null; then
+    cb_step "Installing Nginx (replacing Caddy)"
+    if [[ "$PKG_MGR" == "apt-get" ]]; then
+      $PKG_MGR install -y -q nginx >> "$LOG_FILE" 2>&1
+    elif [[ "$PKG_MGR" == "pacman" ]]; then
+      pacman -S --noconfirm --needed nginx >> "$LOG_FILE" 2>&1
+    else
+      $PKG_MGR install -y -q nginx >> "$LOG_FILE" 2>&1
+    fi
+    systemctl stop nginx >> "$LOG_FILE" 2>&1 || true
+    cb_ok "Nginx installed"
+  fi
+
+  # Stop Caddy if still present (port 443 conflict)
+  if systemctl is-active caddy &>/dev/null 2>&1; then
+    cb_step "Stopping Caddy (replaced by Nginx)"
+    systemctl stop caddy >> "$LOG_FILE" 2>&1 || true
+    systemctl disable caddy >> "$LOG_FILE" 2>&1 || true
+    cb_ok "Caddy stopped and disabled"
+  fi
+  rm -f /etc/caddy/Caddyfile 2>/dev/null || true
+
   # Always regenerate Nginx config on upgrade (picks up CSP/config changes; certs preserved if existing)
   stage3_configure_nginx
 
