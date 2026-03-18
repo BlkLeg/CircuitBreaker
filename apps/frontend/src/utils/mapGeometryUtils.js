@@ -88,7 +88,7 @@ export function applyEdgeSidesForEdge(nodesArr, edge, overrides = {}) {
  *   { "hw-1": {x,y}, ... }  (flat node position map).
  */
 export function parseLayoutData(raw) {
-  const parsed = JSON.parse(raw);
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   if (parsed && typeof parsed.nodes === 'object' && !Array.isArray(parsed.nodes)) {
     return {
       nodes: parsed.nodes || {},

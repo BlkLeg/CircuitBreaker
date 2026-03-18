@@ -639,7 +639,11 @@ function MapInternal() {
       if (settings.map_default_filters && typeof settings.map_default_filters === 'object') {
         const f = settings.map_default_filters;
         if (f.include && typeof f.include === 'object') {
-          setIncludeTypes((prev) => ({ ...prev, ...f.include }));
+          setIncludeTypes((prev) => {
+            const next = new Map(prev);
+            for (const [k, v] of Object.entries(f.include)) next.set(k, v);
+            return next;
+          });
         }
       }
     }

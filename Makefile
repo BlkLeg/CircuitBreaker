@@ -30,12 +30,18 @@ CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help dev backend backend-watch frontend migrate stop
+.PHONY: help install dev backend backend-watch frontend migrate stop
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-dev: deps-up stop backend frontend  ## Native backend + frontend + deps
+install: ## Bootstrap dev environment (run once)
+	python3.12 -m venv .venv
+	$(CURDIR)/.venv/bin/pip install --upgrade pip
+	$(CURDIR)/.venv/bin/pip install -e "apps/backend/[dev]"
+
+dev: deps-up stop ## Native backend + frontend + deps
+	trap 'kill 0' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
 
 stop: ## Kill any process holding the dev ports
 	lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 || true
@@ -46,7 +52,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 	@echo "Running migrations..."
 	cd $(BACKEND_DIR) && \
 		CB_DB_URL="postgresql://breaker:breaker@localhost:5432/circuitbreaker" \
-		PYTHONPATH=src .venv/bin/alembic upgrade head
+		PYTHONPATH=src $(CURDIR)/.venv/bin/alembic upgrade head
 	@echo "Starting backend → http://localhost:8000"
 	cd $(BACKEND_DIR) && \
 		CB_DATA_DIR="$(CURDIR)/$(BACKEND_DIR)/.dev-data" \
@@ -55,7 +61,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		NATS_URL="nats://localhost:4222" \
 		NATS_AUTH_TOKEN="dev-token-local-only" \
 		CB_AUTO_MIGRATE=false \
-		PYTHONPATH=src .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 $(CB_UVICORN_ARGS)
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 $(CB_UVICORN_ARGS)
 
 backend-watch:  ## Native backend WITH reload (post-fix only)
 	$(MAKE) backend --no-print-directory CB_UVICORN_ARGS="--reload"
@@ -70,13 +76,19 @@ migrate: ## Run Alembic DB migrations
 # ==============================================================================
 # DEPENDENCIES (Local Services)
 # ==============================================================================
-.PHONY: deps-up deps-down
+.PHONY: deps-up deps-down deps-native-up deps-native-down
 
-deps-up:  ## Start deps only (Postgres/Redis/NATS)
+deps-up:  ## Start deps only (Postgres/Redis/NATS) via Docker
 	docker compose -f docker-compose.deps.yml up -d
 
-deps-down:
+deps-down:  ## Stop Docker deps
 	docker compose -f docker-compose.deps.yml down -v
+
+deps-native-up:  ## Start native systemd deps (prod-parity: same units as install.sh)
+	sudo systemctl start circuitbreaker-postgres circuitbreaker-pgbouncer circuitbreaker-redis circuitbreaker-nats
+
+deps-native-down:  ## Stop native systemd deps
+	sudo systemctl stop circuitbreaker-nats circuitbreaker-redis circuitbreaker-pgbouncer circuitbreaker-postgres
 
 # ==============================================================================
 # CODE QUALITY & TESTING

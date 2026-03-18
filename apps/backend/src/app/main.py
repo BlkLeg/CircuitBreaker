@@ -334,6 +334,34 @@ async def lifespan(app: FastAPI):
 
     _assert_required_schema()
 
+    # ── Phase 1c: Auto-detect api_base_url ────────────────────────────────
+    # On native installs api_base_url is often null, causing invite emails to
+    # embed the backend URL (localhost:8000) instead of the frontend URL.
+    # If unset, detect the LAN IP and default to http://<ip>:8088 (native port).
+    def _detect_lan_ip() -> str | None:
+        import socket as _socket
+
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as _s:
+                _s.connect(("8.8.8.8", 80))
+                return _s.getsockname()[0]
+        except Exception:
+            return None
+
+    try:
+        with get_session_context() as _url_db:
+            from app.services.settings_service import get_or_create_settings as _get_settings
+
+            _url_cfg = _get_settings(_url_db)
+            if not _url_cfg.api_base_url:
+                _lan_ip = _detect_lan_ip()
+                if _lan_ip and not _lan_ip.startswith("127."):
+                    _url_cfg.api_base_url = f"http://{_lan_ip}:8088"
+                    _url_db.commit()
+                    _logger.info("Auto-set api_base_url to %s", _url_cfg.api_base_url)
+    except Exception as _url_exc:
+        _logger.debug("api_base_url auto-detect skipped: %s", _url_exc)
+
     # ── Phase 7: Vault key init ────────────────────────────────────────────
     # Must run before any scheduler job or service that encrypts/decrypts.
     # Fallback chain: env CB_VAULT_KEY → /data/.env → AppSettings.vault_key

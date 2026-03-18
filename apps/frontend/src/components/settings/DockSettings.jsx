@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { settingsApi } from '../../api/client';
 import { useSettings } from '../../context/SettingsContext';
-import { NAV_MAP, DEFAULT_ORDER } from '../Dock';
+import { NAV_MAP, DEFAULT_ORDER } from '../MacOSDOCK';
 
 export default function DockSettings() {
   const { settings, reloadSettings } = useSettings();

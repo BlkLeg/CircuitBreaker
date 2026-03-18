@@ -656,6 +656,8 @@ async def run_scan_job(job_id: int) -> None:
                 if container.get("type") == "network_topology":
                     continue
                 container_ip = container.get("ip") or None
+                if container_ip is None:
+                    continue
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
                 raw_results.append(
@@ -700,13 +702,17 @@ async def run_scan_job(job_id: int) -> None:
         # ── Phase 2: Network Discovery ────────────────────────────────────────
         active_ips: set[str] = set()
         nmap_results: dict = {}
+        arp_mac_by_ip: dict[str, str] = {}
 
         if effective_mode == "full" and not _has_raw_socket_privilege():
             logger.warning(
-                "Job %s: discovery_mode='full' but no CAP_NET_RAW — downgrading to 'safe'",
+                "Job %s: discovery_mode='full' but no CAP_NET_RAW — "
+                "ARP and OS detection will be skipped; nmap will run in TCP-connect mode",
                 job_id,
             )
-            effective_mode = "safe"
+            # Do NOT downgrade to safe — nmap can still run unprivileged (-sT) and
+            # resolve hostnames via DNS. Only _arp_phase and -O are skipped (handled
+            # gracefully by _arp_available() and _sanitise_nmap_args_for_unpriv).
 
         if effective_mode == "safe":
             import ipaddress as _ipaddress
@@ -850,8 +856,9 @@ async def run_scan_job(job_id: int) -> None:
 
             arp_results, nmap_scan = await asyncio.gather(_arp_phase(), _nmap_phase())
             nmap_results = nmap_scan
-            for r in arp_results:
-                active_ips.add(r["ip"])
+            arp_mac_by_ip = {r["ip"]: r["mac"] for r in arp_results if r.get("mac")}
+            for ip in arp_mac_by_ip:
+                active_ips.add(ip)
             for ip in nmap_results.keys():
                 active_ips.add(ip)
 
@@ -892,7 +899,7 @@ async def run_scan_job(job_id: int) -> None:
             )
 
             n_data = nmap_results.get(ip, {})
-            mac_address = n_data.get("mac")
+            mac_address = n_data.get("mac") or arp_mac_by_ip.get(ip)
             hostname = n_data.get("hostname")
             os_family = n_data.get("os_family")
             os_vendor = n_data.get("os_vendor")
@@ -962,6 +969,8 @@ async def run_scan_job(job_id: int) -> None:
                 docker_socket_path, docker_network_types, docker_port_scan
             ):
                 container_ip = container.get("ip") or None
+                if container_ip is None:
+                    continue
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
                 raw_results.append(

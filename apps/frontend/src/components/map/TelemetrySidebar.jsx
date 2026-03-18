@@ -123,6 +123,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
   const sidebarRef = useRef(null);
 
   const integrationId = node?.data?.integration_config_id ?? null;
+  const isHardwareNode = node?.originalType === 'hardware';
 
   const typeMap = {
     hardware: 'hardware',
@@ -207,7 +208,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
   }, [entityType, entityId]);
 
   useEffect(() => {
-    if (!integrationId) {
+    if (!integrationId || !isHardwareNode) {
       setClusterOverview(null);
       return;
     }
@@ -223,11 +224,11 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
     return () => {
       cancelled = true;
     };
-  }, [integrationId]);
+  }, [integrationId, isHardwareNode]);
 
   if (!node) return null;
 
-  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct * 100) : null;
+  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct) : null;
   const memUsed =
     data?.mem_used_gb ?? (data?.mem_used != null ? +(data.mem_used / 1073741824).toFixed(1) : null);
   const memTotal =
@@ -611,7 +612,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
         </>
       )}
 
-      {clusterOverview && (
+      {clusterOverview && node?.originalType === 'hardware' && (
         <div
           style={{
             marginTop: 10,

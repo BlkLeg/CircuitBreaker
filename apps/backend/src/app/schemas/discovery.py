@@ -154,6 +154,7 @@ class ScanResultOut(BaseModel):
     open_ports_json: str | None
     os_family: str | None
     os_vendor: str | None
+    os_accuracy: int | None = None
     snmp_sys_name: str | None
     snmp_sys_descr: str | None
     vlan_id: int | None = None

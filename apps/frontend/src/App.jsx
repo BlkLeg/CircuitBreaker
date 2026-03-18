@@ -9,7 +9,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
-import Dock from './components/Dock';
+import MacOSDOCK from './components/MacOSDOCK';
 import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
 import AuthModal from './components/auth/AuthModal.jsx';
@@ -179,7 +179,7 @@ function AppInner() {
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock pendingCount={pendingCount} wsStatus={wsStatus} />
+      <MacOSDOCK pendingCount={pendingCount} wsStatus={wsStatus} />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />
     </div>
@@ -364,7 +364,7 @@ function AppRoutes() {
 function App() {
   return (
     <I18nextProvider i18n={i18n}>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <SettingsProvider>
           <TimezoneProvider>
             <AuthProvider>

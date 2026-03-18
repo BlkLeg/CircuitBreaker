@@ -10,7 +10,7 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -357,7 +357,9 @@ def _json_or_502(resp: httpx.Response, provider: str, stage: str) -> dict:
 
 @router.get("/oauth/github")
 @limiter.limit(lambda: get_limit("auth"))
-def github_authorize(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+def github_authorize(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> RedirectResponse:
     cfg = _get_oauth_config(db, "github")
     state = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, provider="github", created_at=datetime.now(UTC).isoformat()))
@@ -369,7 +371,7 @@ def github_authorize(request: Request, db: Session = Depends(get_db)) -> Redirec
 @router.get("/oauth/github/callback")
 @limiter.limit(lambda: get_limit("auth"))
 async def github_callback(
-    request: Request, code: str, state: str, db: Session = Depends(get_db)
+    request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
 ) -> RedirectResponse:
     _pop_state_or_400(db, state, OAuthState.provider == "github")
 
@@ -440,7 +442,9 @@ async def github_callback(
 
 @router.get("/oauth/google")
 @limiter.limit(lambda: get_limit("auth"))
-def google_authorize(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+def google_authorize(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> RedirectResponse:
     cfg = _get_oauth_config(db, "google")
     state = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, provider="google", created_at=datetime.now(UTC).isoformat()))
@@ -465,7 +469,7 @@ def google_authorize(request: Request, db: Session = Depends(get_db)) -> Redirec
 @router.get("/oauth/google/callback")
 @limiter.limit(lambda: get_limit("auth"))
 async def google_callback(
-    request: Request, code: str, state: str, db: Session = Depends(get_db)
+    request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
 ) -> RedirectResponse:
     _pop_state_or_400(db, state, OAuthState.provider == "google")
 
@@ -525,7 +529,7 @@ async def google_callback(
 @router.get("/oauth/oidc/{provider_slug}")
 @limiter.limit(lambda: get_limit("auth"))
 async def oidc_authorize(
-    request: Request, provider_slug: str, db: Session = Depends(get_db)
+    request: Request, response: Response, provider_slug: str, db: Session = Depends(get_db)
 ) -> RedirectResponse:
     cfg = _get_oidc_config(db, provider_slug)
     state = secrets.token_urlsafe(32)
@@ -568,7 +572,12 @@ async def oidc_authorize(
 @router.get("/oauth/oidc/{provider_slug}/callback")
 @limiter.limit(lambda: get_limit("auth"))
 async def oidc_callback(
-    request: Request, provider_slug: str, code: str, state: str, db: Session = Depends(get_db)
+    request: Request,
+    response: Response,
+    provider_slug: str,
+    code: str,
+    state: str,
+    db: Session = Depends(get_db),
 ) -> RedirectResponse:
     oauth_state = _pop_state_or_400(db, state, OAuthState.provider.like(f"oidc:{provider_slug}:%"))
 

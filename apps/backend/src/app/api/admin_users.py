@@ -497,15 +497,19 @@ async def create_invite_endpoint(
     if cfg.smtp_enabled and cfg.smtp_host and cfg.smtp_from_email:
         from app.services.smtp_service import (
             SmtpService,
-            public_base_from_request_headers,
             resolve_public_base_url,
         )
 
         try:
-            header_fallback = public_base_from_request_headers(
-                request.headers, str(request.base_url).rstrip("/")
-            )
-            base_url = resolve_public_base_url(cfg, header_fallback)
+            # Use api_base_url only — never fall back to request.base_url which is
+            # the backend URL (localhost:8000) and not reachable by invite recipients.
+            base_url = resolve_public_base_url(cfg)
+            if not base_url:
+                _logger.warning(
+                    "Invite email for %s: api_base_url is not set — "
+                    "link will be relative. Set App URL in Settings.",
+                    payload.email,
+                )
             await SmtpService(cfg).send_invite(payload.email, token, user.email, base_url)
             email_status = "sent"
         except Exception as exc:

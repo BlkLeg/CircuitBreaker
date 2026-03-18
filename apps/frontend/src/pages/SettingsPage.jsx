@@ -1025,8 +1025,8 @@ export default function SettingsPage() {
 
                 <SettingSection title="External Access">
                   <SettingField
-                    label="External App URL"
-                    hint="Publicly reachable domain used in invite links. Example: https://circuitbreaker.example.com"
+                    label="App URL (used in invite links)"
+                    hint="Frontend URL reachable by invited users. Auto-detected from LAN on startup if blank. Example: http://192.168.1.x:8088 or https://cb.example.com"
                   >
                     <input
                       className="form-control"

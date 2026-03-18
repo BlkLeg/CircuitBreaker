@@ -421,7 +421,6 @@ LOG_DIR=${CB_DATA_DIR}/logs
 CB_PORT=${CB_PORT}
 CB_FQDN=${CB_FQDN}
 CB_APP_URL=http://${CB_FQDN:-$detected_ip}
-CB_AUTH_ENABLED=false
 CB_ENV=production
 EOF
     
@@ -735,7 +734,7 @@ ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker
 EnvironmentFile=-/run/circuitbreaker/vault.env
 ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
-ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level info
 Restart=on-failure
 RestartSec=10s
 NoNewPrivileges=yes
@@ -1397,7 +1396,7 @@ ${site_address} {
 
     # Security headers
     header {
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'strict-dynamic'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'strict-dynamic'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gravatar.com https://secure.gravatar.com https://avatars.githubusercontent.com; connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; frame-ancestors 'none';"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"

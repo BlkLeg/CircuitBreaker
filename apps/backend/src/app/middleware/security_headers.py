@@ -12,7 +12,8 @@ _CSP = (
     "script-src 'self' 'unsafe-inline' 'strict-dynamic'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com; "
-    "img-src 'self' data: blob: https://www.gravatar.com; "
+    "img-src 'self' data: blob: https://www.gravatar.com "
+    "https://secure.gravatar.com https://avatars.githubusercontent.com; "
     "connect-src 'self' ws: wss: https://geocoding-api.open-meteo.com https://api.open-meteo.com; "
     "frame-ancestors 'none';"
 )

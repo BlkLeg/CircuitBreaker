@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,7 @@ class IpCheckRequest(BaseModel):
 @router.post("/ip-check")
 @limiter.limit(lambda: get_limit("ip_check"))
 def check_ip(
-    request: Request, payload: IpCheckRequest, db: Session = Depends(get_db)
+    request: Request, response: Response, payload: IpCheckRequest, db: Session = Depends(get_db)
 ) -> dict[str, Any]:
     """Return any conflicts for the given IP address + optional port bindings.
 

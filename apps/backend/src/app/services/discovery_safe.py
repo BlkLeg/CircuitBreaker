@@ -112,7 +112,7 @@ def scan_subnet_safe(cidr: str, max_workers: int = 100) -> list[dict]:
 
 def docker_discover(
     socket_path: str = "/var/run/docker.sock",
-    network_types: list[str] = None,
+    network_types: list[str] | None = None,
     enable_port_scan: bool = False,
 ) -> list[dict]:
     """Enhanced Docker discovery with network topology and port scanning.

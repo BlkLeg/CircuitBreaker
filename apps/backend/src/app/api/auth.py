@@ -95,6 +95,7 @@ class DemoAuthResponse(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def accept_invite_endpoint(
     request: Request,
+    response: Response,
     payload: AcceptInviteRequest,
     db: Session = Depends(get_db),
 ) -> Response:
@@ -120,6 +121,7 @@ def accept_invite_endpoint(
 @limiter.limit(lambda: get_limit("auth"))
 def register_user(
     request: Request,
+    response: Response,
     payload: RegisterRequest,
     db: Session = Depends(get_db),
 ) -> Response:
@@ -202,6 +204,7 @@ async def reset_password(
 @limiter.limit(lambda: get_limit("auth"))
 def create_demo_session(
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> Response:
     """Create a one-hour demo read-only session."""
@@ -247,10 +250,11 @@ def create_demo_session(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/login", tags=["auth"])
+@router.post("/login", tags=["auth"], response_model=None)
 @limiter.limit(lambda: get_limit("auth"))
 def login_compat(
     request: Request,
+    response: Response,
     payload: LoginRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, Any] | Response:
@@ -337,6 +341,7 @@ class ForceChangePasswordRequest(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def force_change_password(
     request: Request,
+    response: Response,
     payload: ForceChangePasswordRequest,
     db: Session = Depends(get_db),
 ) -> Response:
@@ -418,6 +423,7 @@ class CreateAPITokenResponse(BaseModel):
 @limiter.limit(lambda: get_limit("auth"))
 def create_api_token(
     request: Request,
+    response: Response,
     payload: CreateAPITokenRequest,
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
@@ -460,6 +466,7 @@ def create_api_token(
 @limiter.limit(lambda: get_limit("auth"))
 def list_api_tokens(
     request: Request,
+    response: Response,
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
 ) -> list[APITokenItem]:
@@ -486,6 +493,7 @@ def list_api_tokens(
 @limiter.limit(lambda: get_limit("auth"))
 def revoke_api_token(
     request: Request,
+    response: Response,
     token_id: int,
     current_user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
@@ -509,6 +517,7 @@ def revoke_api_token(
 @limiter.limit(lambda: get_limit("auth"))
 def vault_reset_password(
     request: Request,
+    response: Response,
     payload: VaultResetRequest,
     db: Session = Depends(get_db),
 ) -> Response:
@@ -615,7 +624,7 @@ def get_me_compat(
 
 @router.post("/logout", status_code=204, tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
-def logout(request: Request, db: Session = Depends(get_db)) -> Response:
+def logout(request: Request, response: Response, db: Session = Depends(get_db)) -> Response:
     """Revoke the caller's session (Bearer or cookie) and clear the session cookie."""
     from app.db.models import UserSession
 
@@ -646,6 +655,7 @@ def logout(request: Request, db: Session = Depends(get_db)) -> Response:
 @limiter.limit(lambda: get_limit("auth"))
 def delete_me(
     request: Request,
+    response: Response,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -734,6 +744,7 @@ def list_my_sessions(
 @limiter.limit(lambda: get_limit("auth"))
 def revoke_session(
     request: Request,
+    response: Response,
     session_id: int,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -751,6 +762,7 @@ def revoke_session(
 @limiter.limit(lambda: get_limit("auth"))
 def revoke_all_other_sessions(
     request: Request,
+    response: Response,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ) -> None:
@@ -770,6 +782,7 @@ def revoke_all_other_sessions(
 @limiter.limit(lambda: get_limit("auth"))
 def change_password(
     request: Request,
+    response: Response,
     payload: ChangePasswordRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -839,6 +852,7 @@ def change_password(
 @limiter.limit(lambda: get_limit("auth"))
 async def upload_avatar(
     request: Request,
+    response: Response,
     display_name: str | None = Form(None),
     profile_photo: UploadFile | None = File(None),
     user_id: int | None = Depends(get_optional_user),
@@ -907,6 +921,7 @@ def _verify_mfa_confirmation_code(user: User, code: str) -> bool:
 @limiter.limit(lambda: get_limit("auth"))
 def mfa_setup(
     request: Request,
+    response: Response,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
@@ -939,6 +954,7 @@ def mfa_setup(
 @limiter.limit(lambda: get_limit("auth"))
 def mfa_activate(
     request: Request,
+    response: Response,
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -988,6 +1004,7 @@ def mfa_activate(
 @limiter.limit(lambda: get_limit("mfa_verify"))
 def mfa_verify(
     request: Request,
+    response: Response,
     payload: MfaVerifyRequest,
     db: Session = Depends(get_db),
 ) -> Response:
@@ -1070,6 +1087,7 @@ def mfa_verify(
 @limiter.limit(lambda: get_limit("auth"))
 def mfa_disable(
     request: Request,
+    response: Response,
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
@@ -1104,6 +1122,7 @@ def mfa_disable(
 @limiter.limit(lambda: get_limit("auth"))
 def mfa_regenerate_backup_codes(
     request: Request,
+    response: Response,
     payload: MfaConfirmRequest,
     user_id: int | None = Depends(get_optional_user),
     db: Session = Depends(get_db),

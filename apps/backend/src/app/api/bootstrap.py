@@ -1,7 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.auth_cookie import auth_response_with_cookie
@@ -45,6 +44,7 @@ def set_onboarding_step(
 @limiter.limit(lambda: get_limit("auth"))
 def initialize_bootstrap(
     request: Request,
+    response: Response,
     payload: BootstrapInitializeRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> Response:
@@ -83,6 +83,7 @@ def initialize_bootstrap(
 @limiter.limit(lambda: get_limit("auth"))
 def initialize_bootstrap_oauth(
     request: Request,
+    response: Response,
     payload: BootstrapInitializeOAuthRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> BootstrapInitializeResponse:

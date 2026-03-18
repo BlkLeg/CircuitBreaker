@@ -106,9 +106,9 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
         _logger.debug("Non-critical check failed in _compute_discovery_status", exc_info=True)
 
     net_raw_capable = _has_raw_socket_privilege()
-    effective_mode = (
-        "safe" if (discovery_mode == "full" and not net_raw_capable) else discovery_mode
-    )
+    # Without CAP_NET_RAW, full mode still runs nmap (TCP-connect) for hostname/ports;
+    # only ARP (MAC) and OS detection are skipped. Report as "full" since nmap runs.
+    effective_mode = discovery_mode
 
     socket_path = getattr(settings, "docker_socket_path", None) or _DEFAULT_DOCKER_SOCKET
     docker_available = is_docker_socket_available(socket_path)
