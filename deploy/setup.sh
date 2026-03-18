@@ -753,6 +753,14 @@ stage4_write_systemd_units() {
   echo "    All services will log to systemd journal"
   echo "    View with: journalctl -u circuitbreaker-<service>"
 
+  # Detect Redis user for templating (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis')
+  export CB_REDIS_USER="redis"
+  if id redis &>/dev/null; then
+    CB_REDIS_USER="redis"
+  elif id _redis &>/dev/null; then
+    CB_REDIS_USER="_redis"
+  fi
+
   # circuitbreaker-postgres.service
   cb_render_template "/opt/circuitbreaker/deploy/systemd/circuitbreaker-postgres.service" "/etc/systemd/system/circuitbreaker-postgres.service"
   # circuitbreaker-pgbouncer.service
