@@ -11,6 +11,7 @@ __pycache__/
 venv/
 dist/
 build/
+!tests/build/
 site/
 *.egg-info/
 .pytest_cache/
