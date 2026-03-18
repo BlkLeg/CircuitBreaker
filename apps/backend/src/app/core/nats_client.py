@@ -14,8 +14,8 @@ from typing import Any
 
 _logger = logging.getLogger(__name__)
 
-NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222")
-NATS_AUTH_TOKEN = os.getenv("NATS_AUTH_TOKEN", "").strip()
+NATS_URL = os.getenv("CB_NATS_URL", os.getenv("NATS_URL", "nats://localhost:4222"))
+NATS_AUTH_TOKEN = os.getenv("CB_NATS_TOKEN", os.getenv("NATS_AUTH_TOKEN", "")).strip()
 NATS_USER = os.getenv("NATS_USER", "").strip()
 NATS_PASSWORD = os.getenv("NATS_PASSWORD", "").strip()
 NATS_TLS = os.getenv("NATS_TLS", "").strip().lower() in ("1", "true", "yes")

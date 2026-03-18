@@ -43,15 +43,16 @@ CB_UPLOADS_DIR=${CB_DATA_DIR}/uploads
 CB_STATIC_DIR=/opt/circuitbreaker/apps/frontend/dist
 CB_LOG_DIR=${CB_DATA_DIR}/logs
 
+# ===== Aliases (non-prefixed names for Python code) =====
+UPLOADS_DIR=${CB_DATA_DIR}/uploads
+NATS_URL=nats://127.0.0.1:4222
+NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
+
 # ===== Application =====
 CB_PORT=${CB_PORT}
 CB_FQDN=${CB_FQDN}
 CB_APP_URL=http://${CB_FQDN:-$CB_DETECTED_IP}
 CB_ENV=production
-
-# ===== Docker socket proxy =====
-DOCKER_HOST=tcp://127.0.0.1:2375
-DOCKER_PROXY_ENABLED=true
 EOF
   chmod 600 "$fallback_template"
   echo "$fallback_template"
@@ -69,6 +70,7 @@ stage1_bootstrap() {
     useradd -r -u 999 -s /usr/sbin/nologin -d /nonexistent -c "Circuit Breaker" breaker >> "$LOG_FILE" 2>&1
     cb_ok "User 'breaker' created"
   fi
+  usermod -aG systemd-journal breaker 2>/dev/null || true
 
   # Create directory structure
   cb_step "Creating directory structure"
@@ -977,6 +979,18 @@ stage8_start_services() {
     fi
   done
 
+  # Start Docker socket proxy if Docker is available
+  if [[ "${DOCKER_AVAILABLE:-false}" == "true" ]]; then
+    cb_step "Starting Docker socket proxy"
+    if ! systemctl start circuitbreaker-docker-proxy >> "$LOG_FILE" 2>&1; then
+      cb_warn "Docker proxy failed to start — container telemetry unavailable"
+      sed -i 's/^DOCKER_PROXY_ENABLED=true/DOCKER_PROXY_ENABLED=false/' /etc/circuitbreaker/.env
+    else
+      sleep 3
+      cb_ok "Docker socket proxy started"
+    fi
+  fi
+
   # Start backend
   cb_step "Starting backend API"
   if ! systemctl start circuitbreaker-backend >> "$LOG_FILE" 2>&1; then
@@ -1022,6 +1036,9 @@ stage8_start_services() {
     echo "CB_HOST_IP=$detected_ip" >> /etc/circuitbreaker/.env
   fi
   
+  # Activate the umbrella target
+  systemctl start circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
+
   cb_ok "All services running"
 }
 

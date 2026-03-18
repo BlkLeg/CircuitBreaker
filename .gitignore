@@ -47,6 +47,7 @@ frontend/.env.*.local
 .github/workflows/.env
 .github/workflows/.env.*
 !.env.example
+!deploy/misc/.env.template
 
 # Docker
 docker/data/
