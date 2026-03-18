@@ -462,14 +462,16 @@ def create_appimage(
         icon_dst.write_bytes(_TRANSPARENT_PNG)
 
     appimage_path = output_dir / f"circuit-breaker-{version}-x86_64.AppImage"
-    result = subprocess.run(
-        [appimagetool, str(appdir), str(appimage_path)],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "ARCH": "x86_64"},
-    )
-    if appdir.exists():
-        shutil.rmtree(appdir)
+    try:
+        result = subprocess.run(
+            [appimagetool, str(appdir), str(appimage_path)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ARCH": "x86_64"},
+        )
+    finally:
+        if appdir.exists():
+            shutil.rmtree(appdir)
 
     if result.returncode == 0:
         print(f"  Created: {appimage_path.name}")
@@ -506,26 +508,27 @@ def create_arch_package(
     shutil.copy2(tarball_path, local_tarball)
 
     # Patch PKGBUILD: swap remote source URL → local filename, pin version
-    import re as _re
     pkgbuild_text = pkgbuild.read_text()
-    patched = _re.sub(
+    patched = re.sub(
         r'(source_(?:x86_64|aarch64)=\().*?(\))',
         f'source_{pkg_arch}=("{tarball_path.name}")',
         pkgbuild_text,
     )
-    patched = _re.sub(r"sha256sums_(?:x86_64|aarch64)=\('[^']*'\)", f"sha256sums_{pkg_arch}=('SKIP')", patched)
-    patched = _re.sub(r'^pkgver=.*', f'pkgver={version}', patched, flags=_re.MULTILINE)
+    patched = re.sub(r"sha256sums_(?:x86_64|aarch64)=\('[^']*'\)", f"sha256sums_{pkg_arch}=('SKIP')", patched)
+    patched = re.sub(r'^pkgver=.*', f'pkgver={version}', patched, flags=re.MULTILINE)
     (work_dir / "PKGBUILD").write_text(patched)
 
     env = {**os.environ, "PKGDEST": str(output_dir), "SRCDEST": str(work_dir)}
-    result = subprocess.run(
-        [makepkg, "--nodeps", "--nocheck", "--noconfirm", "-f"],
-        env=env,
-        cwd=str(work_dir),
-        capture_output=True,
-        text=True,
-    )
-    shutil.rmtree(work_dir)
+    try:
+        result = subprocess.run(
+            [makepkg, "--nodeps", "--nocheck", "--noconfirm", "-f"],
+            env=env,
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     if result.returncode != 0:
         print(f"  WARNING: Arch package creation failed:\n{result.stderr.strip()}")
