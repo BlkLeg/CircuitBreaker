@@ -216,17 +216,17 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
     import jwt as pyjwt
     from sqlalchemy import select
 
+    from app.core.security import _extract_token
     from app.db.models import User
 
     try:
-        # 1. CB_API_TOKEN — set by LegacyTokenMiddleware or raw header match
+        # 1. API or Session Token (Bearer header or cb_session cookie)
         if getattr(request.state, "legacy_admin", False):
             return "api-token", None, 0, "api-token"
 
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        token = _extract_token(request)
+        if not token:
             return "anonymous", None, None, None
-        token = auth_header[len("Bearer ") :]
 
         api_token = os.getenv("CB_API_TOKEN")
         if api_token and token == api_token:

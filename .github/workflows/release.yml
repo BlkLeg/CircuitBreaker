@@ -117,7 +117,7 @@ jobs:
           </body>
           </html>
           EOF
-          echo "install.circuitbreaker.app" > _site/CNAME
+          echo "circuitbreaker.shawnji.com" > _site/CNAME
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v4

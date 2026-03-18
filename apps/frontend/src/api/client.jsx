@@ -228,6 +228,7 @@ export const servicesApi = {
   getExternalDeps: (id) => client.get(`/services/${id}/external-dependencies`),
   addExternalDep: (id, data) => client.post(`/services/${id}/external-dependencies`, data),
   removeExternalDep: (id, relId) => client.delete(`/services/${id}/external-dependencies/${relId}`),
+  getDiscovery: (id) => client.get(`/services/${id}/discovery`).then((r) => r.data),
 };
 
 export const storageApi = {

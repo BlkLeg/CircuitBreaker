@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.db.models import (  # noqa: F401 (Service used for reactive cascade)
     ComputeUnit,
+    Doc,
+    EntityDoc,
     EntityTag,
     Hardware,
     HardwareClusterMember,
@@ -78,6 +80,24 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
     return [row.tag.name for row in rows]
 
 
+def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
+    rows = db.execute(
+        select(Doc.id, Doc.title, Doc.category, Doc.icon)
+        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
+        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
+        .order_by(Doc.updated_at.desc())
+    ).all()
+    return [
+        {
+            "id": doc_id,
+            "title": title,
+            "category": category,
+            "icon": icon,
+        }
+        for doc_id, title, category, icon in rows
+    ]
+
+
 def _to_dict(db: Session, hw: Hardware) -> dict:
     d = {c.name: getattr(hw, c.name) for c in hw.__table__.columns}
     d["tags"] = get_tags_for(db, "hardware", hw.id)
@@ -100,6 +120,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
         d["storage_summary"] = None
     d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
     d["rack_name"] = hw.rack.name if hw.rack else None
+    d["documents"] = _get_documents_for(db, "hardware", hw.id)
     return d
 
 

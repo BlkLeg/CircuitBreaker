@@ -292,9 +292,79 @@ def get_docker_status(socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
         }
 
 
+def get_container_discovery(container_id: str, socket_path: str = _DEFAULT_SOCKET_PATH) -> dict:
+    """Return real-time stats and metadata for a single container."""
+    base_url = _resolve_docker_base_url(socket_path)
+    is_tcp = base_url.startswith("tcp://") or base_url.startswith("http")
+
+    if not is_tcp and not is_docker_socket_available(socket_path):
+        return {"error": "Docker socket not found"}
+
+    try:
+        import importlib
+
+        docker_module = importlib.import_module("docker")
+        client = docker_module.DockerClient(base_url=base_url)
+        container = client.containers.get(container_id)
+
+        # Get stats (non-blocking if stream=False)
+        stats = container.stats(stream=False)
+
+        # Basic CPU calculation (handles Linux; Windows differs)
+        cpu_pct = 0.0
+        try:
+            cpu_stats = stats.get("cpu_stats", {})
+            precpu_stats = stats.get("precpu_stats", {})
+
+            cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - precpu_stats.get(
+                "cpu_usage", {}
+            ).get("total_usage", 0)
+            system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get(
+                "system_cpu_usage", 0
+            )
+
+            online_cpus = cpu_stats.get("online_cpus")
+            if online_cpus is None:
+                online_cpus = len(cpu_stats.get("cpu_usage", {}).get("percpu_usage", []))
+
+            if system_delta > 0.0 and cpu_delta > 0.0:
+                cpu_pct = (cpu_delta / system_delta) * online_cpus * 100.0
+        except (KeyError, ZeroDivisionError, TypeError):
+            pass
+
+        # Memory calculation
+        mem_usage = stats.get("memory_stats", {}).get("usage", 0)
+        mem_limit = stats.get("memory_stats", {}).get("limit", 0)
+        mem_pct = (mem_usage / mem_limit) * 100.0 if mem_limit > 0 else 0.0
+
+        # Accurate status detection
+        raw_status = container.attrs.get("State", {}).get("Status", container.status)
+        status = _normalise_status(raw_status)
+
+        return {
+            "id": container.short_id,
+            "full_id": container.id,
+            "name": container.name,
+            "status": status,
+            "raw_status": raw_status,
+            "image": (container.image.tags or [None])[0],
+            "created": container.attrs.get("Created", ""),
+            "cpu_pct": round(cpu_pct, 2),
+            "mem_usage": mem_usage,
+            "mem_limit": mem_limit,
+            "mem_pct": round(mem_pct, 2),
+            "networks": container.attrs.get("NetworkSettings", {}).get("Networks", {}),
+            "ports": container.attrs.get("NetworkSettings", {}).get("Ports", {}),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 def _normalise_status(docker_status: str) -> str:
     mapping = {
         "running": "running",
+        "healthy": "running",
+        "starting": "degraded",
         "exited": "stopped",
         "paused": "stopped",
         "restarting": "degraded",

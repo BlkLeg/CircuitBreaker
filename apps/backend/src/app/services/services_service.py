@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import (
     Category,
+    Doc,
+    EntityDoc,
     EntityTag,
     Service,
     ServiceDependency,
@@ -79,6 +81,24 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
     return [row.tag.name for row in rows]
 
 
+def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
+    rows = db.execute(
+        select(Doc.id, Doc.title, Doc.category, Doc.icon)
+        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
+        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
+        .order_by(Doc.updated_at.desc())
+    ).all()
+    return [
+        {
+            "id": doc_id,
+            "title": title,
+            "category": category,
+            "icon": icon,
+        }
+        for doc_id, title, category, icon in rows
+    ]
+
+
 def _backfill_ports_json(db: Session) -> None:
     """Backfill ports_json for services that have a legacy freeform ports string.
 
@@ -134,6 +154,7 @@ def _to_dict(db: Session, svc: Service) -> dict:
     d["ip_mode"] = svc.ip_mode or "explicit"
     d["ip_conflict"] = bool(svc.ip_conflict)
     d["ip_conflict_with"] = svc.ip_conflict_json or []
+    d["documents"] = _get_documents_for(db, "service", svc.id)
     return d
 
 

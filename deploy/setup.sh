@@ -88,6 +88,8 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/nats"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/uploads"]="breaker:breaker:755"
+    ["${CB_DATA_DIR}/uploads/icons"]="breaker:breaker:755"
+    ["${CB_DATA_DIR}/uploads/branding"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/tls"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/logs"]="breaker:breaker:777"
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
@@ -726,8 +728,9 @@ stage3_configure_nginx() {
 
   cb_ok "Nginx configuration written"
 
-  # Remove default site that conflicts on port 80/443
+  # Remove default sites that conflict on port 80/443
   rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+  rm -f /etc/nginx/conf.d/default.conf 2>/dev/null || true
 
   # Validate config
   cb_step "Validating Nginx configuration"

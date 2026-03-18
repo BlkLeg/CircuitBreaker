@@ -130,6 +130,28 @@ def patch_service(
         ) from exc
 
 
+@router.get("/{service_id}/discovery")
+def get_service_discovery(service_id: int, db: Session = Depends(get_db)) -> Any:
+    """Return real-time discovery info (e.g. Docker stats) for a service."""
+    from app.db.models import Service as ServiceModel
+    from app.services.docker_discovery import get_container_discovery
+    from app.services.settings_service import get_or_create_settings
+
+    svc = db.get(ServiceModel, service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    result = {"service_id": service_id, "name": svc.name}
+
+    if svc.is_docker_container and svc.docker_container_id:
+        settings = get_or_create_settings(db)
+        socket_path = getattr(settings, "docker_socket_path", None) or "/var/run/docker.sock"
+        docker_info = get_container_discovery(svc.docker_container_id, socket_path=socket_path)
+        result["docker"] = docker_info
+
+    return result
+
+
 @router.delete("/{service_id}", status_code=204)
 def delete_service(
     service_id: int,

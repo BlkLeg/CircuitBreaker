@@ -106,20 +106,23 @@ export default function CustomEdge({
   const bandwidth = rawBw ?? 1000;
   const displayBandwidth = rawBw != null ? formatBandwidth(rawBw) : null;
 
+  // Scaling factor based on bandwidth (1Gbps = 1.0). Ranges from 0.5 to 3.0.
+  const bwScale = Math.max(0.5, Math.min(3, bandwidth / 1000));
+
   const particleCount = typedEdge ? connStyle?.particles || 0 : 0;
-  const particleSize = typedEdge ? connStyle?.particleSize || 3 : 3;
+  const particleSize = (typedEdge ? connStyle?.particleSize || 3 : 3) * bwScale;
   const particleDuration = typedEdge
     ? computeParticleDuration(connStyle?.baseSpeed || 1, bandwidth)
     : null;
 
-  const effectiveStrokeWidth = selected ? strokeWidth * 1.8 : strokeWidth;
+  const effectiveStrokeWidth = (selected ? strokeWidth * 1.8 : strokeWidth) * bwScale;
   const animationStyle = dashArray
     ? {
-        animation: `cb-edge-flow ${Math.max(0.35, 1.5 / (connStyle?.baseSpeed || 1))}s linear infinite`,
+        animation: `cb-edge-flow ${Math.max(0.35, 1.5 / ((connStyle?.baseSpeed || 1) * bwScale))}s linear infinite`,
       }
     : {};
   const glowFilter = connStyle?.glow
-    ? `drop-shadow(0 0 3px ${strokeColor}) drop-shadow(0 0 6px ${strokeColor}88)`
+    ? `drop-shadow(0 0 ${3 * bwScale}px ${strokeColor}) drop-shadow(0 0 ${6 * bwScale}px ${strokeColor}88)`
     : undefined;
 
   const particles = buildParticles(id, particleCount, particleDuration);

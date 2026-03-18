@@ -9,13 +9,17 @@ vi.mock('reactflow', () => ({
 }));
 
 describe('NodeHandles', () => {
-  it('renders only connected handle points by default', () => {
+  it('renders all handle points but hides unconnected ones by default', () => {
     const { getAllByTestId } = render(
       <NodeHandles connectedHandleIds={new Set(['right', 'bottom'])} isConnecting={false} />
     );
 
+    const handles = getAllByTestId('rf-handle');
+    expect(handles).toHaveLength(16);
+
     // Each visible handle point renders both source and target handles.
-    expect(getAllByTestId('rf-handle')).toHaveLength(4);
+    const visibleHandles = handles.filter((h) => h.style.opacity === '1');
+    expect(visibleHandles).toHaveLength(4);
   });
 
   it('renders all 8 handle points while connecting', () => {

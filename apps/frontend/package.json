@@ -1,6 +1,6 @@
 {
   "name": "circuit-breaker-ui",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "private": true,
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
@@ -14,7 +14,7 @@
     "d3-force": "^3.0.0",
     "d3-hierarchy": "^3.1.2",
     "dompurify": "^3.3.2",
-    "framer-motion": "^12.34.4",
+    "framer-motion": "^11.18.2",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
     "i18next": "^25.5.2",

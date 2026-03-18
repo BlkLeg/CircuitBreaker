@@ -21,6 +21,7 @@ import {
 import { normalizeConnectionType } from '../components/map/connectionTypes';
 import { isUpdatableEdgeId } from '../components/map/linkMutations';
 import { getDagreLayout, getDagreViewportOptions, getRadialLayout } from '../utils/layouts';
+import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import { groupNodesIntoCloud } from '../utils/cloudView';
 import { VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 import {
@@ -389,7 +390,7 @@ export function useMapDataLoad({
 
         setNodes(initialNodes);
         const nextEdgesManual = applyEdgeSides(mergedNodes, rawE, savedEdgeOverrides);
-        setEdges(nextEdgesManual);
+        setEdges(recalculateAllEdges(initialNodes, nextEdgesManual));
         setLayoutEngine('manual');
       } else {
         const viewportWidth = containerRef?.current?.getBoundingClientRect?.()?.width;
@@ -408,7 +409,7 @@ export function useMapDataLoad({
         }
         setNodes(initialNodes);
         const nextEdgesAuto = applyEdgeSides(initialNodes, layout.edges, {});
-        setEdges(nextEdgesAuto);
+        setEdges(recalculateAllEdges(initialNodes, nextEdgesAuto));
         setLayoutEngine(isProxmox ? 'radial' : settings?.graph_default_layout || 'dagre');
         nodesForProxmox = initialNodes;
       }

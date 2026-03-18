@@ -52,9 +52,10 @@ vi.mock('react-i18next', () => ({
     i18n: { language: 'en', changeLanguage: vi.fn() },
   }),
 }));
+const mockSettings = { theme: 'dark', environments: [], categories: [], locations: [] };
 vi.mock('../context/SettingsContext', () => ({
   useSettings: () => ({
-    settings: { theme: 'dark', environments: [], categories: [], locations: [] },
+    settings: mockSettings,
     reloadSettings: vi.fn(),
   }),
 }));
