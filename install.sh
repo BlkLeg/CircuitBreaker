@@ -879,8 +879,8 @@ check_secret "CB_VAULT_KEY"    "${CB_VAULT_KEY:-}"    32
 check_secret "NATS_AUTH_TOKEN" "${NATS_AUTH_TOKEN:-}"  0
 check_secret "CB_DB_PASSWORD"  "${CB_DB_PASSWORD:-}"   0
 EOF
-  chmod 700 /opt/circuitbreaker/scripts/validate-secrets.sh
-  chown root:root /opt/circuitbreaker/scripts/validate-secrets.sh
+  chmod 750 /opt/circuitbreaker/scripts/validate-secrets.sh
+  chown root:breaker /opt/circuitbreaker/scripts/validate-secrets.sh
 
   # circuitbreaker-healthcheck.service
   cat > /etc/systemd/system/circuitbreaker-healthcheck.service <<EOF
@@ -1360,17 +1360,26 @@ stage3_configure_caddy() {
     if [[ "$CB_CERT_TYPE" == "self-signed" ]]; then
       cb_step "Generating self-signed TLS certificate"
       local cert_cn="${CB_FQDN:-circuitbreaker}"
+      local cert_ip
+      cert_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || true)
+      local san="DNS:${cert_cn}"
+      [[ -n "$cert_ip" ]] && san="${san},IP:${cert_ip}"
       openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
         -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
         -out "${CB_DATA_DIR}/tls/fullchain.pem" \
-        -subj "/CN=${cert_cn}/O=CircuitBreaker" >> "$LOG_FILE" 2>&1
-      chown breaker:breaker "${CB_DATA_DIR}/tls"/*.pem
+        -subj "/CN=${cert_cn}/O=CircuitBreaker" \
+        -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1
+      chown root:caddy "${CB_DATA_DIR}/tls"/*.pem
       chmod 640 "${CB_DATA_DIR}/tls"/*.pem
       tls_line="tls ${cert_path}/fullchain.pem ${cert_path}/privkey.pem"
       cb_ok "Self-signed TLS certificate generated"
     fi
 
-    site_address="${CB_FQDN:-circuitbreaker.lab}"
+    if [[ -n "${cert_ip:-}" ]]; then
+      site_address="${CB_FQDN:-circuitbreaker.lab}, https://${cert_ip}"
+    else
+      site_address="${CB_FQDN:-circuitbreaker.lab}"
+    fi
   else
     # Plain HTTP mode
     site_address="http://${CB_FQDN:-circuitbreaker.lab}:${CB_PORT}"
@@ -1417,13 +1426,10 @@ ${site_address} {
         reverse_proxy 127.0.0.1:8000 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
             flush_interval -1
             transport http {
                 dial_timeout 5s
                 response_header_timeout 0
-                read_idle_timeout 3600s
                 write_timeout 3600s
             }
         }
