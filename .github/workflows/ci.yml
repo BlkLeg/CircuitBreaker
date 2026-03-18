@@ -46,8 +46,8 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: breaker
-          POSTGRES_PASSWORD: breaker
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: ${{ secrets.CB_TEST_DB_PASSWORD }}
           POSTGRES_DB: circuitbreaker
         options: >-
           --health-cmd pg_isready
@@ -85,7 +85,7 @@ jobs:
           cd apps/backend
           PYTHONPATH=src ../../.venv/bin/pytest ../../tests/integration -q
         env:
-          CB_DB_URL: postgresql://breaker:breaker@localhost:5432/circuitbreaker
+          CB_DB_URL: postgresql://root:${{ secrets.CB_TEST_DB_PASSWORD }}@localhost:5432/circuitbreaker
           CB_REDIS_URL: redis://localhost:6379/0
 
       - name: Frontend tests

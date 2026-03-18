@@ -13,7 +13,7 @@ from app.services.discovery_network import PORT_SERVICE_MAP  # noqa: F401 — re
 try:
     import nmap
 except ImportError:
-    nmap = None  # type: ignore[assignment]
+    nmap = None
 
 try:
     from pysnmp.entity.engine import SnmpEngine

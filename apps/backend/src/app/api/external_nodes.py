@@ -61,7 +61,7 @@ def create_external_node(
         request,
         user_id=user_id,
         action="external_node_created",
-        resource=f"external_node:{result.id}",
+        resource=f"external_node:{result['id']}",
         status="ok",
     )
     return result

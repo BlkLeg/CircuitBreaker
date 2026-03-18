@@ -43,7 +43,7 @@ def create_storage(
         request,
         user_id=user_id,
         action="storage_created",
-        resource=f"storage:{result.id}",
+        resource=f"storage:{result['id']}",
         status="ok",
     )
     return result

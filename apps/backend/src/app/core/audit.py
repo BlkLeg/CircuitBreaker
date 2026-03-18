@@ -88,7 +88,7 @@ def log_audit(
             db=None,
             action=action,
             entity_type=resource or None,
-            actor_name=actor_name,
+            actor_name=actor_name or "",
             actor_id=user_id,
             ip_address=ip,
             severity=severity,

@@ -87,4 +87,4 @@ class Settings(BaseSettings):
     analytics_db_path: str = ""
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]

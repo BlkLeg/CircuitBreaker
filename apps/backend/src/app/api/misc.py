@@ -42,7 +42,7 @@ def create_misc_item(
         request,
         user_id=user_id,
         action="misc_item_created",
-        resource=f"misc:{result.id}",
+        resource=f"misc:{result['id']}",
         status="ok",
     )
     return result

@@ -62,7 +62,7 @@ from app.services.settings_service import get_or_create_settings
 try:
     import nmap
 except ImportError:
-    nmap = None  # type: ignore[assignment]
+    nmap = None
 
 logger = logging.getLogger(__name__)
 
