@@ -59,16 +59,21 @@ stage1_bootstrap() {
   else
     cb_step "Generating secrets"
     
-    local jwt_secret=$(openssl rand -hex 64)
+    # Export as environment variables so cb_render_template can access them
+    export CB_JWT_SECRET=$(openssl rand -hex 64)
     # Generate Fernet key: 32 random bytes, base64-encoded (URL-safe)
-    local vault_key=$(openssl rand -base64 32 | tr '/+' '_-')
-    local db_password=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
-    local redis_pass=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
-    local nats_token=$(openssl rand -base64 48 | tr -d '/+=' )
+    export CB_VAULT_KEY=$(openssl rand -base64 32 | tr '/+' '_-')
+    export CB_DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+    export CB_REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+    export CB_NATS_TOKEN=$(openssl rand -base64 48 | tr -d '/+=' )
     
-    local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
+    export CB_DETECTED_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
     
-    cb_render_template "/opt/circuitbreaker/deploy/misc/.env" "/etc/circuitbreaker/.env"    
+    # Render template from .env.template
+    if ! cb_render_template "/opt/circuitbreaker/deploy/misc/.env.template" "/etc/circuitbreaker/.env"; then
+      cb_fail "Failed to render .env template" "Check: /opt/circuitbreaker/deploy/misc/.env.template exists"
+    fi
+    
     chmod 640 /etc/circuitbreaker/.env
     chown root:breaker /etc/circuitbreaker/.env
     
@@ -258,6 +263,11 @@ stage0_preflight() {
 stage3_configure_postgres() {
   cb_section "Configuring PostgreSQL 15"
   
+  # Validate required secrets are set
+  if [[ -z "${CB_DB_PASSWORD:-}" ]]; then
+    cb_fail "Database password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
+  fi
+  
   # Stop any existing postgres
   cb_step "Stopping existing PostgreSQL instances"
   systemctl stop postgresql 2>/dev/null || true
@@ -336,6 +346,11 @@ stage3_configure_postgres() {
 stage3_configure_pgbouncer() {
   cb_section "Configuring pgbouncer"
   
+  # Validate required secrets are set
+  if [[ -z "${CB_DB_PASSWORD:-}" ]]; then
+    cb_fail "Database password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
+  fi
+  
   # Stop any existing pgbouncer processes
   cb_step "Stopping any existing pgbouncer processes"
   systemctl stop circuitbreaker-pgbouncer 2>/dev/null || true
@@ -352,7 +367,7 @@ stage3_configure_pgbouncer() {
   
   # Compute MD5 hash - CRITICAL: format is md5(password+username)
   cb_step "Configuring pgbouncer connection pooler"
-  local pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
+  export pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
   echo "    Pool port: 6432, Backend: PostgreSQL 5432"
   
   mkdir -p /etc/pgbouncer
@@ -392,6 +407,11 @@ stage3_configure_pgbouncer() {
 
 stage3_configure_redis() {
   cb_section "Configuring Redis"
+  
+  # Validate required secrets are set
+  if [[ -z "${CB_REDIS_PASSWORD:-}" ]]; then
+    cb_fail "Redis password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
+  fi
   
   # Stop any existing Redis
   cb_step "Stopping existing Redis instances"
@@ -450,7 +470,7 @@ stage3_configure_redis() {
   
   # Verify Redis
   cb_step "Verifying Redis connection"
-  if ! redis-cli -a "$CB_REDIS_PASS" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
+  if ! redis-cli -a "$CB_REDIS_PASSWORD" --no-auth-warning PING 2>/dev/null | grep -q PONG; then
     cb_fail "Redis not responding" "Check: journalctl -u circuitbreaker-redis -n 50"
   fi
   cb_ok "Redis connection verified"
@@ -458,6 +478,11 @@ stage3_configure_redis() {
 
 stage3_configure_nats() {
   cb_section "Configuring NATS"
+  
+  # Validate required secrets are set
+  if [[ -z "${CB_NATS_TOKEN:-}" ]]; then
+    cb_fail "NATS token not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
+  fi
   
   # Stop any existing NATS
   cb_step "Stopping existing NATS instances"
