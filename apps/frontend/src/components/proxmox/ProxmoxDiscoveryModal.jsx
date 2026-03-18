@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { discoveryEmitter } from '../../hooks/useDiscoveryStream';
 
 function formatDuration(seconds) {
@@ -22,7 +21,6 @@ function getErrorMessage(e, fallback = 'Request failed') {
 }
 
 export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComplete }) {
-  const navigate = useNavigate();
   const [phase, setPhase] = useState('starting');
   const [message, setMessage] = useState('Connecting to Proxmox cluster...');
   const [percent, setPercent] = useState(0);
@@ -279,20 +277,6 @@ export default function ProxmoxDiscoveryModal({ integrationId, onClose, onComple
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          {phase === 'done' && !error && (
-            <button
-              className="btn btn-sm"
-              onClick={() => navigate('/discovery', { state: { discoveryFilter: 'review' } })}
-              style={{
-                padding: '6px 12px',
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 500,
-              }}
-            >
-              Open Review Queue
-            </button>
-          )}
           {phase !== 'starting' && (
             <button
               className="btn btn-sm"

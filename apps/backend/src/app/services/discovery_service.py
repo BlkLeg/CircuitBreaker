@@ -638,7 +638,7 @@ async def run_scan_job(job_id: int) -> None:
             if label and label.startswith("docker:"):
                 socket_path = label[len("docker:") :]
             await _update_job_progress(
-                job_id, "docker", "Enumerating Docker containers…", percent=10
+                job_id, "docker", "Enumerating Docker containers...", percent=10
             )
             await _log_scan_event(
                 job_id, "INFO", f"Starting Docker discovery via {socket_path}", "docker"
@@ -648,7 +648,7 @@ async def run_scan_job(job_id: int) -> None:
             await _update_job_progress(
                 job_id,
                 "docker",
-                f"{len(containers)} container(s) found — creating results…",
+                f"{len(containers)} container(s) found -- creating results...",
                 percent=70,
             )
 
@@ -724,7 +724,7 @@ async def run_scan_job(job_id: int) -> None:
             await _update_job_progress(
                 job_id,
                 "ping",
-                f"Pinging {max(_total_hosts, 0)} hosts in {target_cidr}…",
+                f"Pinging {max(_total_hosts, 0)} hosts in {target_cidr}...",
                 percent=10,
             )
             try:
@@ -743,7 +743,7 @@ async def run_scan_job(job_id: int) -> None:
                 (
                     f"{len(safe_results)} host"
                     f"{'s' if len(safe_results) != 1 else ''}"
-                    " responded — probing TCP ports\u2026"
+                    " responded -- probing TCP ports..."
                 ),
                 percent=30,
             )
@@ -997,7 +997,7 @@ async def run_scan_job(job_id: int) -> None:
         await _update_job_progress(
             job_id,
             "reconcile",
-            f"Saving {len(raw_results)} result(s)…",
+            f"Saving {len(raw_results)} result(s)...",
             percent=95,
         )
         import_data = await loop.run_in_executor(None, _scan_import, job_id, setup, raw_results)

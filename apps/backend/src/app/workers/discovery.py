@@ -126,7 +126,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     while not nats_client.is_connected:
         await nats_client.connect()
         if not nats_client.is_connected:
-            logger.error("Failed to connect to NATS, retrying in %ds…", backoff)
+            logger.error("Failed to connect to NATS, retrying in %ds...", backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
 

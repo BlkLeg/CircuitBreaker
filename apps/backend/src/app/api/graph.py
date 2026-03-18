@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.core.audit import log_audit
 from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.models import (
@@ -200,8 +201,9 @@ class EdgeUpdatePayload(BaseModel):
 @router.delete("/edges/{edge_id}", status_code=204)
 def delete_edge(
     edge_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    _: Any = Depends(require_write_auth),
+    user_id: int | None = Depends(require_write_auth),
 ) -> None:
     """Delete a topology edge (connection join-table row) by its React Flow edge ID.
 
@@ -220,14 +222,24 @@ def delete_edge(
         raise HTTPException(status_code=404, detail="Edge not found")
     db.delete(row)
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="edge_deleted",
+        resource=f"edge:{edge_id}",
+        status="ok",
+        severity="warn",
+    )
 
 
 @router.patch("/edges/{edge_id}", status_code=200)
 def update_edge_type(
     edge_id: str,
     payload: EdgeUpdatePayload,
+    request: Request,
     db: Session = Depends(get_db),
-    _: Any = Depends(require_write_auth),
+    user_id: int | None = Depends(require_write_auth),
 ) -> dict[str, Any]:
     """Update the connection_type on a topology edge."""
     model, row_id = _parse_deletable_edge(edge_id)
@@ -246,6 +258,14 @@ def update_edge_type(
     if hasattr(row, "connection_type"):
         row.connection_type = normalized
         db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="edge_updated",
+        resource=f"edge:{edge_id}",
+        status="ok",
+    )
     return {"status": "ok", "connection_type": normalized}
 
 

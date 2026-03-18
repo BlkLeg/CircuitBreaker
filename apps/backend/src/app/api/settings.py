@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.rbac import require_role
 from app.core.security import get_optional_user
 from app.db.session import get_db
@@ -42,8 +43,6 @@ def put_settings(
         from app.core.rate_limit import invalidate_rate_limit_profile_cache
 
         invalidate_rate_limit_profile_cache()
-    from app.core.audit import log_audit
-
     log_audit(
         db, request, user_id=user.id, action="settings_update", resource="settings", status="ok"
     )
@@ -51,16 +50,29 @@ def put_settings(
 
 
 @router.post("/reset", response_model=AppSettingsRead)
-def reset_settings(db: Session = Depends(get_db), _: Any = require_role("admin")) -> Any:
+def reset_settings(
+    request: Request, db: Session = Depends(get_db), user: Any = require_role("admin")
+) -> Any:
     """Reset all settings to factory defaults."""
-    return settings_service.reset_settings(db)
+    result = settings_service.reset_settings(db)
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="settings_reset",
+        resource="settings",
+        status="ok",
+        severity="warn",
+    )
+    return result
 
 
 @router.patch("/smtp", response_model=AppSettingsRead)
 def patch_smtp(
     payload: SmtpUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    _: Any = require_role("admin"),
+    user: Any = require_role("admin"),
 ) -> Any:
     """Update SMTP configuration fields only; auto-encrypts password.
 
@@ -73,14 +85,24 @@ def patch_smtp(
     has_from = bool((data.get("smtp_from_email") or "").strip())
     if has_host and has_from and "smtp_enabled" not in data:
         payload.smtp_enabled = True
-    return settings_service.update_settings(db, payload)  # type: ignore[arg-type]
+    result = settings_service.update_settings(db, payload)  # type: ignore[arg-type]
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="smtp_settings_updated",
+        resource="settings",
+        status="ok",
+    )
+    return result
 
 
 @router.post("/smtp/test")
 async def test_smtp(
     send_to: str | None = Query(default=None),
+    request: Request = None,
     db: Session = Depends(get_db),
-    _: Any = require_role("admin"),
+    user: Any = require_role("admin"),
 ) -> dict[str, Any]:
     """Test SMTP connectivity and optionally send a test email to send_to."""
     from app.services.smtp_service import SmtpService
@@ -100,6 +122,14 @@ async def test_smtp(
     if result["status"] == "ok" and not cfg.smtp_enabled:
         cfg.smtp_enabled = True
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="smtp_test",
+        resource="settings",
+        status="ok",
+    )
     return result
 
 
@@ -125,7 +155,10 @@ def get_oauth_settings(
 
 @router.patch("/oauth")
 def update_oauth_settings(
-    payload: dict[str, Any], db: Session = Depends(get_db), _: Any = require_role("admin")
+    payload: dict[str, Any],
+    request: Request,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
 ) -> dict[str, Any]:
     settings = get_or_create_settings(db)
     existing: dict = settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
@@ -183,4 +216,12 @@ def update_oauth_settings(
             merged.append(entry)
         settings.oidc_providers = merged
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="oauth_settings_updated",
+        resource="settings",
+        status="ok",
+    )
     return {"status": "ok"}
