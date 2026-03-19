@@ -72,7 +72,7 @@ tui_banner() {
 tui_phase() {
   local title="$1"
   echo -e "\n  ${BOLD}${title}${RESET}"
-  [[ "$QUIET" != "true" ]] && echo "  $(printf '─%.0s' {1..46})"
+  if [[ "$QUIET" != "true" ]]; then echo "  $(printf '─%.0s' {1..46})"; fi
 }
 
 tui_step() {
@@ -211,9 +211,9 @@ parse_args() {
   fi
 
   # Per-resource overrides
-  [[ -n "$CORES_OVERRIDE" ]] && CT_CORES="$CORES_OVERRIDE"
-  [[ -n "$MEM_OVERRIDE"   ]] && CT_RAM="$MEM_OVERRIDE"
-  [[ -n "$DISK_OVERRIDE"  ]] && CT_DISK="$DISK_OVERRIDE"
+  if [[ -n "$CORES_OVERRIDE" ]]; then CT_CORES="$CORES_OVERRIDE"; fi
+  if [[ -n "$MEM_OVERRIDE"   ]]; then CT_RAM="$MEM_OVERRIDE"; fi
+  if [[ -n "$DISK_OVERRIDE"  ]]; then CT_DISK="$DISK_OVERRIDE"; fi
 }
 
 # ── Phase 1: Preflight ─────────────────────────────────────────────────────────
