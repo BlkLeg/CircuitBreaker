@@ -1,0 +1,26 @@
+[Unit]
+Description=Circuit Breaker PostgreSQL 15
+After=network.target
+Before=circuitbreaker-pgbouncer.service
+
+[Service]
+Type=notify
+User=postgres
+Group=postgres
+Environment=PGDATA=${CB_DATA_DIR}/postgres
+ExecStart=${PG_BIN_DIR}/postgres -D ${CB_DATA_DIR}/postgres
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=0
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=3
+StartLimitInterval=60s
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-postgres
+
+[Install]
+WantedBy=multi-user.target

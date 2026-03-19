@@ -7,7 +7,9 @@ metacharacters are rejected.
 import re
 import shlex
 
-# Safe nmap flags (exact match). No -O, -sS, or other root-only options.
+# Safe nmap flags (exact match). -O is allowed here; _sanitise_nmap_args_for_unpriv()
+# strips it at runtime when CAP_NET_RAW is absent, so rejection at the allowlist level
+# was redundant and prevented OS detection for privileged runs.
 _NMAP_ALLOWED_FLAGS = frozenset(
     {
         "-sT",
@@ -20,6 +22,10 @@ _NMAP_ALLOWED_FLAGS = frozenset(
         "-T3",
         "-T4",
         "-T5",
+        "-O",
+        "--osscan-limit",
+        "--osscan-guess",
+        "-A",
     }
 )
 

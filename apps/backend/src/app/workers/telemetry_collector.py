@@ -67,11 +67,11 @@ def _discover_devices(default_interval_s: int) -> list[dict[str, Any]]:
         rows = db.query(Hardware).filter(Hardware.telemetry_config.isnot(None)).all()
         for hw in rows:
             config = _safe_json(hw.telemetry_config)
+            if config is None:
+                continue
             if not _is_enabled_config(config):
                 continue
-            interval_s = _coerce_interval(
-                config.get("poll_interval_seconds") if config else default_interval_s
-            )
+            interval_s = _coerce_interval(config.get("poll_interval_seconds"))
             if hw.telemetry_last_polled is not None:
                 age_s = (now - hw.telemetry_last_polled).total_seconds()
                 if age_s < interval_s:
@@ -95,7 +95,7 @@ async def _poll_one(
     hw_stub = SimpleNamespace(id=device["id"], telemetry_config=device["telemetry_config"])
     source = str(device.get("profile") or "collector")
     try:
-        result = await asyncio.wait_for(
+        result: Any = await asyncio.wait_for(
             asyncio.to_thread(poll_hardware, hw_stub, get_vault()),
             timeout=timeout_s,
         )
@@ -151,7 +151,7 @@ async def collect_once(
 
     with get_session_context() as db:
         for item in results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 logger.warning("Telemetry collector task failed unexpectedly: %s", item)
                 continue
             hardware_id, source, payload = item

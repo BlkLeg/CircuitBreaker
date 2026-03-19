@@ -18,7 +18,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import redis.asyncio as aioredis
@@ -60,12 +62,15 @@ def _resolve_redis_password(url: str) -> str | None:
             if secret:
                 return secret
     except Exception as exc:
-        _logger.debug("Failed reading Redis password file %s: %s", _password_file, exc)
+        _logger.debug(
+            "Failed reading Redis password file %s: %s", _password_file, exc
+        )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+        # Logs file path and exception — no credential value is logged
 
     return None
 
 
-async def _try_connect(connect_timeout: int = 5, socket_timeout: int = 5) -> aioredis.Redis | None:
+async def _try_connect(connect_timeout: int = 5) -> aioredis.Redis | None:
     """Attempt a Redis connection.  Returns the client or ``None``."""
     try:
         password = _resolve_redis_password(_url)
@@ -75,10 +80,8 @@ async def _try_connect(connect_timeout: int = 5, socket_timeout: int = 5) -> aio
             decode_responses=True,
             max_connections=20,
             socket_connect_timeout=connect_timeout,
-            socket_timeout=socket_timeout,
-            retry_on_timeout=True,
         )
-        await client.ping()
+        await cast(Awaitable[Any], client.ping())
         return client
     except Exception:
         return None
@@ -116,12 +119,12 @@ async def get_redis() -> aioredis.Redis | None:
 
     if _redis is not None:
         try:
-            await _redis.ping()
+            await cast(Awaitable[Any], _redis.ping())
             return _redis
         except Exception:
             _logger.warning("Redis connection lost — will attempt reconnect")
             try:
-                await _redis.aclose()
+                await cast(Awaitable[Any], _redis.aclose())
             except Exception:
                 pass
             _redis = None
@@ -131,7 +134,7 @@ async def get_redis() -> aioredis.Redis | None:
         return None
 
     _last_reconnect_attempt = now
-    client = await _try_connect(connect_timeout=2, socket_timeout=2)
+    client = await _try_connect(connect_timeout=2)
     if client is not None:
         _redis = client
         _logger.info("Redis reconnected (%s)", _url)
@@ -145,7 +148,7 @@ async def close_redis() -> None:
     global _redis
     if _redis is not None:
         try:
-            await _redis.aclose()
+            await cast(Awaitable[Any], _redis.aclose())
         except Exception as exc:
             _logger.debug("Redis close error: %s", exc)
         finally:
@@ -158,6 +161,6 @@ async def redis_health() -> bool:
     if _redis is None:
         return False
     try:
-        return await _redis.ping()
+        return bool(await cast(Awaitable[Any], _redis.ping()))
     except Exception:
         return False

@@ -1,5 +1,7 @@
 """Admin endpoint for audit log chain verification."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -12,9 +14,12 @@ router = APIRouter(tags=["admin-audit"])
 
 @router.get("/audit-log/verify-chain")
 def audit_log_verify_chain(
-    _=require_role("admin"),
+    _: Any = require_role("admin"),
     db: Session = Depends(get_db),
-):
-    """Verify the audit log hash chain. Admin-only. Returns valid, first_failure_id, message, checked_count."""
+) -> dict[str, Any]:
+    """Verify the audit log hash chain. Admin-only.
+
+    Returns valid, first_failure_id, message, checked_count.
+    """
     result = verify_audit_chain(db)
     return result

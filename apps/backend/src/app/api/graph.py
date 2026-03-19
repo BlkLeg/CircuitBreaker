@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.core.audit import log_audit
 from app.core.rbac import require_scope
 from app.core.security import require_write_auth
 from app.db.models import (
@@ -182,7 +183,7 @@ _DELETABLE_EDGES = [
 ]
 
 
-def _parse_deletable_edge(edge_id: str):
+def _parse_deletable_edge(edge_id: str) -> tuple[Any, Any]:
     """Return (model_class, row_id) for deletable/updatable edges, else (None, None)."""
     for prefix, model in _DELETABLE_EDGES:
         if edge_id.startswith(prefix):
@@ -200,9 +201,10 @@ class EdgeUpdatePayload(BaseModel):
 @router.delete("/edges/{edge_id}", status_code=204)
 def delete_edge(
     edge_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    user_id: int | None = Depends(require_write_auth),
+) -> None:
     """Delete a topology edge (connection join-table row) by its React Flow edge ID.
 
     Structural edges (hosts, runs, rack_member, cluster_member, etc.) and
@@ -220,15 +222,25 @@ def delete_edge(
         raise HTTPException(status_code=404, detail="Edge not found")
     db.delete(row)
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="edge_deleted",
+        resource=f"edge:{edge_id}",
+        status="ok",
+        severity="warn",
+    )
 
 
 @router.patch("/edges/{edge_id}", status_code=200)
 def update_edge_type(
     edge_id: str,
     payload: EdgeUpdatePayload,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    user_id: int | None = Depends(require_write_auth),
+) -> dict[str, Any]:
     """Update the connection_type on a topology edge."""
     model, row_id = _parse_deletable_edge(edge_id)
     if model is None:
@@ -246,6 +258,14 @@ def update_edge_type(
     if hasattr(row, "connection_type"):
         row.connection_type = normalized
         db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user_id,
+        action="edge_updated",
+        resource=f"edge:{edge_id}",
+        status="ok",
+    )
     return {"status": "ok", "connection_type": normalized}
 
 
@@ -278,9 +298,10 @@ def build_topology_graph(
     # Helper to fetch tags for a set of entities
     # Optimization: Loading tags for all entities can be N+1 if not careful.
     # For v1 homelab scale, we can just fetch them or rely on lazy loading if eager is set.
-    # Let's do a simple bulk fetch approach if performance matters, but for now simple attribute access
-    # (relying on SQLAlchemy lazy/eager loading) is fine.
-    # But wait, our models don't have `tags` relationship explicitly defined in `models.py` snippet I saw?
+    # Let's do a simple bulk fetch approach if performance matters, but for now simple
+    # attribute access (relying on SQLAlchemy lazy/eager loading) is fine.
+    # But wait, our models don't have `tags` relationship explicitly defined in
+    # `models.py` snippet I saw?
     # Checking models.py... EntityTag exists.
     # Let's add a helper to get tags or simple ignore them for now if relation isn't easy.
     # Actually, `EntityTag` is there. Let's pre-fetch all entity tags to avoid N+1.
@@ -300,8 +321,9 @@ def build_topology_graph(
             entity_tags_map[key] = []
         entity_tags_map[key].append(tname)
 
-    def get_tags(etype, eid):
-        return entity_tags_map.get((etype, eid), [])
+    def get_tags(etype: Any, eid: Any) -> list[Any]:
+        result: list[Any] = entity_tags_map.get((etype, eid), [])
+        return result
 
     entity_docs_map: dict[Any, Any] = {}
     doc_rows = db.execute(
@@ -316,8 +338,9 @@ def build_topology_graph(
             entity_docs_map[key] = []
         entity_docs_map[key].append({"id": did, "title": dtitle})
 
-    def get_docs(etype, eid):
-        return entity_docs_map.get((etype, eid), [])
+    def get_docs(etype: Any, eid: Any) -> list[Any]:
+        result: list[Any] = entity_docs_map.get((etype, eid), [])
+        return result
 
     # Pre-build compute_id → [storage_pool_names] via service→storage relationships
     cu_storage_pools: dict[int, list[str]] = {}
@@ -501,12 +524,7 @@ def build_topology_graph(
                     "primary_pool": primary_pool,
                     "count": len(hw.storage_items),
                 }
-            telemetry_data = None
-            if hw.telemetry_data:
-                try:
-                    telemetry_data = json.loads(hw.telemetry_data)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            telemetry_data = hw.telemetry_data if isinstance(hw.telemetry_data, dict) else None
             nodes.append(
                 {
                     "id": f"hw-{hw.id}",
@@ -1024,7 +1042,7 @@ def get_topology(
     rack_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     db: Session = Depends(get_db),
-):
+) -> Response:
     etag = _topology_etag(db, environment, environment_id, rack_id, include)
     if_none_match = (request.headers.get("if-none-match") or "").strip().strip('"')
     if if_none_match and if_none_match == etag:
@@ -1040,7 +1058,7 @@ def get_topology(
 
 
 @router.get("/layout")
-def get_layout(name: str = "default", db: Session = Depends(get_db)):
+def get_layout(name: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
     layout = db.execute(select(GraphLayout).where(GraphLayout.name == name)).scalar_one_or_none()
     if not layout:
         return {"layout_data": None}
@@ -1051,16 +1069,20 @@ def get_layout(name: str = "default", db: Session = Depends(get_db)):
 async def save_layout(
     data: LayoutUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> dict[str, Any]:
     try:
         layout = db.execute(
             select(GraphLayout).where(GraphLayout.name == data.name)
         ).scalar_one_or_none()
+        try:
+            parsed_layout: dict = json.loads(data.layout_data)
+        except (json.JSONDecodeError, TypeError):
+            parsed_layout = {}
         if layout:
-            layout.layout_data = data.layout_data
+            layout.layout_data = parsed_layout
         else:
-            layout = GraphLayout(name=data.name, layout_data=data.layout_data)
+            layout = GraphLayout(name=data.name, layout_data=parsed_layout)
             db.add(layout)
         db.commit()
     except Exception as e:
@@ -1089,8 +1111,8 @@ async def save_layout(
 def place_node(
     data: PlaceNodeInput,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> dict[str, Any]:
     from app.services.graph_service import place_node_safe
 
     safe_pos = place_node_safe(db, data.node_id, environment=data.environment)
@@ -1098,7 +1120,7 @@ def place_node(
 
 
 @router.get("/layouts")
-def get_layouts():
+def get_layouts() -> Any:
     """Return the registry of all available layout engines and presets."""
     from app.services.graph_layout import get_layouts as _get_layouts
 

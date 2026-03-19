@@ -134,7 +134,21 @@ export function useMapLayout({
         _applyResult(layout);
       }, 50);
     },
-    [nodes, edges, setNodes, setEdges, setEdgeOverrides, fitView, cloudViewEnabled, nodeSpacing]
+    [
+      nodes,
+      edges,
+      setNodes,
+      setEdges,
+      setEdgeOverrides,
+      fitView,
+      cloudViewEnabled,
+      nodeSpacing,
+      dirtyRef,
+      edgeOverridesRef,
+      flowContainerRef,
+      isMountedRef,
+      setLoading,
+    ]
   );
 
   applyLayoutRef.current = applyLayout;
@@ -170,7 +184,7 @@ export function useMapLayout({
       ro.disconnect();
       clearTimeout(debounceTimer);
     };
-  }, []);
+  }, [flowContainerRef, isMountedRef]);
 
   // Apply a layout preset when groupBy changes
   useEffect(() => {

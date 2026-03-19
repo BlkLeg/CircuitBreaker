@@ -42,6 +42,14 @@ ssl_explicitly_requested = any(
 if not ssl_explicitly_requested:
     _connect_args["ssl"] = False
 
+_using_pgbouncer = bool(os.environ.get("CB_DB_POOL_URL") or settings.db_pool_url)
+if _using_pgbouncer:
+    # asyncpg caches prepared statements per connection; pgbouncer transaction
+    # mode routes each transaction to a different backend connection, so the
+    # cached statement does not exist there. Disable the cache entirely.
+    _connect_args["statement_cache_size"] = 0
+    _connect_args["prepared_statement_cache_size"] = 0
+
 async_engine = create_async_engine(
     _async_url,
     connect_args=_connect_args,

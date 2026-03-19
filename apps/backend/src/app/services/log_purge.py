@@ -32,7 +32,7 @@ def purge_old_audit_logs() -> int:
 
         cutoff = utcnow() - timedelta(days=retention_days)
         result = db.execute(delete(Log).where(Log.timestamp < cutoff))
-        deleted = result.rowcount  # type: ignore[attr-defined]
+        deleted = int(result.rowcount)  # type: ignore[attr-defined]
         db.commit()
 
     if deleted:

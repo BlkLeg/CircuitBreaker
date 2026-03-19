@@ -372,17 +372,19 @@ function MapInternal() {
   const [envFilter, setEnvFilter] = useState('');
   const [environmentsList, setEnvironmentsList] = useState([]);
   const [tagFilter, setTagFilter] = useState('');
-  const [includeTypes, setIncludeTypes] = useState({
-    cluster: true,
-    hardware: true,
-    compute: true,
-    service: true,
-    storage: true,
-    network: true,
-    misc: true,
-    external: true,
-    docker: false,
-  });
+  const [includeTypes, setIncludeTypes] = useState(
+    new Map([
+      ['cluster', true],
+      ['hardware', true],
+      ['compute', true],
+      ['service', true],
+      ['storage', true],
+      ['network', true],
+      ['misc', true],
+      ['external', true],
+      ['docker', false],
+    ])
+  );
   // Sub-role filter for hardware nodes (null = show all)
   const [hwRoleFilter, setHwRoleFilter] = useState(null);
 
@@ -637,7 +639,11 @@ function MapInternal() {
       if (settings.map_default_filters && typeof settings.map_default_filters === 'object') {
         const f = settings.map_default_filters;
         if (f.include && typeof f.include === 'object') {
-          setIncludeTypes((prev) => ({ ...prev, ...f.include }));
+          setIncludeTypes((prev) => {
+            const next = new Map(prev);
+            for (const [k, v] of Object.entries(f.include)) next.set(k, v);
+            return next;
+          });
         }
       }
     }
@@ -894,8 +900,8 @@ function MapInternal() {
       }
 
       const targetType = targetNode.originalType;
-      const updater = ENTITY_API_UPDATE_STATUS[targetType];
-      const allowed = STATUS_OPTIONS_BY_TYPE[targetType] || [];
+      const updater = ENTITY_API_UPDATE_STATUS.get(targetType);
+      const allowed = STATUS_OPTIONS_BY_TYPE.get(targetType) || [];
       if (!updater || allowed.length === 0 || !targetNode._refId) {
         toast.error('Status updates are not supported for this node type.');
         return;
@@ -923,7 +929,7 @@ function MapInternal() {
         return;
       }
 
-      const updater = ENTITY_API_UPDATE_ALIAS[targetNode.originalType];
+      const updater = ENTITY_API_UPDATE_ALIAS.get(targetNode.originalType);
       if (!updater || !targetNode._refId) {
         toast.error('Alias updates are not supported for this node type.');
         return;
@@ -942,7 +948,7 @@ function MapInternal() {
 
   const submitAliasQuickAction = useCallback(
     async (modalData, value) => {
-      const updater = ENTITY_API_UPDATE_ALIAS[modalData.nodeType];
+      const updater = ENTITY_API_UPDATE_ALIAS.get(modalData.nodeType);
       const nextName = value.trim();
       if (!updater) {
         toast.error('Alias updates are not supported for this node type.');
@@ -961,7 +967,7 @@ function MapInternal() {
 
   const submitStatusQuickAction = useCallback(
     async (modalData, value) => {
-      const updater = ENTITY_API_UPDATE_STATUS[modalData.nodeType];
+      const updater = ENTITY_API_UPDATE_STATUS.get(modalData.nodeType);
       const allowed = modalData.allowed || [];
       const normalized = value.trim().toLowerCase();
       if (!updater) {
@@ -1308,7 +1314,7 @@ function MapInternal() {
   const handleIconPick = useCallback(
     async (slug) => {
       if (!iconPickerNode) return;
-      const updater = ENTITY_API_UPDATE_ICON[iconPickerNode.originalType];
+      const updater = ENTITY_API_UPDATE_ICON.get(iconPickerNode.originalType);
       if (!updater || !iconPickerNode._refId) {
         toast.error('Icon editing is not supported for this node type.');
         return;
@@ -2491,7 +2497,7 @@ function MapInternal() {
                           >
                             {(quickActionModal.allowed || []).map((value) => (
                               <option key={value} value={value}>
-                                {STATUS_OPTION_LABEL[value] || value}
+                                {STATUS_OPTION_LABEL.get(value) || value}
                               </option>
                             ))}
                           </select>
@@ -2872,7 +2878,7 @@ function MapInternal() {
               onClose={() => setSelectedNode(null)}
               onUplinkChange={handleUplinkChange}
               onOpenInHud={(node) => {
-                navigate(NODE_TYPE_ROUTES[node?.originalType] || '/');
+                navigate(NODE_TYPE_ROUTES.get(node?.originalType) || '/');
               }}
               onBoundsChange={handleSidebarBoundsChange}
               onMonitorAction={(action) =>

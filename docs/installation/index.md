@@ -1,6 +1,6 @@
 # Installation Overview
 
-Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker application. This section covers every supported installation method so you can choose the one that fits your environment.
+Circuit Breaker is a self-hosted homelab topology mapper. It installs natively on Linux via systemd — no Docker required. Docker Compose is available as an alternative for users who prefer container-based deployments.
 
 ---
 
@@ -8,44 +8,35 @@ Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker a
 
 | Requirement | Minimum |
 |---|---|
-| **OS** | Linux (amd64, arm64, arm/v7) |
-| **Docker** | Engine 20+ with Compose plugin v2 |
+| **OS** | Linux (amd64, arm64) |
 | **RAM** | 1 GB available |
-| **Disk** | 500 MB for image + space for your data volume |
-| **Network** | Outbound access to `ghcr.io` to pull the image |
+| **Disk** | 2 GB |
+| **Network** | Outbound internet access (to download the installer and image) |
 
-> **macOS / Windows:** Circuit Breaker runs inside Docker Desktop. All install methods work the same — replace Linux-specific steps (systemd, CA cert import) with the platform equivalents described in [Configuration Reference](configuration.md#trusting-the-self-signed-ca-certificate).
+> **Docker not required for native installs.** The default install method runs Circuit Breaker directly as a systemd service. Docker is only needed if you choose the `--docker` flag.
 
 ---
 
 ## Method Comparison
 
-| Method | Best for | HTTPS | Effort |
+| Method | Best for | Port | Effort |
 |---|---|---|---|
-| [Quick Install (Script)](quick-install.md) | Most Linux users — fastest path | Auto via Caddy | Low |
-| [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md) | Full capability (discovery, webhooks) — no build | Auto via Caddy | Low |
-| [Docker Compose — Prebuilt Single](docker-compose.md) | Minimal single-container, behind existing proxy | BYO | Low |
-| [Docker Compose — From Source](docker-compose-source.md) | Contributors or custom builds | Auto via Caddy | Medium |
-| [Single Docker Container](manual-docker.md) | Minimal setups, scripting, behind an existing reverse proxy | BYO | Low |
+| [Native Systemd](quick-install.md#native-recommended) | Most Linux users — fastest path, no Docker | 8088 | Low |
+| [Proxmox LXC](proxmox-lxc.md) | Proxmox VE users — isolated container on the PVE host | 8088 | Low |
+| [Docker Compose](docker-compose.md) | Users who prefer containerised deployments | 8088 / 443 | Low |
 
 ---
 
 ## Which Method Should I Choose?
 
-**I just want to get Circuit Breaker running as fast as possible with full capability (discovery, webhooks, HTTPS).**
-→ Use the [Quick Install script](quick-install.md). Choose option 2 (Compose stack). One command, no build, under 60 seconds.
+**I want to get Circuit Breaker running as fast as possible on a Linux server.**
+→ Use the [Quick Install script](quick-install.md). One command, no Docker required, under 2 minutes.
 
-**I want a full compose stack (backend, workers, Caddy) without building from source.**
-→ Use [Docker Compose — Prebuilt Full Stack](docker-compose-prod.md). Pull-only, zero build.
+**I'm running Proxmox VE and want Circuit Breaker in an isolated LXC container.**
+→ Use the [Proxmox LXC installer](proxmox-lxc.md). Runs on the PVE host, creates and configures the container automatically.
 
-**I want a minimal single container to drop into my stack.**
-→ Use [Docker Compose — Prebuilt Single](docker-compose.md). No repo clone needed, pull-and-go.
-
-**I want to build Circuit Breaker from source (or contribute to development).**
-→ Use [Docker Compose — From Source](docker-compose-source.md). Clones the repo and builds images locally.
-
-**I have my own reverse proxy (nginx, Traefik, Caddy) and just want a single container to proxy to.**
-→ Use the [Single Docker Container](manual-docker.md) method and point your proxy at port 8080.
+**I want a full container stack (Caddy, NATS, workers) managed with Docker Compose.**
+→ Use the [Docker Compose](docker-compose.md) method.
 
 ---
 
@@ -53,7 +44,7 @@ Circuit Breaker is a homelab topology mapper that runs as a self-hosted Docker a
 
 Regardless of method, your next steps are:
 
-1. Open Circuit Breaker in your browser.
+1. Open Circuit Breaker in your browser at `http://<host>:8088` (or your configured domain).
 2. Complete the **first-run setup wizard** — see [First-Run Setup](first-run.md).
 3. Back up the vault key shown at the end of the wizard (only displayed once).
 4. Optionally review the [Configuration Reference](configuration.md) to tune environment variables.

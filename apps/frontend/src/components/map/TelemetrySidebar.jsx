@@ -9,8 +9,10 @@ import {
   Container,
   CheckCircle,
   AlertCircle,
+  FileText,
+  ExternalLink,
 } from 'lucide-react';
-import { telemetryApi, proxmoxApi } from '../../api/client';
+import { telemetryApi, proxmoxApi, servicesApi } from '../../api/client';
 
 function BarMeter({ label, value, max, color, unit }) {
   const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0;
@@ -89,40 +91,42 @@ function isHealthyStatus(data) {
   return HEALTHY_STATUSES.has(status) || HEALTHY_TELEMETRY.has(telemetry);
 }
 
-const NODE_STYLES = {
-  cluster: { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }, // violet
-  hardware: { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }, // steel blue
-  compute: { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' }, // green
-  service: { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' }, // orange
-  storage: { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' }, // purple
-  network: { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }, // cyan
-  misc: { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }, // gray
-  external: { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }, // sky blue
-  docker_network: { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }, // docker teal
-  docker_container: { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }, // docker blue
-};
+const NODE_STYLES = new Map([
+  ['cluster', { background: '#7c3aed', borderColor: '#5b21b6', glowColor: '#a78bfa' }], // violet
+  ['hardware', { background: '#4a7fa5', borderColor: '#2c5f7a', glowColor: '#4a7fa5' }], // steel blue
+  ['compute', { background: '#3a7d44', borderColor: '#1f5c2c', glowColor: '#3a7d44' }], // green
+  ['service', { background: '#c2601e', borderColor: '#8f4012', glowColor: '#e07030' }], // orange
+  ['storage', { background: '#7b4fa0', borderColor: '#5a3278', glowColor: '#7b4fa0' }], // purple
+  ['network', { background: '#0e8a8a', borderColor: '#0a6060', glowColor: '#0eb8b8' }], // cyan
+  ['misc', { background: '#4a5568', borderColor: '#2d3748', glowColor: '#6b7a96' }], // gray
+  ['external', { background: '#2196f3', borderColor: '#1565c0', glowColor: '#64b5f6' }], // sky blue
+  ['docker_network', { background: '#0b6e8e', borderColor: '#086080', glowColor: '#1cb8d8' }], // docker teal
+  ['docker_container', { background: '#1e6ba8', borderColor: '#164e80', glowColor: '#2d8ae0' }], // docker blue
+]);
 
-const NODE_TYPE_LABELS = {
-  cluster: 'Cluster',
-  hardware: 'Hardware',
-  compute: 'Compute',
-  service: 'Service',
-  storage: 'Storage',
-  network: 'Network',
-  misc: 'Misc',
-  external: 'External',
-  docker_network: 'Docker Net',
-  docker_container: 'Container',
-};
+const NODE_TYPE_LABELS = new Map([
+  ['cluster', 'Cluster'],
+  ['hardware', 'Hardware'],
+  ['compute', 'Compute'],
+  ['service', 'Service'],
+  ['storage', 'Storage'],
+  ['network', 'Network'],
+  ['misc', 'Misc'],
+  ['external', 'External'],
+  ['docker_network', 'Docker Net'],
+  ['docker_container', 'Container'],
+]);
 
 export default function TelemetrySidebar({ node, position, onClose, onBoundsChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [discoveryData, setDiscoveryData] = useState(null);
   const [clusterOverview, setClusterOverview] = useState(null);
   const [adjustedPos, setAdjustedPos] = useState({ x: position?.x ?? 200, y: position?.y ?? 100 });
   const sidebarRef = useRef(null);
 
   const integrationId = node?.data?.integration_config_id ?? null;
+  const isHardwareNode = node?.originalType === 'hardware';
 
   const typeMap = {
     hardware: 'hardware',
@@ -161,7 +165,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
 
       setAdjustedPos({ x, y });
     }
-  }, [position, data]);
+  }, [position, data, discoveryData]);
 
   // Report bounds so the context menu can shift away and avoid overlapping this hover box
   useLayoutEffect(() => {
@@ -180,7 +184,7 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
       });
     });
     return () => cancelAnimationFrame(rafId);
-  }, [adjustedPos, data, onBoundsChange]);
+  }, [adjustedPos, data, discoveryData, onBoundsChange]);
 
   useEffect(() => {
     return () => onBoundsChange?.(null);
@@ -207,7 +211,26 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
   }, [entityType, entityId]);
 
   useEffect(() => {
-    if (!integrationId) {
+    if (node?.originalType !== 'service' || !entityId) {
+      setDiscoveryData(null);
+      return;
+    }
+    let cancelled = false;
+    servicesApi
+      .getDiscovery(entityId)
+      .then((res) => {
+        if (!cancelled) setDiscoveryData(res);
+      })
+      .catch(() => {
+        if (!cancelled) setDiscoveryData(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [node?.originalType, entityId]);
+
+  useEffect(() => {
+    if (!integrationId || !isHardwareNode) {
       setClusterOverview(null);
       return;
     }
@@ -223,11 +246,11 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
     return () => {
       cancelled = true;
     };
-  }, [integrationId]);
+  }, [integrationId, isHardwareNode]);
 
   if (!node) return null;
 
-  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct * 100) : null;
+  const cpuPct = data?.cpu_pct != null ? Math.round(data.cpu_pct) : null;
   const memUsed =
     data?.mem_used_gb ?? (data?.mem_used != null ? +(data.mem_used / 1073741824).toFixed(1) : null);
   const memTotal =
@@ -239,6 +262,12 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
   const diskTotal =
     data?.disk_total_gb ??
     (data?.rootfs_total != null ? +(data.rootfs_total / 1073741824).toFixed(1) : null);
+  const linkedDocs = [];
+  if (Array.isArray(data?.documents) && data.documents.length > 0) {
+    linkedDocs.push(...data.documents);
+  } else if (Array.isArray(node?.data?.docs)) {
+    linkedDocs.push(...node.data.docs);
+  }
 
   return (
     <div
@@ -284,6 +313,18 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
             }}
           >
             {node?.data?.label || data?.name || '…'}
+            {data?.hostname && data.hostname !== (node?.data?.label || data?.name) && (
+              <span
+                style={{
+                  fontWeight: 400,
+                  fontSize: 11,
+                  color: 'var(--color-text-muted)',
+                  marginLeft: 6,
+                }}
+              >
+                ({data.hostname})
+              </span>
+            )}
           </div>
           <div
             style={{
@@ -303,11 +344,11 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
                   height: 8,
                   borderRadius: '50%',
                   background:
-                    NODE_STYLES[node?.originalType]?.glowColor || 'var(--color-text-muted)',
-                  boxShadow: `0 0 6px ${NODE_STYLES[node?.originalType]?.glowColor || 'transparent'}`,
+                    NODE_STYLES.get(node?.originalType)?.glowColor || 'var(--color-text-muted)',
+                  boxShadow: `0 0 6px ${NODE_STYLES.get(node?.originalType)?.glowColor || 'transparent'}`,
                 }}
               />
-              <span>{NODE_TYPE_LABELS[node?.originalType] || node?.originalType}</span>
+              <span>{NODE_TYPE_LABELS.get(node?.originalType) || node?.originalType}</span>
             </div>
             {node?.originalType === 'hardware' && node?._hwRole && (
               <>
@@ -385,6 +426,54 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
         style={{ border: 'none', borderTop: '1px solid var(--color-border)', margin: '0 0 10px 0' }}
       />
 
+      {linkedDocs.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              marginBottom: 6,
+              fontSize: 11,
+              color: 'var(--color-text-muted)',
+            }}
+          >
+            <FileText size={12} />
+            <span>Documents</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {linkedDocs.map((doc) => (
+              <a
+                key={doc.id}
+                href={`/docs?docId=${doc.id}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 11,
+                  color: 'var(--color-primary)',
+                  textDecoration: 'none',
+                }}
+                title={`Open ${doc.title || 'document'}`}
+              >
+                <span>{doc.icon || '📄'}</span>
+                <span
+                  style={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: 190,
+                  }}
+                >
+                  {doc.title || 'Untitled'}
+                </span>
+                <ExternalLink size={11} style={{ marginLeft: 'auto', opacity: 0.7 }} />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {loading && (
         <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>Loading telemetry…</div>
       )}
@@ -451,7 +540,10 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
           )}
 
           {/* Children */}
-          {(data.child_vms || data.child_cts) && (
+          {(data.child_vms?.running > 0 ||
+            data.child_vms?.stopped > 0 ||
+            data.child_cts?.running > 0 ||
+            data.child_cts?.stopped > 0) && (
             <div
               style={{ marginTop: 6, padding: '6px 0', borderTop: '1px solid var(--color-border)' }}
             >
@@ -611,7 +703,100 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
         </>
       )}
 
-      {clusterOverview && (
+      {!loading && discoveryData?.docker && (
+        <div style={{ marginTop: 6 }}>
+          {discoveryData.docker.error ? (
+            <div style={{ fontSize: 11, color: '#ef4444' }}>
+              Error: {discoveryData.docker.error}
+            </div>
+          ) : (
+            <>
+              <div style={{ marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: discoveryData.docker.status === 'running' ? '#22c55e' : '#ef4444',
+                    display: 'inline-block',
+                  }}
+                />
+                <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>
+                  {discoveryData.docker.status || 'unknown'}
+                  {discoveryData.docker.raw_status &&
+                    discoveryData.docker.raw_status !== discoveryData.docker.status && (
+                      <span style={{ color: 'var(--color-text-muted)', marginLeft: 4 }}>
+                        ({discoveryData.docker.raw_status})
+                      </span>
+                    )}
+                </span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--color-text-muted)',
+                    marginLeft: 'auto',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {discoveryData.docker.id}
+                </span>
+              </div>
+
+              {discoveryData.docker.cpu_pct != null && (
+                <BarMeter
+                  label="CPU Usage"
+                  value={discoveryData.docker.cpu_pct}
+                  max={100}
+                  color={meterColor(discoveryData.docker.cpu_pct)}
+                />
+              )}
+              {discoveryData.docker.mem_usage != null && discoveryData.docker.mem_limit > 0 && (
+                <BarMeter
+                  label={`Memory (${(discoveryData.docker.mem_usage / 1048576).toFixed(1)} MB)`}
+                  value={discoveryData.docker.mem_usage}
+                  max={discoveryData.docker.mem_limit}
+                  color={meterColor(discoveryData.docker.mem_pct)}
+                />
+              )}
+
+              {/* Ports */}
+              {discoveryData.docker.ports && Object.keys(discoveryData.docker.ports).length > 0 && (
+                <div
+                  style={{
+                    marginTop: 6,
+                    padding: '6px 0',
+                    borderTop: '1px solid var(--color-border)',
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                    Exposed Ports
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {Object.entries(discoveryData.docker.ports).map(([p, binding], idx) => (
+                      <span
+                        key={idx}
+                        style={{
+                          fontSize: 10,
+                          background: 'var(--color-surface-hover)',
+                          padding: '1px 4px',
+                          borderRadius: 3,
+                          color: binding ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                          border: '1px solid var(--color-border)',
+                          fontFamily: 'monospace',
+                        }}
+                      >
+                        {p}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {clusterOverview && node?.originalType === 'hardware' && (
         <div
           style={{
             marginTop: 10,
@@ -777,164 +962,6 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
             </div>
           )}
         </>
-      )}
-
-      {!loading && !data && (
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {/* Storage summary (hardware) */}
-          {node?.data?.storage_summary &&
-            (() => {
-              const s = node.data.storage_summary;
-              const tb =
-                s.total_gb >= 1024 ? `${(s.total_gb / 1024).toFixed(1)}TB` : `${s.total_gb}GB`;
-              const types = s.types?.join(', ') || '';
-              const usedPct =
-                s.used_gb != null && s.total_gb > 0
-                  ? `${Math.round((s.used_gb / s.total_gb) * 100)}% used`
-                  : null;
-              const parts = [usedPct, types].filter(Boolean).join(', ');
-              return (
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: 'var(--color-text-muted)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                >
-                  <HardDrive size={12} />
-                  <span>
-                    {tb} total{parts ? ` (${parts})` : ''}
-                  </span>
-                  {s.primary_pool && <span>· {s.primary_pool}</span>}
-                </div>
-              );
-            })()}
-
-          {/* Storage allocated (compute) */}
-          {node?.data?.storage_allocated?.disk_gb && (
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--color-text-muted)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <HardDrive size={12} />
-              <span>{node.data.storage_allocated.disk_gb} GB disk</span>
-              {node.data.storage_allocated.storage_pools?.length > 0 && (
-                <span>· {node.data.storage_allocated.storage_pools.join(', ')}</span>
-              )}
-            </div>
-          )}
-
-          {/* Capacity (storage nodes) */}
-          {node?.data?.capacity_gb && (
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--color-text-muted)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <HardDrive size={12} />
-              <span>
-                {node.data.capacity_gb >= 1024
-                  ? `${(node.data.capacity_gb / 1024).toFixed(1)} TB`
-                  : `${node.data.capacity_gb} GB`}{' '}
-                capacity
-              </span>
-              {node.data.used_gb != null && node.data.capacity_gb > 0 && (
-                <span>({Math.round((node.data.used_gb / node.data.capacity_gb) * 100)}% used)</span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Renders safely when data is null, but only if it's meant to have telemetry */}
-
-      {!loading && !data && (
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {/* Storage summary (hardware) */}
-          {node?.data?.storage_summary &&
-            (() => {
-              const s = node.data.storage_summary;
-              const tb =
-                s.total_gb >= 1024 ? `${(s.total_gb / 1024).toFixed(1)}TB` : `${s.total_gb}GB`;
-              const types = s.types?.join(', ') || '';
-              const usedPct =
-                s.used_gb != null && s.total_gb > 0
-                  ? `${Math.round((s.used_gb / s.total_gb) * 100)}% used`
-                  : null;
-              const parts = [usedPct, types].filter(Boolean).join(', ');
-              return (
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: 'var(--color-text-muted)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                  }}
-                >
-                  <HardDrive size={12} />
-                  <span>
-                    {tb} total{parts ? ` (${parts})` : ''}
-                  </span>
-                  {s.primary_pool && <span>· {s.primary_pool}</span>}
-                </div>
-              );
-            })()}
-
-          {/* Storage allocated (compute) */}
-          {node?.data?.storage_allocated?.disk_gb && (
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--color-text-muted)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <HardDrive size={12} />
-              <span>{node.data.storage_allocated.disk_gb} GB disk</span>
-              {node.data.storage_allocated.storage_pools?.length > 0 && (
-                <span>· {node.data.storage_allocated.storage_pools.join(', ')}</span>
-              )}
-            </div>
-          )}
-
-          {/* Capacity (storage nodes) */}
-          {node?.data?.capacity_gb && (
-            <div
-              style={{
-                fontSize: 11,
-                color: 'var(--color-text-muted)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <HardDrive size={12} />
-              <span>
-                {node.data.capacity_gb >= 1024
-                  ? `${(node.data.capacity_gb / 1024).toFixed(1)} TB`
-                  : `${node.data.capacity_gb} GB`}{' '}
-                capacity
-              </span>
-              {node.data.used_gb != null && node.data.capacity_gb > 0 && (
-                <span>({Math.round((node.data.used_gb / node.data.capacity_gb) * 100)}% used)</span>
-              )}
-            </div>
-          )}
-        </div>
       )}
 
       {/* Renders safely when data is null, but only if it's meant to have telemetry */}

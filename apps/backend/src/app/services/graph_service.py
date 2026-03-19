@@ -10,7 +10,27 @@ from app.db.models import GraphLayout
 logger = logging.getLogger(__name__)
 
 
-def _extract_layout_nodes(layout_data: str | None) -> list[dict]:
+def save_layout(db: Session, name: str, layout_data: str | dict) -> None:
+    """Save positions to the graph layout table (server-side)."""
+    parsed: dict
+    if isinstance(layout_data, str):
+        try:
+            parsed = json.loads(layout_data)
+        except json.JSONDecodeError:
+            parsed = {}
+    else:
+        parsed = layout_data
+
+    layout = db.query(GraphLayout).filter(GraphLayout.name == name).first()
+    if layout:
+        layout.layout_data = parsed
+    else:
+        layout = GraphLayout(name=name, layout_data=parsed)
+        db.add(layout)
+    db.commit()
+
+
+def _extract_layout_nodes(layout_data: dict | str | None) -> list[dict]:
     """Extract node position records from supported layout formats.
 
     Supports:
@@ -21,10 +41,13 @@ def _extract_layout_nodes(layout_data: str | None) -> list[dict]:
     if not layout_data:
         return []
 
-    try:
-        parsed = json.loads(layout_data)
-    except json.JSONDecodeError:
-        return []
+    if isinstance(layout_data, dict):
+        parsed = layout_data
+    else:
+        try:
+            parsed = json.loads(layout_data)
+        except json.JSONDecodeError:
+            return []
 
     raw_nodes: Any = parsed.get("nodes", parsed) if isinstance(parsed, dict) else []
     nodes: list[dict] = []

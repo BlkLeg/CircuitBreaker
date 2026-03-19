@@ -1,0 +1,11 @@
+[Unit]
+Description=Circuit Breaker Liveness Check
+After=circuitbreaker-backend.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/circuitbreaker/scripts/healthcheck.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-healthcheck

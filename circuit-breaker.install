@@ -1,0 +1,17 @@
+post_install() {
+    systemctl daemon-reload
+    echo "Circuit Breaker installed. Run 'cb-setup' to configure."
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+}
+
+pre_remove() {
+    systemctl stop circuit-breaker 2>/dev/null || true
+    systemctl disable circuit-breaker 2>/dev/null || true
+}
+
+post_remove() {
+    systemctl daemon-reload
+}

@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -30,7 +31,7 @@ class StatusPageRead(StatusPageBase):
 
     @field_validator("config", mode="before")
     @classmethod
-    def parse_config(cls, v):
+    def parse_config(cls, v: Any) -> Any:
         if v is None or v == "":
             return None
         if isinstance(v, dict):
@@ -70,7 +71,7 @@ class StatusGroupRead(StatusGroupBase):
 
     @field_validator("nodes", mode="before")
     @classmethod
-    def parse_nodes(cls, v):
+    def parse_nodes(cls, v: Any) -> Any:
         if v is None:
             return []
         if isinstance(v, list):
@@ -84,7 +85,7 @@ class StatusGroupRead(StatusGroupBase):
 
     @field_validator("services", mode="before")
     @classmethod
-    def parse_services(cls, v):
+    def parse_services(cls, v: Any) -> Any:
         if v is None:
             return []
         if isinstance(v, list):
@@ -110,7 +111,7 @@ class StatusHistoryRead(BaseModel):
 
     @field_validator("metrics", "raw_telemetry", mode="before")
     @classmethod
-    def parse_json_dict(cls, v):
+    def parse_json_dict(cls, v: Any) -> Any:
         if v is None or v == "":
             return None
         if isinstance(v, dict):

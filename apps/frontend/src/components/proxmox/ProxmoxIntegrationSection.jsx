@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { proxmoxApi } from '../../api/client';
 import SettingSection from '../settings/SettingSection';
 import SettingField from '../settings/SettingField';
@@ -53,7 +52,6 @@ function StatusBadge({ status }) {
 }
 
 export default function ProxmoxIntegrationSection() {
-  const navigate = useNavigate();
   const [configs, setConfigs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -445,17 +443,6 @@ export default function ProxmoxIntegrationSection() {
                             is still beta.
                           </div>
                         )}
-                      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
-                        <button
-                          className="btn btn-sm"
-                          type="button"
-                          onClick={() =>
-                            navigate('/discovery', { state: { discoveryFilter: 'review' } })
-                          }
-                        >
-                          Open Review Queue
-                        </button>
-                      </div>
                     </>
                   )}
 

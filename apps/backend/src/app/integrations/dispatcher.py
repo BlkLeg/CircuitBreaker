@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 from app.integrations.apc_ups import APCUPSClient
 from app.integrations.idrac import IDRACClient
@@ -11,7 +12,7 @@ _logger = logging.getLogger(__name__)
 
 # Reuse ILO/IDRAC clients per (profile, host, username) to avoid connection pool exhaustion.
 _HW_CLIENT_CACHE_MAX = 64
-_hw_client_cache: dict[tuple[str, str, str], object] = {}
+_hw_client_cache: dict[tuple[str, str, str], Any] = {}
 
 PROFILE_MAP = {
     "idrac6": IDRACClient,
@@ -28,7 +29,7 @@ PROFILE_MAP = {
 }
 
 
-def poll_hardware(hardware, vault: CredentialVault) -> dict:
+def poll_hardware(hardware: Any, vault: CredentialVault) -> dict:
     """
     Resolves the correct client for a hardware node's telemetry profile,
     executes a poll, and returns normalized data + status string.
@@ -58,6 +59,7 @@ def poll_hardware(hardware, vault: CredentialVault) -> dict:
     password = vault.decrypt(config["password"]) if config.get("password") else None
 
     try:
+        client: Any
         if profile in ("ilo4", "ilo5", "ilo6"):
             cache_key = (profile, host, config.get("username") or "")
             client = _hw_client_cache.get(cache_key)

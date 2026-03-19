@@ -9,6 +9,9 @@ Audit logs are append-only.  No update or delete path exists through this servic
 import json
 import logging
 import sys
+from typing import Any
+
+from sqlalchemy.orm import Session
 
 from app.core.time import utcnow, utcnow_iso
 
@@ -43,7 +46,7 @@ def _mask_key(k: str) -> str:
     return result
 
 
-def sanitise_diff(obj):
+def sanitise_diff(obj: Any) -> Any:
     """Recursively walk *obj* and replace the value of any sensitive key with
     ``"***REDACTED***"``.  The key name is also masked so that sensitive
     substrings (e.g. 'password') do not leak into audit log strings.
@@ -81,7 +84,7 @@ def _sanitise_log_string(value: str | None) -> str | None:
 
 
 def write_log(
-    db,
+    db: Session | None,
     action: str,
     entity_type: str | None = None,
     entity_id: int | None = None,
@@ -130,9 +133,27 @@ def write_log(
         # Map actor fields (new → legacy for backward compat with existing queries)
         effective_actor = actor if actor is not None else actor_name
 
+        # Handle IP redaction based on global settings
+        effective_ip = ip_address
+        try:
+            from app.services.settings_service import get_or_create_settings
+
+            # Use the provided session if available, otherwise open a transient one
+            if db is not None:
+                cfg = get_or_create_settings(db)
+            else:
+                with SessionLocal() as config_db:
+                    cfg = get_or_create_settings(config_db)
+
+            if getattr(cfg, "audit_log_hide_ip", False):
+                effective_ip = None
+        except Exception:  # noqa: BLE001
+            # If settings cannot be loaded, default to the provided IP
+            pass
+
         _now_iso = utcnow_iso()
 
-        def _do_write(session):
+        def _do_write(session: Session) -> None:
             import hashlib
 
             from sqlalchemy import select
@@ -157,7 +178,7 @@ def write_log(
                 "entity_type": entity_type,
                 "entity_id": entity_id,
                 "diff": diff_str,
-                "ip_address": ip_address,
+                "ip_address": effective_ip,
                 "previous_hash": previous_hash,
             }
             # Serialize deterministically
@@ -178,12 +199,12 @@ def write_log(
                 old_value=safe_old_value,
                 new_value=safe_new_value,
                 user_agent=user_agent,
-                ip_address=ip_address,
+                ip_address=effective_ip,
                 details=safe_details,
                 status_code=status_code,
                 # Structured audit fields (Feature 6)
                 actor_id=actor_id,
-                actor_name=effective_actor,
+                actor_name=actor_name,
                 entity_name=entity_name,
                 diff=diff_str,
                 severity=severity,
@@ -221,7 +242,7 @@ def _publish_audit_to_redis(
 
         from app.core.redis import get_redis
 
-        async def _pub():
+        async def _pub() -> None:
             r = await get_redis()
             if r is None:
                 return

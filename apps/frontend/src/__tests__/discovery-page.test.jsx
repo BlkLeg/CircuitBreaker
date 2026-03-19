@@ -72,7 +72,7 @@ vi.mock('../hooks/useDiscoveryStream.js', () => ({
 
 // Mock child components to keep tests focused
 vi.mock('../components/discovery/DiscoverySidebar.jsx', () => ({
-  default: ({ filter, onFilterChange, jobCounts, pendingReviewCount }) =>
+  default: ({ filter, onFilterChange, pendingReviewCount }) =>
     React.createElement(
       'nav',
       { 'data-testid': 'discovery-sidebar' },
@@ -110,8 +110,26 @@ vi.mock('../components/discovery/ScanProfilesPanel.jsx', () => ({
   default: () => React.createElement('div', null, 'ScanProfiles'),
 }));
 
-vi.mock('./DiscoveryHistoryPage.jsx', () => ({
-  default: () => React.createElement('div', null, 'DiscoveryHistory'),
+vi.mock('../pages/DiscoveryHistoryPage.jsx', () => ({
+  default: ({ jobsData }) => {
+    const activeCount = jobsData.filter((j) => j.status === 'running').length;
+    return React.createElement(
+      'div',
+      { 'data-testid': 'history-page' },
+      React.createElement(
+        'div',
+        { 'data-testid': 'status-bar' },
+        `${jobsData.length} scans, ${activeCount} active`
+      ),
+      React.createElement(
+        'div',
+        { 'data-testid': 'scan-table' },
+        jobsData.map((j) =>
+          React.createElement('div', { key: j.id, 'data-testid': `job-${j.id}` }, j.target || j.id)
+        )
+      )
+    );
+  },
 }));
 
 vi.mock('../components/discovery/NewScanPage.jsx', () => ({
@@ -126,11 +144,19 @@ vi.mock('../components/proxmox/ProxmoxIntegrationSection.jsx', () => ({
   default: () => React.createElement('div', null, 'ProxmoxIntegration'),
 }));
 
+vi.mock('../components/discovery/ScanSettingsPanel.jsx', () => ({
+  default: () => React.createElement('div', null, 'ScanSettings'),
+}));
+
 vi.mock('lucide-react', () => ({
   X: () => React.createElement('span', null, 'X'),
+  ChevronRight: () => React.createElement('span', null, 'ChevronRight'),
+  ChevronDown: () => React.createElement('span', null, 'ChevronDown'),
 }));
 
 vi.mock('../styles/discovery.css', () => ({}));
+
+import { MemoryRouter } from 'react-router-dom';
 
 describe('DiscoveryPage', () => {
   beforeEach(() => {
@@ -150,7 +176,11 @@ describe('DiscoveryPage', () => {
   });
 
   it('renders discovery page with sidebar and main content', async () => {
-    render(<DiscoveryPage />);
+    render(
+      <MemoryRouter>
+        <DiscoveryPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('discovery-sidebar')).toBeInTheDocument();
@@ -168,7 +198,11 @@ describe('DiscoveryPage', () => {
       ],
     });
 
-    render(<DiscoveryPage />);
+    render(
+      <MemoryRouter>
+        <DiscoveryPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('job-1')).toBeInTheDocument();
@@ -185,7 +219,11 @@ describe('DiscoveryPage', () => {
       ],
     });
 
-    render(<DiscoveryPage />);
+    render(
+      <MemoryRouter>
+        <DiscoveryPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(screen.getByText('2 scans, 1 active')).toBeInTheDocument();
@@ -195,7 +233,11 @@ describe('DiscoveryPage', () => {
   it('displays pending review count in sidebar', async () => {
     discoveryApi.getPendingResults.mockResolvedValueOnce({ data: { total: 7 } });
 
-    render(<DiscoveryPage />);
+    render(
+      <MemoryRouter>
+        <DiscoveryPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('pending-count')).toHaveTextContent('7');

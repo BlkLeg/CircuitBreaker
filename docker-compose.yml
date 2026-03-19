@@ -13,7 +13,7 @@ name: circuitbreaker
 
 services:
   circuitbreaker:
-    image: ${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:mono-${CB_TAG:-latest}}
+    image: ${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:${CB_TAG:-latest}}
     build:
       context: .
       dockerfile: Dockerfile.mono

@@ -10,6 +10,13 @@ class PortEntry(BaseModel):
     label: str | None = None
 
 
+class LinkedDocument(BaseModel):
+    id: int
+    title: str
+    category: str | None = None
+    icon: str | None = None
+
+
 class ServiceBase(BaseModel):
     name: str
     slug: str | None = None  # auto-derived from name if not provided
@@ -67,6 +74,7 @@ class Service(ServiceBase):
     ip_mode: str = "explicit"
     ip_conflict: bool = False
     ip_conflict_with: list[dict] = []
+    documents: list[LinkedDocument] = []
 
 
 class ServiceDependencyCreate(BaseModel):

@@ -31,7 +31,13 @@ const S = {
   },
 };
 
-export default function SettingSection({ title, description, children, action, className }) {
+export default function SettingSection({
+  title = null,
+  description = null,
+  children = null,
+  action = null,
+  className = '',
+}) {
   const sectionClassName = className ? `setting-section ${className}` : 'setting-section';
 
   return (
@@ -54,12 +60,4 @@ SettingSection.propTypes = {
   children: PropTypes.node,
   action: PropTypes.node,
   className: PropTypes.string,
-};
-
-SettingSection.defaultProps = {
-  title: null,
-  description: null,
-  children: null,
-  action: null,
-  className: '',
 };

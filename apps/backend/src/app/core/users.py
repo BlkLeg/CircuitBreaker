@@ -9,7 +9,7 @@ import os
 import re
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Response
 from fastapi_users import BaseUserManager, FastAPIUsers, IntegerIDMixin
 from fastapi_users.authentication import AuthenticationBackend, BearerTransport, JWTStrategy
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
@@ -20,7 +20,8 @@ from app.db.models import User
 
 _logger = logging.getLogger(__name__)
 
-# JWT secret: DB (from OOBE/settings) or CB_JWT_SECRET env only. No vault/API-token or runtime random.
+# JWT secret: DB (from OOBE/settings) or CB_JWT_SECRET env only.
+# No vault/API-token or runtime random.
 CB_JWT_SECRET_ENV = "CB_JWT_SECRET"
 
 
@@ -112,7 +113,7 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
         self,
         user: User,
         request: Request | None = None,
-        response=None,
+        response: Response | None = None,
     ) -> None:
         import json
 

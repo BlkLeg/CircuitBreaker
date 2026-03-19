@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import (
     Category,
+    Doc,
+    EntityDoc,
     EntityTag,
     Service,
     ServiceDependency,
@@ -78,6 +81,24 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
     return [row.tag.name for row in rows]
 
 
+def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
+    rows = db.execute(
+        select(Doc.id, Doc.title, Doc.category, Doc.icon)
+        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
+        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
+        .order_by(Doc.updated_at.desc())
+    ).all()
+    return [
+        {
+            "id": doc_id,
+            "title": title,
+            "category": category,
+            "icon": icon,
+        }
+        for doc_id, title, category, icon in rows
+    ]
+
+
 def _backfill_ports_json(db: Session) -> None:
     """Backfill ports_json for services that have a legacy freeform ports string.
 
@@ -109,8 +130,8 @@ def _backfill_ports_json(db: Session) -> None:
     db.commit()
 
 
-def _ports_to_json(ports_list) -> str | None:
-    """Serialise a list of PortEntry objects (or dicts) to JSON for storage."""
+def _ports_to_json(ports_list: Any) -> list | None:
+    """Serialise a list of PortEntry objects (or dicts) to a list for storage in JSONB."""
     if ports_list is None:
         return None
     entries = []
@@ -119,27 +140,21 @@ def _ports_to_json(ports_list) -> str | None:
             entries.append(pe.model_dump())
         else:
             entries.append(dict(pe))
-    return json.dumps(entries)
+    return entries
 
 
 def _to_dict(db: Session, svc: Service) -> dict:
     d = {c.name: getattr(svc, c.name) for c in svc.__table__.columns}
     # Expose structured ports from ports_json, overriding the legacy plain-text ports field
-    raw_ports_json = d.pop("ports_json", None)
-    try:
-        d["ports"] = json.loads(raw_ports_json) if raw_ports_json else None
-    except (json.JSONDecodeError, TypeError):
-        d["ports"] = None
+    d["ports"] = d.get("ports_json")
     d["tags"] = get_tags_for(db, "service", svc.id)
     d["category_name"] = svc.category_rel.name if svc.category_rel else None
     d["environment_name"] = svc.environment_rel.name if svc.environment_rel else None
     # IP conflict classification
     d["ip_mode"] = svc.ip_mode or "explicit"
     d["ip_conflict"] = bool(svc.ip_conflict)
-    try:
-        d["ip_conflict_with"] = json.loads(svc.ip_conflict_json or "[]")
-    except (json.JSONDecodeError, TypeError):
-        d["ip_conflict_with"] = []
+    d["ip_conflict_with"] = svc.ip_conflict_json or []
+    d["documents"] = _get_documents_for(db, "service", svc.id)
     return d
 
 
@@ -343,7 +358,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         setattr(svc, field, value)
     svc.ip_mode = conflict_result["ip_mode"]
     svc.ip_conflict = conflict_result["is_conflict"]
-    svc.ip_conflict_json = json.dumps(conflict_result["conflict_with"])
+    svc.ip_conflict_json = conflict_result["conflict_with"]
     svc.updated_at = utcnow()
     if payload.tags is not None:
         _sync_tags(db, "service", svc.id, payload.tags)

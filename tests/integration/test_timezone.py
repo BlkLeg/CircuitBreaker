@@ -56,10 +56,10 @@ def test_timezone_log_on_change(client):
 
     logs = client.get("/api/v1/logs").json()["logs"]
     entry = next(
-        (log for log in logs if log.get("entity_type") == "settings" and log.get("action") == "update_settings"),
+        (log for log in logs if log.get("entity_type") == "settings" and log.get("action") == "settings_update"),
         None,
     )
-    assert entry is not None, "Expected 'update_settings' settings log after timezone change"
+    assert entry is not None, "Expected 'settings_update' settings log after timezone change"
 
     # Diff should reference timezone
     if entry.get("diff"):

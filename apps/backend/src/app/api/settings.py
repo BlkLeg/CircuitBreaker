@@ -1,10 +1,11 @@
-import json
 import logging
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
 from app.core.rbac import require_role
 from app.core.security import get_optional_user
 from app.db.session import get_db
@@ -20,7 +21,7 @@ _logger = logging.getLogger(__name__)
 def get_settings(
     db: Session = Depends(get_db),
     user_id: int | None = Depends(get_optional_user),
-):
+) -> Any:
     """Return the current app settings, initializing defaults on first access."""
     settings = settings_service.get_or_create_settings(db)
     # Keep pre-bootstrap behavior (no jwt secret yet), but require auth after OOBE.
@@ -34,16 +35,14 @@ def put_settings(
     payload: AppSettingsUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    user=require_role("admin"),
-):
+    user: Any = require_role("admin"),
+) -> Any:
     """Merge-update app settings. Only supplied fields are changed."""
     result = settings_service.update_settings(db, payload, user_id=user.id)
     if payload.rate_limit_profile is not None:
         from app.core.rate_limit import invalidate_rate_limit_profile_cache
 
         invalidate_rate_limit_profile_cache()
-    from app.core.audit import log_audit
-
     log_audit(
         db, request, user_id=user.id, action="settings_update", resource="settings", status="ok"
     )
@@ -51,17 +50,30 @@ def put_settings(
 
 
 @router.post("/reset", response_model=AppSettingsRead)
-def reset_settings(db: Session = Depends(get_db), _=require_role("admin")):
+def reset_settings(
+    request: Request, db: Session = Depends(get_db), user: Any = require_role("admin")
+) -> Any:
     """Reset all settings to factory defaults."""
-    return settings_service.reset_settings(db)
+    result = settings_service.reset_settings(db)
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="settings_reset",
+        resource="settings",
+        status="ok",
+        severity="warn",
+    )
+    return result
 
 
 @router.patch("/smtp", response_model=AppSettingsRead)
 def patch_smtp(
     payload: SmtpUpdate,
+    request: Request,
     db: Session = Depends(get_db),
-    _=require_role("admin"),
-):
+    user: Any = require_role("admin"),
+) -> Any:
     """Update SMTP configuration fields only; auto-encrypts password.
 
     Auto-enables SMTP when the caller provides a host and from-email but
@@ -73,15 +85,25 @@ def patch_smtp(
     has_from = bool((data.get("smtp_from_email") or "").strip())
     if has_host and has_from and "smtp_enabled" not in data:
         payload.smtp_enabled = True
-    return settings_service.update_settings(db, payload)  # type: ignore[arg-type]
+    result = settings_service.update_settings(db, payload)  # type: ignore[arg-type]
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="smtp_settings_updated",
+        resource="settings",
+        status="ok",
+    )
+    return result
 
 
 @router.post("/smtp/test")
 async def test_smtp(
     send_to: str | None = Query(default=None),
+    request: Request = None,
     db: Session = Depends(get_db),
-    _=require_role("admin"),
-):
+    user: Any = require_role("admin"),
+) -> dict[str, Any]:
     """Test SMTP connectivity and optionally send a test email to send_to."""
     from app.services.smtp_service import SmtpService
 
@@ -100,14 +122,24 @@ async def test_smtp(
     if result["status"] == "ok" and not cfg.smtp_enabled:
         cfg.smtp_enabled = True
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="smtp_test",
+        resource="settings",
+        status="ok",
+    )
     return result
 
 
 @router.get("/oauth", response_model=dict)
-def get_oauth_settings(db: Session = Depends(get_db), _=require_role("admin")):
+def get_oauth_settings(
+    db: Session = Depends(get_db), _: Any = require_role("admin")
+) -> dict[str, Any]:
     settings = get_or_create_settings(db)
-    providers = json.loads(settings.oauth_providers or "{}")
-    oidc_raw = json.loads(settings.oidc_providers or "[]")
+    providers: dict = settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
+    oidc_raw = settings.oidc_providers if isinstance(settings.oidc_providers, (list, dict)) else []
     for p in providers.values():
         p["client_secret_set"] = bool(p.get("client_secret_enc") or p.get("client_secret"))
         p.pop("client_secret", None)
@@ -122,9 +154,14 @@ def get_oauth_settings(db: Session = Depends(get_db), _=require_role("admin")):
 
 
 @router.patch("/oauth")
-def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=require_role("admin")):
+def update_oauth_settings(
+    payload: dict[str, Any],
+    request: Request,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+) -> dict[str, Any]:
     settings = get_or_create_settings(db)
-    existing = json.loads(settings.oauth_providers or "{}")
+    existing: dict = settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
     for provider_name, cfg in payload.get("oauth_providers", {}).items():
         if provider_name not in existing:
             existing[provider_name] = {}
@@ -139,11 +176,13 @@ def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=requir
                 existing[provider_name].pop("client_secret", None)
             except Exception as e:
                 _logger.debug("OAuth vault encrypt failed (keeping plain): %s", e, exc_info=True)
-    settings.oauth_providers = json.dumps(existing)
+    settings.oauth_providers = existing
     if "oidc_providers" in payload:
         oidc_raw = payload["oidc_providers"]
         oidc_list = oidc_raw if isinstance(oidc_raw, list) else list(oidc_raw.values())
-        existing_oidc_raw = json.loads(settings.oidc_providers or "[]")
+        existing_oidc_raw = (
+            settings.oidc_providers if isinstance(settings.oidc_providers, (list, dict)) else []
+        )
         existing_oidc = (
             existing_oidc_raw
             if isinstance(existing_oidc_raw, list)
@@ -175,6 +214,14 @@ def update_oauth_settings(payload: dict, db: Session = Depends(get_db), _=requir
                 if prev.get("client_secret_enc"):
                     entry["client_secret_enc"] = prev["client_secret_enc"]
             merged.append(entry)
-        settings.oidc_providers = json.dumps(merged)
+        settings.oidc_providers = merged
     db.commit()
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="oauth_settings_updated",
+        resource="settings",
+        status="ok",
+    )
     return {"status": "ok"}

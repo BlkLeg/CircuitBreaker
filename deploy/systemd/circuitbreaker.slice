@@ -1,0 +1,6 @@
+[Unit]
+Description=Circuit Breaker Service Slice
+
+[Slice]
+MemoryMax=3G
+MemoryHigh=2G

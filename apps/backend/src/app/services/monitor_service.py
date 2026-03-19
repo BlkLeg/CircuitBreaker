@@ -103,7 +103,8 @@ def probe_http(
                 if not _TLS_WARNING_LOGGED:
                     _TLS_WARNING_LOGGED = True
                     logger.warning(
-                        "CB_MONITOR_VERIFY_TLS=false: TLS verification disabled for monitor HTTP probe (insecure; homelab self-signed only)"
+                        "CB_MONITOR_VERIFY_TLS=false: TLS verification disabled for monitor"
+                        " HTTP probe (insecure; homelab self-signed only)"
                     )
             with httpx.Client(verify=verify_tls, timeout=timeout) as client:
                 resp = client.head(url)
@@ -211,8 +212,8 @@ def _get_tcp_ports_for_hardware(db: Session, hardware_id: int) -> list[int]:
     )
     if result and result.open_ports_json:
         try:
-            ports = json.loads(result.open_ports_json)
-            if ports and isinstance(ports[0], dict):
+            ports = result.open_ports_json
+            if ports and isinstance(ports, list) and isinstance(ports[0], dict):
                 return [p["port"] for p in ports if "port" in p]
             return [int(p) for p in ports]
         except Exception:
@@ -226,7 +227,7 @@ def run_monitor(db: Session, monitor: HardwareMonitor) -> None:
     if not hw or not hw.ip_address:
         return
 
-    methods = json.loads(monitor.probe_methods or '["icmp","tcp","http"]')
+    methods = monitor.probe_methods if monitor.probe_methods else ["icmp", "tcp", "http"]
     tcp_ports = _get_tcp_ports_for_hardware(db, monitor.hardware_id)
 
     snmp_community = None
@@ -397,7 +398,7 @@ def create_monitor(
         hardware_id=hardware_id,
         enabled=enabled,
         interval_secs=interval_secs,
-        probe_methods=json.dumps(probe_methods or ["icmp", "tcp", "http"]),
+        probe_methods=probe_methods or ["icmp", "tcp", "http"],
         last_status="unknown",
         consecutive_failures=0,
         created_at=now,
@@ -425,7 +426,7 @@ def update_monitor(
     if interval_secs is not None:
         monitor.interval_secs = interval_secs
     if probe_methods is not None:
-        monitor.probe_methods = json.dumps(probe_methods)
+        monitor.probe_methods = probe_methods
     monitor.updated_at = utcnow_iso()
     db.commit()
     db.refresh(monitor)

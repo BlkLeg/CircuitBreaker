@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -26,7 +26,7 @@ def list_hardware(
     tag: Annotated[str | None, Query()] = None,
     role: Annotated[str | None, Query()] = None,
     q: Annotated[str | None, Query()] = None,
-):
+) -> list[Any]:
     return hardware_service.list_hardware(db, tag=tag, role=role, q=q)
 
 
@@ -41,7 +41,7 @@ def create_hardware(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user_id: Annotated[int | None, Depends(require_write_auth)] = None,
-):
+) -> Any:
     try:
         result = hardware_service.create_hardware(db, payload)
         log_audit(
@@ -59,13 +59,13 @@ def create_hardware(
 
 
 @router.get("/orphans")
-def get_orphans(db: Annotated[Session, Depends(get_db)]):
+def get_orphans(db: Annotated[Session, Depends(get_db)]) -> list[Any]:
     """CB-PATTERN-003: Hardware with no compute_units, services, or storage."""
     return hardware_service.find_orphans(db)
 
 
 @router.get("/groups")
-def get_groups(db: Annotated[Session, Depends(get_db)]):
+def get_groups(db: Annotated[Session, Depends(get_db)]) -> list[Any]:
     """CB-PATTERN-004: Hardware grouped by vendor+model with counts."""
     return hardware_service.list_hardware_groups(db)
 
@@ -75,7 +75,7 @@ def get_groups(db: Annotated[Session, Depends(get_db)]):
     response_model=Hardware,
     responses={404: {"description": "Hardware not found."}},
 )
-def get_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)]):
+def get_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)]) -> Any:
     try:
         return hardware_service.get_hardware(db, hardware_id)
     except ValueError as exc:
@@ -89,7 +89,7 @@ def replace_hardware(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user_id: Annotated[int | None, Depends(require_write_auth)] = None,
-):
+) -> Any:
     update = HardwareUpdate(**payload.model_dump())
     try:
         result = hardware_service.update_hardware(db, hardware_id, update)
@@ -116,7 +116,7 @@ def patch_hardware(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user_id: Annotated[int | None, Depends(require_write_auth)] = None,
-):
+) -> Any:
     try:
         result = hardware_service.update_hardware(db, hardware_id, payload)
         log_audit(
@@ -141,7 +141,7 @@ def delete_hardware(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user_id: Annotated[int | None, Depends(require_write_auth)] = None,
-):
+) -> None:
     try:
         hardware_service.delete_hardware(db, hardware_id)
         log_audit(
@@ -162,7 +162,7 @@ def delete_hardware(
 
 
 @router.get("/{hardware_id}/network-memberships")
-def get_network_memberships(hardware_id: int, db: Annotated[Session, Depends(get_db)]):
+def get_network_memberships(hardware_id: int, db: Annotated[Session, Depends(get_db)]) -> list[Any]:
     """Return all networks this hardware node is directly a member of."""
     try:
         hardware_service.get_hardware(db, hardware_id)  # 404 guard
@@ -172,7 +172,9 @@ def get_network_memberships(hardware_id: int, db: Annotated[Session, Depends(get
 
 
 @router.get("/{hardware_id}/clusters")
-def get_clusters_for_hardware(hardware_id: int, db: Annotated[Session, Depends(get_db)]):
+def get_clusters_for_hardware(
+    hardware_id: int, db: Annotated[Session, Depends(get_db)]
+) -> list[Any]:
     """Return all hardware clusters this hardware belongs to."""
     try:
         hardware_service.get_hardware(db, hardware_id)  # 404 guard
@@ -185,7 +187,7 @@ def get_clusters_for_hardware(hardware_id: int, db: Annotated[Session, Depends(g
 def get_hardware_ports(hardware_id: int, db: Annotated[Session, Depends(get_db)]) -> list[dict]:
     try:
         hw = hardware_service.get_hardware(db, hardware_id)
-        return hw.get("port_map", [])
+        return cast(list[dict], hw.get("port_map", []))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -229,7 +231,7 @@ def update_hardware_ports(
         updated_hw = hardware_service.update_hardware(
             db, hardware_id, HardwareUpdate(port_map=payload)
         )
-        return updated_hw.get("port_map", [])
+        return cast(list[dict], updated_hw.get("port_map", []))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:
@@ -250,7 +252,7 @@ async def create_hardware_connection(
     payload: HardwareConnectionCreate,
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, Depends(require_write_auth)] = None,
-):
+) -> Any:
     """Create a direct physical connection between two hardware nodes."""
     try:
         conn = hardware_service.add_hardware_connection(db, hardware_id, payload.target_hardware_id)
@@ -291,7 +293,7 @@ async def delete_hardware_connection(
     connection_id: int,
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, Depends(require_write_auth)] = None,
-):
+) -> None:
     """Delete a hardware-to-hardware connection by its ID."""
     from app.core.nats_client import nats_client
     from app.core.subjects import TOPOLOGY_CABLE_REMOVED

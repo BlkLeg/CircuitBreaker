@@ -9,7 +9,11 @@ import '../../styles/discovery.css';
 
 const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'docker', 'proxmox'];
 
-const CRON_RE = /^(\S+\s+){4,5}\S+$/;
+const isValidCron = (val) => {
+  if (!val) return false;
+  const parts = val.trim().split(/\s+/);
+  return parts.length === 5 || parts.length === 6;
+};
 const CIDR_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/;
 
 export default function ScanProfileForm({ profile, onClose, onSaved }) {
@@ -103,8 +107,9 @@ export default function ScanProfileForm({ profile, onClose, onSaved }) {
     const errs = {};
     if (!name.trim()) errs.name = 'Name is required';
     if (!CIDR_RE.test(cidr)) errs.cidr = 'Enter a valid CIDR (e.g. 192.168.1.0/24)';
-    if (schedule && !CRON_RE.test(schedule.trim()))
+    if (schedule && !isValidCron(schedule)) {
       errs.schedule = 'Enter a valid cron expression (5 or 6 fields)';
+    }
     return errs;
   };
 

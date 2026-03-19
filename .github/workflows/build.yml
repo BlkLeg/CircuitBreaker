@@ -1,0 +1,76 @@
+name: Build Packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string (e.g. 0.1.3). Defaults to dev-<sha>."
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build deps
+        run: bash scripts/install-build-deps.sh
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Build frontend
+        run: cd apps/frontend && npm ci && npm run build
+
+      - name: Build packages
+        run: |
+          .venv/bin/python scripts/build_native_release.py \
+            --version "${{ steps.ver.outputs.version }}" \
+            --clean
+
+      - name: List artifacts
+        run: ls -lh dist/native/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/native/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,22 @@
+[Unit]
+Description=Circuit Breaker pgbouncer
+After=circuitbreaker-postgres.service
+Requires=circuitbreaker-postgres.service
+
+[Service]
+Type=simple
+User=postgres
+Slice=circuitbreaker.slice
+ExecStart=/usr/sbin/pgbouncer /etc/pgbouncer/pgbouncer.ini
+ExecReload=/bin/kill -HUP \$MAINPID
+RuntimeDirectory=pgbouncer
+RuntimeDirectoryMode=0755
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-pgbouncer
+
+[Install]
+WantedBy=multi-user.target

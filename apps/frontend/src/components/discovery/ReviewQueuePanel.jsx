@@ -227,10 +227,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
     getPendingResults({ limit: 200 })
       .then((res) => {
         const items = Array.isArray(res.data) ? res.data : (res.data?.results ?? []);
-        const count = res.data?.total ?? items.length;
         setResults(items);
-        setTotal(count);
-        onCountChange?.(count);
         setLocalEdits((prev) => {
           const next = new Map(prev);
           for (const r of items) {
@@ -254,7 +251,12 @@ export default function ReviewQueuePanel({ onCountChange }) {
         console.error('Failed to fetch pending discovery results:', err);
       })
       .finally(() => setLoading(false));
-  }, [onCountChange]);
+  }, []);
+
+  useEffect(() => {
+    setTotal(results.length);
+    onCountChange?.(results.length);
+  }, [results.length, onCountChange]);
 
   useEffect(() => {
     load();
@@ -269,35 +271,19 @@ export default function ReviewQueuePanel({ onCountChange }) {
     return () => document.removeEventListener('keydown', handler);
   }, [pendingAccept]);
 
-  const removeResult = useCallback(
-    (id) => {
-      setResults((prev) => {
-        const next = prev.filter((r) => r.id !== id);
-        setTotal(next.length);
-        onCountChange?.(next.length);
-        return next;
-      });
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    },
-    [onCountChange]
-  );
+  const removeResult = useCallback((id) => {
+    setResults((prev) => prev.filter((r) => r.id !== id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
-  const removeResults = useCallback(
-    (ids) => {
-      setResults((prev) => {
-        const next = prev.filter((r) => !ids.has(r.id));
-        setTotal(next.length);
-        onCountChange?.(next.length);
-        return next;
-      });
-      setSelectedIds(new Set());
-    },
-    [onCountChange]
-  );
+  const removeResults = useCallback((ids) => {
+    setResults((prev) => prev.filter((r) => !ids.has(r.id)));
+    setSelectedIds(new Set());
+  }, []);
 
   const setEdit = (id, field, value) => {
     setLocalEdits((prev) => {

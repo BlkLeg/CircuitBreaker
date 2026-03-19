@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import signal
+from collections.abc import Awaitable, Callable
 
 from app.core.nats_client import nats_client
 
 logger = logging.getLogger(__name__)
 
 
-async def run_with_graceful_shutdown(worker_loop_coro):
+async def run_with_graceful_shutdown(
+    worker_loop_coro: Callable[[asyncio.Event], Awaitable[None]],
+) -> None:
     """
     Wraps a worker's main loop with standard SIGTERM/SIGINT handling.
     The worker_loop_coro should accept a shutdown_event argument and
@@ -16,7 +19,7 @@ async def run_with_graceful_shutdown(worker_loop_coro):
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
 
-    def sigterm_handler():
+    def sigterm_handler() -> None:
         logger.info("SIGTERM received, shutting down gracefully...")
         shutdown_event.set()
 
@@ -33,7 +36,7 @@ async def run_with_graceful_shutdown(worker_loop_coro):
         await shutdown()
 
 
-async def shutdown():
+async def shutdown() -> None:
     """Shared teardown logic for workers."""
     if nats_client.is_connected:
         await nats_client.disconnect()

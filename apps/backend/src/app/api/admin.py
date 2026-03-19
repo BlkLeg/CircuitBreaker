@@ -25,7 +25,9 @@ def _dt(v: Any) -> str | None:
     """Convert datetime to ISO string; pass through strings or None."""
     if isinstance(v, datetime):
         return v.isoformat()
-    return v
+    if isinstance(v, str):
+        return v
+    return None
 
 
 def _hw_to_dict(r: models.Hardware) -> dict:
@@ -245,7 +247,7 @@ def _svc_ext_to_dict(r: models.ServiceExternalNode) -> dict:
 @router.get("/export")
 def export_backup(
     db: Annotated[Session, Depends(get_db)], _: Annotated[None, require_role("admin")] = None
-):
+) -> dict[str, Any]:
     """Export a full JSON snapshot of all entities, tags, docs, and relationships.
 
     Does NOT export: users, app_settings, audit logs, or graph layouts — these are
@@ -355,7 +357,7 @@ def import_backup(
     payload: ImportPayload,
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> dict[str, Any]:
     """Restore a backup snapshot.
 
     Set ``wipe_before_import=true`` to delete all current entity data before
@@ -420,7 +422,7 @@ def _wipe_entities_keep_docs(db: Session) -> None:
 )
 def clear_lab(
     db: Annotated[Session, Depends(get_db)], _: Annotated[None, require_role("admin")] = None
-):
+) -> dict[str, Any]:
     """Wipe all lab entities (hardware, compute, services, storage, networks, misc,
     clusters, external nodes, tags, and their relationships) while preserving all
     documents and their content.
@@ -455,7 +457,7 @@ def recent_changes(
     db: Annotated[Session, Depends(get_db)],
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> list[dict[str, Any]]:
     """Return the *limit* most-recent actions across supported entity types."""
     rows = (
         db.query(models.Log)

@@ -12,7 +12,7 @@ import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import VulnerabilityPanel from './VulnerabilityPanel';
 
-function ComputeDetail({ compute, isOpen, onClose }) {
+function ComputeDetail({ compute = null, isOpen, onClose }) {
   const toast = useToast();
   const [activeTab, setActiveTab] = useState('overview');
   const [services, setServices] = useState([]);
@@ -503,10 +503,6 @@ ComputeDetail.propTypes = {
   }),
   isOpen: PropTypes.bool.isRequired,
   onClose: PropTypes.func.isRequired,
-};
-
-ComputeDetail.defaultProps = {
-  compute: null,
 };
 
 export default ComputeDetail;

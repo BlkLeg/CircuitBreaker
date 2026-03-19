@@ -59,10 +59,11 @@ def record_session(
         .scalars()
         .all()
     )
+    active = list(active)
     limit = getattr(cfg, "concurrent_sessions", 5)
     while len(active) >= limit:
-        oldest = active.pop(0)  # type: ignore[attr-defined]
-        oldest.revoked = True  # type: ignore[attr-defined]
+        oldest = active.pop(0)
+        oldest.revoked = True
         db.flush()
 
     session = UserSession(

@@ -47,9 +47,6 @@ def log_audit(
         severity:  ``"info"`` | ``"warn"`` | ``"error"``.
     """
     try:
-        from app.core.time import utcnow
-        from app.db.models import Log
-
         ip: str | None = None
         ua: str | None = None
         if request is not None:
@@ -73,36 +70,34 @@ def log_audit(
                 _logger.debug(
                     "Audit: could not resolve actor for user_id=%s: %s", user_id, e, exc_info=True
                 )
+        elif request is None:
+            # Action triggered by system (e.g. background job)
+            actor_email = "system"
+            actor_name = "system"
+        else:
+            # Action triggered by unauthenticated request (e.g. login)
+            actor_email = "anonymous"
+            actor_name = "anonymous"
 
-        # Check the global hide-IP setting.
-        redact_ip = False
-        try:
-            from app.services.settings_service import get_or_create_settings
+        from app.services.log_service import write_log
 
-            cfg = get_or_create_settings(db)
-            redact_ip = getattr(cfg, "audit_log_hide_ip", False)
-        except Exception as e:
-            _logger.debug("Audit: could not load hide-IP setting: %s", e, exc_info=True)
-
-        now = utcnow()
-        entry = Log(
-            timestamp=now,
-            level=severity,
+        # Use db=None to force write_log to use its own session.
+        # This avoids deadlocks in tests where the handler's session might be
+        # part of a transacted fixture, while write_log needs to commit.
+        write_log(
+            db=None,
+            action=action,
+            entity_type=resource or None,
+            actor_name=actor_name or "",
+            actor_id=user_id,
+            ip_address=ip,
             severity=severity,
             category="audit",
-            action=action,
-            actor=actor_email,
-            actor_id=user_id,
-            actor_name=actor_name,
-            actor_gravatar_hash=actor_gravatar_hash,
-            entity_type=resource or None,
-            ip_address=None if redact_ip else ip,
             user_agent=ua,
             details=f"status={status}" + (f" | {details}" if details else ""),
-            created_at_utc=now.isoformat(),
+            actor=actor_email,
+            actor_gravatar_hash=actor_gravatar_hash,
         )
-        db.add(entry)
-        db.commit()
     except Exception as e:
         # Audit logging must never crash the request it decorates.
         _logger.debug("Audit log write failed: %s", e, exc_info=True)

@@ -14,7 +14,7 @@ import { sanitizeImageSrc } from '../utils/validation.js';
 
 // ── Actor avatar ──────────────────────────────────────────────────────────────────────────────
 
-function ActorAvatar({ actor, profilePhotoUrl, gravatarHash, size = 20 }) {
+function ActorAvatar({ actor = null, profilePhotoUrl = null, gravatarHash = null, size = 20 }) {
   const [photoBroken, setPhotoBroken] = useState(false);
   const [gravatarBroken, setGravatarBroken] = useState(false);
 
@@ -79,13 +79,6 @@ ActorAvatar.propTypes = {
   profilePhotoUrl: PropTypes.string,
   gravatarHash: PropTypes.string,
   size: PropTypes.number,
-};
-
-ActorAvatar.defaultProps = {
-  actor: null,
-  profilePhotoUrl: null,
-  gravatarHash: null,
-  size: 20,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────────────────
@@ -244,7 +237,7 @@ function getDisplayKeys(before, after) {
     : [...keys];
 }
 
-function DiffTable({ diffStr, oldValueStr, newValueStr }) {
+function DiffTable({ diffStr = null, oldValueStr = null, newValueStr = null }) {
   const { before, after } = parseBeforeAfter(diffStr, oldValueStr, newValueStr);
 
   if (before === null && after === null) return null;
@@ -342,13 +335,7 @@ DiffTable.propTypes = {
   newValueStr: PropTypes.string,
 };
 
-DiffTable.defaultProps = {
-  diffStr: null,
-  oldValueStr: null,
-  newValueStr: null,
-};
-
-function JsonBlock({ value }) {
+function JsonBlock({ value = null }) {
   if (!value) return null;
   let display = value;
   try {
@@ -379,10 +366,6 @@ function JsonBlock({ value }) {
 
 JsonBlock.propTypes = {
   value: PropTypes.string,
-};
-
-JsonBlock.defaultProps = {
-  value: null,
 };
 
 function getEntityName(log) {
@@ -538,7 +521,15 @@ ExpandedContent.propTypes = {
   log: PropTypes.object.isRequired,
 };
 
-function LogRow({ log, expanded, onToggle, navigate, isAdmin, revealed, onToggleReveal }) {
+function LogRow({
+  log,
+  expanded,
+  onToggle,
+  navigate,
+  isAdmin = false,
+  revealed = false,
+  onToggleReveal = () => {},
+}) {
   const color = actionColor(log.action);
   const isLoginFailed = log.action === 'login_failed';
   const hasDiff = !!(log.diff || log.old_value || log.new_value);
@@ -716,12 +707,6 @@ LogRow.propTypes = {
   onToggleReveal: PropTypes.func,
 };
 
-LogRow.defaultProps = {
-  isAdmin: false,
-  revealed: false,
-  onToggleReveal: () => {},
-};
-
 // ── Virtualized table (used when > 50 rows to avoid DOM bloat) ────────────────────────────────
 
 const LOG_ROW_ESTIMATE_PX = 44;
@@ -729,16 +714,16 @@ const LOG_ROW_ESTIMATE_PX = 44;
 function LogsVirtualTable({
   logs,
   loading,
-  expandedId,
+  expandedId = null,
   setExpandedId,
   timestampSort,
   setTimestampSort,
   navigate,
   tableContainerRef,
-  isAdmin,
-  revealedIps,
-  onToggleRevealIp,
-  onRevealAll,
+  isAdmin = false,
+  revealedIps = new Set(),
+  onToggleRevealIp = () => {},
+  onRevealAll = () => {},
 }) {
   const useVirtual = logs.length > 50;
 
@@ -865,14 +850,6 @@ LogsVirtualTable.propTypes = {
   revealedIps: PropTypes.instanceOf(Set),
   onToggleRevealIp: PropTypes.func,
   onRevealAll: PropTypes.func,
-};
-
-LogsVirtualTable.defaultProps = {
-  expandedId: null,
-  isAdmin: false,
-  revealedIps: new Set(),
-  onToggleRevealIp: () => {},
-  onRevealAll: () => {},
 };
 // ── Main Page ───────────────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=Circuit Breaker NATS JetStream
+After=network.target
+
+[Service]
+Type=simple
+User=breaker
+Slice=circuitbreaker.slice
+ExecStart=/usr/local/bin/nats-server -c /etc/nats/nats.conf
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+MemoryMax=512M
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-nats
+
+[Install]
+WantedBy=multi-user.target

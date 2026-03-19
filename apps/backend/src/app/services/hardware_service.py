@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 
@@ -9,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.core.time import utcnow
 from app.db.models import (  # noqa: F401 (Service used for reactive cascade)
     ComputeUnit,
+    Doc,
+    EntityDoc,
     EntityTag,
     Hardware,
     HardwareClusterMember,
@@ -79,31 +80,30 @@ def get_tags_for(db: Session, entity_type: str, entity_id: int) -> list[str]:
     return [row.tag.name for row in rows]
 
 
+def _get_documents_for(db: Session, entity_type: str, entity_id: int) -> list[dict]:
+    rows = db.execute(
+        select(Doc.id, Doc.title, Doc.category, Doc.icon)
+        .join(EntityDoc, EntityDoc.doc_id == Doc.id)
+        .where(EntityDoc.entity_type == entity_type, EntityDoc.entity_id == entity_id)
+        .order_by(Doc.updated_at.desc())
+    ).all()
+    return [
+        {
+            "id": doc_id,
+            "title": title,
+            "category": category,
+            "icon": icon,
+        }
+        for doc_id, title, category, icon in rows
+    ]
+
+
 def _to_dict(db: Session, hw: Hardware) -> dict:
     d = {c.name: getattr(hw, c.name) for c in hw.__table__.columns}
     d["tags"] = get_tags_for(db, "hardware", hw.id)
-    # Deserialize JSON text columns into dicts for API responses
-    if isinstance(d.get("telemetry_config"), str):
-        try:
-            d["telemetry_config"] = json.loads(d["telemetry_config"])
-        except (json.JSONDecodeError, TypeError):
-            d["telemetry_config"] = None
-    if isinstance(d.get("telemetry_data"), str):
-        try:
-            d["telemetry_data"] = json.loads(d["telemetry_data"])
-        except (json.JSONDecodeError, TypeError):
-            d["telemetry_data"] = {}
-
-    # Deserialize networking extensions (v0.1.7)
-    for field in ("wifi_standards", "wifi_bands", "port_map_json"):
-        if isinstance(d.get(field), str):
-            try:
-                d[field] = json.loads(d[field])
-            except (json.JSONDecodeError, TypeError):
-                d[field] = [] if field != "port_map_json" else []
 
     # Expose port_map_json as port_map in the API
-    d["port_map"] = d.pop("port_map_json", [])
+    d["port_map"] = d.pop("port_map_json", []) or []
 
     if hw.storage_items:
         total_gb = sum(s.capacity_gb or 0 for s in hw.storage_items)
@@ -120,6 +120,7 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
         d["storage_summary"] = None
     d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
     d["rack_name"] = hw.rack.name if hw.rack else None
+    d["documents"] = _get_documents_for(db, "hardware", hw.id)
     return d
 
 
@@ -212,7 +213,10 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
                 entity_type="hardware",
                 entity_name=payload.name,
                 severity="warn",
-                details=f"IP conflict for {payload.ip_address}: already used by {', '.join(c.entity_name for c in conflicts)}",
+                details=(
+                    f"IP conflict for {payload.ip_address}: already used by"
+                    f" {', '.join(c.entity_name for c in conflicts)}"
+                ),
                 category="crud",
             )
             raise HTTPException(
@@ -257,15 +261,13 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         ).scalar_one_or_none()
         if existing:
             _logger.warning(
-                "Duplicate MAC detected for new hardware %r: conflicts with existing hardware id=%d %r. Saving both (freeform-first).",
+                "Duplicate MAC detected for new hardware %r: conflicts with existing"
+                " hardware id=%d %r. Saving both (freeform-first).",
                 payload.name,
                 existing.id,
                 existing.name,
             )
 
-    telemetry_config_json = None
-    if payload.telemetry_config is not None:
-        telemetry_config_json = payload.telemetry_config.model_dump_json()
     resolved_env_id = resolve_environment_id(db, payload.environment_id, payload.environment)
     hw = Hardware(
         name=payload.name,
@@ -285,17 +287,17 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         model_catalog_key=payload.model_catalog_key,
         u_height=u_height,
         rack_unit=rack_unit,
-        telemetry_config=telemetry_config_json,
+        telemetry_config=(
+            payload.telemetry_config.model_dump() if payload.telemetry_config else None
+        ),
         environment_id=resolved_env_id,
         rack_id=rack_id,
         # v0.1.7: Networking extensions
-        wifi_standards=json.dumps(payload.wifi_standards) if payload.wifi_standards else None,
-        wifi_bands=json.dumps(payload.wifi_bands) if payload.wifi_bands else None,
+        wifi_standards=payload.wifi_standards,
+        wifi_bands=payload.wifi_bands,
         max_tx_power_dbm=payload.max_tx_power_dbm,
         port_count=payload.port_count,
-        port_map_json=json.dumps(
-            [p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]
-        )
+        port_map_json=[p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]
         if payload.port_map
         else None,
         software_platform=payload.software_platform,
@@ -341,24 +343,22 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
                 },
             )
     update_data = payload.model_dump(exclude_unset=True, exclude={"tags", "port_map"})
-    # Serialize TelemetryConfig Pydantic model to JSON string for storage
+    # CB-FIX: Assign dicts directly to JSONB columns (SQLAlchemy handles serialization)
     if "telemetry_config" in payload.model_fields_set and payload.telemetry_config is not None:
         tc = payload.telemetry_config
-        update_data["telemetry_config"] = (
-            tc.model_dump_json() if hasattr(tc, "model_dump_json") else json.dumps(tc)
-        )
+        update_data["telemetry_config"] = tc.model_dump() if hasattr(tc, "model_dump") else tc
 
-    # Serialize networking extensions (v0.1.7)
-    if "wifi_standards" in payload.model_fields_set and payload.wifi_standards is not None:
-        update_data["wifi_standards"] = json.dumps(payload.wifi_standards)
-    if "wifi_bands" in payload.model_fields_set and payload.wifi_bands is not None:
-        update_data["wifi_bands"] = json.dumps(payload.wifi_bands)
+    # networking extensions (v0.1.7)
+    if "wifi_standards" in payload.model_fields_set:
+        update_data["wifi_standards"] = payload.wifi_standards
+    if "wifi_bands" in payload.model_fields_set:
+        update_data["wifi_bands"] = payload.wifi_bands
 
     if "port_map" in payload.model_fields_set:
         if payload.port_map is not None:
-            update_data["port_map_json"] = json.dumps(
-                [p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map]
-            )
+            update_data["port_map_json"] = [
+                p.model_dump() if hasattr(p, "model_dump") else p for p in payload.port_map
+            ]
             _sync_port_edges(db, hardware_id, payload.port_map)
         else:
             update_data["port_map_json"] = None
@@ -420,7 +420,7 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         result = resolve_ip_conflict(db, svc.id, svc.ip_address, svc.compute_id, svc.hardware_id)
         svc.ip_mode = result["ip_mode"]
         svc.ip_conflict = result["is_conflict"]
-        svc.ip_conflict_json = json.dumps(result["conflict_with"])
+        svc.ip_conflict_json = result["conflict_with"]
     if affected:
         db.commit()
     # CB-STATE-001: recalculate hardware status (respects status_override)
@@ -437,26 +437,36 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
         raise ValueError(f"Hardware {hardware_id} not found")
     # Block if dependent entities still exist
     blocking: list[str] = []
-    cu_count = len(
-        db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id))
-        .scalars()
-        .all()
+    cu_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(ComputeUnit)
+            .where(ComputeUnit.hardware_id == hardware_id)
+        )
+        or 0
     )
     if cu_count:
         blocking.append(f"{cu_count} compute unit(s)")
-    st_count = len(
-        db.execute(select(Storage).where(Storage.hardware_id == hardware_id)).scalars().all()
+    st_count = (
+        db.scalar(
+            select(func.count()).select_from(Storage).where(Storage.hardware_id == hardware_id)
+        )
+        or 0
     )
     if st_count:
         blocking.append(f"{st_count} storage item(s)")
-    svc_count = len(
-        db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all()
+    svc_count = (
+        db.scalar(
+            select(func.count()).select_from(Service).where(Service.hardware_id == hardware_id)
+        )
+        or 0
     )
     if svc_count:
         blocking.append(f"{svc_count} service(s)")
     if blocking:
         raise ValueError(
-            f"Cannot delete: this hardware has {', '.join(blocking)} assigned to it. Remove them first."
+            f"Cannot delete: this hardware has {', '.join(blocking)} assigned to it."
+            " Remove them first."
         )
     # ── Safe cascades (join/history tables — no user data lost) ──────────────
 

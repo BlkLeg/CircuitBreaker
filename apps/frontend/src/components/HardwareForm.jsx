@@ -3,7 +3,7 @@ import PropTypes from 'prop-types';
 
 import { assetsApi, hardwareApi } from '../api/client';
 
-const HardwareForm = ({ hardware, onUpdated }) => {
+const HardwareForm = ({ hardware, onUpdated = null }) => {
   const [uploading, setUploading] = useState(false);
 
   const uploadIcon = async (file) => {
@@ -50,10 +50,6 @@ HardwareForm.propTypes = {
     custom_icon: PropTypes.string,
   }).isRequired,
   onUpdated: PropTypes.func,
-};
-
-HardwareForm.defaultProps = {
-  onUpdated: null,
 };
 
 export default HardwareForm;

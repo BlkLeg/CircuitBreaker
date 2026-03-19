@@ -1,0 +1,1 @@
+"breaker" "md5${pgbouncer_hash}"

@@ -118,9 +118,11 @@ export default function LegendPanel({ legendOpen, setLegendOpen, includeTypes })
                   marginBottom: 10,
                 }}
               >
-                {Object.entries(NODE_STYLES).map(([type, style]) => {
+                {Array.from(NODE_STYLES.entries()).map(([type, style]) => {
                   const isDockerType = type === 'docker_network' || type === 'docker_container';
-                  const isActive = isDockerType ? includeTypes.docker : includeTypes[type];
+                  const isActive = isDockerType
+                    ? includeTypes.get('docker')
+                    : includeTypes.get(type);
                   return (
                     <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div
@@ -137,7 +139,7 @@ export default function LegendPanel({ legendOpen, setLegendOpen, includeTypes })
                           color: isActive ? 'var(--color-text)' : 'var(--color-text-muted)',
                         }}
                       >
-                        {NODE_TYPE_LABELS[type] || type}
+                        {NODE_TYPE_LABELS.get(type) || type}
                       </span>
                     </div>
                   );

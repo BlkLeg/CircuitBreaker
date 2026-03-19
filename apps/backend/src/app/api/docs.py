@@ -2,6 +2,7 @@ import io
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -26,8 +27,8 @@ _MAX_IMPORT_ZIP_BYTES = 10 * 1024 * 1024  # 10 MB total ZIP
 
 @router.post("/attach", status_code=201)
 def attach_doc(
-    payload: EntityDocAttach, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    payload: EntityDocAttach, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> dict[str, str]:
     try:
         docs_service.attach_doc(db, payload)
         return {"status": "attached"}
@@ -37,8 +38,8 @@ def attach_doc(
 
 @router.delete("/attach", status_code=204)
 def detach_doc(
-    payload: EntityDocAttach, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    payload: EntityDocAttach, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> None:
     try:
         docs_service.detach_doc(db, payload)
     except ValueError as exc:
@@ -50,17 +51,21 @@ def docs_by_entity(
     entity_type: str = Query(...),
     entity_id: int = Query(...),
     db: Session = Depends(get_db),
-):
+) -> Any:
     return docs_service.docs_by_entity(db, entity_type, entity_id)
 
 
 @router.get("", response_model=list[Doc])
-def list_docs(q: str | None = Query(None), db: Session = Depends(get_db)):
+def list_docs(q: str | None = Query(None), db: Session = Depends(get_db)) -> Any:
     return docs_service.list_docs(db, q=q)
 
 
 @router.post("", response_model=Doc, status_code=201)
-def create_doc(payload: DocCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def create_doc(
+    payload: DocCreate,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> Any:
     return docs_service.create_doc(db, payload)
 
 
@@ -113,7 +118,7 @@ def _parse_md_entry(filename: str | None, data: bytes) -> list[tuple[str, str]]:
 def export_docs(
     ids: list[int] | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> StreamingResponse:
     """Export all docs (or a filtered subset by ?ids=1&ids=2) as a ZIP of .md files."""
     data = docs_service.export_docs_zip(db, ids=ids)
     return StreamingResponse(
@@ -127,8 +132,8 @@ def export_docs(
 async def import_docs(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     """Import docs from a .md file or a .zip archive containing .md files."""
     filename = (file.filename or "").lower()
     data = await file.read()
@@ -151,7 +156,7 @@ async def import_docs(
 
 
 @router.get("/{doc_id}", response_model=Doc)
-def get_doc(doc_id: int, db: Session = Depends(get_db)):
+def get_doc(doc_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return docs_service.get_doc(db, doc_id)
     except ValueError as exc:
@@ -159,7 +164,7 @@ def get_doc(doc_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{doc_id}/entities", response_model=list[DocEntityLink])
-def doc_entities(doc_id: int, db: Session = Depends(get_db)):
+def doc_entities(doc_id: int, db: Session = Depends(get_db)) -> Any:
     """Return all entity links for a doc (backlinks panel)."""
     try:
         return docs_service.entities_by_doc(db, doc_id)
@@ -169,8 +174,11 @@ def doc_entities(doc_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{doc_id}", response_model=Doc)
 def patch_doc(
-    doc_id: int, payload: DocUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    doc_id: int,
+    payload: DocUpdate,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return docs_service.update_doc(db, doc_id, payload)
     except ValueError as exc:
@@ -178,7 +186,9 @@ def patch_doc(
 
 
 @router.delete("/{doc_id}", status_code=204)
-def delete_doc(doc_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_doc(
+    doc_id: int, db: Session = Depends(get_db), _: Any = Depends(require_write_auth)
+) -> None:
     try:
         docs_service.delete_doc(db, doc_id)
     except ValueError as exc:
@@ -190,8 +200,8 @@ async def upload_doc_image(
     doc_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> dict[str, str]:
     """Upload an image to embed in a doc. Returns the public URL."""
     # Verify doc exists
     try:

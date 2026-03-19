@@ -1,3 +1,5 @@
+from typing import Any
+
 import psutil
 from fastapi import APIRouter, Depends
 
@@ -7,7 +9,7 @@ router = APIRouter(tags=["system"])
 
 
 @router.get("/stats")
-def get_system_stats(_id: int = Depends(require_write_auth)):
+def get_system_stats(_id: int = Depends(require_write_auth)) -> dict[str, Any]:
     net_io = psutil.net_io_counters()
     return {
         "cpu_pct": psutil.cpu_percent(interval=0.5),

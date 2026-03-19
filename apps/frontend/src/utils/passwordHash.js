@@ -12,6 +12,12 @@ const CIRCUIT_BREAKER_SALT = 'circuitbreaker-salt-v1';
  * @returns {Promise<string>} 64-char hex hash
  */
 export async function hashPasswordForAuth(password, salt = CIRCUIT_BREAKER_SALT) {
+  if (!crypto?.subtle) {
+    throw new Error(
+      'This app requires a secure connection (HTTPS or localhost) to handle passwords. ' +
+        'Please access Circuit Breaker via your configured App URL (Settings → General).'
+    );
+  }
   const encoder = new TextEncoder();
   const data = encoder.encode(password + salt);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);

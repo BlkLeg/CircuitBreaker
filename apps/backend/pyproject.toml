@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "circuit-breaker-backend"
 dynamic = ["version"]
-requires-python = ">=3.11,<4"
+requires-python = ">=3.12,<4"
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
@@ -14,7 +14,8 @@ dependencies = [
     "pydantic-settings>=2.2.0",
     "alembic>=1.13.0",
     "python-multipart>=0.0.9",
-    "PyJWT>=2.8.0",
+    "PyJWT>=2.12.0,<3.0.0",
+    "pyasn1>=0.6.3",
     "bcrypt>=4.0",
     "Pillow>=10.4.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
@@ -51,6 +52,7 @@ analytics = [
     "duckdb-engine>=0.13.0",
 ]
 dev = [
+    "pyinstaller>=6.0.0",
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "pytest-asyncio>=0.23.0",
@@ -67,6 +69,7 @@ dev = [
     "mypy-extensions>=1.0.0",
     "types-bleach>=6.0.0",
     "types-requests>=2.32.0",
+    "types-cachetools>=5.3.0",
 ]
 docs = [
     "zensical>=0.0.24",
@@ -87,8 +90,9 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "Q", "I", "UP"]
-ignore = ["E501", "B008"]
+select = ["E", "F", "I", "UP", "ASYNC"]
+ignore = []
+
 
 [tool.ruff.format]
 quote-style = "double"
@@ -96,7 +100,10 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 
 [tool.mypy]
-python_version = "3.11"
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_return_any = true
+python_version = "3.12"
 # Start permissive: ignore missing stubs for third-party libraries so mypy
 # can be adopted gradually without requiring every dependency to ship py.typed.
 ignore_missing_imports = true
@@ -107,12 +114,25 @@ no_implicit_optional = false
 # Warn on unreachable code; skip unused-ignores to avoid false positives
 # while the codebase is being gradually annotated.
 warn_unreachable = true
-warn_unused_ignores = false
+warn_unused_ignores = true
 # Exclude test fixtures and migration files from strict checks.
 exclude = [
     "tests/",
     "migrations/",
 ]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.discovery_probes",
+    "app.services.discovery_service",
+]
+# python-nmap has no stubs and no py.typed marker. Whether mypy treats
+# `import nmap` as Module or Any depends on how it resolves the package,
+# which changes with environment and cache state. The type: ignore[assignment]
+# on the `nmap = None` fallback is correct when mypy sees a Module type,
+# but triggers [unused-ignore] when mypy infers Any. Disabling
+# warn_unused_ignores here keeps the ignore stable in both environments.
+warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 module = [

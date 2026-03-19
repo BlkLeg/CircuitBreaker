@@ -60,9 +60,11 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const defaultCidr = settings?.discovery_default_cidr || '';
   const defaultNmapArgs = settings?.discovery_nmap_args || '-sV -O --open -T4';
 
-  const [scanMode, setScanMode] = useState('safe');
+  const [scanMode, setScanMode] = useState(() => settings?.discovery_mode || 'safe');
   const [cidrs, setCidrs] = useState([defaultCidr || '']);
-  const [scanTypes, setScanTypes] = useState(['snmp', 'http']);
+  const [scanTypes, setScanTypes] = useState(() =>
+    settings?.discovery_mode === 'full' ? ['nmap', 'snmp', 'http'] : ['snmp', 'http']
+  );
   const [nmapArgs, setNmapArgs] = useState(defaultNmapArgs);
   const [ports, setPorts] = useState('');
   const [snmpCom, setSnmpCom] = useState('');

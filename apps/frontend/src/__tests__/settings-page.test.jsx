@@ -259,9 +259,9 @@ describe('SettingsPage', () => {
     });
 
     // Check settings nav has tabs rendered
-    expect(screen.getByText('General')).toBeInTheDocument();
-    expect(screen.getByText('Appearance')).toBeInTheDocument();
-    expect(screen.getByText('Security')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^General$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Appearance$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Security$/ })).toBeInTheDocument();
   });
 
   it('displays the current tab label as heading', async () => {
@@ -269,7 +269,7 @@ describe('SettingsPage', () => {
 
     await waitFor(() => {
       // Default active tab is 'general', so the heading should show General
-      expect(screen.getByText('General')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /^General$/ })).toBeInTheDocument();
     });
   });
 

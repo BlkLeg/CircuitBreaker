@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import CVEEntry  # noqa: F401 — ensure model metadata is loaded
 
@@ -40,7 +42,7 @@ cve_engine = create_engine(
 
 
 @event.listens_for(cve_engine, "connect")
-def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+def _set_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -73,7 +75,7 @@ def _is_existing_table_race(exc: OperationalError) -> bool:
     return inspect(cve_engine).has_table(CVEEntry.__tablename__)
 
 
-def get_cve_db():
+def get_cve_db() -> Generator[Session, None, None]:
     """FastAPI dependency: yields a CVE database session."""
     db = CVESessionLocal()
     try:

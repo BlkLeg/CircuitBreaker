@@ -79,7 +79,13 @@ function getEntitySub(entity, type) {
  *   onClose     — close without changes
  *   onLinked    — called after a successful attach/detach to trigger refresh
  */
-function DocLinkModalContent({ docId, docTitle, existingLinks = [], onClose, onLinked }) {
+function DocLinkModalContent({
+  docId,
+  docTitle,
+  existingLinks = [],
+  onClose,
+  onLinked = undefined,
+}) {
   const toast = useToast();
   const [activeType, setActiveType] = useState(ENTITY_TYPES[0].key);
   const [items, setItems] = useState([]);
@@ -276,11 +282,6 @@ DocLinkModalContent.propTypes = {
   ),
   onClose: PropTypes.func.isRequired,
   onLinked: PropTypes.func,
-};
-
-DocLinkModalContent.defaultProps = {
-  existingLinks: [],
-  onLinked: undefined,
 };
 
 export default DocLinkModalContent;

@@ -39,8 +39,8 @@ async def check_for_update(current_version: str) -> str | None:
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            latest = data.get("tag_name", "")
-            if _parse_version(latest) > _parse_version(current_version):
+            latest = str(data.get("tag_name", ""))
+            if latest and _parse_version(latest) > _parse_version(current_version):
                 return latest
     except Exception:
         # Never let update check break the app

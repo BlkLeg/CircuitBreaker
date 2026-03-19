@@ -210,7 +210,7 @@ def _publish_renewal(cert: Certificate) -> None:
     """Publish renewed cert to Redis for real-time consumers."""
     import asyncio
 
-    async def _pub():
+    async def _pub() -> None:
         from app.core.redis import get_redis
 
         r = await get_redis()
@@ -230,7 +230,7 @@ def _publish_renewal(cert: Certificate) -> None:
         pass
 
 
-async def check_and_renew_expiring(db: Session) -> int:
+def check_and_renew_expiring(db: Session) -> int:
     """Check all auto_renew certs expiring within 30 days and renew them.
 
     Returns the count of renewed certificates.

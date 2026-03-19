@@ -28,6 +28,27 @@ const BACKOFF_MULTIPLIER = 1.5;
 
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
+function closeSocketSafely(socket) {
+  if (!socket) return;
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.addEventListener(
+      'open',
+      () => {
+        try {
+          socket.close();
+        } catch {
+          // Ignore late-close failures during teardown.
+        }
+      },
+      { once: true }
+    );
+    return;
+  }
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.close();
+  }
+}
+
 export function getTelemetryWsUrl(locationLike = globalThis.location) {
   const proto = locationLike.protocol === 'https:' ? 'wss' : 'ws';
   const host = locationLike.host;
@@ -43,6 +64,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
   const attemptRef = useRef(0);
   const retryTimerRef = useRef(null);
   const intentionalRef = useRef(false);
+  const handshakeCompleteRef = useRef(false);
   const entityIdsRef = useRef(entityIds);
   entityIdsRef.current = entityIds;
 
@@ -61,6 +83,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
 
   const connect = useCallback(() => {
     clearRetry();
+    intentionalRef.current = false;
 
     if (
       wsRef.current &&
@@ -74,6 +97,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
 
     const ws = new WebSocket(getTelemetryWsUrl());
     wsRef.current = ws;
+    handshakeCompleteRef.current = false;
 
     ws.onopen = () => {
       if (token && token !== 'cookie' && token.length > 10) {
@@ -92,6 +116,7 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
       if (msg.status === 'connected') {
         setConnected(true);
         attemptRef.current = 0;
+        handshakeCompleteRef.current = true;
         sendSubscriptions(ws, entityIdsRef.current);
         return;
       }
@@ -99,13 +124,14 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
       if (msg.error && HARD_STOP_ERRORS.has(msg.error)) {
         setConnected(false);
         intentionalRef.current = true;
-        ws.close();
+        closeSocketSafely(ws);
         return;
       }
 
       if (msg.error === 'connection_limit_exceeded') {
         setConnected(false);
-        ws.close();
+        intentionalRef.current = false;
+        closeSocketSafely(ws);
         retryTimerRef.current = setTimeout(() => {
           attemptRef.current = 0;
           connect();
@@ -149,7 +175,13 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
       retryTimerRef.current = setTimeout(connect, delay);
     };
 
-    ws.onerror = () => ws.close();
+    ws.onerror = () => {
+      // Defensive: explicitly ensure onclose fires even if browser doesn't trigger it.
+      // This covers pre-handshake errors where the close chain may be unreliable.
+      if (wsRef.current === ws && ws.readyState !== WebSocket.CLOSED) {
+        closeSocketSafely(ws);
+      }
+    };
   }, [clearRetry, user, token, sendSubscriptions]);
 
   // Connect on mount, reconnect on visibility change
@@ -173,7 +205,8 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
       document.removeEventListener('visibilitychange', onVisibility);
       clearRetry();
       intentionalRef.current = true;
-      wsRef.current?.close();
+      handshakeCompleteRef.current = false;
+      closeSocketSafely(wsRef.current);
     };
   }, [connect, clearRetry]);
 

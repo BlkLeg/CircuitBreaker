@@ -149,9 +149,24 @@ function OOBEWizardPage({ onCompleted }) {
     return { active: true, isHttps, httpsOrigin, certUrl };
   }, []);
 
-  const openCertificateDownload = useCallback(() => {
+  const openCertificateDownload = useCallback(async () => {
     if (!_caddyDetection.active) return;
-    globalThis.open(_caddyDetection.certUrl, '_blank', 'noopener,noreferrer');
+    try {
+      const response = await fetch(_caddyDetection.certUrl);
+      if (!response.ok) throw new Error('Failed to fetch certificate');
+      const blob = await response.blob();
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'circuitbreaker.crt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Error downloading certificate:', err);
+    }
   }, [_caddyDetection]);
 
   // Auto-populate external app URL when running behind Caddy and field is empty.

@@ -13,7 +13,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { telemetryApi, docsApi } from '../../api/client';
+import { telemetryApi, docsApi, servicesApi } from '../../api/client';
 
 function formatSpeedLabel(mbps) {
   const value = Number(mbps) || 0;
@@ -109,7 +109,7 @@ function DocRow({ doc, expanded, onToggle }) {
           {truncated}
         </span>
         <a
-          href={`/docs?id=${doc.id}`}
+          href={`/docs?docId=${doc.id}`}
           target="_blank"
           rel="noopener noreferrer"
           style={{ color: 'var(--color-text-muted)' }}
@@ -152,7 +152,10 @@ const ENTITY_TYPE_MAP = {
   hardware: 'hardware',
   compute: 'compute_unit',
   compute_unit: 'compute_unit',
+  virtual_machine: 'compute_unit',
+  docker_container: 'compute_unit',
   storage: 'storage',
+  service: 'service',
 };
 
 function formatTelemetryRate(bytes) {
@@ -166,6 +169,7 @@ function formatTelemetryRate(bytes) {
 function SidebarTelemetryBlock({ node }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [discoveryData, setDiscoveryData] = useState(null);
   const hasProxmox = node?.data?.integration_config_id != null;
   const entityType = ENTITY_TYPE_MAP[node?.originalType] || null;
   const entityId = node?._refId;
@@ -190,7 +194,26 @@ function SidebarTelemetryBlock({ node }) {
     };
   }, [hasProxmox, entityType, entityId]);
 
-  if (!hasProxmox || !entityType) return null;
+  useEffect(() => {
+    if (node?.originalType !== 'service' || !entityId) {
+      setDiscoveryData(null);
+      return;
+    }
+    let cancelled = false;
+    servicesApi
+      .getDiscovery(entityId)
+      .then((res) => {
+        if (!cancelled) setDiscoveryData(res);
+      })
+      .catch(() => {
+        if (!cancelled) setDiscoveryData(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [node?.originalType, entityId]);
+
+  if (!hasProxmox && node?.originalType !== 'service') return null;
 
   if (loading) {
     return (
@@ -224,13 +247,30 @@ function SidebarTelemetryBlock({ node }) {
     data.disk_used_gb ??
     (data.rootfs_used != null ? +(data.rootfs_used / 1073741824).toFixed(1) : null);
   const diskTotal =
-    data.disk_total_gb ??
-    (data.rootfs_total != null ? +(data.rootfs_total / 1073741824).toFixed(1) : null);
+    data?.disk_total_gb ??
+    (data?.rootfs_total != null ? +(data.rootfs_total / 1073741824).toFixed(1) : null);
   const statusLabel =
-    data.status === 'active' || data.status === 'running' ? 'Running' : data.status || 'Unknown';
+    data?.status === 'active' || data?.status === 'running' ? 'Running' : data?.status || null;
 
   const rows = [];
   if (statusLabel) rows.push({ label: 'Status', value: statusLabel });
+
+  // Add Docker specific rows
+  if (discoveryData?.docker) {
+    const d = discoveryData.docker;
+    if (d.error) {
+      rows.push({ label: 'Docker Error', value: d.error });
+    } else {
+      rows.push({ label: 'Docker Status', value: d.status || d.raw_status || 'unknown' });
+      if (d.cpu_pct != null) rows.push({ label: 'Docker CPU', value: `${d.cpu_pct}%` });
+      if (d.mem_usage != null && d.mem_limit > 0) {
+        const usageMb = (d.mem_usage / 1048576).toFixed(1);
+        const pct = d.mem_pct != null ? ` (${d.mem_pct}%)` : '';
+        rows.push({ label: 'Docker Mem', value: `${usageMb} MB${pct}` });
+      }
+    }
+  }
+
   if (cpuPct != null) rows.push({ label: 'CPU', value: `${cpuPct}%` });
   if (memUsed != null && memTotal != null)
     rows.push({ label: 'Memory', value: `${memUsed} / ${memTotal} GB` });
@@ -317,16 +357,16 @@ function SidebarTelemetryBlock({ node }) {
 SidebarTelemetryBlock.propTypes = { node: PropTypes.object };
 
 export default function Sidebar({
-  node,
-  anchor,
-  relationships,
-  sysinfo,
-  status,
+  node = null,
+  anchor = null,
+  relationships = [],
+  sysinfo = [],
+  status = null,
   onClose,
-  onUplinkChange,
-  onOpenInHud,
-  onBoundsChange,
-  onMonitorAction,
+  onUplinkChange = undefined,
+  onOpenInHud = undefined,
+  onBoundsChange = undefined,
+  onMonitorAction = undefined,
 }) {
   const [speed, setSpeed] = useState(1000);
   const [position, setPosition] = useState({ x: 24, y: 84 });
@@ -500,6 +540,7 @@ export default function Sidebar({
     <AnimatePresence>
       {node && (
         <motion.div
+          key={node.id}
           initial={{ opacity: 0, y: 10, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 8, scale: 0.98 }}
@@ -975,7 +1016,17 @@ export default function Sidebar({
                       }}
                     >
                       <span style={{ fontSize: 13 }}>📄</span>
-                      <span style={{ fontSize: 12, color: 'var(--color-text)' }}>{doc.title}</span>
+                      <a
+                        href={`/docs?docId=${doc.id}`}
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--color-primary)',
+                          textDecoration: 'none',
+                        }}
+                        title={`Open ${doc.title || 'document'}`}
+                      >
+                        {doc.title}
+                      </a>
                     </div>
                   ))}
                 </div>
@@ -1059,16 +1110,4 @@ Sidebar.propTypes = {
   onBoundsChange: PropTypes.func,
   /** Called with 'monitor_create' | 'monitor_toggle' | 'monitor_check_now' for hardware nodes */
   onMonitorAction: PropTypes.func,
-};
-
-Sidebar.defaultProps = {
-  node: null,
-  anchor: null,
-  relationships: [],
-  sysinfo: [],
-  status: null,
-  onUplinkChange: undefined,
-  onOpenInHud: undefined,
-  onBoundsChange: undefined,
-  onMonitorAction: undefined,
 };

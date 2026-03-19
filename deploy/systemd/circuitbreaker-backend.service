@@ -1,0 +1,30 @@
+[Unit]
+Description=Circuit Breaker Backend API
+After=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbreaker-nats.service
+Requires=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbreaker-nats.service
+
+[Service]
+Type=exec
+User=breaker
+Group=breaker
+Slice=circuitbreaker.slice
+WorkingDirectory=/opt/circuitbreaker/apps/backend
+EnvironmentFile=/etc/circuitbreaker/.env
+RuntimeDirectory=circuitbreaker
+RuntimeDirectoryMode=0750
+ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker/.env > /run/circuitbreaker/vault.env 2>/dev/null || true'
+EnvironmentFile=-/run/circuitbreaker/vault.env
+ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
+ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
+ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level info
+Restart=on-failure
+RestartSec=10s
+MemoryMax=1G
+LimitNOFILE=65536
+CPUQuota=200%
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-backend
+
+[Install]
+WantedBy=multi-user.target

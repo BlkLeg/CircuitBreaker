@@ -6,10 +6,11 @@ import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -36,16 +37,17 @@ _STAGE_DISCOVERY = "discovery"
 
 
 @router.get("/oauth/providers")
-def list_oauth_providers(db: Session = Depends(get_db)):
+def list_oauth_providers(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Return the list of enabled OAuth/OIDC providers for the login page."""
     settings = db.query(AppSettings).first()
     providers: list[dict] = []
     if settings and settings.oauth_providers:
-        for name, cfg in json.loads(settings.oauth_providers).items():
+        oauth_data = settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
+        for name, cfg in oauth_data.items():
             if cfg.get("enabled") and cfg.get("client_id"):
                 providers.append({"name": name, "type": "oauth"})
     if settings and settings.oidc_providers:
-        raw = json.loads(settings.oidc_providers)
+        raw = settings.oidc_providers if isinstance(settings.oidc_providers, (list, dict)) else []
         items = raw if isinstance(raw, list) else raw.values()
         for p in items:
             if p.get("enabled") and p.get("client_id"):
@@ -64,32 +66,25 @@ def _get_oauth_config(db: Session, provider: str) -> dict:
     settings = db.query(AppSettings).first()
     if not settings or not settings.oauth_providers:
         raise HTTPException(400, f"OAuth provider '{provider}' not configured")
-    providers = json.loads(settings.oauth_providers)
+    providers = settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
     cfg = providers.get(provider)
     if not cfg or not cfg.get("enabled"):
         raise HTTPException(400, f"OAuth provider '{provider}' not enabled")
-    return cfg
+    return cast(dict, cfg)
 
 
 def _get_oidc_config(db: Session, provider_slug: str) -> dict:
     settings = db.query(AppSettings).first()
     if not settings or not settings.oidc_providers:
         raise HTTPException(400, f"OIDC provider '{provider_slug}' not configured")
-    providers = json.loads(settings.oidc_providers)
-    if isinstance(providers, list):
-        cfg = next(
-            (
-                p
-                for p in providers
-                if p.get("slug") == provider_slug or p.get("name") == provider_slug
-            ),
-            None,
-        )
-    else:
-        cfg = providers.get(provider_slug)
+    providers = settings.oidc_providers if isinstance(settings.oidc_providers, list) else []
+    cfg = next(
+        (p for p in providers if p.get("slug") == provider_slug or p.get("name") == provider_slug),
+        None,
+    )
     if not cfg or not cfg.get("enabled"):
         raise HTTPException(400, f"OIDC provider '{provider_slug}' not enabled")
-    return cfg
+    return cast(dict, cfg)
 
 
 def _ensure_provider_enabled(
@@ -107,7 +102,9 @@ def _ensure_provider_enabled(
 
     changed = False
     if provider_type == "oauth":
-        providers = json.loads(settings.oauth_providers or "{}")
+        providers: dict = (
+            settings.oauth_providers if isinstance(settings.oauth_providers, dict) else {}
+        )
         entry = dict(providers.get(provider_name) or {})
         if entry.get("enabled") is not True:
             entry["enabled"] = True
@@ -117,9 +114,9 @@ def _ensure_provider_enabled(
             changed = True
         providers[provider_name] = entry
         if changed:
-            settings.oauth_providers = json.dumps(providers)
+            settings.oauth_providers = providers
     else:
-        raw = json.loads(settings.oidc_providers or "[]")
+        raw = settings.oidc_providers if isinstance(settings.oidc_providers, (list, dict)) else []
         items = raw if isinstance(raw, list) else list(raw.values())
         slug = cfg.get("slug") or cfg.get("name") or provider_name
         matched = False
@@ -149,7 +146,7 @@ def _ensure_provider_enabled(
             updated_items.append(new_entry)
             changed = True
         if changed:
-            settings.oidc_providers = json.dumps(updated_items)
+            settings.oidc_providers = updated_items
 
     if changed:
         try:
@@ -163,7 +160,7 @@ def _get_app_base_url(db: Session, request: Request | None = None) -> str:
     settings = db.query(AppSettings).first()
     api_base_url = getattr(settings, "api_base_url", None) if settings else None
     if api_base_url:
-        return api_base_url.rstrip("/")
+        return str(api_base_url).rstrip("/")
     if request is not None:
         proto = (
             (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
@@ -188,7 +185,7 @@ def _is_state_expired(created_at: str) -> bool:
     return datetime.now(UTC) - parsed > _OAUTH_STATE_TTL
 
 
-def _pop_state_or_400(db: Session, state: str, provider_filter):
+def _pop_state_or_400(db: Session, state: str, provider_filter: Any) -> OAuthState:
     oauth_state = db.query(OAuthState).filter(OAuthState.state == state, provider_filter).first()
     if not oauth_state:
         raise HTTPException(400, _INVALID_STATE)
@@ -201,7 +198,10 @@ def _pop_state_or_400(db: Session, state: str, provider_filter):
 
 
 def _get_user_oauth_tokens(user: User) -> dict | None:
-    """Return decrypted OAuth tokens for user, or None. Handles both encrypted and legacy plaintext."""
+    """Return decrypted OAuth tokens for user, or None.
+
+    Handles both encrypted and legacy plaintext.
+    """
     raw = user.oauth_tokens
     if not raw:
         return None
@@ -214,7 +214,10 @@ def _get_user_oauth_tokens(user: User) -> dict | None:
     try:
         vault = get_vault()
         plain = vault.decrypt(raw)
-        return json.loads(plain)
+        data = json.loads(plain)
+        if isinstance(data, dict):
+            return cast(dict, data)
+        return None
     except (RuntimeError, ValueError, TypeError):
         return None
 
@@ -324,22 +327,22 @@ def _bootstrap_redirect_or_none(
 
 def _client_secret(cfg: dict) -> str:
     if cfg.get("client_secret"):
-        return cfg["client_secret"]
+        return str(cfg["client_secret"])
     enc = cfg.get("client_secret_enc", "")
     if not enc:
         return ""
     try:
         from app.services.credential_vault import get_vault
 
-        return get_vault().decrypt(enc)
+        return str(get_vault().decrypt(enc))
     except Exception:
-        return enc
+        return str(enc)
 
 
 def _json_or_502(resp: httpx.Response, provider: str, stage: str) -> dict:
     try:
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict, resp.json())
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -354,7 +357,9 @@ def _json_or_502(resp: httpx.Response, provider: str, stage: str) -> dict:
 
 @router.get("/oauth/github")
 @limiter.limit(lambda: get_limit("auth"))
-def github_authorize(request: Request, db: Session = Depends(get_db)):
+def github_authorize(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> RedirectResponse:
     cfg = _get_oauth_config(db, "github")
     state = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, provider="github", created_at=datetime.now(UTC).isoformat()))
@@ -365,7 +370,9 @@ def github_authorize(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/oauth/github/callback")
 @limiter.limit(lambda: get_limit("auth"))
-async def github_callback(request: Request, code: str, state: str, db: Session = Depends(get_db)):
+async def github_callback(
+    request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
+) -> RedirectResponse:
     _pop_state_or_400(db, state, OAuthState.provider == "github")
 
     cfg = _get_oauth_config(db, "github")
@@ -435,7 +442,9 @@ async def github_callback(request: Request, code: str, state: str, db: Session =
 
 @router.get("/oauth/google")
 @limiter.limit(lambda: get_limit("auth"))
-def google_authorize(request: Request, db: Session = Depends(get_db)):
+def google_authorize(
+    request: Request, response: Response, db: Session = Depends(get_db)
+) -> RedirectResponse:
     cfg = _get_oauth_config(db, "google")
     state = secrets.token_urlsafe(32)
     db.add(OAuthState(state=state, provider="google", created_at=datetime.now(UTC).isoformat()))
@@ -459,7 +468,9 @@ def google_authorize(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/oauth/google/callback")
 @limiter.limit(lambda: get_limit("auth"))
-async def google_callback(request: Request, code: str, state: str, db: Session = Depends(get_db)):
+async def google_callback(
+    request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
+) -> RedirectResponse:
     _pop_state_or_400(db, state, OAuthState.provider == "google")
 
     cfg = _get_oauth_config(db, "google")
@@ -517,7 +528,9 @@ async def google_callback(request: Request, code: str, state: str, db: Session =
 
 @router.get("/oauth/oidc/{provider_slug}")
 @limiter.limit(lambda: get_limit("auth"))
-async def oidc_authorize(request: Request, provider_slug: str, db: Session = Depends(get_db)):
+async def oidc_authorize(
+    request: Request, response: Response, provider_slug: str, db: Session = Depends(get_db)
+) -> RedirectResponse:
     cfg = _get_oidc_config(db, provider_slug)
     state = secrets.token_urlsafe(32)
 
@@ -559,8 +572,13 @@ async def oidc_authorize(request: Request, provider_slug: str, db: Session = Dep
 @router.get("/oauth/oidc/{provider_slug}/callback")
 @limiter.limit(lambda: get_limit("auth"))
 async def oidc_callback(
-    request: Request, provider_slug: str, code: str, state: str, db: Session = Depends(get_db)
-):
+    request: Request,
+    response: Response,
+    provider_slug: str,
+    code: str,
+    state: str,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
     oauth_state = _pop_state_or_400(db, state, OAuthState.provider.like(f"oidc:{provider_slug}:%"))
 
     verifier = oauth_state.provider.split(":", 2)[2]

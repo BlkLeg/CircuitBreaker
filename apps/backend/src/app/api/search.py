@@ -29,7 +29,7 @@ SOURCES = [
 
 
 @router.get("", response_model=list[SearchResult])
-def search(q: str = Query(..., min_length=1), db: Session = Depends(get_db)):
+def search(q: str = Query(..., min_length=1), db: Session = Depends(get_db)) -> list[SearchResult]:
     results: list[SearchResult] = []
     term = f"%{q}%"
     for Model, type_key, action_url, desc_field in SOURCES:

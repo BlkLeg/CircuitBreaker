@@ -125,7 +125,7 @@ function buildPreviewGraph(results, clusterName, networkName, assignments) {
       id: 'cluster-anchor',
       type: 'anchorNode',
       position: { x: 20, y: 20 },
-      data: { label: clusterName, emoji: '🗄️', bg: NODE_STYLES.cluster.glowColor },
+      data: { label: clusterName, emoji: '🗄️', bg: NODE_STYLES.get('cluster')?.glowColor },
       draggable: false,
     });
     yOffset = 80;
@@ -137,7 +137,7 @@ function buildPreviewGraph(results, clusterName, networkName, assignments) {
       id: 'network-anchor',
       type: 'anchorNode',
       position: { x: 340, y: 20 },
-      data: { label: networkName, emoji: '🌐', bg: NODE_STYLES.network.glowColor },
+      data: { label: networkName, emoji: '🌐', bg: NODE_STYLES.get('network')?.glowColor },
       draggable: false,
     });
     yOffset = Math.max(yOffset, 80);
@@ -166,7 +166,7 @@ function buildPreviewGraph(results, clusterName, networkName, assignments) {
       data: {
         label: a.name || r.hostname || r.ip_address,
         iconSrc,
-        glowColor: NODE_STYLES.hardware.glowColor,
+        glowColor: NODE_STYLES.get('hardware')?.glowColor,
         isGhost: true,
       },
       draggable: false,
@@ -179,7 +179,11 @@ function buildPreviewGraph(results, clusterName, networkName, assignments) {
         source: 'cluster-anchor',
         target: nodeId,
         type: 'default',
-        style: { stroke: NODE_STYLES.cluster.glowColor, strokeDasharray: '4 3', opacity: 0.4 },
+        style: {
+          stroke: NODE_STYLES.get('cluster')?.glowColor,
+          strokeDasharray: '4 3',
+          opacity: 0.4,
+        },
         animated: true,
       });
     }
@@ -191,7 +195,11 @@ function buildPreviewGraph(results, clusterName, networkName, assignments) {
         source: 'network-anchor',
         target: nodeId,
         type: 'default',
-        style: { stroke: NODE_STYLES.network.glowColor, strokeDasharray: '4 3', opacity: 0.4 },
+        style: {
+          stroke: NODE_STYLES.get('network')?.glowColor,
+          strokeDasharray: '4 3',
+          opacity: 0.4,
+        },
         animated: true,
       });
     }

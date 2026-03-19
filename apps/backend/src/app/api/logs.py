@@ -5,8 +5,9 @@ Audit logs are append-only. No update or delete endpoints exist by design.
 
 import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -125,8 +126,8 @@ def list_logs(
     search: str | None = None,
     sort: str | None = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
-    _=require_role("admin"),
-):
+    _: Any = require_role("admin"),
+) -> LogsResponse:
     _order = Log.timestamp.asc() if sort == "asc" else Log.timestamp.desc()
     q = select(Log).order_by(_order)
     count_q = select(func.count()).select_from(Log)
@@ -209,8 +210,8 @@ def list_logs(
 @router.get("/actions")
 def list_actions(
     db: Session = Depends(get_db),
-    _=require_role("admin"),
-):
+    _: Any = require_role("admin"),
+) -> dict[str, Any]:
     """Return the distinct set of action strings present in the logs table.
     Used by the frontend to populate the action filter dropdown dynamically.
     """
@@ -232,8 +233,8 @@ def list_audit_logs(
     actor: str | None = None,
     sort: str | None = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
-    _=require_role("admin"),
-):
+    _: Any = require_role("admin"),
+) -> LogsResponse:
     """Admin-only endpoint that returns entries with category='audit'."""
     from datetime import datetime as _dt
 
@@ -287,7 +288,7 @@ def list_audit_logs(
 
 
 @router.delete("")
-def clear_logs(db: Session = Depends(get_db), _=require_role("admin")):
+def clear_logs(db: Session = Depends(get_db), _: Any = require_role("admin")) -> dict[str, int]:
     deleted = db.execute(select(Log)).scalars().all()
     count = len(deleted)
     for row in deleted:
@@ -299,8 +300,8 @@ def clear_logs(db: Session = Depends(get_db), _=require_role("admin")):
 @router.get("/stream")
 async def stream_logs(
     since: str | None = None,
-    _=require_role("admin"),
-):
+    _: Any = require_role("admin"),
+) -> StreamingResponse:
     """Server-Sent Events endpoint — streams new log entries since a given timestamp."""
 
     since_dt: datetime | None = None
@@ -310,7 +311,7 @@ async def stream_logs(
         except ValueError:
             since_dt = None
 
-    async def event_generator():
+    async def event_generator() -> AsyncGenerator[str, None]:
         # Use a mutable reference so we can update across iterations
         last_dt = since_dt
 

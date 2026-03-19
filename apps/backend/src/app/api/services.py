@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -32,7 +34,9 @@ class ServiceIpCheckRequest(BaseModel):
 
 
 @router.post("/check-ip")
-def check_service_ip(payload: ServiceIpCheckRequest, db: Session = Depends(get_db)):
+def check_service_ip(
+    payload: ServiceIpCheckRequest, db: Session = Depends(get_db)
+) -> dict[str, Any]:
     return resolve_ip_conflict(
         db,
         service_id=payload.exclude_service_id,
@@ -52,7 +56,7 @@ def list_services(
     tag: str | None = Query(None),
     q: str | None = Query(None),
     db: Session = Depends(get_db),
-):
+) -> Any:
     return services_service.list_services(
         db,
         compute_id=compute_id,
@@ -71,7 +75,7 @@ def create_service(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> Any:
     try:
         result = services_service.create_service(db, payload)
         log_audit(
@@ -91,7 +95,7 @@ def create_service(
 
 
 @router.get("/{service_id}", response_model=Service)
-def get_service(service_id: int, db: Session = Depends(get_db)):
+def get_service(service_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return services_service.get_service(db, service_id)
     except ValueError as exc:
@@ -105,7 +109,7 @@ def patch_service(
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> Any:
     try:
         result = services_service.update_service(db, service_id, payload)
         log_audit(
@@ -126,13 +130,35 @@ def patch_service(
         ) from exc
 
 
+@router.get("/{service_id}/discovery")
+def get_service_discovery(service_id: int, db: Session = Depends(get_db)) -> Any:
+    """Return real-time discovery info (e.g. Docker stats) for a service."""
+    from app.db.models import Service as ServiceModel
+    from app.services.docker_discovery import get_container_discovery
+    from app.services.settings_service import get_or_create_settings
+
+    svc = db.get(ServiceModel, service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    result = {"service_id": service_id, "name": svc.name}
+
+    if svc.is_docker_container and svc.docker_container_id:
+        settings = get_or_create_settings(db)
+        socket_path = getattr(settings, "docker_socket_path", None) or "/var/run/docker.sock"
+        docker_info = get_container_discovery(svc.docker_container_id, socket_path=socket_path)
+        result["docker"] = docker_info
+
+    return result
+
+
 @router.delete("/{service_id}", status_code=204)
 def delete_service(
     service_id: int,
     request: Request,
     db: Session = Depends(get_db),
     user_id: int | None = Depends(require_write_auth),
-):
+) -> None:
     try:
         services_service.delete_service(db, service_id)
         log_audit(
@@ -157,7 +183,7 @@ def delete_service(
 
 
 @router.get("/{service_id}/dependencies", response_model=list[ServiceDependency])
-def get_dependencies(service_id: int, db: Session = Depends(get_db)):
+def get_dependencies(service_id: int, db: Session = Depends(get_db)) -> Any:
     return services_service.get_dependencies(db, service_id)
 
 
@@ -166,8 +192,8 @@ def add_dependency(
     service_id: int,
     payload: ServiceDependencyCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return services_service.add_dependency(db, service_id, payload.depends_on_id)
     except ValueError as exc:
@@ -179,8 +205,8 @@ def remove_dependency(
     service_id: int,
     depends_on_id: int,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         services_service.remove_dependency(db, service_id, depends_on_id)
     except ValueError as exc:
@@ -191,7 +217,7 @@ def remove_dependency(
 
 
 @router.get("/{service_id}/storage", response_model=list[ServiceStorageRead])
-def get_service_storage(service_id: int, db: Session = Depends(get_db)):
+def get_service_storage(service_id: int, db: Session = Depends(get_db)) -> Any:
     return services_service.get_service_storage(db, service_id)
 
 
@@ -200,8 +226,8 @@ def add_storage_link(
     service_id: int,
     payload: ServiceStorageLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return services_service.add_storage_link(
             db, service_id, payload.storage_id, payload.purpose
@@ -212,8 +238,11 @@ def add_storage_link(
 
 @router.delete("/{service_id}/storage/{storage_id}", status_code=204)
 def remove_storage_link(
-    service_id: int, storage_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    service_id: int,
+    storage_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         services_service.remove_storage_link(db, service_id, storage_id)
     except ValueError as exc:
@@ -224,7 +253,7 @@ def remove_storage_link(
 
 
 @router.get("/{service_id}/misc", response_model=list[ServiceMiscRead])
-def get_service_misc(service_id: int, db: Session = Depends(get_db)):
+def get_service_misc(service_id: int, db: Session = Depends(get_db)) -> Any:
     return services_service.get_service_misc(db, service_id)
 
 
@@ -233,8 +262,8 @@ def add_misc_link(
     service_id: int,
     payload: ServiceMiscLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return services_service.add_misc_link(db, service_id, payload.misc_id, payload.purpose)
     except ValueError as exc:
@@ -243,8 +272,11 @@ def add_misc_link(
 
 @router.delete("/{service_id}/misc/{misc_id}", status_code=204)
 def remove_misc_link(
-    service_id: int, misc_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    service_id: int,
+    misc_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         services_service.remove_misc_link(db, service_id, misc_id)
     except ValueError as exc:
@@ -255,7 +287,7 @@ def remove_misc_link(
 
 
 @router.get("/{service_id}/external-dependencies", response_model=list[ServiceExternalNodeRead])
-def get_external_deps(service_id: int, db: Session = Depends(get_db)):
+def get_external_deps(service_id: int, db: Session = Depends(get_db)) -> Any:
     from app.db.models import ExternalNode, ServiceExternalNode
     from app.db.models import Service as ServiceModel
 
@@ -292,8 +324,8 @@ def add_external_dep(
     service_id: int,
     payload: ServiceExternalNodeLink,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return external_nodes_service.link_service(db, service_id, payload)
     except ValueError as exc:
@@ -305,8 +337,11 @@ def add_external_dep(
 
 @router.delete("/{service_id}/external-dependencies/{relation_id}", status_code=204)
 def remove_external_dep(
-    service_id: int, relation_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    service_id: int,
+    relation_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         external_nodes_service.unlink_service(db, relation_id)
     except ValueError as exc:

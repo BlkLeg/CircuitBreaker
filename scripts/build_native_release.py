@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -96,6 +97,18 @@ def ensure_frontend_dist(frontend_dir: Path) -> None:
         raise SystemExit(
             f"Frontend dist directory not found at {frontend_dir}. Run the frontend build first."
         )
+
+
+def ensure_pyinstaller_available() -> None:
+    if importlib.util.find_spec("PyInstaller") is not None:
+        return
+    raise SystemExit(
+        "PyInstaller is required for native packaging but is not installed in the active Python environment.\n"
+        "Install backend dev dependencies first, for example:\n"
+        "  .venv/bin/pip install -e \"apps/backend[dev]\"\n"
+        "Or install PyInstaller directly:\n"
+        "  .venv/bin/pip install pyinstaller"
+    )
 
 
 def build_binary(target_os: str, work_dir: Path) -> Path:
@@ -375,7 +388,7 @@ def create_linux_packages(
     }
 
     packages: list[Path] = []
-    for fmt in ("deb", "rpm"):
+    for fmt in ("deb", "rpm", "apk"):
         pkg_path = output_dir / f"circuit-breaker_{version}_{goarch}.{fmt}"
         result = subprocess.run(
             [nfpm, "package", "--config", str(nfpm_config), "--packager", fmt,
@@ -391,6 +404,145 @@ def create_linux_packages(
     return packages
 
 
+def create_appimage(
+    bundle_dir: Path, version: str, target_arch: str, output_dir: Path
+) -> Path | None:
+    """Generate .AppImage for amd64 only."""
+    if target_arch != "amd64":
+        print("  AppImage: skipping (amd64 only)")
+        return None
+
+    appimagetool = shutil.which("appimagetool")
+    if not appimagetool:
+        print("appimagetool not found — skipping AppImage. Install: https://appimage.github.io/appimagetool/")
+        return None
+
+    appdir = output_dir / "CircuitBreaker.AppDir"
+    if appdir.exists():
+        shutil.rmtree(appdir)
+
+    bin_dir = appdir / "usr" / "bin"
+    share_dir = appdir / "usr" / "share" / "circuit-breaker"
+    bin_dir.mkdir(parents=True)
+    share_dir.mkdir(parents=True)
+
+    shutil.copy2(bundle_dir / "circuit-breaker", bin_dir / "circuit-breaker")
+    (bin_dir / "circuit-breaker").chmod(0o755)
+
+    src_share = bundle_dir / "share"
+    if src_share.exists():
+        shutil.copytree(src_share, share_dir, dirs_exist_ok=True)
+
+    apprun = appdir / "AppRun"
+    apprun.write_text(
+        '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/circuit-breaker" "$@"\n'
+    )
+    apprun.chmod(0o755)
+
+    (appdir / "circuit-breaker.desktop").write_text(
+        "[Desktop Entry]\n"
+        "Name=Circuit Breaker\n"
+        f"Version={version}\n"
+        "Type=Application\n"
+        "Exec=circuit-breaker\n"
+        "Icon=circuit-breaker\n"
+        "Categories=Network;\n"
+        "Terminal=true\n"
+    )
+
+    icon_src = bundle_dir / "circuit-breaker.png"
+    icon_dst = appdir / "circuit-breaker.png"
+    if icon_src.exists():
+        shutil.copy2(icon_src, icon_dst)
+    else:
+        import base64
+        _TRANSPARENT_PNG = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        icon_dst.write_bytes(_TRANSPARENT_PNG)
+
+    appimage_path = output_dir / f"circuit-breaker-{version}-x86_64.AppImage"
+    try:
+        result = subprocess.run(
+            [appimagetool, str(appdir), str(appimage_path)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "ARCH": "x86_64"},
+        )
+    finally:
+        if appdir.exists():
+            shutil.rmtree(appdir)
+
+    if result.returncode == 0:
+        print(f"  Created: {appimage_path.name}")
+        return appimage_path
+    else:
+        print(f"  WARNING: AppImage creation failed: {result.stderr.strip()}")
+        return None
+
+
+def create_arch_package(
+    bundle_dir: Path, version: str, target_arch: str, output_dir: Path, tarball_path: Path
+) -> Path | None:
+    """Generate .pkg.tar.zst using makepkg with a local-source patched PKGBUILD."""
+    makepkg = shutil.which("makepkg")
+    if not makepkg:
+        print("makepkg not found — skipping Arch package generation.")
+        return None
+
+    pkgbuild = REPO_ROOT / "PKGBUILD"
+    if not pkgbuild.exists():
+        print("PKGBUILD not found — skipping Arch package generation.")
+        return None
+
+    arch_map = {"amd64": "x86_64", "arm64": "aarch64"}
+    pkg_arch = arch_map.get(target_arch, target_arch)
+
+    work_dir = output_dir / "arch-pkg-build"
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True)
+
+    # Copy tarball into work_dir so makepkg can find it as a local source
+    local_tarball = work_dir / tarball_path.name
+    shutil.copy2(tarball_path, local_tarball)
+
+    # Patch PKGBUILD: swap remote source URL → local filename, pin version
+    pkgbuild_text = pkgbuild.read_text()
+    patched = re.sub(
+        r'(source_(?:x86_64|aarch64)=\().*?(\))',
+        f'source_{pkg_arch}=("{tarball_path.name}")',
+        pkgbuild_text,
+    )
+    patched = re.sub(r"sha256sums_(?:x86_64|aarch64)=\('[^']*'\)", f"sha256sums_{pkg_arch}=('SKIP')", patched)
+    patched = re.sub(r'^pkgver=.*', f'pkgver={version}', patched, flags=re.MULTILINE)
+    (work_dir / "PKGBUILD").write_text(patched)
+
+    env = {**os.environ, "PKGDEST": str(output_dir), "SRCDEST": str(work_dir)}
+    try:
+        result = subprocess.run(
+            [makepkg, "--nodeps", "--nocheck", "--noconfirm", "-f"],
+            env=env,
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    if result.returncode != 0:
+        print(f"  WARNING: Arch package creation failed:\n{result.stderr.strip()}")
+        return None
+
+    pkgs = sorted(output_dir.glob("*.pkg.tar.zst"))
+    if pkgs:
+        print(f"  Created: {pkgs[-1].name}")
+        return pkgs[-1]
+
+    print("  WARNING: makepkg succeeded but no .pkg.tar.zst found in output dir")
+    return None
+
+
 def main() -> int:
     args = parse_args()
     target_os, target_arch = detect_target()
@@ -404,6 +556,7 @@ def main() -> int:
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    ensure_pyinstaller_available()
     binary_path = build_binary(target_os, work_dir)
     bundle_dir, manifest = stage_bundle(
         binary_path=binary_path,
@@ -417,9 +570,11 @@ def main() -> int:
     write_metadata(output_dir, manifest, archive_path)
     print(archive_path)
 
-    # Generate deb/rpm if on Linux
+    # Generate Linux packages
     if target_os == "linux":
         create_linux_packages(bundle_dir, version, target_arch, output_dir)
+        create_appimage(bundle_dir, version, target_arch, output_dir)
+        create_arch_package(bundle_dir, version, target_arch, output_dir, archive_path)
 
     return 0
 

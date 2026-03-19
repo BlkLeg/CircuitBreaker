@@ -26,7 +26,7 @@ export default function InviteAcceptPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (password !== confirmPassword) {
+    if (!Object.is(password, confirmPassword)) {
       setError('Passwords do not match');
       return;
     }

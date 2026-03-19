@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
@@ -41,7 +42,7 @@ def _require_vault() -> None:
         raise HTTPException(status_code=503, detail=_VAULT_NOT_READY)
 
 
-def _config_out(config) -> dict:
+def _config_out(config: Any) -> dict[str, Any]:
     """Convert IntegrationConfig to ProxmoxConfigOut-compatible dict."""
     import json
 
@@ -69,13 +70,13 @@ def _config_out(config) -> dict:
 def create_proxmox_config(
     body: ProxmoxConfigCreate,
     db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
+    current_user: Any = require_role("admin"),
+) -> dict[str, Any]:
     _require_vault()
     config = proxmox_service.create_integration(
         db,
         name=body.name,
-        config_url=body.config_url,
+        config_url=str(body.config_url),
         api_token=body.api_token,
         auto_sync=body.auto_sync,
         sync_interval_s=body.sync_interval_s,
@@ -92,7 +93,9 @@ def create_proxmox_config(
 
 
 @router.get("", response_model=list[ProxmoxConfigOut])
-def list_proxmox_configs(db: Session = Depends(get_db), current_user=require_role("admin")):
+def list_proxmox_configs(
+    db: Session = Depends(get_db), current_user: Any = require_role("admin")
+) -> list[dict[str, Any]]:
     configs = proxmox_service.list_integrations(db)
     return [_config_out(c) for c in configs]
 
@@ -101,16 +104,19 @@ def list_proxmox_configs(db: Session = Depends(get_db), current_user=require_rol
 async def get_cluster_overview(
     integration_id: int = Query(..., description="Proxmox integration ID"),
     db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
-    """Return cluster overview for dashboard: cluster info, problems, time-series, storage. Cached 90s."""
+    current_user: Any = require_role("admin"),
+) -> ProxmoxClusterOverviewResponse:
+    """Return cluster overview for dashboard: cluster info, problems, time-series, storage.
+
+    Cached 90s.
+    """
     import json
 
     from app.core.nats_client import nats_client
 
     cache_key = f"proxmox_overview.{integration_id}"
 
-    def _make_response(payload):
+    def _make_response(payload: Any) -> ProxmoxClusterOverviewResponse:
         try:
             return ProxmoxClusterOverviewResponse.model_validate(payload)
         except ValidationError as e:
@@ -160,8 +166,8 @@ async def get_cluster_overview(
 
 @router.get("/{integration_id}", response_model=ProxmoxConfigOut)
 def get_proxmox_config(
-    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
-):
+    integration_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
+) -> dict[str, Any]:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -173,8 +179,8 @@ def update_proxmox_config(
     integration_id: int,
     body: ProxmoxConfigUpdate,
     db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
+    current_user: Any = require_role("admin"),
+) -> dict[str, Any]:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -184,7 +190,7 @@ def update_proxmox_config(
         db,
         config,
         name=body.name,
-        config_url=body.config_url,
+        config_url=str(body.config_url) if body.config_url is not None else None,
         api_token=body.api_token,
         auto_sync=body.auto_sync,
         sync_interval_s=body.sync_interval_s,
@@ -202,8 +208,8 @@ def update_proxmox_config(
 
 @router.delete("/{integration_id}")
 def delete_proxmox_config(
-    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
-):
+    integration_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
+) -> dict[str, bool]:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -229,8 +235,8 @@ def delete_proxmox_config(
 
 @router.post("/{integration_id}/test", response_model=ProxmoxTestResponse)
 async def test_proxmox_connection(
-    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
-):
+    integration_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
+) -> Any:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -245,8 +251,8 @@ async def test_proxmox_connection(
 async def discover_proxmox_cluster(
     integration_id: int,
     db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
+    current_user: Any = require_role("admin"),
+) -> Any:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -268,15 +274,18 @@ async def discover_proxmox_cluster(
         entity_id=config.id,
         actor_id=current_user.id,
         actor_name=actor_name,
-        details=f"nodes={result['nodes_imported']} vms={result['vms_imported']} cts={result['cts_imported']}",
+        details=(
+            f"nodes={result['nodes_imported']}"
+            f" vms={result['vms_imported']} cts={result['cts_imported']}"
+        ),
     )
     return result
 
 
 @router.get("/{integration_id}/status", response_model=ProxmoxSyncStatus)
 def get_proxmox_status(
-    integration_id: int, db: Session = Depends(get_db), current_user=require_role("admin")
-):
+    integration_id: int, db: Session = Depends(get_db), current_user: Any = require_role("admin")
+) -> Any:
     config = proxmox_service.get_integration(db, integration_id)
     if not config:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
@@ -297,8 +306,8 @@ async def proxmox_vm_action(
     vmid: int,
     body: ProxmoxActionRequest,
     db: Session = Depends(get_db),
-    current_user=require_role("admin"),
-):
+    current_user: Any = require_role("admin"),
+) -> Any:
     if vm_type not in ("qemu", "lxc"):
         raise HTTPException(status_code=400, detail="vm_type must be 'qemu' or 'lxc'")
     config = proxmox_service.get_integration(db, integration_id)

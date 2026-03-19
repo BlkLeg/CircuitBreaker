@@ -1,6 +1,7 @@
 /* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import PropTypes from 'prop-types';
+import { useSearchParams } from 'react-router-dom';
 import MarkdownViewer from '../components/MarkdownViewer';
 const DocEditor = React.lazy(() => import('../components/DocEditor'));
 import DocLinkModal from '../components/DocLinkModal';
@@ -160,7 +161,7 @@ function entityTypeLabel(type) {
 
 function DocRowMenu({
   doc,
-  menuPos,
+  menuPos = null,
   onPin,
   onSetCategory,
   onDuplicate,
@@ -263,13 +264,9 @@ DocRowMenu.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-DocRowMenu.defaultProps = {
-  menuPos: null,
-};
-
 // ── Right panel (outline + backlinks) ─────────────────────────────────────
 
-function DocRightPanel({ docId, bodyMd, linksRevision = 0 }) {
+function DocRightPanel({ docId = null, bodyMd = '', linksRevision = 0 }) {
   const [entities, setEntities] = useState([]);
   const [entitiesLoading, setEntitiesLoading] = useState(false);
   const headings = useMemo(() => parseHeadings(bodyMd), [bodyMd]);
@@ -360,15 +357,9 @@ DocRightPanel.propTypes = {
   linksRevision: PropTypes.number,
 };
 
-DocRightPanel.defaultProps = {
-  docId: null,
-  bodyMd: '',
-  linksRevision: 0,
-};
-
 // ── Icon picker (emoji swatch beside title) ───────────────────────────────
 
-function DocIconPicker({ value, onChange }) {
+function DocIconPicker({ value = '', onChange }) {
   const [open, setOpen] = useState(false);
   const [Picker, setPicker] = useState(null);
   const [pickerData, setPickerData] = useState(null);
@@ -440,15 +431,12 @@ DocIconPicker.propTypes = {
   onChange: PropTypes.func.isRequired,
 };
 
-DocIconPicker.defaultProps = {
-  value: '',
-};
-
 // ── Main page ──────────────────────────────────────────────────────────────
 
 function DocsPage() {
   const toast = useToast();
   const sidebar = useSidebarWidth();
+  const [searchParams] = useSearchParams();
 
   const [docs, setDocs] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -466,6 +454,12 @@ function DocsPage() {
   const [confirmState, setConfirmState] = useState({ open: false, message: '', onConfirm: null });
   const importFileRef = useRef(null);
   const searchDebounceRef = useRef(null);
+  const selectedDocIdParam = useMemo(() => {
+    const raw = searchParams.get('docId') ?? searchParams.get('id');
+    if (!raw) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [searchParams]);
 
   // Load existing entity links when the link modal target changes
   useEffect(() => {
@@ -495,6 +489,16 @@ function DocsPage() {
   useEffect(() => {
     fetchDocs();
   }, [fetchDocs]);
+
+  useEffect(() => {
+    if (!selectedDocIdParam || loading) return;
+
+    const targetDoc = docs.find((doc) => doc.id === selectedDocIdParam);
+    if (!targetDoc) return;
+
+    setSelectedDoc(targetDoc);
+    setEditing(false);
+  }, [docs, loading, selectedDocIdParam]);
 
   // ── Debounced search ──
   const handleSearchChange = (e) => {
@@ -536,6 +540,7 @@ function DocsPage() {
   };
 
   const handleEdit = () => {
+    if (!selectedDoc) return;
     setFormValues({
       title: selectedDoc.title,
       body_md: selectedDoc.body_md,

@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,17 +12,21 @@ router = APIRouter(tags=["racks"])
 
 
 @router.get("", response_model=list[RackOut])
-def list_racks(db: Session = Depends(get_db)):
+def list_racks(db: Session = Depends(get_db)) -> Any:
     return rack_service.list_racks(db)
 
 
 @router.post("", response_model=RackOut, status_code=201)
-def create_rack(payload: RackCreate, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def create_rack(
+    payload: RackCreate,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> Any:
     return rack_service.create_rack(db, payload)
 
 
 @router.get("/{rack_id}", response_model=RackOut)
-def get_rack(rack_id: int, db: Session = Depends(get_db)):
+def get_rack(rack_id: int, db: Session = Depends(get_db)) -> Any:
     try:
         return rack_service.get_rack(db, rack_id)
     except ValueError as exc:
@@ -29,8 +35,11 @@ def get_rack(rack_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/{rack_id}", response_model=RackOut)
 def update_rack(
-    rack_id: int, payload: RackUpdate, db: Session = Depends(get_db), _=Depends(require_write_auth)
-):
+    rack_id: int,
+    payload: RackUpdate,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> Any:
     try:
         return rack_service.update_rack(db, rack_id, payload)
     except ValueError as exc:
@@ -38,7 +47,11 @@ def update_rack(
 
 
 @router.delete("/{rack_id}", status_code=204)
-def delete_rack(rack_id: int, db: Session = Depends(get_db), _=Depends(require_write_auth)):
+def delete_rack(
+    rack_id: int,
+    db: Session = Depends(get_db),
+    _: Any = Depends(require_write_auth),
+) -> None:
     try:
         rack_service.delete_rack(db, rack_id)
     except ValueError as exc:

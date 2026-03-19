@@ -33,7 +33,7 @@ function DrawToolsDropdown({
   onStartLineDraw,
   onAddLabel,
   onCancel,
-  onStartZoneDraw,
+  onStartZoneDraw = null,
 }) {
   const [open, setOpen] = useState(false);
   const [expandedSection, setExpandedSection] = useState(null);
@@ -364,10 +364,6 @@ DrawToolsDropdown.propTypes = {
   onAddLabel: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
   onStartZoneDraw: PropTypes.func,
-};
-
-DrawToolsDropdown.defaultProps = {
-  onStartZoneDraw: null,
 };
 
 export default DrawToolsDropdown;

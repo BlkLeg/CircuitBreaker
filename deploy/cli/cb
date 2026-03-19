@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# cb - Circuit Breaker management CLI
+
+[[ -f /etc/circuitbreaker/.env ]] && source /etc/circuitbreaker/.env
+
+SERVICES=(
+  "circuitbreaker-postgres"
+  "circuitbreaker-pgbouncer"
+  "circuitbreaker-redis"
+  "circuitbreaker-nats"
+  "circuitbreaker-backend"
+  "circuitbreaker-worker@discovery"
+  "circuitbreaker-worker@webhook"
+  "circuitbreaker-worker@notification"
+  "circuitbreaker-worker@telemetry"
+  "nginx"
+)
+[[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]] && \
+  SERVICES+=("circuitbreaker-docker-proxy")
+
+cmd_status() {
+  echo ""
+  printf "  %-36s %-12s %s\n" "SERVICE" "STATUS" "UPTIME"
+  printf "  %-36s %-12s %s\n" "────────────────────────────────────" "──────────" "──────"
+  for svc in "${SERVICES[@]}"; do
+    active=$(systemctl is-active "$svc" 2>/dev/null)
+    uptime=$(systemctl show "$svc" --property=ActiveEnterTimestamp \
+      --value 2>/dev/null | xargs -I{} date -d{} "+%H:%M %b %d" 2>/dev/null || echo "—")
+    color="\033[0;32m"; [[ "$active" != "active" ]] && color="\033[0;31m"
+    printf "  %-36s ${color}%-12s\033[0m %s\n" "$svc" "$active" "$uptime"
+  done
+  echo ""
+}
+
+cmd_doctor() {
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo /usr/local/bin/cb doctor
+  fi
+  echo ""
+  echo "  Circuit Breaker Health Check"
+  echo "  ─────────────────────────────────────────"
+  FAILED=0
+  check() {
+    local name=$1 cmd=$2 hint=$3
+    if eval "$cmd" &>/dev/null; then
+      printf "  \033[0;32m✓\033[0m  %-20s OK\n" "$name"
+    else
+      printf "  \033[0;31m✗\033[0m  %-20s FAILED\n" "$name"
+      echo "     → $hint"
+      FAILED=$((FAILED + 1))
+    fi
+  }
+  check "PostgreSQL (5432)"  "nc -z 127.0.0.1 5432"           "journalctl -u circuitbreaker-postgres -n 30"
+  check "pgbouncer (6432)"   "nc -z 127.0.0.1 6432"           "journalctl -u circuitbreaker-pgbouncer -n 30"
+  check "DB connection"      "PGPASSWORD=\"$CB_DB_PASSWORD\" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q'" "Check pgbouncer userlist.txt hash"
+  check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASSWORD\" --no-auth-warning PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
+  check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
+  check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
+  if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
+    check "Docker proxy (2375)" \
+      "curl -sf http://127.0.0.1:2375/version" \
+      "journalctl -u circuitbreaker-docker-proxy -n 30"
+  fi
+  # Check nginx on 443 (TLS) or CB_PORT (no-TLS)
+  if nc -z 127.0.0.1 443 2>/dev/null; then
+    check "nginx (443)"        "nc -z 127.0.0.1 443"             "nginx -t && journalctl -u nginx -n 30"
+  else
+    check "nginx (${CB_PORT:-8088})"  "nc -z 127.0.0.1 ${CB_PORT:-8088}"  "nginx -t && journalctl -u nginx -n 30"
+  fi
+  echo ""
+  [[ $FAILED -eq 0 ]] && echo "  All systems operational." \
+                       || echo "  $FAILED check(s) failed. Fix top-down — each service depends on the one above."
+  echo ""
+}
+
+cmd_logs() {
+  journalctl -f \
+    -u circuitbreaker-postgres \
+    -u circuitbreaker-pgbouncer \
+    -u circuitbreaker-redis \
+    -u circuitbreaker-nats \
+    -u circuitbreaker-backend \
+    -u "circuitbreaker-worker@*" \
+    -u nginx
+}
+
+cmd_restart() {
+  echo "Restarting Circuit Breaker..."
+  systemctl restart circuitbreaker.target
+  sleep 3
+  cmd_status
+}
+
+cmd_update() {
+  echo "Updating Circuit Breaker..."
+  bash <(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh) --upgrade
+}
+
+cmd_backup() {
+  TS=$(date +%Y%m%d-%H%M%S)
+  FILE="${CB_DATA_DIR}/backups/cb-backup-${TS}.sql"
+  echo "Backing up to $FILE..."
+  PGPASSWORD="$CB_DB_PASSWORD" pg_dump \
+    -h 127.0.0.1 -p 6432 -U breaker circuitbreaker > "$FILE"
+  echo "Done: $FILE"
+}
+
+cmd_version() {
+  cat /opt/circuitbreaker/VERSION 2>/dev/null || echo "unknown"
+}
+
+cmd_uninstall() {
+  read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
+  [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
+
+  echo "Stopping Docker proxy container..."
+  docker stop cb-docker-proxy 2>/dev/null || true
+  docker rm cb-docker-proxy 2>/dev/null || true
+
+  echo "Stopping and disabling all services..."
+  systemctl stop \
+    circuitbreaker-postgres circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
+    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    nginx 2>/dev/null || true
+
+  systemctl disable \
+    circuitbreaker-postgres circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
+    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    circuitbreaker-docker-proxy \
+    circuitbreaker.target nginx 2>/dev/null || true
+
+  echo "Killing any remaining CircuitBreaker processes..."
+  pkill -u breaker 2>/dev/null || true
+  sleep 2
+  pkill -9 -u breaker 2>/dev/null || true
+
+  echo "Removing systemd unit files..."
+  rm -f /etc/systemd/system/circuitbreaker-*.service
+  rm -f /etc/systemd/system/circuitbreaker-*.timer
+  rm -f /etc/systemd/system/circuitbreaker.target
+  rm -f /etc/systemd/system/circuitbreaker.slice
+  systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+
+  echo "Removing application files..."
+  rm -rf /opt/circuitbreaker /etc/circuitbreaker /etc/nats
+  rm -rf "${CB_DATA_DIR}"
+
+  echo "Removing Nginx configuration..."
+  rm -f /etc/nginx/conf.d/circuitbreaker.conf
+
+  echo "Removing NATS binary..."
+  rm -f /usr/local/bin/nats-server
+
+  echo "Removing CB CLI..."
+  rm -f /usr/local/bin/cb
+
+  echo "Removing system user..."
+  userdel -r breaker 2>/dev/null || userdel breaker 2>/dev/null || true
+
+  echo "Removing /etc/hosts entry..."
+  if [[ -n "${CB_FQDN:-}" ]]; then
+    sed -i "/[[:space:]]${CB_FQDN}$/d" /etc/hosts
+  fi
+
+  echo "Removing Nginx package..."
+  apt-get remove -y nginx 2>/dev/null || dnf remove -y nginx 2>/dev/null || pacman -R --noconfirm nginx 2>/dev/null || true
+
+  echo "Removing NodeSource repository..."
+  rm -f /etc/apt/sources.list.d/nodesource.list
+  rm -f /usr/share/keyrings/nodesource.gpg
+
+  echo "Circuit Breaker fully removed."
+}
+
+case "${1:-help}" in
+  status)    cmd_status    ;;
+  doctor)    cmd_doctor    ;;
+  logs)      cmd_logs      ;;
+  restart)   cmd_restart   ;;
+  update)    cmd_update    ;;
+  backup)    cmd_backup    ;;
+  version)   cmd_version   ;;
+  uninstall) cmd_uninstall ;;
+  *)
+    echo ""
+    echo "  cb - Circuit Breaker CLI"
+    echo ""
+    echo "  Commands:"
+    echo "    cb status     Show all service statuses"
+    echo "    cb doctor     Run health checks and diagnose issues"
+    echo "    cb logs       Tail all logs (live)"
+    echo "    cb restart    Restart all services"
+    echo "    cb update     Update to latest version"
+    echo "    cb backup     Backup database"
+    echo "    cb version    Show installed version"
+    echo "    cb uninstall  Remove Circuit Breaker"
+    echo ""
+    ;;
+esac

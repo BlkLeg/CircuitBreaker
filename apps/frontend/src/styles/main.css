@@ -330,398 +330,239 @@ body {
   }
 }
 
-/* ── Bottom Dock ───────────────────────────────────────────────────────── */
-/* Dock — transparent scroll rail; each item floats independently */
-.dock {
+.macos-dock-root {
   position: fixed;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 8px 14px 10px;
-  background: rgba(13, 17, 23, 0.72);
-  background: color-mix(in srgb, var(--color-surface-alt) 72%, transparent);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  backdrop-filter: blur(28px) saturate(1.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-bottom-color: rgba(255, 255, 255, 0.04);
-  border-radius: 22px;
-  box-shadow:
-    0 8px 40px rgba(0, 0, 0, 0.55),
-    0 2px 8px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  z-index: 100;
-  overflow: visible;
-  transition:
-    transform 0.28s ease-out,
-    opacity 0.22s ease-out;
-}
-
-/* Auto-hide: slide down and fade when mouse is away from dock and bottom trigger zone */
-.dock.dock--autohide-hidden {
-  transform: translate(-50%, calc(100% + 32px));
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Status indicator pulsing */
-@keyframes status-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent);
-  }
-  70% {
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-success) 0%, transparent);
-  }
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 0%, transparent);
-  }
-}
-
-.status-indicator--online {
-  animation: status-pulse 2.4s ease-in-out infinite;
-  background: var(--color-success) !important;
-}
-
-/* Mobile Navigation */
-.mobile-tab-bar {
-  display: flex;
-  position: fixed;
-  bottom: 0;
   left: 0;
   right: 0;
-  height: 56px;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
-  padding-bottom: env(safe-area-inset-bottom);
-  z-index: 1000;
-  justify-content: space-around;
-  align-items: center;
-}
-
-.mobile-tab-item {
+  bottom: 24px;
+  z-index: 220;
   display: flex;
-  flex-direction: column;
-  align-items: center;
   justify-content: center;
-  gap: 4px;
-  flex: 1;
-  color: var(--color-text-muted);
-  text-decoration: none;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  transition: color 0.18s;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.mobile-tab-item.active {
-  color: var(--color-primary);
-}
-
-.mobile-tab-label {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.mobile-tab-icon-wrapper {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.mobile-tab-badge {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 8px;
-  height: 8px;
-  background: var(--color-primary);
-  border-radius: 50%;
-  border: 1px solid var(--color-surface);
-}
-
-/* Mobile Overflow Sheet */
-.mobile-overflow-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
-  z-index: 1100;
-  display: flex;
-  align-items: flex-end;
-}
-
-.mobile-overflow-sheet {
-  width: 100%;
-  max-height: 70%;
-  background: var(--color-surface-2, var(--color-surface));
-  border-top-left-radius: 20px;
-  border-top-right-radius: 20px;
-  padding: 16px 20px 40px;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.4);
-  animation: slide-up 0.2s ease-out;
-}
-
-@keyframes slide-up {
-  from {
-    transform: translateY(100%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
-.mobile-overflow-handle {
-  width: 32px;
-  height: 4px;
-  background: var(--color-border);
-  border-radius: 2px;
-  margin: 0 auto 16px;
-}
-
-.mobile-overflow-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-}
-
-.mobile-overflow-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.mobile-overflow-close {
-  background: var(--color-border);
-  border: none;
-  color: var(--color-text);
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.mobile-overflow-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px 12px;
-  overflow-y: auto;
-}
-
-.mobile-overflow-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  text-decoration: none;
-  color: var(--color-text-muted);
-  -webkit-tap-highlight-color: transparent;
-}
-
-.mobile-overflow-item.active {
-  color: var(--color-primary);
-}
-
-.mobile-overflow-item span {
-  font-size: 11px;
-  font-weight: 500;
-  text-align: center;
-}
-
-.mobile-overflow-icon-wrapper {
-  position: relative;
-  width: 48px;
-  height: 48px;
-  background: var(--color-border);
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text);
-  transition: all 0.2s;
-}
-
-.mobile-overflow-item.active .mobile-overflow-icon-wrapper {
-  background: var(--color-primary);
-  color: #000;
-}
-
-.mobile-overflow-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  background: var(--color-primary);
-  color: #000;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 10px;
-  border: 2px solid var(--color-surface);
-}
-
-/* ── macOS-style dock icon wrappers ──────────────────────────────────── */
-.dock-item {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  /* Base icon size; scaling handled via --dock-scale transform */
-  width: 48px;
-  height: 48px;
-  flex-shrink: 0;
-  border-radius: 14px;
-  color: var(--color-text-muted);
-  text-decoration: none;
-  cursor: pointer;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  -webkit-user-select: none;
-  user-select: none;
-  transform-origin: bottom center;
-  transform: scale(var(--dock-scale, 1));
+  pointer-events: none;
+  padding: 0 16px;
   transition:
-    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
-    color 0.15s;
-  will-change: transform;
-  font: inherit;
+    transform 0.24s ease,
+    opacity 0.2s ease;
 }
 
-.dock-item:hover {
-  color: var(--color-text);
-}
-
-.dock-item svg {
-  transition: filter 0.15s;
+.macos-dock-root.is-hidden {
+  opacity: 0;
+  transform: translateY(calc(100% + 28px));
   pointer-events: none;
 }
 
-.dock-item:hover svg {
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--color-primary) 45%, transparent));
+.macos-dock-shelf {
+  pointer-events: auto;
+  position: relative;
+  width: fit-content;
+  max-width: calc(100vw - 24px);
+  min-height: 54px;
+  padding: 14px 10px 8px;
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 58%, #ffffff 42%);
+  background: color-mix(in srgb, var(--color-surface) 74%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.36);
+  overflow: visible;
 }
 
-/* Active state: primary color icon + dot indicator */
-.dock-item.active {
+.macos-dock-shelf::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--color-bg) 28%, transparent),
+    color-mix(in srgb, #ffffff 16%, transparent)
+  );
+  pointer-events: none;
+}
+
+.macos-dock-items {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  overflow: visible;
+  transform: translateY(-14px);
+}
+
+.macos-dock-link {
+  position: relative;
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  text-decoration: none;
+}
+
+.macos-dock-link:hover {
+  z-index: 6;
+}
+
+.macos-dock-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, #ffffff 40%);
+  background: color-mix(in srgb, var(--color-surface-alt) 80%, #ffffff 20%);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  transform: translateY(0) scale(1);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    color 0.15s ease;
+}
+
+.macos-dock-icon.is-mobile {
+  width: 44px;
+  height: 44px;
+}
+
+.macos-dock-link:hover .macos-dock-icon {
+  transform: translateY(-8px) scale(1.2);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.3),
+    0 0 24px color-mix(in srgb, var(--color-primary) 36%, transparent);
+}
+
+.macos-dock-icon.is-active {
+  color: var(--color-primary);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.34),
+    0 0 20px color-mix(in srgb, var(--color-primary) 35%, transparent);
+}
+
+.macos-dock-link:active .macos-dock-icon {
+  transform: translateY(-2px) scale(1.1);
+}
+
+.macos-dock-icon-glyph {
+  transition: color 0.15s ease;
+}
+
+.macos-dock-link:hover .macos-dock-icon-glyph,
+.macos-dock-icon.is-active .macos-dock-icon-glyph {
   color: var(--color-primary);
 }
 
-.dock-item.active svg {
-  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--color-primary) 60%, transparent));
+.macos-dock-badge {
+  position: absolute;
+  right: -4px;
+  top: -4px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-bg);
+  background: #f97316;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-/* Active dot below icon */
-.dock-active-dot {
+.macos-dock-status {
   position: absolute;
-  bottom: -7px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--color-primary);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary) 70%, transparent);
+  right: 4px;
+  bottom: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-surface) 75%, #ffffff 25%);
 }
 
-/* Tooltip label above icon */
-.dock-tooltip {
-  position: absolute;
-  bottom: calc(100% + 12px);
-  left: 50%;
-  transform: translateX(-50%) translateY(4px);
-  background: rgba(13, 17, 23, 0.92);
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--color-text);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  padding: 4px 10px;
-  border-radius: 8px;
+.macos-dock-status--connected {
+  background: #22c55e;
+}
+
+.macos-dock-status--connecting {
+  background: #f59e0b;
+}
+
+.macos-dock-status--disconnected {
+  background: #ef4444;
+}
+
+.macos-dock-active-indicator {
+  margin-top: 6px;
+  width: 30px;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 92%, #ffffff 8%);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--color-primary) 78%, transparent);
+}
+
+.macos-dock-tooltip {
   pointer-events: none;
+  position: absolute;
+  left: 50%;
+  top: -38px;
+  transform: translate(-50%, 4px);
   opacity: 0;
   transition:
-    opacity 0.15s,
-    transform 0.15s;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  z-index: 10;
+    opacity 0.15s ease,
+    transform 0.15s ease;
+  background: color-mix(in srgb, var(--color-surface) 82%, #000000 18%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 65%, #ffffff 35%);
+  border-radius: 8px;
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 4px 8px;
 }
 
-.dock-item:hover .dock-tooltip {
+.macos-dock-link:hover .macos-dock-tooltip {
   opacity: 1;
-  transform: translateX(-50%) translateY(0);
+  transform: translate(-50%, 0);
 }
 
-.dock-item--stub {
-  opacity: 0.35;
-  cursor: not-allowed;
+.macos-dock-mobile-label {
+  margin-top: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
-.dock-item--stub:hover svg {
-  filter: none;
-}
-
-/* ── Dock edit-mode / jiggle ────────────────────────────────────────────── */
-@keyframes jiggle {
-  0%,
-  100% {
-    transform: scale(var(--dock-scale, 1)) rotate(-2.5deg);
-  }
-  25% {
-    transform: scale(var(--dock-scale, 1)) rotate(2.5deg) translateY(-1px);
-  }
-  75% {
-    transform: scale(var(--dock-scale, 1)) rotate(-2.5deg) translateY(-1px);
+@media (max-width: 1440px) {
+  .macos-dock-items {
+    gap: 7px;
   }
 }
 
-.dock-item.jiggling {
-  animation: jiggle 0.28s ease-in-out infinite;
-  transform-origin: center 85%;
-  cursor: grab;
+@media (max-width: 1024px) {
+  .macos-dock-shelf {
+    max-width: 420px;
+  }
 }
 
-.dock-item.jiggling:active {
-  cursor: grabbing;
-  animation-play-state: paused;
-}
+@media (max-width: 768px) {
+  .macos-dock-root {
+    bottom: 12px;
+  }
 
-/* Grip / reorder toggle button */
-.dock-item--grip {
-  opacity: 0.45;
-  transition:
-    opacity 0.15s,
-    color 0.15s;
-  width: auto;
-  padding: 0 4px;
-  height: 48px;
-}
+  .macos-dock-items {
+    gap: 12px;
+    align-items: flex-end;
+  }
 
-.dock-item--grip:hover,
-.dock-item--grip.active {
-  opacity: 0.9;
-}
-
-.dock-item--grip.active {
-  color: #a5b4fc;
+  .page-content {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom, 16px));
+  }
 }
 
 /* ── Command Palette ───────────────────────────────────────────────────── */
@@ -1491,7 +1332,7 @@ body {
   padding: 8px 12px 4px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--color-text-muted);
+  color: var(--color-text);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   border-top: 1px solid var(--color-border);
@@ -1708,9 +1549,9 @@ body {
   gap: 10px;
 }
 .docs-view-category {
-  background: rgba(var(--color-primary-rgb), 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface) 90%);
   color: var(--color-primary);
-  border: 1px solid rgba(var(--color-primary-rgb), 0.2);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.25);
   border-radius: 20px;
   padding: 1px 10px;
   font-size: 11px;
@@ -1821,12 +1662,12 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(var(--color-primary-rgb), 0.08);
-  border: 1px solid rgba(var(--color-primary-rgb), 0.18);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface) 88%);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.2);
   border-radius: 20px;
   padding: 2px 10px 2px 6px;
   font-size: 11.5px;
-  color: var(--color-text-muted);
+  color: var(--color-text);
 }
 .docs-entity-chip-type {
   font-size: 10px;
@@ -3579,11 +3420,6 @@ body {
   .page-content {
     padding: calc(var(--header-height) + 16px) 16px
       calc(56px + env(safe-area-inset-bottom, 16px) + 16px);
-  }
-
-  /* Dock Mobile View — hidden on mobile (MobileTabBar takes over) */
-  .dock {
-    display: none;
   }
 
   /* Docs Page Layout */

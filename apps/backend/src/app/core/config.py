@@ -3,7 +3,7 @@ import os
 import sys
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     dev_mode: bool = False
     database_url: str = ""  # Must be a postgresql:// URL; set via CB_DB_URL env var
     db_pool_url: str | None = None  # pgbouncer URL; falls back to database_url
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = Field(
+        "redis://localhost:6379/0",
+        validation_alias=AliasChoices("CB_REDIS_URL", "REDIS_URL"),
+    )
     airgap: bool = False
     docker_host: str = ""
     api_prefix: str = "/api/v1"
@@ -84,4 +87,4 @@ class Settings(BaseSettings):
     analytics_db_path: str = ""
 
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]

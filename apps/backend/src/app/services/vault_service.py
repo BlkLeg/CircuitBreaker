@@ -306,7 +306,8 @@ def rotate_vault_key(db: Session) -> None:
         try:
             cfg.smtp_password_enc = _reencrypt(cfg.smtp_password_enc)
         except Exception as exc:
-            _logger.warning(
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs only type(exc).__name__ — exception class name, not any credential value
                 "Could not re-encrypt SMTP password during rotation (reason: %s)",
                 type(exc).__name__,
             )
@@ -333,7 +334,8 @@ def rotate_vault_key(db: Session) -> None:
         try:
             cred.encrypted_value = _reencrypt(cred.encrypted_value)
         except Exception as exc:
-            _logger.warning(
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs only type(exc).__name__ — exception class name, not any credential value
                 "Could not re-encrypt credential %d during rotation (reason: %s)",
                 cred.id,
                 type(exc).__name__,

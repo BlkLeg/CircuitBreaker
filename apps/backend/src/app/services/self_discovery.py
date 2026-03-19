@@ -4,7 +4,6 @@ Detects Circuit Breaker's own Docker containers and groups them into a
 HardwareCluster automatically. Idempotent — safe to call on every sync.
 """
 
-import json
 import logging
 
 from sqlalchemy.orm import Session
@@ -25,12 +24,7 @@ _CB_TAGS = ["self_managed", "circuitbreaker"]
 
 def _is_cb_service(service: Service) -> bool:
     """Return True if this docker Service belongs to the CB stack."""
-    labels: dict = {}
-    if service.docker_labels:
-        try:
-            labels = json.loads(service.docker_labels)
-        except Exception:
-            pass
+    labels: dict = service.docker_labels if service.docker_labels else {}
 
     project = labels.get("com.docker.compose.project", "").lower().replace("-", "").replace("_", "")
     if project in _CB_COMPOSE_KEYS:

@@ -4,7 +4,7 @@ asset deletion, dynamic manifest, Theme Park export/import."""
 import json
 import logging
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -32,7 +32,7 @@ _BG_ALLOWED = {".jpg", ".jpeg", ".png"}
 _MIME_PNG = "image/png"
 
 
-def _build_branding(row) -> BrandingConfig:
+def _build_branding(row: Any) -> BrandingConfig:
     raw_accents = row.accent_colors
     if isinstance(raw_accents, str):
         try:
@@ -62,7 +62,7 @@ async def upload_favicon(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> BrandingConfig:
     """Upload a custom favicon (.ico or .png, max 512 KB)."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _FAVICON_ALLOWED:
@@ -100,7 +100,7 @@ async def upload_login_logo(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> BrandingConfig:
     """Upload a custom login logo (.png/.jpg/.svg, max 2 MB)."""
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _LOGO_ALLOWED:
@@ -143,7 +143,7 @@ async def upload_login_bg(
     file: Annotated[UploadFile, File()],
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> BrandingConfig:
     """Upload a custom login background (.jpg/.png, max 5 MB).
 
     Large images are resized to fit within 1920×1080 using Pillow.
@@ -219,7 +219,7 @@ def delete_branding_asset(
     asset_type: str,
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> BrandingConfig:
     """Remove a branding asset (favicon, login-logo, or login-bg).
 
     Deletes the file from disk and clears the corresponding DB path.
@@ -255,7 +255,7 @@ def delete_branding_asset(
 
 
 @router.get("/manifest.json")
-def dynamic_manifest(db: Annotated[Session, Depends(get_db)]):
+def dynamic_manifest(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
     """Generate a PWA manifest.json reflecting current branding settings."""
     row = get_or_create_settings(db)
     app_name = row.app_name or "Circuit Breaker"
@@ -295,7 +295,7 @@ class ThemeParkImport(BaseModel):
 
 
 @router.get("/export", response_model=ThemeParkExport)
-def export_theme(db: Annotated[Session, Depends(get_db)]):
+def export_theme(db: Annotated[Session, Depends(get_db)]) -> ThemeParkExport:
     """Export branding as a Theme Park-compatible JSON blob."""
     row = get_or_create_settings(db)
     branding = _build_branding(row)
@@ -311,7 +311,7 @@ def import_theme(
     payload: ThemeParkImport,
     db: Annotated[Session, Depends(get_db)],
     _: Annotated[None, require_role("admin")] = None,
-):
+) -> BrandingConfig:
     """Import a Theme Park JSON blob. Updates name/colors only; does NOT change file paths."""
     row = get_or_create_settings(db)
     if payload.app_name is not None:
@@ -319,7 +319,7 @@ def import_theme(
     if payload.primary_color is not None:
         row.primary_color = payload.primary_color
     if payload.accent_colors is not None:
-        row.accent_colors = json.dumps(payload.accent_colors)
+        row.accent_colors = payload.accent_colors
     row.updated_at = utcnow()
     try:
         db.commit()

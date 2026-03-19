@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,7 +13,7 @@ router = APIRouter(tags=["tags"])
 
 
 @router.get("", response_model=list[TagRead])
-def list_tags(db: Session = Depends(get_db)):
+def list_tags(db: Session = Depends(get_db)) -> list[TagRead]:
     """List all tags (id, name, color) for dropdowns and colored display."""
     rows = db.execute(select(Tag).order_by(Tag.name)).scalars().all()
     return [TagRead.model_validate(t) for t in rows]
@@ -22,8 +24,8 @@ def update_tag(
     tag_id: int,
     payload: TagUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_write_auth),
-):
+    _: Any = Depends(require_write_auth),
+) -> TagRead:
     """Update a tag (e.g. color)."""
     tag = db.get(Tag, tag_id)
     if not tag:

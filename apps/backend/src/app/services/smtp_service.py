@@ -13,13 +13,13 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 try:
     import aiosmtplib
 except ImportError:  # pragma: no cover - exercised in runtime fallback paths
-    aiosmtplib = None
+    aiosmtplib = None  # type: ignore[assignment]
 
 from app.services.credential_vault import get_vault
 
@@ -41,7 +41,7 @@ _DEFAULT_LOGO = Path("/app/default-logo.png")
 _LOGO_MIME: dict[str, str] = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".gif": "gif"}
 
 
-def _require_aiosmtplib():
+def _require_aiosmtplib() -> Any:
     if aiosmtplib is None:
         raise RuntimeError(
             "SMTP support is unavailable because `aiosmtplib` is not installed. "
@@ -90,7 +90,7 @@ def _resolve_logo_path(cfg: AppSettings) -> Path | None:
     """
     from app.core.config import settings as _app_cfg  # local import avoids circular
 
-    logo_db_path = getattr(cfg, "login_logo_path", None)
+    logo_db_path = cast(str | None, getattr(cfg, "login_logo_path", None))
     if logo_db_path:
         # login_logo_path is a URL path like "/branding/login-logo.png";
         # strip the leading "/" and resolve against the uploads dir.
@@ -151,12 +151,15 @@ class SmtpService:
         # Port 587  → STARTTLS: plain connect, then starttls() when smtp_tls=True.
         # Port 25   → plain SMTP: no TLS at all.
         use_implicit_tls = self.cfg.smtp_port == 465
-        smtp = smtp_lib.SMTP(
-            hostname=self.cfg.smtp_host,
-            port=self.cfg.smtp_port,
-            use_tls=use_implicit_tls,
-            start_tls=False,  # never auto-upgrade; we handle STARTTLS below
-            timeout=30,
+        smtp = cast(
+            aiosmtplib.SMTP,
+            smtp_lib.SMTP(
+                hostname=self.cfg.smtp_host,
+                port=self.cfg.smtp_port,
+                use_tls=use_implicit_tls,
+                start_tls=False,  # never auto-upgrade; we handle STARTTLS below
+                timeout=30,
+            ),
         )
         await smtp.connect()
         if self.cfg.smtp_tls and not use_implicit_tls:
@@ -218,12 +221,12 @@ class SmtpService:
             return {"status": "error", "message": str(exc)}
         except Exception as exc:
             _log.warning("SMTP test failed: %s", exc)
-            msg = str(exc)
+            error_msg = str(exc)
             if "localhost" in (getattr(self.cfg, "smtp_host", "") or "").lower():
-                msg += (
+                error_msg += (
                     " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
                 )
-            return {"status": "error", "message": msg}
+            return {"status": "error", "message": error_msg}
 
     async def send_test_email(self, to_email: str, base_url: str | None = None) -> dict:
         """Send a simple test message to verify end-to-end delivery."""
@@ -243,12 +246,12 @@ class SmtpService:
             return {"status": "error", "message": str(exc)}
         except Exception as exc:
             _log.warning("SMTP test email failed: %s", exc)
-            msg = str(exc)
+            error_msg = str(exc)
             if "localhost" in (getattr(self.cfg, "smtp_host", "") or "").lower():
-                msg += (
+                error_msg += (
                     " (From Docker, use host.docker.internal or the host IP instead of localhost.)"
                 )
-            return {"status": "error", "message": msg}
+            return {"status": "error", "message": error_msg}
 
     async def send_invite(self, to_email: str, token: str, invited_by: str, base_url: str) -> None:
         """Send an invite email with a clickable accept link."""
@@ -313,12 +316,18 @@ class SmtpService:
 # ---------------------------------------------------------------------------
 
 # Shared inline-style constants
-_S_WRAP = "max-width:560px;margin:40px auto;background:#282828;border-radius:10px;overflow:hidden;font-family:Arial,sans-serif"
+_S_WRAP = (
+    "max-width:560px;margin:40px auto;background:#282828;"
+    "border-radius:10px;overflow:hidden;font-family:Arial,sans-serif"
+)
 _S_BODY = "padding:32px 36px;background:#282828"
 _S_P = "margin:0 0 16px;line-height:1.65;color:#d5c4a1;font-size:15px"
 _S_SMALL = "font-size:13px;color:#928374;margin:0"
 _S_HR = "border:none;border-top:1px solid #3c3836;margin:24px 0"
-_S_FOOT = "padding:18px 32px;background:#1d2021;font-size:12px;color:#928374;text-align:center;font-family:Arial,sans-serif"
+_S_FOOT = (
+    "padding:18px 32px;background:#1d2021;font-size:12px;"
+    "color:#928374;text-align:center;font-family:Arial,sans-serif"
+)
 
 
 def _s_header(primary_color: str) -> str:
@@ -378,7 +387,8 @@ def _invite_html(
         f'    <a href="{invite_url}" style="{btn}">Accept Invite &rarr;</a>'
         f'    <hr style="{_S_HR}">'
         f'    <p style="{_S_SMALL}">Or copy this link into your browser:<br>'
-        f'    <a href="{invite_url}" style="color:#a89984;word-break:break-all">{invite_url}</a></p>'
+        f'    <a href="{invite_url}" style="color:#a89984;word-break:break-all">'
+        f"{invite_url}</a></p>"
         f"  </div>"
         f'  <div style="{_S_FOOT}">'
         f"    You received this because an admin invited you to {app_name}."
@@ -437,7 +447,8 @@ def _test_html(app_name: str, primary_color: str, has_logo: bool) -> str:
         f"  {header}"
         f'  <div style="{_S_BODY}">'
         f'    <p style="{_S_P}">This is a test email from <strong>{app_name}</strong>.</p>'
-        f'    <p style="{_S_P}">If you received this, your SMTP configuration is working correctly.</p>'
+        f'    <p style="{_S_P}">If you received this, your SMTP configuration is'
+        " working correctly.</p>"
         f"  </div>"
         f'  <div style="{_S_FOOT}">{app_name} &mdash; SMTP test</div>'
         f"</div>"

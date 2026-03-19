@@ -88,6 +88,13 @@ class PortEntry(BaseModel):
     notes: str | None = None
 
 
+class LinkedDocument(BaseModel):
+    id: int
+    title: str
+    category: str | None = None
+    icon: str | None = None
+
+
 class HardwareBase(BaseModel):
     name: str
     role: str | None = None
@@ -212,3 +219,4 @@ class Hardware(HardwareBase):
     source_scan_result_id: int | None = None
     # v2: manual status override
     status_override: str | None = None
+    documents: list[LinkedDocument] = []

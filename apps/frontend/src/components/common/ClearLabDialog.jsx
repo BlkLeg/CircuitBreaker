@@ -11,7 +11,7 @@ import PropTypes from 'prop-types';
  *
  * Docs are explicitly preserved; the dialog copy makes this clear.
  */
-function ClearLabDialog({ open, onBackup, onConfirm, onCancel, clearing }) {
+function ClearLabDialog({ open, onBackup, onConfirm, onCancel, clearing = false }) {
   if (!open) return null;
 
   return (
@@ -114,10 +114,6 @@ ClearLabDialog.propTypes = {
   onConfirm: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
   clearing: PropTypes.bool,
-};
-
-ClearLabDialog.defaultProps = {
-  clearing: false,
 };
 
 export default ClearLabDialog;

@@ -99,14 +99,14 @@ def update_settings(
                 if value.get("primary_color") is not None:
                     row.primary_color = value["primary_color"]
                 if value.get("accent_colors") is not None:
-                    row.accent_colors = json.dumps(value["accent_colors"])
+                    row.accent_colors = json.dumps(value["accent_colors"])  # type: ignore
                 # favicon_path and login_logo_path are only set via upload endpoints
             continue
         if field == "theme_colors":
             # Serialise ThemeColors dict → JSON string stored in custom_colors column.
             # Explicitly set to None when null so switching from custom to a named preset
             # clears the stale custom_colors from the DB.
-            row.custom_colors = json.dumps(value) if value is not None else None
+            row.custom_colors = value
             continue
         if field == "timezone":
             if value is not None and value != "UTC" and value not in zoneinfo.available_timezones():
@@ -114,8 +114,14 @@ def update_settings(
             setattr(row, field, value)
             _write_timezone_log(db, value or "UTC", user_id=user_id)
             continue
-        if field in (
-            "map_default_filters",
+        if field == "map_default_filters":
+            # JSONB column — store a dict directly; parse JSON strings from the frontend
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    value = None
+        elif field in (
             "environments",
             "categories",
             "locations",
@@ -137,7 +143,10 @@ def update_settings(
                     if "not initialized" in str(e).lower():
                         raise HTTPException(
                             status_code=503,
-                            detail="Vault is not initialized. Complete the first-run setup so SMTP password can be stored securely.",
+                            detail=(
+                                "Vault is not initialized. Complete the first-run setup"
+                                " so SMTP password can be stored securely."
+                            ),
                         ) from e
                     raise
             # If value is None we leave smtp_password_enc untouched so

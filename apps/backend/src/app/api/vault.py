@@ -1,5 +1,7 @@
 """Vault API — key health, initialization, rotation, and decryption test endpoints."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -32,8 +34,8 @@ class VaultTestResponse(BaseModel):
 @router.get("/health/vault", response_model=VaultStatusResponse)
 def get_vault_health(
     db: Session = Depends(get_db),
-    _user=require_role("admin"),
-):
+    _user: Any = require_role("admin"),
+) -> dict[str, Any]:
     """Return vault status: active key source, encrypted secret count, last rotation."""
     return vault_service.get_vault_status(db)
 
@@ -46,8 +48,8 @@ def get_vault_health(
 @router.post("/admin/vault/initialize", response_model=VaultStatusResponse)
 def initialize_vault_key(
     db: Session = Depends(get_db),
-    _user=require_role("admin"),
-):
+    _user: Any = require_role("admin"),
+) -> dict[str, Any]:
     """Create the first persistent vault key when the vault is uninitialized."""
     try:
         vault_service.initialize_vault_key(db)
@@ -64,8 +66,8 @@ def initialize_vault_key(
 @router.post("/admin/vault/rotate", response_model=VaultStatusResponse)
 def rotate_vault_key(
     db: Session = Depends(get_db),
-    _user=require_role("admin"),
-):
+    _user: Any = require_role("admin"),
+) -> dict[str, Any]:
     """Re-generate the vault key and re-encrypt all secrets in-place.
 
     The new key is immediately written to /data/.env and the database.
@@ -83,8 +85,8 @@ def rotate_vault_key(
 @router.post("/admin/vault/test", response_model=VaultTestResponse)
 def test_vault_decryption(
     db: Session = Depends(get_db),
-    _user=require_role("admin"),
-):
+    _user: Any = require_role("admin"),
+) -> VaultTestResponse:
     """Round-trip encrypt/decrypt a test value to verify vault health."""
     vault = get_vault()
     if not vault.is_initialized:

@@ -19,6 +19,7 @@ PostgreSQL is required; ``ADD COLUMN IF NOT EXISTS`` is used directly.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from pathlib import Path
 
 from sqlalchemy import text
@@ -52,7 +53,7 @@ def run_migrations(engine: Engine) -> None:
     _logger.info("SQL migrations complete (%d file(s))", len(sql_files))
 
 
-def _iter_statements(sql: str):
+def _iter_statements(sql: str) -> Generator[str, None, None]:
     """Yield individual SQL statements split on semicolons, skipping blanks/comments."""
     for raw in sql.split(";"):
         stmt = "\n".join(

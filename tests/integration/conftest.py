@@ -3,6 +3,12 @@ import os
 # Force NATS to fail fast in tests (unreachable port) so lifespan doesn't hang
 os.environ.setdefault("NATS_URL", "nats://127.0.0.1:19999")
 
+# Use a writable temp dir so the app lifespan doesn't crash on /data permission checks
+os.environ.setdefault("CB_DATA_DIR", "/tmp/cb-test-data")
+
+# Disable Alembic auto-migration in tests; conftest uses Base.metadata.create_all() instead
+os.environ.setdefault("CB_AUTO_MIGRATE", "false")
+
 # v0.2.0: app.db.session requires CB_DB_URL to be postgresql:// at import time.
 # Schema uses JSONB (PostgreSQL-only), so tests need a real Postgres or are skipped.
 # Default below is for local/test DB only; do not use in production. Set CB_TEST_DB_URL for CI.
@@ -143,4 +149,5 @@ def auth_headers(client):
         },
     )
     token = login_resp.json()["token"]
-    return {"Authorization": f"Bearer {token}"}
+    csrf_token = client.cookies.get("cb_csrf", "")
+    return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf_token}

@@ -2,6 +2,7 @@
 
 import os
 import secrets
+from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -10,7 +11,7 @@ COOKIE_NAME = "cb_session"
 CSRF_COOKIE_NAME = "cb_csrf"  # Readable by JS — used for double-submit CSRF defense
 
 
-def _cookie_params(request: Request, session_timeout_hours: int | None):
+def _cookie_params(request: Request, session_timeout_hours: int | None) -> dict[str, Any]:
     max_age = (session_timeout_hours or 24) * 3600
     secure = request.url.scheme == "https" if request.url else True
     return dict(
@@ -26,7 +27,8 @@ def set_auth_cookie_on_response(
     request: Request, response: Response, token: str, session_timeout_hours: int | None
 ) -> None:
     """Set the session cookie on an existing response (e.g. RedirectResponse)."""
-    response.set_cookie(
+    response.set_cookie(  # nosemgrep: python.django.web.django-cookie-httponly-missing.django-cookie-httponly-missing,python.django.web.django-cookie-samesite-missing.django-cookie-samesite-missing,python.django.web.django-cookie-secure-missing.django-cookie-secure-missing,python.fastapi.web.fastapi-cookie-httponly-missing.fastapi-cookie-httponly-missing,python.fastapi.web.fastapi-cookie-secure-missing.fastapi-cookie-secure-missing  # noqa: E501
+        # httponly/secure/samesite flags set via **_cookie_params() kwargs spread
         key=COOKIE_NAME,
         value=token,
         **_cookie_params(request, session_timeout_hours),
@@ -75,7 +77,7 @@ def token_from_websocket_scope(scope: dict) -> str | None:
             for part in cookie.split(";"):
                 part = part.strip()
                 if part.startswith(COOKIE_NAME + "="):
-                    return part[len(COOKIE_NAME) + 1 :].strip()
+                    return str(part[len(COOKIE_NAME) + 1 :].strip())
             return None
     return None
 
@@ -84,8 +86,8 @@ def is_websocket_secure(scope: dict) -> bool:
     """True if the WebSocket handshake is considered secure (e.g. X-Forwarded-Proto: https)."""
     for name, value in scope.get("headers", []):
         if name == b"x-forwarded-proto":
-            return value.decode("latin-1").strip().lower() == "https"
-    return scope.get("type") == "websocket" and (scope.get("scheme") or "ws") == "wss"
+            return bool(value.decode("latin-1").strip().lower() == "https")
+    return bool(scope.get("type") == "websocket" and (scope.get("scheme") or "ws") == "wss")
 
 
 def ws_require_wss() -> bool:

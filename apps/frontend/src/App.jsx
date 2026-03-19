@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import { I18nextProvider } from 'react-i18next';
 import i18n from './i18n';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
@@ -9,7 +10,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
-import Dock from './components/Dock';
+import MacOSDOCK from './components/MacOSDOCK';
 import Header from './components/Header';
 import CommandPalette from './components/CommandPalette';
 import AuthModal from './components/auth/AuthModal.jsx';
@@ -102,84 +103,94 @@ function AppInner() {
       <div className="page-content">
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/map" replace />} />
-              <Route path="/hardware" element={<HardwarePage />} />
-              <Route path="/compute-units" element={<ComputeUnitsPage />} />
-              <Route path="/services" element={<ServicesPage />} />
-              <Route path="/storage" element={<StoragePage />} />
-              <Route path="/networks" element={<NetworksPage />} />
-              <Route path="/external-nodes" element={<ExternalNodesPage />} />
-              <Route path="/misc" element={<MiscPage />} />
-              <Route path="/docs" element={<DocsPage />} />
-              <Route path="/map" element={<MapPage />} />
-              <Route
-                path="/ipam"
-                element={
-                  <RequireEditor>
-                    <IPAMPage />
-                  </RequireEditor>
-                }
-              />
-              <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
-              <Route
-                path="/status-pages"
-                element={
-                  <RequireEditor>
-                    <StatusPagesPage />
-                  </RequireEditor>
-                }
-              />
-              <Route
-                path="/racks"
-                element={
-                  <RequireEditor>
-                    <RackPage />
-                  </RequireEditor>
-                }
-              />
-              <Route
-                path="/logs"
-                element={
-                  <RequireAdmin>
-                    <LogsPage />
-                  </RequireAdmin>
-                }
-              />
-              <Route
-                path="/settings"
-                element={
-                  <RequireEditor>
-                    <SettingsPage />
-                  </RequireEditor>
-                }
-              />
-              <Route path="/discovery" element={<DiscoveryPage />} />
-              <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
-              <Route
-                path="/admin/users"
-                element={
-                  <RequireAdmin>
-                    <AdminUsersPage />
-                  </RequireAdmin>
-                }
-              />
-              <Route
-                path="/admin/users/:id/actions"
-                element={
-                  <RequireAdmin>
-                    <UserActionsPage />
-                  </RequireAdmin>
-                }
-              />
-              <Route path="/invite/accept" element={<InviteAcceptPage />} />
-              <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
-              <Route path="/reset-password" element={<ResetPasswordPage />} />
-            </Routes>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={location.pathname}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+              >
+                <Routes location={location}>
+                  <Route path="/" element={<Navigate to="/map" replace />} />
+                  <Route path="/hardware" element={<HardwarePage />} />
+                  <Route path="/compute-units" element={<ComputeUnitsPage />} />
+                  <Route path="/services" element={<ServicesPage />} />
+                  <Route path="/storage" element={<StoragePage />} />
+                  <Route path="/networks" element={<NetworksPage />} />
+                  <Route path="/external-nodes" element={<ExternalNodesPage />} />
+                  <Route path="/misc" element={<MiscPage />} />
+                  <Route path="/docs" element={<DocsPage />} />
+                  <Route path="/map" element={<MapPage />} />
+                  <Route
+                    path="/ipam"
+                    element={
+                      <RequireEditor>
+                        <IPAMPage />
+                      </RequireEditor>
+                    }
+                  />
+                  <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
+                  <Route
+                    path="/status-pages"
+                    element={
+                      <RequireEditor>
+                        <StatusPagesPage />
+                      </RequireEditor>
+                    }
+                  />
+                  <Route
+                    path="/racks"
+                    element={
+                      <RequireEditor>
+                        <RackPage />
+                      </RequireEditor>
+                    }
+                  />
+                  <Route
+                    path="/logs"
+                    element={
+                      <RequireAdmin>
+                        <LogsPage />
+                      </RequireAdmin>
+                    }
+                  />
+                  <Route
+                    path="/settings"
+                    element={
+                      <RequireEditor>
+                        <SettingsPage />
+                      </RequireEditor>
+                    }
+                  />
+                  <Route path="/discovery" element={<DiscoveryPage />} />
+                  <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
+                  <Route
+                    path="/admin/users"
+                    element={
+                      <RequireAdmin>
+                        <AdminUsersPage />
+                      </RequireAdmin>
+                    }
+                  />
+                  <Route
+                    path="/admin/users/:id/actions"
+                    element={
+                      <RequireAdmin>
+                        <UserActionsPage />
+                      </RequireAdmin>
+                    }
+                  />
+                  <Route path="/invite/accept" element={<InviteAcceptPage />} />
+                  <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
+                  <Route path="/reset-password" element={<ResetPasswordPage />} />
+                </Routes>
+              </motion.div>
+            </AnimatePresence>
           </React.Suspense>
         </ErrorBoundary>
       </div>
-      <Dock pendingCount={pendingCount} wsStatus={wsStatus} />
+      <MacOSDOCK pendingCount={pendingCount} wsStatus={wsStatus} />
       <AuthModal isOpen={authModalOpen} onClose={() => setAuthModalOpen(false)} />
       <ProfileModal isOpen={profileModalOpen} onClose={() => setProfileModalOpen(false)} />
     </div>

@@ -31,7 +31,10 @@ def set_status_main_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 
 def schedule_status_broadcast(payload: dict[str, Any]) -> None:
-    """Schedule a broadcast to all status WS clients. Safe to call from sync (e.g. status_worker)."""
+    """Schedule a broadcast to all status WS clients.
+
+    Safe to call from sync (e.g. status_worker).
+    """
     if _main_loop is None:
         return
     try:
@@ -43,15 +46,18 @@ def schedule_status_broadcast(payload: dict[str, Any]) -> None:
         logger.warning("Status broadcast schedule failed: %s", e)
 
 
-async def _ping_loop(ws: WebSocket) -> None:
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
     try:
         while True:
             await asyncio.sleep(30)
             if ws.application_state == WebSocketState.DISCONNECTED:
+                main_task.cancel()
                 break
             await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
-    except Exception:
+    except asyncio.CancelledError:
         pass
+    except Exception:
+        main_task.cancel()
 
 
 def _extract_client_ip(websocket: WebSocket) -> str:
@@ -67,7 +73,7 @@ async def status_stream(websocket: WebSocket) -> None:
     """Accept one status stream client; expect JWT in first message."""
     await websocket.accept()
 
-    if ws_require_wss() and not is_websocket_secure(websocket.scope):
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
         try:
             await websocket.send_text(json.dumps({"error": "wss_required"}))
             await websocket.close(code=1008)
@@ -110,7 +116,7 @@ async def status_stream(websocket: WebSocket) -> None:
                         if (
                             u
                             and u.is_active
-                            and not (getattr(u, "locked_until", None) and u.locked_until > utcnow())
+                            and not (u.locked_until is not None and u.locked_until > utcnow())
                         ):
                             authenticated = True
                             user_id = uid
@@ -132,7 +138,9 @@ async def status_stream(websocket: WebSocket) -> None:
 
     await websocket.send_text(json.dumps({"status": "connected", "type": "status_stream"}))
 
-    ping_task = asyncio.create_task(_ping_loop(websocket))
+    _current_task = asyncio.current_task()
+    assert _current_task is not None
+    ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
     try:
         while True:
             raw = await websocket.receive_text()

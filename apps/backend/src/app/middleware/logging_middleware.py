@@ -1,8 +1,10 @@
 """HTTP middleware that automatically logs all mutating API operations to the audit log."""
 
+import asyncio
 import json
 import logging
 import re
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -148,7 +150,7 @@ def _entity_type_from_path(path: str) -> tuple[str | None, int | None]:
     return entity_type, eid
 
 
-def _match_rule(method: str, path: str):
+def _match_rule(method: str, path: str) -> tuple[str | None, str | None]:
     """Return (action, category) for the request, or (None, None) if not matched."""
     for rule_method, pattern, action_tpl, category in _ROUTE_RULES:
         if rule_method != method:
@@ -175,7 +177,7 @@ async def _read_body(request: Request) -> bytes:
     body = await request.body()
 
     # Re-inject so downstream can read it again
-    async def receive():
+    async def receive() -> dict:
         return {"type": "http.request", "body": body, "more_body": False}
 
     request._receive = receive  # noqa: SLF001
@@ -192,7 +194,7 @@ async def _read_response_body(response: Response) -> bytes:
     body = b"".join(chunks)
 
     # Re-inject the body so the client still receives it
-    async def body_iterator():
+    async def body_iterator() -> AsyncGenerator[bytes, None]:
         yield body
 
     response.body_iterator = body_iterator()  # type: ignore[attr-defined]
@@ -214,17 +216,17 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
     import jwt as pyjwt
     from sqlalchemy import select
 
+    from app.core.security import _extract_token
     from app.db.models import User
 
     try:
-        # 1. CB_API_TOKEN — set by LegacyTokenMiddleware or raw header match
+        # 1. API or Session Token (Bearer header or cb_session cookie)
         if getattr(request.state, "legacy_admin", False):
             return "api-token", None, 0, "api-token"
 
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        token = _extract_token(request)
+        if not token:
             return "anonymous", None, None, None
-        token = auth_header[len("Bearer ") :]
 
         api_token = os.getenv("CB_API_TOKEN")
         if api_token and token == api_token:
@@ -273,7 +275,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         method = request.method
         path = request.url.path
 
@@ -293,8 +297,11 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         user_agent = request.headers.get("user-agent")
         ip_address = request.client.host if request.client else None
 
-        # Resolve the actor from JWT if present
-        actor, actor_gravatar_hash, actor_id, role_at_time = _resolve_actor(request)
+        # Resolve the actor from JWT if present — run in executor to avoid blocking event loop
+        loop = asyncio.get_running_loop()
+        actor, actor_gravatar_hash, actor_id, role_at_time = await loop.run_in_executor(
+            None, _resolve_actor, request
+        )
 
         # Read request body (re-inject for downstream)
         req_body_bytes = await _read_body(request)
@@ -306,11 +313,13 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 _logger.debug("Failed to decode request body as UTF-8", exc_info=True)
                 req_body_str = None
 
-        # Fetch old value for updates/deletes
+        # Fetch old value for updates/deletes — run in executor to avoid blocking event loop
         old_value_str: str | None = None
         if method in {"PATCH", "PUT", "DELETE"} and entity_id and entity_type:
             try:
-                old_value_str = _fetch_entity_json(entity_type, entity_id)
+                old_value_str = await loop.run_in_executor(
+                    None, _fetch_entity_json, entity_type, entity_id
+                )
             except Exception:
                 _logger.debug("Failed to fetch old entity value for audit diff", exc_info=True)
 
@@ -374,11 +383,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception:
             _logger.debug("Failed to build audit diff from old/new values", exc_info=True)
 
-        # Write log entry via the centralised service (always — including errors)
-        try:
-            _write_log(
+        # Write log entry — fire-and-forget in executor so the response is not delayed
+        loop.run_in_executor(
+            None,
+            lambda: _write_log(
                 action=action,
-                category=category,
+                category=category or "",
                 level=level,
                 status_code=status_code,
                 entity_type=entity_type,
@@ -394,9 +404,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 actor_id=actor_id,
                 actor_gravatar_hash=actor_gravatar_hash,
                 role_at_time=role_at_time,
-            )
-        except Exception as exc:
-            _logger.warning("Audit log write failed: %s", exc, exc_info=True)
+            ),
+        )
 
         return response
 

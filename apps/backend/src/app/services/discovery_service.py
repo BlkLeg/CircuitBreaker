@@ -1,188 +1,80 @@
 import asyncio
 import json
 import logging
-import re
 import time as _time_module
 from datetime import UTC, datetime
-from typing import Any
 
 import httpx
 from sqlalchemy.orm import Session
 
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
-from app.core.validation import validate_snmp_community
 from app.core.ws_manager import ws_manager
 from app.db.models import (
-    ComputeUnit,
     Hardware,
-    Network,
     ScanJob,
     ScanLog,
     ScanResult,
-    Service,
-    Storage,
 )
-from app.db.session import SessionLocal
-from app.schemas.discovery import ScanJobOut, ScanResultOut
-from app.services.credential_vault import get_vault
+from app.db.session import SessionLocal, get_session_context
+from app.schemas.discovery import ScanResultOut
+from app.services.discovery_merge import (
+    _auto_merge_result,
+    bulk_merge_results,  # noqa: F401
+    enhanced_bulk_merge,  # noqa: F401
+    merge_scan_result,  # noqa: F401
+)
+from app.services.discovery_network import (
+    _NMAP_OVERRIDE_PREFIX,
+    PORT_SERVICE_MAP,
+    _decrypt_community,
+    _match_ip_to_network,
+    _validate_cidr,
+    resolve_vlans_to_cidrs,
+)
+from app.services.discovery_probes import (
+    _ARP_CAPABLE,  # noqa: F401
+    _arp_available,
+    _has_raw_socket_privilege,
+    _run_arp_scan,
+    _run_banner_grab,
+    _run_nmap_scan,
+    _run_snmp_probe,
+    _run_vendor_lookup,
+)
 from app.services.discovery_safe import (
     docker_discover,
     is_docker_socket_available,
     scan_subnet_safe,
 )
+from app.services.discovery_scheduler import (
+    _max_concurrent_scans,
+    _running_scan_count,
+    _schedule_queued_scan_jobs,
+    purge_old_scan_results,  # noqa: F401
+    refresh_ip_pool,  # noqa: F401
+    run_scan_job_by_profile,  # noqa: F401
+    set_main_loop,  # noqa: F401
+)
 from app.services.log_service import write_log
 from app.services.settings_service import get_or_create_settings
+
+try:
+    import nmap
+except ImportError:
+    nmap = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 
 _scan_start_gate = asyncio.Lock()
 _ema_eta: dict[int, float] = {}
 _last_progress_snap: dict[int, tuple[float, float]] = {}
 
-
-def resolve_vlans_to_cidrs(db: Session, vlan_ids: list[int]) -> tuple[list[str], list[int]]:
-    """
-    Given a list of VLAN IDs, return (cidrs, network_ids).
-    Each VLAN may have multiple networks; de‑duplicate CIDRs.
-    """
-    if not vlan_ids:
-        return [], []
-    nets = db.query(Network).filter(Network.vlan_id.in_(vlan_ids)).all()
-    cidrs = sorted({n.cidr for n in nets if n.cidr})
-    network_ids = [n.id for n in nets]
-    return cidrs, network_ids
-
-
-def _match_ip_to_network(db: Session, ip: str) -> tuple[int | None, int | None]:
-    """Match an IP address to the most specific network in the DB.
-    Returns (network_id, vlan_id). Uses PostgreSQL INET when available for a single query.
-    """
-    import ipaddress
-
-    try:
-        ipaddress.ip_address(ip)
-    except ValueError:
-        return None, None
-
-    # PostgreSQL: single query with inet >> containment, longest prefix first
-    if db.get_bind().dialect.name == "postgresql":
-        from sqlalchemy import text
-
-        try:
-            row = db.execute(
-                text(
-                    """
-                    SELECT id, vlan_id FROM networks
-                    WHERE cidr IS NOT NULL AND cidr != ''
-                      AND inet(:ip) << inet(cidr)
-                    ORDER BY masklen(inet(cidr)) DESC
-                    LIMIT 1
-                    """
-                ),
-                {"ip": ip},
-            ).fetchone()
-            if row:
-                return int(row[0]), int(row[1]) if row[1] is not None else None
-            return None, None
-        except Exception as e:
-            logger.debug(
-                "Discovery: IP-to-network query failed, falling back to Python loop: %s",
-                e,
-                exc_info=True,
-            )
-
-    # Fallback: fetch all networks and match in Python (e.g. non-PostgreSQL or query error)
-    from sqlalchemy import select as _select
-
-    nets = db.scalars(_select(Network).where(Network.cidr != None)).all()  # noqa: E711
-    best_match = None
-    max_prefixlen = -1
-    ip_obj = ipaddress.ip_address(ip)
-    for net in nets:
-        if net.cidr is None:
-            continue
-        try:
-            net_obj = ipaddress.ip_network(net.cidr, strict=False)
-            if ip_obj in net_obj and net_obj.prefixlen > max_prefixlen:
-                max_prefixlen = net_obj.prefixlen
-                best_match = net
-        except ValueError:
-            continue
-    if best_match:
-        return best_match.id, best_match.vlan_id
-    return None, None
-
-
-try:
-    import nmap
-except ImportError:
-    nmap = None
-
-try:
-    from pysnmp.entity.engine import SnmpEngine
-    from pysnmp.hlapi.v3arch.asyncio.auth import CommunityData
-    from pysnmp.hlapi.v3arch.asyncio.cmdgen import get_cmd
-    from pysnmp.hlapi.v3arch.asyncio.context import ContextData
-    from pysnmp.hlapi.v3arch.asyncio.transport import UdpTransportTarget
-    from pysnmp.smi.rfc1902 import ObjectIdentity, ObjectType
-
-    _SNMP_AVAILABLE = True
-except ImportError:
-    _SNMP_AVAILABLE = False
-
-logger = logging.getLogger(__name__)
-
-_ARP_CAPABLE: bool | None = None
-
-
-def _norm_mac(mac: str | None) -> str | None:
-    """Normalize MAC to uppercase colon-separated format."""
-    if not mac:
-        return None
-    cleaned = re.sub(r"[^0-9a-fA-F]", "", mac)
-    if len(cleaned) != 12:
-        return mac.strip().upper()
-    return ":".join(cleaned[i : i + 2] for i in range(0, 12, 2)).upper()
-
-
-PORT_SERVICE_MAP = {
-    80: {"name": "HTTP", "type": "web_server"},
-    443: {"name": "HTTPS", "type": "web_server"},
-    8006: {"name": "Proxmox", "type": "hypervisor"},
-    8060: {"name": "TrueNAS", "type": "storage_appliance"},
-    22: {"name": "SSH", "type": "remote_access"},
-    3389: {"name": "RDP", "type": "remote_access"},
-    161: {"name": "SNMP", "type": "monitoring"},
-    8443: {"name": "UniFi", "type": "controller"},
-    623: {"name": "IPMI", "type": "out_of_band"},
-}
-
-
-def _arp_available() -> bool:
-    """Detect at runtime whether NET_RAW capability is available.
-    Returns True only if scapy can be imported AND the process has
-    sufficient privileges to open a raw socket.
-    Falls back to False silently — never raises.
-    """
-    global _ARP_CAPABLE
-    if _ARP_CAPABLE is not None:
-        return _ARP_CAPABLE
-    try:
-        import socket
-
-        import scapy.all  # noqa: F401
-
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
-        s.close()
-        _ARP_CAPABLE = True
-    except Exception:
-        _ARP_CAPABLE = False
-    return _ARP_CAPABLE
-
-
 _REDIS_DISCOVERY_CHANNEL = "cb:discovery:events"
 
 
-async def _emit_ws_event(event_type: str, payload: dict):
+async def _emit_ws_event(event_type: str, payload: dict) -> None:
     """Broadcast a discovery event via Redis pub/sub, WebSocket, and NATS.
 
     Primary delivery: Redis pub/sub (crosses Uvicorn worker boundaries).
@@ -216,76 +108,8 @@ async def _emit_ws_event(event_type: str, payload: dict):
     await nats_client.publish(subject, {"event_type": event_type, **payload})
 
 
-async def _emit_result_processed_event(db: Session, result_id: int, status: str):
-    """Emit WebSocket and NATS event for result processing (accept/reject)."""
-    try:
-        # Get the result from database
-        result = db.query(ScanResult).filter(ScanResult.id == result_id).first()
-        if not result:
-            logger.warning("Cannot emit result_processed event: result %d not found", result_id)
-            return
-
-        # Prepare payload with result data and status
-        payload = {
-            "job_id": result.scan_job_id,
-            "result": ScanResultOut.model_validate(result).model_dump(),
-            "status": status,
-        }
-
-        # Emit the event
-        await _emit_ws_event("result_processed", payload)
-
-    except Exception as exc:
-        logger.warning("Failed to emit result_processed event for result %d: %s", result_id, exc)
-
-
-_MAX_CIDR_PREFIXLEN = 12  # Allow at most /12 (e.g. 1M addresses for IPv4)
-_MAX_CIDR_ADDRESSES = 1_048_576  # 1M addresses max per CIDR
-
-
-def _validate_cidr(cidr: str) -> str:
-    """Validate and normalise a CIDR string.
-    Raises ValueError with a clear message on any invalid input, /0, or too-large range.
-    Never passes unvalidated strings to nmap or any subprocess.
-    Returns the normalised CIDR string on success.
-    The sentinel value 'docker' is allowed for docker-socket-only scans.
-    """
-    if cidr == "docker":
-        return "docker"
-    import ipaddress
-
-    try:
-        net = ipaddress.ip_network(cidr, strict=False)
-        if net.prefixlen == 0:
-            raise ValueError("Prefix length /0 is not allowed")
-        if net.num_addresses > _MAX_CIDR_ADDRESSES:
-            raise ValueError(
-                f"CIDR too large (max {_MAX_CIDR_ADDRESSES} addresses). Use a smaller range (e.g. /24)."
-            )
-        if net.version == 4 and net.prefixlen < _MAX_CIDR_PREFIXLEN:
-            raise ValueError(f"IPv4 CIDR must be /{_MAX_CIDR_PREFIXLEN} or smaller (e.g. /24).")
-        return str(net)
-    except ValueError as exc:
-        if (
-            "not a valid" in str(exc)
-            or "Prefix" in str(exc)
-            or "CIDR" in str(exc)
-            or "addresses" in str(exc)
-        ):
-            raise
-        raise ValueError(f"'{cidr}' is not a valid CIDR range. Example: '192.168.1.0/24'") from exc
-
-
-def _decrypt_community(encrypted: str | None) -> str:
-    if not encrypted:
-        return ""
-    vault = get_vault()
-    return vault.decrypt(encrypted) or ""
-
-
 async def _update_job_progress(
-    db: Session,
-    job: ScanJob,
+    job_id: int,
     phase: str,
     message: str = "",
     percent: int | None = None,
@@ -293,35 +117,40 @@ async def _update_job_progress(
     total: int | None = None,
 ) -> None:
     """Persist progress phase in DB and push a job_progress WebSocket event."""
-    job.progress_phase = phase
-    job.progress_message = message
-    db.commit()
+    started_at: str | None = None
+    with get_session_context() as _db:
+        _job = _db.query(ScanJob).filter(ScanJob.id == job_id).first()
+        if _job:
+            _job.progress_phase = phase
+            _job.progress_message = message
+            started_at = _job.started_at
+            _db.commit()
     payload = {
-        "job_id": job.id,
+        "job_id": job_id,
         "phase": phase,
         "message": message,
     }
     if percent is not None:
         clamped = max(0, min(100, int(percent)))
         payload["percent"] = clamped
-        if clamped > 0 and job.started_at:
+        if clamped > 0 and started_at:
             try:
                 EMA_ALPHA = 0.2
                 now_mono = _time_module.monotonic()
-                prev_ts, prev_pct = _last_progress_snap.get(job.id, (now_mono, 0.0))
+                prev_ts, prev_pct = _last_progress_snap.get(job_id, (now_mono, 0.0))
                 time_delta = max(now_mono - prev_ts, 0.5)
                 pct_delta = max(clamped - prev_pct, 0.0)
                 if pct_delta > 0:
                     rate = pct_delta / time_delta
                     instant_eta = (100.0 - clamped) / rate
                 else:
-                    started = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
+                    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                     elapsed = (datetime.now(UTC) - started).total_seconds()
                     instant_eta = elapsed * (100.0 / max(clamped, 0.1) - 1) if elapsed > 0 else 0
-                prev_ema = _ema_eta.get(job.id, instant_eta)
+                prev_ema = _ema_eta.get(job_id, instant_eta)
                 new_ema = EMA_ALPHA * instant_eta + (1.0 - EMA_ALPHA) * prev_ema
-                _ema_eta[job.id] = new_ema
-                _last_progress_snap[job.id] = (now_mono, clamped)
+                _ema_eta[job_id] = new_ema
+                _last_progress_snap[job_id] = (now_mono, clamped)
                 payload["eta_seconds"] = int(max(0, new_ema))
             except Exception as e:
                 logger.debug("Discovery: ETA calculation failed: %s", e, exc_info=True)
@@ -333,39 +162,38 @@ async def _update_job_progress(
 
 
 async def _log_scan_event(
-    db: Session,
-    job: ScanJob,
+    job_id: int,
     level: str,
     message: str,
     phase: str | None = None,
     details: str | None = None,
 ) -> None:
     """Log a detailed scan event to database and emit WebSocket event."""
-    scan_log = ScanLog(
-        scan_job_id=job.id,
-        level=level,
-        phase=phase,
-        message=message,
-        details=details,
-        created_at=utcnow_iso(),
-    )
-    db.add(scan_log)
-    db.commit()
-
-    # Emit detailed log event via WebSocket
+    log_id: int | None = None
+    created_ts: str = utcnow_iso()
+    with get_session_context() as _db:
+        scan_log = ScanLog(
+            scan_job_id=job_id,
+            level=level,
+            phase=phase,
+            message=message,
+            details=details,
+            created_at=created_ts,
+        )
+        _db.add(scan_log)
+        _db.commit()
+        _db.refresh(scan_log)
+        log_id = scan_log.id
     log_payload = {
-        "job_id": job.id,
-        "log_id": scan_log.id,
-        "timestamp": scan_log.created_at,
+        "job_id": job_id,
+        "log_id": log_id,
+        "timestamp": created_ts,
         "level": level,
         "phase": phase,
         "message": message,
         "details": details,
     }
     await _emit_ws_event("scan_log_entry", log_payload)
-
-
-_NMAP_OVERRIDE_PREFIX = "__nmap_override__:"
 
 
 def create_scan_job(
@@ -439,303 +267,37 @@ def create_scan_job(
     return job
 
 
-async def _run_arp_scan(cidr: str) -> list[dict]:
-    """Fallback mechanism if ARP capable is found."""
-    if not _arp_available():
-        logger.info(f"ARP not capable, skipping pure scapy ARP ping for {cidr}")
-        return []
-
-    logger.info(f"Running scapy ARP ping for {cidr}")
-    try:
-        from scapy.layers.l2 import ARP, Ether
-        from scapy.sendrecv import srp
-
-        ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=cidr), timeout=2, verbose=False)
-        results = []
-        for _snd, rcv in ans:
-            results.append({"ip": rcv.psrc, "mac": rcv.hwsrc, "status": "up"})
-        return results
-    except Exception as e:
-        logger.error(f"ARP scan failed: {e}")
-        return []
-
-
-def _has_raw_socket_privilege() -> bool:
-    """Return True if the process can open raw sockets (root or CAP_NET_RAW)."""
-    try:
-        import socket
-
-        s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-        s.close()
-        return True
-    except (PermissionError, OSError):
-        return False
-
-
-def _sanitise_nmap_args_for_unpriv(args: str) -> str:
-    """Strip flags that require root when running unprivileged.
-
-    -O (OS detection) and -sS/-sA/-sN etc. (raw SYN/ACK scans) need
-    CAP_NET_RAW.  Replace with -sT (connect scan) to keep discovery working.
-    Caller must pass already-validated (allowlisted) args.
-    """
-    import shlex
-
-    tokens = shlex.split(args)
-    filtered = [t for t in tokens if t not in ("-O", "--osscan-limit", "--osscan-guess")]
-    has_scan_type = any(t.startswith("-s") and t != "-sV" for t in filtered)
-    if not has_scan_type:
-        filtered.insert(0, "-sT")
-    else:
-        filtered = ["-sT" if (t.startswith("-s") and t not in ("-sV",)) else t for t in filtered]
-    return " ".join(filtered)
-
-
-async def _run_nmap_scan(cidr: str, args: str) -> dict:
-    if not nmap:
-        logger.error("python-nmap is not installed. Unable to run scan.")
-        return {}
-
-    safe_args = validate_nmap_arguments(args)
-    privileged = _has_raw_socket_privilege()
-    effective_args = safe_args if privileged else _sanitise_nmap_args_for_unpriv(safe_args)
-    if not privileged and effective_args != safe_args:
-        logger.warning(
-            "Running unprivileged — nmap args adjusted from '%s' to '%s'", safe_args, effective_args
-        )
-
-    nm = nmap.PortScanner()
-    logger.info(f"Running nmap {effective_args} against {cidr}")
-
-    # Note: We can't inject job logging here since this function doesn't have access to job/db
-    # Enhanced logging will be added at the caller level
-
-    loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, lambda: nm.scan(hosts=cidr, arguments=effective_args))
-
-        results = {}
-        for host in nm.all_hosts():
-            host_data = nm[host]
-            ip_address = host
-            mac_address = None
-            if "addresses" in host_data and "mac" in host_data["addresses"]:
-                mac_address = host_data["addresses"]["mac"]
-
-            hostname = None
-            if "hostnames" in host_data and len(host_data["hostnames"]) > 0:
-                hostname = host_data["hostnames"][0].get("name", None)
-
-            os_family = None
-            os_vendor = None
-            os_accuracy = None
-            if "osmatch" in host_data and len(host_data["osmatch"]) > 0:
-                best_match = host_data["osmatch"][0]
-                os_family = best_match.get("osclass", [{}])[0].get("osfamily", None)
-                os_vendor = best_match.get("osclass", [{}])[0].get("vendor", None)
-                try:
-                    os_accuracy = int(best_match.get("accuracy", 0)) or None
-                except (ValueError, TypeError):
-                    os_accuracy = None
-
-            open_ports = []
-            if "tcp" in host_data:
-                for port, port_info in host_data["tcp"].items():
-                    if port_info.get("state") == "open":
-                        port_name = port_info.get("name")
-                        service_version = port_info.get("version", "")
-                        open_ports.append(
-                            {
-                                "port": port,
-                                "protocol": "tcp",
-                                "name": port_name,
-                                "version": service_version,
-                            }
-                        )
-
-            # Create a clean subset of raw_xml since nm.get_nmap_last_output() could be huge
-            raw_xml = ""
-
-            results[ip_address] = {
-                "mac": mac_address,
-                "hostname": hostname,
-                "os_family": os_family,
-                "os_vendor": os_vendor,
-                "os_accuracy": os_accuracy,
-                "open_ports": open_ports,
-                "raw": raw_xml,
-            }
-        return results
-    except Exception as e:
-        logger.error(f"Nmap scan failed: {e}")
-        return {}
-
-
-async def _run_snmp_probe(ip: str, community: str, version: str = "2c", port: int = 161) -> dict:
-    if not community or not _SNMP_AVAILABLE:
-        return {}
-    try:
-        community = validate_snmp_community(community)
-    except ValueError:
-        logger.warning("Invalid SNMP community string, skipping probe")
-        return {}
-
-    logger.info(f"Running SNMP probe for {ip}")
-    result: dict[str, Any] = {"sys_name": None, "sys_descr": None, "interfaces": [], "storage": []}
-
-    try:
-        transport = await UdpTransportTarget.create((ip, port), timeout=1.0, retries=1)
-        async for error_indication, error_status, _, var_binds in get_cmd(
-            SnmpEngine(),
-            CommunityData(community, mpModel=1 if version == "2c" else 0),
-            transport,
-            ContextData(),
-            ObjectType(ObjectIdentity("SNMPv2-MIB", "sysName", 0)),
-            ObjectType(ObjectIdentity("SNMPv2-MIB", "sysDescr", 0)),
-        ):
-            if error_indication or error_status:
-                break
-            for name, val in var_binds:
-                oid_str = name.prettyPrint()
-                if "sysName" in oid_str:
-                    result["sys_name"] = val.prettyPrint()
-                elif "sysDescr" in oid_str:
-                    result["sys_descr"] = val.prettyPrint()
-    except Exception as e:
-        logger.debug(f"SNMP probe failed for {ip}: {e}")
-
-    return result
-
-
-async def _run_banner_grab(ip: str, ports: list[int], timeout: float = 2.0) -> dict[int, str]:
-    """Async TCP banner grab — connects to each port and reads the first 256 bytes."""
-    banners: dict[int, str] = {}
-    sem = asyncio.Semaphore(10)
-
-    async def _probe(port: int) -> None:
-        async with sem:
-            try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, port), timeout=timeout
-                )
-                data = await asyncio.wait_for(reader.read(512), timeout=timeout)
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception as e:
-                    logger.debug("Discovery: writer wait_closed: %s", e, exc_info=True)
-                text = data.decode(errors="replace").strip()[:256]
-                if text:
-                    banners[port] = text
-            except Exception as e:
-                logger.debug("Discovery: banner probe %s:%s failed: %s", ip, port, e, exc_info=True)
-
-    await asyncio.gather(*[_probe(p) for p in ports[:20]])
-    return banners
-
-
-async def _run_vendor_lookup(mac: str) -> str | None:
-    """Lookup MAC vendor via macvendors.com API.  Returns vendor string or None."""
-    if not mac:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.get(f"https://api.macvendors.com/{mac}")
-            if r.status_code == 200:
-                return r.text.strip()[:100]
-    except Exception as e:
-        logger.debug("Discovery: MAC vendor lookup failed: %s", e, exc_info=True)
-    return None
-
-
-def _running_scan_count(db: Session) -> int:
-    return db.query(ScanJob).filter(ScanJob.status == "running").count()
-
-
-def _max_concurrent_scans(settings) -> int:
-    return max(1, int(getattr(settings, "max_concurrent_scans", 2) or 2))
-
-
-def _schedule_queued_scan_jobs(db: Session) -> None:
-    settings = get_or_create_settings(db)
-    available_slots = _max_concurrent_scans(settings) - _running_scan_count(db)
-    if available_slots <= 0:
-        return
-
-    queued_jobs = (
-        db.query(ScanJob)
-        .filter(ScanJob.status == "queued")
-        .order_by(ScanJob.created_at.asc(), ScanJob.id.asc())
-        .limit(available_slots)
-        .all()
-    )
-    for queued in queued_jobs:
-        asyncio.create_task(run_scan_job(queued.id))
-
-
-async def run_scan_job(job_id: int):
-    """
-    Background worker function that performs the actual network scanning orchestration.
-    """
-    logger.info(f"Starting execution of Discovery Job {job_id}")
-
-    # 1. Fetch Job and Settings
+def _scan_setup(job_id: int) -> dict | None:
+    """Phase 1 (sync, runs in executor): Read job config, verify slot, mark running.
+    Returns setup dict or None if the job should not run."""
     db = SessionLocal()
     try:
-        async with _scan_start_gate:
-            job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
-            if not job:
-                return
-            if job.status != "queued":
-                logger.debug("Skipping scan job %s because status=%s", job_id, job.status)
-                return
+        job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+        if not job:
+            return None
+        if job.status != "queued":
+            logger.debug("Skipping scan job %s because status=%s", job_id, job.status)
+            return None
 
-            # Re-verify slot is still available (race-safe: we hold _scan_start_gate)
-            running_now = _running_scan_count(db)
-            max_allowed = _max_concurrent_scans(get_or_create_settings(db))
-            if running_now >= max_allowed:
-                logger.info(
-                    "Scan job %d: no slot available (running=%d, max=%d), re-queuing",
-                    job_id,
-                    running_now,
-                    max_allowed,
-                )
-                job.status = "queued"
-                db.commit()
-                return
-
-            scan_types = json.loads(job.scan_types_json)
-            job.status = "running"
-            job.started_at = utcnow_iso()
-            db.commit()
-
-        write_log(
-            db,
-            action="scan_triggered",
-            entity_type="scan_job",
-            entity_id=job.id,
-            category="discovery",
-            actor=job.triggered_by,
-            details=json.dumps(
-                {
-                    "cidr": job.target_cidr,
-                    "scan_types": scan_types,
-                    "triggered_by": job.triggered_by,
-                }
-            ),
-        )
-
-        # Publish NATS event for scan start
-        from app.core.nats_client import nats_client
-        from app.core.subjects import DISCOVERY_SCAN_STARTED, discovery_scan_started_payload
-
-        await nats_client.publish(
-            DISCOVERY_SCAN_STARTED,
-            discovery_scan_started_payload(job.id, job.target_cidr, job.triggered_by or "api"),  # type: ignore[arg-type]
-        )
-
-        # Determine effective parameters from profile or settings
+        running_now = _running_scan_count(db)
         settings = get_or_create_settings(db)
+        max_allowed = _max_concurrent_scans(settings)
+        if running_now >= max_allowed:
+            logger.info(
+                "Scan job %d: no slot available (running=%d, max=%d), re-queuing",
+                job_id,
+                running_now,
+                max_allowed,
+            )
+            job.status = "queued"
+            db.commit()
+            return None
+
+        scan_types = json.loads(job.scan_types_json)
+        job.status = "running"
+        job.started_at = utcnow_iso()
+        db.commit()
+
         nmap_args = settings.discovery_nmap_args
         snmp_community_plain = _decrypt_community(settings.discovery_snmp_community)
         snmp_version = "2c"
@@ -745,11 +307,10 @@ async def run_scan_job(job_id: int):
         docker_network_types = ["bridge"]
         docker_port_scan = False
         docker_socket_path = "/var/run/docker.sock"
-        docker_network_types = ["bridge"]
-        docker_port_scan = False
-        docker_socket_path = "/var/run/docker.sock"
+        effective_mode = getattr(settings, "discovery_mode", "safe")
+        docker_discovery_enabled = getattr(settings, "docker_discovery_enabled", False)
+        error_reason: str | None = None
 
-        # B12: check for ad-hoc nmap override encoded in the label field
         if job.label and job.label.startswith(_NMAP_OVERRIDE_PREFIX):
             nmap_args = job.label[len(_NMAP_OVERRIDE_PREFIX) :]
 
@@ -776,433 +337,94 @@ async def run_scan_job(job_id: int):
                             else profile.docker_network_types
                         )
                     except (json.JSONDecodeError, TypeError):
-                        docker_network_types = ["bridge"]  # fallback
+                        docker_network_types = ["bridge"]
                 if hasattr(profile, "docker_port_scan"):
                     docker_port_scan = bool(profile.docker_port_scan)
                 if hasattr(profile, "docker_socket_path") and profile.docker_socket_path:
                     docker_socket_path = profile.docker_socket_path
-                if hasattr(profile, "docker_network_types") and profile.docker_network_types:
-                    docker_network_types = (
-                        json.loads(profile.docker_network_types)
-                        if isinstance(profile.docker_network_types, str)
-                        else profile.docker_network_types
-                    )
-                if hasattr(profile, "docker_port_scan"):
-                    docker_port_scan = profile.docker_port_scan  # type: ignore[assignment]
-                if hasattr(profile, "docker_socket_path") and profile.docker_socket_path:
-                    docker_socket_path = profile.docker_socket_path  # type: ignore[assignment]
 
-        await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
-        await _emit_ws_event(
-            "job_progress", {"job_id": job.id, "message": f"Starting scan on {job.target_cidr}"}
-        )
+        return {
+            "job_id": job_id,
+            "target_cidr": job.target_cidr,
+            "triggered_by": job.triggered_by,
+            "scan_types": scan_types,
+            "nmap_args": nmap_args,
+            "snmp_community_plain": snmp_community_plain,
+            "snmp_version": snmp_version,
+            "snmp_port": snmp_port,
+            "http_probe": http_probe,
+            "auto_merge": auto_merge,
+            "docker_discovery_enabled": docker_discovery_enabled,
+            "docker_socket_path": docker_socket_path,
+            "docker_network_types": docker_network_types,
+            "docker_port_scan": docker_port_scan,
+            "effective_mode": effective_mode,
+            "error_reason": error_reason,
+            "started_at": job.started_at,
+            "label": job.label,
+        }
+    finally:
+        db.close()
 
+
+def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
+    """Phase 3 (sync, runs in executor): Write scan results to DB, match hardware, auto-merge.
+    Each entry in raw_results is a dict with probe data. Returns stats + serialised result list."""
+    db = SessionLocal()
+    try:
+        job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+        if not job:
+            return {"stats": {}, "results": []}
+
+        auto_merge = setup.get("auto_merge", False)
         hosts_found = 0
         hosts_new = 0
         hosts_updated = 0
         hosts_conflict = 0
+        results_out: list[dict] = []
 
-        # Docker-only scan: skip all network discovery phases
-        if scan_types == ["docker"]:
-            socket_path = "/var/run/docker.sock"
-            if job.label and job.label.startswith("docker:"):
-                socket_path = job.label[len("docker:") :]
-            await _update_job_progress(
-                db, job, "docker", "Enumerating Docker containers…", percent=10
-            )
-            await _log_scan_event(
-                db, job, "INFO", f"Starting Docker discovery via {socket_path}", "docker"
-            )
-            containers = docker_discover(socket_path, docker_network_types, docker_port_scan)
-            await _update_job_progress(
-                db,
-                job,
-                "docker",
-                f"{len(containers)} container(s) found — creating results…",
-                percent=70,
-            )
-            for container in containers:
-                # Skip network topology entries - they're metadata
-                if container.get("type") == "network_topology":
-                    continue
+        for raw in raw_results:
+            ip = raw.get("ip")
+            mac_address = raw.get("mac_address")
+            hostname = raw.get("hostname")
+            snmp_data = raw.get("snmp_data", {})
+            source = raw.get("source", "nmap")
+            network_id = raw.get("network_id")
+            vlan_id = raw.get("vlan_id")
 
-                container_ip = container.get("ip") or None
-                _image = container.get("image") or "container"
-                _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                net_id, v_id = (
-                    _match_ip_to_network(db, container_ip) if container_ip else (None, None)
-                )
+            # For docker results, resolve network_id/vlan_id if not already set
+            if source == "docker" and network_id is None and ip:
+                network_id, vlan_id = _match_ip_to_network(db, ip)
 
-                # Enhanced raw data with network and port information
-                raw_data = {
-                    "source": "docker",
-                    "image": _image,
-                    "status": container.get("status"),
-                    "container_id": container.get("container_id"),
-                    "full_id": container.get("full_id"),
-                    "networks": container.get("networks", []),
-                    "primary_network": container.get("primary_network"),
-                    "open_ports": container.get("open_ports", []),
-                    "port_count": container.get("port_count", 0),
-                    "labels": container.get("labels", {}),
-                    "env_vars": container.get("env_vars", [])[:10],  # Limit to first 10 env vars
-                    "mounts": container.get("mounts", []),
-                }
-                docker_res = ScanResult(
-                    scan_job_id=job.id,
-                    ip_address=container_ip,
-                    hostname=container["name"],
-                    os_vendor="Docker",
-                    os_family=_vendor,
-                    network_id=net_id,
-                    vlan_id=v_id,
-                    raw_nmap_xml=json.dumps(
-                        {
-                            "source": "docker",
-                            "image": _image,
-                            "status": container.get("status"),
-                            "container_id": container.get("container_id"),
-                        }
-                    ),
-                    state="new",
-                    merge_status="pending",
-                    created_at=utcnow_iso(),
-                )
-                matched_hw = (
-                    db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
-                    if container_ip
-                    else None
-                )
-                if matched_hw:
-                    docker_res.matched_entity_type = "hardware"
-                    docker_res.matched_entity_id = matched_hw.id
-                    docker_res.state = "matched"
-                    hosts_updated += 1
-                else:
-                    hosts_new += 1
-                hosts_found += 1
-                db.add(docker_res)
-                db.commit()
-                db.refresh(docker_res)
-                await _emit_ws_event(
-                    "result_added",
-                    {
-                        "job_id": job.id,
-                        "result": ScanResultOut.model_validate(docker_res).model_dump(),
-                    },
-                )
-            job.hosts_found = hosts_found
-            job.hosts_new = hosts_new
-            job.hosts_updated = hosts_updated
-            job.hosts_conflict = 0
-            job.status = "completed"
-            job.completed_at = utcnow_iso()
-            db.commit()
-            await _update_job_progress(
-                db,
-                job,
-                "docker",
-                f"Docker scan complete. {hosts_found} container(s) discovered.",
-                percent=100,
-            )
-            await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
-            _ema_eta.pop(job.id, None)
-            _last_progress_snap.pop(job.id, None)
-            _schedule_queued_scan_jobs(db)
-            return
-
-        active_ips: set[str] = set()
-        nmap_results: dict = {}
-
-        # Determine effective discovery mode; auto-downgrade if no raw socket privilege
-        effective_mode = getattr(settings, "discovery_mode", "safe")
-        if effective_mode == "full" and not _has_raw_socket_privilege():
-            logger.warning(
-                "Job %s: discovery_mode='full' but no CAP_NET_RAW — downgrading to 'safe'",
-                job.id,
-            )
-            effective_mode = "safe"
-
-        if effective_mode == "safe":
-            # Safe mode: ICMP ping + TCP connect scan; no raw sockets required
-            import ipaddress as _ipaddress
-
-            try:
-                _total_hosts = (
-                    _ipaddress.IPv4Network(job.target_cidr, strict=False).num_addresses - 2
-                )
-            except Exception:
-                _total_hosts = 0
-            await _update_job_progress(
-                db,
-                job,
-                "ping",
-                f"Pinging {max(_total_hosts, 0)} hosts in {job.target_cidr}…",
-                percent=10,
-            )
-            loop = asyncio.get_running_loop()
-            try:
-                safe_results = await loop.run_in_executor(None, scan_subnet_safe, job.target_cidr)  # type: ignore[arg-type]
-            except Exception as _scan_exc:
-                logger.warning(
-                    "Scan job %d: scan_subnet_safe raised %s: %s",
-                    job.id,
-                    type(_scan_exc).__name__,
-                    _scan_exc,
-                )
-                job.error_reason = f"scan_error: {type(_scan_exc).__name__}"
-                safe_results = []
-            await _update_job_progress(
-                db,
-                job,
-                "tcp",
-                f"{len(safe_results)} host{'s' if len(safe_results) != 1 else ''} responded — probing TCP ports…",
-                percent=30,
-            )
-            for r in safe_results:
-                ip = r["ip"]
-                active_ips.add(ip)
-                open_ports = [
-                    {
-                        "port": p,
-                        "service": PORT_SERVICE_MAP.get(p, {}).get("name", "unknown"),
-                        "state": "open",
-                    }
-                    for p in r.get("open_ports", [])
-                ]
-                nmap_results[ip] = {
-                    "mac": None,
-                    "hostname": None,
-                    "os_family": None,
-                    "os_vendor": None,
-                    "open_ports": open_ports,
-                    "raw": "",
-                }
-            logger.info(
-                "[safe-mode] job %s: %d hosts found via ping/TCP in %s",
-                job.id,
-                len(active_ips),
-                job.target_cidr,
-            )
-        else:
-            # Full mode: ARP + nmap (requires CAP_NET_RAW / NET_ADMIN)
-            async def _arp_phase():
-                if "arp" in scan_types and _arp_available():
-                    await _update_job_progress(
-                        db, job, "arp", "Running ARP discovery...", percent=12
-                    )
-                    await _log_scan_event(db, job, "INFO", "Starting ARP discovery phase", "arp")
-                    try:
-                        results = await _run_arp_scan(job.target_cidr)
-                        await _log_scan_event(
-                            db,
-                            job,
-                            "SUCCESS",
-                            f"ARP discovery completed. Found {len(results)} responding hosts",
-                            "arp",
-                            f"Discovered hosts: {[r['ip'] for r in results][:10]}",
-                        )
-                        return results
-                    except Exception as e:
-                        await _log_scan_event(
-                            db, job, "ERROR", f"ARP discovery failed: {str(e)}", "arp", str(e)
-                        )
-                        raise
-                await _log_scan_event(
-                    db, job, "INFO", "ARP discovery skipped (not available or not requested)", "arp"
-                )
-                return []
-
-            async def _nmap_phase():
-                if "nmap" in scan_types and not nmap:
-                    logger.warning(
-                        "Scan job %d: python-nmap unavailable; nmap phase skipped.", job.id
-                    )
-                    job.error_reason = "tools_unavailable"
-                    await _log_scan_event(
-                        db,
-                        job,
-                        "ERROR",
-                        "nmap tool unavailable — python-nmap not installed",
-                        "nmap",
-                    )
-                    return {}
-                if "nmap" in scan_types:
-                    await _update_job_progress(
-                        db, job, "nmap", "Running nmap host discovery...", percent=42
-                    )
-                    await _log_scan_event(
-                        db, job, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap"
-                    )
-                    try:
-                        results = await _run_nmap_scan(job.target_cidr, nmap_args)
-                        host_count = len(results)
-                        await _log_scan_event(
-                            db,
-                            job,
-                            "SUCCESS",
-                            f"Nmap scan completed. Discovered {host_count} active hosts",
-                            "nmap",
-                            f"Hosts found: {list(results.keys())[:10]}",
-                        )
-                        # Log detailed results for each discovered host
-                        for ip, host_data in list(results.items())[
-                            :5
-                        ]:  # Limit to first 5 for brevity
-                            open_ports = host_data.get("open_ports", [])
-                            hostname = host_data.get("hostname", "Unknown")
-                            if open_ports:
-                                port_list = [f"{p['port']}/{p['protocol']}" for p in open_ports[:5]]
-                                await _log_scan_event(
-                                    db,
-                                    job,
-                                    "INFO",
-                                    f"Host {ip} ({hostname}): {len(open_ports)} open ports",
-                                    "nmap",
-                                    f"Ports: {', '.join(port_list)}",
-                                )
-                            else:
-                                await _log_scan_event(
-                                    db,
-                                    job,
-                                    "INFO",
-                                    f"Host {ip} ({hostname}): No open ports detected",
-                                    "nmap",
-                                )
-                        return results
-                    except Exception as e:
-                        await _log_scan_event(
-                            db, job, "ERROR", f"Nmap scan failed: {str(e)}", "nmap", str(e)
-                        )
-                        raise
-                await _log_scan_event(db, job, "INFO", "Nmap scan skipped (not requested)", "nmap")
-                return {}
-
-            arp_results, nmap_scan = await asyncio.gather(_arp_phase(), _nmap_phase())
-            nmap_results = nmap_scan
-
-            for r in arp_results:
-                active_ips.add(r["ip"])
-            for ip in nmap_results.keys():
-                active_ips.add(ip)
-
-        # 4. Phase 3 & 4: Deep Probes per IP
-        n_active = len(active_ips)
-        if n_active > 0 and "snmp" in scan_types and snmp_community_plain:
-            await _update_job_progress(
-                db,
-                job,
-                "snmp",
-                f"Preparing deep probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58,
-                processed=0,
-                total=n_active,
-            )
-            await _log_scan_event(
-                db, job, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp"
-            )
-        elif n_active > 0 and http_probe and "http" in scan_types:
-            await _update_job_progress(
-                db,
-                job,
-                "http",
-                f"Preparing HTTP probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58,
-                processed=0,
-                total=n_active,
-            )
-
-        # B6: use Python-only counters; assign to job once at the end
-        hosts_found = 0
-        hosts_new = 0
-        hosts_updated = 0
-        hosts_conflict = 0
-
-        results_list = []
-        for index, ip in enumerate(active_ips, start=1):
-            await _emit_ws_event(
-                "job_progress",
-                {
-                    "job_id": job.id,
-                    "phase": job.progress_phase,
-                    "message": f"Probing host {index}/{n_active}: {ip}",
-                    "processed": index - 1,
-                    "total": n_active,
-                    "percent": 58 + int(((index - 1) / max(n_active, 1)) * 35),
-                },
-            )
-
-            # Get nmap base data
-            n_data = nmap_results.get(ip, {})
-            mac_address = n_data.get("mac")
-            hostname = n_data.get("hostname")
-            os_family = n_data.get("os_family")
-            os_vendor = n_data.get("os_vendor")
-            os_accuracy = n_data.get("os_accuracy")
-            open_ports = n_data.get("open_ports", [])
-            raw_xml = n_data.get("raw", "")
-
-            snmp_data = {}
-            if "snmp" in scan_types and snmp_community_plain:
-                snmp_data = await _run_snmp_probe(ip, snmp_community_plain, snmp_version, snmp_port)
-
-            # HTTP Probe fallback if hostname is empty and http requested
-            if http_probe and not hostname:
-                has_web = any(p["port"] in (80, 443) for p in open_ports)
-                if has_web:
-                    try:
-                        async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
-                            await client.get(f"http://{ip}")
-                    except Exception as e:
-                        logger.debug(
-                            "Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True
-                        )
-
-            # Deep Dive: TCP banner grab + MAC vendor lookup
-            banner_text: str | None = None
-            if "deep_dive" in scan_types and open_ports:
-                port_nums = [p["port"] for p in open_ports if isinstance(p.get("port"), int)]
-                if port_nums:
-                    banners = await _run_banner_grab(ip, port_nums)
-                    if banners:
-                        # Prefer well-known ports (22=SSH, 80=HTTP, 443=HTTPS, 21=FTP)
-                        for preferred in (22, 21, 80, 443):
-                            if preferred in banners:
-                                banner_text = banners[preferred]
-                                break
-                        if not banner_text:
-                            banner_text = next(iter(banners.values()))
-
-                if not os_vendor and mac_address:
-                    os_vendor = await _run_vendor_lookup(mac_address) or os_vendor
-
-            # Determine source type for this result
-            if "deep_dive" in scan_types:
-                result_source = "deep_dive"
-            elif not n_data:
-                result_source = "arp"
-            else:
-                result_source = "nmap"
-
-            # Construct Result Entity
             res = ScanResult(
-                scan_job_id=job.id,
+                scan_job_id=job_id,
                 ip_address=ip,
                 mac_address=mac_address,
                 hostname=hostname or snmp_data.get("sys_name"),
-                open_ports_json=json.dumps(open_ports) if open_ports else None,
-                os_family=os_family,
-                os_vendor=os_vendor,
-                os_accuracy=os_accuracy,
-                banner=banner_text,
-                source_type=result_source,
+                open_ports_json=raw.get("open_ports_json"),
+                os_family=raw.get("os_family"),
+                os_vendor=raw.get("os_vendor"),
+                os_accuracy=raw.get("os_accuracy"),
+                banner=raw.get("banner"),
+                source_type=raw.get("source_type", source),
                 snmp_sys_name=snmp_data.get("sys_name"),
                 snmp_sys_descr=snmp_data.get("sys_descr"),
-                raw_nmap_xml=raw_xml,
+                raw_nmap_xml=raw.get("raw_nmap_xml", ""),
+                network_id=network_id,
+                vlan_id=vlan_id,
                 state="new",
                 merge_status="pending",
                 created_at=utcnow_iso(),
             )
+
+            # docker-sourced results have os_vendor/os_family/hostname preset via override fields
+            if raw.get("os_vendor_override"):
+                res.os_vendor = raw["os_vendor_override"]
+            if raw.get("os_family_override"):
+                res.os_family = raw["os_family_override"]
+            if raw.get("hostname_override"):
+                res.hostname = raw["hostname_override"]
+
             db.add(res)
 
             # Match against existing hardware
@@ -1211,14 +433,13 @@ async def run_scan_job(job_id: int):
                 matched_hardware = (
                     db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
                 )
-            if not matched_hardware:
+            if not matched_hardware and ip:
                 matched_hardware = db.query(Hardware).filter(Hardware.ip_address == ip).first()
 
             if matched_hardware:
                 res.matched_entity_type = "hardware"
                 res.matched_entity_id = matched_hardware.id
 
-                # B5: Conflict detection — compare discovered vs stored fields
                 conflict_fields = []
                 if (
                     mac_address
@@ -1248,7 +469,7 @@ async def run_scan_job(job_id: int):
 
                 if conflict_fields:
                     res.state = "conflict"
-                    res.conflicts_json = json.dumps(conflict_fields)
+                    res.conflicts_json = json.dumps(conflict_fields)  # type: ignore[assignment]
                     hosts_conflict += 1
                 else:
                     res.state = "matched"
@@ -1257,1243 +478,569 @@ async def run_scan_job(job_id: int):
                 hosts_new += 1
 
             hosts_found += 1
-            job.hosts_found = hosts_found
-            job.hosts_new = hosts_new
-            job.hosts_updated = hosts_updated
-            job.hosts_conflict = hosts_conflict
-
             db.commit()
             db.refresh(res)
+            results_out.append(ScanResultOut.model_validate(res).model_dump())
 
-            await _emit_ws_event(
-                "result_added",
-                {"job_id": job.id, "result": ScanResultOut.model_validate(res).model_dump()},
+        # Auto-merge
+        if auto_merge:
+            results_for_merge = (
+                db.query(ScanResult)
+                .filter(
+                    ScanResult.scan_job_id == job_id,
+                    ScanResult.merge_status == "pending",
+                )
+                .all()
             )
-            results_list.append(res)
+            for r in results_for_merge:
+                _auto_merge_result(db, r, actor=setup.get("triggered_by") or "system")
 
+        # Update job counters
+        job.hosts_found = hosts_found
+        job.hosts_new = hosts_new
+        job.hosts_updated = hosts_updated
+        job.hosts_conflict = hosts_conflict
+        db.commit()
+
+        return {
+            "stats": {
+                "hosts_found": hosts_found,
+                "hosts_new": hosts_new,
+                "hosts_updated": hosts_updated,
+                "hosts_conflict": hosts_conflict,
+            },
+            "results": results_out,
+        }
+    finally:
+        db.close()
+
+
+def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
+    """Phase 4 (sync, runs in executor): finalize job status, write audit log, schedule queued scans."""  # noqa: E501
+    db = SessionLocal()
+    try:
+        job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+        if not job:
+            return
+
+        hosts_found = stats.get("hosts_found", 0)
+        job.hosts_found = stats.get("hosts_found", job.hosts_found or 0)
+        job.hosts_new = stats.get("hosts_new", job.hosts_new or 0)
+        job.hosts_updated = stats.get("hosts_updated", job.hosts_updated or 0)
+        job.hosts_conflict = stats.get("hosts_conflict", job.hosts_conflict or 0)
+        job.status = final_status
+        job.completed_at = utcnow_iso()
+        db.commit()
+
+        if final_status == "completed":
+            write_log(
+                db,
+                action="scan_completed",
+                entity_type="scan_job",
+                entity_id=job_id,
+                category="discovery",
+                actor=job.triggered_by,
+                details=json.dumps(
+                    {
+                        "hosts_found": hosts_found,
+                        "hosts_new": stats.get("hosts_new", 0),
+                        "hosts_conflict": stats.get("hosts_conflict", 0),
+                        "cidr": job.target_cidr,
+                    }
+                ),
+            )
+        elif final_status == "failed":
+            error_text = stats.get("error_text", "")
+            job.error_text = error_text
+            job.error_reason = stats.get("error_reason", "scan_error: unknown")
+            job.progress_phase = "failed"
+            job.progress_message = error_text
+            db.commit()
+            write_log(
+                db,
+                action="scan_failed",
+                entity_type="scan_job",
+                entity_id=job_id,
+                category="discovery",
+                severity="error",
+                actor=job.triggered_by,
+                details=json.dumps({"error": error_text, "cidr": job.target_cidr}),
+            )
+
+        _schedule_queued_scan_jobs(db)
+    finally:
+        db.close()
+
+
+async def run_scan_job(job_id: int) -> None:
+    """
+    Background worker function that performs the actual network scanning orchestration.
+
+    Structured into 4 phases to avoid holding a DB session open during async network I/O:
+      Phase 1 (_scan_setup)    — sync, in executor: read config, mark job running
+      Phase 2                  — async: network discovery, per-host probing
+      Phase 3 (_scan_import)   — sync, in executor: write results, match hardware
+      Phase 4 (_scan_finalize) — sync, in executor: finalize job status
+    """
+    logger.info(f"Starting execution of Discovery Job {job_id}")
+    loop = asyncio.get_running_loop()
+
+    # ── Phase 1: Setup ────────────────────────────────────────────────────────
+    async with _scan_start_gate:
+        setup = await loop.run_in_executor(None, _scan_setup, job_id)
+    if not setup:
+        return
+
+    target_cidr = setup["target_cidr"]
+    triggered_by = setup.get("triggered_by") or "api"
+    scan_types: list = setup["scan_types"]
+    nmap_args: str = setup["nmap_args"]
+    snmp_community_plain: str = setup.get("snmp_community_plain", "")
+    snmp_version: str = setup.get("snmp_version", "2c")
+    snmp_port: int = setup.get("snmp_port", 161)
+    http_probe: bool = setup.get("http_probe", False)
+    docker_discovery_enabled: bool = setup.get("docker_discovery_enabled", False)
+    docker_socket_path: str = setup.get("docker_socket_path", "/var/run/docker.sock")
+    docker_network_types: list = setup.get("docker_network_types", ["bridge"])
+    docker_port_scan: bool = setup.get("docker_port_scan", False)
+    effective_mode: str = setup.get("effective_mode", "safe")
+    label: str | None = setup.get("label")
+
+    # Publish NATS scan started event
+    from app.core.nats_client import nats_client
+    from app.core.subjects import DISCOVERY_SCAN_STARTED, discovery_scan_started_payload
+
+    await nats_client.publish(
+        DISCOVERY_SCAN_STARTED,
+        discovery_scan_started_payload(job_id, target_cidr, triggered_by),
+    )
+    await _emit_ws_event(
+        "job_update",
+        {
+            "job": {
+                "id": job_id,
+                "status": "running",
+                "target_cidr": target_cidr,
+                "triggered_by": triggered_by,
+            }
+        },
+    )
+    await _emit_ws_event(
+        "job_progress", {"job_id": job_id, "message": f"Starting scan on {target_cidr}"}
+    )
+
+    raw_results: list[dict] = []
+
+    try:
+        # ── Docker-only scan (early return path) ─────────────────────────────
+        if scan_types == ["docker"]:
+            socket_path = "/var/run/docker.sock"
+            if label and label.startswith("docker:"):
+                socket_path = label[len("docker:") :]
+            await _update_job_progress(
+                job_id, "docker", "Enumerating Docker containers...", percent=10
+            )
+            await _log_scan_event(
+                job_id, "INFO", f"Starting Docker discovery via {socket_path}", "docker"
+            )
+
+            containers = docker_discover(socket_path, docker_network_types, docker_port_scan)
+            await _update_job_progress(
+                job_id,
+                "docker",
+                f"{len(containers)} container(s) found -- creating results...",
+                percent=70,
+            )
+
+            for container in containers:
+                if container.get("type") == "network_topology":
+                    continue
+                container_ip = container.get("ip") or None
+                if container_ip is None:
+                    continue
+                _image = container.get("image") or "container"
+                _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
+                raw_results.append(
+                    {
+                        "ip": container_ip,
+                        "hostname_override": container["name"],
+                        "os_vendor_override": "Docker",
+                        "os_family_override": _vendor,
+                        "source": "docker",
+                        "source_type": "docker",
+                        "raw_nmap_xml": json.dumps(
+                            {
+                                "source": "docker",
+                                "image": _image,
+                                "status": container.get("status"),
+                                "container_id": container.get("container_id"),
+                            }
+                        ),
+                        "snmp_data": {},
+                        "_docker_meta": container,
+                    }
+                )
+
+            import_data = await loop.run_in_executor(None, _scan_import, job_id, setup, raw_results)
+            for result_data in import_data["results"]:
+                await _emit_ws_event("result_added", {"job_id": job_id, "result": result_data})
+
+            stats = import_data["stats"]
+            hosts_found = stats.get("hosts_found", 0)
+            await _update_job_progress(
+                job_id,
+                "docker",
+                f"Docker scan complete. {hosts_found} container(s) discovered.",
+                percent=100,
+            )
+            await loop.run_in_executor(None, _scan_finalize, job_id, stats, "completed")
+            await _emit_ws_event("job_update", {"job": {"id": job_id, "status": "completed"}})
+            _ema_eta.pop(job_id, None)
+            _last_progress_snap.pop(job_id, None)
+            return
+
+        # ── Phase 2: Network Discovery ────────────────────────────────────────
+        active_ips: set[str] = set()
+        nmap_results: dict = {}
+        arp_mac_by_ip: dict[str, str] = {}
+
+        if effective_mode == "full" and not _has_raw_socket_privilege():
+            logger.warning(
+                "Job %s: discovery_mode='full' but no CAP_NET_RAW — "
+                "ARP and OS detection will be skipped; nmap will run in TCP-connect mode",
+                job_id,
+            )
+            # Do NOT downgrade to safe — nmap can still run unprivileged (-sT) and
+            # resolve hostnames via DNS. Only _arp_phase and -O are skipped (handled
+            # gracefully by _arp_available() and _sanitise_nmap_args_for_unpriv).
+
+        if effective_mode == "safe":
+            import ipaddress as _ipaddress
+
+            try:
+                _total_hosts = _ipaddress.IPv4Network(target_cidr, strict=False).num_addresses - 2
+            except Exception:
+                _total_hosts = 0
+            await _update_job_progress(
+                job_id,
+                "ping",
+                f"Pinging {max(_total_hosts, 0)} hosts in {target_cidr}...",
+                percent=10,
+            )
+            try:
+                safe_results = await loop.run_in_executor(None, scan_subnet_safe, target_cidr)
+            except Exception as _scan_exc:
+                logger.warning(
+                    "Scan job %d: scan_subnet_safe raised %s: %s",
+                    job_id,
+                    type(_scan_exc).__name__,
+                    _scan_exc,
+                )
+                safe_results = []
+            await _update_job_progress(
+                job_id,
+                "tcp",
+                (
+                    f"{len(safe_results)} host"
+                    f"{'s' if len(safe_results) != 1 else ''}"
+                    " responded -- probing TCP ports..."
+                ),
+                percent=30,
+            )
+            for r in safe_results:
+                ip = r["ip"]
+                active_ips.add(ip)
+                open_ports = [
+                    {
+                        "port": p,
+                        "service": PORT_SERVICE_MAP.get(p, {}).get("name", "unknown"),
+                        "state": "open",
+                    }
+                    for p in r.get("open_ports", [])
+                ]
+                nmap_results[ip] = {
+                    "mac": None,
+                    "hostname": None,
+                    "os_family": None,
+                    "os_vendor": None,
+                    "open_ports": open_ports,
+                    "raw": "",
+                }
+            logger.info(
+                "[safe-mode] job %s: %d hosts found via ping/TCP in %s",
+                job_id,
+                len(active_ips),
+                target_cidr,
+            )
+        else:
+
+            async def _arp_phase() -> list[dict]:
+                if "arp" in scan_types and _arp_available():
+                    await _update_job_progress(
+                        job_id, "arp", "Running ARP discovery...", percent=12
+                    )
+                    await _log_scan_event(job_id, "INFO", "Starting ARP discovery phase", "arp")
+                    try:
+                        results = await _run_arp_scan(target_cidr)
+                        await _log_scan_event(
+                            job_id,
+                            "SUCCESS",
+                            f"ARP discovery completed. Found {len(results)} responding hosts",
+                            "arp",
+                            f"Discovered hosts: {[r['ip'] for r in results][:10]}",
+                        )
+                        return results
+                    except Exception as e:
+                        await _log_scan_event(
+                            job_id, "ERROR", f"ARP discovery failed: {str(e)}", "arp", str(e)
+                        )
+                        raise
+                await _log_scan_event(
+                    job_id, "INFO", "ARP discovery skipped (not available or not requested)", "arp"
+                )
+                return []
+
+            async def _nmap_phase() -> dict:
+                if "nmap" in scan_types and not nmap:
+                    logger.warning(
+                        "Scan job %d: python-nmap unavailable; nmap phase skipped.", job_id
+                    )
+                    await _log_scan_event(
+                        job_id, "ERROR", "nmap tool unavailable — python-nmap not installed", "nmap"
+                    )
+                    return {}
+                if "nmap" in scan_types:
+                    await _update_job_progress(
+                        job_id, "nmap", "Running nmap host discovery...", percent=42
+                    )
+                    await _log_scan_event(
+                        job_id, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap"
+                    )
+                    try:
+                        results = await _run_nmap_scan(target_cidr, nmap_args)
+                        host_count = len(results)
+                        await _log_scan_event(
+                            job_id,
+                            "SUCCESS",
+                            f"Nmap scan completed. Discovered {host_count} active hosts",
+                            "nmap",
+                            f"Hosts found: {list(results.keys())[:10]}",
+                        )
+                        for ip, host_data in list(results.items())[:5]:
+                            open_ports = host_data.get("open_ports", [])
+                            hostname = host_data.get("hostname", "Unknown")
+                            if open_ports:
+                                port_list = [f"{p['port']}/{p['protocol']}" for p in open_ports[:5]]
+                                await _log_scan_event(
+                                    job_id,
+                                    "INFO",
+                                    f"Host {ip} ({hostname}): {len(open_ports)} open ports",
+                                    "nmap",
+                                    f"Ports: {', '.join(port_list)}",
+                                )
+                            else:
+                                await _log_scan_event(
+                                    job_id,
+                                    "INFO",
+                                    f"Host {ip} ({hostname}): No open ports detected",
+                                    "nmap",
+                                )
+                        return results
+                    except Exception as e:
+                        await _log_scan_event(
+                            job_id, "ERROR", f"Nmap scan failed: {str(e)}", "nmap", str(e)
+                        )
+                        raise
+                await _log_scan_event(job_id, "INFO", "Nmap scan skipped (not requested)", "nmap")
+                return {}
+
+            arp_results, nmap_scan = await asyncio.gather(_arp_phase(), _nmap_phase())
+            nmap_results = nmap_scan
+            arp_mac_by_ip = {r["ip"]: r["mac"] for r in arp_results if r.get("mac")}
+            for ip in arp_mac_by_ip:
+                active_ips.add(ip)
+            for ip in nmap_results.keys():
+                active_ips.add(ip)
+
+        # ── Per-host probing: collect raw probe data ──────────────────────────
+        n_active = len(active_ips)
+        if n_active > 0 and "snmp" in scan_types and snmp_community_plain:
+            await _update_job_progress(
+                job_id,
+                "snmp",
+                f"Preparing deep probes for {n_active} host{'s' if n_active != 1 else ''}...",
+                percent=58,
+                processed=0,
+                total=n_active,
+            )
+            await _log_scan_event(
+                job_id, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp"
+            )
+        elif n_active > 0 and http_probe and "http" in scan_types:
+            await _update_job_progress(
+                job_id,
+                "http",
+                f"Preparing HTTP probes for {n_active} host{'s' if n_active != 1 else ''}...",
+                percent=58,
+                processed=0,
+                total=n_active,
+            )
+
+        for index, ip in enumerate(active_ips, start=1):
             await _emit_ws_event(
                 "job_progress",
                 {
-                    "job_id": job.id,
-                    "phase": job.progress_phase,
-                    "message": f"Processed host {index}/{n_active}",
-                    "processed": index,
+                    "job_id": job_id,
+                    "message": f"Probing host {index}/{n_active}: {ip}",
+                    "processed": index - 1,
                     "total": n_active,
-                    "percent": 58 + int((index / max(n_active, 1)) * 35),
+                    "percent": 58 + int(((index - 1) / max(n_active, 1)) * 35),
                 },
             )
 
-        # Docker container discovery (always runs if socket mounted and enabled)
-        docker_discovery_enabled = getattr(settings, "docker_discovery_enabled", False)
+            n_data = nmap_results.get(ip, {})
+            mac_address = n_data.get("mac") or arp_mac_by_ip.get(ip)
+            hostname = n_data.get("hostname")
+            os_family = n_data.get("os_family")
+            os_vendor = n_data.get("os_vendor")
+            os_accuracy = n_data.get("os_accuracy")
+            open_ports = n_data.get("open_ports", [])
+            raw_xml = n_data.get("raw", "")
+
+            snmp_data: dict = {}
+            if "snmp" in scan_types and snmp_community_plain:
+                snmp_data = await _run_snmp_probe(ip, snmp_community_plain, snmp_version, snmp_port)
+
+            if http_probe and not hostname:
+                has_web = any(p["port"] in (80, 443) for p in open_ports)
+                if has_web:
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
+                            await client.get(f"http://{ip}")
+                    except Exception as e:
+                        logger.debug(
+                            "Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True
+                        )
+
+            banner_text: str | None = None
+            if "deep_dive" in scan_types and open_ports:
+                port_nums = [p["port"] for p in open_ports if isinstance(p.get("port"), int)]
+                if port_nums:
+                    banners = await _run_banner_grab(ip, port_nums)
+                    if banners:
+                        for preferred in (22, 21, 80, 443):
+                            if preferred in banners:
+                                banner_text = banners[preferred]
+                                break
+                        if not banner_text:
+                            banner_text = next(iter(banners.values()))
+                if not os_vendor and mac_address:
+                    os_vendor = await _run_vendor_lookup(mac_address) or os_vendor
+
+            if "deep_dive" in scan_types:
+                result_source = "deep_dive"
+            elif not n_data:
+                result_source = "arp"
+            else:
+                result_source = "nmap"
+
+            raw_results.append(
+                {
+                    "ip": ip,
+                    "mac_address": mac_address,
+                    "hostname": hostname,
+                    "os_family": os_family,
+                    "os_vendor": os_vendor,
+                    "os_accuracy": os_accuracy,
+                    "open_ports_json": json.dumps(open_ports) if open_ports else None,
+                    "raw_nmap_xml": raw_xml,
+                    "banner": banner_text,
+                    "source_type": result_source,
+                    "snmp_data": snmp_data,
+                }
+            )
+
+        # Supplemental Docker discovery
         if docker_discovery_enabled and is_docker_socket_available():
             await _update_job_progress(
-                db, job, "docker", "Scanning Docker containers...", percent=94
+                job_id, "docker", "Scanning Docker containers...", percent=94
             )
             for container in docker_discover(
                 docker_socket_path, docker_network_types, docker_port_scan
             ):
                 container_ip = container.get("ip") or None
+                if container_ip is None:
+                    continue
                 _image = container.get("image") or "container"
                 _vendor = _image.split("/")[0] if "/" in _image else _image.split(":")[0]
-                net_id, v_id = (
-                    _match_ip_to_network(db, container_ip) if container_ip else (None, None)
-                )
-                docker_res = ScanResult(
-                    scan_job_id=job.id,
-                    ip_address=container_ip,
-                    hostname=container["name"],
-                    os_vendor="Docker",
-                    os_family=_vendor,
-                    network_id=net_id,
-                    vlan_id=v_id,
-                    raw_nmap_xml=json.dumps(
-                        {
-                            "source": "docker",
-                            "image": _image,
-                            "status": container.get("status"),
-                            "container_id": container.get("container_id"),
-                        }
-                    ),
-                    state="new",
-                    merge_status="pending",
-                    created_at=utcnow_iso(),
-                )
-                matched_hw = (
-                    db.query(Hardware).filter(Hardware.ip_address == container_ip).first()
-                    if container_ip
-                    else None
-                )
-                if matched_hw:
-                    docker_res.matched_entity_type = "hardware"
-                    docker_res.matched_entity_id = matched_hw.id
-                    docker_res.state = "matched"
-                    hosts_updated += 1
-                else:
-                    hosts_new += 1
-                hosts_found += 1
-                db.add(docker_res)
-                db.commit()
-                db.refresh(docker_res)
-                await _emit_ws_event(
-                    "result_added",
+                raw_results.append(
                     {
-                        "job_id": job.id,
-                        "result": ScanResultOut.model_validate(docker_res).model_dump(),
-                    },
+                        "ip": container_ip,
+                        "hostname_override": container["name"],
+                        "os_vendor_override": "Docker",
+                        "os_family_override": _vendor,
+                        "source": "docker",
+                        "source_type": "docker",
+                        "raw_nmap_xml": json.dumps(
+                            {
+                                "source": "docker",
+                                "image": _image,
+                                "status": container.get("status"),
+                                "container_id": container.get("container_id"),
+                            }
+                        ),
+                        "snmp_data": {},
+                    }
                 )
-                results_list.append(docker_res)
 
-        # B3: run auto-merge BEFORE marking job completed so any exception
-        # doesn't overwrite a completed job with "failed"
-        if auto_merge and results_list:
-            await _update_job_progress(
-                db,
-                job,
-                "reconcile",
-                f"Reconciling {hosts_found} host{'s' if hosts_found != 1 else ''}...",
-                percent=95,
-                processed=hosts_found,
-                total=hosts_found,
-            )
-            for r in results_list:  # type: ignore[assignment]
-                _auto_merge_result(db, r, actor=job.triggered_by)  # type: ignore[arg-type]
-
-        # B6: assign all counters at once, then commit once
-        job.hosts_found = hosts_found
-        job.hosts_new = hosts_new
-        job.hosts_updated = hosts_updated
-        job.hosts_conflict = hosts_conflict
-        job.status = "completed"
-        job.completed_at = utcnow_iso()
-        db.commit()
-
-        write_log(
-            db,
-            action="scan_completed",
-            entity_type="scan_job",
-            entity_id=job.id,
-            category="discovery",
-            actor=job.triggered_by,
-            details=json.dumps(
-                {
-                    "hosts_found": hosts_found,
-                    "hosts_new": hosts_new,
-                    "hosts_conflict": hosts_conflict,
-                    "cidr": job.target_cidr,
-                }
-            ),
+        # ── Phase 3: Import results to DB ─────────────────────────────────────
+        await _update_job_progress(
+            job_id,
+            "reconcile",
+            f"Saving {len(raw_results)} result(s)...",
+            percent=95,
         )
+        import_data = await loop.run_in_executor(None, _scan_import, job_id, setup, raw_results)
+
+        for result_data in import_data["results"]:
+            await _emit_ws_event("result_added", {"job_id": job_id, "result": result_data})
+
+        stats = import_data["stats"]
+        hosts_found = stats.get("hosts_found", 0)
 
         await _update_job_progress(
-            db,
-            job,
+            job_id,
             "done",
             f"Scan complete. Found {hosts_found} host{'s' if hosts_found != 1 else ''}.",
             percent=100,
             processed=hosts_found,
             total=max(hosts_found, n_active),
         )
-        await _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
-        _ema_eta.pop(job.id, None)
-        _last_progress_snap.pop(job.id, None)
-        _schedule_queued_scan_jobs(db)
+
+        # ── Phase 4: Finalize ─────────────────────────────────────────────────
+        await loop.run_in_executor(None, _scan_finalize, job_id, stats, "completed")
+        await _emit_ws_event("job_update", {"job": {"id": job_id, "status": "completed"}})
+        _ema_eta.pop(job_id, None)
+        _last_progress_snap.pop(job_id, None)
 
     except Exception as e:
         logger.error(f"Scan job {job_id} failed: {e}")
-        if "job" in locals() and job:
-            job.status = "failed"
-            job.error_text = str(e)
-            job.error_reason = (
+        error_stats = {
+            "error_text": str(e),
+            "error_reason": (
                 "scan_timeout"
                 if isinstance(e, asyncio.TimeoutError)
                 else f"scan_error: {type(e).__name__}"
-            )
-            job.completed_at = utcnow_iso()
-            job.progress_phase = "failed"
-            job.progress_message = str(e)
-            db.commit()
-            write_log(
-                db,
-                action="scan_failed",
-                entity_type="scan_job",
-                entity_id=job.id,
-                category="discovery",
-                severity="error",
-                actor=job.triggered_by,
-                details=json.dumps({"error": str(e), "cidr": job.target_cidr}),
-            )
-            task1 = asyncio.create_task(
-                _emit_ws_event("job_update", {"job": ScanJobOut.model_validate(job).model_dump()})
-            )
-            task2 = asyncio.create_task(
-                _emit_ws_event(
-                    "job_progress",
-                    {"job_id": job.id, "phase": "failed", "message": str(e), "percent": 100},
-                )
-            )
-            _ema_eta.pop(job.id, None)
-            _last_progress_snap.pop(job.id, None)
-            _schedule_queued_scan_jobs(db)
-    finally:
-        db.close()
-
-
-def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system"):
-    """
-    Attempt to automatically merge a scan result into the system without manual intervention.
-    Called when discovery_auto_merge is true, or via API bulk action.
-    """
-    if result.merge_status != "pending":
-        return
-
-    now = utcnow_iso()
-
-    # Update existing match
-    if result.state == "matched" and result.matched_entity_type == "hardware":
-        hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
-        if hw:
-            # Update last_seen
-            hw.last_seen = now
-            hw.status = "online"
-            # Supplement missing info
-            if not hw.mac_address and result.mac_address:
-                hw.mac_address = result.mac_address
-            if not hw.os_version and result.os_family:
-                hw.os_version = result.os_family
-            db.commit()
-
-            result.merge_status = "merged"
-            db.commit()
-            return
-
-    # Create new entity
-    if result.state == "new":
-        # Create a new piece of hardware
-        name = result.hostname or result.snmp_sys_name or f"Discovered Host - {result.ip_address}"
-        # Determine hardware role based on OS or ports (heuristics)
-        # For simplicity, default to server.
-        hw = Hardware(
-            name=name,
-            role="server",
-            ip_address=result.ip_address,
-            mac_address=result.mac_address,
-            vendor=result.os_vendor,
-            status="online",
-            source="discovery",
-            discovered_at=now,
-            last_seen=now,
-            created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-            updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-        )
-        db.add(hw)
-        db.commit()
-        db.refresh(hw)
-
-        # Link services based on open ports
-        if result.open_ports_json:
-            try:
-                ports = json.loads(result.open_ports_json)
-                for p in ports:
-                    port_num = int(p["port"])
-                    if port_num in PORT_SERVICE_MAP:
-                        s_map = PORT_SERVICE_MAP[port_num]
-                        svc_name = f"{s_map['name']} on {hw.name}"
-                        svc = Service(
-                            name=svc_name,
-                            slug=_make_service_slug(db, svc_name, hw.id),
-                            status="running",
-                            hardware_id=hw.id,
-                            ports_json=json.dumps(
-                                [
-                                    {
-                                        "port": port_num,
-                                        "protocol": p.get("protocol", "tcp"),
-                                    }
-                                ]
-                            ),
-                        )
-                        db.add(svc)
-                db.commit()
-            except Exception as e:
-                logger.debug("Discovery: auto-merge service creation failed: %s", e, exc_info=True)
-
-        result.matched_entity_type = "hardware"
-        result.matched_entity_id = hw.id
-        result.merge_status = "merged"
-        db.commit()
-
-        write_log(
-            db,
-            action="result_auto_merged",
-            entity_type="hardware",
-            entity_id=hw.id,
-            category="discovery",
-            actor=actor,
-            details=json.dumps(
-                {"ip": result.ip_address, "source": "nmap", "scan_result_id": result.id}
             ),
-        )
-
-
-# B4: The main event loop captured at import time (set by main.py lifespan).
-# APScheduler jobs run in a thread pool; they must dispatch coroutines onto
-# this loop with run_coroutine_threadsafe — NOT asyncio.run() — so that
-# ws_manager.broadcast() reaches the live WebSocket connections.
-_main_loop: asyncio.AbstractEventLoop | None = None
-
-
-def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Call once from main.py lifespan startup to register the running loop."""
-    global _main_loop
-    _main_loop = loop
-
-
-# --- Public API Functions ---
-
-
-async def _run_profile_job_async(profile_id: int):
-    """Internal async helper to create and run a profile job."""
-    db = SessionLocal()
-    try:
-        from app.db.models import DiscoveryProfile
-
-        profile = db.query(DiscoveryProfile).filter(DiscoveryProfile.id == profile_id).first()
-        if not profile or not profile.enabled:
-            return
-
-        profile.last_run = utcnow_iso()
-        db.commit()
-
-        scan_types = json.loads(profile.scan_types)
-        vlan_ids = []
-        if profile.vlan_ids:
-            try:
-                vlan_ids = json.loads(profile.vlan_ids)
-            except Exception as e:
-                logger.debug(
-                    "Discovery: vlan_ids parse failed for profile %s: %s",
-                    profile.id,
-                    e,
-                    exc_info=True,
-                )
-
-        job = create_scan_job(
-            db,
-            target_cidr=profile.cidr,
-            vlan_ids=vlan_ids,
-            scan_types=scan_types,
-            profile_id=profile.id,
-            triggered_by="scheduler",
-        )
-        await run_scan_job(job.id)
-    finally:
-        db.close()
-
-
-def _run_scan_job_by_profile_impl(profile_id: int) -> None:
-    """Inner implementation for APScheduler profile scan (called under advisory lock)."""
-    if _main_loop and _main_loop.is_running():
-        asyncio.run_coroutine_threadsafe(_run_profile_job_async(profile_id), _main_loop)
-    else:
-        asyncio.run(_run_profile_job_async(profile_id))
-
-
-def run_scan_job_by_profile(profile_id: int) -> None:
-    """Entry point for APScheduler to kick off a profile scan. Single-run via advisory lock."""
-    from app.core.job_lock import run_with_advisory_lock
-
-    run_with_advisory_lock(
-        "discovery_profile", profile_id, job_fn=lambda: _run_scan_job_by_profile_impl(profile_id)
-    )
-
-
-def _purge_old_scan_results_impl() -> None:
-    """Daily cron job body: purge old scan results and jobs (called under advisory lock)."""
-    db = SessionLocal()
-    try:
-        settings = get_or_create_settings(db)
-        retention_days = settings.discovery_retention_days
-        if retention_days <= 0:
-            return
-
-        logger.info(f"Purging discovery results older than {retention_days} days.")
-        from datetime import timedelta
-
-        cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
-        cutoff_iso = cutoff_date.isoformat() + "Z"
-
-        result_count = (
-            db.query(ScanResult)
-            .filter(ScanResult.created_at < cutoff_iso)
-            .delete(synchronize_session=False)
-        )
-        job_count = (
-            db.query(ScanJob)
-            .filter(ScanJob.created_at < cutoff_iso)
-            .delete(synchronize_session=False)
-        )
-        db.commit()
-
-        logger.info(f"Purged {result_count} old scan results and {job_count} old scan jobs.")
-    except Exception as e:
-        logger.error(f"Purger error: {e}")
-    finally:
-        db.close()
-
-
-def purge_old_scan_results() -> None:
-    """Daily cron job to purge old scan results and jobs. Single-run via advisory lock."""
-    from app.core.job_lock import run_with_advisory_lock
-
-    run_with_advisory_lock("discovery_purge", job_fn=_purge_old_scan_results_impl)
-
-
-def _build_ports_list(open_ports_json: str | None) -> list:
-    """Build the ports suggestion list returned to the frontend after accepting a new host."""
-    if not open_ports_json:
-        return []
-    try:
-        ports = json.loads(open_ports_json)
-    except Exception:
-        return []
-    result = []
-    for p in ports:
-        port_num = int(p.get("port", 0))
-        protocol = p.get("protocol", "tcp")
-        mapping = PORT_SERVICE_MAP.get(port_num)
-        if mapping:
-            result.append(
-                {
-                    "port": port_num,
-                    "protocol": protocol,
-                    "suggested_name": mapping["name"],
-                    "suggested_category": mapping["type"],
-                }
-            )
-        else:
-            result.append(
-                {
-                    "port": port_num,
-                    "protocol": protocol,
-                    "suggested_name": p.get("name") or "Unknown",
-                    "suggested_category": "misc",
-                }
-            )
-    return result
-
-
-def _parse_proxmox_metadata(result: ScanResult) -> dict[str, Any] | None:
-    if result.source_type != "proxmox":
-        return None
-    if not result.raw_nmap_xml:
-        return None
-    try:
-        payload = json.loads(result.raw_nmap_xml)
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("source") != "proxmox":
-        return None
-    return payload
-
-
-def _reattach_proxmox_storage_to_node(
-    db: Session,
-    integration_id: int | None,
-    node_name: str | None,
-    hardware_id: int,
-) -> None:
-    """Attach queued Proxmox storage rows to their accepted node entity."""
-    if not integration_id:
-        return
-
-    node = (node_name or "").strip()
-    if not node:
-        return
-
-    suffix = f"@{node}"
-    orphaned = (
-        db.query(Storage)
-        .filter(
-            Storage.integration_config_id == integration_id,
-            Storage.hardware_id.is_(None),
-        )
-        .all()
-    )
-
-    for st in orphaned:
-        if not st.name or not st.name.endswith(suffix):
-            continue
-
-        duplicate = (
-            db.query(Storage)
-            .filter(
-                Storage.integration_config_id == integration_id,
-                Storage.hardware_id == hardware_id,
-                Storage.proxmox_storage_name == st.proxmox_storage_name,
-            )
-            .first()
-        )
-        if duplicate:
-            # Keep a single row per (integration, node, proxmox storage) and refresh metrics.
-            duplicate.kind = st.kind or duplicate.kind
-            duplicate.capacity_gb = st.capacity_gb
-            duplicate.used_gb = st.used_gb
-            duplicate.protocol = st.protocol or duplicate.protocol
-            if st.notes:
-                duplicate.notes = st.notes
-            db.delete(st)
-            continue
-
-        st.hardware_id = hardware_id
-
-    db.flush()
-
-
-def _upsert_proxmox_node_entity(
-    db: Session,
-    payload: dict[str, Any],
-    now_iso: str,
-) -> Hardware:
-    integration_id = payload.get("integration_id")
-    node_name = str(payload.get("node_name") or "").strip()
-    if not node_name:
-        node_name = str(payload.get("name") or "proxmox-node").strip()
-
-    hw = (
-        db.query(Hardware)
-        .filter(
-            Hardware.integration_config_id == integration_id,
-            Hardware.proxmox_node_name == node_name,
-        )
-        .first()
-    )
-
-    status_str = str(payload.get("status") or "unknown")
-    cpu_pct = payload.get("cpu", 0) or 0
-    maxmem = payload.get("maxmem", 0) or 0
-    mem = payload.get("mem", 0) or 0
-    uptime = payload.get("uptime", 0) or 0
-    telemetry = json.dumps(
-        {
-            "cpu_pct": round(float(cpu_pct) * 100, 1) if cpu_pct else 0,
-            "mem_used_bytes": mem,
-            "mem_total_bytes": maxmem,
-            "uptime_s": uptime,
-            "status": status_str,
         }
-    )
-    now_dt = datetime.fromisoformat(now_iso) if "T" in now_iso else datetime.now(UTC)
-
-    if not hw:
-        hw = Hardware(
-            name=node_name,
-            role="hypervisor",
-            vendor="Proxmox",
-            vendor_icon_slug="proxmox-dark",
-            proxmox_node_name=node_name,
-            integration_config_id=integration_id,
-            status="active" if status_str == "online" else "inactive",
-            source="discovery",
-            telemetry_data=telemetry,
-            telemetry_status="healthy" if status_str == "online" else "unknown",
-            telemetry_last_polled=now_iso,
-            ip_address=payload.get("ip"),
-            memory_gb=round(maxmem / (1024**3)) if maxmem else None,
-            discovered_at=now_iso,
-            last_seen=now_iso,
-            created_at=now_dt,
-            updated_at=now_dt,
+        await loop.run_in_executor(None, _scan_finalize, job_id, error_stats, "failed")
+        await asyncio.gather(
+            _emit_ws_event("job_update", {"job": {"id": job_id, "status": "failed"}}),
+            _emit_ws_event(
+                "job_progress",
+                {"job_id": job_id, "phase": "failed", "message": str(e), "percent": 100},
+            ),
+            return_exceptions=True,
         )
-        db.add(hw)
-    else:
-        hw.name = node_name or hw.name
-        hw.status = "active" if status_str == "online" else "inactive"
-        hw.vendor = "Proxmox"
-        hw.vendor_icon_slug = hw.vendor_icon_slug or "proxmox-dark"
-        hw.telemetry_data = telemetry
-        hw.telemetry_status = "healthy" if status_str == "online" else "unknown"
-        hw.telemetry_last_polled = now_iso
-        if payload.get("ip"):
-            hw.ip_address = payload.get("ip")
-        hw.last_seen = now_iso
-    db.flush()
-    _reattach_proxmox_storage_to_node(db, integration_id, node_name, hw.id)
-    return hw
-
-
-def _upsert_proxmox_vm_entity(
-    db: Session,
-    payload: dict[str, Any],
-    now_iso: str,
-) -> ComputeUnit:
-    integration_id = payload.get("integration_id")
-    node_name = str(payload.get("node_name") or "").strip()
-    vmid_raw = payload.get("vmid")
-    vmid = int(vmid_raw) if vmid_raw is not None else None
-    vm_type = str(payload.get("vm_type") or "qemu").strip().lower()
-    vm_name = str(payload.get("name") or f"{vm_type}-{vmid or 'unknown'}").strip()
-
-    parent = None
-    if node_name:
-        parent = (
-            db.query(Hardware)
-            .filter(
-                Hardware.integration_config_id == integration_id,
-                Hardware.proxmox_node_name == node_name,
-            )
-            .first()
-        )
-    if not parent:
-        now_dt = datetime.fromisoformat(now_iso) if "T" in now_iso else datetime.now(UTC)
-        parent = Hardware(
-            name=node_name or f"Proxmox node {integration_id}",
-            role="hypervisor",
-            vendor="Proxmox",
-            vendor_icon_slug="proxmox-dark",
-            proxmox_node_name=node_name or None,
-            integration_config_id=integration_id,
-            status="unknown",
-            source="discovery",
-            discovered_at=now_iso,
-            last_seen=now_iso,
-            created_at=now_dt,
-            updated_at=now_dt,
-        )
-        db.add(parent)
-        db.flush()
-    _reattach_proxmox_storage_to_node(db, integration_id, node_name, parent.id)
-
-    cu = (
-        db.query(ComputeUnit)
-        .filter(
-            ComputeUnit.integration_config_id == integration_id,
-            ComputeUnit.proxmox_vmid == vmid,
-        )
-        .first()
-    )
-
-    status_str = str(payload.get("status") or "unknown")
-    pve_status = {
-        "status": status_str,
-        "cpu_pct": round(float(payload.get("cpu", 0) or 0) * 100, 1),
-        "mem_used_bytes": payload.get("mem", 0) or 0,
-        "mem_total_bytes": payload.get("maxmem", 0) or 0,
-        "disk_total_bytes": payload.get("maxdisk", 0) or 0,
-    }
-
-    kind = "container" if vm_type == "lxc" else "vm"
-    if not cu:
-        cu = ComputeUnit(
-            name=vm_name,
-            kind=kind,
-            hardware_id=parent.id,
-            proxmox_vmid=vmid,
-            proxmox_type=vm_type,
-            proxmox_status=pve_status,
-            integration_config_id=integration_id,
-            status="active" if status_str == "running" else "inactive",
-            cpu_cores=payload.get("maxcpu") or None,
-            memory_mb=round((payload.get("maxmem", 0) or 0) / (1024**2))
-            if payload.get("maxmem")
-            else None,
-            disk_gb=round((payload.get("maxdisk", 0) or 0) / (1024**3))
-            if payload.get("maxdisk")
-            else None,
-        )
-        db.add(cu)
-    else:
-        cu.name = vm_name
-        cu.kind = kind
-        cu.hardware_id = parent.id
-        cu.proxmox_type = vm_type
-        cu.proxmox_status = pve_status
-        cu.status = "active" if status_str == "running" else "inactive"
-        if payload.get("maxcpu"):
-            cu.cpu_cores = payload.get("maxcpu")
-        if payload.get("maxmem"):
-            cu.memory_mb = round((payload.get("maxmem") or 0) / (1024**2))
-        if payload.get("maxdisk"):
-            cu.disk_gb = round((payload.get("maxdisk") or 0) / (1024**3))
-    db.flush()
-    return cu
-
-
-def _merge_proxmox_result(
-    db: Session,
-    result: ScanResult,
-    overrides: dict,
-    actor: str,
-    now_iso: str,
-) -> dict:
-    from fastapi import HTTPException
-
-    payload = _parse_proxmox_metadata(result)
-    if payload is None:
-        raise HTTPException(status_code=400, detail="Invalid Proxmox discovery payload")
-
-    kind = str(payload.get("kind") or "").strip().lower()
-    if kind == "node":
-        entity = _upsert_proxmox_node_entity(db, payload, now_iso)
-        result.matched_entity_type = "hardware"
-        result.matched_entity_id = entity.id
-        allowed_override_keys = {"name", "ip_address", "vendor", "status", "notes"}
-    elif kind == "vm":
-        entity = _upsert_proxmox_vm_entity(db, payload, now_iso)
-        result.matched_entity_type = "compute_unit"
-        result.matched_entity_id = entity.id
-        allowed_override_keys = {"name", "status", "cpu_cores", "memory_mb", "disk_gb", "notes"}
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported Proxmox discovery entity type")
-
-    for k, v in overrides.items():
-        if k in allowed_override_keys and hasattr(entity, k):
-            setattr(entity, k, v)
-
-    result.merge_status = "accepted"
-    result.reviewed_by = actor
-    result.reviewed_at = now_iso
-    db.commit()
-
-    write_log(
-        db,
-        action="result_accepted",
-        entity_type=result.matched_entity_type or "hardware",
-        entity_id=result.matched_entity_id,
-        category="discovery",
-        actor=actor,
-        details=json.dumps(
-            {
-                "scan_result_id": result.id,
-                "source": "proxmox",
-                "kind": kind,
-                "ip": result.ip_address,
-                "hostname": result.hostname,
-                "overrides": overrides,
-            }
-        ),
-    )
-
-    try:
-        import asyncio
-
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-        else:
-            asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-    except Exception as e:
-        logger.debug("Discovery: WebSocket emit accept (proxmox) failed: %s", e, exc_info=True)
-
-    return {
-        "entity_type": result.matched_entity_type,
-        "entity_id": result.matched_entity_id,
-        "source": "proxmox",
-    }
-
-
-def merge_scan_result(
-    db: Session,
-    result_id: int,
-    action: str,
-    entity_type: str | None = None,
-    overrides: dict | None = None,
-    actor: str = "api",
-) -> dict:
-    """Accept or reject a single scan result.
-
-    Returns:
-      reject              → {'rejected': True}
-      accept + matched    → {'updated': True}
-      accept + new        → {'entity_type': ..., 'entity_id': ..., 'ports': [...]}
-    Raises HTTP 404 if not found.
-    Raises HTTP 409 if already accepted/rejected.
-    """
-    from fastapi import HTTPException
-
-    if overrides is None:
-        overrides = {}
-    result = db.query(ScanResult).filter(ScanResult.id == result_id).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="Scan result not found")
-
-    if result.merge_status not in ("pending",):
-        raise HTTPException(
-            status_code=409, detail=f"Result already has merge_status='{result.merge_status}'"
-        )
-
-    now = utcnow_iso()
-
-    # ── reject ──────────────────────────────────────────────────────────────
-    if action == "reject":
-        result.merge_status = "rejected"
-        result.reviewed_by = actor
-        result.reviewed_at = now
-        db.commit()
-        write_log(
-            db,
-            action="result_rejected",
-            entity_type="scan_result",
-            entity_id=result.id,
-            category="discovery",
-            actor=actor,
-            details=json.dumps({"ip": result.ip_address, "hostname": result.hostname}),
-        )
-
-        # Emit WebSocket event for real-time badge update
-        try:
-            import asyncio
-
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_emit_result_processed_event(db, result.id, "reject"))
-            else:
-                asyncio.run(_emit_result_processed_event(db, result.id, "reject"))
-        except Exception as e:
-            logger.debug("Discovery: WebSocket emit reject failed: %s", e, exc_info=True)
-
-        return {"rejected": True}
-
-    # ── accept ───────────────────────────────────────────────────────────────
-    if action == "accept":
-        if result.source_type == "proxmox":
-            return _merge_proxmox_result(db, result, overrides, actor, now)
-
-        # CB-CASCADE-005: wrap accept branch in a savepoint for atomicity
-        sp = db.begin_nested()
-        try:
-            # Normalize MAC before writing (CB-PATTERN-001)
-            norm_mac = _norm_mac(result.mac_address)
-
-            # conflict / matched: update existing entity with overrides
-            if result.state in ("matched", "conflict") and result.matched_entity_type == "hardware":
-                hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
-                if hw:
-                    hw.last_seen = now
-                    hw.status = "online"
-                    # CB-REL-001: link scan result to hardware
-                    hw.source_scan_result_id = result.id
-                    if not hw.mac_address and norm_mac:
-                        hw.mac_address = norm_mac
-                    if not hw.os_version and result.os_family:
-                        hw.os_version = result.os_family
-                    for k, v in overrides.items():
-                        if hasattr(hw, k):
-                            setattr(hw, k, v)
-                    db.flush()
-
-                result.merge_status = "accepted"
-                result.reviewed_by = actor
-                result.reviewed_at = now
-                db.flush()
-                sp.commit()
-                db.commit()
-                write_log(
-                    db,
-                    action="result_accepted",
-                    entity_type=result.matched_entity_type or "hardware",
-                    entity_id=result.matched_entity_id,
-                    category="discovery",
-                    actor=actor,
-                    details=json.dumps(
-                        {
-                            "scan_result_id": result.id,
-                            "ip": result.ip_address,
-                            "hostname": result.hostname,
-                            "overrides": overrides,
-                        }
-                    ),
-                )
-
-                # Emit WebSocket event for real-time badge update
-                try:
-                    import asyncio
-
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-                    else:
-                        asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception as e:
-                    logger.debug(
-                        "Discovery: WebSocket emit accept (updated) failed: %s", e, exc_info=True
-                    )
-
-                return {"updated": True}
-
-            # new host: create hardware entity
-            if result.state == "new":
-                name = (
-                    overrides.get("name")
-                    or result.hostname
-                    or result.snmp_sys_name
-                    or f"Discovered Host - {result.ip_address}"
-                )
-                role = overrides.get("role") or "server"
-
-                hw = Hardware(
-                    name=name,
-                    role=role,
-                    ip_address=result.ip_address,
-                    mac_address=norm_mac,
-                    vendor=result.os_vendor,
-                    status="online",
-                    source="discovery",
-                    discovered_at=now,
-                    last_seen=now,
-                    source_scan_result_id=result.id,  # CB-REL-001
-                    created_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-                    updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
-                )
-                for k, v in overrides.items():
-                    if hasattr(hw, k):
-                        setattr(hw, k, v)
-                db.add(hw)
-                db.flush()
-
-                result.matched_entity_type = "hardware"
-                result.matched_entity_id = hw.id
-                result.merge_status = "accepted"
-                result.reviewed_by = actor
-                result.reviewed_at = now
-                db.flush()
-                sp.commit()
-                db.commit()
-                db.refresh(hw)
-
-                write_log(
-                    db,
-                    action="result_accepted",
-                    entity_type="hardware",
-                    entity_id=hw.id,
-                    category="discovery",
-                    actor=actor,
-                    details=json.dumps(
-                        {
-                            "scan_result_id": result.id,
-                            "ip": result.ip_address,
-                            "hostname": result.hostname,
-                            "overrides": overrides,
-                        }
-                    ),
-                )
-
-                # Emit WebSocket event for real-time badge update
-                try:
-                    import asyncio
-
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(_emit_result_processed_event(db, result.id, "accept"))
-                    else:
-                        asyncio.run(_emit_result_processed_event(db, result.id, "accept"))
-                except Exception as e:
-                    logger.debug(
-                        "Discovery: WebSocket emit accept (new host) failed: %s", e, exc_info=True
-                    )
-
-                return {
-                    "entity_type": "hardware",
-                    "entity_id": hw.id,
-                    "ports": _build_ports_list(result.open_ports_json),
-                }
-
-            # If we reach here inside the savepoint without matching a branch, commit savepoint
-            sp.commit()
-        except Exception:
-            sp.rollback()
-            raise
-
-    return {"skipped": True}
-
-
-def bulk_merge_results(db: Session, result_ids: list[int], action: str, actor: str = "api") -> dict:
-    """Bulk accept or reject scan results.
-    For bulk accept, conflict rows are skipped (they always require per-field review).
-    Returns {'accepted': N, 'rejected': N, 'skipped': N}.
-    """
-    accepted = 0
-    rejected = 0
-    skipped = 0
-    for rid in result_ids:
-        result = db.query(ScanResult).filter(ScanResult.id == rid).first()
-        if not result:
-            skipped += 1
-            continue
-        # Conflicts must be reviewed individually on accept
-        if action == "accept" and result.state == "conflict":
-            skipped += 1
-            continue
-        try:
-            merge_scan_result(db, rid, action, actor=actor)
-            if action == "accept":
-                accepted += 1
-            else:
-                rejected += 1
-        except Exception as e:
-            logger.error(f"Bulk merge failed for result {rid}: {e}")
-            skipped += 1
-    return {"accepted": accepted, "rejected": rejected, "skipped": skipped}
-
-
-def enhanced_bulk_merge(db: Session, payload, actor: str = "api") -> dict:
-    """Enhanced bulk merge: accept scan results + optionally create/link cluster,
-    network, rack assignment, per-node overrides, and auto-create services.
-
-    Returns summary dict with created entity counts and hardware IDs.
-    """
-    from app.db.models import (
-        HardwareCluster,
-        HardwareClusterMember,
-        HardwareNetwork,
-    )
-    from app.db.models import (
-        Network as NetworkModel,
-    )
-    from app.services.bulk_suggest import EXTENDED_PORT_SERVICE_MAP, _parse_ports
-
-    merged = 0
-    skipped = 0
-    hardware_ids = []
-    created_clusters = 0
-    created_networks = 0
-    created_services = 0
-    errors = []
-
-    # Build per-result assignment lookup
-    assignment_map = {}
-    for a in payload.assignments or []:
-        assignment_map[a.result_id] = a
-
-    # ── Step A: Cluster ──────────────────────────────────────────────────────
-    cluster_id = None
-    if payload.cluster:
-        existing_cluster = (
-            db.query(HardwareCluster).filter(HardwareCluster.name == payload.cluster.name).first()
-        )
-        if existing_cluster:
-            cluster_id = existing_cluster.id
-        else:
-            cluster = HardwareCluster(
-                name=payload.cluster.name,
-                description=payload.cluster.description,
-                environment=payload.cluster.environment,
-                location=payload.cluster.location,
-            )
-            db.add(cluster)
-            db.flush()
-            cluster_id = cluster.id
-            created_clusters = 1
-
-    # ── Step B: Network ──────────────────────────────────────────────────────
-    network_id = None
-    if payload.network:
-        if payload.network.existing_id:
-            network_id = payload.network.existing_id
-        else:
-            # Check for existing by CIDR
-            if payload.network.cidr:
-                existing_net = (
-                    db.query(NetworkModel).filter(NetworkModel.cidr == payload.network.cidr).first()
-                )
-                if existing_net:
-                    network_id = existing_net.id
-            if not network_id:
-                net = NetworkModel(
-                    name=payload.network.name,
-                    cidr=payload.network.cidr,
-                    vlan_id=payload.network.vlan_id,
-                    gateway=payload.network.gateway,
-                    description=payload.network.description,
-                )
-                db.add(net)
-                db.flush()
-                network_id = net.id
-                created_networks = 1
-
-    # ── Step C: Merge each result ────────────────────────────────────────────
-    for rid in payload.result_ids:
-        result = db.query(ScanResult).filter(ScanResult.id == rid).first()
-        if not result:
-            skipped += 1
-            continue
-        if result.state == "conflict":
-            skipped += 1
-            continue
-        if result.merge_status != "pending":
-            skipped += 1
-            continue
-
-        # Build overrides from per-node assignment
-        overrides = {}
-        assignment = assignment_map.get(rid)
-        if assignment:
-            for field in (
-                "vendor",
-                "vendor_catalog_key",
-                "model_catalog_key",
-                "vendor_icon_slug",
-                "role",
-                "name",
-                "rack_unit",
-                "u_height",
-            ):
-                val = getattr(assignment, field, None)
-                if val is not None:
-                    overrides[field] = val
-
-        # Apply rack_id from payload-level
-        if payload.rack_id:
-            overrides["rack_id"] = payload.rack_id
-
-        try:
-            merge_result = merge_scan_result(db, rid, "accept", overrides=overrides, actor=actor)
-        except Exception as e:
-            logger.error(f"Enhanced bulk merge failed for result {rid}: {e}")
-            errors.append({"result_id": rid, "error": str(e)})
-            skipped += 1
-            continue
-
-        merged += 1
-        entity_id = merge_result.get("entity_id")
-        if not entity_id and merge_result.get("updated"):
-            # For matched results, get the hardware ID from the result
-            entity_id = result.matched_entity_id
-
-        if entity_id:
-            hardware_ids.append(entity_id)
-
-            # Link to cluster
-            if cluster_id:
-                existing_member = (
-                    db.query(HardwareClusterMember)
-                    .filter(
-                        HardwareClusterMember.cluster_id == cluster_id,
-                        HardwareClusterMember.hardware_id == entity_id,
-                    )
-                    .first()
-                )
-                if not existing_member:
-                    role = overrides.get("role") or (assignment.role if assignment else None)
-                    member = HardwareClusterMember(
-                        cluster_id=cluster_id,
-                        hardware_id=entity_id,
-                        role=role,
-                    )
-                    db.add(member)
-                    db.flush()
-
-            # Link to network
-            if network_id:
-                existing_link = (
-                    db.query(HardwareNetwork)
-                    .filter(
-                        HardwareNetwork.network_id == network_id,
-                        HardwareNetwork.hardware_id == entity_id,
-                    )
-                    .first()
-                )
-                if not existing_link:
-                    hw_net = HardwareNetwork(
-                        network_id=network_id,
-                        hardware_id=entity_id,
-                        ip_address=result.ip_address,
-                    )
-                    db.add(hw_net)
-                    db.flush()
-
-            # Auto-create services
-            if payload.create_services:
-                ports = _parse_ports(result.open_ports_json)
-                for p in ports:
-                    port_num = int(p.get("port", 0))
-                    svc_info = EXTENDED_PORT_SERVICE_MAP.get(port_num)
-                    if svc_info:
-                        svc_name = svc_info["name"]
-                        slug = _make_service_slug(db, svc_name, entity_id)
-                        svc = Service(
-                            name=svc_name,
-                            slug=slug,
-                            hardware_id=entity_id,
-                            port=port_num,
-                            protocol=p.get("protocol", "tcp"),
-                            status="active",
-                            source="discovery",
-                        )
-                        db.add(svc)
-                        db.flush()
-                        created_services += 1
-
-    db.commit()
-
-    return {
-        "merged": merged,
-        "skipped": skipped,
-        "created": {
-            "clusters": created_clusters,
-            "networks": created_networks,
-            "services": created_services,
-        },
-        "hardware_ids": hardware_ids,
-        "errors": errors,
-    }
-
-
-def _make_service_slug(db: Session, name: str, hardware_id: int) -> str:
-    """Generate a unique slug for a discovery-created service.
-
-    Derives a base slug from the service name, then appends the hardware_id
-    to avoid collisions when the same port name appears on multiple hosts.
-    Falls back to appending an incrementing counter if the slug still collides.
-    """
-    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    candidate = f"{base}-hw{hardware_id}"
-    # Guard against UNIQUE constraint violation
-    from sqlalchemy import select as _select
-
-    from app.db.models import Service as _Service
-
-    counter = 1
-    while db.execute(_select(_Service).where(_Service.slug == candidate)).scalar_one_or_none():
-        candidate = f"{base}-hw{hardware_id}-{counter}"
-        counter += 1
-    return candidate
-
-
-def refresh_ip_pool():
-    """
-    Scheduled job to refresh IP statuses in the live_metrics table.
-    Checks reachability of known IP addresses and updates last_seen and status.
-    """
-    db = SessionLocal()
-    try:
-        from concurrent.futures import ThreadPoolExecutor
-        from datetime import datetime, timedelta
-
-        from app.db.models import LiveMetric
-        from app.services.discovery_safe import _ping_host
-
-        metrics = db.query(LiveMetric).all()
-        now = datetime.now(UTC)
-
-        def check_metric(metric: LiveMetric) -> tuple[LiveMetric, bool]:
-            if not metric.ip:
-                return metric, False
-            # Ping with a short timeout to prevent long hangs
-            is_up = _ping_host(metric.ip, timeout=1.0)
-            return metric, is_up
-
-        # Use ThreadPoolExecutor for concurrent pings
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            results = list(executor.map(check_metric, metrics))
-
-        for metric, _is_up in results:
-            if metric.last_seen and (now - metric.last_seen) > timedelta(days=1):
-                metric.status = "offline"
-
-        db.commit()
-    except Exception as e:
-        logger.error(f"Error in refresh_ip_pool: {e}")
-    finally:
-        db.close()
+        _ema_eta.pop(job_id, None)
+        _last_progress_snap.pop(job_id, None)

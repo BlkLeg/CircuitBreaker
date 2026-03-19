@@ -1,0 +1,11 @@
+[Unit]
+Description=Circuit Breaker Liveness Check Timer
+Requires=circuitbreaker-backend.service
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

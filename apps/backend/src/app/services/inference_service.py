@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from app.db.models import ScanResult
+
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -225,7 +227,7 @@ _oui_resolver = OUIResolver()
 # ---------------------------------------------------------------------------
 
 
-def annotate_result(scan_result) -> InferredAnnotation:
+def annotate_result(scan_result: ScanResult) -> InferredAnnotation:
     mac = getattr(scan_result, "mac_address", None)
     hostname = getattr(scan_result, "hostname", None)
     ports = getattr(scan_result, "open_ports_json", None)

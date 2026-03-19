@@ -3,6 +3,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 from app.core.nats_client import nats_client
 from app.core.nmap_args import validate_nmap_arguments
@@ -48,7 +49,7 @@ async def _run_nmap(targets: list[str], args: str) -> dict:
     nm = nmap.PortScanner()
     target_str = " ".join(targets)
 
-    def _scan():
+    def _scan() -> Any:
         return nm.scan(hosts=target_str, arguments=args)
 
     loop = asyncio.get_running_loop()
@@ -58,7 +59,7 @@ async def _run_nmap(targets: list[str], args: str) -> dict:
 _JOB_TIMEOUT_S = 600  # 10 minutes max per discovery job
 
 
-async def _process_job_inner(msg) -> None:
+async def _process_job_inner(msg: Any) -> None:
     data = json.loads(msg.data.decode())
     cidr = data.get("target_cidr")
     raw_nmap = data.get("nmap_args", "-T4 -F")
@@ -79,7 +80,7 @@ async def _process_job_inner(msg) -> None:
     await msg.ack()
 
 
-async def process_job(msg, semaphore: asyncio.Semaphore):
+async def process_job(msg: Any, semaphore: asyncio.Semaphore) -> None:
     async with semaphore:
         try:
             await asyncio.wait_for(_process_job_inner(msg), timeout=_JOB_TIMEOUT_S)
@@ -108,7 +109,7 @@ async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
         except Exception as e:
             logger.warning("Stream may already exist: %s", e)
 
-        def cb(msg):
+        def cb(msg: Any) -> None:
             asyncio.create_task(process_job(msg, semaphore))
 
         await js.subscribe("discovery.jobs", queue="discovery_workers", cb=cb)
@@ -119,16 +120,15 @@ async def _setup_jetstream(semaphore: asyncio.Semaphore) -> bool:
         return False
 
 
-async def run_worker(shutdown_event: asyncio.Event = None):
+async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     # Retry connecting to NATS with backoff — exiting would cause a Docker restart loop.
     backoff = 2
     while not nats_client.is_connected:
         await nats_client.connect()
-        if nats_client.is_connected:
-            break
-        logger.error("Failed to connect to NATS, retrying in %ds…", backoff)
-        await asyncio.sleep(backoff)
-        backoff = min(backoff * 2, 60)
+        if not nats_client.is_connected:
+            logger.error("Failed to connect to NATS, retrying in %ds...", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
     from app.db.session import SessionLocal
     from app.services.settings_service import get_or_create_settings
@@ -144,7 +144,7 @@ async def run_worker(shutdown_event: asyncio.Event = None):
     _touch_healthy()
 
     # Watchdog: re-subscribe via JetStream after NATS reconnects
-    was_connected = True
+    was_connected: bool = True
     while not (shutdown_event and shutdown_event.is_set()):
         try:
             if shutdown_event:
@@ -155,7 +155,7 @@ async def run_worker(shutdown_event: asyncio.Event = None):
             pass
 
         _touch_healthy()
-        now_connected = nats_client.is_connected
+        now_connected: bool = nats_client.is_connected
         if was_connected and not now_connected:
             logger.warning("Discovery worker: NATS disconnected — waiting for auto-reconnect")
         elif not was_connected and now_connected:

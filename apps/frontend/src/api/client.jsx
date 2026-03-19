@@ -29,6 +29,11 @@ function buildUserMessage(status, data, error) {
   const message = Array.isArray(detail)
     ? detail.map((e) => e.msg || JSON.stringify(e)).join('; ')
     : detail || error.message;
+
+  if (status === 401 && !isSessionExpiryCandidate(error)) {
+    return message;
+  }
+
   logger.error(`API ${status}:`, message);
   return message;
 }
@@ -51,8 +56,15 @@ const client = axios.create({
 });
 
 function getCookie(name) {
-  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-  return match ? decodeURIComponent(match[1]) : null;
+  const prefix = name + '=';
+  const cookies = document.cookie.split(';');
+  for (const cookie of cookies) {
+    const c = cookie.trim();
+    if (c.indexOf(prefix) === 0) {
+      return decodeURIComponent(c.substring(prefix.length, c.length));
+    }
+  }
+  return null;
 }
 
 const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];
@@ -216,6 +228,7 @@ export const servicesApi = {
   getExternalDeps: (id) => client.get(`/services/${id}/external-dependencies`),
   addExternalDep: (id, data) => client.post(`/services/${id}/external-dependencies`, data),
   removeExternalDep: (id, relId) => client.delete(`/services/${id}/external-dependencies/${relId}`),
+  getDiscovery: (id) => client.get(`/services/${id}/discovery`).then((r) => r.data),
 };
 
 export const storageApi = {

@@ -20,7 +20,7 @@ import socket  # noqa: E402
 _orig_socketpair = socket.socketpair
 
 
-def _tcp_socketpair():
+def _tcp_socketpair() -> tuple[socket.socket, socket.socket]:
     """Return a connected TCP socket pair as a drop-in replacement for socketpair."""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -34,7 +34,9 @@ def _tcp_socketpair():
     return conn, client
 
 
-def _safe_socketpair(family=socket.AF_UNIX, type=socket.SOCK_STREAM, proto=0):
+def _safe_socketpair(
+    family: Any = socket.AF_UNIX, type: Any = socket.SOCK_STREAM, proto: int = 0
+) -> tuple[socket.socket, socket.socket]:
     try:
         return _orig_socketpair(family, type, proto)
     except PermissionError:
