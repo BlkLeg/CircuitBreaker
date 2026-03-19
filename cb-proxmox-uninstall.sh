@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Circuit Breaker — Proxmox LXC Uninstaller
 # Stops and destroys the Circuit Breaker LXC container on a Proxmox VE host.
+# See cb-proxmox-deploy.sh to create a new container.
 
 # Color codes
 RED='\033[0;31m'
@@ -16,7 +17,7 @@ cb_header() {
   clear
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
-  echo "  ║   Circuit Breaker — Proxmox Uninstaller  ║"
+  echo "  ║  Circuit Breaker — Proxmox Uninstaller   ║"
   echo "  ╚══════════════════════════════════════════╝"
   echo -e "${RESET}"
 }
