@@ -58,8 +58,12 @@ class TestCapabilitiesShape:
         data = _get_caps(client)
         assert "enabled" in data["auth"]
 
-    def test_fallback_when_no_settings_row(self, client):
+    def test_fallback_when_no_settings_row(self, client, db):
         """With empty DB there is no AppSettings row; endpoint must return safe defaults."""
+        from app.db.models import AppSettings
+
+        db.query(AppSettings).delete()
+        db.commit()
         data = _get_caps(client)
         assert data["auth"]["enabled"] is True
         assert data["realtime"]["available"] is False

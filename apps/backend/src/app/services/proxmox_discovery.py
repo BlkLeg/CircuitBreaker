@@ -593,6 +593,15 @@ def _upsert_node(
     # convert to percentage and clamp to 0-100
     cpu_pct = min(100, round(cpu_raw * 100, 1)) if cpu_raw else 0
 
+    if status_str != "online":
+        t_status = "unknown"
+    elif cpu_pct >= 90:
+        t_status = "critical"
+    elif cpu_pct >= 70:
+        t_status = "degraded"
+    else:
+        t_status = "healthy"
+
     telemetry = {
         "cpu_pct": cpu_pct,
         "mem_used_bytes": mem,
@@ -614,7 +623,7 @@ def _upsert_node(
             status="active" if status_str == "online" else "inactive",
             source="discovery",
             telemetry_data=telemetry,
-            telemetry_status="healthy" if status_str == "online" else "unknown",
+            telemetry_status=t_status,
             telemetry_last_polled=utcnow(),
             ip_address=node_res.get("ip"),
             memory_gb=round(maxmem / (1024**3)) if maxmem else None,
@@ -633,7 +642,7 @@ def _upsert_node(
     else:
         hw.status = "active" if status_str == "online" else "inactive"
         hw.telemetry_data = telemetry
-        hw.telemetry_status = "healthy" if status_str == "online" else "unknown"
+        hw.telemetry_status = t_status
         hw.telemetry_last_polled = utcnow()
         hw.memory_gb = round(maxmem / (1024**3)) if maxmem else hw.memory_gb
         if not hw.vendor_icon_slug:

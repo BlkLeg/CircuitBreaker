@@ -204,7 +204,7 @@ def write_log(
                 status_code=status_code,
                 # Structured audit fields (Feature 6)
                 actor_id=actor_id,
-                actor_name=effective_actor,
+                actor_name=actor_name,
                 entity_name=entity_name,
                 diff=diff_str,
                 severity=severity,

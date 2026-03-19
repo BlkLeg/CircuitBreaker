@@ -269,6 +269,9 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
 
     cfg = get_or_create_settings(db)
 
+    if not cfg.auth_enabled:
+        return 0  # App not bootstrapped / auth disabled — open access
+
     if not cfg.jwt_secret:
         return None
 
