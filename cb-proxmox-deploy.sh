@@ -105,7 +105,7 @@ tui_warn() {
 
 tui_phase_done() {
   [[ "$QUIET" == "true" ]] && return
-  echo "  $(printf '─%.0s' {1..40}) ${GREEN}[✓ COMPLETE]${RESET}"
+  echo -e "  $(printf '─%.0s' {1..40}) ${GREEN}[✓ COMPLETE]${RESET}"
 }
 
 # ── Spinner ────────────────────────────────────────────────────────────────────
@@ -344,7 +344,7 @@ interactive_config() {
   printf "    %-16s %s\n" "Proxmox API :"  "$([ "$CONFIGURE_API" == "true" ] && echo "configure ✓" || echo "skip")"
   echo ""
   read -rp "  Proceed? [Y/n]: " PROCEED
-  [[ "${PROCEED:-Y}" =~ ^[Nn]$ ]] && { echo "  Aborted."; exit 0; }
+  if [[ "${PROCEED:-Y}" =~ ^[Nn]$ ]]; then echo "  Aborted."; exit 0; fi
 }
 
 # ── Phase 2: LXC Creation ──────────────────────────────────────────────────────
