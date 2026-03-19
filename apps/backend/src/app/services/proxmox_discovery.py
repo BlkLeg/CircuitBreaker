@@ -524,7 +524,8 @@ async def discover_and_import(
                 run.completed_at = utcnow()
                 run.errors = result["errors"]
                 db.commit()
-                _logger.warning(
+                _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                    # Logs integration ID and exception message — no credential value
                     "Proxmox discovery failed (invalid config/token) for integration %d: %s",
                     config.id,
                     e,

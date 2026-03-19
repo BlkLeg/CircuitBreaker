@@ -437,20 +437,29 @@ def delete_hardware(db: Session, hardware_id: int) -> None:
         raise ValueError(f"Hardware {hardware_id} not found")
     # Block if dependent entities still exist
     blocking: list[str] = []
-    cu_count = len(
-        db.execute(select(ComputeUnit).where(ComputeUnit.hardware_id == hardware_id))
-        .scalars()
-        .all()
+    cu_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(ComputeUnit)
+            .where(ComputeUnit.hardware_id == hardware_id)
+        )
+        or 0
     )
     if cu_count:
         blocking.append(f"{cu_count} compute unit(s)")
-    st_count = len(
-        db.execute(select(Storage).where(Storage.hardware_id == hardware_id)).scalars().all()
+    st_count = (
+        db.scalar(
+            select(func.count()).select_from(Storage).where(Storage.hardware_id == hardware_id)
+        )
+        or 0
     )
     if st_count:
         blocking.append(f"{st_count} storage item(s)")
-    svc_count = len(
-        db.execute(select(Service).where(Service.hardware_id == hardware_id)).scalars().all()
+    svc_count = (
+        db.scalar(
+            select(func.count()).select_from(Service).where(Service.hardware_id == hardware_id)
+        )
+        or 0
     )
     if svc_count:
         blocking.append(f"{svc_count} service(s)")

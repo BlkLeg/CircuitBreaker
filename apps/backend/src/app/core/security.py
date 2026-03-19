@@ -203,7 +203,10 @@ def decode_access_token(token: str) -> dict[str, Any]:
     Full signature verification is handled by FastAPI-Users auth middleware.
     """
     try:
-        return jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256"])
+        return jwt.decode(
+            token, options={"verify_signature": False}, algorithms=["HS256"]
+        )  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
+        # Intentional: claim extractor for RLS only; FastAPI-Users verifies auth upstream
     except jwt.PyJWTError:
         return {}
 

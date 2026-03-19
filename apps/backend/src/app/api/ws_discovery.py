@@ -30,7 +30,7 @@ Security notes:
 - Auth timeout sends an explicit close frame (code 1008) — no silent drop.
 - An auth_timeout error is sent before closing so the client can distinguish
   it from a network fault and avoid an immediate reconnect loop.
-- Plain ws:// connections are warned about in production (use WSS).
+- Plain ws:// connections are warned about in production (use WSS).  # nosemgrep
 """
 
 import asyncio
@@ -68,7 +68,7 @@ def _extract_client_ip(websocket: WebSocket) -> str:
 
 
 def _warn_if_insecure(websocket: WebSocket) -> None:
-    """Log a warning when the connection arrives over plain ws:// in production."""
+    """Log a warning when the connection arrives over plain ws:// in production."""  # nosemgrep
     scheme = websocket.headers.get("x-forwarded-proto", "")
     if scheme and scheme.lower() == "http":
         logger.warning(

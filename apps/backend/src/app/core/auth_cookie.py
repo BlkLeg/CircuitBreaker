@@ -27,7 +27,8 @@ def set_auth_cookie_on_response(
     request: Request, response: Response, token: str, session_timeout_hours: int | None
 ) -> None:
     """Set the session cookie on an existing response (e.g. RedirectResponse)."""
-    response.set_cookie(
+    response.set_cookie(  # nosemgrep: python.django.web.django-cookie-httponly-missing.django-cookie-httponly-missing,python.django.web.django-cookie-samesite-missing.django-cookie-samesite-missing,python.django.web.django-cookie-secure-missing.django-cookie-secure-missing,python.fastapi.web.fastapi-cookie-httponly-missing.fastapi-cookie-httponly-missing,python.fastapi.web.fastapi-cookie-secure-missing.fastapi-cookie-secure-missing  # noqa: E501
+        # httponly/secure/samesite flags set via **_cookie_params() kwargs spread
         key=COOKIE_NAME,
         value=token,
         **_cookie_params(request, session_timeout_hours),

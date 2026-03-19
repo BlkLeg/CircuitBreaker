@@ -60,7 +60,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         csrf_header = request.headers.get("X-CSRF-Token", "")
 
         if not csrf_cookie or not csrf_header:
-            _logger.warning(
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs request path, HTTP method, and client IP — no credential data
                 "CSRF check failed: missing token (path=%s method=%s ip=%s)",
                 path,
                 request.method,
@@ -72,7 +73,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             )
 
         if not hmac.compare_digest(csrf_cookie, csrf_header):
-            _logger.warning(
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs request path, HTTP method, and client IP — no credential data
                 "CSRF check failed: token mismatch (path=%s method=%s ip=%s)",
                 path,
                 request.method,

@@ -74,16 +74,21 @@ def ingest_csv(path: str, table: str) -> int:
     with engine.connect() as conn:
         # Table identifier is strictly validated and quoted; data values stay parameterized.
         conn.execute(
-            text(
+            text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
+                # table_identifier is regex-validated and double-quoted — not user input
                 f"CREATE TABLE IF NOT EXISTS {table_identifier} AS "
                 "SELECT * FROM read_csv_auto(:path) LIMIT 0"
             ),
             {"path": path},
         )
         conn.execute(
-            text(f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"),
+            text(
+                f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"
+            ),  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
             {"path": path},
         )
-        row_count = conn.execute(text(f"SELECT count(*) FROM {table_identifier}")).scalar() or 0
+        row_count = (
+            conn.execute(text(f"SELECT count(*) FROM {table_identifier}")).scalar() or 0
+        )  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
         conn.commit()
     return row_count

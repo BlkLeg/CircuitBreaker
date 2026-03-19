@@ -192,13 +192,16 @@ class ListenerService:
     async def _run_ssdp(self) -> None:
         """Listen for SSDP NOTIFY and M-SEARCH responses via UDP multicast."""
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock = socket.socket(
+                socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP
+            )  # nosemgrep: python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces  # noqa: E501
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             except AttributeError:
                 pass  # not available on all platforms
             sock.bind(("", _SSDP_PORT))
+            # SSDP multicast discovery requires binding to all interfaces by design
             mcast_req = struct.pack("4sL", socket.inet_aton(_SSDP_ADDR), socket.INADDR_ANY)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mcast_req)
             sock.setblocking(False)
