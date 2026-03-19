@@ -1,0 +1,197 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: '0 4 * * 1'  # Weekly Monday 04:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs-results.sarif
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '1'
+          skip-dirs: '.venv,node_modules,dist'
+      - name: Upload Trivy filesystem results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-filesystem
+
+  trivy-config:
+    name: Trivy Config / IaC Scan
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config-results.sarif
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          skip-dirs: '.venv,node_modules,dist'
+      - name: Upload Trivy config results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-config-results.sarif
+          category: trivy-config
+
+  semgrep:
+    name: Semgrep (SAST)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Run Semgrep
+        # Scans native source only — backend Python and frontend React
+        run: semgrep scan --config p/default --error --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/
+      - name: Upload Semgrep results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Bandit
+        run: pip install bandit
+      - name: Run Bandit
+        run: bandit -r apps/backend/src/ -ll --skip B101 -f sarif -o bandit-results.sarif
+      - name: Upload Bandit results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+
+  gitleaks:
+    name: Gitleaks (Secret Scanning)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        # GITHUB_TOKEN is omitted intentionally — PR annotations are not required;
+        # findings will surface via the Security tab through other SARIF uploads.
+        uses: gitleaks/gitleaks-action@v2
+
+  checkov:
+    name: Checkov (GitHub Actions / IaC)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Checkov
+        run: pip install checkov
+      - name: Run Checkov on GitHub Actions workflows
+        # Scans workflow YAML files for misconfigurations; docker/ removed as
+        # native systemd is the primary install method (no Dockerfile to scan).
+        run: checkov -d .github/workflows/ --output sarif --output-file-path checkov-results.sarif --quiet || true
+      - name: Upload Checkov results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov
+
+  pip-audit:
+    name: Python Dependency Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps and pip-audit
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip pip-audit
+          .venv/bin/pip install -e "apps/backend/[dev]"
+      - name: Run pip-audit
+        run: .venv/bin/pip-audit --format=json --output pip-audit-results.json || true
+      - name: Upload pip-audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.json
+          retention-days: 30
+
+  npm-audit:
+    name: Frontend Dependency Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+      - name: Run npm audit
+        working-directory: apps/frontend
+        run: npm audit --audit-level=high --json > ../../npm-audit-results.json || true
+      - name: Upload npm audit results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-audit-results
+          path: npm-audit-results.json
+          retention-days: 30

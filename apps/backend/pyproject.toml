@@ -123,6 +123,19 @@ exclude = [
 
 [[tool.mypy.overrides]]
 module = [
+    "app.services.discovery_probes",
+    "app.services.discovery_service",
+]
+# python-nmap has no stubs and no py.typed marker. Whether mypy treats
+# `import nmap` as Module or Any depends on how it resolves the package,
+# which changes with environment and cache state. The type: ignore[assignment]
+# on the `nmap = None` fallback is correct when mypy sees a Module type,
+# but triggers [unused-ignore] when mypy infers Any. Disabling
+# warn_unused_ignores here keeps the ignore stable in both environments.
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = [
     "app.api.compute_units",
     "app.api.discovery",
     "app.main",
