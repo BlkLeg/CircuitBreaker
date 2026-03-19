@@ -58,12 +58,6 @@ CT_IP=""
 CLEANUP_ON_EXIT=false
 SPINNER_PID=""
 
-# ── Logging: strip ANSI → tee to log file + /dev/tty ──────────────────────────
-# Only redirect when running interactively (always true on a PVE host)
-if [[ -t 1 && -e /dev/tty ]]; then
-  exec > >(sed -u 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG_FILE" >/dev/tty) 2>&1
-fi
-
 # ── TUI Helpers ────────────────────────────────────────────────────────────────
 
 tui_banner() {
@@ -627,10 +621,23 @@ phase5_success() {
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 main() {
+  # Restore standard input so the TUI can read keystrokes over 'curl | bash'
+  if [[ ! -t 0 && -c /dev/tty ]]; then
+    exec < /dev/tty
+  fi
+
   parse_args "$@"
   tui_banner
   phase1_preflight
+
+  # Run TUI / interactive configuration BEFORE intercepting output
   interactive_config
+
+  # Start global logging AFTER the TUI has finished drawing to avoid stripping ANSI
+  if [[ -t 1 && -e /dev/tty ]]; then
+    exec > >(sed -u 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG_FILE" >/dev/tty) 2>&1
+  fi
+
   phase2_create_lxc
   phase3_install_cb
   phase4_health_check
