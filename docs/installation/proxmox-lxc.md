@@ -17,10 +17,10 @@ Install Circuit Breaker inside a new LXC container on your Proxmox VE host. The 
 Run this on your **Proxmox VE host** (not inside an existing container):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox-deploy.sh)"
 ```
 
-The script walks through a short interactive setup (~3 minutes total).
+The script walks through an interactive TUI setup (~3 minutes total).
 
 ---
 

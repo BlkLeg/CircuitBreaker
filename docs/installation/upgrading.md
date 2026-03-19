@@ -16,7 +16,7 @@ Or in the UI: **Settings → About**.
 
 ## Native / Proxmox LXC
 
-If you installed natively with `install.sh` or via the Proxmox LXC helper (`cb-proxmox.sh`), upgrade with:
+If you installed natively with `install.sh` or via the Proxmox LXC helper (`cb-proxmox-deploy.sh`), upgrade with:
 
 ```bash
 cb update

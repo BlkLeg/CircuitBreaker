@@ -60,10 +60,10 @@ Installs natively via systemd — no Docker required. Opens the OOBE setup wizar
 ### Proxmox LXC (Proxmox Hosts)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox-deploy.sh)"
 ```
 
-Runs on your PVE host: creates a Debian 12 LXC container, installs Circuit Breaker natively, and auto-configures Proxmox API integration. Asks 3 questions, done in ~3 minutes.
+Runs on your PVE host: creates a Debian 12 LXC container, installs Circuit Breaker natively, and auto-configures Proxmox API integration. Interactive TUI guides you through setup, done in ~3 minutes.
 
 ---
 

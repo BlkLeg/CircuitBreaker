@@ -450,14 +450,16 @@ phase2_create_lxc() {
       --ostype     debian          \
       --unprivileged 0             \
       --features   "nesting=1,keyctl=1" \
-      --onboot     1 >/dev/null 2>&1
+      --onboot     1 >/dev/null 2>&1 \
+      || { spinner_stop; tui_fail "Failed to create container $CTID" "Re-run with --verbose for details"; }
     spinner_stop
   fi
   tui_ok "Container $CTID created"
 
   # Start container
   spinner_start "Starting container"
-  pct start "$CTID" >/dev/null 2>&1
+  pct start "$CTID" >/dev/null 2>&1 \
+    || { spinner_stop; tui_fail "Failed to start container $CTID" "Check: journalctl -u pve-container@${CTID}"; }
   spinner_stop
   tui_ok "Container started"
 
@@ -465,7 +467,8 @@ phase2_create_lxc() {
   spinner_start "Waiting for DHCP address"
   local deadline=$(( $(date +%s) + 60 ))
   while (( $(date +%s) < deadline )); do
-    CT_IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
+    CT_IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null \
+      | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
     [[ -n "$CT_IP" ]] && break
     sleep 2
   done
@@ -561,20 +564,23 @@ phase4_health_check() {
     spinner_start "Registering Proxmox integration"
     local PVE_HOST_IP; PVE_HOST_IP=$(hostname -I | awk '{print $1}')
     local PVE_HOSTNAME; PVE_HOSTNAME=$(hostname)
-    local HTTP_STATUS
+    local HTTP_STATUS json_payload
+    json_payload=$(python3 -c "
+import json, sys
+print(json.dumps({
+  'type': 'proxmox',
+  'name': sys.argv[1],
+  'host': sys.argv[2],
+  'token_id': sys.argv[3],
+  'token_secret': sys.argv[4],
+  'verify_ssl': False
+}))" "$PVE_HOSTNAME" "$PVE_HOST_IP" "$TOKEN_ID" "$TOKEN_SECRET" 2>/dev/null) || json_payload=""
+    TOKEN_SECRET=""  # clear from memory immediately
     HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
       --max-time 10 \
       -X POST "http://$CT_IP:$CB_PORT/api/v1/integration_configs" \
       -H "Content-Type: application/json" \
-      -d "{
-        \"type\":\"proxmox\",
-        \"name\":\"${PVE_HOSTNAME}\",
-        \"host\":\"${PVE_HOST_IP}\",
-        \"token_id\":\"${TOKEN_ID}\",
-        \"token_secret\":\"${TOKEN_SECRET}\",
-        \"verify_ssl\":false
-      }" 2>/dev/null || echo "000")
-    TOKEN_SECRET=""  # clear from memory
+      -d "$json_payload" 2>/dev/null || echo "000")
     spinner_stop
     if [[ "$HTTP_STATUS" =~ ^2 ]]; then
       tui_ok "Proxmox integration registered" "HTTP $HTTP_STATUS"

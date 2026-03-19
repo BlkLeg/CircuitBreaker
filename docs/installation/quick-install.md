@@ -47,7 +47,7 @@ See [cb CLI Tool](../cb-cli.md) for the full reference.
 Runs on your Proxmox VE host. Creates a Debian 12 LXC container and installs Circuit Breaker inside it automatically.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox.sh | bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox-deploy.sh)"
 ```
 
 Takes about 3 minutes. Circuit Breaker is accessible at `http://<container-ip>:8088` when done.
