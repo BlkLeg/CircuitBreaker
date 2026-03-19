@@ -104,15 +104,10 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Bandit
-        run: pip install bandit
+        run: pip install bandit bandit-sarif-formatter
       - name: Run Bandit
-        # Bandit does not support sarif output; emit JSON and convert below
-        run: bandit -r apps/backend/src/ -ll --skip B101 -f json -o bandit-results.json || true
-      - name: Convert Bandit JSON to SARIF
-        uses: advanced-security/convert-bandit-json-to-sarif@v1
-        with:
-          input: bandit-results.json
-          output: bandit-results.sarif
+        # bandit-sarif-formatter provides native SARIF output via -f sarif
+        run: bandit -r apps/backend/src/ -ll --skip B101 -f sarif -o bandit-results.sarif || true
       - name: Upload Bandit results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -131,9 +126,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Run Gitleaks
-        # GITHUB_TOKEN is omitted intentionally — PR annotations are not required;
-        # findings will surface via the Security tab through other SARIF uploads.
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   checkov:
     name: Checkov (GitHub Actions / IaC)
