@@ -205,7 +205,13 @@ stage0_preflight() {
 
   # Root check
   cb_step "Checking root privileges"
-  [[ $EUID -ne 0 ]] && cb_fail "Must run as root" "sudo bash install.sh"
+  if [[ $EUID -ne 0 ]]; then
+    if command -v sudo &>/dev/null; then
+      cb_step "Elevating privileges with sudo"
+      exec sudo -E bash "$0" "$@"
+    fi
+    cb_fail "Root access required" "Run as root or install sudo"
+  fi
   cb_ok "Running as root"
 
   # OS Detection

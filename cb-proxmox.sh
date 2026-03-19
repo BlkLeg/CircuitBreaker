@@ -8,6 +8,7 @@ set -euo pipefail
 
 LOG_FILE="/tmp/cb-proxmox-install.log"
 CB_INSTALL_URL="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh"
+CB_VERSION="latest"
 CB_PORT=8088
 
 # Color codes
@@ -22,13 +23,14 @@ RESET='\033[0m'
 CT_CORES=2
 CT_RAM=4096
 CT_SWAP=512
-CT_DISK=10
+CT_DISK=20
 CT_BRIDGE=vmbr0
 
 # Runtime vars
 CTID=""
 STORAGE=""
 CT_HOSTNAME="circuitbreaker"
+CT_PASSWORD=""
 TOKEN_ID=""
 TOKEN_SECRET=""
 CONFIGURE_API=false
@@ -36,8 +38,6 @@ CT_IP=""
 CLEANUP_ON_EXIT=false
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-
-exec > >(tee -a "$LOG_FILE") 2>&1
 
 # Strip ANSI codes from log file so it stays readable
 exec > >(sed -u 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG_FILE" >/dev/tty) 2>&1
@@ -128,6 +128,23 @@ phase1_preflight() {
   CT_HOSTNAME="${INPUT_HOSTNAME:-circuitbreaker}"
   cb_ok "Hostname: $CT_HOSTNAME"
 
+  # Resource confirmation
+  echo ""
+  echo "  Resources: ${CT_CORES} cores / ${CT_RAM}MB RAM / ${CT_DISK}GB disk"
+  read -rp "  Use these defaults? [Y/n]: " CONFIRM_RESOURCES
+  if [[ "${CONFIRM_RESOURCES:-Y}" =~ ^[Nn]$ ]]; then
+    read -rp "  Cores [${CT_CORES}]: "   INPUT_CORES; CT_CORES="${INPUT_CORES:-$CT_CORES}"
+    read -rp "  RAM MB [${CT_RAM}]: "    INPUT_RAM;   CT_RAM="${INPUT_RAM:-$CT_RAM}"
+    read -rp "  Disk GB [${CT_DISK}]: "  INPUT_DISK;  CT_DISK="${INPUT_DISK:-$CT_DISK}"
+  fi
+  cb_ok "Resources: ${CT_CORES} cores / ${CT_RAM}MB RAM / ${CT_DISK}GB disk"
+
+  # Container root password
+  echo ""
+  read -rsp "  Container root password: " CT_PASSWORD; echo ""
+  [[ -n "$CT_PASSWORD" ]] || cb_fail "Container password cannot be empty" "Re-run and enter a password"
+  cb_ok "Container password set"
+
   # Idempotency: check if a container with this hostname already has CB running
   EXISTING_CT=$(pct list | awk -v h="$CT_HOSTNAME" 'NR>1 && $3==h {print $1}' | head -1)
   if [[ -n "$EXISTING_CT" ]]; then
@@ -200,16 +217,17 @@ phase3_create_lxc() {
   cb_step "Creating container $CTID"
   CLEANUP_ON_EXIT=true
   pct create "$CTID" "local:vztmpl/$TEMPLATE" \
-    --hostname "$CT_HOSTNAME" \
-    --memory    "$CT_RAM" \
-    --swap      "$CT_SWAP" \
-    --cores     "$CT_CORES" \
-    --rootfs    "${STORAGE}:${CT_DISK}" \
-    --net0      "name=eth0,bridge=${CT_BRIDGE},ip=dhcp" \
-    --ostype    debian \
+    --hostname   "$CT_HOSTNAME" \
+    --password   "$CT_PASSWORD" \
+    --memory     "$CT_RAM" \
+    --swap       "$CT_SWAP" \
+    --cores      "$CT_CORES" \
+    --rootfs     "${STORAGE}:${CT_DISK}" \
+    --net0       "name=eth0,bridge=${CT_BRIDGE},ip=dhcp" \
+    --ostype     debian \
     --unprivileged 0 \
-    --features  nesting=1 \
-    --onboot    1
+    --features   "nesting=1,keyctl=1" \
+    --onboot     1
   cb_ok "Container $CTID created"
 
   cb_step "Starting container"
@@ -238,7 +256,7 @@ phase4_install_cb() {
   echo ""
   # Stream output live — pct exec inherits stdout
   pct exec "$CTID" -- bash -c \
-    "curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --docker"
+    "curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --no-tls"
   echo ""
   cb_ok "Circuit Breaker installation complete"
 }
