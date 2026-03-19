@@ -95,7 +95,9 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 # BUILD & RELEASE
 # ==============================================================================
-.PHONY: build build-deps build-release build-from-source release-local docker-build docker-push
+DIST_NATIVE ?= dist/native
+
+.PHONY: build build-deps build-release build-from-source release-local docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -125,6 +127,27 @@ docker-push: ## Push mono image to GHCR (requires docker login to ghcr.io first)
 	docker push $(DOCKER_REGISTRY):$$(cat VERSION)
 	docker tag $(DOCKER_REGISTRY):$$(cat VERSION) $(DOCKER_REGISTRY):latest
 	docker push $(DOCKER_REGISTRY):latest
+
+sign: ## GPG-sign dist/native artifacts + SHA256SUMS (requires GPG_KEY_ID=<email>)
+	@[ -n "$(GPG_KEY_ID)" ] || (echo "Error: set GPG_KEY_ID=<fingerprint-or-email>"; exit 1)
+	@cd $(DIST_NATIVE) && sha256sum * > SHA256SUMS
+	@cd $(DIST_NATIVE) && for f in *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json SHA256SUMS; do \
+	  [ -f "$$f" ] && [[ "$$f" != *.asc ]] || continue; \
+	  gpg --armor --detach-sign --local-user "$(GPG_KEY_ID)" "$$f"; \
+	  echo "  signed: $$f"; \
+	done
+	@echo "Signatures written to $(DIST_NATIVE)/*.asc"
+
+sbom: ## Generate SBOM for source dirs using syft (install: https://github.com/anchore/syft/releases/tag/v1.14.0)
+	@command -v syft >/dev/null 2>&1 || (echo "Error: syft not found"; exit 1)
+	@VERSION=$$(cat VERSION); \
+	  syft scan dir:$(BACKEND_DIR) --exclude '**/node_modules' \
+	    --output cyclonedx-json=$(DIST_NATIVE)/circuit-breaker_$${VERSION}_sbom-backend.cdx.json \
+	    --output spdx-json=$(DIST_NATIVE)/circuit-breaker_$${VERSION}_sbom-backend.spdx.json; \
+	  syft scan dir:$(FRONTEND_DIR) --exclude '**/node_modules' \
+	    --output cyclonedx-json=$(DIST_NATIVE)/circuit-breaker_$${VERSION}_sbom-frontend.cdx.json \
+	    --output spdx-json=$(DIST_NATIVE)/circuit-breaker_$${VERSION}_sbom-frontend.spdx.json
+	@echo "SBOMs written to $(DIST_NATIVE)/"
 
 # ==============================================================================
 # CODE QUALITY & TESTING
