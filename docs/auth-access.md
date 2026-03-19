@@ -139,6 +139,45 @@ In Authentik (example):
 
 ---
 
+## Two-Factor Authentication (TOTP)
+
+Circuit Breaker supports TOTP-based MFA using any standard authenticator app (Google Authenticator, Authy, Bitwarden Authenticator, etc.).
+
+### Enabling TOTP MFA
+
+1. Go to **Settings → Account → Security**.
+2. Click **Enable Two-Factor Authentication**.
+3. Scan the QR code with your authenticator app.
+4. Enter the 6-digit code from your app to confirm enrollment.
+5. **Save your recovery codes** — they are shown once. Treat them like your vault key: store them somewhere safe offline.
+
+### Signing In with TOTP
+
+Once enrolled, the sign-in flow becomes:
+
+1. Enter email and password as usual.
+2. A second prompt appears — enter the 6-digit code from your authenticator app.
+
+Recovery codes can be used in place of the TOTP code if you lose access to your authenticator app. Each recovery code is single-use.
+
+### Admin Reset (Lost Device)
+
+If a user loses access to their authenticator app and has no recovery codes:
+
+1. Go to **Admin → Users**.
+2. Select the user.
+3. Click **Reset MFA**.
+
+The user's TOTP enrollment is cleared. They will be prompted to re-enroll on their next login.
+
+### Disabling TOTP
+
+1. Go to **Settings → Account → Security**.
+2. Click **Disable Two-Factor Authentication**.
+3. Confirm by entering your current TOTP code (or a recovery code).
+
+---
+
 ## User & Invite Lifecycle
 
 - Admins can invite users from **Admin → Users**.

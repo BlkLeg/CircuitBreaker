@@ -26,7 +26,7 @@ The command prompts you to confirm, then:
 If the `cb` CLI is not available, run the uninstall script directly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash
 ```
 
 The script:

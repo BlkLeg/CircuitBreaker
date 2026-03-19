@@ -1,1 +1,1 @@
-make ci
+make lint
