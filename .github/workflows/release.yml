@@ -14,7 +14,7 @@ permissions:
   contents: write    # create GitHub Release, upload assets
   packages: write    # push Docker image to GHCR
   pages: write       # deploy GitHub Pages (install redirect)
-  id-token: write    # OIDC for pages deployment
+  id-token: write    # OIDC for pages deployment + cosign keyless signing
 
 jobs:
   # ── Derive version ────────────────────────────────────────────────────────────
@@ -58,11 +58,33 @@ jobs:
           path: dist/release/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate SHA256SUMS
+      - name: Generate preliminary SHA256SUMS
         run: |
           cd dist/release/
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Install syft v1.14.0
+        run: |
+          curl -sSfL \
+            https://github.com/anchore/syft/releases/download/v1.14.0/syft_1.14.0_linux_amd64.tar.gz \
+            -o /tmp/syft.tar.gz
+          echo "21653debfeccb278576ffdd85b5dbe8cd44fcb820cae71e887a6ac2efb399d37  /tmp/syft.tar.gz" | sha256sum -c
+          sudo tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
+          syft version
+
+      - name: Generate source SBOMs
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          syft scan dir:apps/backend \
+            --exclude '**/node_modules' \
+            --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-backend.cdx.json" \
+            --output "spdx-json=dist/release/circuit-breaker_${VERSION}_sbom-backend.spdx.json"
+          syft scan dir:apps/frontend \
+            --exclude '**/node_modules' \
+            --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-frontend.cdx.json" \
+            --output "spdx-json=dist/release/circuit-breaker_${VERSION}_sbom-frontend.spdx.json"
 
       - name: Log in to GHCR
         run: |
@@ -70,8 +92,10 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push Docker image
+        id: docker_push
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
           IMAGE="ghcr.io/blkleg/circuitbreaker"
           docker build -f Dockerfile.mono \
             -t "${IMAGE}:${VERSION}" \
@@ -79,16 +103,79 @@ jobs:
             .
           docker push "${IMAGE}:${VERSION}"
           docker push "${IMAGE}:latest"
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{ .Manifest.Digest }}')
+          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign v2.4.1
+        run: |
+          curl -sSfL \
+            https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 \
+            -o /tmp/cosign
+          echo "8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b  /tmp/cosign" | sha256sum -c
+          sudo mv /tmp/cosign /usr/local/bin/cosign
+          sudo chmod +x /usr/local/bin/cosign
+          cosign version
+
+      - name: Generate container SBOM
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+        run: |
+          syft scan "${IMAGE_DIGEST}" \
+            --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-container.cdx.json"
+
+      - name: Sign Docker image with cosign
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+        run: |
+          cosign sign --yes "${IMAGE_DIGEST}"
+
+      - name: Attach container SBOM to image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.docker_push.outputs.digest }}
+        run: |
+          cosign attach sbom \
+            --sbom "dist/release/circuit-breaker_${VERSION}_sbom-container.cdx.json" \
+            --type cyclonedx \
+            "${IMAGE_DIGEST}"
+
+      - name: GPG sign artifacts
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+
+          cd dist/release/
+          for f in *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json; do
+            [ -f "$f" ] && [[ "$f" != *.asc ]] || continue
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${GPG_PASSPHRASE}" \
+                --armor --detach-sign "$f"
+          done
+
+          # Regenerate SHA256SUMS (now includes .asc + SBOM files) then sign it
+          sha256sum * > SHA256SUMS
+          gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "${GPG_PASSPHRASE}" \
+              --armor --detach-sign SHA256SUMS
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
           gh release create "v${VERSION}" \
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
-            dist/release/*
+            dist/release/* \
+            packaging/circuit-breaker-release-key.asc
 
   # ── Deploy install redirect to GitHub Pages ───────────────────────────────────
   deploy-redirect:
