@@ -31,7 +31,7 @@ UPGRADE_MODE=false
 NO_TLS=false
 FORCE_DEPS=false
 DOCKER_AVAILABLE=false
-INSTALL_DOCKER=false
+INSTALL_DOCKER=true
 
 # UI Functions
 cb_version() {

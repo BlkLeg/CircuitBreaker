@@ -337,49 +337,17 @@ stage0_preflight() {
   # Interactive prompts (skip if --unattended or UPGRADE_MODE)
   if [[ "$UNATTENDED" == "false" ]] && [[ "$UPGRADE_MODE" == "false" ]]; then
     cb_section "Configuration"
-    
-    echo -e "  ${CYAN}HTTP Port${RESET} (default: 8088): "
-    read -t 10 -r port_input < /dev/tty || port_input=""
-    if [[ -n "$port_input" ]]; then
-      CB_PORT="$port_input"
-    fi
+
     cb_ok "HTTP Port: $CB_PORT"
-    
-    echo -e "  ${CYAN}Data Directory${RESET} (default: /var/lib/circuitbreaker): "
-    read -t 10 -r dir_input < /dev/tty || dir_input=""
-    if [[ -n "$dir_input" ]]; then
-      CB_DATA_DIR="$dir_input"
-    fi
     cb_ok "Data Directory: $CB_DATA_DIR"
-    
-    echo -e "  ${CYAN}Domain (FQDN)${RESET} (optional, press Enter to skip): "
+
+    echo -e "  ${CYAN}Domain (FQDN)${RESET} (default: ${CB_FQDN}): "
     read -t 15 -r fqdn_input < /dev/tty || fqdn_input=""
     if [[ -n "$fqdn_input" ]]; then
       CB_FQDN="$fqdn_input"
-      cb_ok "Domain: $CB_FQDN"
-      
-      echo -e "  ${CYAN}TLS Certificate${RESET}"
-      echo -e "    1) Self-signed (default)"
-      echo -e "    2) Let's Encrypt (requires port 80 accessible from internet)"
-      read -t 10 -r -p "  Choice [1-2]: " cert_choice < /dev/tty || cert_choice="1"
-      if [[ "$cert_choice" == "2" ]]; then
-        CB_CERT_TYPE="letsencrypt"
-        echo -e "  ${CYAN}Email for Let's Encrypt${RESET} (required): "
-        read -t 15 -r email_input < /dev/tty || email_input=""
-        if [[ -z "$email_input" ]]; then
-          cb_warn "Email required for Let's Encrypt, falling back to self-signed"
-          CB_CERT_TYPE="self-signed"
-        else
-          CB_EMAIL="$email_input"
-          cb_ok "Certificate: Let's Encrypt (email: $CB_EMAIL)"
-        fi
-      else
-        cb_ok "Certificate: Self-signed"
-      fi
-    else
-      cb_ok "Domain: Not configured (using IP)"
-      cb_ok "Certificate: Self-signed"
     fi
+    cb_ok "Domain: $CB_FQDN"
+    cb_ok "Certificate: Self-signed"
   fi
 }
 
@@ -1228,20 +1196,9 @@ stage2_dependencies() {
     DOCKER_AVAILABLE=true
     cb_ok "Docker detected — socket proxy will be configured"
   else
-    # Offer to install Docker if not present and --docker wasn't already passed
-    if [[ "$INSTALL_DOCKER" != "true" ]]; then
-      if [[ "$UNATTENDED" == "false" ]]; then
-        echo -e "  ${YELLOW}Docker not found.${RESET} Docker enables container telemetry."
-        read -t 15 -r -p "  Install Docker CE? [y/N]: " docker_input < /dev/tty || docker_input=""
-        if [[ "$docker_input" =~ ^[Yy]$ ]]; then
-          INSTALL_DOCKER=true
-        fi
-      else
-        cb_warn "Docker not found — pass --docker to install it (enables container telemetry)"
-      fi
-    fi
+    # Always install Docker when not present (enables container telemetry)
+    INSTALL_DOCKER=true
 
-    # Install Docker if requested (by flag or interactive prompt)
     if [[ "$INSTALL_DOCKER" == "true" ]]; then
       cb_step "Installing Docker CE"
       if [[ "$PKG_MGR" == "apt-get" ]]; then
@@ -1265,9 +1222,7 @@ https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "
       DOCKER_AVAILABLE=true
     else
       DOCKER_AVAILABLE=false
-      if [[ "$UNATTENDED" == "false" ]]; then
-        cb_warn "Docker skipped — container telemetry will be unavailable"
-      fi
+      cb_warn "Docker installation failed — container telemetry will be unavailable"
     fi
   fi
 }
