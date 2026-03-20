@@ -1,647 +1,494 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Circuit Breaker — Proxmox LXC Helper
+# Full whiptail TUI for creating, managing, and removing CB containers.
+# Usage: bash -c "$(curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/cb-proxmox-deploy.sh)"
 
-# Circuit Breaker — Proxmox LXC Deploy Script
-# Runs on the Proxmox VE host. Creates a Debian 12 LXC container and
-# installs Circuit Breaker natively inside it.
+# ── Colors (tput) ─────────────────────────────────────────────────────────────
+red=$(tput setaf 1 2>/dev/null)
+green=$(tput setaf 2 2>/dev/null)
+yellow=$(tput setaf 3 2>/dev/null)
+blue=$(tput setaf 4 2>/dev/null)
+bold=$(tput bold 2>/dev/null)
+nc=$(tput sgr0 2>/dev/null)
 
-CB_VERSION="latest"
-CB_INSTALL_URL="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh"
-CB_GITHUB_REPO="BlkLeg/CircuitBreaker"
-CB_PORT=8088
+# ── Constants ─────────────────────────────────────────────────────────────────
+BT="Circuit Breaker — Proxmox Helper"
 LOG_FILE="/tmp/cb-proxmox.log"
+CB_INSTALL_URL="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh"
+CB_PORT=8088
 
-# ── Colors ─────────────────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
-
-# ── Verbosity flags ────────────────────────────────────────────────────────────
-QUIET=false
-VERBOSE=false
-
-# ── CLI arg vars ───────────────────────────────────────────────────────────────
-CTID_OVERRIDE=""
-PRESET_OVERRIDE=""
-CORES_OVERRIDE=""
-MEM_OVERRIDE=""
-DISK_OVERRIDE=""
-RECREATE=false
-
-# ── Preset table ───────────────────────────────────────────────────────────────
-declare -A PRESETS
-PRESETS[small]="1 2048 10"
-PRESETS[med]="2 4096 20"
-PRESETS[large]="4 8192 50"
-DEFAULT_PRESET="med"
-
-# ── Container defaults (overridden by parse_args) ──────────────────────────────
-CT_CORES=2
-CT_RAM=4096
-CT_SWAP=512
-CT_DISK=20
-CT_BRIDGE=vmbr0
-
-# ── Runtime state ──────────────────────────────────────────────────────────────
+# ── Runtime state ─────────────────────────────────────────────────────────────
 CTID=""
+HN="circuitbreaker"
+PW=""
+CORES=2
+RAM=4096
+DISK=20
+SWAP=512
 STORAGE=""
-CT_HOSTNAME="circuitbreaker"
-CT_PASSWORD=""
-TOKEN_ID=""
-TOKEN_SECRET=""
-CONFIGURE_API=false
+BRIDGE="vmbr0"
+TEMPLATE=""
 CT_IP=""
-CLEANUP_ON_EXIT=false
-SPINNER_PID=""
+CLEANUP_CTID=""
 
-# ── TUI Helpers ────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
+exec > >(tee -a "$LOG_FILE") 2>&1
 
-tui_banner() {
-  clear
-  echo -e "${CYAN}${BOLD}"
-  echo "  ╔══════════════════════════════════════════════╗"
-  echo "  ║    Circuit Breaker — Proxmox LXC Deploy     ║"
-  echo "  ╚══════════════════════════════════════════════╝"
-  echo -e "${RESET}"
-}
-
-tui_phase() {
-  local title="$1"
-  echo -e "\n  ${BOLD}${title}${RESET}"
-  if [[ "$QUIET" != "true" ]]; then echo "  $(printf '─%.0s' {1..46})"; fi
-}
-
-tui_step() {
-  [[ "$QUIET" == "true" ]] && return
-  printf "  ${CYAN}▸${RESET} %s..." "$1"
-}
-
-tui_ok() {
-  local msg="$1"
-  local detail="${2:-}"
-  [[ "$QUIET" == "true" ]] && return
-  if [[ -n "$detail" ]]; then
-    printf "\r  ${GREEN}✓${RESET} %-38s ${DIM}%s${RESET}\n" "$msg" "$detail"
-  else
-    printf "\r  ${GREEN}✓${RESET} %s\n" "$msg"
-  fi
-}
-
-tui_fail() {
-  spinner_stop
-  echo -e "\n  ${RED}✗  ERROR: $1${RESET}"
-  [[ -n "${2:-}" ]] && echo -e "  ${YELLOW}→  $2${RESET}"
-  echo ""
-  exit 1
-}
-
-tui_warn() {
-  echo -e "  ${YELLOW}⚠${RESET}  $1"
-}
-
-tui_phase_done() {
-  [[ "$QUIET" == "true" ]] && return
-  echo -e "  $(printf '─%.0s' {1..40}) ${GREEN}[✓ COMPLETE]${RESET}"
-}
-
-# ── Spinner ────────────────────────────────────────────────────────────────────
-
-spinner_start() {
-  [[ "$QUIET" == "true" || "$VERBOSE" == "true" ]] && return
-  local msg="$1"
-  (
-    local frames=('▸' '▹' '◃')
-    local i=0
-    while true; do
-      printf "\r  ${CYAN}%s${RESET} %s..." "${frames[$((i % 3))]}" "$msg"
-      (( i++ ))
-      sleep 0.15
-    done
-  ) &
-  SPINNER_PID=$!
-  disown "$SPINNER_PID" 2>/dev/null || true
-}
-
-spinner_stop() {
-  if [[ -n "${SPINNER_PID:-}" ]]; then
-    kill "$SPINNER_PID" 2>/dev/null || true
-    wait "$SPINNER_PID" 2>/dev/null || true
-    SPINNER_PID=""
-    printf "\r\033[K"
-  fi
-}
-
-# ── Cleanup trap ───────────────────────────────────────────────────────────────
-
+# ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-  spinner_stop
-  if [[ "$CLEANUP_ON_EXIT" == "true" && -n "${CTID:-}" ]]; then
-    echo ""
-    tui_warn "Interrupted — destroying container $CTID..."
-    pct stop "$CTID" --skiplock 2>/dev/null || true
-    pct destroy "$CTID" --purge 2>/dev/null || true
-    tui_ok "Container $CTID removed"
+  if [[ -n "$CLEANUP_CTID" ]]; then
+    echo -e "\n${yellow}Interrupted — destroying container $CLEANUP_CTID...${nc}"
+    pct stop "$CLEANUP_CTID" --skiplock 2>/dev/null
+    pct destroy "$CLEANUP_CTID" --purge 2>/dev/null
+    echo -e "${green}Container $CLEANUP_CTID removed.${nc}"
+    CLEANUP_CTID=""
   fi
 }
-
 trap 'cleanup; exit 130' INT TERM
-trap 'spinner_stop' EXIT
 
-# ── Arg parser ─────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+msg_ok()   { echo -e "  ${green}✓${nc}  $1"; }
+msg_info() { echo -e "  ${blue}▸${nc}  $1"; }
+msg_warn() { echo -e "  ${yellow}⚠${nc}  $1"; }
+msg_err()  { echo -e "  ${red}✗${nc}  $1"; }
 
-print_help() {
-  cat <<EOF
-
-  Usage: cb-proxmox-deploy.sh [OPTIONS]
-
-  Options:
-    --quiet           Show phase headers and final result only
-    --verbose         Stream all pct exec output directly (no spinners)
-    --ctid=N          Use specific container ID (skip auto-detect)
-    --preset=NAME     Resource preset: small | med | large
-    --cores=N         Override preset CPU cores
-    --mem=N           Override preset RAM in MB
-    --disk=N          Override preset disk in GB
-    --recreate        Destroy existing container with same hostname first
-    --version         Print CB_VERSION and exit
-    --help            Print this help and exit
-
-  Presets:
-    small   1 core  /  2 GB RAM /  10 GB disk
-    med     2 cores /  4 GB RAM /  20 GB disk  (default)
-    large   4 cores /  8 GB RAM /  50 GB disk
-
-  Examples:
-    cb-proxmox-deploy.sh --preset=small
-    cb-proxmox-deploy.sh --preset=large --verbose
-    cb-proxmox-deploy.sh --ctid=200 --recreate
-
-EOF
+die() {
+  whiptail --backtitle "$BT" --title "Error" --msgbox "$1" 10 60
+  return 1
 }
 
-parse_args() {
-  for arg in "$@"; do
-    case "$arg" in
-      --quiet)      QUIET=true ;;
-      --verbose)    VERBOSE=true ;;
-      --recreate)   RECREATE=true ;;
-      --ctid=*)     CTID_OVERRIDE="${arg#*=}" ;;
-      --preset=*)   PRESET_OVERRIDE="${arg#*=}" ;;
-      --cores=*)    CORES_OVERRIDE="${arg#*=}" ;;
-      --mem=*)      MEM_OVERRIDE="${arg#*=}" ;;
-      --disk=*)     DISK_OVERRIDE="${arg#*=}" ;;
-      --version)    echo "$CB_VERSION"; exit 0 ;;
-      --help|-h)    print_help; exit 0 ;;
-      *) echo "Unknown option: $arg"; print_help; exit 1 ;;
-    esac
-  done
-
-  # Apply preset (user choice or default)
-  local preset="${PRESET_OVERRIDE:-$DEFAULT_PRESET}"
-  preset="${preset,,}"  # lowercase
-  if [[ -n "${PRESETS[$preset]+x}" ]]; then
-    read -r CT_CORES CT_RAM CT_DISK <<< "${PRESETS[$preset]}"
-  else
-    echo "Unknown preset: '$preset' (valid: small, med, large)"
+# ── Preflight ─────────────────────────────────────────────────────────────────
+preflight() {
+  if ! command -v pveversion &>/dev/null; then
+    echo -e "${red}This script must run on a Proxmox VE host.${nc}"
     exit 1
   fi
 
-  # Per-resource overrides
-  if [[ -n "$CORES_OVERRIDE" ]]; then CT_CORES="$CORES_OVERRIDE"; fi
-  if [[ -n "$MEM_OVERRIDE"   ]]; then CT_RAM="$MEM_OVERRIDE"; fi
-  if [[ -n "$DISK_OVERRIDE"  ]]; then CT_DISK="$DISK_OVERRIDE"; fi
+  if ! command -v whiptail &>/dev/null; then
+    echo -e "${yellow}Installing whiptail...${nc}"
+    apt-get update -qq && apt-get install -y whiptail >/dev/null 2>&1
+  fi
+
+  if ! curl -sf --max-time 10 https://github.com -o /dev/null 2>/dev/null; then
+    echo -e "${red}No internet — curl to github.com failed.${nc}"
+    exit 1
+  fi
 }
 
-# ── Phase 1: Preflight ─────────────────────────────────────────────────────────
+# ── Detect infrastructure ────────────────────────────────────────────────────
+detect_storage() {
+  # Only list storages that support container rootfs
+  local candidates
+  candidates=$(pvesm status --content rootdir 2>/dev/null \
+    | awk 'NR>1 && $3=="active" {print $1}')
 
-phase1_preflight() {
-  tui_phase "Phase 1 — Preflight Checks"
-
-  spinner_start "Verifying Proxmox VE host"
-  if ! command -v pveversion &>/dev/null; then
-    spinner_stop
-    tui_fail "This script must run on a Proxmox VE host" \
-      "pveversion not found — are you on PVE?"
-  fi
-  PVE_VER=$(pveversion 2>/dev/null | grep -oP 'pve-manager/\K[0-9]+\.[0-9]+' || echo "unknown")
-  spinner_stop
-  tui_ok "Proxmox VE detected" "v${PVE_VER}"
-
-  spinner_start "Checking internet connectivity"
-  if ! curl -sf --max-time 10 https://github.com -o /dev/null; then
-    spinner_stop
-    tui_fail "No internet access" \
-      "curl to github.com failed — check DNS and routing"
-  fi
-  spinner_stop
-  tui_ok "Internet reachable"
-
-  if [[ -n "$CTID_OVERRIDE" ]]; then
-    CTID="$CTID_OVERRIDE"
-    tui_ok "Container ID" "$CTID (manual)"
-  else
-    spinner_start "Selecting next available CTID"
-    CTID=$(pvesh get /cluster/nextid 2>/dev/null | tr -d '[:space:]')
-    spinner_stop
-    [[ "$CTID" =~ ^[0-9]+$ ]] || tui_fail "Could not determine next CTID from pvesh"
-    tui_ok "Container ID" "$CTID (auto)"
+  if [[ -z "$candidates" ]]; then
+    # Fallback: any active storage
+    candidates=$(pvesm status 2>/dev/null \
+      | awk 'NR>1 && $3=="active" {print $1}')
   fi
 
-  spinner_start "Detecting storage pool"
-  if pvesm status 2>/dev/null | awk 'NR>1 && $1=="local-lvm" && $2=="lvm-thin" {found=1} END {exit !found}'; then
+  # Prefer local-lvm, then local-zfs, then first available
+  if echo "$candidates" | grep -qx "local-lvm"; then
     STORAGE="local-lvm"
-  elif pvesm status 2>/dev/null | awk 'NR>1 && $1=="local" {found=1} END {exit !found}'; then
-    STORAGE="local"
+  elif echo "$candidates" | grep -qx "local-zfs"; then
+    STORAGE="local-zfs"
   else
-    STORAGE=$(pvesm status 2>/dev/null | awk 'NR>1 && $3=="active" {print $1; exit}')
-    [[ -n "$STORAGE" ]] || { spinner_stop; tui_fail "No active storage pool found" "Check 'pvesm status'"; }
+    STORAGE=$(echo "$candidates" | head -1)
   fi
-  spinner_stop
-  tui_ok "Storage pool" "$STORAGE"
 
-  spinner_start "Checking network bridge"
-  if ! ip link show "$CT_BRIDGE" &>/dev/null; then
-    spinner_stop
-    tui_fail "Bridge $CT_BRIDGE not found" \
-      "Check 'ip link show' for available bridges"
-  fi
-  spinner_stop
-  tui_ok "Network bridge" "$CT_BRIDGE"
-
-  tui_phase_done
+  [[ -n "$STORAGE" ]] || { echo -e "${red}No active storage found.${nc}"; exit 1; }
 }
 
-# ── Interactive configuration ──────────────────────────────────────────────────
-
-interactive_config() {
-  echo ""
-  echo -e "  ${BOLD}Configuration${RESET}"
-  echo "  $(printf '─%.0s' {1..46})"
-
-  # Preset prompt (skip if --preset was provided via CLI)
-  if [[ -z "$PRESET_OVERRIDE" ]]; then
-    echo ""
-    echo -e "  ${CYAN}Resource preset?${RESET}"
-    echo -e "    ${DIM}small  — 1 core  /  2 GB RAM /  10 GB disk${RESET}"
-    echo -e "    ${DIM}med    — 2 cores /  4 GB RAM /  20 GB disk  [default]${RESET}"
-    echo -e "    ${DIM}large  — 4 cores /  8 GB RAM /  50 GB disk${RESET}"
-    echo -e "    ${DIM}M      — enter manually${RESET}"
-    read -rp "  Choice [Med]: " INPUT_PRESET
-    INPUT_PRESET="${INPUT_PRESET:-med}"
-    INPUT_PRESET="${INPUT_PRESET,,}"
-
-    if [[ "$INPUT_PRESET" == "m" ]]; then
-      read -rp "  Cores [${CT_CORES}]:   " INPUT_CORES;  CT_CORES="${INPUT_CORES:-$CT_CORES}"
-      read -rp "  RAM MB [${CT_RAM}]: "   INPUT_RAM;    CT_RAM="${INPUT_RAM:-$CT_RAM}"
-      read -rp "  Disk GB [${CT_DISK}]: " INPUT_DISK;   CT_DISK="${INPUT_DISK:-$CT_DISK}"
-    elif [[ -n "${PRESETS[$INPUT_PRESET]+x}" ]]; then
-      read -r CT_CORES CT_RAM CT_DISK <<< "${PRESETS[$INPUT_PRESET]}"
-    else
-      tui_warn "Unknown preset '$INPUT_PRESET' — using med defaults"
-      read -r CT_CORES CT_RAM CT_DISK <<< "${PRESETS[med]}"
-    fi
-  fi
-
-  echo ""
-  read -rp "  Hostname? [circuitbreaker]: " INPUT_HOSTNAME
-  CT_HOSTNAME="${INPUT_HOSTNAME:-circuitbreaker}"
-
-  echo ""
-  read -rsp "  Container root password: " CT_PASSWORD; echo ""
-  [[ -n "$CT_PASSWORD" ]] || tui_fail "Container password cannot be empty" \
-    "Re-run and enter a password"
-
-  echo ""
-  read -rp "  Configure Proxmox auto-discovery? [Y/n]: " CONFIGURE_INPUT
-  CONFIGURE_INPUT="${CONFIGURE_INPUT:-Y}"
-  if [[ "${CONFIGURE_INPUT}" =~ ^[Yy]$ ]]; then
-    CONFIGURE_API=true
-    echo ""
-    read -rp "    Token ID? [circuitbreaker@pam!circuitbreaker]: " INPUT_TOKEN_ID
-    TOKEN_ID="${INPUT_TOKEN_ID:-circuitbreaker@pam!circuitbreaker}"
-    echo ""
-    read -rsp "    Token Secret? (hidden): " TOKEN_SECRET; echo ""
-    [[ -n "$TOKEN_SECRET" ]] || tui_fail "Token secret cannot be empty" \
-      "Re-run and enter the secret when prompted"
-    tui_ok "API credentials collected (secret not logged)"
-  else
-    CONFIGURE_API=false
-    tui_ok "Skipping Proxmox API configuration"
-  fi
-
-  echo ""
-  echo -e "  ${BOLD}Deployment summary${RESET}"
-  echo "  $(printf '─%.0s' {1..46})"
-  printf "    %-16s %s\n" "Container ID :" "$CTID"
-  printf "    %-16s %s\n" "Hostname :"     "$CT_HOSTNAME"
-  printf "    %-16s %s\n" "Resources :"    "${CT_CORES} cores / ${CT_RAM} MB RAM / ${CT_DISK} GB disk"
-  printf "    %-16s %s\n" "Storage :"      "$STORAGE"
-  printf "    %-16s %s\n" "Bridge :"       "$CT_BRIDGE"
-  printf "    %-16s %s\n" "Proxmox API :"  "$([ "$CONFIGURE_API" == "true" ] && echo "configure ✓" || echo "skip")"
-  echo ""
-  read -rp "  Proceed? [Y/n]: " PROCEED
-  if [[ "${PROCEED:-Y}" =~ ^[Nn]$ ]]; then echo "  Aborted."; exit 0; fi
+detect_next_ctid() {
+  CTID=$(pvesh get /cluster/nextid 2>/dev/null | tr -d '[:space:]')
+  [[ "$CTID" =~ ^[0-9]+$ ]] || CTID=""
 }
 
-# ── Phase 2: LXC Creation ──────────────────────────────────────────────────────
-
-phase2_create_lxc() {
-  tui_phase "Phase 2 — LXC Container Creation"
-
-  # Idempotency check
-  local EXISTING_CT
-  EXISTING_CT=$(pct list 2>/dev/null | awk -v h="$CT_HOSTNAME" 'NR>1 && $3==h {print $1}' | head -1 || true)
-  if [[ -n "$EXISTING_CT" ]]; then
-    if [[ "$RECREATE" == "true" ]]; then
-      spinner_start "Destroying existing container $EXISTING_CT"
-      pct stop "$EXISTING_CT" --skiplock 2>/dev/null || true
-      pct destroy "$EXISTING_CT" --purge 2>/dev/null || true
-      spinner_stop
-      tui_ok "Container $EXISTING_CT destroyed"
-    else
-      local EXISTING_IP
-      EXISTING_IP=$(pct exec "$EXISTING_CT" -- hostname -I 2>/dev/null | awk '{print $1}' || true)
-      if [[ -n "$EXISTING_IP" ]] && curl -sf --max-time 5 "http://$EXISTING_IP:$CB_PORT/api/v1/health" -o /dev/null 2>/dev/null; then
-        echo ""
-        tui_ok "Circuit Breaker already running in container $EXISTING_CT" "IP: $EXISTING_IP"
-        tui_warn "To upgrade:  pct exec $EXISTING_CT -- bash -c \"curl -fsSL $CB_INSTALL_URL | bash -s -- --unattended --upgrade\""
-        tui_warn "To redeploy: re-run with --recreate"
-        exit 0
-      fi
-      tui_warn "Container $EXISTING_CT exists but CB is not healthy — using new CTID $CTID"
-    fi
-  fi
-
-  # Update template list
-  spinner_start "Updating template list"
-  if [[ "$VERBOSE" == "true" ]]; then
-    spinner_stop; tui_step "Updating template list"; echo ""
-    pveam update
-    echo ""
-  else
-    pveam update >/dev/null 2>&1
-    spinner_stop
-  fi
-  tui_ok "Template list updated"
-
-  # Locate Debian 12 template
-  spinner_start "Locating Debian 12 template"
-  local TEMPLATE
+detect_template() {
   TEMPLATE=$(pveam available --section system 2>/dev/null \
     | awk '/debian-12/ {print $2}' | sort -V | tail -1)
-  spinner_stop
-  [[ -n "$TEMPLATE" ]] || tui_fail "No Debian 12 template found" \
-    "Check 'pveam available --section system' manually"
-  tui_ok "Template" "$TEMPLATE"
+}
 
-  # Download template if not cached
-  if ! pveam list local 2>/dev/null | grep -q "$TEMPLATE"; then
-    spinner_start "Downloading $TEMPLATE"
-    if [[ "$VERBOSE" == "true" ]]; then
-      spinner_stop; tui_step "Downloading $TEMPLATE"; echo ""
-      pveam download local "$TEMPLATE"
-      echo ""
-    else
-      pveam download local "$TEMPLATE" >/dev/null 2>&1
-      spinner_stop
-    fi
-    tui_ok "Template downloaded"
-  else
-    tui_ok "Template cached"
-  fi
+detect_bridges() {
+  # Return list of bridges for whiptail
+  ip -br link show type bridge 2>/dev/null | awk '{print $1}' || echo "vmbr0"
+}
 
-  # Create container
-  CLEANUP_ON_EXIT=true
-  spinner_start "Creating container $CTID"
-  if [[ "$VERBOSE" == "true" ]]; then
-    spinner_stop; tui_step "Creating container $CTID"; echo ""
-    pct create "$CTID" "local:vztmpl/$TEMPLATE" \
-      --hostname   "$CT_HOSTNAME"  \
-      --password   "$CT_PASSWORD"  \
-      --memory     "$CT_RAM"       \
-      --swap       "$CT_SWAP"      \
-      --cores      "$CT_CORES"     \
-      --rootfs     "${STORAGE}:${CT_DISK}" \
-      --net0       "name=eth0,bridge=${CT_BRIDGE},ip=dhcp" \
-      --ostype     debian          \
-      --unprivileged 0             \
-      --features   "nesting=1,keyctl=1" \
-      --onboot     1
-    echo ""
-  else
-    pct create "$CTID" "local:vztmpl/$TEMPLATE" \
-      --hostname   "$CT_HOSTNAME"  \
-      --password   "$CT_PASSWORD"  \
-      --memory     "$CT_RAM"       \
-      --swap       "$CT_SWAP"      \
-      --cores      "$CT_CORES"     \
-      --rootfs     "${STORAGE}:${CT_DISK}" \
-      --net0       "name=eth0,bridge=${CT_BRIDGE},ip=dhcp" \
-      --ostype     debian          \
-      --unprivileged 0             \
-      --features   "nesting=1,keyctl=1" \
-      --onboot     1 >/dev/null 2>&1 \
-      || { spinner_stop; tui_fail "Failed to create container $CTID" "Re-run with --verbose for details"; }
-    spinner_stop
-  fi
-  tui_ok "Container $CTID created"
-
-  # Start container
-  spinner_start "Starting container"
-  pct start "$CTID" >/dev/null 2>&1 \
-    || { spinner_stop; tui_fail "Failed to start container $CTID" "Check: journalctl -u pve-container@${CTID}"; }
-  spinner_stop
-  tui_ok "Container started"
-
-  # Wait for DHCP IP (60s timeout)
-  spinner_start "Waiting for DHCP address"
-  local deadline=$(( $(date +%s) + 60 ))
+# ── Wait for DHCP IP ─────────────────────────────────────────────────────────
+wait_for_ip() {
+  local ctid="$1" timeout=60
+  local deadline=$(( $(date +%s) + timeout ))
+  CT_IP=""
   while (( $(date +%s) < deadline )); do
-    CT_IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null \
-      | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
-    [[ -n "$CT_IP" ]] && break
+    CT_IP=$(pct exec "$ctid" -- hostname -I 2>/dev/null \
+      | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+    [[ -n "$CT_IP" ]] && return 0
     sleep 2
   done
-  spinner_stop
-  [[ -n "$CT_IP" ]] || tui_fail "Container did not receive a DHCP address within 60s" \
-    "Check bridge $CT_BRIDGE and DHCP server"
-  tui_ok "Container IP" "$CT_IP"
-
-  tui_phase_done
+  return 1
 }
 
-# ── Phase 3: Install Circuit Breaker ──────────────────────────────────────────
-
-phase3_install_cb() {
-  tui_phase "Phase 3 — Circuit Breaker Installation"
-
-  # Determine DEB arch from host (container arch matches host)
-  local ARCH; ARCH=$(uname -m)
-  local DEB_ARCH="amd64"
-  [[ "$ARCH" == "aarch64" ]] && DEB_ARCH="arm64"
-
-  local install_block
-  if [[ "$CB_VERSION" == "latest" ]]; then
-    # No valid DEB URL for "latest" — go straight to install.sh
-    tui_ok "Install method" "curl | install.sh (CB_VERSION=latest)"
-    install_block="curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --no-tls"
-  else
-    local DEB_URL="https://github.com/${CB_GITHUB_REPO}/releases/download/v${CB_VERSION}/circuit-breaker_${CB_VERSION}_${DEB_ARCH}.deb"
-    tui_ok "Install method" "DEB with curl fallback (v${CB_VERSION} ${DEB_ARCH})"
-    install_block="
-if curl -fsSL --head '${DEB_URL}' -o /dev/null 2>/dev/null; then
-  echo '[cb-deploy] Downloading DEB package...'
-  curl -fsSL '${DEB_URL}' -o /tmp/cb.deb
-  dpkg -i /tmp/cb.deb || apt-get -f install -y
-  systemctl enable --now circuitbreaker
-else
-  echo '[cb-deploy] DEB not found — falling back to install.sh'
-  curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --no-tls
-fi"
-  fi
-
-  local full_script="
-apt-get update -qq
-apt-get install -y --no-install-recommends curl >/dev/null 2>&1
-${install_block}
-"
-
-  if [[ "$VERBOSE" == "true" ]]; then
-    echo ""
-    tui_step "Running installer inside container $CTID"
-    echo ""
-    pct exec "$CTID" -- bash -c "$full_script"
-    echo ""
-  else
-    spinner_start "Installing Circuit Breaker in container $CTID"
-    pct exec "$CTID" -- bash -c "
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y --no-install-recommends curl >/dev/null 2>&1
-${install_block}
-" 2>&1 | tee -a "$LOG_FILE" >/dev/null
-    spinner_stop
-  fi
-  tui_ok "Circuit Breaker installed"
-
-  # Installation succeeded — disable container cleanup on subsequent errors
-  CLEANUP_ON_EXIT=false
-
-  tui_phase_done
-}
-
-# ── Phase 4: Health Check ──────────────────────────────────────────────────────
-
-phase4_health_check() {
-  tui_phase "Phase 4 — Health Check"
-
-  spinner_start "Waiting for Circuit Breaker API"
-  local deadline=$(( $(date +%s) + 120 ))
-  local ready=false
+# ── Wait for health endpoint ─────────────────────────────────────────────────
+wait_for_health() {
+  local ip="$1" timeout=120
+  local deadline=$(( $(date +%s) + timeout ))
   while (( $(date +%s) < deadline )); do
-    if curl -sf --max-time 5 "http://$CT_IP:$CB_PORT/api/v1/health" -o /dev/null 2>/dev/null; then
-      ready=true
-      break
+    if curl -sf --max-time 5 "http://$ip:$CB_PORT/api/v1/health" -o /dev/null 2>/dev/null; then
+      return 0
     fi
     sleep 5
   done
-  spinner_stop
-  [[ "$ready" == "true" ]] || tui_fail "Circuit Breaker API did not respond within 120s" \
-    "Check logs: pct exec $CTID -- journalctl -u circuitbreaker -n 50"
-  tui_ok "API ready" "http://$CT_IP:$CB_PORT"
+  return 1
+}
 
-  # Push Proxmox integration (best-effort, pre-OOBE open endpoint)
-  if [[ "$CONFIGURE_API" == "true" ]]; then
-    spinner_start "Registering Proxmox integration"
-    local PVE_HOST_IP; PVE_HOST_IP=$(hostname -I | awk '{print $1}')
-    local PVE_HOSTNAME; PVE_HOSTNAME=$(hostname)
-    local HTTP_STATUS json_payload
-    json_payload=$(python3 -c "
-import json, sys
-print(json.dumps({
-  'type': 'proxmox',
-  'name': sys.argv[1],
-  'host': sys.argv[2],
-  'token_id': sys.argv[3],
-  'token_secret': sys.argv[4],
-  'verify_ssl': False
-}))" "$PVE_HOSTNAME" "$PVE_HOST_IP" "$TOKEN_ID" "$TOKEN_SECRET" 2>/dev/null) || json_payload=""
-    TOKEN_SECRET=""  # clear from memory immediately
-    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-      --max-time 10 \
-      -X POST "http://$CT_IP:$CB_PORT/api/v1/integration_configs" \
-      -H "Content-Type: application/json" \
-      -d "$json_payload" 2>/dev/null || echo "000")
-    spinner_stop
-    if [[ "$HTTP_STATUS" =~ ^2 ]]; then
-      tui_ok "Proxmox integration registered" "HTTP $HTTP_STATUS"
-    else
-      tui_warn "Integration POST returned HTTP $HTTP_STATUS — configure manually in CB Settings → Integrations"
+# ══════════════════════════════════════════════════════════════════════════════
+# INSTALL FLOWS
+# ══════════════════════════════════════════════════════════════════════════════
+
+func_preset() {
+  # ── Size radiolist ──────────────────────────────────────────────────────────
+  local size
+  size=$(whiptail --backtitle "$BT" --title "Container Size" \
+    --radiolist "Choose a resource preset:" 15 55 4 \
+    "small"  "1 core  /  2 GB RAM / 10 GB disk" OFF \
+    "medium" "2 cores /  4 GB RAM / 20 GB disk" ON \
+    "large"  "4 cores /  8 GB RAM / 50 GB disk" OFF \
+    "custom" "Enter values manually" OFF \
+    3>&1 1>&2 2>&3) || return
+
+  case "$size" in
+    small)  CORES=1; RAM=2048;  DISK=10 ;;
+    medium) CORES=2; RAM=4096;  DISK=20 ;;
+    large)  CORES=4; RAM=8192;  DISK=50 ;;
+    custom) func_custom_size || return ;;
+  esac
+
+  func_common_prompts || return
+  func_do_install
+}
+
+func_advanced() {
+  # ── CTID ────────────────────────────────────────────────────────────────────
+  detect_next_ctid
+  local input
+  input=$(whiptail --backtitle "$BT" --title "Container ID" \
+    --inputbox "CTID (auto-detected):" 10 50 "${CTID:-100}" \
+    3>&1 1>&2 2>&3) || return
+  CTID="$input"
+
+  # ── Resources ───────────────────────────────────────────────────────────────
+  func_custom_size || return
+
+  # ── Storage selector ────────────────────────────────────────────────────────
+  local storage_list=()
+  while IFS= read -r s; do
+    [[ -n "$s" ]] && storage_list+=("$s" "" OFF)
+  done < <(pvesm status --content rootdir 2>/dev/null | awk 'NR>1 && $3=="active" {print $1}')
+
+  if [[ ${#storage_list[@]} -gt 0 ]]; then
+    # Pre-select current STORAGE
+    for i in $(seq 1 3 ${#storage_list[@]}); do
+      if [[ "${storage_list[$((i-1))]}" == "$STORAGE" ]]; then
+        storage_list[$((i+1))]="ON"
+      fi
+    done
+    local sel
+    sel=$(whiptail --backtitle "$BT" --title "Storage" \
+      --radiolist "Select storage for rootfs:" 15 55 6 \
+      "${storage_list[@]}" 3>&1 1>&2 2>&3) || return
+    STORAGE="$sel"
+  fi
+
+  # ── Bridge selector ─────────────────────────────────────────────────────────
+  local bridge_list=()
+  while IFS= read -r b; do
+    [[ -n "$b" ]] && bridge_list+=("$b" "" OFF)
+  done < <(detect_bridges)
+
+  if [[ ${#bridge_list[@]} -gt 0 ]]; then
+    for i in $(seq 1 3 ${#bridge_list[@]}); do
+      if [[ "${bridge_list[$((i-1))]}" == "$BRIDGE" ]]; then
+        bridge_list[$((i+1))]="ON"
+      fi
+    done
+    local bsel
+    bsel=$(whiptail --backtitle "$BT" --title "Network Bridge" \
+      --radiolist "Select bridge:" 15 55 6 \
+      "${bridge_list[@]}" 3>&1 1>&2 2>&3) || return
+    BRIDGE="$bsel"
+  fi
+
+  func_common_prompts || return
+  func_do_install
+}
+
+func_custom_size() {
+  local input
+  input=$(whiptail --backtitle "$BT" --title "CPU Cores" \
+    --inputbox "Number of CPU cores:" 10 50 "$CORES" 3>&1 1>&2 2>&3) || return
+  CORES="$input"
+
+  input=$(whiptail --backtitle "$BT" --title "RAM" \
+    --inputbox "RAM in MB:" 10 50 "$RAM" 3>&1 1>&2 2>&3) || return
+  RAM="$input"
+
+  input=$(whiptail --backtitle "$BT" --title "Disk Size" \
+    --inputbox "Root disk in GB:" 10 50 "$DISK" 3>&1 1>&2 2>&3) || return
+  DISK="$input"
+}
+
+func_common_prompts() {
+  # ── Hostname ────────────────────────────────────────────────────────────────
+  local input
+  input=$(whiptail --backtitle "$BT" --title "Hostname" \
+    --inputbox "Container hostname:" 10 50 "$HN" 3>&1 1>&2 2>&3) || return
+  HN="$input"
+
+  # ── Root password ───────────────────────────────────────────────────────────
+  PW=$(whiptail --backtitle "$BT" --title "Root Password" \
+    --passwordbox "Set root password (for SSH access):" 10 50 \
+    3>&1 1>&2 2>&3) || return
+  [[ -n "$PW" ]] || { die "Password cannot be empty."; return 1; }
+
+  # ── Auto-detect CTID if not already set ─────────────────────────────────────
+  if [[ -z "$CTID" ]]; then
+    detect_next_ctid
+    [[ -n "$CTID" ]] || { die "Could not determine next CTID."; return 1; }
+  fi
+
+  # ── Summary & confirm ──────────────────────────────────────────────────────
+  whiptail --backtitle "$BT" --title "Install Summary" --yesno \
+    "Container ID:  $CTID\n\
+Hostname:      $HN\n\
+Resources:     ${CORES} cores / ${RAM} MB RAM / ${DISK} GB disk\n\
+Storage:       $STORAGE\n\
+Bridge:        $BRIDGE\n\n\
+Proceed with installation?" 16 60 || return
+}
+
+# ── Do the actual install ─────────────────────────────────────────────────────
+func_do_install() {
+  clear
+  echo -e "\n${bold}Circuit Breaker — LXC Installation${nc}\n"
+
+  # ── Template ────────────────────────────────────────────────────────────────
+  msg_info "Updating template list..."
+  pveam update >/dev/null 2>&1
+  detect_template
+  if [[ -z "$TEMPLATE" ]]; then
+    msg_err "No Debian 12 template found."
+    return 1
+  fi
+  msg_ok "Template: $TEMPLATE"
+
+  if ! pveam list local 2>/dev/null | grep -q "$TEMPLATE"; then
+    msg_info "Downloading $TEMPLATE..."
+    if ! pveam download local "$TEMPLATE" >/dev/null 2>&1; then
+      msg_err "Template download failed."
+      return 1
     fi
   fi
+  msg_ok "Template cached"
 
-  tui_phase_done
+  # ── Create container ────────────────────────────────────────────────────────
+  CLEANUP_CTID="$CTID"
+  msg_info "Creating container $CTID..."
+  local create_err
+  create_err=$(pct create "$CTID" "local:vztmpl/$TEMPLATE" \
+    --hostname   "$HN" \
+    --password   "$PW" \
+    --memory     "$RAM" \
+    --swap       "$SWAP" \
+    --cores      "$CORES" \
+    --rootfs     "${STORAGE}:${DISK}" \
+    --net0       "name=eth0,bridge=${BRIDGE},ip=dhcp" \
+    --ostype     debian \
+    --unprivileged 0 \
+    --features   "nesting=1,keyctl=1" \
+    --onboot     1 2>&1)
+  if [[ $? -ne 0 ]]; then
+    msg_err "pct create failed:"
+    echo "       $create_err"
+    CLEANUP_CTID=""
+    return 1
+  fi
+  PW=""  # clear password from memory
+  msg_ok "Container $CTID created"
+
+  # ── Start container ─────────────────────────────────────────────────────────
+  msg_info "Starting container..."
+  if ! pct start "$CTID" 2>&1; then
+    msg_err "Failed to start container $CTID."
+    return 1
+  fi
+  msg_ok "Container started"
+
+  # ── Wait for DHCP ───────────────────────────────────────────────────────────
+  msg_info "Waiting for DHCP address..."
+  if ! wait_for_ip "$CTID"; then
+    msg_err "No DHCP address within 60s. Check bridge $BRIDGE."
+    return 1
+  fi
+  msg_ok "Container IP: $CT_IP"
+
+  # ── Install Circuit Breaker ─────────────────────────────────────────────────
+  msg_info "Installing Circuit Breaker (this takes a few minutes)..."
+  echo ""
+  if ! pct exec "$CTID" -- bash -c \
+    "curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --no-tls" 2>&1; then
+    msg_err "Circuit Breaker installation failed inside container."
+    return 1
+  fi
+  echo ""
+  msg_ok "Circuit Breaker installed"
+
+  # ── Health check ────────────────────────────────────────────────────────────
+  msg_info "Waiting for API health check..."
+  if ! wait_for_health "$CT_IP"; then
+    msg_err "API did not respond within 120s."
+    msg_warn "Check: pct exec $CTID -- journalctl -u circuitbreaker -n 50"
+    CLEANUP_CTID=""
+    return 1
+  fi
+  msg_ok "API ready at http://$CT_IP:$CB_PORT"
+
+  # ── Done ────────────────────────────────────────────────────────────────────
+  CLEANUP_CTID=""  # install succeeded — don't destroy on interrupt
+  echo ""
+  echo -e "${green}${bold}  ╔══════════════════════════════════════════════════╗"
+  echo -e "  ║   Circuit Breaker installed successfully!        ║"
+  echo -e "  ╠══════════════════════════════════════════════════╣"
+  printf  "  ║  Container ID : %-32s║\n" "$CTID"
+  printf  "  ║  URL          : %-32s║\n" "http://$CT_IP:$CB_PORT"
+  echo -e "  ╚══════════════════════════════════════════════════╝${nc}"
+  echo ""
+  echo -e "  Open the URL above to complete setup (OOBE wizard)."
+  echo -e "  ${blue}Log:${nc} $LOG_FILE"
+  echo ""
+  read -rp "  Press Enter to return to menu..."
 }
 
-# ── Phase 5: Success Banner ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# UNINSTALL
+# ══════════════════════════════════════════════════════════════════════════════
 
-phase5_success() {
-  local api_status
-  if [[ "$CONFIGURE_API" == "true" ]]; then
-    api_status="configured ✓"
-  else
-    api_status="skipped"
+func_uninstall() {
+  local ct_list=()
+  while IFS= read -r line; do
+    local vmid name
+    vmid=$(echo "$line" | awk '{print $1}')
+    name=$(echo "$line" | awk '{print $NF}')
+    [[ -n "$vmid" ]] && ct_list+=("$vmid" "$name" OFF)
+  done < <(pct list 2>/dev/null | awk 'NR>1')
+
+  if [[ ${#ct_list[@]} -eq 0 ]]; then
+    whiptail --backtitle "$BT" --title "Uninstall" --msgbox "No containers found." 8 40
+    return
   fi
 
-  # Pad each data row to exactly 44 chars (2 indent + 44 = 46 inner box width)
-  local ctid_line url_line api_line
-  printf -v ctid_line "%-44s" "  Container ID : $CTID"
-  printf -v url_line  "%-44s" "  URL          : http://$CT_IP:$CB_PORT"
-  printf -v api_line  "%-44s" "  Proxmox API  : $api_status"
+  local target
+  target=$(whiptail --backtitle "$BT" --title "Uninstall — Select Container" \
+    --radiolist "Select container to destroy:" 18 60 8 \
+    "${ct_list[@]}" 3>&1 1>&2 2>&3) || return
 
+  whiptail --backtitle "$BT" --title "Confirm Destroy" \
+    --yesno "Permanently destroy container $target?\n\nThis cannot be undone." 10 50 || return
+
+  clear
+  msg_info "Stopping container $target..."
+  pct stop "$target" --skiplock 2>/dev/null
+  msg_info "Destroying container $target..."
+  if pct destroy "$target" --purge 2>/dev/null; then
+    msg_ok "Container $target destroyed."
+  else
+    msg_err "Failed to destroy container $target."
+  fi
   echo ""
-  echo -e "${GREEN}${BOLD}"
-  echo "  ╔══════════════════════════════════════════════╗"
-  echo "  ║   Circuit Breaker installed successfully!    ║"
-  echo "  ╠══════════════════════════════════════════════╣"
-  printf "  ║%s║\n" "$ctid_line"
-  printf "  ║%s║\n" "$url_line"
-  printf "  ║%s║\n" "$api_line"
-  echo "  ╚══════════════════════════════════════════════╝"
-  echo -e "${RESET}"
-  echo "  Open the URL to complete setup (OOBE wizard)."
-  echo ""
-  echo -e "  ${CYAN}Log file:${RESET} $LOG_FILE"
-  echo ""
+  read -rp "  Press Enter to return to menu..."
 }
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# UPDATE
+# ══════════════════════════════════════════════════════════════════════════════
+
+func_update() {
+  local ct_list=()
+  while IFS= read -r line; do
+    local vmid name
+    vmid=$(echo "$line" | awk '{print $1}')
+    name=$(echo "$line" | awk '{print $NF}')
+    [[ -n "$vmid" ]] && ct_list+=("$vmid" "$name" OFF)
+  done < <(pct list 2>/dev/null | awk 'NR>1 && $2=="running"')
+
+  if [[ ${#ct_list[@]} -eq 0 ]]; then
+    whiptail --backtitle "$BT" --title "Update" --msgbox "No running containers found." 8 45
+    return
+  fi
+
+  local target
+  target=$(whiptail --backtitle "$BT" --title "Update — Select Container" \
+    --radiolist "Select container to update:" 18 60 8 \
+    "${ct_list[@]}" 3>&1 1>&2 2>&3) || return
+
+  clear
+  echo -e "\n${bold}Updating Circuit Breaker in container $target${nc}\n"
+  if pct exec "$target" -- bash -c \
+    "curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --upgrade" 2>&1; then
+    msg_ok "Update complete."
+  else
+    msg_err "Update failed. Check logs inside container."
+  fi
+  echo ""
+  read -rp "  Press Enter to return to menu..."
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VIEW LOGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+func_viewlogs() {
+  if [[ -f "$LOG_FILE" ]]; then
+    whiptail --backtitle "$BT" --title "Install Log" \
+      --scrolltext --textbox "$LOG_FILE" 30 80
+  else
+    whiptail --backtitle "$BT" --title "Logs" --msgbox "No log file found." 8 40
+  fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
 main() {
-  # Restore standard input so the TUI can read keystrokes over 'curl | bash'
-  if [[ ! -t 0 && -c /dev/tty ]]; then
-    exec < /dev/tty
-  fi
+  preflight
+  detect_storage
 
-  parse_args "$@"
-  tui_banner
-  phase1_preflight
+  while true; do
+    CHOICE=$(whiptail --backtitle "$BT" --title "Circuit Breaker LXC" \
+      --menu "What would you like to do?" 18 64 6 \
+      "1)" "Install Circuit Breaker LXC (Recommended)" \
+      "2)" "Advanced Install (Custom CTID/Size/Storage)" \
+      "3)" "Uninstall Container" \
+      "4)" "Update Circuit Breaker" \
+      "5)" "View Logs" \
+      "6)" "Exit" \
+      3>&1 1>&2 2>&3)
 
-  # Run TUI / interactive configuration BEFORE intercepting output
-  interactive_config
+    if [[ $? -ne 0 ]]; then
+      clear
+      exit 0
+    fi
 
-  # Start global logging AFTER the TUI has finished drawing to avoid stripping ANSI
-  if [[ -t 1 && -e /dev/tty ]]; then
-    exec > >(sed -u 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG_FILE" >/dev/tty) 2>&1
-  fi
-
-  phase2_create_lxc
-  phase3_install_cb
-  phase4_health_check
-  phase5_success
+    case "$CHOICE" in
+      "1)") func_preset ;;
+      "2)") func_advanced ;;
+      "3)") func_uninstall ;;
+      "4)") func_update ;;
+      "5)") func_viewlogs ;;
+      "6)") clear; exit 0 ;;
+    esac
+  done
 }
 
-main "$@"
+main
