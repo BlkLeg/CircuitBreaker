@@ -63,7 +63,7 @@ pysnmp==7.1.22
 python-dotenv==1.2.2
 python-multipart==0.0.22
 python-nmap==0.7.1
-pywin32==311
+pywin32==311; platform_system == "Windows"
 pyyaml==6.0.3
 redis==7.3.0
 requests==2.32.5
