@@ -48,7 +48,7 @@
 ### One-line Install (Recommended — Native)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash
 ```
 
 Installs natively via systemd — no Docker required. Opens the OOBE setup wizard at `http://<host>:8088` on completion.

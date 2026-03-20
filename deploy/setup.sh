@@ -46,6 +46,7 @@ CB_ALEMBIC_INI=/opt/circuitbreaker/share/backend/alembic.ini
 CB_LOG_DIR=${CB_DATA_DIR}/logs
 
 # ===== Aliases (non-prefixed names for Python code) =====
+DATABASE_URL=postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
 UPLOADS_DIR=${CB_DATA_DIR}/uploads
 NATS_URL=nats://127.0.0.1:4222
 NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
@@ -338,21 +339,21 @@ stage0_preflight() {
     cb_section "Configuration"
     
     echo -e "  ${CYAN}HTTP Port${RESET} (default: 8088): "
-    read -t 10 -r port_input || port_input=""
+    read -t 10 -r port_input < /dev/tty || port_input=""
     if [[ -n "$port_input" ]]; then
       CB_PORT="$port_input"
     fi
     cb_ok "HTTP Port: $CB_PORT"
     
     echo -e "  ${CYAN}Data Directory${RESET} (default: /var/lib/circuitbreaker): "
-    read -t 10 -r dir_input || dir_input=""
+    read -t 10 -r dir_input < /dev/tty || dir_input=""
     if [[ -n "$dir_input" ]]; then
       CB_DATA_DIR="$dir_input"
     fi
     cb_ok "Data Directory: $CB_DATA_DIR"
     
     echo -e "  ${CYAN}Domain (FQDN)${RESET} (optional, press Enter to skip): "
-    read -t 15 -r fqdn_input || fqdn_input=""
+    read -t 15 -r fqdn_input < /dev/tty || fqdn_input=""
     if [[ -n "$fqdn_input" ]]; then
       CB_FQDN="$fqdn_input"
       cb_ok "Domain: $CB_FQDN"
@@ -360,11 +361,11 @@ stage0_preflight() {
       echo -e "  ${CYAN}TLS Certificate${RESET}"
       echo -e "    1) Self-signed (default)"
       echo -e "    2) Let's Encrypt (requires port 80 accessible from internet)"
-      read -t 10 -r -p "  Choice [1-2]: " cert_choice || cert_choice="1"
+      read -t 10 -r -p "  Choice [1-2]: " cert_choice < /dev/tty || cert_choice="1"
       if [[ "$cert_choice" == "2" ]]; then
         CB_CERT_TYPE="letsencrypt"
         echo -e "  ${CYAN}Email for Let's Encrypt${RESET} (required): "
-        read -t 15 -r email_input || email_input=""
+        read -t 15 -r email_input < /dev/tty || email_input=""
         if [[ -z "$email_input" ]]; then
           cb_warn "Email required for Let's Encrypt, falling back to self-signed"
           CB_CERT_TYPE="self-signed"
@@ -1231,7 +1232,7 @@ stage2_dependencies() {
     if [[ "$INSTALL_DOCKER" != "true" ]]; then
       if [[ "$UNATTENDED" == "false" ]]; then
         echo -e "  ${YELLOW}Docker not found.${RESET} Docker enables container telemetry."
-        read -t 15 -r -p "  Install Docker CE? [y/N]: " docker_input || docker_input=""
+        read -t 15 -r -p "  Install Docker CE? [y/N]: " docker_input < /dev/tty || docker_input=""
         if [[ "$docker_input" =~ ^[Yy]$ ]]; then
           INSTALL_DOCKER=true
         fi

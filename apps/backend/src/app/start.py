@@ -155,7 +155,9 @@ def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
         str(_get_option(None, "UPLOADS_DIR", config, "uploads_dir", str(data_dir / "uploads")))
     ).expanduser()
     static_dir = _get_option(None, "STATIC_DIR", config, "static_dir", None)
-    database_url = _get_option(None, "DATABASE_URL", config, "database_url", None)
+    database_url = _get_option(None, "CB_DB_URL", config, "database_url", None) or _get_option(
+        None, "DATABASE_URL", config, "database_url", None
+    )
     analytics_db_path = _get_option(None, "ANALYTICS_DB_PATH", config, "analytics_db_path", None)
     share_dir = _get_option(None, "CB_SHARE_DIR", config, "share_dir", None)
     docs_seed_file = _get_option(None, "CB_DOCS_SEED_FILE", config, "docs_seed_file", None)
