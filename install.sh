@@ -79,16 +79,13 @@ stage0_bootstrap_preflight() {
   cb_header
   cb_section "Bootstrap Pre-flight Checks"
   
-  # Root check
-  cb_step "Checking root privileges"
-  if [[ $EUID -ne 0 ]]; then
-    if command -v sudo &>/dev/null; then
-      cb_step "Elevating privileges with sudo"
-      exec sudo -E bash "$0" "$@"
-    fi
-    cb_fail "Root access required" "Run as root or install sudo"
+  # Privilege confirmation (elevation handled before main)
+  cb_step "Checking privileges"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    cb_ok "Running with sudo (user: $SUDO_USER)"
+  else
+    cb_ok "Running with elevated privileges"
   fi
-  cb_ok "Running as root"
 
   # OS Detection (Minimal for git install)
   cb_step "Detecting operating system"
@@ -166,6 +163,9 @@ show_help() {
   exit 0
 }
 
+# Save original arguments for potential sudo re-exec
+CB_ORIGINAL_ARGS=("$@")
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --port)
@@ -222,6 +222,27 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ── Privilege check ──────────────────────────────────────────────────────────
+# Accepts both root and sudo users. For non-root users with sudo available,
+# automatically re-executes the script with elevated privileges.
+if [[ $EUID -ne 0 ]]; then
+  if command -v sudo &>/dev/null; then
+    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo..."
+    # File-based execution: re-exec with sudo and original args
+    if [[ -f "$0" && "$0" != "bash" && "$0" != "-bash" && "$0" != "/bin/bash" && "$0" != "/usr/bin/bash" ]]; then
+      exec sudo -E bash "$0" "${CB_ORIGINAL_ARGS[@]}"
+    fi
+    # Piped execution: can't re-exec, advise user
+    echo -e "\n  ${RED}✗  ERROR: Elevated privileges required${RESET}"
+    echo -e "  ${YELLOW}→  Piped scripts must run with sudo:${RESET}"
+    echo -e "  ${YELLOW}   curl -fsSL <url> | sudo bash -s -- [options]${RESET}\n"
+    exit 1
+  fi
+  echo -e "\n  ${RED}✗  ERROR: Elevated privileges required${RESET}"
+  echo -e "  ${YELLOW}→  Run with: sudo bash install.sh  OR  install sudo first${RESET}\n"
+  exit 1
+fi
 
 # Global vars set during execution
 PKG_MGR=""
