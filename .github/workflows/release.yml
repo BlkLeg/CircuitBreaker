@@ -61,7 +61,7 @@ jobs:
       - name: Generate preliminary SHA256SUMS
         run: |
           cd dist/release/
-          sha256sum * > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
           cat SHA256SUMS
 
       - name: Install syft v1.14.0
@@ -164,7 +164,7 @@ jobs:
           done
 
           # Regenerate SHA256SUMS (now includes .asc + SBOM files) then sign it
-          sha256sum * > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
           gpg --batch --yes --pinentry-mode loopback \
               --passphrase "${GPG_PASSPHRASE}" \
               --armor --detach-sign SHA256SUMS
