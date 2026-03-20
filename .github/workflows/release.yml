@@ -143,11 +143,14 @@ jobs:
             "${IMAGE_DIGEST}"
 
       - name: GPG sign artifacts
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          if [ -z "${GPG_PRIVATE_KEY}" ]; then
+            echo "GPG_PRIVATE_KEY not set — skipping GPG signing"
+            exit 0
+          fi
           echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
           echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
           gpgconf --kill gpg-agent
