@@ -79,7 +79,7 @@ install_nfpm() {
     # Resolve version from GitHub API if set to "latest"
     local version="$NFPM_VERSION"
     if [[ "$version" == "latest" ]]; then
-        version=$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+        version=$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest | grep -m1 -oP '"tag_name":\s*"v\K[^"]+')
         if [[ -z "$version" ]]; then
             echo "ERROR: Failed to fetch latest nfpm version" >&2; exit 1
         fi
