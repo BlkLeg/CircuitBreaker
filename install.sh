@@ -37,7 +37,7 @@ cb_header() {
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════╗"
   echo "  ║         Circuit Breaker Installer        ║"
-  echo "  ║                 $(cb_version)              ║"
+  echo "  ║                 $(cb_version)                 ║"
   echo "  ╚══════════════════════════════════════════╝"
   echo -e "${RESET}"
 }
@@ -264,6 +264,9 @@ main() {
     if [[ ! -f /opt/circuitbreaker/install.sh ]]; then
       cb_fail "Clone succeeded but install.sh not found" "Check repo structure at /opt/circuitbreaker"
     fi
+    # Remove user-owned log before re-exec — fs.protected_regular blocks
+    # root from writing to non-root-owned files in sticky /tmp
+    rm -f "$LOG_FILE" 2>/dev/null || true
     cb_step "Re-executing installer as root"
     exec sudo bash /opt/circuitbreaker/install.sh "${CB_ORIGINAL_ARGS[@]}"
   fi
