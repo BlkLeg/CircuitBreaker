@@ -168,6 +168,9 @@ jobs:
               --passphrase "${GPG_PASSPHRASE}" \
               --armor --detach-sign SHA256SUMS
 
+      - name: Remove bundle directory from release artifacts
+        run: rm -rf dist/release/bundle
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
