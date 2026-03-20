@@ -1195,9 +1195,13 @@ stage2_dependencies() {
 
   # Group 5: NATS Server binary
   cb_step "Installing NATS Server (JetStream)"
-  local nats_version=$(curl -s https://api.github.com/repos/nats-io/nats-server/releases/latest | jq -r '.tag_name' | tr -d v)
-  if [[ -z "$nats_version" ]] || [[ "$nats_version" == "null" ]]; then
-    cb_fail "Failed to fetch NATS version from GitHub" "Check internet connectivity"
+  local NATS_FALLBACK_VER="2.11.3"
+  local nats_version
+  nats_version=$(curl -sS --fail https://api.github.com/repos/nats-io/nats-server/releases/latest 2>/dev/null \
+    | jq -r '.tag_name // empty' | tr -d v) || true
+  if [[ -z "$nats_version" ]]; then
+    cb_warn "Could not fetch latest NATS version from GitHub — using fallback v${NATS_FALLBACK_VER}"
+    nats_version="$NATS_FALLBACK_VER"
   fi
   
   local nats_tarball="nats-server-v${nats_version}-linux-${ARCH}.tar.gz"

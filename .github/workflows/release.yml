@@ -20,7 +20,7 @@ jobs:
   # ── Derive version ────────────────────────────────────────────────────────────
   version:
     name: Derive Version
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
@@ -46,7 +46,7 @@ jobs:
   release:
     name: Publish Release
     needs: [version, build]
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v5
 
@@ -187,7 +187,7 @@ jobs:
   deploy-redirect:
     name: Deploy Install Redirect
     needs: release
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

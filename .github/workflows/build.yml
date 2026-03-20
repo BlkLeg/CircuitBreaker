@@ -20,11 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
+          - arch: amd64
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v5
