@@ -203,8 +203,8 @@ build_storage_radiolist() {
     [[ "$avail" =~ ^[0-9]+$ ]] || continue
 
     local free_h used_h
-    free_h=$(awk "BEGIN{printf \"%.1fGB\", $avail/1073741824}" 2>/dev/null || echo "?")
-    used_h=$(awk "BEGIN{printf \"%.1fGB\", $used/1073741824}" 2>/dev/null || echo "?")
+    free_h=$(awk "BEGIN{printf \"%.1fGB\", $avail/1048576}" 2>/dev/null || echo "?")
+    used_h=$(awk "BEGIN{printf \"%.1fGB\", $used/1048576}" 2>/dev/null || echo "?")
 
     local tag="OFF"
     [[ "$name" == "$default" ]] && tag="ON"
@@ -838,10 +838,11 @@ adv_storage() {
   avail_bytes=$(pvesm status --content rootdir 2>/dev/null \
     | awk -v s="$STORAGE" '$1==s && $3=="active" {print $6}')
   if [[ "$avail_bytes" =~ ^[0-9]+$ ]] && (( avail_bytes > 0 )); then
-    local avail_gb=$(( avail_bytes / 1073741824 ))
+    local avail_kib="$avail_bytes"  # pvesm outputs KiB, not bytes
+    local avail_gb=$(( avail_kib / 1048576 ))
     if (( avail_gb < DISK )); then
       local free_h
-      free_h=$(awk "BEGIN{printf \"%.1f\", $avail_bytes/1073741824}")
+      free_h=$(awk "BEGIN{printf \"%.1f\", $avail_kib/1048576}")
       whiptail --backtitle "$BT" --title "Insufficient Space" \
         --msgbox "Storage '$STORAGE' has ${free_h}GB free but ${DISK}GB requested.\n\nSelect a different storage or reduce disk size." 10 60
       return 1
@@ -941,12 +942,13 @@ func_settings() {
   while true; do
     local choice
     choice=$(whiptail --backtitle "$BT" --title "Settings" \
-      --menu "Configure script settings:" 18 70 6 \
+      --menu "Configure script settings:" 20 70 7 \
       "URL"    "Install URL: .../${CB_INSTALL_URL##*/}" \
       "Branch" "Git branch: $CB_BRANCH" \
       "Port"   "CB port: $CB_PORT" \
       "FQDN"   "FQDN: ${CB_FQDN:-auto}" \
       "TLS"    "TLS: $([ "$CB_NO_TLS" = true ] && echo disabled || echo enabled)" \
+      "Docker" "Docker mode: $([ "$CB_DOCKER" = true ] && echo enabled || echo disabled)" \
       "Back"   "Return to main menu" \
       3>&1 1>&2 2>&3) || return
 
@@ -956,6 +958,7 @@ func_settings() {
       Port)   CB_PORT=$(whiptail --backtitle "$BT" --inputbox "Port:" 10 50 "$CB_PORT" 3>&1 1>&2 2>&3) || true ;;
       FQDN)   CB_FQDN=$(whiptail --backtitle "$BT" --inputbox "FQDN (blank=auto):" 10 50 "$CB_FQDN" 3>&1 1>&2 2>&3) || true ;;
       TLS)    if whiptail --backtitle "$BT" --yesno "Enable TLS?" 8 40; then CB_NO_TLS=false; else CB_NO_TLS=true; fi ;;
+      Docker) if whiptail --backtitle "$BT" --yesno "Use Docker deployment mode?" 8 45; then CB_DOCKER=true; else CB_DOCKER=false; fi ;;
       Back)   return ;;
     esac
   done
@@ -999,9 +1002,9 @@ func_do_install() {
   # Show storage info
   local ct_free tmpl_free
   ct_free=$(pvesm status --content rootdir 2>/dev/null \
-    | awk -v s="$STORAGE" '$1==s {printf "Free: %.1fGB  Used: %.1fGB", $6/1073741824, $5/1073741824}')
+    | awk -v s="$STORAGE" '$1==s {printf "Free: %.1fGB  Used: %.1fGB", $6/1048576, $5/1048576}')
   tmpl_free=$(pvesm status --content vztmpl 2>/dev/null \
-    | awk -v s="$TEMPLATE_STORAGE" '$1==s {printf "Free: %.1fGB  Used: %.1fGB", $6/1073741824, $5/1073741824}')
+    | awk -v s="$TEMPLATE_STORAGE" '$1==s {printf "Free: %.1fGB  Used: %.1fGB", $6/1048576, $5/1048576}')
 
   if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
     msg_info "Downloading $TEMPLATE..."
@@ -1080,7 +1083,7 @@ func_do_install() {
   if [[ "$VERBOSE" -eq 1 ]]; then
     pct exec "$CTID" -- bash -c "$installer_cmd"
   else
-    pct exec "$CTID" -- bash -c "$installer_cmd"
+    pct exec "$CTID" -- bash -c "$installer_cmd" >/dev/null 2>&1
   fi
   local install_rc=$?
   echo ""
