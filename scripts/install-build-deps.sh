@@ -4,7 +4,7 @@
 # Does NOT invoke makepkg — that is the caller's responsibility.
 set -euo pipefail
 
-NFPM_VERSION="2.38.0"
+NFPM_VERSION="${NFPM_VERSION:-latest}"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 log() { echo "[build-deps] $*"; }
@@ -75,21 +75,36 @@ install_nfpm() {
         ok "nfpm $(nfpm --version 2>&1)"
         return
     fi
-    log "Installing nfpm v${NFPM_VERSION}"
-    local arch
-    arch=$(uname -m)
-    case "$arch" in
-        x86_64)  local goarch="amd64" ;;
-        aarch64) local goarch="arm64" ;;
-        *)        echo "ERROR: Unsupported arch ${arch}" >&2; exit 1 ;;
+
+    # Resolve version from GitHub API if set to "latest"
+    local version="$NFPM_VERSION"
+    if [[ "$version" == "latest" ]]; then
+        version=$(curl -fsSL https://api.github.com/repos/goreleaser/nfpm/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+        if [[ -z "$version" ]]; then
+            echo "ERROR: Failed to fetch latest nfpm version" >&2; exit 1
+        fi
+    fi
+    log "Installing nfpm v${version}"
+
+    local goarch
+    case "$(uname -m)" in
+        x86_64)  goarch="amd64" ;;
+        aarch64) goarch="arm64" ;;
+        *)       echo "ERROR: Unsupported arch $(uname -m)" >&2; exit 1 ;;
     esac
-    local url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${goarch}.tar.gz"
+
+    # nfpm >= 2.39 uses lowercase "linux"; older releases use "Linux"
     local tmpdir
     tmpdir=$(mktemp -d)
-    curl -fsSL "$url" | tar -xz -C "$tmpdir" nfpm
+    local url="https://github.com/goreleaser/nfpm/releases/download/v${version}/nfpm_${version}_linux_${goarch}.tar.gz"
+    if ! curl -fsSL "$url" | tar -xz -C "$tmpdir" nfpm 2>/dev/null; then
+        # Fallback to old naming convention (uppercase Linux)
+        url="https://github.com/goreleaser/nfpm/releases/download/v${version}/nfpm_${version}_Linux_${goarch}.tar.gz"
+        curl -fsSL "$url" | tar -xz -C "$tmpdir" nfpm
+    fi
     sudo install -m755 "$tmpdir/nfpm" /usr/local/bin/nfpm
     rm -rf "$tmpdir"
-    ok "nfpm installed"
+    ok "nfpm v${version} installed"
 }
 
 # ── appimagetool (amd64 only) ──────────────────────────────────────────────────
