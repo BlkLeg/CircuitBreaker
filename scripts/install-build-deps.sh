@@ -88,7 +88,7 @@ install_nfpm() {
 
     local goarch
     case "$(uname -m)" in
-        x86_64)  goarch="amd64" ;;
+        x86_64)  goarch="x86_64" ;;
         aarch64) goarch="arm64" ;;
         *)       echo "ERROR: Unsupported arch $(uname -m)" >&2; exit 1 ;;
     esac
