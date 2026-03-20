@@ -200,6 +200,7 @@ build_storage_radiolist() {
     total=$(echo "$line" | awk '{print $4}')
     used=$(echo "$line" | awk '{print $5}')
     avail=$(echo "$line" | awk '{print $6}')
+    [[ "$avail" =~ ^[0-9]+$ ]] || continue
 
     local free_h used_h
     free_h=$(awk "BEGIN{printf \"%.1fGB\", $avail/1073741824}" 2>/dev/null || echo "?")
@@ -312,6 +313,7 @@ build_pct_cmd() {
   PCT_CMD+=(--ostype debian)
   PCT_CMD+=(--unprivileged "$CT_TYPE")
   PCT_CMD+=(--onboot 1)
+  PCT_CMD+=(--force 1)
 
   # Network
   local net0="name=eth0,bridge=${BRIDGE}"
@@ -830,6 +832,21 @@ adv_storage() {
   elif [[ ${#root_list[@]} -eq 3 ]]; then
     STORAGE="${root_list[0]}"
   fi
+
+  # ── Validate free space ────────────────────────────────────────────────────
+  local avail_bytes
+  avail_bytes=$(pvesm status --content rootdir 2>/dev/null \
+    | awk -v s="$STORAGE" '$1==s && $3=="active" {print $6}')
+  if [[ "$avail_bytes" =~ ^[0-9]+$ ]] && (( avail_bytes > 0 )); then
+    local avail_gb=$(( avail_bytes / 1073741824 ))
+    if (( avail_gb < DISK )); then
+      local free_h
+      free_h=$(awk "BEGIN{printf \"%.1f\", $avail_bytes/1073741824}")
+      whiptail --backtitle "$BT" --title "Insufficient Space" \
+        --msgbox "Storage '$STORAGE' has ${free_h}GB free but ${DISK}GB requested.\n\nSelect a different storage or reduce disk size." 10 60
+      return 1
+    fi
+  fi
 }
 
 # Screen 34 — Save Advanced Settings
@@ -988,6 +1005,7 @@ func_do_install() {
 
   if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
     msg_info "Downloading $TEMPLATE..."
+    pvesm set "$TEMPLATE_STORAGE" 2>/dev/null || true  # clear stale locks
     if ! pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null 2>&1; then
       msg_err "Template download failed."
       read -rp "  Press Enter to return to menu..."
@@ -1001,6 +1019,7 @@ func_do_install() {
 
   # ── Build and run pct create ────────────────────────────────────────────────
   CLEANUP_CTID="$CTID"
+  pct unlock "$CTID" 2>/dev/null || true  # clear stale locks
   build_pct_cmd
 
   local create_err
