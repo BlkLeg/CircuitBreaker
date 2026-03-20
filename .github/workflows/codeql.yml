@@ -12,7 +12,7 @@ on:
 jobs:
   analyze-python:
     name: Analyze (Python)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       actions: read
       contents: read
@@ -46,7 +46,7 @@ jobs:
 
   analyze-javascript:
     name: Analyze (JavaScript / TypeScript)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       actions: read
       contents: read

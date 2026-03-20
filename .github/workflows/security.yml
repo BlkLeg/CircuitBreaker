@@ -15,7 +15,7 @@ jobs:
 
   trivy-fs:
     name: Trivy Filesystem Scan
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -40,7 +40,7 @@ jobs:
 
   trivy-config:
     name: Trivy Config / IaC Scan
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -67,7 +67,7 @@ jobs:
 
   semgrep:
     name: Semgrep (SAST)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -93,7 +93,7 @@ jobs:
 
   bandit:
     name: Bandit (Python SAST)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -117,7 +117,7 @@ jobs:
 
   gitleaks:
     name: Gitleaks (Secret Scanning)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -132,7 +132,7 @@ jobs:
 
   checkov:
     name: Checkov (GitHub Actions / IaC)
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       security-events: write
@@ -157,7 +157,7 @@ jobs:
 
   pip-audit:
     name: Python Dependency Audit
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - name: Set up Python
@@ -181,7 +181,7 @@ jobs:
 
   npm-audit:
     name: Frontend Dependency Audit
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
       - name: Set up Node
