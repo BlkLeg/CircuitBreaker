@@ -8,7 +8,7 @@ Type=exec
 User=breaker
 Group=breaker
 Slice=circuitbreaker.slice
-WorkingDirectory=/opt/circuitbreaker/apps/backend
+WorkingDirectory=/opt/circuitbreaker
 EnvironmentFile=/etc/circuitbreaker/.env
 RuntimeDirectory=circuitbreaker
 RuntimeDirectoryMode=0750
@@ -16,7 +16,7 @@ ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker
 EnvironmentFile=-/run/circuitbreaker/vault.env
 ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
-ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level info
+ExecStart=/opt/circuitbreaker/bin/circuit-breaker --host 127.0.0.1 --port 8000 --workers 1
 Restart=on-failure
 RestartSec=10s
 MemoryMax=1G

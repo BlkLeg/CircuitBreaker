@@ -8,7 +8,7 @@ Type=simple
 User=breaker
 Group=breaker
 Slice=circuitbreaker.slice
-WorkingDirectory=/opt/circuitbreaker/apps/backend
+WorkingDirectory=/opt/circuitbreaker
 EnvironmentFile=/etc/circuitbreaker/.env
 RuntimeDirectory=circuitbreaker
 RuntimeDirectoryMode=0750
@@ -16,7 +16,7 @@ ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker
 EnvironmentFile=-/run/circuitbreaker/vault.env
 Environment="DB_POOL_SIZE=3"
 Environment="DB_MAX_OVERFLOW=2"
-ExecStart=/opt/circuitbreaker/apps/backend/venv/bin/python -m app.workers.main --type %i
+ExecStart=/opt/circuitbreaker/bin/circuit-breaker --worker-type %i
 Restart=on-failure
 RestartSec=10s
 MemoryMax=512M

@@ -175,6 +175,7 @@ jobs:
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
             dist/release/* \
+            install.sh \
             packaging/circuit-breaker-release-key.asc
 
   # ── Deploy install redirect to GitHub Pages ───────────────────────────────────

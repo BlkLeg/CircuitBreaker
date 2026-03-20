@@ -121,6 +121,13 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
 
     hidden_imports = [
         "greenlet",   # Required by SQLAlchemy async
+        "app.workers",
+        "app.workers.main",
+        "app.workers.discovery",
+        "app.workers.webhook_worker",
+        "app.workers.notification_worker",
+        "app.workers.telemetry_collector",
+        "app.workers.status_worker",
     ]
     run(
         [
@@ -286,6 +293,18 @@ def stage_bundle(
     if plist_template.exists():
         shutil.copy2(plist_template, share_dir / "com.blkleg.circuitbreaker.plist")
 
+    # Bundle installer infrastructure for curl-pipe / Proxmox installs
+    deploy_src = REPO_ROOT / "deploy"
+    deploy_dst = bundle_dir / "deploy"
+    for subdir in ("config", "systemd", "nginx", "cli", "misc"):
+        src = deploy_src / subdir
+        if src.exists():
+            shutil.copytree(src, deploy_dst / subdir, dirs_exist_ok=True)
+    shutil.copy2(deploy_src / "setup.sh", deploy_dst / "setup.sh")
+    installer_src = REPO_ROOT / "install.sh"
+    if installer_src.exists():
+        shutil.copy2(installer_src, bundle_dir / "install.sh")
+
     manifest = {
         "app": "Circuit Breaker",
         "version": version,
@@ -300,6 +319,8 @@ def stage_bundle(
             "frontend": "share/frontend",
             "alembic_ini": "share/backend/alembic.ini",
             "migrations": "share/backend/migrations",
+            "deploy": "deploy",
+            "installer": "install.sh",
         },
     }
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

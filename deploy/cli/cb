@@ -106,7 +106,7 @@ cmd_backup() {
 }
 
 cmd_version() {
-  cat /opt/circuitbreaker/VERSION 2>/dev/null || echo "unknown"
+  cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown"
 }
 
 cmd_uninstall() {

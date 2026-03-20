@@ -40,7 +40,9 @@ CB_NATS_URL=nats://127.0.0.1:4222
 # ===== Paths =====
 CB_DATA_DIR=${CB_DATA_DIR}
 CB_UPLOADS_DIR=${CB_DATA_DIR}/uploads
-CB_STATIC_DIR=/opt/circuitbreaker/apps/frontend/dist
+CB_STATIC_DIR=/opt/circuitbreaker/share/frontend
+CB_SHARE_DIR=/opt/circuitbreaker/share
+CB_ALEMBIC_INI=/opt/circuitbreaker/share/backend/alembic.ini
 CB_LOG_DIR=${CB_DATA_DIR}/logs
 
 # ===== Aliases (non-prefixed names for Python code) =====
@@ -80,11 +82,12 @@ stage1_bootstrap() {
   
   declare -A DIRS=(
     ["/opt/circuitbreaker"]="root:root:755"
-    ["/opt/circuitbreaker/apps"]="root:root:755"
-    ["/opt/circuitbreaker/apps/backend"]="breaker:breaker:750"
-    ["/opt/circuitbreaker/apps/frontend"]="root:root:755"
+    ["/opt/circuitbreaker/bin"]="root:root:755"
+    ["/opt/circuitbreaker/share"]="root:root:755"
+    ["/opt/circuitbreaker/share/frontend"]="root:root:755"
+    ["/opt/circuitbreaker/share/backend"]="root:root:755"
     ["/opt/circuitbreaker/scripts"]="root:root:755"
-    ["/opt/circuitbreaker/apps/frontend/dist"]="root:root:755"
+    ["/opt/circuitbreaker/deploy"]="root:root:755"
     ["${CB_DATA_DIR}"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/nats"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/uploads"]="breaker:breaker:755"
@@ -875,63 +878,18 @@ stage4_write_systemd_units() {
   cb_ok "Systemd units created and enabled"
 }
 
-stage6_setup_python() {
-  cb_section "Python Backend Setup"
-  
-  # Create virtual environment
-  cb_step "Creating Python virtual environment"
-  echo "    Location: /opt/circuitbreaker/apps/backend/venv"
-  if ! python3.12 -m venv /opt/circuitbreaker/apps/backend/venv >> "$LOG_FILE" 2>&1; then
-    cb_fail "Python venv creation failed" "Is python3.12 installed? Check: python3.12 --version"
-  fi
-  chown -R breaker:breaker /opt/circuitbreaker/apps/backend/venv
-  cb_ok "Virtual environment created"
-  
-  # Install dependencies as breaker user
-  cb_step "Installing Python dependencies (may take 1-2 minutes)"
-  echo "    Installing from: apps/backend/requirements.txt"
-  if ! su -s /bin/bash breaker -c "
-    source /opt/circuitbreaker/apps/backend/venv/bin/activate
-    pip install --quiet --upgrade pip
-    pip install --quiet -r /opt/circuitbreaker/apps/backend/requirements.txt -r /opt/circuitbreaker/apps/backend/requirements-pg.txt
-    pip install --quiet -e /opt/circuitbreaker/apps/backend/
-  " >> "$LOG_FILE" 2>&1; then
-    cb_fail "Python dependency install failed" "Check: tail -100 ${CB_DATA_DIR}/logs/install.log"
-  fi
-  if [[ ! -x /opt/circuitbreaker/apps/backend/venv/bin/uvicorn ]]; then
-    cb_fail "uvicorn not found after pip install" "Check: tail -100 ${CB_DATA_DIR}/logs/install.log"
-  fi
-  cb_ok "Python dependencies installed"
-  
-  # Run database migrations
-  cb_step "Running database migrations (alembic upgrade head)"
-  source /etc/circuitbreaker/.env
-  echo "    Database: circuitbreaker@127.0.0.1:6432 (via pgbouncer)"
-  su -s /bin/bash breaker -c "
-    set -a
-    source /etc/circuitbreaker/.env
-    set +a
-    cd /opt/circuitbreaker/apps/backend
-    /opt/circuitbreaker/apps/backend/venv/bin/alembic upgrade head
-  " >> "$LOG_FILE" 2>&1
-  
-  # Verify migrations ran
-  local migration_count=$(PGPASSWORD="$CB_DB_PASSWORD" psql \
-    -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -tAc \
-    "SELECT COUNT(*) FROM alembic_version" 2>/dev/null || echo "0")
-  
-  if [[ "$migration_count" -gt 0 ]]; then
-    echo "    Migrations applied: $migration_count"
-    cb_ok "Database schema ready"
-  else
-    cb_fail "Database migrations did not run" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
-  fi
+stage6_apply_binary() {
+  cb_section "Binary Backend Setup"
 
-  cb_step "Granting NET_RAW capability to venv Python interpreter"
+  cb_step "Setting binary permissions"
+  chmod 755 /opt/circuitbreaker/bin/circuit-breaker
+  chown root:root /opt/circuitbreaker/bin/circuit-breaker
+  cb_ok "Binary ready at /opt/circuitbreaker/bin/circuit-breaker"
+
+  # Grant NET_RAW capability for SNMP/ICMP telemetry
+  cb_step "Granting NET_RAW capability"
   if command -v setcap &>/dev/null; then
-    _py_real=$(realpath /opt/circuitbreaker/apps/backend/venv/bin/python3.12 2>/dev/null \
-               || echo /opt/circuitbreaker/apps/backend/venv/bin/python3.12)
-    if setcap cap_net_raw+ep "$_py_real" >> "$LOG_FILE" 2>&1; then
+    if setcap cap_net_raw+ep /opt/circuitbreaker/bin/circuit-breaker >> "$LOG_FILE" 2>&1; then
       cb_ok "NET_RAW capability granted"
     else
       cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
@@ -939,36 +897,20 @@ stage6_setup_python() {
   else
     cb_warn "setcap not found — install libcap2-bin and re-run"
   fi
-}
 
-stage7_build_frontend() {
-  cb_section "Frontend Build"
-  
-  cb_step "Installing Node.js dependencies (may take 1-2 minutes)"
-  cd /opt/circuitbreaker/apps/frontend
-  echo "    Running: npm ci"
-  if ! npm ci >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
-    cb_fail "npm install failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  # Verify frontend assets exist
+  if [[ ! -f /opt/circuitbreaker/share/frontend/index.html ]]; then
+    cb_fail "Frontend assets missing" "Check bundle integrity at /opt/circuitbreaker/share/frontend/"
   fi
-  cb_ok "Node dependencies installed"
-  
-  cb_step "Building frontend application (React + Vite, may take 1-2 minutes)"
-  echo "    Running: npm run build"
-  if ! npm run build >> "${CB_DATA_DIR}/logs/install.log" 2>&1; then
-    cb_fail "Frontend build failed" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
+  cb_ok "Frontend assets verified"
+
+  # Verify database connectivity (migrations run automatically on binary startup)
+  cb_step "Verifying database connectivity"
+  if PGPASSWORD="${CB_DB_PASSWORD}" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' >> "$LOG_FILE" 2>&1; then
+    cb_ok "Database accessible — migrations will run on first start"
+  else
+    cb_warn "Database not yet reachable — migrations will run when services start"
   fi
-  
-  # Verify build output
-  if [[ ! -f /opt/circuitbreaker/apps/frontend/dist/index.html ]]; then
-    cb_fail "Frontend build produced no output" "Check: tail -50 ${CB_DATA_DIR}/logs/install.log"
-  fi
-  
-  # Fix permissions
-  chown -R root:root /opt/circuitbreaker/apps/frontend/dist
-  chmod -R 755 /opt/circuitbreaker/apps/frontend/dist
-  
-  echo "    Output: /opt/circuitbreaker/apps/frontend/dist/"
-  cb_ok "Frontend built successfully"
 }
 
 stage8_start_services() {
@@ -978,7 +920,7 @@ stage8_start_services() {
   for required_file in \
     /opt/circuitbreaker/scripts/validate-secrets.sh \
     /opt/circuitbreaker/scripts/wait-for-services.sh \
-    /opt/circuitbreaker/apps/backend/venv/bin/uvicorn; do
+    /opt/circuitbreaker/bin/circuit-breaker; do
     if [[ ! -x "$required_file" ]]; then
       cb_fail "Missing: $required_file" "A previous stage may have failed — check install.log"
     fi
@@ -1275,57 +1217,6 @@ stage2_dependencies() {
   echo "    Install path: /usr/local/bin/nats-server"
   cb_ok "NATS Server ${nats_version} installed"
 
-  # Group 6: Python 3.12
-  cb_step "Installing Python 3.12"
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    if [[ "$OS_ID" == "ubuntu" ]] && [[ "$OS_VERSION" == "22.04" ]]; then
-      $PKG_MGR install -y -q software-properties-common >> "$LOG_FILE" 2>&1
-      add-apt-repository -y ppa:deadsnakes/ppa >> "$LOG_FILE" 2>&1
-      $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
-    fi
-    $PKG_MGR install -y -q python3.12 python3.12-venv python3.12-dev >> "$LOG_FILE" 2>&1
-  elif [[ "$PKG_MGR" == "pacman" ]]; then
-    # Arch ships Python 3.12+ as the default python package; venv module is included
-    pacman -S --noconfirm --needed python python-pip >> "$LOG_FILE" 2>&1
-    # Arch does not provide a python3.12 binary — symlink if python3 is >= 3.12
-    if ! command -v python3.12 &>/dev/null; then
-      local arch_pyver
-      arch_pyver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
-      if [[ "$(echo -e "3.12\n$arch_pyver" | sort -V | head -1)" == "3.12" ]]; then
-        ln -sf "$(command -v python3)" /usr/local/bin/python3.12
-        cb_ok "Symlinked python3 ($arch_pyver) → python3.12"
-      else
-        cb_fail "Python >= 3.12 required, got $arch_pyver" "Install python >= 3.12"
-      fi
-    fi
-  else
-    $PKG_MGR install -y -q python3.12 python3.12-devel >> "$LOG_FILE" 2>&1
-  fi
-  
-  if ! python3.12 --version &>/dev/null; then
-    cb_fail "Python 3.12 verification failed" "Check: python3.12 --version"
-  fi
-  local py_version=$(python3.12 --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+')
-  cb_ok "Python ${py_version} installed"
-
-  # Group 7: Node 20 LTS
-  cb_step "Installing Node.js 20 LTS"
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q nodejs >> "$LOG_FILE" 2>&1
-  elif [[ "$PKG_MGR" == "pacman" ]]; then
-    # Arch extra repo ships current Node (typically >= 20); NodeSource does not support Arch
-    pacman -S --noconfirm --needed nodejs npm >> "$LOG_FILE" 2>&1
-  else
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q nodejs >> "$LOG_FILE" 2>&1
-  fi
-
-  if ! node --version 2>/dev/null | grep -qE "^v(1[89]|[2-9][0-9])"; then
-    cb_fail "Node 18+ verification failed" "Check: node --version (got: $(node --version 2>/dev/null || echo none))"
-  fi
-  cb_ok "Node.js $(node --version) installed"
-
   # Docker detection — enables container telemetry proxy when Docker is present
   cb_step "Checking for Docker"
   if command -v docker &>/dev/null; then
@@ -1403,10 +1294,20 @@ run_upgrade() {
   sleep 2
   cb_ok "Services stopped"
   
-  # Record current HEAD for changelog
-  local old_head=$(git -C /opt/circuitbreaker rev-parse HEAD 2>/dev/null || echo "unknown")
-  
-  # Code already updated by bootstrap script
+  # Migrate from source-based to bundle-based layout (one-time)
+  if [[ -d /opt/circuitbreaker/apps/backend/venv ]]; then
+    cb_step "Migrating from source-based to bundle-based layout"
+    rm -rf /opt/circuitbreaker/apps/backend/venv
+    rm -rf /opt/circuitbreaker/apps/frontend/node_modules
+    rm -rf /opt/circuitbreaker/.git
+    mkdir -p /opt/circuitbreaker/bin
+    mkdir -p /opt/circuitbreaker/share
+    # Update .env paths for bundle layout
+    sed -i 's|CB_STATIC_DIR=.*/apps/frontend/dist|CB_STATIC_DIR=/opt/circuitbreaker/share/frontend|' /etc/circuitbreaker/.env
+    grep -q "CB_SHARE_DIR=" /etc/circuitbreaker/.env || echo "CB_SHARE_DIR=/opt/circuitbreaker/share" >> /etc/circuitbreaker/.env
+    grep -q "CB_ALEMBIC_INI=" /etc/circuitbreaker/.env || echo "CB_ALEMBIC_INI=/opt/circuitbreaker/share/backend/alembic.ini" >> /etc/circuitbreaker/.env
+    cb_ok "Layout migrated to bundle structure"
+  fi
 
   write_wait_for_services_script
   write_service_scripts
@@ -1469,25 +1370,9 @@ https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "
 
   stage3_configure_docker_proxy
 
-  # Show changelog
-  if [[ "$old_head" != "unknown" ]]; then
-    cb_section "Changes in this update"
-    git -C /opt/circuitbreaker log --oneline "${old_head}..HEAD" 2>/dev/null || echo "  (changelog unavailable)"
-  fi
-  
-  # Update Python dependencies
-  stage6_setup_python
-  # Re-apply NET_RAW after venv rebuild (setcap is wiped when venv is recreated)
-  if command -v setcap &>/dev/null; then
-    _py_real=$(realpath /opt/circuitbreaker/apps/backend/venv/bin/python3.12 2>/dev/null \
-               || echo /opt/circuitbreaker/apps/backend/venv/bin/python3.12)
-    setcap cap_net_raw+ep "$_py_real" >> "$LOG_FILE" 2>&1 || \
-      cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
-  fi
+  # Apply binary and set capabilities
+  stage6_apply_binary
 
-  # Rebuild frontend
-  stage7_build_frontend
-  
   # Restart services
   stage9_install_cb_cli
 

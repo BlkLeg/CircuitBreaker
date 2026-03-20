@@ -131,6 +131,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssl-certfile", help="Path to the TLS certificate file.")
     parser.add_argument("--ssl-keyfile", help="Path to the TLS private key file.")
     parser.add_argument("--version", action="store_true", help="Print the app version and exit.")
+    parser.add_argument(
+        "--worker-type",
+        help=(
+            "Run as a background worker instead of the API server. "
+            "Types: discovery, webhook, notification, telemetry"
+        ),
+    )
     return parser
 
 
@@ -212,6 +219,24 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.version:
         print(resolve_app_version())
+        return 0
+
+    # Worker mode: dispatch to background worker instead of API server
+    if args.worker_type:
+        import asyncio
+        import logging
+
+        from app.core.log_redaction import install_global_log_redaction
+        from app.workers.main import _TYPE_MAP, _dispatch
+
+        worker_type = args.worker_type
+        if worker_type in _TYPE_MAP:
+            worker_type = _TYPE_MAP[worker_type]
+
+        logging.basicConfig(level=logging.INFO)
+        install_global_log_redaction()
+        logging.getLogger(__name__).info("Starting worker type %s", worker_type)
+        asyncio.run(_dispatch(worker_type))
         return 0
 
     # Load config.toml (env vars take precedence over TOML values)

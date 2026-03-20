@@ -18,9 +18,9 @@ LOG_FILE="/tmp/cb-proxmox.log"
 DEFAULTS_FILE="${HOME}/.cb-proxmox-defaults.json"
 
 # ── Script settings ──────────────────────────────────────────────────────────
-CB_INSTALL_URL="https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh"
+CB_GITHUB_REPO="BlkLeg/CircuitBreaker"
+CB_RELEASE_API="https://api.github.com/repos/${CB_GITHUB_REPO}/releases"
 CB_PORT=8088
-CB_BRANCH="main"
 CB_FQDN=""
 CB_NO_TLS=true
 CB_DOCKER=false
@@ -406,11 +406,10 @@ post_start_config() {
 
 # ── Build installer command ───────────────────────────────────────────────────
 build_installer_cmd() {
-  local cmd="curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended"
+  local cmd="bash /tmp/cb-bundle/install.sh --unattended --local-bundle /tmp/cb-bundle.tar.gz"
   [[ "$CB_NO_TLS" == true ]] && cmd+=" --no-tls"
   [[ -n "$CB_FQDN" ]] && cmd+=" --fqdn '${CB_FQDN}'"
   [[ "$CB_PORT" != "8088" ]] && cmd+=" --port ${CB_PORT}"
-  [[ "$CB_BRANCH" != "main" ]] && cmd+=" --branch '${CB_BRANCH}'"
   [[ "$CB_DOCKER" == true ]] && cmd+=" --docker"
   echo "$cmd"
 }
@@ -1064,31 +1063,68 @@ func_do_install() {
   # ── Post-start config ──────────────────────────────────────────────────────
   post_start_config
 
-  # ── Install curl inside container ──────────────────────────────────────────
-  msg_info "Preparing container (installing curl)..."
-  if ! pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y curl" >/dev/null 2>&1; then
-    msg_err "Failed to install curl inside container."
+  # ── Download bundle on PVE host ─────────────────────────────────────────────
+  msg_info "Downloading Circuit Breaker bundle..."
+  local host_arch
+  case "$(uname -m)" in
+    x86_64)  host_arch="amd64" ;;
+    aarch64) host_arch="arm64" ;;
+    *) msg_err "Unsupported architecture: $(uname -m)"; return 1 ;;
+  esac
+
+  local release_json cb_version tarball_name tarball_url
+  release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null) \
+    || { msg_err "Failed to fetch latest release from GitHub"; return 1; }
+  cb_version=$(echo "$release_json" | jq -r '.tag_name' | tr -d v)
+  tarball_name="circuit-breaker_${cb_version}_linux_${host_arch}.tar.gz"
+  tarball_url=$(echo "$release_json" | jq -r ".assets[] | select(.name==\"${tarball_name}\") | .browser_download_url")
+
+  if [[ -z "$tarball_url" ]] || [[ "$tarball_url" == "null" ]]; then
+    msg_err "Bundle ${tarball_name} not found in release v${cb_version}"
+    return 1
+  fi
+
+  curl -fsSL -o "/tmp/${tarball_name}" "$tarball_url" \
+    || { msg_err "Failed to download bundle"; return 1; }
+  echo "  ✔️  Bundle downloaded: v${cb_version} (${host_arch})"
+
+  # ── Push bundle into container ────────────────────────────────────────────
+  msg_info "Pushing bundle into container..."
+  pct push "$CTID" "/tmp/${tarball_name}" "/tmp/cb-bundle.tar.gz"
+  pct exec "$CTID" -- bash -c "mkdir -p /tmp/cb-bundle && tar -xzf /tmp/cb-bundle.tar.gz -C /tmp/cb-bundle"
+
+  # ── Install dependencies (curl+jq needed by installer) ───────────────────
+  msg_info "Preparing container (installing curl and jq)..."
+  if ! pct exec "$CTID" -- bash -c "apt-get update -qq && apt-get install -y curl jq" >/dev/null 2>&1; then
+    msg_err "Failed to install curl/jq inside container."
     CLEANUP_CTID=""
     read -rp "  Press Enter to return to menu..."
     return 1
   fi
 
-  # ── Install Circuit Breaker ─────────────────────────────────────────────────
+  # Clean up host-side tarball
+  rm -f "/tmp/${tarball_name}"
+
+  # ── Install Circuit Breaker from bundle ──────────────────────────────────
   msg_info "Installing Circuit Breaker (this takes a few minutes)..."
   echo ""
   local installer_cmd
   installer_cmd=$(build_installer_cmd)
 
+  local install_log="/tmp/cb-install-${CTID}.log"
   if [[ "$VERBOSE" -eq 1 ]]; then
-    pct exec "$CTID" -- bash -c "$installer_cmd"
+    pct exec "$CTID" -- bash -c "$installer_cmd" 2>&1 | tee "$install_log"
   else
-    pct exec "$CTID" -- bash -c "$installer_cmd" >/dev/null 2>&1
+    pct exec "$CTID" -- bash -c "$installer_cmd" &>"$install_log"
   fi
   local install_rc=$?
   echo ""
   if [[ $install_rc -ne 0 ]]; then
     msg_err "Circuit Breaker installation failed (exit code $install_rc)."
-    msg_warn "Check: pct exec $CTID -- journalctl -u circuitbreaker -n 50"
+    msg_warn "Install log: $install_log"
+    msg_warn "Last 20 lines:"
+    tail -20 "$install_log" 2>/dev/null | sed 's/^/    /'
+    echo ""
     CLEANUP_CTID=""
     read -rp "  Press Enter to return to menu..."
     return 1
