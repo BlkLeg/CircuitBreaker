@@ -103,9 +103,8 @@ jobs:
             .
           docker push "${IMAGE}:${VERSION}"
           docker push "${IMAGE}:latest"
-          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
-            --format '{{ .Manifest.Digest }}')
-          echo "digest=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}:${VERSION}")
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign v2.4.1
         run: |
