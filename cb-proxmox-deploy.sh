@@ -101,7 +101,7 @@ cleanup() {
   # Clean up temp SSH key file
   rm -f /tmp/cb-ssh-keys-$$.pub 2>/dev/null
 }
-trap 'cleanup; exit 130' INT TERM
+trap 'cleanup; exit 130' INT TERM EXIT
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -834,11 +834,10 @@ adv_storage() {
   fi
 
   # ── Validate free space ────────────────────────────────────────────────────
-  local avail_bytes
-  avail_bytes=$(pvesm status --content rootdir 2>/dev/null \
+  local avail_kib
+  avail_kib=$(pvesm status --content rootdir 2>/dev/null \
     | awk -v s="$STORAGE" '$1==s && $3=="active" {print $6}')
-  if [[ "$avail_bytes" =~ ^[0-9]+$ ]] && (( avail_bytes > 0 )); then
-    local avail_kib="$avail_bytes"  # pvesm outputs KiB, not bytes
+  if [[ "$avail_kib" =~ ^[0-9]+$ ]] && (( avail_kib > 0 )); then
     local avail_gb=$(( avail_kib / 1048576 ))
     if (( avail_gb < DISK )); then
       local free_h

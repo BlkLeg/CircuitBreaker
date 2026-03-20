@@ -91,7 +91,7 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}/uploads/icons"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/uploads/branding"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/tls"]="breaker:breaker:755"
-    ["${CB_DATA_DIR}/logs"]="breaker:breaker:777"
+    ["${CB_DATA_DIR}/logs"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
     ["/etc/circuitbreaker"]="root:breaker:750"
     ["/etc/nats"]="root:root:755"
@@ -203,16 +203,12 @@ stage0_preflight() {
   cb_header
   cb_section "Pre-flight Checks"
 
-  # Root check
-  cb_step "Checking root privileges"
+  # Root check — install.sh guarantees root before sourcing this file
+  cb_step "Checking privileges"
   if [[ $EUID -ne 0 ]]; then
-    if command -v sudo &>/dev/null; then
-      cb_step "Elevating privileges with sudo"
-      exec sudo -E bash "$0" "$@"
-    fi
-    cb_fail "Root access required" "Run as root or install sudo"
+    cb_fail "This script must be invoked via install.sh" "Run: sudo bash install.sh"
   fi
-  cb_ok "Running as root"
+  cb_ok "Running with elevated privileges"
 
   # OS Detection
   cb_step "Detecting operating system"

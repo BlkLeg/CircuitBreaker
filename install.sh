@@ -79,12 +79,12 @@ stage0_bootstrap_preflight() {
   cb_header
   cb_section "Bootstrap Pre-flight Checks"
   
-  # Privilege confirmation (elevation handled before main)
+  # Privilege confirmation
   cb_step "Checking privileges"
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    cb_ok "Running with sudo (user: $SUDO_USER)"
+  if [[ -n "$SUDO_CMD" ]]; then
+    cb_ok "Running with sudo privileges"
   else
-    cb_ok "Running with elevated privileges"
+    cb_ok "Running as root"
   fi
 
   # OS Detection (Minimal for git install)
@@ -106,12 +106,12 @@ stage0_bootstrap_preflight() {
   if ! command -v git &>/dev/null; then
     cb_step "Installing git"
     if [[ "$PKG_MGR" == "apt-get" ]]; then
-      $PKG_MGR update -y -q >/dev/null 2>&1
-      $PKG_MGR install -y -q git >/dev/null 2>&1
+      $SUDO_CMD $PKG_MGR update -y -q >/dev/null 2>&1
+      $SUDO_CMD $PKG_MGR install -y -q git >/dev/null 2>&1
     elif [[ "$PKG_MGR" == "pacman" ]]; then
-      pacman -Sy --noconfirm --needed git >/dev/null 2>&1
+      $SUDO_CMD pacman -Sy --noconfirm --needed git >/dev/null 2>&1
     else
-      $PKG_MGR install -y -q git >/dev/null 2>&1
+      $SUDO_CMD $PKG_MGR install -y -q git >/dev/null 2>&1
     fi
     cb_ok "Git installed"
   fi
@@ -125,14 +125,14 @@ stage0_clone_repo() {
   echo "    Location: /opt/circuitbreaker"
   
   if [[ -d /opt/circuitbreaker/.git ]]; then
-    git -C /opt/circuitbreaker fetch origin >> "$LOG_FILE" 2>&1
-    git -C /opt/circuitbreaker checkout "$CB_BRANCH" >> "$LOG_FILE" 2>&1
-    git -C /opt/circuitbreaker pull origin "$CB_BRANCH" >> "$LOG_FILE" 2>&1
+    $SUDO_CMD git -C /opt/circuitbreaker fetch origin >> "$LOG_FILE" 2>&1
+    $SUDO_CMD git -C /opt/circuitbreaker checkout "$CB_BRANCH" >> "$LOG_FILE" 2>&1
+    $SUDO_CMD git -C /opt/circuitbreaker pull origin "$CB_BRANCH" >> "$LOG_FILE" 2>&1
   else
     if [[ -d /opt/circuitbreaker ]] && [[ ! -d /opt/circuitbreaker/.git ]]; then
-      rm -rf /opt/circuitbreaker/apps /opt/circuitbreaker/scripts
+      $SUDO_CMD rm -rf /opt/circuitbreaker/apps /opt/circuitbreaker/scripts
     fi
-    if ! git clone --branch "$CB_BRANCH" --depth 1       https://github.com/BlkLeg/CircuitBreaker.git       /opt/circuitbreaker >> "$LOG_FILE" 2>&1; then
+    if ! $SUDO_CMD git clone --branch "$CB_BRANCH" --depth 1       https://github.com/BlkLeg/CircuitBreaker.git       /opt/circuitbreaker >> "$LOG_FILE" 2>&1; then
       cb_fail "Git clone failed" "Check: tail -50 ${LOG_FILE}"
     fi
   fi
@@ -163,7 +163,7 @@ show_help() {
   exit 0
 }
 
-# Save original arguments for potential sudo re-exec
+# Save original args for sudo re-exec after clone
 CB_ORIGINAL_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
@@ -223,26 +223,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ── Privilege check ──────────────────────────────────────────────────────────
-# Accepts both root and sudo users. For non-root users with sudo available,
-# automatically re-executes the script with elevated privileges.
+# ── Privilege setup ──────────────────────────────────────────────────────────
+SUDO_CMD=""
 if [[ $EUID -ne 0 ]]; then
   if command -v sudo &>/dev/null; then
-    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo..."
-    # File-based execution: re-exec with sudo and original args
-    if [[ -f "$0" && "$0" != "bash" && "$0" != "-bash" && "$0" != "/bin/bash" && "$0" != "/usr/bin/bash" ]]; then
-      exec sudo -E bash "$0" "${CB_ORIGINAL_ARGS[@]}"
-    fi
-    # Piped execution: can't re-exec, advise user
-    echo -e "\n  ${RED}✗  ERROR: Elevated privileges required${RESET}"
-    echo -e "  ${YELLOW}→  Piped scripts must run with sudo:${RESET}"
-    echo -e "  ${YELLOW}   curl -fsSL <url> | sudo bash -s -- [options]${RESET}\n"
+    SUDO_CMD="sudo"
+  else
+    echo -e "\n  ${RED}✗  Elevated privileges required${RESET}"
+    echo -e "  ${YELLOW}→  Run as root or install sudo${RESET}\n"
     exit 1
   fi
-  echo -e "\n  ${RED}✗  ERROR: Elevated privileges required${RESET}"
-  echo -e "  ${YELLOW}→  Run with: sudo bash install.sh  OR  install sudo first${RESET}\n"
-  exit 1
 fi
+export SUDO_CMD
 
 # Global vars set during execution
 PKG_MGR=""
@@ -265,7 +257,17 @@ main() {
   echo "=== Bootstrap Log ===" > "$LOG_FILE"
 
   stage0_clone_repo
-  
+
+  # If running as sudo user (not root), re-exec from cloned copy as root.
+  # The clone is done, so the script file exists on disk — no piped-stdin issue.
+  if [[ -n "$SUDO_CMD" ]]; then
+    if [[ ! -f /opt/circuitbreaker/install.sh ]]; then
+      cb_fail "Clone succeeded but install.sh not found" "Check repo structure at /opt/circuitbreaker"
+    fi
+    cb_step "Re-executing installer as root"
+    exec sudo bash /opt/circuitbreaker/install.sh "${CB_ORIGINAL_ARGS[@]}"
+  fi
+
   if [[ -f /opt/circuitbreaker/deploy/setup.sh ]]; then
     source /opt/circuitbreaker/deploy/setup.sh
 
