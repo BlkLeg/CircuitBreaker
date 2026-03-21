@@ -80,6 +80,11 @@ data/user-icons/**
 
 # Test artifacts
 coverage.xml
+coverage/
+apps/frontend/coverage/
+.coverage
+.coverage.*
+htmlcov/
 
 # Generated security scan reports (keep STANDING reports untracked naturally)
 SECURITY_REPORTS/security_scan_report*.md
