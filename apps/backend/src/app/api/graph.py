@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import Integer, String, cast, func, literal, null, select, union_all
+from sqlalchemy import Integer, Select, String, cast, func, literal, null, select, union_all
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.audit import log_audit
@@ -48,8 +48,14 @@ router = APIRouter(tags=["graph"], dependencies=[require_scope("read", "*")])
 
 
 def _edge_arm(
-    tag: str, model, src_col: str, tgt_col: str, *, has_conn: bool = True, has_bw: bool = True
-):
+    tag: str,
+    model: type[Any],
+    src_col: str,
+    tgt_col: str,
+    *,
+    has_conn: bool = True,
+    has_bw: bool = True,
+) -> Select[Any]:
     """Build one SELECT arm of the edge UNION ALL CTE."""
     t = model.__table__
     return select(
