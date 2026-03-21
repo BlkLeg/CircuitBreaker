@@ -1,0 +1,15 @@
+# False positives — see SECURITY_PATCHES/scanner_false_positives_2026-03-12.md for context
+# Format: <commit>:<file>:<rule>:<line>
+
+# JWT token in scanner false-positives documentation file (not a real secret)
+d61f34b20e1884e95a3f94b32ff1b823b094ff99:SECURITY_PATCHES/scanner_false_positives_2026-03-12.md:generic-api-key:29
+d61f34b20e1884e95a3f94b32ff1b823b094ff99:SECURITY_PATCHES/scanner_false_positives_2026-03-12.md:generic-api-key:45
+
+# Placeholder "YOUR_API_KEY" in KNOWN_BUGS.md documentation
+c5d335bc8e2ad285438b87c0933b5632610316cf:KNOWN_BUGS.md:curl-auth-header:272
+
+# Alembic migration revision ID (short hex string, not an API key)
+2ecbb38e8c6d5faa82501b23e748d1cd5a3190c9:apps/backend/migrations/versions/0020_merge_heads.py:generic-api-key:4
+
+# JWT secret in a committed dev log file (log file since removed from repo)
+0f36b6b0fc9a8c4c945f547b31ae0143fe1a9db2:docker/circuitbreaker-data/backend_api_err.log:generic-api-key:412136

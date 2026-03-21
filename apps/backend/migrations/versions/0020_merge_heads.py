@@ -1,7 +1,7 @@
 """Merge migration heads 0016 and 0019.
 
 Revision ID: 0020_merge_heads
-Revises: 0016_webhook_deliveries_oauth_states, b4a9c1d2e8f0
+Revises: 0016_webhook_deliveries_oauth_states, b4a9c1d2e8f0  # gitleaks:allow
 Create Date: 2026-03-08 00:00:00.000000
 
 """

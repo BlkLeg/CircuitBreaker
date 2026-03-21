@@ -560,6 +560,14 @@ async def lifespan(app: FastAPI):
             removed = purge_old_hardware_live_metrics(_tdb, days=7)
             if removed:
                 _logger.info("Purged %d rows from hardware_live_metrics.", removed)
+                from app.core.worker_audit import log_worker_audit
+
+                log_worker_audit(
+                    action="purge_live_metrics",
+                    entity_type="hardware_live_metrics",
+                    details=f"purged={removed} retention_days=7",
+                    worker_name="scheduler",
+                )
 
     scheduler.add_job(
         _purge_hardware_live_metrics,
@@ -589,6 +597,14 @@ async def lifespan(app: FastAPI):
                     "Purged %d rows from telemetry_timeseries (retention=%dd).",
                     removed,
                     retention_days,
+                )
+                from app.core.worker_audit import log_worker_audit
+
+                log_worker_audit(
+                    action="purge_telemetry_timeseries",
+                    entity_type="telemetry_timeseries",
+                    details=f"purged={removed} retention_days={retention_days}",
+                    worker_name="scheduler",
                 )
 
     scheduler.add_job(
@@ -650,6 +666,17 @@ async def lifespan(app: FastAPI):
                 if expired:
                     db.commit()
                     _logger.info("Disabled %d expired demo user(s)", len(expired))
+                    from app.core.worker_audit import log_worker_audit
+
+                    for u in expired:
+                        log_worker_audit(
+                            action="disable_expired_demo_user",
+                            entity_type="user",
+                            entity_id=u.id,
+                            severity="warn",
+                            details=f"email={u.email} demo_expires={u.demo_expires}",
+                            worker_name="scheduler",
+                        )
         except Exception as exc:
             _logger.warning("Expired demo user cleanup failed: %s", exc)
 
@@ -964,6 +991,15 @@ async def lifespan(app: FastAPI):
                 )
                 try:
                     rotate_vault_key(vault_db)
+                    from app.core.worker_audit import log_worker_audit
+
+                    log_worker_audit(
+                        action="vault_key_rotated",
+                        entity_type="vault",
+                        severity="warn",
+                        details=f"rotation_days={rotation_days}",
+                        worker_name="scheduler",
+                    )
                 except Exception as exc:
                     _logger.error("Vault key auto-rotation failed: %s", exc)
 

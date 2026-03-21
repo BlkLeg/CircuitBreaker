@@ -39,6 +39,33 @@ jobs:
       - name: ESLint
         run: cd apps/frontend && npm run lint
 
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install scan tools
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install bandit semgrep
+
+      - name: Run security gate (fails on HIGH/CRIT)
+        run: ./scripts/security_scan.sh --gate
+
+      - name: Upload scan report
+        uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: security-scan-report
+          path: security_scan_report.md
+          retention-days: 30
+
   test:
     name: Test
     runs-on: ubuntu-22.04

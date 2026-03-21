@@ -60,6 +60,15 @@ class LogRedactionFilter(logging.Filter):
         return True
 
 
+class UvicornNuisanceLogFilter(logging.Filter):
+    """Silences expected Uvicorn warnings caused by internal Nmap discovery scans."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg == "Invalid HTTP request received.":
+            return False
+        return True
+
+
 def install_global_log_redaction(logger_names: Iterable[str] | None = None) -> None:
     """Install redaction filter on root and selected named loggers exactly once."""
     filter_instance = LogRedactionFilter()
@@ -75,3 +84,11 @@ def install_global_log_redaction(logger_names: Iterable[str] | None = None) -> N
             continue
         logger.addFilter(filter_instance)
         setattr(logger, _INSTALL_MARKER, True)
+
+    # Attach the nuisance filter to uvicorn.error separately, regardless of the marker,
+    # or inside the marker condition to avoid duplicating it.
+    error_logger = logging.getLogger("uvicorn.error")
+    # To prevent multiple additions if install_global_log_redaction is called multiple
+    # times and the marker logic above skips it, we check the filters list.
+    if not any(isinstance(f, UvicornNuisanceLogFilter) for f in error_logger.filters):
+        error_logger.addFilter(UvicornNuisanceLogFilter())

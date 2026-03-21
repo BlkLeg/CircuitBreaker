@@ -81,6 +81,18 @@ def _write_delivery(
         db.add(delivery)
         db.commit()
 
+        if not delivery.ok:
+            from app.core.worker_audit import log_worker_audit
+
+            log_worker_audit(
+                action="webhook_delivery_failed",
+                entity_type="webhook",
+                entity_id=rule_id,
+                details=f"subject={subject} status={delivery.status_code} error={error}",
+                severity="warn",
+                worker_name="webhook_worker",
+            )
+
 
 def _effective_events(rule: WebhookRule) -> list[str]:
     try:

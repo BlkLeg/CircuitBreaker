@@ -53,9 +53,12 @@ async def resolve_reset_token(token: str) -> int | None:
     stored = await redis.get(redis_key)
 
     if not stored:
-        _logger.warning(
-            "[password_reset] token not found or expired prefix=%s...", token[:8]
-        )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+        _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+            # Safe: logs only first 8 chars of the token (opaque prefix) —
+            # insufficient to reconstruct or reuse the token.
+            "[password_reset] token not found or expired prefix=%s...",
+            token[:8],
+        )
         return None
 
     return int(stored)
@@ -68,6 +71,9 @@ async def consume_reset_token(token: str) -> None:
         raise RuntimeError("Redis is unavailable — cannot consume password reset token")
 
     await redis.delete(f"{REDIS_KEY_PREFIX}:{token}")
-    _logger.info(
-        "[password_reset] token consumed prefix=%s...", token[:8]
-    )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+    _logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+        # Safe: logs only first 8 chars of the token (opaque prefix) —
+        # insufficient to reconstruct or reuse the token.
+        "[password_reset] token consumed prefix=%s...",
+        token[:8],
+    )

@@ -45,18 +45,20 @@ def is_available() -> bool:
 
 def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Execute a read-only SQL statement and return rows as a list of dicts."""
+    # Internal analytics engine — callers are trusted application code, not user input.
     engine = get_engine("analytics")
     with engine.connect() as conn:
-        result = conn.execute(text(sql), params or {})
+        result = conn.execute(text(sql), params or {})  # nosemgrep: avoid-sqlalchemy-text
         columns = list(result.keys())
         return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
 def execute(sql: str, params: dict[str, Any] | None = None) -> None:
     """Execute a write statement (CREATE TABLE, INSERT, etc.)."""
+    # Internal analytics engine — callers are trusted application code, not user input.
     engine = get_engine("analytics")
     with engine.connect() as conn:
-        conn.execute(text(sql), params or {})
+        conn.execute(text(sql), params or {})  # nosemgrep: avoid-sqlalchemy-text
         conn.commit()
 
 
@@ -74,21 +76,30 @@ def ingest_csv(path: str, table: str) -> int:
     with engine.connect() as conn:
         # Table identifier is strictly validated and quoted; data values stay parameterized.
         conn.execute(
-            text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
-                # table_identifier is regex-validated and double-quoted — not user input
+            text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
+                # Safe: table_identifier is regex-validated & double-quoted by
+                # _quoted_table_identifier().
+                # The :path parameter is properly parameterized. Not user-controlled.
                 f"CREATE TABLE IF NOT EXISTS {table_identifier} AS "
                 "SELECT * FROM read_csv_auto(:path) LIMIT 0"
             ),
             {"path": path},
         )
         conn.execute(
-            text(
+            text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
+                # Safe: table_identifier validated above; :path is parameterized.
                 f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"
-            ),  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
+            ),
             {"path": path},
         )
         row_count = (
-            conn.execute(text(f"SELECT count(*) FROM {table_identifier}")).scalar() or 0
-        )  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # noqa: E501
+            conn.execute(
+                text(
+                    f"SELECT count(*) FROM {table_identifier}"
+                )  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
+                # Safe: table_identifier validated above.
+            ).scalar()
+            or 0
+        )
         conn.commit()
     return row_count

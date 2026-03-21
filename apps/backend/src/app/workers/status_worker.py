@@ -223,6 +223,14 @@ def _run_status_poll_job_impl() -> None:
         pruned = svc.prune_history_older_than(db, days=30)
         if pruned:
             _logger.info("Status history pruned: %d rows", pruned)
+            from app.core.worker_audit import log_worker_audit
+
+            log_worker_audit(
+                action="prune_status_history",
+                entity_type="status_history",
+                details=f"pruned={pruned}",
+                worker_name="status_worker",
+            )
     except Exception as e:
         db.rollback()
         _logger.exception("Status poll job failed: %s", e)

@@ -165,6 +165,16 @@ async def collect_once(
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
                 logger.warning("Telemetry write failed for hardware %d: %s", hardware_id, exc)
+                from app.core.worker_audit import log_worker_audit
+
+                log_worker_audit(
+                    action="telemetry_collect_failed",
+                    entity_type="hardware",
+                    entity_id=hardware_id,
+                    details=str(exc)[:200],
+                    severity="error",
+                    worker_name="telemetry_collector",
+                )
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:

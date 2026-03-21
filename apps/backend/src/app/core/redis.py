@@ -62,10 +62,13 @@ def _resolve_redis_password(url: str) -> str | None:
             if secret:
                 return secret
     except Exception as exc:
-        _logger.debug(
-            "Failed reading Redis password file %s: %s", _password_file, exc
-        )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
-        # Logs file path and exception — no credential value is logged
+        _logger.debug(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+            # Safe: logs only the password FILE PATH (_password_file) and exception text —
+            # no password value is ever captured or emitted.
+            "Failed reading Redis password file %s: %s",
+            _password_file,
+            exc,
+        )
 
     return None
 

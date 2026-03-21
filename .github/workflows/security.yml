@@ -54,9 +54,8 @@ jobs:
           format: sarif
           output: trivy-config-results.sarif
           severity: 'CRITICAL,HIGH'
-          # exit-code 0 — report findings to the Security tab without blocking PRs;
-          # config findings are informational until the backlog is triaged.
-          exit-code: '0'
+          # exit-code 1 — block PRs on HIGH/CRIT IaC misconfigurations
+          exit-code: '1'
           skip-dirs: '.venv,node_modules,dist'
       - name: Upload Trivy config results
         uses: github/codeql-action/upload-sarif@v4
@@ -81,9 +80,8 @@ jobs:
         run: pip install semgrep
       - name: Run Semgrep
         # Scans native source only — backend Python and frontend React.
-        # --error removed: findings are reported to the Security tab without
-        # blocking PRs until the initial finding backlog is triaged.
-        run: semgrep scan --config p/default --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/ || true
+        # --error --severity ERROR: block PRs on high-severity SAST findings
+        run: semgrep scan --config p/default --error --severity ERROR --sarif --output semgrep.sarif apps/backend/src/ apps/frontend/src/
       - name: Upload Semgrep results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
@@ -107,7 +105,8 @@ jobs:
         run: pip install bandit bandit-sarif-formatter
       - name: Run Bandit
         # bandit-sarif-formatter provides native SARIF output via -f sarif
-        run: bandit -r apps/backend/src/ -ll --skip B101 -f sarif -o bandit-results.sarif || true
+        # -lll = HIGH severity only; blocks PRs on high-severity findings
+        run: bandit -r apps/backend/src/ -lll --skip B101 -f sarif -o bandit-results.sarif
       - name: Upload Bandit results
         uses: github/codeql-action/upload-sarif@v4
         if: always()

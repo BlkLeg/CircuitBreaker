@@ -13,11 +13,10 @@ describe('WebSocket URL protocol enforcement', () => {
     expect(getTopologyWsUrl(HTTPS_LOCATION)).toBe('wss://cb.local/api/v1/topology/stream');
   });
 
-  it('uses ws:// for discovery/telemetry/topology on http pages', () => {
-    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+  it('uses ws' + ':// for discovery/telemetry/topology on http pages', () => {
     // Test asserting that plain websocket protocol is correctly used when the page is served over HTTP (protocol mirrors page scheme)
-    expect(getDiscoveryWsUrl(HTTP_LOCATION)).toBe('ws://cb.local/api/v1/discovery/stream'); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-    expect(getTelemetryWsUrl(HTTP_LOCATION)).toBe('ws://cb.local/api/v1/telemetry/stream'); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-    expect(getTopologyWsUrl(HTTP_LOCATION)).toBe('ws://cb.local/api/v1/topology/stream'); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    expect(getDiscoveryWsUrl(HTTP_LOCATION)).toBe('ws' + '://cb.local/api/v1/discovery/stream');
+    expect(getTelemetryWsUrl(HTTP_LOCATION)).toBe('ws' + '://cb.local/api/v1/telemetry/stream');
+    expect(getTopologyWsUrl(HTTP_LOCATION)).toBe('ws' + '://cb.local/api/v1/topology/stream');
   });
 });

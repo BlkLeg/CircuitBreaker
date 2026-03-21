@@ -178,7 +178,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def gravatar_hash(email: str) -> str:
     # MD5 is required by the Gravatar protocol and is intentionally limited to this helper.
-    return hashlib.md5(email.strip().lower().encode()).hexdigest()  # noqa: S324
+    return hashlib.md5(email.strip().lower().encode(), usedforsecurity=False).hexdigest()  # noqa: S324
 
 
 # ---------------------------------------------------------------------------
@@ -225,17 +225,33 @@ def decode_token(token: str, secret: str) -> int | None:
         return None
 
 
-def decode_access_token(token: str) -> dict[str, Any]:
-    """Decode a JWT payload without signature verification.
+def decode_access_token(token: str, secret: str | None = None) -> dict[str, Any]:
+    """Decode a JWT and return its claim payload.
 
-    Used only for extracting non-auth claims (e.g. tenant_id for RLS context).
-    Full signature verification is handled by FastAPI-Users auth middleware.
+    When ``secret`` is supplied, full verification is performed (HS256 signature,
+    expiry, and audience).  This is the preferred and secure code path.
+
+    When ``secret`` is ``None``, signature verification is skipped as a last-resort
+    fallback (e.g. app not yet bootstrapped and jwt_secret unavailable).  In that
+    case the returned dict is restricted to only the ``tenant_id`` claim so that
+    no security-sensitive claims leak through the unverified path.
+    Do NOT use this function as an authentication gate under any circumstances.
     """
     try:
-        return jwt.decode(
+        if secret:
+            return jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience=[SESSION_AUDIENCE],
+            )
+        # Unverified fallback: secret unavailable (e.g. pre-bootstrap). Caller must
+        # NEVER use the result for auth/authz decisions.
+        raw = jwt.decode(  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
             token, options={"verify_signature": False}, algorithms=["HS256"]
-        )  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
-        # Intentional: claim extractor for RLS only; FastAPI-Users verifies auth upstream
+        )
+        # Expose only tenant_id — all other claims are suppressed on unverified path.
+        return {"tenant_id": raw.get("tenant_id")} if raw else {}
     except jwt.PyJWTError:
         return {}
 

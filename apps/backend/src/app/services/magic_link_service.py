@@ -53,9 +53,12 @@ async def resolve_magic_link_token(token: str) -> int | None:
     stored = await redis.get(redis_key)
 
     if not stored:
-        _logger.warning(
-            "[magic_link] token not found or expired prefix=%s...", token[:8]
-        )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+        _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+            # Safe: logs only first 8 chars of the token (opaque prefix) —
+            # insufficient to reconstruct or reuse the token.
+            "[magic_link] token not found or expired prefix=%s...",
+            token[:8],
+        )
         return None
 
     return int(stored)
@@ -68,6 +71,9 @@ async def consume_magic_link_token(token: str) -> None:
         raise RuntimeError("Redis is unavailable — cannot consume magic link token")
 
     await redis.delete(f"{REDIS_KEY_PREFIX}:{token}")
-    _logger.info(
-        "[magic_link] token consumed prefix=%s...", token[:8]
-    )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+    _logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+        # Safe: logs only first 8 chars of the token (opaque prefix) —
+        # insufficient to reconstruct or reuse the token.
+        "[magic_link] token consumed prefix=%s...",
+        token[:8],
+    )

@@ -32,8 +32,15 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if auth_header.startswith("Bearer "):
             try:
                 from app.core.security import decode_access_token
+                from app.db.session import SessionLocal
+                from app.services.settings_service import get_or_create_settings
 
-                payload = decode_access_token(auth_header.split(" ", 1)[1])
+                raw_token = auth_header.split(" ", 1)[1]
+                with SessionLocal() as db:
+                    cfg = get_or_create_settings(db)
+                    secret = cfg.jwt_secret or None
+
+                payload = decode_access_token(raw_token, secret=secret)
                 tenant_id = payload.get("tenant_id")
             except Exception:  # noqa: BLE001
                 pass

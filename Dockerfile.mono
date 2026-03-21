@@ -49,7 +49,7 @@ RUN pip install --no-cache-dir --no-deps .
 
 
 ########## Stage 3: Runtime image (all services + supervisor) ##########
-# checkov:skip=CKV_DOCKER_3: Mono runtime intentionally starts as root to run entrypoint bootstrap tasks (volume ownership, embedded service wiring) before supervised processes run as breaker/root where required.
+# checkov:skip=CKV_DOCKER_3,CKV_DS_0002: Mono runtime intentionally starts as root to run entrypoint bootstrap tasks (volume ownership, embedded service wiring) before supervised processes run as breaker/root where required.
 FROM python:3.12.9-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import Integer, String, cast, func, literal, null, select, union_all
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.audit import log_audit
@@ -47,67 +47,65 @@ _logger = logging.getLogger(__name__)
 router = APIRouter(tags=["graph"], dependencies=[require_scope("read", "*")])
 
 
+def _edge_arm(
+    tag: str, model, src_col: str, tgt_col: str, *, has_conn: bool = True, has_bw: bool = True
+):
+    """Build one SELECT arm of the edge UNION ALL CTE."""
+    t = model.__table__
+    return select(
+        literal(tag).label("edge_type"),
+        t.c[src_col].label("src_id"),
+        t.c[tgt_col].label("tgt_id"),
+        (
+            t.c.connection_type.label("connection_type")
+            if has_conn
+            else cast(null(), String).label("connection_type")
+        ),
+        (
+            t.c.bandwidth_mbps.label("bandwidth_mbps")
+            if has_bw
+            else cast(null(), Integer).label("bandwidth_mbps")
+        ),
+        t.c.id.label("row_id"),
+    )
+
+
 def _preload_edge_maps(db: Session) -> dict:
     """CTE-based bulk preload of all edge/relation data in a single round-trip.
 
     Returns a dict of pre-built lookup maps that build_topology_graph uses
     to emit edges without issuing separate queries for each join table.
-    """
-    from sqlalchemy import text as _text
 
-    # Fetch all relationship data via a single UNION ALL CTE.
-    # Each row: (edge_type, source_type, source_id, target_type, target_id,
-    #            connection_type, bandwidth_mbps, row_id)
-    cte_sql = _text("""
-        WITH all_edges AS (
-            SELECT 'hn' AS edge_type,
-                   hardware_id AS src_id, network_id AS tgt_id,
-                   connection_type, bandwidth_mbps, id AS row_id
-            FROM hardware_networks
-          UNION ALL
-            SELECT 'cn', compute_id, network_id,
-                   connection_type, bandwidth_mbps, id
-            FROM compute_networks
-          UNION ALL
-            SELECT 'hh', source_hardware_id, target_hardware_id,
-                   connection_type, bandwidth_mbps, id
-            FROM hardware_connections
-          UNION ALL
-            SELECT 'np', network_a_id, network_b_id,
-                   NULL, NULL, 0
-            FROM network_peers
-          UNION ALL
-            SELECT 'dep', service_id, depends_on_id,
-                   connection_type, bandwidth_mbps, id
-            FROM service_dependencies
-          UNION ALL
-            SELECT 'ss', service_id, storage_id,
-                   connection_type, bandwidth_mbps, id
-            FROM service_storage
-          UNION ALL
-            SELECT 'sm', service_id, misc_id,
-                   connection_type, bandwidth_mbps, id
-            FROM service_misc
-          UNION ALL
-            SELECT 'extnet', external_node_id, network_id,
-                   connection_type, bandwidth_mbps, id
-            FROM external_node_networks
-          UNION ALL
-            SELECT 'svcext', service_id, external_node_id,
-                   connection_type, bandwidth_mbps, id
-            FROM service_external_nodes
-          UNION ALL
-            SELECT 'hcm', cluster_id, hardware_id,
-                   NULL, NULL, id
-            FROM hardware_cluster_members
-        )
-        SELECT edge_type, src_id, tgt_id, connection_type, bandwidth_mbps, row_id
-        FROM all_edges
-    """)
+    Uses SQLAlchemy expression API (union_all + select) instead of raw SQL
+    for defense-in-depth parameterization.
+    """
+    cte = union_all(
+        _edge_arm("hn", HardwareNetwork, "hardware_id", "network_id"),
+        _edge_arm("cn", ComputeNetwork, "compute_id", "network_id"),
+        _edge_arm("hh", HardwareConnection, "source_hardware_id", "target_hardware_id"),
+        _edge_arm("np", NetworkPeer, "network_a_id", "network_b_id", has_conn=False, has_bw=False),
+        _edge_arm("dep", ServiceDependency, "service_id", "depends_on_id"),
+        _edge_arm("ss", ServiceStorage, "service_id", "storage_id"),
+        _edge_arm("sm", ServiceMisc, "service_id", "misc_id"),
+        _edge_arm("extnet", ExternalNodeNetwork, "external_node_id", "network_id"),
+        _edge_arm("svcext", ServiceExternalNode, "service_id", "external_node_id"),
+        _edge_arm(
+            "hcm", HardwareClusterMember, "cluster_id", "hardware_id", has_conn=False, has_bw=False
+        ),
+    ).cte("all_edges")
+
+    stmt = select(
+        cte.c.edge_type,
+        cte.c.src_id,
+        cte.c.tgt_id,
+        cte.c.connection_type,
+        cte.c.bandwidth_mbps,
+        cte.c.row_id,
+    )
 
     result: dict[str, list] = {}
     try:
-        rows = db.execute(cte_sql).all()
+        rows = db.execute(stmt).all()
         for edge_type, src_id, tgt_id, conn_type, bw, row_id in rows:
             result.setdefault(edge_type, []).append((src_id, tgt_id, conn_type, bw, row_id))
     except Exception:

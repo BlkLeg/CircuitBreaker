@@ -152,7 +152,13 @@ sbom: ## Generate SBOM for source dirs using syft (install: https://github.com/a
 # ==============================================================================
 # CODE QUALITY & TESTING
 # ==============================================================================
-.PHONY: lint format test
+security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
+	./scripts/security_scan.sh --gate
+
+security-report: ## Run full security scan report (non-blocking)
+	./scripts/security_scan.sh
+
+.PHONY: lint format test security-check security-report
 
 lint: ## Run backend and frontend linters
 	cd $(BACKEND_DIR) && $(CURDIR)/.venv/bin/ruff check src/app

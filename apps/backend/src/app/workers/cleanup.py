@@ -36,4 +36,12 @@ def cleanup_old_icons(db: Session) -> int:
 
     if removed:
         db.commit()
+        from app.core.worker_audit import log_worker_audit
+
+        log_worker_audit(
+            action="cleanup_icons",
+            entity_type="user_icon",
+            details=f"removed={removed}",
+            worker_name="cleanup",
+        )
     return removed
