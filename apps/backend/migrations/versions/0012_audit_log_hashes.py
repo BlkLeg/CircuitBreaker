@@ -62,7 +62,8 @@ def upgrade() -> None:
 
     logs = conn.execute(
         sa.text(
-            "SELECT id, timestamp, action, actor_id, role_at_time, entity_type, entity_id, diff, ip_address FROM logs ORDER BY id ASC"
+            "SELECT id, timestamp, action, actor_id, role_at_time, "
+            "entity_type, entity_id, diff, ip_address FROM logs ORDER BY id ASC"
         )
     ).fetchall()
 

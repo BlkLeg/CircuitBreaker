@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets as _secrets
 from pathlib import Path
@@ -366,6 +367,8 @@ def register(
 
 
 def bootstrap_status(db: Session) -> BootstrapStatusResponse:
+    from app.core.security import get_client_salt
+
     try:
         user_count = db.query(User).count()
         cfg = db.query(AppSettings).first()
@@ -373,7 +376,11 @@ def bootstrap_status(db: Session) -> BootstrapStatusResponse:
         # jwt_secret may be generated earlier (e.g. OAuth callback), so it is
         # not a reliable completion marker.
         needs_bootstrap = cfg is None or not bool(cfg.auth_enabled)
-        return BootstrapStatusResponse(needs_bootstrap=needs_bootstrap, user_count=user_count)
+        return BootstrapStatusResponse(
+            needs_bootstrap=needs_bootstrap,
+            user_count=user_count,
+            client_hash_salt=get_client_salt(db),
+        )
     except Exception as e:
         import logging
 
@@ -514,6 +521,9 @@ def bootstrap_initialize(
         cfg.ui_font_size = ui_font_size
     if not cfg.jwt_secret:
         cfg.jwt_secret = _secrets.token_hex(32)
+    if not cfg.client_hash_salt:
+        # Use CB_CLIENT_SALT env if set, else generate a random hex
+        cfg.client_hash_salt = os.getenv("CB_CLIENT_SALT", _secrets.token_hex(32))
     if language in {"en", "es", "fr", "de", "zh", "ja"}:
         cfg.language = language
     if timezone:
@@ -826,6 +836,24 @@ def login(
     # response and prevent timing-based email enumeration (L-08).
     _hash_to_check = user.hashed_password if user else _DUMMY_HASH
     _password_valid = verify_password(password_or_hash, _hash_to_check)
+
+    # Task 3: Migrate existing legacy tokens (on first valid login with plaintext)
+    if not _password_valid and user and not _is_client_hash(password_or_hash):
+        from app.core.security import _DEFAULT_SALT, client_hash_password, get_client_salt
+
+        current_salt = get_client_salt(db)
+        if current_salt != _DEFAULT_SALT:
+            # Check if login succeeds with the legacy hardcoded salt
+            legacy_client_hash = client_hash_password(password_or_hash, _DEFAULT_SALT)
+            if verify_password(legacy_client_hash, _hash_to_check):
+                # SUCCESS with legacy salt! Migrate this user to the current dynamic salt.
+                _logger.info("Migrating user %s to new CLIENT_HASH_SALT", user.email)
+                new_client_hash = client_hash_password(password_or_hash, current_salt)
+                user.hashed_password = hash_password(new_client_hash)
+                db.commit()
+                db.refresh(user)
+                _password_valid = True
+
     if not user or not _password_valid:
         if user:
             record_failed_login(db, user, cfg)

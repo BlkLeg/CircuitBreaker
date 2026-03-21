@@ -432,8 +432,9 @@ class TestRBAC:
         "method,path",
         [
             ("GET", "/api/v1/hardware"),
-            ("GET", "/api/v1/discovery"),
+            ("GET", "/api/v1/discovery/status"),
             ("GET", "/api/v1/logs"),
+            ("GET", "/api/v1/tags"),
             ("POST", "/api/v1/discovery/scan"),
         ],
     )

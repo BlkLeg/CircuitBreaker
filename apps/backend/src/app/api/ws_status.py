@@ -95,31 +95,26 @@ async def status_stream(websocket: WebSocket) -> None:
     authenticated = False
     user_id: int | None = None
     import app.db.session as _db_session
-    from app.core.security import _get_api_token, decode_token
+    from app.core.security import decode_token
     from app.core.time import utcnow
     from app.db.models import User
     from app.services.settings_service import get_or_create_settings
     from app.services.user_service import is_session_revoked
 
-    api_token = _get_api_token()
-    if api_token and raw_token.strip() == api_token:
-        authenticated = True
-        user_id = 0
-    else:
-        with _db_session.SessionLocal() as db:
-            cfg = get_or_create_settings(db)
-            if cfg.jwt_secret:
-                if not is_session_revoked(db, raw_token.strip()):
-                    uid = decode_token(raw_token.strip(), cfg.jwt_secret)
-                    if uid is not None:
-                        u = db.get(User, uid)
-                        if (
-                            u
-                            and u.is_active
-                            and not (u.locked_until is not None and u.locked_until > utcnow())
-                        ):
-                            authenticated = True
-                            user_id = uid
+    with _db_session.SessionLocal() as db:
+        cfg = get_or_create_settings(db)
+        if cfg.jwt_secret:
+            if not is_session_revoked(db, raw_token.strip()):
+                uid = decode_token(raw_token.strip(), cfg.jwt_secret)
+                if uid is not None:
+                    u = db.get(User, uid)
+                    if (
+                        u
+                        and u.is_active
+                        and not (u.locked_until is not None and u.locked_until > utcnow())
+                    ):
+                        authenticated = True
+                        user_id = uid
 
     if not authenticated:
         await websocket.send_text(json.dumps({"error": "unauthorized"}))

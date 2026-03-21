@@ -33,7 +33,9 @@ def upgrade() -> None:
                 "show_experimental_features",
                 existing_type=sa.Integer(),
                 type_=sa.Boolean(),
-                postgresql_using="CASE WHEN show_experimental_features = 0 THEN FALSE ELSE TRUE END",
+                postgresql_using=(
+                    "CASE WHEN show_experimental_features = 0 THEN FALSE ELSE TRUE END"
+                ),
                 existing_nullable=False,
             )
 

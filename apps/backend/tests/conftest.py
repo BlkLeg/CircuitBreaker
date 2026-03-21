@@ -30,7 +30,7 @@ def pytest_configure(config):
     # Settings() is a module-level singleton in config.py — set env before import
     os.environ["CB_DB_URL"] = _PG_CONTAINER.get_connection_url()
     os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
-    os.environ["CB_VAULT_KEY"] = "ci-test-vault-key-different-from-jwt-xxxxx"
+    os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
     os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
 
 

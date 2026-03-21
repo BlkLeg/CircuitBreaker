@@ -419,6 +419,74 @@ class CreateAPITokenResponse(BaseModel):
     expires_at: str | None
 
 
+class CreateServiceAccountRequest(BaseModel):
+    label: str | None = None
+    scopes: list[str] = ["read:*"]
+    expires_at: str | None = None  # ISO datetime or None for no expiry
+
+
+@router.post("/service-account", response_model=CreateAPITokenResponse, tags=["auth"])
+@limiter.limit(lambda: get_limit("auth"))
+def create_service_account(
+    request: Request,
+    payload: CreateServiceAccountRequest,
+    current_user: Annotated[User, require_role("admin")],
+    db: Session = Depends(get_db),
+) -> CreateAPITokenResponse:
+    """Create a scoped service account token (JWT).
+
+    Admin-only. Generates a JWT with embedded scopes and stores a salted
+    hash in the APIToken table for tracking and revocation.
+    """
+    cfg = get_or_create_settings(db)
+    if not cfg.jwt_secret:
+        raise HTTPException(status_code=503, detail="Auth not configured")
+
+    expires_delta = None
+    expires_at_dt = None
+    if payload.expires_at:
+        try:
+            from datetime import datetime
+
+            expires_at_dt = datetime.fromisoformat(payload.expires_at.replace("Z", "+00:00"))
+            now = utcnow()
+            if expires_at_dt <= now:
+                raise ValueError("Expiry must be in the future")
+            diff = expires_at_dt - now
+            expires_delta = int(diff.total_seconds() / 3600)
+        except (ValueError, TypeError) as err:
+            raise HTTPException(
+                status_code=400, detail=str(err) or "expires_at must be ISO 8601 datetime"
+            ) from err
+
+    token = create_token(
+        0,  # user_id=0: service-account sentinel
+        cfg.jwt_secret,
+        expires_delta or 8760,  # Default 1 year
+        scopes=payload.scopes,
+        extra_claims={"label": payload.label},
+    )
+
+    token_hash = create_salted_api_token_hash(token)
+    api_token = APIToken(
+        token_hash=token_hash,
+        label=f"[Service Account] {payload.label or 'unnamed'}",
+        created_by=current_user.id,
+        scopes=payload.scopes,
+        expires_at=expires_at_dt,
+    )
+    db.add(api_token)
+    db.commit()
+    db.refresh(api_token)
+
+    return CreateAPITokenResponse(
+        token=token,
+        id=api_token.id,
+        label=api_token.label,
+        expires_at=api_token.expires_at.isoformat() if api_token.expires_at else None,
+    )
+
+
 @router.post("/api-token", response_model=CreateAPITokenResponse, tags=["auth"])
 @limiter.limit(lambda: get_limit("auth"))
 def create_api_token(

@@ -143,7 +143,13 @@ def require_role(*roles: str) -> params.Depends:
             raise HTTPException(status_code=401, detail="Demo session expired")
         if user.is_superuser:
             return user
-        if role not in roles:
+
+        # Check hierarchy: if any requested role is satisfied by user's role rank
+        user_rank = ROLE_HIERARCHY.get(role, 0)
+        allowed_ranks = [ROLE_HIERARCHY.get(r, 0) for r in roles]
+        if not allowed_ranks:
+            return user
+        if user_rank < min(allowed_ranks):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
 

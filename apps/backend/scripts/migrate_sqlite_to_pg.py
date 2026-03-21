@@ -72,7 +72,8 @@ def migrate(src_url: str, dst_url: str, dry_run: bool = False) -> None:
                 col_list = ", ".join(f'"{c}"' for c in cols)
                 param_list = ", ".join(f":{c}" for c in cols)
                 stmt = text(
-                    f'INSERT INTO "{table}" ({col_list}) VALUES ({param_list}) ON CONFLICT DO NOTHING'  # noqa: S608
+                    f'INSERT INTO "{table}" ({col_list}) '
+                    f"VALUES ({param_list}) ON CONFLICT DO NOTHING"  # noqa: S608
                 )
                 result = dst_conn.execute(stmt, batch)
                 copied += result.rowcount

@@ -99,6 +99,7 @@ class AuthResponse(BaseModel):
 class BootstrapStatusResponse(BaseModel):
     needs_bootstrap: bool
     user_count: int
+    client_hash_salt: str = "circuitbreaker-salt-v1"
 
 
 # Onboarding (OOBE) step state — public API, no auth required

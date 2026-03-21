@@ -841,6 +841,7 @@ class AppSettings(Base):
     registration_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     rate_limit_profile: Mapped[str] = mapped_column(String, nullable=False, default="normal")
     jwt_secret: Mapped[str | None] = mapped_column(Text)
+    client_hash_salt: Mapped[str | None] = mapped_column(Text)
     session_timeout_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     dev_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     audit_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
@@ -1325,6 +1326,7 @@ class APIToken(Base):
     created_by: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    scopes: Mapped[list | None] = mapped_column(JSONB, default=list)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

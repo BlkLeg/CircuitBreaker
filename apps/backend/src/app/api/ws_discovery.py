@@ -34,7 +34,6 @@ Security notes:
 """
 
 import asyncio
-import hmac
 import json
 import logging
 from typing import Any
@@ -45,7 +44,7 @@ from starlette.websockets import WebSocketState
 import app.db.session as _db_session
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.rbac import require_role
-from app.core.security import _get_api_token, decode_token
+from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.core.ws_manager import ws_manager
 from app.db.models import User
@@ -166,30 +165,25 @@ async def discovery_stream(websocket: WebSocket) -> None:
 
         authenticated = False
         user_id: int | None = None
-        api_token = _get_api_token()
 
-        if api_token and raw_token and hmac.compare_digest(raw_token, api_token):
-            authenticated = True
-            user_id = 0  # service-account sentinel
-        else:
-            with _db_session.SessionLocal() as db:
-                cfg = get_or_create_settings(db)
-                if cfg.jwt_secret:
-                    if is_session_revoked(db, raw_token):
-                        authenticated = False
-                    else:
-                        uid = decode_token(raw_token, cfg.jwt_secret)
-                        if uid is not None:
-                            u = db.get(User, uid)
-                            if u and u.is_active:
-                                if not (u.locked_until and u.locked_until > utcnow()):
-                                    if not (
-                                        u.role == "demo"
-                                        and u.demo_expires
-                                        and u.demo_expires <= utcnow()
-                                    ):
-                                        authenticated = True
-                                        user_id = uid
+        with _db_session.SessionLocal() as db:
+            cfg = get_or_create_settings(db)
+            if cfg.jwt_secret:
+                if is_session_revoked(db, raw_token):
+                    authenticated = False
+                else:
+                    uid = decode_token(raw_token, cfg.jwt_secret)
+                    if uid is not None:
+                        u = db.get(User, uid)
+                        if u and u.is_active:
+                            if not (u.locked_until and u.locked_until > utcnow()):
+                                if not (
+                                    u.role == "demo"
+                                    and u.demo_expires
+                                    and u.demo_expires <= utcnow()
+                                ):
+                                    authenticated = True
+                                    user_id = uid
 
         if not authenticated:
             logger.warning("WS auth failed (ip=%s)", client_ip)

@@ -1036,6 +1036,11 @@ stage10_final_output() {
     fi
     echo ""
   fi
+
+  echo -e "  ${YELLOW}${BOLD}⚠  SECURITY ADVISORY: CB_API_TOKEN is deprecated${RESET}"
+  echo -e "     Static bearer tokens via CB_API_TOKEN will be removed in v0.4.0."
+  echo -e "     Migrate your scripts to Service Accounts (POST /api/v1/auth/service-account)."
+  echo ""
   
   echo -e "  ${BOLD}Centralized Logs:${RESET}"
   echo -e "    ${CB_DATA_DIR}/logs/install.log       (this install)"

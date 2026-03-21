@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -65,6 +66,18 @@ class TelemetryConfig(BaseModel):
     password: str | None = None  # encrypted before storage
     poll_interval_seconds: int = 60
     enabled: bool = True
+
+    @field_validator("snmp_community")
+    @classmethod
+    def validate_snmp_community(cls, v: str | None) -> str | None:
+        """Reject shell metacharacters and enforce length limit."""
+        if v is None:
+            return v
+        if len(v) > 64:
+            raise ValueError("SNMP community string must be <= 64 characters")
+        if re.search(r'[;&|$`"><\\()&]', v):
+            raise ValueError("SNMP community string contains illegal characters")
+        return v
 
     @field_serializer("password", when_used="json")
     def _mask_password(self, v: str | None) -> str | None:

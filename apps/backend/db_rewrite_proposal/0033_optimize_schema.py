@@ -21,7 +21,8 @@ def upgrade() -> None:
     # Note: CONCURRENTLY cannot run inside a transaction.
     op.execute("COMMIT")
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_name_trgm ON users USING GIN(display_name gin_trgm_ops)"
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_name_trgm "
+        "ON users USING GIN(display_name gin_trgm_ops)"
     )
     op.execute("BEGIN")
 
@@ -71,7 +72,8 @@ def upgrade() -> None:
     """)
 
     # 0055: Replication Configuration
-    # Safe to ignore if replication is not natively enabled on the cluster, but conceptually included:
+    # Safe to ignore if replication is not natively enabled on the cluster,
+    # but conceptually included:
     op.execute("""
         SELECT pg_create_logical_replication_slot('repl_slot', 'pgoutput')
         WHERE NOT EXISTS (
@@ -94,7 +96,8 @@ def downgrade() -> None:
     op.drop_table("query_stats")
 
     op.execute(
-        "SELECT pg_drop_replication_slot('repl_slot') WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = 'repl_slot');"
+        "SELECT pg_drop_replication_slot('repl_slot') "
+        "WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = 'repl_slot');"
     )
 
     op.execute("DROP FUNCTION IF EXISTS get_user_stats();")

@@ -230,7 +230,7 @@ def create_webhook(
     try:
         reject_ssrf_url(str(rule_in.url))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=422, detail=str(e)) from e
     rule = WebhookRule(
         name=rule_in.label.strip(),
         target_url=str(rule_in.url),

@@ -2,7 +2,8 @@
 
 Preserves backward-compat dependencies (get_optional_user, require_write_auth,
 require_auth_always) that existing routers rely on, while integrating with
-FastAPI-Users for JWT validation and the CB_API_TOKEN legacy middleware.
+FastAPI-Users for JWT validation.  CB_API_TOKEN god-mode is deprecated;
+rejection/rollback is handled by LegacyTokenMiddleware.
 """
 
 import hashlib
@@ -16,8 +17,9 @@ from typing import Any
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from app.core.time import utcnow
 from app.db.models import User
@@ -115,8 +117,13 @@ def invalidate_session_cache(token: str | None = None) -> None:
             _session_cache.clear()
 
 
-def _get_api_token() -> str | None:
-    return os.getenv("CB_API_TOKEN") or None
+def _log_api_token_deprecation() -> None:
+    """Emit a one-shot deprecation warning if CB_API_TOKEN is still set."""
+    if os.getenv("CB_API_TOKEN"):
+        _logger.warning(
+            "DEPRECATION: CB_API_TOKEN is deprecated and will be removed in v0.4.0. "
+            "Migrate to service accounts (POST /api/v1/auth/service-account)."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -124,14 +131,36 @@ def _get_api_token() -> str | None:
 # ---------------------------------------------------------------------------
 
 # Must match frontend CIRCUIT_BREAKER_SALT so client-hashed login works.
-CLIENT_HASH_SALT = "circuitbreaker-salt-v1"
+# In v0.3.0+ this defaults to a dynamic value if CB_CLIENT_SALT is set.
+_DEFAULT_SALT = "circuitbreaker-salt-v1"
+CLIENT_HASH_SALT = os.getenv("CB_CLIENT_SALT", _DEFAULT_SALT)
 
 
-def client_hash_password(plain: str) -> str:
+def get_client_salt(db: Session | None = None) -> str:
+    """Return the active client-side hashing salt.
+
+    Priority: CB_CLIENT_SALT env > app_settings.client_hash_salt > hardcoded default.
+    """
+    env_salt = os.getenv("CB_CLIENT_SALT")
+    if env_salt:
+        return env_salt
+
+    if db:
+        from app.services.settings_service import get_or_create_settings
+
+        cfg = get_or_create_settings(db)
+        if cfg.client_hash_salt:
+            return cfg.client_hash_salt
+
+    return _DEFAULT_SALT
+
+
+def client_hash_password(plain: str, salt: str | None = None) -> str:
     """SHA256(plain + salt) hex. Use when storing a password that will be
     sent by the client as password_hash on login (e.g. local user temp password).
     """
-    return hashlib.sha256((plain + CLIENT_HASH_SALT).encode()).hexdigest()
+    active_salt = salt or CLIENT_HASH_SALT
+    return hashlib.sha256((plain + active_salt).encode()).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -216,14 +245,14 @@ def decode_access_token(token: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _extract_bearer(request: Request) -> str | None:
+def _extract_bearer(request: HTTPConnection) -> str | None:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[len("Bearer ") :]
     return None
 
 
-def _extract_token(request: Request) -> str | None:
+def _extract_token(request: HTTPConnection) -> str | None:
     """Token from Authorization header or cb_session cookie (httpOnly)."""
     token = _extract_bearer(request)
     if token:
@@ -233,12 +262,14 @@ def _extract_token(request: Request) -> str | None:
     return request.cookies.get(COOKIE_NAME)
 
 
-def _is_legacy_admin(request: Request) -> bool:
+def _is_legacy_admin(request: HTTPConnection) -> bool:
     """Check if the LegacyTokenMiddleware flagged this request."""
     return getattr(request.state, "legacy_admin", False)
 
 
 def _is_user_accessible(db: Session, user_id: int) -> bool:
+    if user_id == 0:
+        return True  # Sentinel for service account / legacy admin
     user = db.get(User, user_id)
     if not user or not user.is_active:
         return False
@@ -253,11 +284,11 @@ def _is_user_accessible(db: Session, user_id: int) -> bool:
     return True
 
 
-def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | None:
+async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
     """Return the authenticated user_id, or None if absent/invalid.
 
-    Returns 0 (service-account sentinel) when the request presents a valid
-    CB_API_TOKEN bearer token.  Never raises.
+    Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
+    has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
     """
     if _is_legacy_admin(request):
         return 0
@@ -265,10 +296,6 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     from app.services.settings_service import get_or_create_settings
 
     raw_token = _extract_token(request)
-
-    api_token = _get_api_token()
-    if api_token and raw_token and hmac.compare_digest(raw_token, api_token):
-        return 0
 
     cfg = get_or_create_settings(db)
 
@@ -335,7 +362,7 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> int | 
     return None
 
 
-def require_write_auth(
+async def require_write_auth(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int | None:
     """Raise 401/403 when write access is not authorised."""
@@ -357,7 +384,7 @@ def require_write_auth(
     return user_id
 
 
-def require_auth_always(
+async def require_auth_always(
     user_id: int | None = Depends(get_optional_user), db: Session = Depends(get_db)
 ) -> int:
     """Validates JWT and raises 401 if no authenticated user."""
@@ -366,3 +393,7 @@ def require_auth_always(
     if user_id != 0 and not _is_user_accessible(db, user_id):
         raise HTTPException(status_code=403, detail="Account is not accessible")
     return user_id
+
+
+# Alias for backward-compat and global router enforcement
+require_auth = require_auth_always

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta  # noqa: F401 — used by models import
 from pathlib import Path, PurePosixPath
 
 import sqlalchemy as sa
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,6 +82,7 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.core.log_redaction import install_global_log_redaction
 from app.core.rate_limit import limiter
+from app.core.security import _log_api_token_deprecation, require_auth
 from app.core.sql_hardening import build_audit_partition_sql
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
@@ -291,6 +292,9 @@ async def lifespan(app: FastAPI):
 
     set_state(ServerState.STARTING)
     _logger.info("[lifecycle] server state → STARTING")
+
+    # Emit one-shot deprecation warning if CB_API_TOKEN is still set in the environment
+    _log_api_token_deprecation()
 
     # ── Phase 1: Filesystem write validation ───────────────────────────────
     # Fail fast if /data volume permissions are broken (avoids cryptic runtime errors).
@@ -1134,66 +1138,341 @@ async def unhandled_error_handler(request: Request, exc: Exception):
 
 _V1 = "/api/v1"
 
-app.include_router(hardware.router, prefix=f"{_V1}/hardware", tags=["hardware"])
-app.include_router(hardware.hw_conn_router, prefix=f"{_V1}", tags=["hardware"])
-app.include_router(compute_units.router, prefix=f"{_V1}/compute-units", tags=["compute-units"])
-app.include_router(services.router, prefix=f"{_V1}/services", tags=["services"])
-app.include_router(storage.router, prefix=f"{_V1}/storage", tags=["storage"])
-app.include_router(networks.router, prefix=f"{_V1}/networks", tags=["networks"])
-app.include_router(misc.router, prefix=f"{_V1}/misc", tags=["misc"])
-app.include_router(docs.router, prefix=f"{_V1}/docs", tags=["docs"])
-app.include_router(graph.router, prefix=f"{_V1}/graph", tags=["graph"])
-app.include_router(search.router, prefix=f"{_V1}/search", tags=["search"])
-app.include_router(logs.router, prefix=f"{_V1}/logs", tags=["logs"])
+app.include_router(
+    hardware.router,
+    prefix=f"{_V1}/hardware",
+    tags=["hardware"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    hardware.hw_conn_router,
+    prefix=f"{_V1}",
+    tags=["hardware"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    compute_units.router,
+    prefix=f"{_V1}/compute-units",
+    tags=["compute-units"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    services.router,
+    prefix=f"{_V1}/services",
+    tags=["services"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    storage.router,
+    prefix=f"{_V1}/storage",
+    tags=["storage"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    networks.router,
+    prefix=f"{_V1}/networks",
+    tags=["networks"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    misc.router,
+    prefix=f"{_V1}/misc",
+    tags=["misc"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    docs.router,
+    prefix=f"{_V1}/docs",
+    tags=["docs"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    graph.router,
+    prefix=f"{_V1}/graph",
+    tags=["graph"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    search.router,
+    prefix=f"{_V1}/search",
+    tags=["search"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    logs.router,
+    prefix=f"{_V1}/logs",
+    tags=["logs"],
+    dependencies=[Depends(require_auth)],
+)
 app.include_router(auth.auth_jwt_router, prefix=f"{_V1}/auth/jwt", tags=["auth"])
-app.include_router(auth.user_me_router, prefix=f"{_V1}/users", tags=["users"])
-app.include_router(auth.users_router, prefix=f"{_V1}/users", tags=["users"])
+app.include_router(
+    auth.user_me_router,
+    prefix=f"{_V1}/users",
+    tags=["users"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    auth.users_router,
+    prefix=f"{_V1}/users",
+    tags=["users"],
+    dependencies=[Depends(require_auth)],
+)
 app.include_router(auth.router, prefix=f"{_V1}/auth", tags=["auth"])
-app.include_router(clusters.router, prefix=f"{_V1}/hardware-clusters", tags=["clusters"])
-app.include_router(external_nodes.router, prefix=f"{_V1}/external-nodes", tags=["external-nodes"])
+app.include_router(
+    clusters.router,
+    prefix=f"{_V1}/hardware-clusters",
+    tags=["clusters"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    external_nodes.router,
+    prefix=f"{_V1}/external-nodes",
+    tags=["external-nodes"],
+    dependencies=[Depends(require_auth)],
+)
 app.include_router(bootstrap.router, prefix=f"{_V1}/bootstrap", tags=["bootstrap"])
-app.include_router(catalog.router, prefix=f"{_V1}/catalog", tags=["catalog"])
-app.include_router(telemetry_api.router, prefix=f"{_V1}/hardware", tags=["telemetry"])
-app.include_router(telemetry_api.router, prefix=f"{_V1}/telemetry", tags=["telemetry"])
-app.include_router(categories.router, prefix=f"{_V1}/categories", tags=["categories"])
-app.include_router(environments.router, prefix=f"{_V1}/environments", tags=["environments"])
-app.include_router(discovery_router, prefix=f"{_V1}/discovery", tags=["discovery"])
-app.include_router(ws_discovery_router, prefix=f"{_V1}/discovery", tags=["discovery-ws"])
-app.include_router(ws_telemetry_router, prefix=f"{_V1}/telemetry", tags=["telemetry-ws"])
-app.include_router(ws_topology_router, prefix=f"{_V1}/topology", tags=["topology-ws"])
-app.include_router(ip_check_router, prefix=f"{_V1}", tags=["ip-check"])
-app.include_router(settings_router, prefix=f"{_V1}/settings", tags=["settings"])
-app.include_router(system_router, prefix=f"{_V1}/system", tags=["system"])
-app.include_router(branding_router, prefix=f"{_V1}/branding", tags=["branding"])
-app.include_router(assets_router, prefix=f"{_V1}/assets", tags=["assets"])
-app.include_router(admin_router, prefix=f"{_V1}/admin", tags=["admin"])
-app.include_router(admin_audit_router, prefix=f"{_V1}/admin", tags=["admin-audit"])
-app.include_router(admin_users_router, prefix=f"{_V1}", tags=["admin-users"])
-app.include_router(admin_db_router, prefix=f"{_V1}/admin", tags=["admin-db"])
-app.include_router(security_router, prefix=f"{_V1}/security", tags=["security"])
-app.include_router(vault_router, prefix=f"{_V1}", tags=["vault"])
-app.include_router(metrics_router, prefix=f"{_V1}/metrics", tags=["metrics"])
-app.include_router(timezones_router, prefix=f"{_V1}/timezones", tags=["timezones"])
-app.include_router(rack_api.router, prefix=f"{_V1}/racks", tags=["racks"])
-app.include_router(tags_api.router, prefix=f"{_V1}/tags", tags=["tags"])
+app.include_router(
+    catalog.router,
+    prefix=f"{_V1}/catalog",
+    tags=["catalog"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    telemetry_api.router,
+    prefix=f"{_V1}/hardware",
+    tags=["telemetry"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    telemetry_api.router,
+    prefix=f"{_V1}/telemetry",
+    tags=["telemetry"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    categories.router,
+    prefix=f"{_V1}/categories",
+    tags=["categories"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    environments.router,
+    prefix=f"{_V1}/environments",
+    tags=["environments"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    discovery_router,
+    prefix=f"{_V1}/discovery",
+    tags=["discovery"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ws_discovery_router,
+    prefix=f"{_V1}/discovery",
+    tags=["discovery-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ws_telemetry_router,
+    prefix=f"{_V1}/telemetry",
+    tags=["telemetry-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ws_topology_router,
+    prefix=f"{_V1}/topology",
+    tags=["topology-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ip_check_router,
+    prefix=f"{_V1}",
+    tags=["ip-check"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    settings_router,
+    prefix=f"{_V1}/settings",
+    tags=["settings"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    system_router,
+    prefix=f"{_V1}/system",
+    tags=["system"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    branding_router,
+    prefix=f"{_V1}/branding",
+    tags=["branding"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    assets_router,
+    prefix=f"{_V1}/assets",
+    tags=["assets"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    admin_router,
+    prefix=f"{_V1}/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    admin_audit_router,
+    prefix=f"{_V1}/admin",
+    tags=["admin-audit"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    admin_users_router,
+    prefix=f"{_V1}",
+    tags=["admin-users"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    admin_db_router,
+    prefix=f"{_V1}/admin",
+    tags=["admin-db"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    security_router,
+    prefix=f"{_V1}/security",
+    tags=["security"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    vault_router,
+    prefix=f"{_V1}",
+    tags=["vault"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    metrics_router,
+    prefix=f"{_V1}/metrics",
+    tags=["metrics"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    timezones_router,
+    prefix=f"{_V1}/timezones",
+    tags=["timezones"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    rack_api.router,
+    prefix=f"{_V1}/racks",
+    tags=["racks"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    tags_api.router,
+    prefix=f"{_V1}/tags",
+    tags=["tags"],
+    dependencies=[Depends(require_auth)],
+)
 
-app.include_router(capabilities_router, prefix=f"{_V1}/capabilities", tags=["capabilities"])
-app.include_router(certificates_router, prefix=f"{_V1}/certificates", tags=["certificates"])
-app.include_router(cve_router, prefix=f"{_V1}/cve", tags=["cve"])
-app.include_router(monitor_router, prefix=f"{_V1}/monitors", tags=["monitors"])
-app.include_router(events_router, prefix=f"{_V1}/events", tags=["events"])
-app.include_router(webhooks_router, prefix=f"{_V1}/webhooks", tags=["webhooks"])
-app.include_router(status_router, prefix=f"{_V1}/status", tags=["status"])
-app.include_router(ws_status_router, prefix=f"{_V1}/status", tags=["status-ws"])
-app.include_router(notifications_router, prefix=f"{_V1}/notifications", tags=["notifications"])
+app.include_router(
+    capabilities_router,
+    prefix=f"{_V1}/capabilities",
+    tags=["capabilities"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    certificates_router,
+    prefix=f"{_V1}/certificates",
+    tags=["certificates"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    cve_router,
+    prefix=f"{_V1}/cve",
+    tags=["cve"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    monitor_router,
+    prefix=f"{_V1}/monitors",
+    tags=["monitors"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    events_router,
+    prefix=f"{_V1}/events",
+    tags=["events"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    webhooks_router,
+    prefix=f"{_V1}/webhooks",
+    tags=["webhooks"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    status_router,
+    prefix=f"{_V1}/status",
+    tags=["status"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ws_status_router,
+    prefix=f"{_V1}/status",
+    tags=["status-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    notifications_router,
+    prefix=f"{_V1}/notifications",
+    tags=["notifications"],
+    dependencies=[Depends(require_auth)],
+)
 app.include_router(auth_oauth.router, prefix=f"{_V1}", tags=["oauth"])
-app.include_router(integration_provider_router, prefix=f"{_V1}/integrations", tags=["integrations"])
-app.include_router(proxmox_router, prefix=f"{_V1}/integrations/proxmox", tags=["proxmox"])
-app.include_router(topologies_router, prefix=f"{_V1}/topologies", tags=["topologies"])
-app.include_router(ipam_router, prefix=f"{_V1}/ipam", tags=["ipam"])
-app.include_router(vlan_router, prefix=f"{_V1}/vlans", tags=["vlans"])
-app.include_router(site_router, prefix=f"{_V1}/sites", tags=["sites"])
-app.include_router(node_relations_router, prefix=f"{_V1}/node-relations", tags=["node-relations"])
+app.include_router(
+    integration_provider_router,
+    prefix=f"{_V1}/integrations",
+    tags=["integrations"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    proxmox_router,
+    prefix=f"{_V1}/integrations/proxmox",
+    tags=["proxmox"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    topologies_router,
+    prefix=f"{_V1}/topologies",
+    tags=["topologies"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ipam_router,
+    prefix=f"{_V1}/ipam",
+    tags=["ipam"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    vlan_router,
+    prefix=f"{_V1}/vlans",
+    tags=["vlans"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    site_router,
+    prefix=f"{_V1}/sites",
+    tags=["sites"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    node_relations_router,
+    prefix=f"{_V1}/node-relations",
+    tags=["node-relations"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 # ── Health check ───────────────────────────────────────────────────────────

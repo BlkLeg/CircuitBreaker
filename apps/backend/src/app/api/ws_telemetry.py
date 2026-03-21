@@ -32,7 +32,7 @@ import app.db.session as _db_session
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.network_acl import is_ip_in_cidrs as _is_ip_in_cidrs
 from app.core.redis import get_redis
-from app.core.security import _get_api_token, decode_token
+from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.services.settings_service import get_or_create_settings
@@ -165,28 +165,24 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                 return
 
         authenticated = False
-        api_token = _get_api_token()
 
-        if api_token and raw_token == api_token:
-            authenticated = True
-        else:
-            with _db_session.SessionLocal() as db:
-                cfg = get_or_create_settings(db)
-                if cfg.jwt_secret:
-                    if is_session_revoked(db, raw_token):
-                        authenticated = False
-                    else:
-                        uid = decode_token(raw_token, cfg.jwt_secret)
-                        if uid is not None:
-                            u = db.get(User, uid)
-                            if u and u.is_active:
-                                if not (u.locked_until and u.locked_until > utcnow()):
-                                    if not (
-                                        u.role == "demo"
-                                        and u.demo_expires
-                                        and u.demo_expires <= utcnow()
-                                    ):
-                                        authenticated = True
+        with _db_session.SessionLocal() as db:
+            cfg = get_or_create_settings(db)
+            if cfg.jwt_secret:
+                if is_session_revoked(db, raw_token):
+                    authenticated = False
+                else:
+                    uid = decode_token(raw_token, cfg.jwt_secret)
+                    if uid is not None:
+                        u = db.get(User, uid)
+                        if u and u.is_active:
+                            if not (u.locked_until and u.locked_until > utcnow()):
+                                if not (
+                                    u.role == "demo"
+                                    and u.demo_expires
+                                    and u.demo_expires <= utcnow()
+                                ):
+                                    authenticated = True
 
         if not authenticated:
             logger.warning("Telemetry WS auth failed (ip=%s)", client_ip)

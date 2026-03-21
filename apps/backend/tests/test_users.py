@@ -11,7 +11,7 @@ import pytest
 
 pytestmark = pytest.mark.asyncio
 
-_LIST = "/api/v1/users"
+_LIST = "/api/v1/admin/users"
 
 
 # ── List users ────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ async def test_unauthenticated_cannot_list_users(client):
 async def test_admin_can_deactivate_user(client, auth_headers, factories):
     target = factories.user(role="viewer")
     resp = await client.patch(
-        f"/api/v1/users/{target.id}",
+        f"/api/v1/admin/users/{target.id}",
         headers=auth_headers,
         json={"is_active": False},
     )
@@ -66,7 +66,7 @@ async def test_admin_can_deactivate_user(client, auth_headers, factories):
 async def test_admin_can_reactivate_user(client, auth_headers, factories):
     target = factories.user(role="viewer", is_active=False)
     resp = await client.patch(
-        f"/api/v1/users/{target.id}",
+        f"/api/v1/admin/users/{target.id}",
         headers=auth_headers,
         json={"is_active": True},
     )
@@ -80,7 +80,7 @@ async def test_admin_can_reactivate_user(client, auth_headers, factories):
 async def test_viewer_cannot_patch_user(client, viewer_headers, factories):
     target = factories.user(role="viewer")
     resp = await client.patch(
-        f"/api/v1/users/{target.id}",
+        f"/api/v1/admin/users/{target.id}",
         headers=viewer_headers,
         json={"is_active": False},
     )
@@ -90,7 +90,7 @@ async def test_viewer_cannot_patch_user(client, viewer_headers, factories):
 async def test_viewer_cannot_delete_user(client, viewer_headers, factories):
     target = factories.user(role="viewer")
     resp = await client.delete(
-        f"/api/v1/users/{target.id}",
+        f"/api/v1/admin/users/{target.id}",
         headers=viewer_headers,
     )
     assert resp.status_code == 403

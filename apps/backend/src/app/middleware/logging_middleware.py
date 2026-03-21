@@ -211,7 +211,6 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
 
     Returns ('anonymous', None, None, None) when no valid credential is present.
     """
-    import os
 
     import jwt as pyjwt
     from sqlalchemy import select
@@ -227,10 +226,6 @@ def _resolve_actor(request: Request) -> tuple[str, str | None, int | None, str |
         token = _extract_token(request)
         if not token:
             return "anonymous", None, None, None
-
-        api_token = os.getenv("CB_API_TOKEN")
-        if api_token and token == api_token:
-            return "api-token", None, 0, "api-token"
 
         from app.services.settings_service import get_or_create_settings
 
