@@ -3,7 +3,7 @@
 # keeps this program "running" via sleep infinity). Otherwise exec the real postgres.
 set -euo pipefail
 
-PG_CMD=(/usr/lib/postgresql/15/bin/postgres -D /data/pgdata -p 5432 -c "unix_socket_directories=/data/run/postgresql" -c config_file=/data/postgresql.conf)
+PG_CMD=(/usr/lib/postgresql/15/bin/postgres -D /data/pgdata -p 5432 -c "unix_socket_directories=/data/run/postgresql" -c config_file=/data/postgresql.conf -c shared_preload_libraries=timescaledb)
 
 # ── Stale lock guard ──────────────────────────────────────────────────────────
 # If postmaster.pid exists but the recorded PID is no longer running, remove it.

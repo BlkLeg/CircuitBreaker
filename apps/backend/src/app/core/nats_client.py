@@ -63,6 +63,7 @@ class NATSClient:
                     except Exception as exc:
                         _logger.error("Resubscribe failed for %s: %s", subject, exc)
                 await self._ensure_kv_bucket()
+                await self._ensure_dlq_stream()
                 await self._flush_publish_buffer()
 
             async def _on_error(exc: Exception) -> None:
@@ -102,6 +103,7 @@ class NATSClient:
             self._js = self._nc.jetstream()
             self._connected = True
             await self._ensure_kv_bucket()
+            await self._ensure_dlq_stream()
             _logger.info("NATS connected to %s", self._url)
         except Exception as exc:
             self._connected = False
@@ -193,6 +195,43 @@ class NATSClient:
                 _logger.debug("NATS KV bucket dashboard_cache already exists")
             else:
                 _logger.warning("NATS KV bucket dashboard_cache ensure failed: %s", exc)
+
+    async def _ensure_dlq_stream(self) -> None:
+        """Create the WEBHOOK_DLQ JetStream stream if it does not exist."""
+        if not self._connected or not self._js:
+            return
+        try:
+            retention_days = int(os.getenv("CB_WEBHOOK_DLQ_RETENTION_DAYS", "7"))
+            await self._js.add_stream(
+                name="WEBHOOK_DLQ",
+                subjects=["webhook.dlq.>"],
+                max_age=retention_days * 86400,
+            )
+            _logger.info("NATS WEBHOOK_DLQ stream created (retention %dd)", retention_days)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
+                _logger.debug("NATS WEBHOOK_DLQ stream already exists")
+            else:
+                _logger.warning("NATS WEBHOOK_DLQ stream ensure failed: %s", exc)
+
+    async def js_publish(self, subject: str, payload: dict | str | bytes) -> bool:
+        """Publish to JetStream. Returns True on success, False if unavailable or on error."""
+        if not self._connected or not self._js:
+            _logger.debug("NATS js_publish skipped (no JetStream): %s", subject)
+            return False
+        if isinstance(payload, dict):
+            data = json.dumps(payload).encode()
+        elif isinstance(payload, str):
+            data = payload.encode()
+        else:
+            data = payload
+        try:
+            await self._js.publish(subject, data)
+            return True
+        except Exception as exc:
+            _logger.warning("NATS js_publish to %s failed: %s", subject, exc)
+            return False
 
     async def kv_put(self, bucket: str, key: str, value: dict | str | bytes) -> None:
         if not self._connected or not self._js:

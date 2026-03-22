@@ -113,6 +113,15 @@ def _run_rollup_job_impl() -> None:
         calculate_daily_rollups(db, yesterday)
     except Exception as exc:
         logger.error("run_rollup_job failed: %s", exc)
+        from app.core.worker_audit import log_worker_audit
+
+        log_worker_audit(
+            action="rollup_failed",
+            entity_type="daily_uptime_stats",
+            details=str(exc)[:200],
+            severity="error",
+            worker_name="rollup_worker",
+        )
     finally:
         db.close()
 

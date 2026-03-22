@@ -8,6 +8,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -1419,8 +1420,10 @@ class LiveMetric(Base):
 
 class HardwareLiveMetric(Base):
     __tablename__ = "hardware_live_metrics"
+    # TimescaleDB requires the partitioning (time) column to be part of the PK.
+    __table_args__ = (PrimaryKeyConstraint("id", "collected_at"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, autoincrement=True, nullable=False)
     hardware_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("hardware.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -1499,6 +1502,7 @@ class WebhookRule(Base):
     )  # JSONB as of v0.2.0
     headers_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    body_template: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1547,6 +1551,9 @@ class WebhookDelivery(Base):
     ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivered_at: Mapped[str] = mapped_column(String, nullable=False)
+    is_dlq: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dlq_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    replayed_at: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OAuthState(Base):
@@ -1567,6 +1574,10 @@ class StatusPage(Base):
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     config: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    integration_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("integrations.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1856,4 +1867,77 @@ class NodeRelation(Base):
     target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     relation_type: Mapped[str] = mapped_column(String(32), nullable=False)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+
+
+# ── Integrations ─────────────────────────────────────────────────────────────
+
+
+class Integration(Base):
+    __tablename__ = "integrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    api_key: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted
+    # integration-specific slug (e.g. status page slug)
+    slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    sync_interval_s: Mapped[int] = mapped_column(Integer, default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_status: Mapped[str] = mapped_column(String(16), default="never")  # "ok"|"error"|"never"
+    sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    monitors: Mapped[list["IntegrationMonitor"]] = relationship(
+        "IntegrationMonitor", back_populates="integration", cascade="all, delete-orphan"
+    )
+
+
+class IntegrationMonitor(Base):
+    __tablename__ = "integration_monitors"
+    __table_args__ = (UniqueConstraint("integration_id", "external_id", name="uq_intmon_ext_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    integration_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # "up"|"down"|"pending"|"maintenance"
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    uptime_7d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uptime_30d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    integration: Mapped["Integration"] = relationship("Integration", back_populates="monitors")
+    events: Mapped[list["IntegrationMonitorEvent"]] = relationship(
+        "IntegrationMonitorEvent", back_populates="monitor", cascade="all, delete-orphan"
+    )
+
+
+class IntegrationMonitorEvent(Base):
+    __tablename__ = "integration_monitor_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    monitor_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("integration_monitors.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    previous_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    new_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    monitor: Mapped["IntegrationMonitor"] = relationship(
+        "IntegrationMonitor", back_populates="events"
+    )

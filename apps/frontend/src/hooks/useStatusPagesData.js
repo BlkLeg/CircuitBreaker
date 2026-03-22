@@ -107,6 +107,10 @@ export function useStatusPagesData(toast) {
     [loadGroups, selectedPageId, toast]
   );
 
+  const reloadGroups = useCallback(async () => {
+    if (selectedPageId) await loadGroups(selectedPageId);
+  }, [loadGroups, selectedPageId]);
+
   const refresh = useCallback(async () => {
     await statusApi.refresh();
     toast.info('Status refresh triggered.');
@@ -125,6 +129,7 @@ export function useStatusPagesData(toast) {
     createGroup,
     bulkAddGroup,
     deleteGroup,
+    reloadGroups,
     refresh,
   };
 }

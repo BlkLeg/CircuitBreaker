@@ -51,6 +51,12 @@ analytics = [
     "duckdb>=1.0.0",
     "duckdb-engine>=0.13.0",
 ]
+otel = [
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-instrumentation-fastapi>=0.45b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.45b0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
+]
 dev = [
     "pyinstaller>=6.0.0",
     "pytest>=8.0.0",

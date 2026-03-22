@@ -39,6 +39,7 @@ def _page_read(p: Any) -> StatusPageRead:
         slug=p.slug,
         name=p.name,
         config=json.loads(p.config) if p.config else None,
+        is_public=p.is_public,
         created_at=p.created_at,
         updated_at=p.updated_at,
     )

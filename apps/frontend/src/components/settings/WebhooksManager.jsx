@@ -1,7 +1,7 @@
 /* eslint-disable security/detect-object-injection -- internal key lookups */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { Trash2, Play, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import { Trash2, Play, ChevronDown, ChevronUp, Plus, RotateCcw, Code2 } from 'lucide-react';
 import api from '../../api/client';
 
 const DEFAULT_GROUPS = {
@@ -167,10 +167,240 @@ DeliveryLog.propTypes = {
   onClose: PropTypes.func.isRequired,
 };
 
-function WebhookRow({ webhook, onDelete, onToggle }) {
+function DLQPanel({ onCountChange }) {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [replayingId, setReplayingId] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get('/webhooks/dlq');
+      setEntries(res.data || []);
+      onCountChange((res.data || []).length);
+    } catch (err) {
+      console.error('DLQ load failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [onCountChange]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleReplay = async (id) => {
+    setReplayingId(id);
+    try {
+      await api.post(`/webhooks/dlq/${id}/replay`);
+      setEntries((prev) => prev.filter((e) => e.id !== id));
+      onCountChange((c) => Math.max(0, c - 1));
+    } catch (err) {
+      console.error('Replay failed:', err);
+    } finally {
+      setReplayingId(null);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        margin: '0 0 16px 0',
+        padding: '10px 12px',
+        background: 'var(--color-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 6,
+      }}
+    >
+      <div
+        style={{
+          fontWeight: 600,
+          fontSize: 12,
+          color: 'var(--color-danger, #ef4444)',
+          marginBottom: 8,
+        }}
+      >
+        Dead Letter Queue
+      </div>
+      {loading && <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading…</span>}
+      {!loading && entries.length === 0 && (
+        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+          No failed deliveries.
+        </span>
+      )}
+      {!loading && entries.length > 0 && (
+        <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--color-text-muted)' }}>
+              <th style={{ textAlign: 'left', paddingBottom: 4 }}>Time</th>
+              <th style={{ textAlign: 'left', paddingBottom: 4 }}>Rule</th>
+              <th style={{ textAlign: 'left', paddingBottom: 4 }}>Event</th>
+              <th style={{ textAlign: 'left', paddingBottom: 4 }}>Error</th>
+              <th style={{ paddingBottom: 4 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td
+                  style={{
+                    paddingBottom: 4,
+                    color: 'var(--color-text-muted)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {e.dlq_at ? new Date(e.dlq_at).toLocaleString() : '—'}
+                </td>
+                <td style={{ paddingBottom: 4, color: 'var(--color-text)' }}>{e.rule_label}</td>
+                <td style={{ paddingBottom: 4, color: 'var(--color-text-muted)' }}>{e.subject}</td>
+                <td
+                  style={{
+                    paddingBottom: 4,
+                    color: 'var(--color-danger, #ef4444)',
+                    maxWidth: 200,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {e.error || (e.status_code ? `HTTP ${e.status_code}` : 'error')}
+                </td>
+                <td style={{ paddingBottom: 4, textAlign: 'right' }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleReplay(e.id)}
+                    disabled={replayingId === e.id}
+                    title="Replay"
+                    style={{ padding: '2px 6px', fontSize: 11 }}
+                  >
+                    <RotateCcw size={11} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+DLQPanel.propTypes = {
+  onCountChange: PropTypes.func.isRequired,
+};
+
+const PRESETS = {
+  Discord: '{"content": "**{{event}}** — {{timestamp}}"}',
+  Slack: '{"text": "{{event}} — {{timestamp}}"}',
+  Teams: '{"text": "**{{event}}**\\n{{timestamp}}"}',
+};
+
+const TEMPLATE_VARS = [
+  '{{event}}',
+  '{{timestamp}}',
+  '{{source}}',
+  '{{data}}',
+  '{{data.fieldname}}',
+];
+
+function BodyTemplateEditor({ ruleId, initial, onSaved }) {
+  const [value, setValue] = useState(initial || '');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaved(false);
+    try {
+      await api.patch(`/webhooks/${ruleId}`, { body_template: value || null });
+      onSaved(value || null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.error('Body template save failed:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        padding: '10px 12px',
+        background: 'var(--color-bg)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 6,
+      }}
+    >
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', alignSelf: 'center' }}>
+          Presets:
+        </span>
+        {Object.entries(PRESETS).map(([name, tpl]) => (
+          <button
+            key={name}
+            className="btn btn-secondary btn-sm"
+            onClick={() => setValue(tpl)}
+            style={{ fontSize: 11, padding: '2px 8px' }}
+          >
+            {name}
+          </button>
+        ))}
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={() => setValue('')}
+          style={{ fontSize: 11, padding: '2px 8px' }}
+        >
+          Default (clear)
+        </button>
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        rows={5}
+        placeholder={
+          'Leave empty to use the default envelope.\nExample: {"content": "**{{event}}** at {{timestamp}}"}'
+        }
+        style={{
+          width: '100%',
+          fontFamily: 'monospace',
+          fontSize: 12,
+          padding: '6px 8px',
+          background: 'var(--color-surface)',
+          color: 'var(--color-text)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 4,
+          resize: 'vertical',
+          boxSizing: 'border-box',
+        }}
+      />
+      <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
+        Variables: {TEMPLATE_VARS.join(', ')}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+        <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving…' : 'Save Template'}
+        </button>
+        {saved && (
+          <span style={{ fontSize: 12, color: 'var(--color-success, #22c55e)' }}>Saved ✓</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+BodyTemplateEditor.propTypes = {
+  ruleId: PropTypes.number.isRequired,
+  initial: PropTypes.string,
+  onSaved: PropTypes.func.isRequired,
+};
+
+function WebhookRow({ webhook, onDelete, onToggle, onDlqRefresh }) {
   const [saving, setSaving] = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [showTemplate, setShowTemplate] = useState(false);
+  const [bodyTemplate, setBodyTemplate] = useState(webhook.body_template || '');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [eventsEnabled, setEventsEnabled] = useState(webhook.events_enabled || []);
@@ -220,8 +450,10 @@ function WebhookRow({ webhook, onDelete, onToggle }) {
     try {
       const res = await api.post(`/webhooks/${webhook.id}/test`);
       setTestResult(res.data);
+      if (!res.data?.ok) onDlqRefresh?.();
     } catch (err) {
       setTestResult({ ok: false, error: err?.response?.data?.detail || 'Request failed' });
+      onDlqRefresh?.();
     } finally {
       setTesting(false);
     }
@@ -281,6 +513,14 @@ function WebhookRow({ webhook, onDelete, onToggle }) {
             style={{ padding: '3px 8px', fontSize: 12 }}
           >
             {showLog ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          <button
+            className={`btn btn-sm ${bodyTemplate ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setShowTemplate((v) => !v)}
+            title="Body template"
+            style={{ padding: '3px 8px', fontSize: 12 }}
+          >
+            <Code2 size={12} />
           </button>
           <button
             className="btn btn-danger btn-sm"
@@ -375,6 +615,13 @@ function WebhookRow({ webhook, onDelete, onToggle }) {
       )}
 
       {showLog && <DeliveryLog ruleId={webhook.id} onClose={() => setShowLog(false)} />}
+      {showTemplate && (
+        <BodyTemplateEditor
+          ruleId={webhook.id}
+          initial={bodyTemplate}
+          onSaved={(tpl) => setBodyTemplate(tpl || '')}
+        />
+      )}
     </li>
   );
 }
@@ -388,10 +635,16 @@ WebhookRow.propTypes = {
     secret: PropTypes.string,
     enabled: PropTypes.bool.isRequired,
     last_delivery_status: PropTypes.string,
+    body_template: PropTypes.string,
     _eventGroups: PropTypes.objectOf(PropTypes.arrayOf(PropTypes.string)),
   }).isRequired,
   onDelete: PropTypes.func.isRequired,
   onToggle: PropTypes.func.isRequired,
+  onDlqRefresh: PropTypes.func,
+};
+
+WebhookRow.defaultProps = {
+  onDlqRefresh: undefined,
 };
 
 export default function WebhooksManager() {
@@ -400,12 +653,24 @@ export default function WebhooksManager() {
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [dlqCount, setDlqCount] = useState(0);
+  const [showDlq, setShowDlq] = useState(false);
+
+  const loadDlqCount = useCallback(async () => {
+    try {
+      const res = await api.get('/webhooks/dlq');
+      setDlqCount((res.data || []).length);
+    } catch {
+      // non-fatal
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const [webhooksRes, groupsRes] = await Promise.all([
+      const [webhooksRes, groupsRes, dlqRes] = await Promise.all([
         api.get('/webhooks', { params: { page: 1, per_page: 100 } }),
         api.get('/webhooks/event-groups'),
+        api.get('/webhooks/dlq'),
       ]);
       const groups = groupsRes?.data?.groups || DEFAULT_GROUPS;
       setWebhooks(
@@ -419,9 +684,11 @@ export default function WebhooksManager() {
           secret: null,
           enabled: item.enabled,
           last_delivery_status: item.last_delivery_status || null,
+          body_template: item.body_template || '',
           _eventGroups: groups,
         }))
       );
+      setDlqCount((dlqRes.data || []).length);
     } catch (err) {
       console.error('Webhooks list load failed:', err);
     }
@@ -429,7 +696,9 @@ export default function WebhooksManager() {
 
   useEffect(() => {
     load();
-  }, [load]);
+    const timer = setInterval(loadDlqCount, 30_000);
+    return () => clearInterval(timer);
+  }, [load, loadDlqCount]);
 
   const handleAdd = async () => {
     if (!form.name.trim() || !form.target_url.trim()) {
@@ -480,6 +749,28 @@ export default function WebhooksManager() {
 
   return (
     <div style={{ marginTop: '1rem' }}>
+      {dlqCount > 0 && (
+        <button
+          onClick={() => setShowDlq((v) => !v)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 12,
+            padding: '3px 10px',
+            fontSize: 12,
+            fontWeight: 600,
+            background: 'rgba(239,68,68,0.12)',
+            color: 'var(--color-danger, #ef4444)',
+            border: '1px solid rgba(239,68,68,0.3)',
+            borderRadius: 12,
+            cursor: 'pointer',
+          }}
+        >
+          {dlqCount} DLQ {showDlq ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+      )}
+      {showDlq && <DLQPanel onCountChange={setDlqCount} />}
       {webhooks.length === 0 ? (
         <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: '0 0 12px 0' }}>
           No webhooks configured.
@@ -487,7 +778,13 @@ export default function WebhooksManager() {
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px 0' }}>
           {webhooks.map((w) => (
-            <WebhookRow key={w.id} webhook={w} onDelete={handleDelete} onToggle={handleToggle} />
+            <WebhookRow
+              key={w.id}
+              webhook={w}
+              onDelete={handleDelete}
+              onToggle={handleToggle}
+              onDlqRefresh={loadDlqCount}
+            />
           ))}
         </ul>
       )}

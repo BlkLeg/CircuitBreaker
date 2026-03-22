@@ -11,6 +11,7 @@ class StatusPageBase(BaseModel):
     slug: str
     name: str
     config: dict | None = None
+    is_public: bool = False
 
 
 class StatusPageCreate(StatusPageBase):
@@ -21,6 +22,7 @@ class StatusPageUpdate(BaseModel):
     slug: str | None = None
     name: str | None = None
     config: dict | None = None
+    is_public: bool | None = None
 
 
 class StatusPageRead(StatusPageBase):

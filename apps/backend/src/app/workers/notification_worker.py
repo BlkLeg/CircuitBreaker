@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from app.core.nats_client import nats_client
+from app.core.worker_audit import log_worker_audit
 from app.db.models import NotificationRoute
 from app.db.session import SessionLocal
 
@@ -151,14 +152,25 @@ async def process_alert(msg: Any) -> None:
             provider_config = route.sink.provider_config
 
             logger.info(f"Routing alert '{title}' to {provider_type} sink")
-            if provider_type == "slack":
-                await notify_slack(provider_config, title, message, severity)
-            elif provider_type == "discord":
-                await notify_discord(provider_config, title, message, severity)
-            elif provider_type == "teams":
-                await notify_teams(provider_config, title, message, severity)
-            elif provider_type == "email":
-                await notify_email(provider_config, title, message, severity)
+            try:
+                if provider_type == "slack":
+                    await notify_slack(provider_config, title, message, severity)
+                elif provider_type == "discord":
+                    await notify_discord(provider_config, title, message, severity)
+                elif provider_type == "teams":
+                    await notify_teams(provider_config, title, message, severity)
+                elif provider_type == "email":
+                    await notify_email(provider_config, title, message, severity)
+            except Exception as exc:
+                logger.error("Notification delivery failed for %s sink: %s", provider_type, exc)
+                log_worker_audit(
+                    action="notification_delivery_failed",
+                    entity_type="notification_sink",
+                    entity_id=getattr(route.sink, "id", None),
+                    details=f"provider={provider_type} severity={severity} error={str(exc)[:150]}",
+                    severity="error",
+                    worker_name="notification_worker",
+                )
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:

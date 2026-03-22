@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +13,9 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.nats_client import nats_client
+from app.core.otel import get_tracer
 from app.core.url_validation import reject_ssrf_url
+from app.core.worker_audit import log_worker_audit
 from app.db.models import WebhookDelivery, WebhookRule
 from app.db.session import SessionLocal
 
@@ -94,6 +97,27 @@ def _write_delivery(
             )
 
 
+def _mark_dlq(rule_id: int, subject: str) -> int | None:
+    """Mark the most recent failed delivery for rule+subject as DLQ. Returns delivery id."""
+    with SessionLocal() as db:
+        delivery = (
+            db.query(WebhookDelivery)
+            .filter(
+                WebhookDelivery.rule_id == rule_id,
+                WebhookDelivery.subject == subject,
+                WebhookDelivery.ok == False,  # noqa: E712
+            )
+            .order_by(WebhookDelivery.id.desc())
+            .first()
+        )
+        if delivery is None:
+            return None
+        delivery.is_dlq = True
+        delivery.dlq_at = datetime.now(UTC).isoformat()
+        db.commit()
+        return delivery.id
+
+
 def _effective_events(rule: WebhookRule) -> list[str]:
     try:
         events = rule.events_enabled or "[]"
@@ -140,8 +164,13 @@ async def _dispatch_with_retries(
         return
     headers = _build_headers(rule, body_bytes)
     safe_target = _safe_target_url_for_log(rule.target_url)
+    with get_tracer().start_as_current_span("webhook.dispatch") as span:
+        span.set_attribute("webhook.rule_id", rule.id)
+        span.set_attribute("nats.subject", subject)
+
     retry_count = max(0, min(int(rule.retries or 0), len(_RETRY_BACKOFF_S)))
     max_attempts = retry_count + 1
+    succeeded = False
     for attempt in range(max_attempts):
         resp = None
         error = None
@@ -164,6 +193,7 @@ async def _dispatch_with_retries(
             )
             _write_delivery(rule.id, subject, body_text, resp, None, elapsed_ms)
             if resp.status_code < 400:
+                succeeded = True
                 break
         except Exception as exc:
             error = exc
@@ -182,6 +212,27 @@ async def _dispatch_with_retries(
         # Best-effort send rate cap (~10 req/sec) per worker.
         await asyncio.sleep(0.1)
 
+    if not succeeded:
+        delivery_id = _mark_dlq(rule.id, subject)
+        log_worker_audit(
+            action="webhook_dlq_enqueued",
+            entity_type="webhook",
+            entity_id=rule.id,
+            details=f"subject={subject} delivery={delivery_id}",
+            severity="warn",
+            worker_name="webhook_worker",
+        )
+        await nats_client.js_publish(
+            f"webhook.dlq.{rule.id}",
+            {
+                "delivery_id": delivery_id,
+                "rule_id": rule.id,
+                "subject": subject,
+                "payload": body_text,
+                "failed_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
 
 def _normalize_webhook_body(subject: str, payload_obj: dict) -> tuple[bytes, str]:
     """Build a consistent webhook body: event, timestamp, source, data."""
@@ -195,10 +246,37 @@ def _normalize_webhook_body(subject: str, payload_obj: dict) -> tuple[bytes, str
     return text.encode("utf-8"), text
 
 
+def _apply_body_template(template: str, subject: str, payload_obj: dict) -> tuple[bytes, str]:
+    """Render a user-defined body template with {{var}} substitution.
+
+    Available variables: {{event}}, {{timestamp}}, {{source}}, {{data}},
+    {{data.fieldname}}. Unknown variables are left as-is.
+    """
+    now = datetime.now(UTC).isoformat()
+
+    def _resolve(match: re.Match) -> str:
+        key = match.group(1).strip()
+        if key == "event":
+            return subject
+        if key == "timestamp":
+            return now
+        if key == "source":
+            return "circuitbreaker"
+        if key == "data":
+            return json.dumps(payload_obj)
+        if key.startswith("data."):
+            val = payload_obj.get(key[5:], "")
+            return json.dumps(val) if isinstance(val, (dict, list)) else str(val)
+        return match.group(0)  # leave unknown vars unchanged
+
+    rendered = re.sub(r"\{\{([^}]+)\}\}", _resolve, template)
+    return rendered.encode("utf-8"), rendered
+
+
 async def process_event(msg: Any) -> None:
     subject = msg.subject
-    # Skip JetStream internal subjects (e.g. $JS.API.STREAM.INFO.KV_dashboard_cache)
-    if subject.startswith("$JS."):
+    # Skip JetStream internal subjects and NATS inbox reply subjects
+    if subject.startswith("$JS.") or subject.startswith("_INBOX."):
         return
     payload_bytes = msg.data
     try:
@@ -221,7 +299,13 @@ async def process_event(msg: Any) -> None:
 
     async with httpx.AsyncClient() as client:
         for rule in active_rules:
-            await _dispatch_with_retries(client, rule, subject, body_bytes, body_text)
+            if rule.body_template:
+                rule_body_bytes, rule_body_text = _apply_body_template(
+                    rule.body_template, subject, payload_obj
+                )
+            else:
+                rule_body_bytes, rule_body_text = body_bytes, body_text
+            await _dispatch_with_retries(client, rule, subject, rule_body_bytes, rule_body_text)
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:

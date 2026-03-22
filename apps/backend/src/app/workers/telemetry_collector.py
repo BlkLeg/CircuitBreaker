@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.nats_client import nats_client
+from app.core.otel import get_tracer
 from app.core.time import utcnow
 from app.db.models import Hardware
 from app.db.session import get_session_context
@@ -130,6 +132,17 @@ async def _poll_one(
         )
 
 
+async def _dispatch_telemetry(
+    hardware_id: int,
+    payload: dict[str, Any],
+    source: str,
+) -> None:
+    """Publish a telemetry payload to the NATS TELEMETRY JetStream for batch ingestion."""
+    subject = f"telemetry.ingest.{hardware_id}"
+    envelope = json.dumps({"hardware_id": hardware_id, "source": source, "payload": payload})
+    await nats_client.publish(subject, envelope.encode())
+
+
 async def collect_once(
     *,
     interval_s: int,
@@ -149,32 +162,42 @@ async def collect_once(
 
     results = await asyncio.gather(*[_run(d) for d in devices], return_exceptions=True)
 
-    with get_session_context() as db:
+    if nats_client.is_connected:
+        # Fast path: publish to NATS JetStream — telemetry_ingest_worker handles batch DB writes.
         for item in results:
             if isinstance(item, BaseException):
                 logger.warning("Telemetry collector task failed unexpectedly: %s", item)
                 continue
             hardware_id, source, payload = item
-            try:
-                await write_telemetry(
-                    hardware_id=hardware_id,
-                    payload=payload,
-                    source=source,
-                    db=db,
-                )
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning("Telemetry write failed for hardware %d: %s", hardware_id, exc)
-                from app.core.worker_audit import log_worker_audit
+            await _dispatch_telemetry(hardware_id, payload, source)
+    else:
+        # Fallback: NATS unavailable — write directly to DB so monitoring never silently drops data.
+        with get_session_context() as db:
+            for item in results:
+                if isinstance(item, BaseException):
+                    logger.warning("Telemetry collector task failed unexpectedly: %s", item)
+                    continue
+                hardware_id, source, payload = item
+                try:
+                    await write_telemetry(
+                        hardware_id=hardware_id,
+                        payload=payload,
+                        source=source,
+                        db=db,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.warning("Telemetry write failed for hardware %d: %s", hardware_id, exc)
+                    from app.core.worker_audit import log_worker_audit
 
-                log_worker_audit(
-                    action="telemetry_collect_failed",
-                    entity_type="hardware",
-                    entity_id=hardware_id,
-                    details=str(exc)[:200],
-                    severity="error",
-                    worker_name="telemetry_collector",
-                )
+                    log_worker_audit(
+                        action="telemetry_collect_failed",
+                        entity_type="hardware",
+                        entity_id=hardware_id,
+                        details=str(exc)[:200],
+                        severity="error",
+                        worker_name="telemetry_collector",
+                    )
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
@@ -194,9 +217,10 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
     while not (shutdown_event and shutdown_event.is_set()):
         started = time.monotonic()
         try:
-            await collect_once(
-                interval_s=interval_s, timeout_s=timeout_s, max_parallel=max_parallel
-            )
+            with get_tracer().start_as_current_span("telemetry.collect_once"):
+                await collect_once(
+                    interval_s=interval_s, timeout_s=timeout_s, max_parallel=max_parallel
+                )
         except Exception as exc:  # noqa: BLE001
             logger.error("Telemetry collector loop failure: %s", exc, exc_info=True)
 

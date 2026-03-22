@@ -1,5 +1,3 @@
-import hashlib
-import hmac
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -85,6 +83,7 @@ class WebhookRuleCreate(BaseModel):
     retries: int = 3
     enabled: bool = True
     secret: str | None = None
+    body_template: str | None = None
 
 
 class WebhookRuleUpdate(BaseModel):
@@ -95,6 +94,7 @@ class WebhookRuleUpdate(BaseModel):
     retries: int | None = None
     enabled: bool | None = None
     secret: str | None = None
+    body_template: str | None = None
 
 
 class WebhookRuleOut(BaseModel):
@@ -107,6 +107,7 @@ class WebhookRuleOut(BaseModel):
     headers: dict[str, str] | None
     retries: int
     enabled: bool
+    body_template: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     last_delivery_status: str | None = None
@@ -131,6 +132,18 @@ class WebhookDeliveryOut(BaseModel):
     error: str | None
     delivered_at: str
     ok: bool
+
+
+class WebhookDLQOut(BaseModel):
+    id: int
+    rule_id: int
+    subject: str
+    payload: str | None
+    status_code: int | None
+    error: str | None
+    dlq_at: str | None
+    replayed_at: str | None
+    rule_label: str
 
 
 def _json_loads(text: str | list | dict | None, fallback: Any) -> Any:
@@ -165,6 +178,7 @@ def _rule_to_out(rule: WebhookRule, status_by_id: dict[int, str]) -> WebhookRule
         enabled=rule.enabled,
         created_at=created,
         updated_at=updated,
+        body_template=rule.body_template,
         last_delivery_status=status_by_id.get(rule.id),
     )
 
@@ -240,11 +254,72 @@ def create_webhook(
         retries=max(0, min(rule_in.retries, 5)),
         enabled=rule_in.enabled,
         secret=rule_in.secret,
+        body_template=rule_in.body_template or None,
     )
     db.add(rule)
     db.commit()
     db.refresh(rule)
     return _rule_to_out(rule, {})
+
+
+@router.get("/dlq", response_model=list[WebhookDLQOut])
+def list_dlq(
+    db: Session = Depends(get_db),
+    current_user: Any = require_role("viewer"),
+) -> list[WebhookDLQOut]:
+    rows = (
+        db.query(WebhookDelivery, WebhookRule.name)
+        .join(WebhookRule, WebhookDelivery.rule_id == WebhookRule.id)
+        .filter(WebhookDelivery.is_dlq == True)  # noqa: E712
+        .order_by(WebhookDelivery.id.desc())
+        .limit(200)
+        .all()
+    )
+    return [
+        WebhookDLQOut(
+            id=d.id,
+            rule_id=d.rule_id,
+            subject=d.subject,
+            payload=d.payload,
+            status_code=d.status_code,
+            error=d.error,
+            dlq_at=d.dlq_at,
+            replayed_at=d.replayed_at,
+            rule_label=name,
+        )
+        for d, name in rows
+    ]
+
+
+@router.post("/dlq/{delivery_id}/replay")
+async def replay_dlq(
+    delivery_id: int,
+    db: Session = Depends(get_db),
+    current_user: Any = require_role("editor"),
+) -> dict[str, Any]:
+    delivery = db.query(WebhookDelivery).filter(WebhookDelivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="DLQ delivery not found")
+    rule = db.query(WebhookRule).filter(WebhookRule.id == delivery.rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Webhook rule not found")
+
+    from app.workers.webhook_worker import _dispatch_with_retries, _normalize_webhook_body
+
+    try:
+        payload_obj = json.loads(delivery.payload or "{}")
+    except Exception:
+        payload_obj = {}
+    body_bytes, body_text = _normalize_webhook_body(delivery.subject, payload_obj)
+
+    async with httpx.AsyncClient() as client:
+        await _dispatch_with_retries(client, rule, delivery.subject, body_bytes, body_text)
+
+    delivery.replayed_at = datetime.now(UTC).isoformat()
+    delivery.is_dlq = False
+    db.commit()
+
+    return {"status": "ok", "delivery_id": delivery_id}
 
 
 @router.patch("/{rule_id}", response_model=WebhookRuleOut)
@@ -279,6 +354,8 @@ def update_webhook(
         rule.enabled = bool(updates["enabled"])
     if "secret" in updates:
         rule.secret = updates["secret"]
+    if "body_template" in updates:
+        rule.body_template = updates["body_template"] or None
 
     db.commit()
     db.refresh(rule)
@@ -293,54 +370,39 @@ async def test_webhook(
     if not rule:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
-    payload = {
-        "event": "test.ping",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "source": "settings.webhooks",
-        "environment": "manual",
-        "data": {"message": "Circuit Breaker test webhook"},
-        "webhook_id": f"wh-{rule.id}",
-    }
-    payload_bytes = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json"}
-    for key, value in (_json_loads(rule.headers_json, {}) or {}).items():
-        headers[str(key)] = str(value)
-    if rule.secret:
-        sig = hmac.new(rule.secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
-        headers["X-Hub-Signature-256"] = f"sha256={sig}"
-
     try:
         reject_ssrf_url(rule.target_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    response = None
-    error = None
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                rule.target_url, content=payload_bytes, headers=headers, timeout=10.0
-            )
-            return {
-                "ok": response.status_code < 400,
-                "status_code": response.status_code,
-                "error": None,
-            }
-    except Exception as exc:
-        error = str(exc)
-        return {"ok": False, "status_code": None, "error": error}
-    finally:
-        delivery = WebhookDelivery(
-            rule_id=rule.id,
-            subject="test.ping",
-            payload=json.dumps(payload),
-            status_code=response.status_code if response is not None else None,
-            response_time_ms=None,
-            ok=response is not None and response.status_code < 400,
-            error=error,
-            delivered_at=datetime.now(UTC).isoformat(),
-        )
-        db.add(delivery)
-        db.commit()
+
+    from app.workers.webhook_worker import (
+        _apply_body_template,
+        _dispatch_with_retries,
+        _normalize_webhook_body,
+    )
+
+    test_payload = {
+        "message": "Circuit Breaker test webhook",
+        "source": "settings.webhooks",
+        "webhook_id": f"wh-{rule.id}",
+    }
+    body_bytes, body_text = _normalize_webhook_body("test.ping", test_payload)
+    if rule.body_template:
+        body_bytes, body_text = _apply_body_template(rule.body_template, "test.ping", test_payload)
+
+    async with httpx.AsyncClient() as client:
+        await _dispatch_with_retries(client, rule, "test.ping", body_bytes, body_text)
+
+    # Read back the most recent delivery created by _dispatch_with_retries
+    latest = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.rule_id == rule_id, WebhookDelivery.subject == "test.ping")
+        .order_by(WebhookDelivery.id.desc())
+        .first()
+    )
+    if latest:
+        return {"ok": latest.ok, "status_code": latest.status_code, "error": latest.error}
+    return {"ok": False, "status_code": None, "error": "No delivery record found"}
 
 
 @router.get("/{rule_id}/deliveries", response_model=list[WebhookDeliveryOut])

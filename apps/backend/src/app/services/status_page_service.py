@@ -49,6 +49,7 @@ def create_status_page(db: Session, data: StatusPageCreate) -> StatusPage:
         slug=data.slug,
         name=data.name,
         config=json.dumps(data.config) if data.config is not None else None,
+        is_public=data.is_public,
     )
     db.add(page)
     db.commit()
@@ -66,6 +67,8 @@ def update_status_page(db: Session, page_id: int, data: StatusPageUpdate) -> Sta
         page.name = data.name
     if data.config is not None:
         page.config = json.dumps(data.config)
+    if data.is_public is not None:
+        page.is_public = data.is_public
     db.commit()
     db.refresh(page)
     return page
@@ -150,11 +153,14 @@ def delete_status_group(db: Session, group_id: int) -> bool:
 # ── Resolve group entities for polling ──────────────────────────────────────
 
 
-def resolve_group_entity_ids(group: StatusGroup) -> tuple[list[int], list[int], list[int]]:
-    """Return (hardware_ids, compute_unit_ids, service_ids) for the group's nodes and services."""
+def resolve_group_entity_ids(
+    group: StatusGroup,
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    """Return (hardware_ids, compute_unit_ids, service_ids, monitor_ids) for the group."""
     hardware_ids: list[int] = []
     compute_unit_ids: list[int] = []
     service_ids: list[int] = list(group.services) if group.services else []
+    monitor_ids: list[int] = []
     nodes = group.nodes if group.nodes else []
     for n in nodes:
         if not isinstance(n, dict):
@@ -173,7 +179,9 @@ def resolve_group_entity_ids(group: StatusGroup) -> tuple[list[int], list[int], 
             compute_unit_ids.append(ref_id)
         elif t == "service":
             service_ids.append(ref_id)
-    return hardware_ids, compute_unit_ids, service_ids
+        elif t == "integration_monitor":
+            monitor_ids.append(ref_id)
+    return hardware_ids, compute_unit_ids, service_ids, monitor_ids
 
 
 # ── StatusHistory ───────────────────────────────────────────────────────────
@@ -395,8 +403,8 @@ def get_dashboard_payload(
     result_groups = []
 
     for g in group_list:
-        hw_ids, cu_ids, svc_ids = resolve_group_entity_ids(g)
-        entity_count = len(hw_ids) + len(cu_ids) + len(svc_ids)
+        hw_ids, cu_ids, svc_ids, monitor_ids = resolve_group_entity_ids(g)
+        entity_count = len(hw_ids) + len(cu_ids) + len(svc_ids) + len(monitor_ids)
         total_entities += entity_count
 
         latest_row = (
@@ -533,7 +541,7 @@ def list_available_entities(
     offset: int = 0,
 ) -> tuple[list[dict], int]:
     """
-    UNION hardware + services rows not already assigned to any status group.
+    UNION hardware + services + integration monitors rows not already assigned to any status group.
     Returns matching entities and total count.
     """
 
@@ -545,7 +553,7 @@ def list_available_entities(
     assigned_service_ids = set()
 
     for g in groups:
-        hw_ids, _, svcs = resolve_group_entity_ids(g)
+        hw_ids, _, svcs, _ = resolve_group_entity_ids(g)
         assigned_hardware_ids.update(hw_ids)
         assigned_service_ids.update(svcs)
 
@@ -602,6 +610,46 @@ def list_available_entities(
                         "already_grouped": svc.id in assigned_service_ids,
                     }
                 )
+
+    # 3. Integration monitors
+    if entity_type in (None, "integration_monitor"):
+        from app.db.models import Integration, IntegrationMonitor
+
+        # Collect already-grouped monitor IDs
+        assigned_monitor_ids: set[int] = set()
+        for g in groups:
+            _, _, _, mon_ids = resolve_group_entity_ids(g)
+            assigned_monitor_ids.update(mon_ids)
+
+        monitor_query = select(IntegrationMonitor, Integration.name).join(
+            Integration, IntegrationMonitor.integration_id == Integration.id
+        )
+        for monitor, integ_name in db.execute(monitor_query).all():
+            display_name = f"{monitor.name} ({integ_name})"
+            if q and q.lower() not in display_name.lower():
+                continue
+            # status filter
+            if status and status.lower() != (monitor.status or "unknown").lower():
+                continue
+            entities.append(
+                {
+                    "id": monitor.id,
+                    "name": display_name,
+                    "type": "integration_monitor",
+                    "role": "monitor",
+                    "status": monitor.status or "unknown",
+                    "source": "integration",
+                    "last_seen": (
+                        monitor.last_checked_at.isoformat() if monitor.last_checked_at else None
+                    ),
+                    "telemetry_summary": (
+                        f"{monitor.uptime_7d:.1f}% uptime (7d)"
+                        if monitor.uptime_7d is not None
+                        else None
+                    ),
+                    "already_grouped": monitor.id in assigned_monitor_ids,
+                }
+            )
 
     # Filter out already grouped before pagination
     unassigned = [e for e in entities if not e["already_grouped"]]

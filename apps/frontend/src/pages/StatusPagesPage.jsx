@@ -4,7 +4,7 @@
  * Thin shell: data owned by useStatusPagesData, rendering by StatusGroupBuilder.
  * ≤ 150 LOC, cognitive complexity ≤ 20.
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useToast } from '../components/common/Toast';
 import { useStatusPagesData } from '../hooks/useStatusPagesData';
 import StatusGroupBuilder from '../components/status/StatusGroupBuilder';
@@ -12,6 +12,7 @@ import FormModal from '../components/common/FormModal';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { SkeletonTable } from '../components/common/SkeletonTable';
 import FutureFeatureBanner from '../components/common/FutureFeatureBanner';
+import { statusApi } from '../api/client';
 
 const PAGE_FIELDS = [
   { name: 'name', label: 'Page Name', required: true },
@@ -48,15 +49,60 @@ export default function StatusPagesPage() {
     deletePage,
     createGroup,
     deleteGroup,
+    reloadGroups,
     refresh,
   } = useStatusPagesData(toast);
 
   const [showForm, setShowForm] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  const selectedPage = pages.find((p) => p.id === selectedPageId) ?? null;
+
+  useEffect(() => {
+    setCopiedUrl(false);
+  }, [selectedPageId]);
+
+  const handleTogglePublic = async () => {
+    if (!selectedPage) return;
+    try {
+      await statusApi.updatePage(selectedPage.id, { is_public: !selectedPage.is_public });
+      await refresh();
+    } catch {
+      toast.error('Failed to update page visibility');
+    }
+  };
+
+  const handleCopyUrl = () => {
+    const url = `${window.location.origin}/status/${selectedPage.slug}`;
+    navigator.clipboard
+      .writeText(url)
+      .then(() => {
+        setCopiedUrl(true);
+        setTimeout(() => setCopiedUrl(false), 2000);
+      })
+      .catch(() => {
+        toast.error('Failed to copy URL');
+      });
+  };
 
   const handleCreatePage = async (values) => {
     await createPage(values);
     setShowForm(false);
+  };
+
+  const handleAddMonitorNode = async (node) => {
+    if (groups.length === 0) return;
+    const group = groups[0];
+    const existingNodes = group.nodes || [];
+    const alreadyAdded = existingNodes.some((n) => n.type === node.type && n.id === node.id);
+    if (alreadyAdded) return;
+    try {
+      await statusApi.updateGroup(group.id, { nodes: [...existingNodes, node] });
+      await reloadGroups();
+    } catch {
+      toast.error('Failed to add monitor to group');
+    }
   };
 
   return (
@@ -88,7 +134,17 @@ export default function StatusPagesPage() {
               >
                 <div>{page.name}</div>
                 <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>/{page.slug}</div>
-                <div style={{ marginTop: 4 }}>
+                <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
+                  <a
+                    href={`/status/${page.slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-secondary"
+                    style={{ fontSize: 11, padding: '2px 8px', textDecoration: 'none' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    View ↗
+                  </a>
                   <button
                     className="btn btn-danger"
                     style={{ fontSize: 11, padding: '2px 8px' }}
@@ -106,14 +162,85 @@ export default function StatusPagesPage() {
 
           {/* Group builder panel */}
           {selectedPageId ? (
-            <StatusGroupBuilder
-              groups={groups}
-              loading={groupsLoading}
-              dashboard={dashboard}
-              onCreate={createGroup}
-              onDelete={deleteGroup}
-              onRefresh={refresh}
-            />
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+              {/* Share bar */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '8px 16px',
+                  borderBottom: '1px solid var(--color-border)',
+                  background: 'var(--color-surface)',
+                  flexShrink: 0,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    color: 'var(--color-text-muted)',
+                    userSelect: 'none',
+                  }}
+                >
+                  <span>Public</span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={!!selectedPage?.is_public}
+                    onChange={handleTogglePublic}
+                    style={{ cursor: 'pointer', width: 16, height: 16 }}
+                  />
+                </label>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
+                >
+                  <a
+                    href={`/status/${selectedPage?.slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: 12,
+                      padding: '3px 8px',
+                      background: 'var(--color-bg)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 4,
+                      color: 'var(--color-text-muted)',
+                      fontFamily: 'monospace',
+                      textDecoration: 'none',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'block',
+                    }}
+                  >
+                    {window.location.origin}/status/{selectedPage?.slug}
+                  </a>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: 12, padding: '3px 10px', flexShrink: 0 }}
+                    onClick={handleCopyUrl}
+                  >
+                    {copiedUrl ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+              <StatusGroupBuilder
+                groups={groups}
+                loading={groupsLoading}
+                dashboard={dashboard}
+                onCreate={createGroup}
+                onDelete={deleteGroup}
+                onRefresh={refresh}
+                onAddMonitorNode={handleAddMonitorNode}
+              />
+            </div>
           ) : (
             <div style={{ flex: 1, padding: 24, color: 'var(--color-text-muted)', fontSize: 13 }}>
               Select a status page to manage its groups.

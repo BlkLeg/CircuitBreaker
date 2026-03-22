@@ -39,6 +39,7 @@ from app.api import (
     services,
     storage,
 )
+from app.api import integrations as integrations_api
 from app.api import rack as rack_api
 from app.api import (
     tags as tags_api,
@@ -62,6 +63,7 @@ from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
 from app.api.notifications import router as notifications_router
 from app.api.proxmox import router as proxmox_router
+from app.api.public_status import router as public_status_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
 from app.api.status import router as status_router
@@ -91,6 +93,7 @@ from app.db.session import engine, get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
 from app.middleware.logging_middleware import LoggingMiddleware
+from app.middleware.rate_limit_middleware import TenantRateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.tenant_middleware import TenantMiddleware
 
@@ -553,66 +556,10 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    def _purge_hardware_live_metrics() -> None:
-        from app.services.telemetry_service import purge_old_hardware_live_metrics
-
-        with get_session_context() as _tdb:
-            removed = purge_old_hardware_live_metrics(_tdb, days=7)
-            if removed:
-                _logger.info("Purged %d rows from hardware_live_metrics.", removed)
-                from app.core.worker_audit import log_worker_audit
-
-                log_worker_audit(
-                    action="purge_live_metrics",
-                    entity_type="hardware_live_metrics",
-                    details=f"purged={removed} retention_days=7",
-                    worker_name="scheduler",
-                )
-
-    scheduler.add_job(
-        _purge_hardware_live_metrics,
-        trigger=CronTrigger(hour=3, minute=5),
-        id="purge_hardware_live_metrics",
-        replace_existing=True,
-    )
-
-    # Daily purge of old telemetry_timeseries rows — unbounded table, grows fast
-    def _purge_telemetry_timeseries() -> None:
-        with get_session_context() as _tdb:
-            from sqlalchemy import text as _text
-
-            from app.db.models import AppSettings as _AS
-
-            cfg = _tdb.query(_AS).first()
-            retention_days = getattr(cfg, "telemetry_retention_days", None) or 30
-            result = _tdb.execute(
-                _text(
-                    "DELETE FROM telemetry_timeseries WHERE ts < NOW() - (:days * INTERVAL '1 day')"
-                ),
-                {"days": retention_days},
-            )
-            removed = result.rowcount
-            if removed:
-                _logger.info(
-                    "Purged %d rows from telemetry_timeseries (retention=%dd).",
-                    removed,
-                    retention_days,
-                )
-                from app.core.worker_audit import log_worker_audit
-
-                log_worker_audit(
-                    action="purge_telemetry_timeseries",
-                    entity_type="telemetry_timeseries",
-                    details=f"purged={removed} retention_days={retention_days}",
-                    worker_name="scheduler",
-                )
-
-    scheduler.add_job(
-        _purge_telemetry_timeseries,
-        trigger=CronTrigger(hour=3, minute=20),
-        id="purge_telemetry_timeseries",
-        replace_existing=True,
-    )
+    # hardware_live_metrics and telemetry_timeseries retention is now managed by
+    # TimescaleDB retention policies (migration 0050). Manual DELETE jobs have been
+    # removed. If TimescaleDB is not installed, fallback functions remain available
+    # in app.services.telemetry_service and app.workers.cleanup.
 
     # Daily purge of old audit log entries based on retention setting
     from app.services.log_purge import purge_old_audit_logs
@@ -1028,14 +975,24 @@ async def lifespan(app: FastAPI):
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
     _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
     _worker_tasks: list = []
+    _ingest_stop_event = asyncio.Event()
+    _integration_stop_event = asyncio.Event()
     if _run_inprocess_workers:
         from app.workers import discovery as discovery_worker
         from app.workers import notification_worker, webhook_worker
+        from app.workers.telemetry_ingest_worker import run_ingest_loop as _run_ingest_loop
 
         _worker_tasks.append(asyncio.create_task(webhook_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(notification_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(discovery_worker.run_worker()))
-        _logger.info("Webhook, notification, and discovery workers started (in-process).")
+        _worker_tasks.append(asyncio.create_task(_run_ingest_loop(_ingest_stop_event)))
+        from app.workers.integration_worker import run_integration_worker as _run_integration_worker
+
+        _worker_tasks.append(asyncio.create_task(_run_integration_worker(_integration_stop_event)))
+        _logger.info(
+            "Webhook, notification, discovery, telemetry ingest, "
+            "and integration workers started (in-process)."
+        )
     else:
         _logger.info(
             "CB_RUN_INPROCESS_WORKERS=false — webhook/notification/discovery workers "
@@ -1072,6 +1029,9 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
 
     # ── Cancel in-process worker tasks ────────────────────────────────────
+    # Signal ingest worker to drain its current batch before the task is cancelled.
+    _ingest_stop_event.set()
+    _integration_stop_event.set()
     for _wt in _worker_tasks:
         _wt.cancel()
     if _worker_tasks:
@@ -1107,6 +1067,10 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+from app.core.otel import init_otel  # noqa: E402
+
+init_otel(app)
+
 # ── CORS ───────────────────────────────────────────────────────────────────
 # Default to same-origin only; never allow wildcard origins in production.
 _cors_origins = settings.cors_origins
@@ -1123,6 +1087,7 @@ app.add_middleware(CSRFMiddleware)
 app.add_middleware(LegacyTokenMiddleware)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TenantRateLimitMiddleware)
 app.add_middleware(TenantMiddleware)
 
 # ── Global error handlers ──────────────────────────────────────────────────
@@ -1508,6 +1473,17 @@ app.include_router(
     prefix=f"{_V1}/node-relations",
     tags=["node-relations"],
     dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    integrations_api.router,
+    prefix=f"{_V1}/integrations",
+    tags=["integrations"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    public_status_router,
+    prefix=f"{_V1}/public",
+    tags=["public"],
 )
 
 

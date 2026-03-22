@@ -12,6 +12,7 @@ from app.db.models import (
     ComputeUnit,
     DailyUptimeStats,
     Hardware,
+    IntegrationMonitor,
     LiveMetric,
     Service,
     StatusGroup,
@@ -29,12 +30,19 @@ _STATUS_DEGRADED = {"degraded", "maintenance"}
 _CPU_HIGH_PCT = 90
 _DOWN_MINUTES_ALERT = 5
 
+_MONITOR_STATUS_MAP = {
+    "up": "up",
+    "down": "down",
+    "pending": "unknown",
+    "maintenance": "degraded",
+}
+
 
 def _entity_status(
     db: Session, group: StatusGroup
 ) -> tuple[list[str], float, list[dict], float | None]:
     """Return (list of status strings, uptime_pct_approx, metrics list, avg_ping)."""
-    hw_ids, cu_ids, svc_ids = svc.resolve_group_entity_ids(group)
+    hw_ids, cu_ids, svc_ids, monitor_ids = svc.resolve_group_entity_ids(group)
     statuses: list[str] = []
     metrics: list[dict] = []
     ping_sum: float = 0.0
@@ -92,6 +100,18 @@ def _entity_status(
             if hasattr(s, "lower"):
                 s = s.lower()
             statuses.append(str(s))
+
+    for mid in monitor_ids:
+        mon = db.get(IntegrationMonitor, mid)
+        if mon:
+            cb_status = _MONITOR_STATUS_MAP.get(mon.status or "pending", "unknown")
+            statuses.append(cb_status)
+            # Contribute uptime_7d to uptime pool if DailyUptimeStats has no data
+            if mon.uptime_7d is not None and total_minutes_total == 0:
+                # Convert 7d uptime % to equivalent minutes out of a 7-day window
+                week_minutes = 7 * 24 * 60
+                uptime_minutes_total += int(week_minutes * mon.uptime_7d / 100)
+                total_minutes_total += week_minutes
 
     n = len(statuses)
     up_count = sum(1 for s in statuses if s in _STATUS_UP)
@@ -213,6 +233,16 @@ def _run_status_poll_job_impl() -> None:
                 )
             except Exception as e:
                 _logger.warning("Status poll failed for group %s: %s", group_id, e)
+                from app.core.worker_audit import log_worker_audit
+
+                log_worker_audit(
+                    action="status_poll_failed",
+                    entity_type="status_group",
+                    entity_id=group_id,
+                    details=str(e)[:200],
+                    severity="error",
+                    worker_name="status_worker",
+                )
         if broadcast_payload:
             try:
                 from app.api.ws_status import schedule_status_broadcast

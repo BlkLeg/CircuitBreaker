@@ -21,6 +21,8 @@ class TestHTTPMutationAuditTrail:
     @pytest.mark.asyncio
     async def test_hardware_create_produces_audit_log(self, client, auth_headers, db_session):
         """POST /hardware → audit log entry with entity_type containing 'hardware'."""
+        import asyncio
+
         resp = await client.post(
             "/api/v1/hardware",
             headers=auth_headers,
@@ -28,13 +30,18 @@ class TestHTTPMutationAuditTrail:
         )
         assert resp.status_code in (200, 201), f"Create failed: {resp.text}"
 
+        # LoggingMiddleware writes via run_in_executor (fire-and-forget); yield briefly
+        # so the thread-pool write commits before we query.
+        await asyncio.sleep(0.1)
+
         from app.db.models import Log
 
+        # Middleware sets details=None for category="crud"; entity_name holds the name.
         logs = (
             db_session.execute(
                 select(Log).where(
                     Log.action.ilike("%hardware%"),
-                    Log.details.ilike("%audit-test-hw%"),
+                    Log.entity_name.ilike("%audit-test-hw%"),
                 )
             )
             .scalars()
@@ -47,34 +54,39 @@ class TestHTTPMutationAuditTrail:
     @pytest.mark.asyncio
     async def test_delete_produces_audit_log(self, client, auth_headers, db_session):
         """DELETE mutation → audit log entry."""
-        # Create then delete a tag
+        import asyncio
+
+        # Create then delete hardware (tags has no POST/DELETE endpoints)
         resp = await client.post(
-            "/api/v1/tags",
+            "/api/v1/hardware",
             headers=auth_headers,
             json={"name": "audit-delete-test"},
         )
-        assert resp.status_code in (200, 201), f"Tag create failed: {resp.text}"
-        tag_id = resp.json().get("id")
+        assert resp.status_code in (200, 201), f"Hardware create failed: {resp.text}"
+        hw_id = resp.json().get("id")
 
         resp = await client.delete(
-            f"/api/v1/tags/{tag_id}",
+            f"/api/v1/hardware/{hw_id}",
             headers=auth_headers,
         )
-        assert resp.status_code in (200, 204), f"Tag delete failed: {resp.text}"
+        assert resp.status_code in (200, 204), f"Hardware delete failed: {resp.text}"
+
+        # LoggingMiddleware writes via run_in_executor (fire-and-forget); yield briefly.
+        await asyncio.sleep(0.1)
 
         from app.db.models import Log
 
         logs = (
             db_session.execute(
                 select(Log).where(
-                    Log.action.ilike("%tag%"),
+                    Log.action.ilike("%hardware%"),
                     Log.action.ilike("%delete%"),
                 )
             )
             .scalars()
             .all()
         )
-        assert len(logs) >= 1, "No audit log entry found for tag deletion"
+        assert len(logs) >= 1, "No audit log entry found for hardware deletion"
 
 
 class TestWorkerAuditHelper:

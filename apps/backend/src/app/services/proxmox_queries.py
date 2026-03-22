@@ -288,7 +288,7 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     try:
         all_groups = list(db.execute(select(StatusGroup)).scalars().all())
         for g in all_groups:
-            hw_ids, _, _ = svc_status.resolve_group_entity_ids(g)
+            hw_ids, _, _, _ = svc_status.resolve_group_entity_ids(g)
             if not any(hid in node_ids for hid in hw_ids):
                 continue
             events = svc_status.list_events_for_group(db, g.id, since_param="7d", limit=50)

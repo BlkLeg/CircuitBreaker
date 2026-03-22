@@ -22,6 +22,15 @@ TELEMETRY_UPDATE = "telemetry.update"
 TELEMETRY_PROXMOX_NODE = "telemetry.proxmox.node"
 TELEMETRY_PROXMOX_VM = "telemetry.proxmox.vm"
 
+# JetStream ingestion pipeline (telemetry_collector → TELEMETRY stream → telemetry_ingest_worker)
+TELEMETRY_INGEST = "telemetry.ingest.{hardware_id}"  # formatted at publish time
+TELEMETRY_INGEST_ALL = "telemetry.ingest.>"  # stream subject filter
+
+# ── Integrations ─────────────────────────────────────────────────────────────
+
+INTEGRATION_SYNCED = "integrations.synced.{integration_id}"  # formatted at publish time
+INTEGRATION_SYNCED_ALL = "integrations.synced.>"  # subscribe filter
+
 # ── Notifications / Alerts ───────────────────────────────────────────────────
 
 NOTIFICATION_EVENT = "notifications.event"

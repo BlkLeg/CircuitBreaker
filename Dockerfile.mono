@@ -96,6 +96,17 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/local/bin/python3 /usr/bin/python
 
+# TimescaleDB extension for PostgreSQL 15 (time-series hypertables + compression)
+# hadolint ignore=DL3008
+RUN curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+      | gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] \
+https://packagecloud.io/timescale/timescaledb/debian/ bookworm main" \
+      > /etc/apt/sources.list.d/timescaledb.list \
+    && apt-get update -qq \
+    && apt-get install -y --no-install-recommends timescaledb-2-postgresql-15 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy Python deps and app from builder
 COPY --from=backend-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=backend-builder /usr/local/bin /usr/local/bin

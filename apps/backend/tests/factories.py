@@ -66,10 +66,14 @@ class Factories:
     # ── Services ──────────────────────────────────────────────────────────────
 
     def service(self, **kwargs):
+        import re
+
         from app.db.models import Service
 
         defaults = {"name": fake.unique.slug()}
         defaults.update(kwargs)
+        if "slug" not in defaults:
+            defaults["slug"] = re.sub(r"[^a-z0-9]+", "-", defaults["name"].lower()).strip("-")
         svc = Service(**defaults)
         self.session.add(svc)
         self.session.flush()

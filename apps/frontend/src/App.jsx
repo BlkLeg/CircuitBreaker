@@ -46,6 +46,7 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
 const StatusPagesPage = React.lazy(() => import('./pages/StatusPagesPage'));
 const RackPage = React.lazy(() => import('./pages/RackPage'));
+const PublicStatusPage = React.lazy(() => import('./pages/PublicStatusPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -184,6 +185,7 @@ function AppInner() {
                   <Route path="/invite/accept" element={<InviteAcceptPage />} />
                   <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
                   <Route path="/reset-password" element={<ResetPasswordPage />} />
+                  <Route path="/status/:slug" element={<PublicStatusPage />} />
                 </Routes>
               </motion.div>
             </AnimatePresence>
@@ -352,7 +354,7 @@ function AppRoutes() {
             <Route path="/invite/accept" element={<InviteAcceptPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/reset-password/vault" element={<VaultResetPage />} />
-            <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
+            <Route path="/status/:slug" element={<PublicStatusPage />} />
             <Route path="*" element={<NavigateToLogin />} />
           </Routes>
         </React.Suspense>

@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.worker_audit import log_worker_audit
 
 
 def cleanup_old_icons(db: Session) -> int:
@@ -28,20 +29,28 @@ def cleanup_old_icons(db: Session) -> int:
     icons_dir = Path(settings.uploads_dir) / "icons"
     removed = 0
 
-    for icon_id, filename in rows:
-        if filename:
-            (icons_dir / filename).unlink(missing_ok=True)
-        db.execute(text("DELETE FROM user_icons WHERE id = :id"), {"id": icon_id})
-        removed += 1
+    try:
+        for icon_id, filename in rows:
+            if filename:
+                (icons_dir / filename).unlink(missing_ok=True)
+            db.execute(text("DELETE FROM user_icons WHERE id = :id"), {"id": icon_id})
+            removed += 1
 
-    if removed:
-        db.commit()
-        from app.core.worker_audit import log_worker_audit
-
+        if removed:
+            db.commit()
+            log_worker_audit(
+                action="cleanup_icons",
+                entity_type="user_icon",
+                details=f"removed={removed}",
+                worker_name="cleanup",
+            )
+    except Exception as exc:
         log_worker_audit(
-            action="cleanup_icons",
+            action="cleanup_failed",
             entity_type="user_icon",
-            details=f"removed={removed}",
+            details=str(exc)[:200],
+            severity="error",
             worker_name="cleanup",
         )
+        raise
     return removed

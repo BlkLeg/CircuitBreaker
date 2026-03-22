@@ -29,6 +29,7 @@ import AdminUsersPage from './AdminUsersPage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
+import IntegrationsManager from '../components/settings/IntegrationsManager';
 import { useTranslation } from 'react-i18next';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
@@ -1221,6 +1222,10 @@ export default function SettingsPage() {
                     to <strong>Discovery → Proxmox VE</strong> to add clusters, run scans, and
                     manage integrations.
                   </p>
+                </SettingSection>
+
+                <SettingSection title="Service Integrations">
+                  <IntegrationsManager />
                 </SettingSection>
               </div>
             )}

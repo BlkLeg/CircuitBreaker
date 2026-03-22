@@ -280,7 +280,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
         category_id=resolved_cat_id,
         ip_mode=conflict_result["ip_mode"],
         ip_conflict=False,
-        ip_conflict_json="[]",
+        ip_conflict_json=[],
     )
     db.add(svc)
     db.flush()

@@ -62,9 +62,9 @@ def _set_tenant_on_checkout(dbapi_conn: Any, connection_record: Any, connection_
         cursor = dbapi_conn.cursor()
         try:
             if tid is not None:
-                cursor.execute("SET app.current_tenant = %s", (str(tid),))
+                cursor.execute("SELECT set_config('app.current_tenant', %s, true)", (str(tid),))
             else:
-                cursor.execute("RESET app.current_tenant")
+                cursor.execute("SELECT set_config('app.current_tenant', '', true)", ())
         finally:
             cursor.close()
     except Exception:  # noqa: BLE001
