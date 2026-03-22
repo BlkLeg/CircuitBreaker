@@ -955,6 +955,17 @@ class AppSettings(Base):
     ws_allowed_cidrs: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]"
     )  # JSON array of CIDRs allowed to connect via WebSocket; empty = allow all
+    # Backup / DR settings (migration 0057)
+    backup_s3_bucket: Mapped[str | None] = mapped_column(String, nullable=True)
+    backup_s3_endpoint_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    backup_s3_access_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    backup_s3_secret_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backup_s3_region: Mapped[str] = mapped_column(String, nullable=False, default="us-east-1")
+    backup_s3_prefix: Mapped[str] = mapped_column(
+        String, nullable=False, default="circuitbreaker/backups/"
+    )
+    backup_s3_retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    backup_local_retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

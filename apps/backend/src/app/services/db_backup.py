@@ -1,8 +1,8 @@
 """PostgreSQL daily backup service.
 
 Runs pg_dump on the configured database and stores compressed .sql.gz files
-under /app/data/backups/. Old files are pruned based on the
-db_backup_retention_days setting (default: 30).
+under $CB_DATA_DIR/backups/ (or $BACKUP_DIR if explicitly set).
+Old files are pruned based on the db_backup_retention_days setting (default: 30).
 """
 
 import gzip
@@ -20,7 +20,10 @@ from app.db.session import SessionLocal, db_url
 
 _logger = logging.getLogger(__name__)
 
-BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/app/data/backups"))
+# _data_dir: CB_DATA_DIR is set by the Makefile (dev) and native installer.
+# Docker sets it to /app/data. Falls back to /var/lib/circuitbreaker.
+_data_dir = Path(os.environ.get("CB_DATA_DIR", "/var/lib/circuitbreaker"))
+BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_data_dir / "backups")))
 
 
 def _pg_env_from_url(url: str) -> dict[str, str]:
@@ -103,3 +106,104 @@ def latest_backup_info() -> dict | None:
         "created_at": datetime.fromtimestamp(f.stat().st_mtime, tz=UTC).isoformat(),
         "path": str(f),
     }
+
+
+async def run_full_snapshot(db: Session) -> Path:
+    """Orchestrate a full-state backup snapshot.
+
+    Steps:
+    1. Read vault_key from os.environ["CB_VAULT_KEY"]
+    2. Read AppSettings from DB (backup dirs, S3 config, retention counts)
+    3. Build snapshot tarball via backup.snapshot.build_snapshot()
+    4. Prune local snapshots via backup.pruner.prune_local()
+    5. If S3 configured: decrypt S3 secret, upload tarball, prune remote
+
+    Args:
+        db: Synchronous SQLAlchemy session.
+
+    Returns:
+        Path to the newly created snapshot tarball.
+
+    Raises:
+        BackupError: If snapshot creation fails.
+        RuntimeError: If CB_VAULT_KEY is not set.
+    """
+    import os
+
+    from app.db.models import AppSettings
+    from app.services.backup.pruner import prune_local, prune_remote
+    from app.services.backup.s3_client import BackupS3Settings, S3Client
+    from app.services.backup.snapshot import BackupError, build_snapshot  # noqa: F401
+
+    vault_key = os.environ.get("CB_VAULT_KEY", "")
+    if not vault_key:
+        raise RuntimeError("CB_VAULT_KEY environment variable is not set")
+
+    settings = db.query(AppSettings).first()
+    if settings is None:
+        settings = AppSettings(id=1)
+
+    cb_version = os.environ.get("CB_VERSION", "unknown")
+    uploads_dir = _data_dir / "uploads"
+
+    tarball = await build_snapshot(
+        backup_dir=BACKUP_DIR,
+        db_url=db_url,
+        vault_key=vault_key,
+        uploads_dir=uploads_dir,
+        cb_version=cb_version,
+    )
+
+    keep_local = (
+        settings.backup_local_retention_count
+        if settings.backup_local_retention_count is not None
+        else 7
+    )
+    prune_local(BACKUP_DIR, keep=keep_local)
+
+    # S3 upload (optional — only if bucket is configured)
+    if settings.backup_s3_bucket:
+        secret_key = ""
+        if settings.backup_s3_secret_key_enc:
+            try:
+                from app.services.credential_vault import get_vault
+
+                secret_key = get_vault().decrypt(settings.backup_s3_secret_key_enc)
+            except Exception as exc:
+                _logger.warning("Could not decrypt S3 secret key: %s", exc)
+
+        s3_settings = BackupS3Settings(
+            bucket=settings.backup_s3_bucket,
+            access_key_id=settings.backup_s3_access_key_id or "",
+            secret_access_key=secret_key,
+            region=settings.backup_s3_region or "us-east-1",
+            endpoint_url=settings.backup_s3_endpoint_url or None,
+            prefix=settings.backup_s3_prefix or "circuitbreaker/backups/",
+        )
+        client = S3Client(s3_settings)
+        await client.upload(tarball)
+
+        keep_remote = (
+            settings.backup_s3_retention_count
+            if settings.backup_s3_retention_count is not None
+            else 30
+        )
+        await prune_remote(client, keep=keep_remote)
+
+    # Publish completion event so webhook rules can trigger on backup success
+    try:
+        from app.core.subjects import BACKUP_SNAPSHOT_COMPLETED
+        from app.services.proxmox_client import _publish
+
+        await _publish(
+            BACKUP_SNAPSHOT_COMPLETED,
+            {
+                "filename": tarball.name,
+                "size_mb": round(tarball.stat().st_size / 1_048_576, 2),
+                "s3_uploaded": bool(settings.backup_s3_bucket),
+            },
+        )
+    except Exception:
+        pass  # NATS unavailable — non-fatal
+
+    return tarball

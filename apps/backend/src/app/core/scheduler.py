@@ -34,6 +34,22 @@ def shutdown_scheduler() -> None:
         logger.info("APScheduler stopped")
 
 
+async def _run_scheduled_snapshot() -> None:
+    """Scheduled wrapper for run_full_snapshot — called by APScheduler daily at 02:00."""
+    from app.db.session import SessionLocal
+    from app.services.backup.snapshot import BackupError
+    from app.services.db_backup import run_full_snapshot
+
+    try:
+        with SessionLocal() as db:
+            tarball = await run_full_snapshot(db)
+            logger.info("Scheduled snapshot completed: %s", tarball.name)
+    except BackupError as exc:
+        logger.error("Scheduled snapshot failed: %s", exc)
+    except Exception as exc:
+        logger.error("Unexpected error in scheduled snapshot: %s", exc)
+
+
 def reload_discovery_jobs(db: Session) -> None:
     """
     Read all enabled discovery_profiles with a schedule_cron.
@@ -97,4 +113,12 @@ def reload_discovery_jobs(db: Session) -> None:
         id="daily_uptime_rollup",
         replace_existing=True,
         misfire_grace_time=3600,
+    )
+
+    # Daily full-state snapshot at 02:00
+    scheduler.add_job(
+        _run_scheduled_snapshot,
+        CronTrigger(hour=2, minute=0),
+        id="daily_db_snapshot",
+        replace_existing=True,
     )

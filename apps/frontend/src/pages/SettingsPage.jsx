@@ -29,6 +29,7 @@ import AdminUsersPage from './AdminUsersPage.jsx';
 import VaultStatusPanel from '../components/settings/VaultStatusPanel.jsx';
 import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
+import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
 import { useTranslation } from 'react-i18next';
 
@@ -1682,6 +1683,12 @@ export default function SettingsPage() {
                 {isAdmin && (
                   <SettingSection title="Host Diagnostics">
                     <HostStatsPanel />
+                  </SettingSection>
+                )}
+
+                {isAdmin && (
+                  <SettingSection title="Backup & Recovery">
+                    <BackupSettings />
                   </SettingSection>
                 )}
 

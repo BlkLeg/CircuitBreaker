@@ -15,6 +15,9 @@ from app.core.subjects import (
     DISCOVERY_SCAN_COMPLETED,
     DISCOVERY_SCAN_PROGRESS,
     DISCOVERY_SCAN_STARTED,
+    PROXMOX_NODE_REMOVED,
+    PROXMOX_STORAGE_REMOVED,
+    PROXMOX_VM_REMOVED,
 )
 from app.core.time import utcnow
 from app.db.models import (
@@ -298,6 +301,9 @@ async def discover_and_import(
         "cts_imported": 0,
         "networks_imported": 0,
         "storage_imported": 0,
+        "storage_removed": 0,
+        "nodes_removed": 0,
+        "vms_removed": 0,
         "results_queued": 0,
         "review_job_id": None,
         "errors": [],
@@ -437,6 +443,14 @@ async def discover_and_import(
                                 result["errors"].append(f"Node {node_name}: {e}")
                                 _logger.warning("Failed to import node %s: %s", node_name, e)
 
+                    # Reconcile: remove nodes that disappeared from Proxmox
+                    try:
+                        result["nodes_removed"] = await _reconcile_nodes(
+                            db, config, set(node_hw_map.keys())
+                        )
+                    except Exception as e:
+                        result["errors"].append(f"Node reconciliation: {e}")
+
                     # ── Import VMs ───────────────────────────────────────────────
                     total_vms = len(qemu_vms) + len(lxc_cts)
                     imported = 0
@@ -472,6 +486,15 @@ async def discover_and_import(
                             _logger.warning("Failed to import CT %s: %s", vmid, e)
                         imported += 1
 
+                    # Reconcile: remove VMs/CTs that disappeared from Proxmox
+                    seen_vmids = {
+                        int(v["vmid"]) for v in qemu_vms + lxc_cts if v.get("vmid") is not None
+                    }
+                    try:
+                        result["vms_removed"] = await _reconcile_vms(db, config, seen_vmids)
+                    except Exception as e:
+                        result["errors"].append(f"VM reconciliation: {e}")
+
                     # ── Import networks ──────────────────────────────────────────
                     for node_name, hw in node_hw_map.items():
                         try:
@@ -483,8 +506,11 @@ async def discover_and_import(
                     # ── Import storage pools ────────────────────────────────────
                     for node_name, hw in node_hw_map.items():
                         try:
-                            st_count = await _import_node_storage(db, config, client, node_name, hw)
-                            result["storage_imported"] += st_count
+                            upserted, removed = await _import_node_storage(
+                                db, config, client, node_name, hw
+                            )
+                            result["storage_imported"] += upserted
+                            result["storage_removed"] += removed
                         except Exception as e:
                             result["errors"].append(f"Storage for {node_name}: {e}")
 
@@ -502,6 +528,9 @@ async def discover_and_import(
                         "vms": result["vms_imported"],
                         "cts": result["cts_imported"],
                         "storage": result["storage_imported"],
+                        "storage_removed": result["storage_removed"],
+                        "nodes_removed": result["nodes_removed"],
+                        "vms_removed": result["vms_removed"],
                     },
                 )
                 run.status = "completed"
@@ -653,6 +682,43 @@ def _upsert_node(
     return hw
 
 
+async def _reconcile_nodes(
+    db: Session,
+    config: IntegrationConfig,
+    seen_node_names: set[str],
+) -> int:
+    """Delete Hardware records for Proxmox nodes no longer present in the cluster."""
+    stale = (
+        db.query(Hardware)
+        .filter(
+            Hardware.integration_config_id == config.id,
+            Hardware.proxmox_node_name.notin_(seen_node_names),
+            Hardware.proxmox_node_name.isnot(None),
+        )
+        .all()
+    )
+    removed = 0
+    for hw in stale:
+        _logger.info(
+            "Proxmox sync: removing stale node '%s' (id=%d, integration=%d)",
+            hw.proxmox_node_name,
+            hw.id,
+            config.id,
+        )
+        await _publish(
+            PROXMOX_NODE_REMOVED,
+            {
+                "integration_id": config.id,
+                "hardware_id": hw.id,
+                "node_name": hw.proxmox_node_name,
+            },
+        )
+        db.delete(hw)
+        removed += 1
+    db.flush()
+    return removed
+
+
 def _upsert_vm(
     db: Session,
     config: IntegrationConfig,
@@ -729,6 +795,44 @@ def _upsert_vm(
 
     db.flush()
     return cu
+
+
+async def _reconcile_vms(
+    db: Session,
+    config: IntegrationConfig,
+    seen_vmids: set[int],
+) -> int:
+    """Delete ComputeUnit records for VMs/CTs no longer reported by Proxmox."""
+    stale = (
+        db.query(ComputeUnit)
+        .filter(
+            ComputeUnit.integration_config_id == config.id,
+            ComputeUnit.proxmox_vmid.notin_(seen_vmids),
+            ComputeUnit.proxmox_vmid.isnot(None),
+        )
+        .all()
+    )
+    removed = 0
+    for cu in stale:
+        _logger.info(
+            "Proxmox sync: removing stale VM/CT vmid=%s (id=%d, integration=%d)",
+            cu.proxmox_vmid,
+            cu.id,
+            config.id,
+        )
+        await _publish(
+            PROXMOX_VM_REMOVED,
+            {
+                "integration_id": config.id,
+                "compute_unit_id": cu.id,
+                "proxmox_vmid": cu.proxmox_vmid,
+                "name": cu.name,
+            },
+        )
+        db.delete(cu)
+        removed += 1
+    db.flush()
+    return removed
 
 
 # ── Network import ───────────────────────────────────────────────────────────
@@ -824,12 +928,12 @@ async def _import_node_storage(
     client: ProxmoxIntegration,
     node_name: str,
     hw: Hardware,
-) -> int:
-    """Import PVE storage pools as CB Storage entries. Returns count upserted."""
+) -> tuple[int, int]:
+    """Import PVE storage pools as CB Storage entries. Returns (upserted, removed)."""
     try:
         storage_list = await client.get_node_storage(node_name)
     except Exception:
-        return 0
+        return 0, 0
 
     count = 0
     for st_data in storage_list:
@@ -881,5 +985,39 @@ async def _import_node_storage(
             if not active:
                 existing.notes = f"[inactive] content: {st_data.get('content', '')}"
 
+    # Reconcile: delete Storage records Proxmox no longer reports for this node
+    seen_names = {st_data.get("storage", "") for st_data in storage_list if st_data.get("storage")}
+    stale = (
+        db.query(Storage)
+        .filter(
+            Storage.hardware_id == hw.id,
+            Storage.integration_config_id == config.id,
+            Storage.proxmox_storage_name.notin_(seen_names),
+            Storage.proxmox_storage_name.isnot(None),
+        )
+        .all()
+    )
+    removed = 0
+    for s in stale:
+        _logger.info(
+            "Proxmox sync: removing stale storage '%s' (id=%d, node=%s, integration=%d)",
+            s.proxmox_storage_name,
+            s.id,
+            node_name,
+            config.id,
+        )
+        await _publish(
+            PROXMOX_STORAGE_REMOVED,
+            {
+                "integration_id": config.id,
+                "hardware_id": hw.id,
+                "storage_id": s.id,
+                "storage_name": s.proxmox_storage_name,
+                "node_name": node_name,
+            },
+        )
+        db.delete(s)
+        removed += 1
+
     db.flush()
-    return count
+    return count, removed

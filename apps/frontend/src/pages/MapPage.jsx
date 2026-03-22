@@ -113,7 +113,7 @@ import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
 import { useTopologyStream, topologyEmitter } from '../hooks/useTopologyStream';
-import { canEdit } from '../utils/rbac';
+import { canEdit, isAdmin } from '../utils/rbac';
 import { useMapLayout } from '../hooks/useMapLayout';
 import { useContextMenuState } from '../hooks/useContextMenuState';
 import { useMapPolling } from '../hooks/useMapPolling';
@@ -186,6 +186,8 @@ function MapInternal() {
   const [cloudViewEnabled, setCloudViewEnabled] = useState(false);
   const [useSigma, setUseSigma] = useState(false);
   const [lastSaved, setLastSaved] = useState(null);
+  const [filterSaving, setFilterSaving] = useState(false);
+  const [filterSaved, setFilterSaved] = useState(false);
   // Track node IDs that have been auto-placed this session so fetchData re-runs
   // don't re-tag the same nodes as _needsAutoPlace before the layout is saved.
   const autoPlacedIdsRef = useRef(new Set());
@@ -693,6 +695,22 @@ function MapInternal() {
         .join(',') || 'hardware'
     );
   };
+
+  const handleSaveFilters = useCallback(async () => {
+    setFilterSaving(true);
+    setFilterSaved(false);
+    try {
+      await settingsApi.update({
+        map_default_filters: { include: Object.fromEntries(includeTypes) },
+      });
+      setFilterSaved(true);
+      setTimeout(() => setFilterSaved(false), 2000);
+    } catch {
+      // non-critical — silently ignore
+    } finally {
+      setFilterSaving(false);
+    }
+  }, [includeTypes]);
 
   const getLayoutName = useCallback(() => {
     return envFilter ? `default::envid:${envFilter}` : 'default';
@@ -1863,6 +1881,18 @@ function MapInternal() {
                 hwRoleFilter={hwRoleFilter}
                 setHwRoleFilter={setHwRoleFilter}
               />
+
+              {isAdmin(user) && (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleSaveFilters}
+                  disabled={filterSaving}
+                  title="Save current filter visibility as default"
+                  style={{ fontSize: 12, padding: '4px 10px', whiteSpace: 'nowrap' }}
+                >
+                  {filterSaved ? '✓ Saved' : filterSaving ? 'Saving…' : 'Save Filters'}
+                </button>
+              )}
 
               <MapToolbar
                 layout={layoutEngine}

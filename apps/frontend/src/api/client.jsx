@@ -344,6 +344,11 @@ export const adminApi = {
   clearLab: () => client.post('/admin/clear-lab'),
   dbHealth: () => client.get('/admin/db/health'),
   triggerBackup: () => client.post('/admin/db/backup'),
+  triggerSnapshot: () => client.post('/admin/db/snapshot'),
+  listSnapshots: () => client.get('/admin/db/snapshots'),
+  getBackupSettings: () => client.get('/admin/settings/backup'),
+  updateBackupSettings: (data) => client.put('/admin/settings/backup', data),
+  testBackupConnection: () => client.post('/admin/settings/backup/test'),
 };
 
 export const adminUsersApi = {

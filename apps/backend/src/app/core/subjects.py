@@ -31,6 +31,12 @@ TELEMETRY_INGEST_ALL = "telemetry.ingest.>"  # stream subject filter
 INTEGRATION_SYNCED = "integrations.synced.{integration_id}"  # formatted at publish time
 INTEGRATION_SYNCED_ALL = "integrations.synced.>"  # subscribe filter
 
+PROXMOX_STORAGE_REMOVED = "integrations.proxmox.storage.removed"
+PROXMOX_NODE_REMOVED = "integrations.proxmox.node.removed"
+PROXMOX_VM_REMOVED = "integrations.proxmox.vm.removed"
+
+BACKUP_SNAPSHOT_COMPLETED = "backup.snapshot.completed"
+
 # ── Notifications / Alerts ───────────────────────────────────────────────────
 
 NOTIFICATION_EVENT = "notifications.event"
