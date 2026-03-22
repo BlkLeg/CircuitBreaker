@@ -208,7 +208,7 @@ def _run_status_poll_job_impl() -> None:
                 overall = _overall_status(statuses, uptime_pct)
                 events = _detect_events(group_id, overall, metrics_list or [], previous_row)
                 raw = {"statuses": statuses, "metrics_count": len(metrics_list)}
-                metrics_payload = None
+                metrics_payload: dict[str, Any] | None = None
                 if metrics_list or events:
                     metrics_payload = {
                         "events": events,

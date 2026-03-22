@@ -69,8 +69,8 @@ def _build_adjacency(db: Session) -> dict[tuple[str, int], list[tuple[str, int]]
 
     # Hardware through shared network membership (bidirectional)
     net_hw: dict[int, list[int]] = {}
-    for row in db.query(HardwareNetwork).all():
-        net_hw.setdefault(row.network_id, []).append(row.hardware_id)
+    for hw_net in db.query(HardwareNetwork).all():
+        net_hw.setdefault(hw_net.network_id, []).append(hw_net.hardware_id)
     for hw_ids in net_hw.values():
         for i, src in enumerate(hw_ids):
             for dst in hw_ids[i + 1 :]:
@@ -94,7 +94,8 @@ def _build_adjacency(db: Session) -> dict[tuple[str, int], list[tuple[str, int]]
 
     # Storage attached to hardware
     for st in db.query(Storage).filter(Storage.hardware_id.isnot(None)).all():
-        _add(("hardware", st.hardware_id), ("storage", st.id))
+        if st.hardware_id is not None:
+            _add(("hardware", st.hardware_id), ("storage", st.id))
 
     return adj
 
