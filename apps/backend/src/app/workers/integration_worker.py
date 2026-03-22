@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, timedelta
+from typing import Any
 
 from app.core.nats_client import nats_client
 from app.core.otel import get_tracer
@@ -39,7 +40,7 @@ def _is_due(integ: Integration) -> bool:
     return now >= due_at
 
 
-def _upsert_monitors(db, integ: Integration, monitors) -> None:
+def _upsert_monitors(db: Any, integ: Integration, monitors: list[Any]) -> None:
     """Create/update/delete IntegrationMonitor rows based on the synced monitor list.
 
     - Rows whose external_id is in the sync result are upserted.
@@ -90,7 +91,7 @@ def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "page"
 
 
-def _ensure_status_page(db, integ: Integration) -> None:
+def _ensure_status_page(db: Any, integ: Integration) -> None:
     """Auto-provision a status page for this integration if one doesn't exist.
 
     On every sync the group nodes are kept in sync with current monitors so

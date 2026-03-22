@@ -193,7 +193,7 @@ async def run_ingest_loop(stop_event: asyncio.Event) -> None:
             # (Re)connected — ensure stream exists and create pull subscription.
             try:
                 await _ensure_stream()
-                js = nats_client._nc.jetstream()  # type: ignore[union-attr]
+                js = nats_client._nc.jetstream()
                 psub = await js.pull_subscribe(_SUBJECT_FILTER, durable=_CONSUMER_DURABLE)
                 _logger.info(
                     "Telemetry ingest worker subscribed to %s stream (durable=%s)",

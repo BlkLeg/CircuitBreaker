@@ -405,7 +405,7 @@ def list_node_relations(
         q = q.where(NodeRelation.target_id == target_id)
     if relation_type:
         q = q.where(NodeRelation.relation_type == relation_type)
-    return db.execute(q.order_by(NodeRelation.created_at.desc())).scalars().all()
+    return db.execute(q.order_by(NodeRelation.id.desc())).scalars().all()
 
 
 @node_relations_router.post("", response_model=NodeRelationRead, status_code=201)

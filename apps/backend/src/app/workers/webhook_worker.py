@@ -254,7 +254,7 @@ def _apply_body_template(template: str, subject: str, payload_obj: dict) -> tupl
     """
     now = datetime.now(UTC).isoformat()
 
-    def _resolve(match: re.Match) -> str:
+    def _resolve(match: re.Match[str]) -> str:
         key = match.group(1).strip()
         if key == "event":
             return subject
