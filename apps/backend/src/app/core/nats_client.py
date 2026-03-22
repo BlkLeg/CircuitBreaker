@@ -64,6 +64,7 @@ class NATSClient:
                         _logger.error("Resubscribe failed for %s: %s", subject, exc)
                 await self._ensure_kv_bucket()
                 await self._ensure_dlq_stream()
+                await self._ensure_events_stream()
                 await self._flush_publish_buffer()
 
             async def _on_error(exc: Exception) -> None:
@@ -104,6 +105,7 @@ class NATSClient:
             self._connected = True
             await self._ensure_kv_bucket()
             await self._ensure_dlq_stream()
+            await self._ensure_events_stream()
             _logger.info("NATS connected to %s", self._url)
         except Exception as exc:
             self._connected = False
@@ -214,6 +216,36 @@ class NATSClient:
                 _logger.debug("NATS WEBHOOK_DLQ stream already exists")
             else:
                 _logger.warning("NATS WEBHOOK_DLQ stream ensure failed: %s", exc)
+
+    async def _ensure_events_stream(self) -> None:
+        """Create the CB_EVENTS JetStream stream if it does not exist."""
+        if not self._connected or not self._js:
+            return
+        try:
+            retention_hours = int(os.getenv("CB_EVENTS_RETENTION_HOURS", "24"))
+            await self._js.add_stream(
+                name="CB_EVENTS",
+                subjects=[
+                    "discovery.device.>",
+                    "discovery.scan.>",
+                    "discovery.listener.>",
+                    "topology.>",
+                    "integrations.>",
+                    "notifications.>",
+                    "status.>",
+                    "monitor.>",
+                    "audit.>",
+                    "alert.>",
+                ],
+                max_age=retention_hours * 3600,
+            )
+            _logger.info("NATS CB_EVENTS stream created (retention %dh)", retention_hours)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
+                _logger.debug("NATS CB_EVENTS stream already exists")
+            else:
+                _logger.warning("NATS CB_EVENTS stream ensure failed: %s", exc)
 
     async def js_publish(self, subject: str, payload: dict | str | bytes) -> bool:
         """Publish to JetStream. Returns True on success, False if unavailable or on error."""

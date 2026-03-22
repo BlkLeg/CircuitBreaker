@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import random
 import re
 import time
 from datetime import UTC, datetime
@@ -34,6 +35,11 @@ def _touch_healthy() -> None:
 
 
 _RETRY_BACKOFF_S = [1, 5, 30]
+
+_JS_STREAM = "CB_EVENTS"
+_JS_CONSUMER_DURABLE = "webhook_dispatch"
+_JS_BATCH_SIZE = 10
+_JS_FETCH_TIMEOUT_S = 1.0
 
 
 def _safe_target_url_for_log(url: str) -> str:
@@ -208,7 +214,8 @@ async def _dispatch_with_retries(
             _write_delivery(rule.id, subject, body_text, None, error, elapsed_ms)
 
         if attempt < max_attempts - 1:
-            await asyncio.sleep(_RETRY_BACKOFF_S[attempt])
+            jitter = 0.5 + random.random() * 0.5
+            await asyncio.sleep(_RETRY_BACKOFF_S[attempt] * jitter)
         # Best-effort send rate cap (~10 req/sec) per worker.
         await asyncio.sleep(0.1)
 
@@ -275,9 +282,6 @@ def _apply_body_template(template: str, subject: str, payload_obj: dict) -> tupl
 
 async def process_event(msg: Any) -> None:
     subject = msg.subject
-    # Skip JetStream internal subjects and NATS inbox reply subjects
-    if subject.startswith("$JS.") or subject.startswith("_INBOX."):
-        return
     payload_bytes = msg.data
     try:
         payload_obj = json.loads(payload_bytes.decode())
@@ -298,42 +302,108 @@ async def process_event(msg: Any) -> None:
         return
 
     async with httpx.AsyncClient() as client:
+        tasks = []
         for rule in active_rules:
             if rule.body_template:
-                rule_body_bytes, rule_body_text = _apply_body_template(
-                    rule.body_template, subject, payload_obj
-                )
+                rb, rt = _apply_body_template(rule.body_template, subject, payload_obj)
             else:
-                rule_body_bytes, rule_body_text = body_bytes, body_text
-            await _dispatch_with_retries(client, rule, subject, rule_body_bytes, rule_body_text)
+                rb, rt = body_bytes, body_text
+            tasks.append(_dispatch_with_retries(client, rule, subject, rb, rt))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.error("Concurrent webhook dispatch error: %s", result, exc_info=result)
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
-    backoff = 1
-    while not nats_client.is_connected:
-        await nats_client.connect()
-        if not nats_client.is_connected:
-            logger.warning("Waiting for NATS... retrying in %ds", backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)
+    if not nats_client.is_connected:
+        backoff = 1
+        while not nats_client.is_connected:
+            if shutdown_event and shutdown_event.is_set():
+                return
+            await nats_client.connect()
+            if not nats_client.is_connected:
+                logger.warning("Waiting for NATS... retrying in %ds", backoff)
+                try:
+                    if shutdown_event:
+                        await asyncio.wait_for(shutdown_event.wait(), timeout=float(backoff))
+                    else:
+                        await asyncio.sleep(backoff)
+                except TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60)
 
-    await nats_client.subscribe(">", handler=process_event)
-    logger.info("Webhook worker started and listening on all events")
-    _touch_healthy()
+    logger.info("Webhook worker starting (JetStream durable consumer)")
+    psub: Any = None
+    was_connected = False
 
     while not (shutdown_event and shutdown_event.is_set()):
+        now_connected = nats_client.is_connected and nats_client._nc is not None
+
+        if now_connected and not was_connected:
+            try:
+                await nats_client._ensure_events_stream()
+                js = nats_client._nc.jetstream()
+                psub = await js.pull_subscribe(
+                    ">",
+                    durable=_JS_CONSUMER_DURABLE,
+                    stream=_JS_STREAM,
+                )
+                logger.info(
+                    "Webhook worker subscribed to %s stream (durable=%s)",
+                    _JS_STREAM,
+                    _JS_CONSUMER_DURABLE,
+                )
+                _touch_healthy()
+            except Exception as exc:
+                logger.warning("Webhook worker JetStream setup failed: %s", exc)
+                psub = None
+
+        was_connected = now_connected
+
+        if psub is None:
+            try:
+                if shutdown_event:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
+                else:
+                    await asyncio.sleep(1.0)
+            except TimeoutError:
+                pass
+            continue
+
         try:
-            if shutdown_event:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=30.0)
-            else:
-                await asyncio.sleep(30)
-        except TimeoutError:
-            pass
+            msgs = await psub.fetch(_JS_BATCH_SIZE, timeout=_JS_FETCH_TIMEOUT_S)
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            if "Timeout" not in exc_name:
+                logger.warning(
+                    "Webhook worker fetch error (%s): %s — resetting subscription",
+                    exc_name,
+                    exc,
+                )
+                psub = None
+                was_connected = False
+            continue
+
+        for msg in msgs:
+            try:
+                await msg.in_progress()
+                await process_event(msg)
+                await msg.ack()
+            except Exception as exc:
+                logger.error(
+                    "Webhook worker: unhandled error processing message: %s",
+                    exc,
+                    exc_info=True,
+                )
+                try:
+                    await msg.nak()
+                except Exception:
+                    pass
 
         _touch_healthy()
-        still_connected: bool = nats_client.is_connected
-        if not still_connected:
-            logger.warning("Webhook worker: NATS not connected — waiting for auto-reconnect")
+
+    logger.info("Webhook worker stopped")
 
 
 if __name__ == "__main__":

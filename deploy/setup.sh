@@ -70,8 +70,27 @@ stage1_bootstrap() {
   if id breaker &>/dev/null; then
     cb_ok "User 'breaker' already exists"
   else
-    useradd -r -u 999 -s /usr/sbin/nologin -d /nonexistent -c "Circuit Breaker" breaker >> "$LOG_FILE" 2>&1
-    cb_ok "User 'breaker' created"
+    local _breaker_uid=""
+    for _uid in 999 998 997; do
+      if ! getent passwd "$_uid" &>/dev/null; then
+        _breaker_uid="$_uid"
+        break
+      else
+        local _taken_by
+        _taken_by=$(getent passwd "$_uid" | cut -d: -f1)
+        cb_warn "UID $_uid is taken by '${_taken_by}' — trying next candidate"
+      fi
+    done
+    if [[ -n "$_breaker_uid" ]]; then
+      useradd -r -u "$_breaker_uid" -s /usr/sbin/nologin -d /nonexistent -c "Circuit Breaker" breaker >> "$LOG_FILE" 2>&1
+    else
+      cb_warn "UIDs 999/998/997 all taken — creating 'breaker' with system-assigned UID"
+      useradd -r -s /usr/sbin/nologin -d /nonexistent -c "Circuit Breaker" breaker >> "$LOG_FILE" 2>&1
+    fi
+    if ! id breaker &>/dev/null; then
+      cb_fail "Failed to create system user 'breaker'" "Check: tail -20 ${LOG_FILE}"
+    fi
+    cb_ok "User 'breaker' created (UID: $(id -u breaker))"
   fi
   usermod -aG systemd-journal breaker 2>/dev/null || true
 
@@ -104,12 +123,38 @@ stage1_bootstrap() {
   
   for dir in "${!DIRS[@]}"; do
     IFS=':' read -r owner group perms <<< "${DIRS[$dir]}"
-    mkdir -p "$dir" >> "$LOG_FILE" 2>&1
-    chown "$owner:$group" "$dir" >> "$LOG_FILE" 2>&1
-    chmod "$perms" "$dir" >> "$LOG_FILE" 2>&1
+    mkdir -p "$dir" >> "$LOG_FILE" 2>&1 \
+      || cb_fail "Failed to create directory: $dir" "Check: tail -20 ${LOG_FILE}"
+    chown "$owner:$group" "$dir" >> "$LOG_FILE" 2>&1 \
+      || cb_fail "Failed to set ownership $owner:$group on: $dir" "Check: tail -20 ${LOG_FILE}"
+    chmod "$perms" "$dir" >> "$LOG_FILE" 2>&1 \
+      || cb_fail "Failed to set permissions $perms on: $dir" "Check: tail -20 ${LOG_FILE}"
   done
-  
+
   cb_ok "Directory structure created"
+
+  # Verify critical directory ownership — catches residual root ownership
+  cb_step "Validating directory ownership"
+  local _val_failed=0
+  for _d in "${CB_DATA_DIR}" "${CB_DATA_DIR}/logs"; do
+    local _owner
+    _owner=$(stat -c '%U' "$_d" 2>/dev/null || echo "MISSING")
+    if [[ "$_owner" != "breaker" ]]; then
+      echo "  ERROR: $_d owner='$_owner' (expected 'breaker')" >&2
+      _val_failed=1
+    fi
+  done
+  local _etc_grp
+  _etc_grp=$(stat -c '%G' /etc/circuitbreaker 2>/dev/null || echo "MISSING")
+  if [[ "$_etc_grp" != "breaker" ]]; then
+    echo "  ERROR: /etc/circuitbreaker group='$_etc_grp' (expected 'breaker')" >&2
+    _val_failed=1
+  fi
+  if [[ "$_val_failed" -eq 1 ]]; then
+    cb_fail "Directory ownership validation failed" \
+      "User 'breaker' may not exist or chown failed — check: tail -20 ${LOG_FILE}"
+  fi
+  cb_ok "Directory ownership verified"
 
   # File descriptor limits for the breaker user
   if ! grep -q "breaker.*nofile" /etc/security/limits.conf 2>/dev/null; then
@@ -239,11 +284,11 @@ stage0_preflight() {
     debian)
       PKG_MGR="apt-get"
       case "$OS_VERSION" in
-        11|12)
+        11|12|13)
           cb_ok "Debian $OS_VERSION detected"
           ;;
         *)
-          cb_fail "Unsupported Debian version: $OS_VERSION" "Supported: 11, 12"
+          cb_fail "Unsupported Debian version: $OS_VERSION" "Supported: 11, 12, 13"
           ;;
       esac
       ;;
