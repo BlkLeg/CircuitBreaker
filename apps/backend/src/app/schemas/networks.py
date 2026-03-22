@@ -1,12 +1,25 @@
+import ipaddress
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class NetworkBase(BaseModel):
     name: str
     icon_slug: str | None = None
     cidr: str | None = None
+
+    @field_validator("cidr", mode="before")
+    @classmethod
+    def validate_cidr(cls, v: object) -> object:
+        if v is None:
+            return v
+        try:
+            ipaddress.ip_network(str(v), strict=False)
+        except ValueError as exc:
+            raise ValueError(f"Invalid CIDR notation: {v}") from exc
+        return v
+
     vlan_id: int | None = None
     gateway: str | None = None
     description: str | None = None

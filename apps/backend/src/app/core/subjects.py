@@ -37,6 +37,10 @@ PROXMOX_VM_REMOVED = "integrations.proxmox.vm.removed"
 
 BACKUP_SNAPSHOT_COMPLETED = "backup.snapshot.completed"
 
+# ── Intelligence ──────────────────────────────────────────────────────────────
+
+INTEL_ASSET_DOWN = "intel.asset.down"  # enriched DOWN event including blast radius payload
+
 # ── Notifications / Alerts ───────────────────────────────────────────────────
 
 NOTIFICATION_EVENT = "notifications.event"

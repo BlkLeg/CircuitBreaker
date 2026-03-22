@@ -43,15 +43,15 @@ async def test_get_settings_viewer_returns_200(client, viewer_headers):
 
 
 async def test_put_settings_updates_string_field(client, auth_headers):
-    """Admin can update a string field (app_name) via PUT."""
+    """Admin can update a string field (app_name) via PUT using the branding object."""
     resp = await client.put(
         _BASE,
         headers=auth_headers,
-        json={"app_name": "CircuitBreaker-Test"},
+        json={"branding": {"app_name": "CircuitBreaker-Test"}},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body.get("app_name") == "CircuitBreaker-Test"
+    assert body.get("branding", {}).get("app_name") == "CircuitBreaker-Test"
 
 
 async def test_put_settings_viewer_returns_403(client, viewer_headers):

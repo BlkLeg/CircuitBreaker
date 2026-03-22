@@ -183,6 +183,9 @@ class Hardware(Base):
         "Environment", back_populates="hardware", foreign_keys=[environment_id]
     )
     storage_items: Mapped[list["Storage"]] = relationship("Storage", back_populates="hardware")
+    capacity_forecasts: Mapped[list["CapacityForecast"]] = relationship(
+        "CapacityForecast", back_populates="hardware", cascade="all, delete-orphan"
+    )
     network_memberships: Mapped[list["HardwareNetwork"]] = relationship(
         "HardwareNetwork", back_populates="hardware"
     )
@@ -847,6 +850,8 @@ class AppSettings(Base):
     dev_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     audit_log_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     audit_log_hide_ip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    telemetry_hot_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    telemetry_warm_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Branding
     app_name: Mapped[str] = mapped_column(String, nullable=False, default="Circuit Breaker")
     favicon_path: Mapped[str | None] = mapped_column(Text)
@@ -1952,3 +1957,62 @@ class IntegrationMonitorEvent(Base):
     monitor: Mapped["IntegrationMonitor"] = relationship(
         "IntegrationMonitor", back_populates="events"
     )
+
+
+# ── Intelligence / Analytics ──────────────────────────────────────────────────
+
+
+class CapacityForecast(Base):
+    __tablename__ = "capacity_forecasts"
+    __table_args__ = (
+        UniqueConstraint("hardware_id", "metric", name="uq_capacity_forecast_hw_metric"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    metric: Mapped[str] = mapped_column(String(64), nullable=False)
+    slope_per_day: Mapped[float] = mapped_column(Float, nullable=False)
+    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    projected_full_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    warning_threshold_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="capacity_forecasts")
+
+
+class ResourceEfficiencyRecommendation(Base):
+    __tablename__ = "resource_efficiency_recommendations"
+    __table_args__ = (
+        UniqueConstraint("asset_type", "asset_id", name="uq_resource_efficiency_asset"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    asset_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    cpu_avg_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpu_peak_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_avg_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class FlapIncident(Base):
+    __tablename__ = "flap_incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    asset_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    transition_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

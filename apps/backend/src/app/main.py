@@ -959,6 +959,21 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=3600,
     )
 
+    from app.workers.analytics_worker import run_analytics_job, run_retention_job
+
+    scheduler.add_job(
+        run_analytics_job,
+        trigger=CronTrigger(hour=2, minute=30),
+        id="analytics_job",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_retention_job,
+        trigger=CronTrigger(hour=3, minute=30),
+        id="retention_job",
+        replace_existing=True,
+    )
+
     scheduler.start()
     _logger.info("APScheduler started.")
 
@@ -1478,6 +1493,15 @@ app.include_router(
     integrations_api.router,
     prefix=f"{_V1}/integrations",
     tags=["integrations"],
+    dependencies=[Depends(require_auth)],
+)
+
+from app.api import intel as intel_api  # noqa: E402
+
+app.include_router(
+    intel_api.router,
+    prefix=f"{_V1}/intel",
+    tags=["intelligence"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(

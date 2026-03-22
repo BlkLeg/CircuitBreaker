@@ -48,6 +48,21 @@ class Factories:
         self.session.flush()
         return hw
 
+    # ── Compute Units ─────────────────────────────────────────────────────────
+
+    def compute_unit(self, **kwargs):
+        from app.db.models import ComputeUnit
+
+        defaults = {
+            "name": fake.unique.hostname(),
+            "kind": "vm",
+        }
+        defaults.update(kwargs)
+        cu = ComputeUnit(**defaults)
+        self.session.add(cu)
+        self.session.flush()
+        return cu
+
     # ── Networks ──────────────────────────────────────────────────────────────
 
     def network(self, **kwargs):

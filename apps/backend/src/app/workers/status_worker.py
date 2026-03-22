@@ -214,6 +214,27 @@ def _run_status_poll_job_impl() -> None:
                         "events": events,
                         "cpu_mem": (metrics_list or [])[:20],
                     }
+                # Enrich with blast radius when a critical DOWN event is detected
+                if events and any(e.get("severity") == "critical" for e in events):
+                    try:
+                        from app.services.intelligence.dependency_graph import (
+                            calculate_blast_radius,
+                        )
+
+                        hw_ids, _, _, _ = svc.resolve_group_entity_ids(group)
+                        if hw_ids:
+                            blast = calculate_blast_radius(db, "hardware", hw_ids[0])
+                            if metrics_payload is None:
+                                metrics_payload = {"events": events, "cpu_mem": []}
+                            metrics_payload["blast_radius"] = {
+                                "summary": blast.summary,
+                                "total_impact_count": blast.total_impact_count,
+                                "impacted_compute_units": len(blast.impacted_compute_units),
+                                "impacted_services": len(blast.impacted_services),
+                                "impacted_hardware": len(blast.impacted_hardware),
+                            }
+                    except Exception:
+                        pass  # blast radius is enrichment only — never block the status update
                 svc.append_history(
                     db,
                     group_id,
