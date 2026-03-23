@@ -62,5 +62,23 @@ export function useRacksData(toast) {
     [load, toast]
   );
 
-  return { racks, hardware, loading, createRack, updateRack, deleteRack, assignToRack };
+  const unassignFromRack = useCallback(
+    async (hwId) => {
+      await hardwareApi.update(hwId, { rack_id: null, rack_unit: null });
+      toast.success('Removed from rack.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  return {
+    racks,
+    hardware,
+    loading,
+    createRack,
+    updateRack,
+    deleteRack,
+    assignToRack,
+    unassignFromRack,
+  };
 }
