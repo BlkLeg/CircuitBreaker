@@ -151,10 +151,17 @@ def _record_sync_health(
                 cfg.last_sync_error = str(exc)[:512]
             elif result is not None:
                 errors = result.get("errors") or []
-                cfg.last_sync_status = "partial" if errors else "ok"
-                cfg.last_sync_error = (
-                    "\n".join(str(e) for e in errors[:5]) if errors else None
-                )
+                if not result.get("ok", True):
+                    # discover_and_import caught a hard failure internally and returned ok=False
+                    cfg.last_sync_status = "error"
+                    cfg.last_sync_error = (
+                        "\n".join(str(e) for e in errors[:5]) if errors else "Sync failed"
+                    )
+                else:
+                    cfg.last_sync_status = "partial" if errors else "ok"
+                    cfg.last_sync_error = (
+                        "\n".join(str(e) for e in errors[:5]) if errors else None
+                    )
             cfg.last_sync_at = utcnow()
             _hdb.commit()
     except Exception:
