@@ -168,7 +168,17 @@ function MonitorNodeRow({ nodeId, monitors }) {
         }}
       />
       <Radio size={12} style={{ flexShrink: 0 }} />
-      <span>{name}</span>
+      <span style={{ flex: 1 }}>{name}</span>
+      {monitor?.avg_response_ms != null && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+          {Math.round(monitor.avg_response_ms)}ms
+        </span>
+      )}
+      {monitor?.uptime_7d != null && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+          {monitor.uptime_7d.toFixed(1)}%
+        </span>
+      )}
     </div>
   );
 }

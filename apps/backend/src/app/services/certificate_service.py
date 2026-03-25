@@ -6,6 +6,8 @@ Let's Encrypt renewal delegates to certbot (if installed) via subprocess.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import subprocess
 import tempfile
@@ -18,6 +20,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_audit
+from app.core.nats_client import nats_client
 from app.core.time import utcnow
 from app.db.models import Certificate
 from app.schemas.certificate import CertificateCreate, CertificateUpdate
@@ -208,7 +212,6 @@ def renew_certificate(db: Session, cert: Certificate) -> Certificate:
 
 def _publish_renewal(cert: Certificate) -> None:
     """Publish renewed cert to Redis for real-time consumers."""
-    import asyncio
 
     async def _pub() -> None:
         from app.core.redis import get_redis
@@ -216,8 +219,6 @@ def _publish_renewal(cert: Certificate) -> None:
         r = await get_redis()
         if r is None:
             return
-        import json
-
         await r.publish(
             f"cert:{cert.domain}",
             json.dumps({"domain": cert.domain, "expires_at": cert.expires_at.isoformat()}),
@@ -231,12 +232,15 @@ def _publish_renewal(cert: Certificate) -> None:
 
 
 def check_and_renew_expiring(db: Session) -> int:
-    """Check all auto_renew certs expiring within 30 days and renew them.
+    """Check all certs for expiration. Renew if auto_renew=True, else alert.
 
     Returns the count of renewed certificates.
     """
-    threshold = utcnow() + timedelta(days=_RENEWAL_THRESHOLD_DAYS)
-    expiring = (
+    now = utcnow()
+    threshold = now + timedelta(days=_RENEWAL_THRESHOLD_DAYS)
+
+    # 1. Automated Renewals (auto_renew=True)
+    expiring_auto = (
         db.query(Certificate)
         .filter(
             Certificate.auto_renew.is_(True),
@@ -246,15 +250,75 @@ def check_and_renew_expiring(db: Session) -> int:
     )
 
     renewed = 0
-    for cert in expiring:
+    for cert in expiring_auto:
         try:
             renew_certificate(db, cert)
             renewed += 1
+            log_audit(
+                db,
+                None,
+                user_id=None,
+                action="certificate_auto_renewed",
+                resource=f"certificate:{cert.id}",
+                details=f"domain={cert.domain} status=ok",
+            )
         except Exception as exc:
-            _logger.error("Failed to renew cert for %s: %s", cert.domain, exc)
+            _logger.error("Failed to auto-renew cert for %s: %s", cert.domain, exc)
+            log_audit(
+                db,
+                None,
+                user_id=None,
+                action="certificate_auto_renew_failed",
+                resource=f"certificate:{cert.id}",
+                status="fail",
+                details=f"domain={cert.domain} error={exc}",
+                severity="error",
+            )
+
+    # 2. Expiration Alerts (for all certs near expiry)
+    all_expiring = db.query(Certificate).filter(Certificate.expires_at <= threshold).all()
+
+    for cert in all_expiring:
+        days_left = (cert.expires_at - now).days
+        # Only alert on specific milestones to avoid daily spam
+        if days_left in (30, 14, 7, 3, 1, 0):
+            severity = "critical" if days_left <= 3 else "warning"
+            msg = (
+                f"Certificate for {cert.domain} expires in {days_left} days "
+                f"({cert.expires_at.date()})."
+            )
+            if cert.auto_renew and days_left > 0:
+                msg += " Automated renewal will be attempted."
+
+            _publish_alert(cert, severity, msg)
 
     if renewed:
         _logger.info(
             "Renewed %d certificate(s) expiring within %d days", renewed, _RENEWAL_THRESHOLD_DAYS
         )
     return renewed
+
+
+def _publish_alert(cert: Certificate, severity: str, message: str) -> None:
+    """Publish an alert to NATS for the notification worker."""
+    payload = {
+        "title": "Certificate Expiration Warning",
+        "message": message,
+        "severity": severity,
+        "domain": cert.domain,
+        "expires_at": cert.expires_at.isoformat(),
+        "certificate_id": cert.id,
+    }
+
+    async def _pub():
+        await nats_client.js_publish(f"alert.certificate.expiring.{cert.id}", payload)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_pub())
+    except RuntimeError:
+        # Fallback for sync contexts if no loop is running
+        try:
+            asyncio.run(_pub())
+        except Exception:
+            pass

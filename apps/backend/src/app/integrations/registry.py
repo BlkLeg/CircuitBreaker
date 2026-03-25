@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from app.integrations.base import IntegrationPlugin
+from app.integrations.native_probe import NativeProbePlugin
 from app.integrations.uptime_kuma import UptimeKumaPlugin
 
 INTEGRATION_REGISTRY: dict[str, type[IntegrationPlugin]] = {
     UptimeKumaPlugin.TYPE: UptimeKumaPlugin,
+    NativeProbePlugin.TYPE: NativeProbePlugin,
 }
 
 

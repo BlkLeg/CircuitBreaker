@@ -17,6 +17,7 @@ import { unlinkByEdge } from '../components/map/linkMutations';
  * @returns {{ saveLayoutSnapshot, saveLayout, handleDeleteNodeAction, forceRemoveDeleteConflicts }}
  */
 export function useMapMutations({
+  mapId,
   // refs
   nodesRef,
   edgeOverridesRef,
@@ -82,13 +83,14 @@ export function useMapMutations({
         nodeSpacing,
         groupBy,
       };
-      await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload));
+      await graphApi.saveLayout(getLayoutName(), JSON.stringify(payload), mapId);
       setLastSaved(new Date().toISOString());
       dirtyRef.current = false;
     },
     [
       boundaries,
       getLayoutName,
+      mapId,
       edgeMode,
       edgeLabelVisible,
       nodeSpacing,

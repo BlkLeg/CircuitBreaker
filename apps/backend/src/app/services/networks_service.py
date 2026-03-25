@@ -1,8 +1,22 @@
-from sqlalchemy import or_, select
+import ipaddress
+
+from sqlalchemy import func, or_, select, union_all
+from sqlalchemy.dialects.postgresql import INET as PG_INET
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
-from app.db.models import ComputeNetwork, EntityTag, HardwareNetwork, Network, NetworkPeer, Tag
+from app.db.models import (
+    ComputeNetwork,
+    ComputeUnit,
+    EntityTag,
+    Hardware,
+    HardwareNetwork,
+    IPAddress,
+    Network,
+    NetworkPeer,
+    ScanResult,
+    Tag,
+)
 from app.schemas.networks import NetworkCreate, NetworkUpdate
 
 
@@ -50,6 +64,19 @@ def _to_dict(db: Session, net: Network) -> dict:
     return d
 
 
+def _cidr_usable(cidr: str | None) -> int:
+    """Return the number of usable host addresses in a CIDR block."""
+    if not cidr:
+        return 0
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        if net.prefixlen >= 31:
+            return int(net.num_addresses)
+        return int(net.num_addresses) - 2  # exclude network + broadcast
+    except ValueError:
+        return 0
+
+
 def list_networks(
     db: Session,
     *,
@@ -78,14 +105,115 @@ def list_networks(
             .where(Tag.name == tag)
         )
     rows = db.execute(stmt).scalars().all()
-    return [_to_dict(db, r) for r in rows]
+
+    # Batch-fetch distinct allocated IPs per network across all sources
+    network_ids = [r.id for r in rows]
+    if not network_ids:
+        allocated_map: dict[int, int] = {}
+    else:
+        q1 = select(
+            IPAddress.network_id.label("network_id"),
+            func.host(IPAddress.address).label("ip"),
+        ).where(
+            IPAddress.network_id.in_(network_ids),
+            IPAddress.status == "allocated",
+        )
+        q2 = (
+            select(
+                Network.id.label("network_id"),
+                Hardware.ip_address.label("ip"),
+            )
+            .join(
+                Network,
+                func.cast(Hardware.ip_address, PG_INET).op("<<")(func.cast(Network.cidr, PG_INET)),
+            )
+            .where(
+                Network.id.in_(network_ids),
+                Hardware.ip_address.isnot(None),
+                Network.cidr.isnot(None),
+            )
+        )
+        q3 = (
+            select(
+                Network.id.label("network_id"),
+                ComputeUnit.ip_address.label("ip"),
+            )
+            .join(
+                Network,
+                func.cast(ComputeUnit.ip_address, PG_INET).op("<<")(
+                    func.cast(Network.cidr, PG_INET)
+                ),
+            )
+            .where(
+                Network.id.in_(network_ids),
+                ComputeUnit.ip_address.isnot(None),
+                Network.cidr.isnot(None),
+            )
+        )
+        q4 = (
+            select(
+                Network.id.label("network_id"),
+                ScanResult.ip_address.label("ip"),
+            )
+            .join(
+                Network,
+                func.cast(ScanResult.ip_address, PG_INET).op("<<")(
+                    func.cast(Network.cidr, PG_INET)
+                ),
+            )
+            .where(
+                Network.id.in_(network_ids),
+                Network.cidr.isnot(None),
+                ScanResult.ip_address.isnot(None),
+                ~ScanResult.ip_address.contains(":"),
+            )
+        )
+        combined = union_all(q1, q2, q3, q4).subquery()
+        count_rows = db.execute(
+            select(
+                combined.c.network_id,
+                func.count(func.distinct(combined.c.ip)).label("cnt"),
+            ).group_by(combined.c.network_id)
+        ).all()
+        allocated_map = {row.network_id: row.cnt for row in count_rows}
+
+    results = []
+    for r in rows:
+        d = _to_dict(db, r)
+        d["allocated_count"] = allocated_map.get(r.id, 0)
+        d["total_count"] = _cidr_usable(r.cidr)
+        results.append(d)
+    return results
 
 
 def get_network(db: Session, network_id: int) -> dict:
     net = db.get(Network, network_id)
     if net is None:
         raise ValueError(f"Network {network_id} not found")
-    return _to_dict(db, net)
+    d = _to_dict(db, net)
+    q1 = select(func.host(IPAddress.address).label("ip")).where(
+        IPAddress.network_id == network_id, IPAddress.status == "allocated"
+    )
+    sources = [q1]
+    if net.cidr:
+        q2 = select(Hardware.ip_address.label("ip")).where(
+            Hardware.ip_address.isnot(None),
+            func.cast(Hardware.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+        )
+        q3 = select(ComputeUnit.ip_address.label("ip")).where(
+            ComputeUnit.ip_address.isnot(None),
+            func.cast(ComputeUnit.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+        )
+        q4 = select(ScanResult.ip_address.label("ip")).where(
+            ScanResult.ip_address.isnot(None),
+            ~ScanResult.ip_address.contains(":"),
+            func.cast(ScanResult.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+        )
+        sources = [q1, q2, q3, q4]
+    combined = union_all(*sources).subquery()
+    d["allocated_count"] = db.execute(select(func.count(func.distinct(combined.c.ip)))).scalar_one()
+    d["total_count"] = _cidr_usable(net.cidr)
+    return d
 
 
 def create_network(db: Session, payload: NetworkCreate) -> dict:
@@ -97,6 +225,7 @@ def create_network(db: Session, payload: NetworkCreate) -> dict:
         description=payload.description,
         gateway_hardware_id=payload.gateway_hardware_id,
         icon_slug=payload.icon_slug,
+        site_id=payload.site_id,
     )
     db.add(net)
     db.flush()

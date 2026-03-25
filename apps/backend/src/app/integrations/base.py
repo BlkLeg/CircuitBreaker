@@ -25,6 +25,7 @@ class MonitorStatus:
     url: str | None = None
     uptime_7d: float | None = None
     uptime_30d: float | None = None
+    avg_response_ms: float | None = None
 
 
 class IntegrationPlugin(ABC):
@@ -39,15 +40,16 @@ class IntegrationPlugin(ABC):
     CONFIG_FIELDS: list[ConfigField]
 
     @abstractmethod
-    def test_connection(self, config: dict[str, Any]) -> tuple[bool, str]:
+    def test_connection(self, config: Any) -> tuple[bool, str]:
         """Test whether the integration credentials are valid.
 
         Returns (ok, message). Must never raise — catch all exceptions internally.
         """
 
     @abstractmethod
-    def sync(self, config: dict[str, Any]) -> list[MonitorStatus]:
+    def sync(self, config: Any, **kwargs: Any) -> list[MonitorStatus]:
         """Pull the current status of all monitors from the external service.
 
         Returns a list of MonitorStatus objects. Must never raise — return [] on error.
+        Subclasses may add keyword arguments (e.g. db session) as needed.
         """

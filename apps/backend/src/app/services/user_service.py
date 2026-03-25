@@ -284,6 +284,7 @@ def accept_invite(
     db.flush()
 
     invite.status = "accepted"
+    invite.accepted_at = utcnow()
     db.commit()
     db.refresh(user)
 
@@ -326,3 +327,67 @@ def is_session_revoked(db: Session, token: str) -> bool:
         .filter(UserSession.revoked == True)  # noqa: E712
     ).first()
     return session is not None
+
+
+def consume_invite_for_oauth(
+    db: Session,
+    invite_token: str,
+    oauth_email: str,
+) -> tuple[str, str]:
+    """Validate and consume an invite token during an OAuth sign-in.
+
+    Decodes the JWT, verifies the DB record, enforces case-insensitive email
+    match against the OAuth account, then marks the invite accepted.
+
+    Returns:
+        (email, role) to be used when creating the OAuth user.
+
+    Raises:
+        HTTPException 400 — invalid/expired token, wrong email, or already used.
+    """
+    from app.services.settings_service import get_or_create_settings
+
+    settings = get_or_create_settings(db)
+    secret = settings.jwt_secret
+    if not secret:
+        raise HTTPException(status_code=400, detail="Invite system not configured")
+
+    try:
+        payload = jwt.decode(
+            invite_token, secret, algorithms=["HS256"], audience=[INVITE_TOKEN_AUD]
+        )
+    except jwt.PyJWTError as err:
+        raise HTTPException(status_code=400, detail="Invalid or expired invite") from err
+
+    invite_email = payload.get("email", "")
+    role = payload.get("role", "viewer")
+    if not invite_email or role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid invite payload")
+
+    if invite_email.lower() != oauth_email.strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth account email does not match this invite",
+        )
+
+    invite = db.query(UserInvite).filter(UserInvite.token == invite_token).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if invite.status != "pending":
+        raise HTTPException(status_code=400, detail="Invite already used or revoked")
+
+    expires = invite.expires
+    if expires.tzinfo is None:
+        from datetime import UTC
+
+        expires = expires.replace(tzinfo=UTC)
+    if expires < utcnow():
+        invite.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invite has expired")
+
+    invite.status = "accepted"
+    invite.accepted_at = utcnow()
+    db.commit()
+
+    return invite_email, role

@@ -109,6 +109,7 @@ import {
   getDefaultQuickCreateValues,
 } from '../utils/mapDataUtils';
 import { useMapDataLoad } from '../hooks/useMapDataLoad';
+import { useMapTabs } from '../hooks/useMapTabs';
 import { useMapRealTimeUpdates } from '../hooks/useMapRealTimeUpdates';
 import { useMapMutations } from '../hooks/useMapMutations';
 import { useTelemetryStream } from '../hooks/useTelemetryStream';
@@ -137,7 +138,7 @@ import { isLightTheme, omitKey, isHiddenByTag, getQuickCreateTitle } from '../ut
 
 // ── Main Component ──────────────────────────────────────────────────────────
 
-function MapInternal() {
+function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMapDelete }) {
   const { onConnectStart, onConnectEnd } = useConnectionStateContext();
   const isMobile = useIsMobile();
   const { timezone } = useTimezone();
@@ -745,6 +746,7 @@ function MapInternal() {
   }, []);
 
   const { fetchData, autoPlaceNew, updateNodePos } = useMapDataLoad({
+    mapId,
     setLoading,
     setError,
     setEdgeMode,
@@ -822,6 +824,7 @@ function MapInternal() {
 
   const { saveLayoutSnapshot, saveLayout, handleDeleteNodeAction, forceRemoveDeleteConflicts } =
     useMapMutations({
+      mapId,
       nodesRef,
       edgeOverridesRef,
       mapLabelsRef,
@@ -1907,6 +1910,12 @@ function MapInternal() {
                 }}
                 onFullscreen={handleToggleFullscreen}
                 isFullscreen={isFullscreen}
+                maps={maps}
+                activeMapId={mapId}
+                onMapSwitch={onMapSwitch}
+                onMapCreate={onMapCreate}
+                onMapRename={onMapRename}
+                onMapDelete={onMapDelete}
               />
 
               <button
@@ -2368,6 +2377,9 @@ function MapInternal() {
                 onAction={handleContextAction}
                 avoidRectRef={sidebarBoundsRef}
                 avoidRectRef2={telemetrySidebarBoundsRef}
+                maps={maps}
+                activeMapId={mapId}
+                onRefresh={fetchData}
               />
             )}
 
@@ -2923,10 +2935,31 @@ function MapInternal() {
 }
 
 export default function MapPage() {
+  const {
+    maps,
+    activeMapId,
+    loading: mapsLoading,
+    switchMap,
+    createMap,
+    renameMap,
+    deleteMap,
+  } = useMapTabs();
+
+  if (mapsLoading || activeMapId == null) {
+    return <div style={{ padding: 32, color: 'var(--text-muted)' }}>Loading maps…</div>;
+  }
+
   return (
-    <ReactFlowProvider>
+    <ReactFlowProvider key={activeMapId}>
       <ConnectionStateProvider>
-        <MapInternal />
+        <MapInternal
+          mapId={activeMapId}
+          maps={maps}
+          onMapSwitch={switchMap}
+          onMapCreate={createMap}
+          onMapRename={renameMap}
+          onMapDelete={deleteMap}
+        />
       </ConnectionStateProvider>
     </ReactFlowProvider>
   );

@@ -10,7 +10,11 @@
     "discovery": "Discovery",
     "docs": "Docs",
     "logs": "Logs",
-    "settings": "Settings"
+    "settings": "Settings",
+    "certificates": "Certificates",
+    "notifications": "Notifications",
+    "tenants": "Tenants",
+    "users": "Users"
   },
   "map": {
     "ethernet": "Ethernet",

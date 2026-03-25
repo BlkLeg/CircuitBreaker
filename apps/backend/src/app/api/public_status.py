@@ -13,6 +13,7 @@ from app.db.models import (
     IntegrationMonitorEvent,
     StatusGroup,
     StatusPage,
+    User,
 )
 from app.db.session import get_session_context
 from app.schemas.public_status import (
@@ -42,6 +43,7 @@ def _build_incidents(
     events: list[IntegrationMonitorEvent],
     monitor_names: dict[int, str],
     monitor_integration_names: dict[int, str],
+    user_names: dict[int, str] | None = None,
 ) -> list[PublicIncident]:
     """Convert raw events into incident objects (down events with optional resolved_at)."""
     # Build a map: monitor_id -> sorted list of events (oldest first)
@@ -51,6 +53,7 @@ def _build_incidents(
     for lst in by_monitor.values():
         lst.sort(key=lambda e: e.detected_at)
 
+    _user_names = user_names or {}
     incidents: list[PublicIncident] = []
     for monitor_id, evs in by_monitor.items():
         i = 0
@@ -72,6 +75,9 @@ def _build_incidents(
                         new_status=ev.new_status,
                         detected_at=ev.detected_at,
                         resolved_at=resolved_at,
+                        reason=ev.reason,
+                        reason_by_name=_user_names.get(ev.reason_by) if ev.reason_by else None,
+                        reason_at=ev.reason_at,
                     )
                 )
             i += 1
@@ -154,7 +160,13 @@ def get_public_status_page(slug: str) -> PublicStatusPageResponse:
         monitor_integration_names = {
             mid: monitor_rows[mid][1] for mid in monitor_ids if mid in monitor_rows
         }
-        incidents = _build_incidents(events, monitor_names, monitor_integration_names)
+        # Pre-load user names for event annotation attribution
+        reason_user_ids = {ev.reason_by for ev in events if ev.reason_by is not None}
+        user_names: dict[int, str] = {}
+        if reason_user_ids:
+            user_rows = db.query(User.id, User.email).filter(User.id.in_(reason_user_ids)).all()
+            user_names = {uid: email.split("@")[0] for uid, email in user_rows}
+        incidents = _build_incidents(events, monitor_names, monitor_integration_names, user_names)
 
         return PublicStatusPageResponse(
             id=page.id,

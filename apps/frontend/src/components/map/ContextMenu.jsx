@@ -23,6 +23,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { NODE_SHAPES } from './CustomNode';
+import { mapsApi } from '../../api/maps';
 
 function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
   const submenuRowClass =
@@ -208,7 +209,32 @@ function ContextMenu({
   onAction,
   avoidRectRef,
   avoidRectRef2,
+  maps = [],
+  activeMapId = null,
+  onRefresh = null,
 }) {
+  // Parse entity type from node ID (e.g. "hw-123" → { type: "hardware", id: 123 })
+  const _PREFIX_MAP = {
+    hw: 'hardware',
+    net: 'network',
+    cluster: 'cluster',
+    cu: 'compute',
+    svc: 'service',
+    st: 'storage',
+    misc: 'misc',
+    ext: 'external',
+  };
+  const parseNodeEntity = (nodeId) => {
+    if (!nodeId) return null;
+    const str = String(nodeId);
+    const dashIdx = str.indexOf('-');
+    if (dashIdx < 0) return null;
+    const prefix = str.slice(0, dashIdx);
+    const id = parseInt(str.slice(dashIdx + 1), 10);
+    const entityType = _PREFIX_MAP[prefix];
+    return entityType && !isNaN(id) ? { entityType, entityId: id } : null;
+  };
+
   const menuRef = useRef(null);
   const [activeSubmenu, setActiveSubmenu] = useState(null);
   const [menuPosition, setMenuPosition] = useState({ x: -9999, y: -9999 });
@@ -724,6 +750,66 @@ function ContextMenu({
           {node.draggable === false ? 'Unpin Node' : 'Pin Node'}
         </button>
 
+        {/* Move to map / Pin to all maps */}
+        {maps.length > 1 &&
+          (() => {
+            const parsed = parseNodeEntity(node.id);
+            if (!parsed) return null;
+            return (
+              <>
+                <div
+                  className={menuRowClass}
+                  style={{ position: 'relative' }}
+                  onMouseEnter={() => setActiveSubmenu('move_map')}
+                  onMouseLeave={() => setActiveSubmenu(null)}
+                >
+                  <Layers className={iconClass} />
+                  Move to map
+                  <ChevronRight className="tw-w-3 tw-h-3 tw-ml-auto tw-text-cb-text-muted" />
+                  {activeSubmenu === 'move_map' && (
+                    <div
+                      className={`tw-absolute ${submenuDirection === 'left' ? 'tw-right-full tw-mr-1' : 'tw-left-full tw-ml-1'} tw-top-0 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                    >
+                      <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
+                        Select Map
+                      </div>
+                      {maps
+                        .filter((m) => m.id !== activeMapId)
+                        .map((m) => (
+                          <button
+                            key={m.id}
+                            className="tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-flex tw-items-center tw-gap-2 hover:tw-bg-cb-secondary"
+                            onClick={async () => {
+                              await mapsApi.removeEntity(
+                                activeMapId,
+                                parsed.entityType,
+                                parsed.entityId
+                              );
+                              await mapsApi.assignEntity(m.id, parsed.entityType, parsed.entityId);
+                              onClose();
+                              onRefresh?.();
+                            }}
+                          >
+                            {m.name}
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={async () => {
+                    await mapsApi.pinEntity(parsed.entityType, parsed.entityId);
+                    onClose();
+                  }}
+                  className={menuRowClass}
+                >
+                  <Pin className={iconClass} />
+                  Pin to all maps
+                </button>
+              </>
+            );
+          })()}
+
         <button
           onClick={() => {
             onAction('delete_node', { nodeId: node.id });
@@ -761,6 +847,9 @@ ContextMenu.propTypes = {
   /** Ref whose `.current` holds { left, top, right, bottom } of the panel to avoid */
   avoidRectRef: PropTypes.shape({ current: PropTypes.object }),
   avoidRectRef2: PropTypes.shape({ current: PropTypes.object }),
+  maps: PropTypes.array,
+  activeMapId: PropTypes.number,
+  onRefresh: PropTypes.func,
 };
 
 export default ContextMenu;

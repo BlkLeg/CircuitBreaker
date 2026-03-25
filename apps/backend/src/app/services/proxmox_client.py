@@ -194,27 +194,32 @@ async def _get_client_async(db: AsyncSession, config: IntegrationConfig) -> Prox
 
 
 async def _check_token_privsep(client: ProxmoxIntegration) -> str | None:
-    """Detect Privilege Separation and return a targeted hint when actionable.
+    """Detect missing token permissions and return a targeted hint when actionable.
 
-    Returns a warning only when token permissions appear insufficient.
-    If the token already has VM.Audit, returning zero VMs/CTs can be legitimate
-    (for example, an empty cluster), so no error is emitted.
+    Checks for both Sys.Audit (required for node metrics) and VM.Audit (required
+    for VM/CT visibility). Returns None when permissions look sufficient.
     """
     try:
         perms = await client.get_permissions()
-        has_vm_audit = any(
-            "VM.Audit" in privs for privs in (perms.values() if isinstance(perms, dict) else [])
-        )
+        priv_sets = list(perms.values()) if isinstance(perms, dict) else []
+        has_sys_audit = any("Sys.Audit" in privs for privs in priv_sets)
+        has_vm_audit = any("VM.Audit" in privs for privs in priv_sets)
     except Exception:
+        has_sys_audit = False
         has_vm_audit = False
 
+    missing: list[str] = []
+    if not has_sys_audit:
+        missing.append("Sys.Audit (required for node CPU/RAM metrics and cluster status)")
     if not has_vm_audit:
+        missing.append("VM.Audit (required for VM/container visibility)")
+
+    if missing:
         return (
-            "0 VMs/containers returned — the API token likely has Privilege "
-            "Separation enabled (the Proxmox default). When enabled, the token "
-            "does NOT inherit the user's permissions and needs its own. Fix: "
-            "Datacenter → Permissions → Add → API Token Permission, select "
-            "your token, set Role = PVEAuditor, Path = /, Propagate = yes. "
+            "API token is missing permissions: "
+            + "; ".join(missing)
+            + ". Fix: Proxmox → Datacenter → Permissions → Add → API Token Permission, "
+            "select your token, set Role = PVEAuditor, Path = /, Propagate = yes. "
             "Or, recreate the token with Privilege Separation unchecked."
         )
     return None

@@ -91,6 +91,8 @@ def get_sync_status(db: Session, config: IntegrationConfig) -> dict:
         "integration_id": config.id,
         "last_sync_at": config.last_sync_at,
         "last_sync_status": config.last_sync_status,
+        "last_sync_error": config.last_sync_error,
+        "last_poll_error": config.last_poll_error,
         "cluster_name": config.cluster_name,
         "nodes_count": nodes_count,
         "vms_count": vms_count,
@@ -214,7 +216,13 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     uptime_str = ""
     if nodes:
         try:
-            td = json.loads(nodes[0].telemetry_data or "{}") if nodes[0].telemetry_data else {}  # type: ignore[arg-type]
+            _raw = nodes[0].telemetry_data
+            if isinstance(_raw, str):
+                td = json.loads(_raw) if _raw else {}
+            elif isinstance(_raw, dict):
+                td = _raw
+            else:
+                td = {}
             uptime_s = td.get("uptime_s", 0)
             if uptime_s:
                 d = int(uptime_s) // 86400

@@ -14,9 +14,12 @@ import {
   EyeOff,
   Mail,
   UserCheck,
+  Pencil,
+  Key,
+  LogOut,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { adminUsersApi } from '../api/client';
+import { adminUsersApi, activateMasqueradeInterceptor } from '../api/client';
 import { useToast } from '../components/common/Toast';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
@@ -79,6 +82,22 @@ export default function AdminUsersPage({ embedded = false }) {
   });
   const [showLocalPass, setShowLocalPass] = useState(false);
   const [showQR, setShowQR] = useState(false);
+
+  // Edit User modal state
+  const [editModal, setEditModal] = useState({
+    open: false,
+    user: null,
+    role: '',
+    displayName: '',
+  });
+  // Reset Password modal state
+  const [resetPassModal, setResetPassModal] = useState({
+    open: false,
+    user: null,
+    tempPassword: null,
+    revokedCount: 0,
+  });
+  const [showResetPass, setShowResetPass] = useState(false);
 
   const toggleEmail = (id) =>
     setRevealedEmails((prev) => {
@@ -280,6 +299,67 @@ export default function AdminUsersPage({ embedded = false }) {
     setShowQR(false);
   };
 
+  const handleEditUser = (u) => {
+    setEditModal({ open: true, user: u, role: u.role, displayName: u.display_name || '' });
+  };
+
+  const handleEditSubmit = async () => {
+    if (!editModal.user) return;
+    try {
+      await adminUsersApi.updateUser(editModal.user.id, {
+        role: editModal.role,
+        display_name: editModal.displayName,
+      });
+      toast.success('User updated');
+      setEditModal({ open: false, user: null, role: '', displayName: '' });
+      fetchData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to update user');
+    }
+  };
+
+  const handleResetPassword = (u) => {
+    setConfirmAction({ type: 'reset_password', user: u });
+  };
+
+  const executeResetPassword = async (u) => {
+    setConfirmAction(null);
+    try {
+      const res = await adminUsersApi.resetPassword(u.id);
+      setShowResetPass(false);
+      setResetPassModal({
+        open: true,
+        user: u,
+        tempPassword: res.data.temp_password,
+        revokedCount: res.data.revoked_sessions,
+      });
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to reset password');
+    }
+  };
+
+  const handleRevokeSessions = async (u) => {
+    setConfirmAction(null);
+    try {
+      await adminUsersApi.revokeSessions(u.id);
+      toast.success(`Logged ${u.display_name || u.email} out of all devices`);
+      fetchData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to revoke sessions');
+    }
+  };
+
+  const handleMasquerade = async (u) => {
+    try {
+      const res = await adminUsersApi.masquerade(u.id);
+      activateMasqueradeInterceptor(res.data.token);
+      sessionStorage.setItem('cb_masquerade_token', res.data.token);
+      window.location.reload();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to start masquerade');
+    }
+  };
+
   if (!isAdmin) return null;
 
   const content = (
@@ -458,6 +538,44 @@ export default function AdminUsersPage({ embedded = false }) {
                             <Unlock size={16} />
                           </button>
                         )}
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => handleEditUser(u)}
+                          title="Edit user"
+                        >
+                          <Pencil size={16} />
+                        </button>
+                        {u.id !== user?.id && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => handleResetPassword(u)}
+                            title="Reset password"
+                          >
+                            <Key size={16} />
+                          </button>
+                        )}
+                        {u.session_count > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setConfirmAction({ type: 'revoke_sessions', user: u })}
+                            title={`Revoke ${u.session_count} active session${u.session_count !== 1 ? 's' : ''}`}
+                          >
+                            <LogOut size={16} />
+                          </button>
+                        )}
+                        {u.id !== user?.id && u.is_active && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setConfirmAction({ type: 'masquerade', user: u })}
+                            title="View as this user"
+                          >
+                            <UserCheck size={16} />
+                          </button>
+                        )}
                         {u.id !== user?.id && u.is_active && (
                           <button
                             type="button"
@@ -574,6 +692,21 @@ export default function AdminUsersPage({ embedded = false }) {
                           )}
                         </td>
                         <td className="action-cell" data-label="Actions">
+                          {inv.status === 'pending' && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost"
+                              title="Copy invite link"
+                              onClick={() => {
+                                navigator.clipboard.writeText(
+                                  `${appOrigin}/invite/accept?token=${inv.token}`
+                                );
+                                toast.success('Invite link copied');
+                              }}
+                            >
+                              <Copy size={16} />
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-ghost"
@@ -760,6 +893,283 @@ export default function AdminUsersPage({ embedded = false }) {
           onConfirm={() => handleRemovePermanent(confirmAction.user)}
           onCancel={() => setConfirmAction(null)}
         />
+      )}
+      {confirmAction?.type === 'reset_password' && (
+        <ConfirmDialog
+          open
+          title="Reset password?"
+          message={`Generate a new temporary password for ${confirmAction.user?.display_name || confirmAction.user?.email}? Their current password will be invalidated and all active sessions will be terminated.`}
+          onConfirm={() => executeResetPassword(confirmAction.user)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction?.type === 'revoke_sessions' && (
+        <ConfirmDialog
+          open
+          title="Log out all devices?"
+          message={`Log ${confirmAction.user?.display_name || confirmAction.user?.email} out of all ${confirmAction.user?.session_count} active device${confirmAction.user?.session_count !== 1 ? 's' : ''}?`}
+          onConfirm={() => handleRevokeSessions(confirmAction.user)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+      {confirmAction?.type === 'masquerade' && (
+        <ConfirmDialog
+          open
+          title="View as this user?"
+          message={`You will temporarily see Circuit Breaker as ${confirmAction.user?.display_name || confirmAction.user?.email}. Your admin session is preserved and you can return at any time.`}
+          onConfirm={() => handleMasquerade(confirmAction.user)}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+
+      {/* Edit User Modal */}
+      {editModal.open && (
+        <div
+          className="modal-overlay"
+          onClick={() => setEditModal({ open: false, user: null, role: '', displayName: '' })}
+        >
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 20,
+              }}
+            >
+              <h3 style={{ margin: 0 }}>Edit User</h3>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setEditModal({ open: false, user: null, role: '', displayName: '' })}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label
+                htmlFor="edit-display-name"
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--color-text-muted)',
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Display Name
+              </label>
+              <input
+                id="edit-display-name"
+                type="text"
+                value={editModal.displayName}
+                onChange={(e) => setEditModal((m) => ({ ...m, displayName: e.target.value }))}
+                placeholder={editModal.user?.email?.split('@')[0] || ''}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: 14,
+                  background: 'var(--color-bg)',
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text)',
+                  boxSizing: 'border-box',
+                }}
+                autoFocus
+              />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <label
+                htmlFor="edit-role"
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--color-text-muted)',
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Role
+              </label>
+              <select
+                id="edit-role"
+                value={editModal.role}
+                onChange={(e) => setEditModal((m) => ({ ...m, role: e.target.value }))}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius)',
+                  fontSize: 14,
+                  background: 'var(--color-bg)',
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text)',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <option value="viewer">Viewer</option>
+                <option value="editor">Editor</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setEditModal({ open: false, user: null, role: '', displayName: '' })}
+              >
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleEditSubmit}>
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password Modal */}
+      {resetPassModal.open && (
+        <div
+          className="modal-overlay"
+          onClick={() =>
+            setResetPassModal({ open: false, user: null, tempPassword: null, revokedCount: 0 })
+          }
+        >
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 20,
+              }}
+            >
+              <h3 style={{ margin: 0 }}>Password Reset</h3>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() =>
+                  setResetPassModal({
+                    open: false,
+                    user: null,
+                    tempPassword: null,
+                    revokedCount: 0,
+                  })
+                }
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 'var(--radius)',
+                marginBottom: 16,
+                background: 'var(--color-online, #b8bb26)11',
+                border: '1px solid var(--color-online, #b8bb26)44',
+                color: 'var(--color-online, #b8bb26)',
+                fontSize: 14,
+              }}
+            >
+              Password reset for{' '}
+              <strong>{resetPassModal.user?.display_name || resetPassModal.user?.email}</strong>.
+            </div>
+            {resetPassModal.revokedCount > 0 && (
+              <div
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius)',
+                  marginBottom: 16,
+                  background: 'var(--color-warning, #fabd2f)11',
+                  border: '1px solid var(--color-warning, #fabd2f)44',
+                  fontSize: 13,
+                  color: 'var(--color-warning, #fabd2f)',
+                }}
+              >
+                {resetPassModal.revokedCount} active session
+                {resetPassModal.revokedCount !== 1 ? 's have' : ' has'} been terminated.
+              </div>
+            )}
+            <div style={{ marginBottom: 20 }}>
+              <label
+                htmlFor="reset-temp-password"
+                style={{
+                  display: 'block',
+                  marginBottom: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--color-text-muted)',
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Temporary Password
+              </label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  id="reset-temp-password"
+                  type={showResetPass ? 'text' : 'password'}
+                  readOnly
+                  value={resetPassModal.tempPassword || ''}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius)',
+                    fontSize: 14,
+                    fontFamily: 'monospace',
+                    background: 'var(--color-bg)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text)',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setShowResetPass((v) => !v)}
+                  title={showResetPass ? 'Hide' : 'Show'}
+                >
+                  {showResetPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  title="Copy password"
+                  onClick={() => {
+                    navigator.clipboard.writeText(resetPassModal.tempPassword || '');
+                    toast.success('Password copied');
+                  }}
+                >
+                  <Copy size={16} />
+                </button>
+              </div>
+            </div>
+            <p
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted)',
+                marginBottom: 16,
+                marginTop: 0,
+              }}
+            >
+              User must change this password on next login.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: '100%' }}
+              onClick={() =>
+                setResetPassModal({ open: false, user: null, tempPassword: null, revokedCount: 0 })
+              }
+            >
+              Done
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Create Local User Drawer */}

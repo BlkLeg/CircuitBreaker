@@ -8,7 +8,6 @@ const FILTERS = [{ key: 'all', label: 'Scans', Icon: Layers }];
 export default function DiscoverySidebar({
   filter,
   onFilterChange,
-  jobCounts,
   pendingReviewCount,
   memoryUsed = null,
   storageUsed = null,
@@ -52,23 +51,19 @@ export default function DiscoverySidebar({
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <nav className="sidebar-nav">
-          {FILTERS.map(({ key, label, Icon }) => {
-            const count = jobCounts.get(key) ?? 0;
-            return (
-              <button
-                key={key}
-                type="button"
-                className={`sidebar-nav-item ${filter === key ? 'active' : ''}`}
-                onClick={() => onFilterChange(key)}
-              >
-                <span className="sidebar-nav-icon">
-                  <Icon size={16} />
-                </span>
-                <span className="sidebar-nav-label">{label}</span>
-                {count > 0 && <span className="sidebar-nav-count">{count}</span>}
-              </button>
-            );
-          })}
+          {FILTERS.map(({ key, label, Icon }) => (
+            <button
+              key={key}
+              type="button"
+              className={`sidebar-nav-item ${filter === key ? 'active' : ''}`}
+              onClick={() => onFilterChange(key)}
+            >
+              <span className="sidebar-nav-icon">
+                <Icon size={16} />
+              </span>
+              <span className="sidebar-nav-label">{label}</span>
+            </button>
+          ))}
         </nav>
 
         <div className="sidebar-divider" />

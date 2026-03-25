@@ -343,6 +343,30 @@ function IncidentCard({ incident }) {
         <span>Started: {formatDatetime(incident.detected_at)}</span>
         <span>Duration: {duration(incident.detected_at, incident.resolved_at)}</span>
       </div>
+      {incident.reason && (
+        <div
+          style={{
+            fontSize: 12,
+            color: 'var(--color-text-muted)',
+            paddingLeft: 12,
+            borderLeft: '2px solid var(--color-border)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          <span>
+            <span style={{ color: 'var(--color-text)', fontWeight: 500 }}>Note: </span>
+            {incident.reason}
+          </span>
+          {incident.reason_at && (
+            <span style={{ fontSize: 11 }}>
+              {incident.reason_by_name ? `Added by ${incident.reason_by_name}` : 'Added by admin'} ·{' '}
+              {formatDatetime(incident.reason_at)}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

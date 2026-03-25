@@ -11,6 +11,7 @@ import {
   environmentsApi,
   tagsApi,
 } from '../api/client';
+import { integrationsApi } from '../api/integrations.js';
 import ServiceDetail from '../components/details/ServiceDetail';
 import FormModal from '../components/common/FormModal';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
@@ -389,6 +390,20 @@ function ServicesPage() {
     });
   };
 
+  const handleAddMonitor = async (row) => {
+    try {
+      await integrationsApi.createNativeMonitor({ entity_type: 'service', entity_id: row.id });
+      toast.success('Monitor created — add it to a status page group to make it visible.');
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 409) {
+        toast.error('Monitor already exists for this entity.');
+      } else {
+        toast.error(err?.response?.data?.detail || err.message || 'Failed to create monitor.');
+      }
+    }
+  };
+
   // When editing, pre-populate the runs_on synthetic field.
   const getInitialValues = (target) => {
     if (!target) return {};
@@ -462,6 +477,7 @@ function ServicesPage() {
           setShowForm(true);
         }}
         onDelete={handleDelete}
+        onMonitor={handleAddMonitor}
         onRowClick={(row) => setDetailTarget(row)}
         editableColumns={['name', 'slug', 'url']}
         onCellSave={handleCellSave}

@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import DocsPanel from '../common/DocsPanel';
 import { clustersApi, hardwareApi } from '../../api/client';
+import MapAssignSection from './MapAssignSection';
 import { Server, X, Plus } from 'lucide-react';
 import logger from '../../utils/logger';
 import { useToast } from '../common/Toast';
@@ -263,6 +264,7 @@ function ClusterDetail({ cluster, isOpen, onClose, onUpdate }) {
         .field-group { margin-bottom: 12px; }
         .field-group .field-label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
       `}</style>
+      <MapAssignSection entityType="cluster" entityId={cluster?.id} />
     </Drawer>
   );
 }

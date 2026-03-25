@@ -72,9 +72,11 @@ function EntityForm({
   };
 
   const handleChange = (e) => {
-    const { name, value, type } = e.target;
+    const { name, value, type, checked } = e.target;
     let coerced;
-    if (type === 'number') {
+    if (type === 'checkbox') {
+      coerced = checked;
+    } else if (type === 'number') {
       coerced = value === '' ? null : Number(value);
     } else if (type === 'select-one') {
       coerced = value === '' ? null : value;
@@ -485,10 +487,12 @@ function EntityForm({
         id={field.name}
         type={field.type === 'tags' ? 'text' : field.type || 'text'}
         name={field.name}
-        value={values[field.name] ?? ''}
+        value={field.type === 'checkbox' ? undefined : (values[field.name] ?? '')}
+        checked={field.type === 'checkbox' ? !!values[field.name] : undefined}
         onChange={handleChange}
         required={field.required}
         placeholder={field.type === 'tags' ? 'e.g. prod, storage' : undefined}
+        style={field.type === 'checkbox' ? { width: 'auto', display: 'block' } : undefined}
       />
     );
   };

@@ -264,7 +264,7 @@ async def discover_proxmox_cluster(
 
     actor_name = "system"
     if current_user:
-        actor_name = current_user.display_name or current_user.email
+        actor_name = getattr(current_user, "display_name", None) or current_user.email
 
     write_log(
         db,

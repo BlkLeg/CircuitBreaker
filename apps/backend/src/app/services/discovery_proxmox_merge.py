@@ -263,7 +263,7 @@ def _merge_proxmox_result(
 ) -> dict:
     from fastapi import HTTPException
 
-    from app.services.discovery_merge import _emit_result_processed_event
+    from app.services.discovery_merge import _assign_to_default_map, _emit_result_processed_event
 
     payload = _parse_proxmox_metadata(result)
     if payload is None:
@@ -291,6 +291,18 @@ def _merge_proxmox_result(
     result.merge_status = "accepted"
     result.reviewed_by = actor
     result.reviewed_at = now_iso
+
+    # Assign entity to the default map
+    # matched_entity_type uses "compute_unit" for other systems (IP reservation, CVE);
+    # the topology map uses "compute" for ComputeUnit nodes.
+    map_entity_type = (
+        "compute" if result.matched_entity_type == "compute_unit" else result.matched_entity_type
+    )
+    _assign_to_default_map(db, map_entity_type, entity.id)
+    # For VMs, also ensure the parent hypervisor node is on the map
+    if kind == "vm" and hasattr(entity, "hardware_id") and entity.hardware_id:
+        _assign_to_default_map(db, "hardware", entity.hardware_id)
+
     db.commit()
 
     write_log(

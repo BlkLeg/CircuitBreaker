@@ -6,6 +6,7 @@ import logger from '../../utils/logger';
 import { networksApi, computeUnitsApi, hardwareApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 import { Monitor, Plus, Trash2, Server, Wifi } from 'lucide-react';
+import MapAssignSection from './MapAssignSection';
 
 function NetworkDetail({
   network,
@@ -428,6 +429,7 @@ function NetworkDetail({
         .field-group { margin-bottom: 12px; }
         .field-group label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
       `}</style>
+      <MapAssignSection entityType="network" entityId={network?.id} />
     </Drawer>
   );
 }

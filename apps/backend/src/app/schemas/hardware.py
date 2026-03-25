@@ -1,6 +1,7 @@
+import json
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
@@ -139,6 +140,9 @@ class HardwareBase(BaseModel):
     # v0.1.4-cortex: rack assignment + discovery lineage
     rack_id: int | None = None
     source_scan_result_id: int | None = None
+    # Phase 2: mounting orientation
+    mounting_orientation: str | None = None
+    side_rail: str | None = None
     # v0.1.7: Networking (Router/AP) hardware extensions
     wifi_standards: list[str] | None = None
     wifi_bands: list[str] | None = None
@@ -184,6 +188,9 @@ class HardwareUpdate(BaseModel):
     environment: str | None = None
     # v0.1.4-cortex: rack assignment
     rack_id: int | None = None
+    # Phase 2: mounting orientation
+    mounting_orientation: str | None = None
+    side_rail: str | None = None
     # v2: manual status override (clears auto-derivation when set)
     status_override: str | None = None
     # v0.1.7: Networking (Router/AP) hardware extensions
@@ -202,6 +209,15 @@ class HardwareUpdate(BaseModel):
         return _coerce_vendor(v)
 
 
+class HardwareConnectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    source_hardware_id: int
+    target_hardware_id: int
+    connection_type: str | None = None
+    bandwidth_mbps: int | None = None
+
+
 class Hardware(HardwareBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -217,6 +233,18 @@ class Hardware(HardwareBase):
     storage_summary: dict | None = None
     # v0.1.2: telemetry read-only state
     telemetry_data: dict | None = None
+
+    @field_validator("telemetry_data", mode="before")
+    @classmethod
+    def _parse_telemetry_data(cls, v: Any) -> dict | None:
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, dict) else None
+            except Exception:
+                return None
+        return v
+
     telemetry_status: str | None = "unknown"
     telemetry_last_polled: datetime | None = None
     # v0.1.4: environment registry

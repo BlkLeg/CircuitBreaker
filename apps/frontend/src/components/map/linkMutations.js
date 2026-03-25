@@ -192,7 +192,7 @@ async function createLinkDirectional(sourceNode, targetNode) {
 
   if (srcType === 'hardware') {
     if (targetType === 'hardware') {
-      await hardwareApi.addConnection(srcId, tgtId);
+      await hardwareApi.createConnection(srcId, { target_hardware_id: tgtId });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-hh-',
@@ -485,7 +485,7 @@ export async function unlinkByEdge(edge) {
     return servicesApi.removeExternalDep(src.id, link.id);
   }
   if (rel === 'connects_to' && src.prefix === 'hw' && tgt.prefix === 'hw') {
-    return hardwareApi.removeConnection(parseInt(edge.id.replace('e-hh-', ''), 10));
+    return hardwareApi.deleteConnection(parseInt(edge.id.replace('e-hh-', ''), 10));
   }
   if (rel === 'peers_with' && src.prefix === 'net' && tgt.prefix === 'net') {
     return networksApi.removePeer(src.id, tgt.id);

@@ -40,6 +40,7 @@ from app.api import (
     storage,
 )
 from app.api import integrations as integrations_api
+from app.api import maps as maps_api
 from app.api import rack as rack_api
 from app.api import (
     tags as tags_api,
@@ -50,6 +51,7 @@ from app.api.admin_audit import router as admin_audit_router
 from app.api.admin_db import router as admin_db_router
 from app.api.admin_users import router as admin_users_router
 from app.api.assets import router as assets_router
+from app.api.branding import public_router as branding_public_router
 from app.api.branding import router as branding_router
 from app.api.capabilities import router as capabilities_router
 from app.api.certificates import router as certificates_router
@@ -68,6 +70,7 @@ from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
 from app.api.status import router as status_router
 from app.api.system import router as system_router
+from app.api.tenants import router as tenants_router
 from app.api.timezones import router as timezones_router
 from app.api.topologies import router as topologies_router
 from app.api.vault import router as vault_router
@@ -89,6 +92,7 @@ from app.core.sql_hardening import build_audit_partition_sql
 from app.core.time import utcnow
 from app.db import models  # noqa: F401 — import to register all model metadata with Base
 from app.db.async_session import AsyncSessionLocal
+from app.db.models import IntegrationConfig
 from app.db.session import engine, get_session_context
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.legacy_token import LegacyTokenMiddleware
@@ -273,6 +277,51 @@ def _assert_required_schema() -> None:
         raise SystemExit(1)
 
 
+def _record_sync_health(
+    config_id: int,
+    result: dict | None = None,
+    exc: Exception | None = None,
+) -> None:
+    """Persist sync outcome to IntegrationConfig. Opens its own session — safe after rollbacks."""
+    try:
+        with get_session_context() as _hdb:
+            cfg = _hdb.get(IntegrationConfig, config_id)
+            if not cfg:
+                return
+            if exc is not None:
+                cfg.last_sync_status = "error"
+                cfg.last_sync_error = str(exc)[:512]
+            elif result is not None:
+                errors = result.get("errors") or []
+                if not result.get("ok", True):
+                    # discover_and_import caught a hard failure internally and returned ok=False
+                    cfg.last_sync_status = "error"
+                    cfg.last_sync_error = (
+                        "\n".join(str(e) for e in errors[:5]) if errors else "Sync failed"
+                    )
+                else:
+                    cfg.last_sync_status = "partial" if errors else "ok"
+                    cfg.last_sync_error = "\n".join(str(e) for e in errors[:5]) if errors else None
+            cfg.last_sync_at = utcnow()
+            _hdb.commit()
+    except Exception:
+        _logger.exception("Failed to record sync health for config %s", config_id)
+
+
+def _record_poll_health(poll_outcomes: dict[int, Exception | None]) -> None:
+    """Write last_poll_error to IntegrationConfig for each config in poll_outcomes."""
+    for config_id, exc in poll_outcomes.items():
+        try:
+            with get_session_context() as _hdb:
+                cfg = _hdb.get(IntegrationConfig, config_id)
+                if not cfg:
+                    continue
+                cfg.last_poll_error = str(exc)[:512] if exc is not None else None
+                _hdb.commit()
+        except Exception:
+            _logger.exception("Failed to record poll health for config %s", config_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run startup and shutdown tasks.
@@ -403,6 +452,27 @@ async def lifespan(app: FastAPI):
             get_or_create_default_page(_status_db)
         except Exception as _se:  # noqa: BLE001
             _logger.debug("Status page seed skipped or failed: %s", _se)
+
+    # ── Native integration bootstrap ───────────────────────────────────────
+    with get_session_context() as _native_db:
+        try:
+            from app.db.models import Integration as _Integration
+
+            _native = _native_db.query(_Integration).filter(_Integration.type == "native").first()
+            if not _native:
+                _native = _Integration(
+                    type="native",
+                    name="Built-in Monitors",
+                    enabled=True,
+                    sync_interval_s=60,
+                )
+                _native_db.add(_native)
+                _native_db.commit()
+                _logger.info("Native integration bootstrapped (id=%d)", _native.id)
+            else:
+                _logger.debug("Native integration already exists (id=%d)", _native.id)
+        except Exception as _ne:  # noqa: BLE001
+            _logger.warning("Native integration bootstrap failed: %s", _ne)
 
     # ── Redis (telemetry cache + pub/sub) ────────────────────────────────
     from app.core.redis import close_redis, init_redis
@@ -655,9 +725,19 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    # CVE sync — only scheduled when enabled in settings
+    # Uptime Kuma integration sync — every 60 seconds
     from apscheduler.triggers.interval import IntervalTrigger
 
+    from app.workers.integration_sync_worker import run_integration_sync_job
+
+    scheduler.add_job(
+        run_integration_sync_job,
+        trigger=IntervalTrigger(seconds=60),
+        id="integration_sync_job",
+        replace_existing=True,
+    )
+
+    # CVE sync — only scheduled when enabled in settings
     from app.services.cve_service import sync_nvd_feed
 
     with get_session_context() as cve_db:
@@ -768,17 +848,19 @@ async def lifespan(app: FastAPI):
 
     async def _proxmox_node_poll():
         try:
-            async with asyncio.timeout(25):
+            async with asyncio.timeout(60):
                 async with AsyncSessionLocal() as _pdb:
-                    await poll_node_telemetry(_pdb)
+                    poll_outcomes = await poll_node_telemetry(_pdb)
+                    _record_poll_health(poll_outcomes)
         except TimeoutError:
-            _logger.warning("proxmox_node_poll timed out (25s) — skipping cycle")
+            _logger.warning("proxmox_node_poll timed out (60s) — skipping cycle")
 
     async def _proxmox_vm_poll():
         try:
             async with asyncio.timeout(100):
                 async with AsyncSessionLocal() as _pdb:
-                    await poll_vm_telemetry(_pdb)
+                    poll_outcomes = await poll_vm_telemetry(_pdb)
+                    _record_poll_health(poll_outcomes)
         except TimeoutError:
             _logger.warning("proxmox_vm_poll timed out (100s) — skipping cycle")
 
@@ -790,9 +872,13 @@ async def lifespan(app: FastAPI):
                     for cfg in configs:
                         if cfg.auto_sync:
                             try:
-                                await discover_and_import(_pdb, cfg, queue_for_review=False)
+                                result = await discover_and_import(
+                                    _pdb, cfg, queue_for_review=False
+                                )
+                                _record_sync_health(cfg.id, result=result)
                             except Exception as exc:
                                 _logger.warning("Proxmox full sync failed for %d: %s", cfg.id, exc)
+                                _record_sync_health(cfg.id, exc=exc)
         except TimeoutError:
             _logger.warning("proxmox_full_sync timed out (270s) — skipping cycle")
 
@@ -836,7 +922,8 @@ async def lifespan(app: FastAPI):
                 try:
                     async with asyncio.timeout(270):
                         async with AsyncSessionLocal() as _pdb:
-                            await poll_rrd_telemetry(_pdb)
+                            poll_outcomes = await poll_rrd_telemetry(_pdb)
+                            _record_poll_health(poll_outcomes)
                 except TimeoutError:
                     _logger.warning("proxmox_rrd_poll timed out (270s) — skipping cycle")
 
@@ -1320,6 +1407,11 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
+    branding_public_router,
+    prefix=f"{_V1}/branding",
+    tags=["branding"],
+)
+app.include_router(
     branding_router,
     prefix=f"{_V1}/branding",
     tags=["branding"],
@@ -1460,6 +1552,12 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
+    tenants_router,
+    prefix=f"{_V1}/tenants",
+    tags=["tenants"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
     topologies_router,
     prefix=f"{_V1}/topologies",
     tags=["topologies"],
@@ -1508,6 +1606,12 @@ app.include_router(
     public_status_router,
     prefix=f"{_V1}/public",
     tags=["public"],
+)
+app.include_router(
+    maps_api.router,
+    prefix=f"{_V1}/maps",
+    tags=["maps"],
+    dependencies=[Depends(require_auth)],
 )
 
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_audit
 from app.core.security import require_write_auth
 from app.core.time import utcnow
-from app.db.models import VLAN, IPAddress, Network, Site
+from app.db.models import VLAN, IPAddress, Network, ScanResult, Site
 from app.db.session import get_db
 from app.schemas.ipam import (
     IPAddressCreate,
@@ -39,6 +39,7 @@ ipam_router = APIRouter(tags=["ipam"])
 def list_ip_addresses(
     network_id: int | None = Query(None),
     status: str | None = Query(None),
+    include_discovered: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> Any:
     q = select(IPAddress)
@@ -47,7 +48,46 @@ def list_ip_addresses(
     if status is not None:
         q = q.where(IPAddress.status == status)
     q = q.order_by(IPAddress.address)
-    return db.execute(q).scalars().all()
+    manual_rows = db.execute(q).scalars().all()
+
+    if not include_discovered:
+        return manual_rows
+
+    # Build dedup set from manual addresses
+    manual_addrs = {str(row.address) for row in manual_rows}
+
+    # Fetch discovered hosts from merged scan results
+    discovered_rows = (
+        db.execute(
+            select(ScanResult).where(
+                ScanResult.merge_status == "merged",
+                ScanResult.matched_entity_type == "hardware",
+                ScanResult.ip_address.isnot(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    combined: list[Any] = list(manual_rows)
+    for sr in discovered_rows:
+        if str(sr.ip_address) in manual_addrs:
+            continue  # manual record takes precedence
+        combined.append(
+            IPAddressRead(
+                source="discovered",
+                id=None,
+                address=str(sr.ip_address),
+                hostname=sr.hostname,
+                hardware_id=sr.matched_entity_id,
+                network_id=sr.network_id,
+                status="seen",
+                notes=None,
+                created_at=None,
+                updated_at=None,
+            )
+        )
+    return combined
 
 
 @ipam_router.post("", response_model=IPAddressRead, status_code=201)
@@ -70,6 +110,7 @@ def create_ip_address(
         hardware_id=payload.hardware_id,
         service_id=payload.service_id,
         hostname=payload.hostname,
+        notes=payload.notes,
         allocated_at=utcnow() if payload.status == "allocated" else None,
     )
     db.add(row)

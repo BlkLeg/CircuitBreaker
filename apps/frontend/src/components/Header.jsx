@@ -1,13 +1,14 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, Moon, Sun, Menu } from 'lucide-react';
+import { Search, Moon, Sun, Menu, ChevronDown, LayoutGrid } from 'lucide-react';
 import UserAvatar from './auth/UserAvatar.jsx';
 import RecentChanges from './common/RecentChanges.jsx';
 import ThemePalette from './ThemePalette';
 import HeaderWidgets from './HeaderWidgets.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSettings } from '../context/SettingsContext';
+import { useTenant } from '../context/TenantContext';
 import { settingsApi } from '../api/client';
 import { NAV_ITEMS } from '../data/navigation';
 import { canEdit, isAdmin } from '../utils/rbac';
@@ -16,24 +17,29 @@ function Header({ onOpenPalette }) {
   const navigate = useNavigate();
   const { openAuthModal, openProfileModal, isAuthenticated, user } = useAuth();
   const { settings, reloadSettings } = useSettings();
+  const { tenants, activeTenant, switchTenant } = useTenant();
   const branding = settings?.branding;
   const appName = branding?.app_name || 'Circuit Breaker';
   const greetingName = user?.display_name || user?.email?.split('@')[0] || 'there';
   const [themeSaving, setThemeSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [tenantOpen, setTenantOpen] = useState(false);
   const menuRef = useRef(null);
+  const tenantRef = useRef(null);
   const isLightTheme = settings?.theme === 'light';
 
   useEffect(() => {
-    if (!menuOpen) return;
     const onOutsideClick = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
         setMenuOpen(false);
       }
+      if (tenantRef.current && !tenantRef.current.contains(event.target)) {
+        setTenantOpen(false);
+      }
     };
     document.addEventListener('mousedown', onOutsideClick);
     return () => document.removeEventListener('mousedown', onOutsideClick);
-  }, [menuOpen]);
+  }, []);
 
   const groupedNavItems = useMemo(
     () =>
@@ -109,6 +115,102 @@ function Header({ onOpenPalette }) {
         <HeaderWidgets settings={settings} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, pointerEvents: 'auto' }}>
+        {isAuthenticated && tenants.length > 1 && (
+          <div ref={tenantRef} style={{ position: 'relative' }}>
+            <button
+              onClick={() => setTenantOpen(!tenantOpen)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                height: 36,
+                border: '1px solid var(--color-border)',
+                borderRadius: 10,
+                background: 'var(--color-bg)',
+                color: 'var(--color-text)',
+                padding: '0 12px',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              <LayoutGrid size={14} className="tw-text-cb-primary" />
+              <span>{activeTenant?.name || 'Select Tenant'}</span>
+              <ChevronDown size={14} style={{ opacity: 0.5 }} />
+            </button>
+
+            {tenantOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(var(--header-height, 52px) - 6px)',
+                  right: 0,
+                  width: 220,
+                  background: 'color-mix(in srgb, var(--color-surface) 94%, transparent)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 12,
+                  boxShadow: '0 16px 40px rgba(0,0,0,0.35)',
+                  backdropFilter: 'blur(20px)',
+                  padding: '8px',
+                  zIndex: 240,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: 'var(--color-text-muted)',
+                    textTransform: 'uppercase',
+                    padding: '4px 8px 8px',
+                  }}
+                >
+                  Switch Environment
+                </div>
+                {tenants.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      switchTenant(t.id);
+                      setTenantOpen(false);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      width: '100%',
+                      textAlign: 'left',
+                      border: '1px solid transparent',
+                      borderRadius: 8,
+                      background:
+                        String(t.id) === String(activeTenant?.id)
+                          ? 'var(--color-primary-dim)'
+                          : 'transparent',
+                      color:
+                        String(t.id) === String(activeTenant?.id)
+                          ? 'var(--color-primary)'
+                          : 'var(--color-text)',
+                      padding: '8px 10px',
+                      fontSize: 13,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>{t.name}</span>
+                    {String(t.id) === String(activeTenant?.id) && (
+                      <div
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: 'currentColor',
+                        }}
+                      />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div ref={menuRef} style={{ position: 'relative' }}>
           <button
             title="Open route menu"

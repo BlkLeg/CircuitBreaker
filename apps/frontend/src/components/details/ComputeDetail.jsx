@@ -11,6 +11,7 @@ import { IconImg } from '../common/IconPickerModal';
 import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import VulnerabilityPanel from './VulnerabilityPanel';
+import MapAssignSection from './MapAssignSection';
 
 function ComputeDetail({ compute = null, isOpen, onClose }) {
   const toast = useToast();
@@ -479,6 +480,7 @@ function ComputeDetail({ compute = null, isOpen, onClose }) {
         .field-group { margin-bottom: 12px; }
         .field-group .field-label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
       `}</style>
+      <MapAssignSection entityType="compute" entityId={compute?.id} />
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}

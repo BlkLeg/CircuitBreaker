@@ -89,7 +89,14 @@ class ProxmoxIntegration:
                     None,
                 )
             except Exception as exc:
-                _logger.warning("Could not fetch cluster/status (standalone node?): %s", exc)
+                _exc = str(exc)
+                if "403" in _exc or "Forbidden" in _exc or "Permission check failed" in _exc:
+                    _logger.debug(
+                        "cluster/status not accessible (Sys.Audit not granted) "
+                        "— cluster name unavailable"
+                    )
+                else:
+                    _logger.warning("Could not fetch cluster/status (standalone node?): %s", exc)
                 cluster_name = None
             return {
                 "version": version_info.get("version", "unknown"),
@@ -108,7 +115,14 @@ class ProxmoxIntegration:
             try:
                 cluster_status = cast(list, self._px.get("cluster/status"))
             except Exception as exc:
-                _logger.warning("Could not fetch cluster/status during discovery: %s", exc)
+                _exc = str(exc)
+                if "403" in _exc or "Forbidden" in _exc or "Permission check failed" in _exc:
+                    _logger.debug(
+                        "cluster/status not accessible (Sys.Audit not granted) "
+                        "— cluster name unavailable"
+                    )
+                else:
+                    _logger.warning("Could not fetch cluster/status during discovery: %s", exc)
                 cluster_status = []
             return {"cluster_status": cluster_status, "resources": resources}
 

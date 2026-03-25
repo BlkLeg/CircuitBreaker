@@ -9,13 +9,99 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
-from app.db.models import Hardware, ScanResult, Service
+from app.db.models import (
+    AppSettings,
+    Hardware,
+    Integration,
+    IntegrationMonitor,
+    ScanResult,
+    Service,
+    Topology,
+    TopologyNode,
+)
 from app.schemas.discovery import ScanResultOut
 from app.services.discovery_network import PORT_SERVICE_MAP, _norm_mac
 from app.services.discovery_proxmox_merge import _merge_proxmox_result
 from app.services.log_service import write_log
 
 logger = logging.getLogger(__name__)
+
+
+def _assign_to_default_map(db: Session, entity_type: str, entity_id: int) -> None:
+    """Add entity to the default topology map if not already present. No-commit — caller commits."""
+    from sqlalchemy import select
+
+    topo = db.execute(select(Topology).where(Topology.is_default == True)).scalar_one_or_none()  # noqa: E712
+    if topo is None:
+        topo = db.execute(
+            select(Topology).order_by(Topology.sort_order, Topology.id)
+        ).scalar_one_or_none()
+    if topo is None:
+        return
+    exists = db.execute(
+        select(TopologyNode).where(
+            TopologyNode.topology_id == topo.id,
+            TopologyNode.entity_type == entity_type,
+            TopologyNode.entity_id == entity_id,
+        )
+    ).scalar_one_or_none()
+    if not exists:
+        db.add(TopologyNode(topology_id=topo.id, entity_type=entity_type, entity_id=entity_id))
+        db.flush()
+
+
+def _maybe_auto_create_native_monitor(db: Session, hardware: Hardware) -> None:
+    """If auto_monitor_on_discovery is enabled, create a native monitor for new hardware.
+
+    Non-blocking: exceptions are caught so they never roll back the caller's transaction.
+    Call this after db.flush() so hardware.id is populated, but before db.commit().
+    """
+    try:
+        settings = db.query(AppSettings).first()
+        if not settings or not settings.auto_monitor_on_discovery:
+            return
+        native = db.query(Integration).filter(Integration.type == "native").first()
+        if not native:
+            return
+        # Idempotent — skip if a monitor already exists for this hardware
+        existing = (
+            db.query(IntegrationMonitor)
+            .filter(
+                IntegrationMonitor.integration_id == native.id,
+                IntegrationMonitor.linked_hardware_id == hardware.id,
+            )
+            .first()
+        )
+        if existing:
+            return
+        from app.integrations.native_probe import derive_probe_config
+
+        probe_type, probe_target, probe_port = derive_probe_config(hardware=hardware)
+        if not probe_target:
+            return  # nothing to probe
+        monitor = IntegrationMonitor(
+            integration_id=native.id,
+            external_id=f"native-hw-{hardware.id}",
+            name=hardware.name,
+            linked_hardware_id=hardware.id,
+            probe_type=probe_type,
+            probe_target=probe_target,
+            probe_port=probe_port,
+            probe_interval_s=60,
+            status="pending",
+        )
+        db.add(monitor)
+        logger.info(
+            "Auto-created native monitor for hardware %d (%s) probe=%s target=%s",
+            hardware.id,
+            hardware.name,
+            probe_type,
+            probe_target,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to auto-create native monitor for hardware %d — continuing", hardware.id
+        )
 
 
 async def _emit_result_processed_event(db: Session, result_id: int, status: str) -> None:
@@ -146,6 +232,8 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
             updated_at=datetime.fromisoformat(now) if "T" in now else datetime.now(),
         )
         db.add(hw)
+        db.flush()
+        _assign_to_default_map(db, "hardware", hw.id)
         db.commit()
         db.refresh(hw)
 
@@ -353,6 +441,8 @@ def merge_scan_result(
                         setattr(hw, k, v)
                 db.add(hw)
                 db.flush()
+                _maybe_auto_create_native_monitor(db, hw)
+                _assign_to_default_map(db, "hardware", hw.id)
 
                 result.matched_entity_type = "hardware"
                 result.matched_entity_id = hw.id

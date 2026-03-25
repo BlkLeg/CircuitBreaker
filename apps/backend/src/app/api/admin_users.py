@@ -54,6 +54,12 @@ class UserCreateRequest(BaseModel):
 class UserUpdateRequest(BaseModel):
     role: str | None = None
     is_active: bool | None = None
+    display_name: str | None = None
+
+
+class ResetPasswordResponse(BaseModel):
+    temp_password: str
+    revoked_sessions: int
 
 
 class InviteCreateRequest(BaseModel):
@@ -65,6 +71,7 @@ class InviteListItem(BaseModel):
     id: int
     email: str
     role: str
+    token: str
     invited_by: int
     expires: datetime
     status: str
@@ -326,9 +333,16 @@ def update_user(
         target.is_superuser = payload.role == "admin"
     if payload.is_active is not None:
         target.is_active = payload.is_active
+    if payload.display_name is not None:
+        target.display_name = payload.display_name.strip() or None
     db.commit()
     db.refresh(target)
-    return {"id": target.id, "role": target.role, "is_active": target.is_active}
+    return {
+        "id": target.id,
+        "role": target.role,
+        "is_active": target.is_active,
+        "display_name": target.display_name,
+    }
 
 
 @router.delete("/users/{user_id}", status_code=204)
@@ -356,6 +370,67 @@ def delete_user(
         return
     target.is_active = False
     db.commit()
+
+
+@router.post("/users/{user_id}/reset-password", response_model=ResetPasswordResponse)
+def reset_user_password(
+    request: Request,
+    user_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    actor: Annotated[User, require_role("admin")],
+) -> ResetPasswordResponse:
+    """Reset a user's password to a generated temp, force change on next login, revoke all sessions.
+
+    Returns the plaintext temp password once — it is never logged or stored.
+    """
+    from app.core.audit import log_audit
+    from app.services.user_service import revoke_all_sessions
+
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == 0:
+        raise HTTPException(status_code=403, detail="Cannot reset service account password")
+    if target.id == actor.id:
+        raise HTTPException(status_code=400, detail="Cannot reset your own password")
+
+    temp = _generate_temp_password()
+    client_hash = client_hash_password(temp)
+    target.hashed_password = hash_password(client_hash)
+    target.force_password_change = True
+
+    revoked = revoke_all_sessions(db, user_id)
+
+    log_audit(
+        db,
+        request,
+        user_id=actor.id,
+        action="admin_reset_password",
+        resource=f"user:{target.id}",
+        status="ok",
+        details=(
+            f"Admin reset password for user_id={target.id}"
+            f" ({target.email or target.display_name or 'unknown'})"
+        ),
+    )
+    db.commit()
+    return ResetPasswordResponse(temp_password=temp, revoked_sessions=revoked)
+
+
+@router.delete("/users/{user_id}/sessions")
+def revoke_user_sessions(
+    user_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> dict[str, int]:
+    """Revoke all active sessions for a user (force logout from all devices)."""
+    from app.services.user_service import revoke_all_sessions
+
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    revoked = revoke_all_sessions(db, user_id)
+    return {"revoked": revoked}
 
 
 @router.post("/users/{user_id}/unlock")
@@ -548,6 +623,7 @@ def list_invites(
             id=i.id,
             email=i.email,
             role=i.role,
+            token=i.token,
             invited_by=i.invited_by,
             expires=i.expires,
             status=i.status,

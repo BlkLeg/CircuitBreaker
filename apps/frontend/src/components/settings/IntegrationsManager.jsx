@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Plus, Trash2, Pencil, Zap } from 'lucide-react';
+import { hardwareApi } from '../../api/client.jsx';
 import { integrationsApi } from '../../api/integrations.js';
 import { useToast } from '../common/Toast';
 import ConfirmDialog from '../common/ConfirmDialog';
+import NativeMonitorModal from './NativeMonitorModal.jsx';
 
 const SYNC_STATUS_COLOR = { ok: '#22c55e', error: '#ef4444', never: '#fbbf24' };
 const MONITOR_STATUS_COLOR = {
@@ -32,30 +34,91 @@ StatusDot.propTypes = {
   color: PropTypes.string,
 };
 
-function MonitorRow({ monitor }) {
+function MonitorRow({ monitor, integrationId, hardware, onLinkChange }) {
+  const [linking, setLinking] = useState(false);
   const color = MONITOR_STATUS_COLOR[monitor.status] || '#94a3b8';
+
+  async function handleHardwareChange(e) {
+    const val = e.target.value;
+    const hwId = val === '' ? null : parseInt(val, 10);
+    setLinking(true);
+    try {
+      await integrationsApi.linkMonitor(integrationId, monitor.id, { linked_hardware_id: hwId });
+      onLinkChange(monitor.id, hwId);
+    } catch {
+      // ignore — toast on error is handled at a higher level if needed
+    } finally {
+      setLinking(false);
+    }
+  }
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12 }}>
-      <StatusDot color={color} />
-      <span style={{ fontWeight: 500 }}>{monitor.name}</span>
-      {monitor.url && (
-        <span
-          style={{
-            color: 'var(--color-text-muted)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            maxWidth: 200,
-          }}
+    <div style={{ padding: '4px 0', fontSize: 12 }}>
+      {/* Status + name + url + uptime */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <StatusDot color={color} />
+        <span style={{ fontWeight: 500 }}>{monitor.name}</span>
+        {monitor.url && (
+          <span
+            style={{
+              color: 'var(--color-text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              maxWidth: 200,
+            }}
+          >
+            {monitor.url}
+          </span>
+        )}
+        {monitor.uptime_7d != null && (
+          <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', flexShrink: 0 }}>
+            {monitor.uptime_7d.toFixed(1)}%
+          </span>
+        )}
+      </div>
+
+      {/* Enriched data + hardware link selector */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          marginTop: 3,
+          paddingLeft: 16,
+          flexWrap: 'wrap',
+        }}
+      >
+        {monitor.avg_response_ms != null && (
+          <span style={{ color: 'var(--color-text-muted)' }}>
+            {Math.round(monitor.avg_response_ms)}ms
+          </span>
+        )}
+        {monitor.cert_expiry_days != null && (
+          <span
+            style={{
+              color: monitor.cert_expiry_days < 14 ? '#ef4444' : 'var(--color-text-muted)',
+            }}
+          >
+            cert: {monitor.cert_expiry_days}d
+          </span>
+        )}
+        <select
+          className="form-control"
+          style={{ fontSize: 11, padding: '1px 4px', height: 22, minWidth: 120 }}
+          value={monitor.linked_hardware_id ?? ''}
+          onChange={handleHardwareChange}
+          disabled={linking}
         >
-          {monitor.url}
-        </span>
-      )}
-      {monitor.uptime_7d != null && (
-        <span style={{ marginLeft: 'auto', color: 'var(--color-text-muted)', flexShrink: 0 }}>
-          {monitor.uptime_7d.toFixed(1)}%
-        </span>
-      )}
+          <option value="">Not linked</option>
+          {(hardware || []).map((hw) => (
+            <option key={hw.id} value={hw.id}>
+              {hw.name}
+              {hw.ip_address ? ` (${hw.ip_address})` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
@@ -67,11 +130,25 @@ MonitorRow.propTypes = {
     url: PropTypes.string,
     status: PropTypes.string,
     uptime_7d: PropTypes.number,
+    avg_response_ms: PropTypes.number,
+    cert_expiry_days: PropTypes.number,
+    linked_hardware_id: PropTypes.number,
+    last_heartbeat_at: PropTypes.string,
   }).isRequired,
+  integrationId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+  hardware: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.number,
+      name: PropTypes.string,
+      ip_address: PropTypes.string,
+    })
+  ).isRequired,
+  onLinkChange: PropTypes.func.isRequired,
 };
 
 function IntegrationCard({ integration, onEdit, onRemove, onTest }) {
   const [monitors, setMonitors] = useState([]);
+  const [hardware, setHardware] = useState([]);
   const [testing, setTesting] = useState(false);
 
   useEffect(() => {
@@ -84,10 +161,27 @@ function IntegrationCard({ integration, onEdit, onRemove, onTest }) {
       .catch(() => {
         if (mounted) setMonitors([]);
       });
+    hardwareApi
+      .list()
+      .then((r) => {
+        if (mounted) {
+          const list = r.data?.items || r.data || [];
+          setHardware([...list].sort((a, b) => a.name.localeCompare(b.name)));
+        }
+      })
+      .catch(() => {
+        if (mounted) setHardware([]);
+      });
     return () => {
       mounted = false;
     };
   }, [integration.id]);
+
+  function handleMonitorLinkChange(monitorId, hwId) {
+    setMonitors((prev) =>
+      prev.map((m) => (m.id === monitorId ? { ...m, linked_hardware_id: hwId } : m))
+    );
+  }
 
   async function handleTestCard() {
     setTesting(true);
@@ -149,7 +243,13 @@ function IntegrationCard({ integration, onEdit, onRemove, onTest }) {
           }}
         >
           {monitors.map((m) => (
-            <MonitorRow key={m.id} monitor={m} />
+            <MonitorRow
+              key={m.id}
+              monitor={m}
+              integrationId={integration.id}
+              hardware={hardware}
+              onLinkChange={handleMonitorLinkChange}
+            />
           ))}
         </div>
       )}
@@ -216,6 +316,186 @@ IntegrationCard.propTypes = {
   onRemove: PropTypes.func.isRequired,
   onTest: PropTypes.func.isRequired,
 };
+
+// ── Native Monitors Tab ────────────────────────────────────────────────────────
+
+function NativeMonitorRow({ monitor, onDelete }) {
+  const color = MONITOR_STATUS_COLOR[monitor.status] || '#94a3b8';
+  const entityBadge = monitor.linked_service_id
+    ? { label: 'service', color: '#818cf8' }
+    : monitor.linked_hardware_id
+      ? { label: 'hardware', color: '#38bdf8' }
+      : null;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '7px 0',
+        borderBottom: '1px solid var(--color-border)',
+        fontSize: 13,
+      }}
+    >
+      <StatusDot color={color} />
+      <span style={{ flex: 1, fontWeight: 500 }}>{monitor.name}</span>
+      {entityBadge && (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '1px 6px',
+            borderRadius: 8,
+            background: `${entityBadge.color}22`,
+            color: entityBadge.color,
+            border: `1px solid ${entityBadge.color}44`,
+            flexShrink: 0,
+          }}
+        >
+          {entityBadge.label}
+        </span>
+      )}
+      {monitor.probe_type && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+          {monitor.probe_type.toUpperCase()}
+        </span>
+      )}
+      {monitor.avg_response_ms != null && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+          {Math.round(monitor.avg_response_ms)}ms
+        </span>
+      )}
+      {monitor.probe_interval_s && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
+          {monitor.probe_interval_s}s
+        </span>
+      )}
+      <button
+        className="btn btn-sm btn-danger"
+        style={{ padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+        onClick={() => onDelete(monitor)}
+        title="Delete monitor"
+      >
+        <Trash2 size={11} />
+      </button>
+    </div>
+  );
+}
+
+NativeMonitorRow.propTypes = {
+  monitor: PropTypes.shape({
+    id: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
+    name: PropTypes.string,
+    status: PropTypes.string,
+    probe_type: PropTypes.string,
+    probe_target: PropTypes.string,
+    probe_interval_s: PropTypes.number,
+    avg_response_ms: PropTypes.number,
+    linked_hardware_id: PropTypes.number,
+    linked_service_id: PropTypes.number,
+  }).isRequired,
+  onDelete: PropTypes.func.isRequired,
+};
+
+function NativeMonitorsTab() {
+  const { showToast } = useToast();
+  const [monitors, setMonitors] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmTarget, setConfirmTarget] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await integrationsApi.listNativeMonitors();
+      setMonitors(res.data || []);
+    } catch {
+      showToast('Failed to load native monitors', 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function handleDeleteClick(monitor) {
+    setConfirmTarget(monitor);
+    setConfirmOpen(true);
+  }
+
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 14,
+        }}
+      >
+        <span style={{ fontWeight: 600, fontSize: 14 }}>Built-in Monitors</span>
+        <button
+          className="btn btn-primary"
+          style={{
+            fontSize: 13,
+            padding: '5px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+          }}
+          onClick={() => setShowModal(true)}
+        >
+          <Plus size={14} />
+          Add Monitor
+        </button>
+      </div>
+
+      {loading ? (
+        <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading…</p>
+      ) : monitors.length === 0 ? (
+        <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
+          No monitors yet — add one from the Hardware or Services page, or use the button above.
+        </p>
+      ) : (
+        <div>
+          {monitors.map((m) => (
+            <NativeMonitorRow key={m.id} monitor={m} onDelete={handleDeleteClick} />
+          ))}
+        </div>
+      )}
+
+      {showModal && (
+        <NativeMonitorModal
+          onClose={() => setShowModal(false)}
+          onCreated={() => {
+            load();
+            showToast('Monitor created', 'success');
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        message={`Delete monitor "${confirmTarget?.name}"?`}
+        onConfirm={async () => {
+          setConfirmOpen(false);
+          try {
+            await integrationsApi.deleteNativeMonitor(confirmTarget.id);
+            showToast('Monitor deleted', 'success');
+            load();
+          } catch {
+            showToast('Delete failed', 'error');
+          }
+        }}
+        onCancel={() => setConfirmOpen(false)}
+      />
+    </div>
+  );
+}
 
 const EMPTY_FORM = { type: '', name: '', base_url: '', api_key: '', sync_interval_s: 60 };
 
@@ -490,6 +770,7 @@ IntegrationModal.propTypes = {
 
 export default function IntegrationsManager() {
   const { showToast } = useToast();
+  const [activeTab, setActiveTab] = useState('integrations'); // 'integrations' | 'native'
   const [integrations, setIntegrations] = useState([]);
   const [registry, setRegistry] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -565,49 +846,92 @@ export default function IntegrationsManager() {
 
   return (
     <div>
-      {/* Header */}
+      {/* Tab strip */}
       <div
         style={{
           display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
+          gap: 0,
+          borderBottom: '1px solid var(--color-border)',
           marginBottom: 16,
         }}
       >
-        <span style={{ fontWeight: 600, fontSize: 14 }}>Service Integrations</span>
-        <button
-          className="btn btn-primary"
-          style={{
-            fontSize: 13,
-            padding: '5px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5,
-          }}
-          onClick={openAdd}
-        >
-          <Plus size={14} />
-          Add Integration
-        </button>
+        {[
+          { key: 'integrations', label: 'Service Integrations' },
+          { key: 'native', label: 'Built-in Monitors' },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            style={{
+              background: 'none',
+              border: 'none',
+              borderBottom:
+                activeTab === tab.key
+                  ? '2px solid var(--color-accent, #6366f1)'
+                  : '2px solid transparent',
+              padding: '8px 16px',
+              fontSize: 13,
+              fontWeight: activeTab === tab.key ? 600 : 400,
+              color: activeTab === tab.key ? 'var(--color-text)' : 'var(--color-text-muted)',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {/* List */}
-      {loading ? (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading…</p>
-      ) : integrations.length === 0 ? (
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
-          No service integrations configured. Add one to start syncing monitor status.
-        </p>
-      ) : (
-        integrations.map((integration) => (
-          <IntegrationCard
-            key={integration.id}
-            integration={integration}
-            onEdit={openEdit}
-            onRemove={handleRemove}
-            onTest={handleTest}
-          />
-        ))
+      {activeTab === 'native' && <NativeMonitorsTab />}
+
+      {activeTab === 'integrations' && (
+        <>
+          {/* Header */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: 16,
+            }}
+          >
+            <span style={{ fontWeight: 600, fontSize: 14 }}>Service Integrations</span>
+            <button
+              className="btn btn-primary"
+              style={{
+                fontSize: 13,
+                padding: '5px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+              onClick={openAdd}
+            >
+              <Plus size={14} />
+              Add Integration
+            </button>
+          </div>
+
+          {/* List */}
+          {loading ? (
+            <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>Loading…</p>
+          ) : integrations.length === 0 ? (
+            <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
+              No service integrations configured. Add one to start syncing monitor status.
+            </p>
+          ) : (
+            integrations.map((integration) => (
+              <IntegrationCard
+                key={integration.id}
+                integration={integration}
+                onEdit={openEdit}
+                onRemove={handleRemove}
+                onTest={handleTest}
+              />
+            ))
+          )}
+        </>
       )}
 
       {/* Modal */}

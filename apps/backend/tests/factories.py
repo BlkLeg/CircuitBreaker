@@ -111,6 +111,24 @@ class Factories:
         self.session.flush()
         return wh
 
+    # ── Integrations ──────────────────────────────────────────────────────────
+
+    def integration(self, **kwargs):
+        from app.db.models import Integration
+
+        defaults = {
+            "type": "uptime_kuma",
+            "name": fake.unique.slug(),
+            "base_url": "http://uptime-kuma.test:3001",
+            "slug": "default",
+            "enabled": True,
+        }
+        defaults.update(kwargs)
+        intg = Integration(**defaults)
+        self.session.add(intg)
+        self.session.flush()
+        return intg
+
     # ── Discovery profiles ────────────────────────────────────────────────────
 
     def discovery_profile(self, **kwargs):

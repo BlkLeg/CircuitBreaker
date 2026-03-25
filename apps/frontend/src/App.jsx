@@ -7,6 +7,7 @@ import i18n from './i18n';
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 import { TimezoneProvider } from './context/TimezoneContext.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { TenantProvider } from './context/TenantContext';
 import { ToastProvider, useToast } from './components/common/Toast';
 import { authApi } from './api/auth.js';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -21,6 +22,7 @@ import OOBEWizardPage from './pages/OOBEWizardPage';
 import { useDiscoveryStream, discoveryEmitter } from './hooks/useDiscoveryStream.js';
 import { connectSSE, disconnectSSE } from './lib/sseClient.js';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
+import MasqueradeBanner from './components/MasqueradeBanner.jsx';
 import ServerLifecycleBanner from './components/ServerLifecycleBanner.jsx';
 import LoadingScreen from './components/common/LoadingScreen.jsx';
 import { canEdit, isAdmin } from './utils/rbac';
@@ -34,7 +36,6 @@ const HardwarePage = React.lazy(() => import('./pages/HardwarePage'));
 const ComputeUnitsPage = React.lazy(() => import('./pages/ComputeUnitsPage'));
 const ServicesPage = React.lazy(() => import('./pages/ServicesPage'));
 const StoragePage = React.lazy(() => import('./pages/StoragePage'));
-const NetworksPage = React.lazy(() => import('./pages/NetworksPage'));
 const LogsPage = React.lazy(() => import('./pages/LogsPage'));
 const ExternalNodesPage = React.lazy(() => import('./pages/ExternalNodesPage'));
 const AdminUsersPage = React.lazy(() => import('./pages/AdminUsersPage'));
@@ -47,10 +48,14 @@ const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
 const StatusPagesPage = React.lazy(() => import('./pages/StatusPagesPage'));
 const RackPage = React.lazy(() => import('./pages/RackPage'));
 const PublicStatusPage = React.lazy(() => import('./pages/PublicStatusPage'));
+const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
+const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
+const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
 
 function AppInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen } = useAuth();
+  const { authModalOpen, setAuthModalOpen, profileModalOpen, setProfileModalOpen, isMasquerade } =
+    useAuth();
   const toast = useToast();
   const location = useLocation();
   const pathnameRef = useRef(location.pathname);
@@ -100,8 +105,16 @@ function AppInner() {
     <div className="app-shell">
       <CommandPalette isOpen={paletteOpen} onClose={handleClosePalette} />
       <Header onOpenPalette={handleOpenPalette} />
+      <MasqueradeBanner />
       <ConnectionStatus discoveryConnected={discoveryConnected} />
-      <div className="page-content">
+      <div
+        className="page-content"
+        style={
+          isMasquerade
+            ? { paddingTop: 'calc(var(--header-height, 60px) + 36px + 16px)' }
+            : undefined
+        }
+      >
         <ErrorBoundary>
           <React.Suspense fallback={<LoadingScreen />}>
             <AnimatePresence mode="wait">
@@ -118,7 +131,10 @@ function AppInner() {
                   <Route path="/compute-units" element={<ComputeUnitsPage />} />
                   <Route path="/services" element={<ServicesPage />} />
                   <Route path="/storage" element={<StoragePage />} />
-                  <Route path="/networks" element={<NetworksPage />} />
+                  <Route path="/networks" element={<Navigate to="/ipam" replace />} />
+                  <Route path="/certificates" element={<CertificatesPage />} />
+                  <Route path="/notifications" element={<NotificationsPage />} />
+                  <Route path="/tenants" element={<TenantsPage />} />
                   <Route path="/external-nodes" element={<ExternalNodesPage />} />
                   <Route path="/misc" element={<MiscPage />} />
                   <Route path="/docs" element={<DocsPage />} />
@@ -383,7 +399,9 @@ function App() {
             <AuthProvider>
               <ToastProvider>
                 <ServerLifecycleBanner>
-                  <AppRoutes />
+                  <TenantProvider>
+                    <AppRoutes />
+                  </TenantProvider>
                 </ServerLifecycleBanner>
               </ToastProvider>
             </AuthProvider>

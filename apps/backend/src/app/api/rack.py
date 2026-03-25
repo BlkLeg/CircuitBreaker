@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.db.session import get_db
+from app.schemas.hardware import HardwareConnectionOut
 from app.schemas.rack import RackCreate, RackOut, RackUpdate
 from app.services import rack_service
 
@@ -31,6 +32,15 @@ def get_rack(rack_id: int, db: Session = Depends(get_db)) -> Any:
         return rack_service.get_rack(db, rack_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{rack_id}/connections", response_model=list[HardwareConnectionOut])
+def get_rack_connections(
+    rack_id: int,
+    db: Session = Depends(get_db),
+) -> list[HardwareConnectionOut]:
+    """Return all HardwareConnection rows where either endpoint is mounted in this rack."""
+    return rack_service.get_rack_connections(db, rack_id)
 
 
 @router.patch("/{rack_id}", response_model=RackOut)

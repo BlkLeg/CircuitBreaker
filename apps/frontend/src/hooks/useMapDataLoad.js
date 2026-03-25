@@ -20,7 +20,7 @@ import {
 } from '../utils/mapDataUtils';
 import { normalizeConnectionType } from '../components/map/connectionTypes';
 import { isUpdatableEdgeId } from '../components/map/linkMutations';
-import { getDagreLayout, getDagreViewportOptions, getRadialLayout } from '../utils/layouts';
+import { getDagreLayout, getDagreViewportOptions } from '../utils/layouts';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import { groupNodesIntoCloud } from '../utils/cloudView';
 import { VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
@@ -39,6 +39,7 @@ import {
  * @returns {{ fetchData, autoPlaceNew, updateNodePos }}
  */
 export function useMapDataLoad({
+  mapId,
   // state setters
   setLoading,
   setError,
@@ -163,6 +164,7 @@ export function useMapDataLoad({
       const res = await graphApi.topology({
         environment_id: envFilter || undefined,
         include: includeCSV,
+        ...(mapId != null && { map_id: mapId }),
       });
 
       const rawN = res.data.nodes.map((n) => {
@@ -307,7 +309,7 @@ export function useMapDataLoad({
           scopedLayoutName === 'default' ? ['default'] : [scopedLayoutName, 'default'];
 
         for (const layoutName of layoutNames) {
-          const layoutRes = await graphApi.getLayout(layoutName);
+          const layoutRes = await graphApi.getLayout(layoutName, mapId);
           if (!layoutRes.data.layout_data) continue;
           const parsed = parseLayoutData(layoutRes.data.layout_data);
           savedNodePositions = parsed.nodes;
@@ -394,15 +396,12 @@ export function useMapDataLoad({
         setLayoutEngine('manual');
       } else {
         const viewportWidth = containerRef?.current?.getBoundingClientRect?.()?.width;
-        const isProxmox = proxmoxClusterDetected(rawNodesWithOverrides);
-        const layout = isProxmox
-          ? getRadialLayout(rawNodesWithOverrides, rawE)
-          : getDagreLayout(
-              rawNodesWithOverrides,
-              rawE,
-              'TB',
-              getDagreViewportOptions(viewportWidth)
-            );
+        const layout = getDagreLayout(
+          rawNodesWithOverrides,
+          rawE,
+          'TB',
+          getDagreViewportOptions(viewportWidth)
+        );
         let initialNodes = layout.nodes;
         if (cloudViewEnabled) {
           initialNodes = groupNodesIntoCloud(initialNodes);
@@ -410,7 +409,7 @@ export function useMapDataLoad({
         setNodes(initialNodes);
         const nextEdgesAuto = applyEdgeSides(initialNodes, layout.edges, {});
         setEdges(recalculateAllEdges(initialNodes, nextEdgesAuto));
-        setLayoutEngine(isProxmox ? 'radial' : settings?.graph_default_layout || 'dagre');
+        setLayoutEngine(settings?.graph_default_layout || 'dagre');
         nodesForProxmox = initialNodes;
       }
 
@@ -456,6 +455,7 @@ export function useMapDataLoad({
       setLoading(false);
     }
   }, [
+    mapId,
     containerRef,
     unmountedRef,
     envFilter,

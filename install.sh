@@ -32,6 +32,7 @@ NO_TLS=false
 FORCE_DEPS=false
 DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
+SKIP_CHECKSUM=false
 
 # UI Functions
 cb_version() {
@@ -62,9 +63,23 @@ cb_warn() {
 
 cb_fail() {
   echo -e "\n  ${RED}✗  ERROR: $1${RESET}"
-  echo -e "  ${YELLOW}→  $2${RESET}\n"
+  if [[ -n "${2:-}" ]]; then
+    echo -e "  ${YELLOW}→  $2${RESET}"
+  fi
+  if [[ ${#CB_STAGE_HINTS[@]} -gt 0 ]]; then
+    echo -e "\n  ${BOLD}Debug steps:${RESET}"
+    local _hint_i=1
+    for _hint in "${CB_STAGE_HINTS[@]}"; do
+      echo -e "    ${DIM}${_hint_i}.${RESET} ${_hint}"
+      (( _hint_i++ ))
+    done
+  fi
+  echo ""
   exit 1
 }
+
+# Hint array populated before each major stage; cleared on success
+CB_STAGE_HINTS=()
 
 cb_section() {
   echo -e "\n  ${BOLD}$1${RESET}"
@@ -184,12 +199,16 @@ stage0_download_bundle() {
 
     # Verify checksum if available
     local checksum_url="${tarball_url}.sha256"
-    if curl -fsSL -o "/tmp/${tarball_name}.sha256" "$checksum_url" 2>/dev/null; then
+    if [[ "$SKIP_CHECKSUM" == "true" ]]; then
+      cb_warn "Skipping SHA256 verification (--skip-checksum)"
+    elif curl -fsSL -o "/tmp/${tarball_name}.sha256" "$checksum_url" 2>/dev/null; then
       cb_step "Verifying checksum"
       if (cd /tmp && sha256sum -c "${tarball_name}.sha256" >/dev/null 2>&1); then
         cb_ok "SHA256 checksum verified"
       else
-        cb_warn "Checksum verification failed — continuing anyway"
+        rm -f "/tmp/${tarball_name}.sha256"
+        cb_fail "SHA256 mismatch — bundle may be corrupted or tampered" \
+          "Use --skip-checksum to bypass (only for trusted local bundles)"
       fi
       rm -f "/tmp/${tarball_name}.sha256"
     fi
@@ -264,6 +283,7 @@ show_help() {
   echo "  --upgrade              Force upgrade mode even if install not detected"
   echo "  --force-deps           Force reinstall dependencies in upgrade mode"
   echo "  --docker               Install Docker CE and enable container telemetry proxy"
+  echo "  --skip-checksum        Skip SHA256 bundle verification (for air-gapped or local bundle use)"
   echo "  --help                 Show this help message"
   echo ""
   exit 0
@@ -319,6 +339,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_DOCKER=true
       shift
       ;;
+    --skip-checksum)
+      SKIP_CHECKSUM=true
+      shift
+      ;;
     --help)
       show_help
       ;;
@@ -372,20 +396,76 @@ main() {
     fi
 
     # Full Fresh Install Flow
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "Retry: bash install.sh --unattended"
+    )
     stage1_bootstrap
+    CB_STAGE_HINTS=()
+
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "Check internet: curl -I https://github.com"
+      "Retry with fresh deps: bash install.sh --force-deps"
+      "Manual package check: ${PKG_MGR} install -y postgresql-15 redis nginx pgbouncer"
+    )
     stage2_dependencies
+    CB_STAGE_HINTS=()
+
     stage4_write_systemd_units
+
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "PostgreSQL status: systemctl status circuitbreaker-postgres"
+      "PostgreSQL logs: journalctl -u circuitbreaker-postgres -n 30"
+      "Check disk space: df -h ${CB_DATA_DIR}"
+      "Retry: bash install.sh --force-deps"
+    )
     stage3_configure_postgres
+    CB_STAGE_HINTS=()
+
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "pgbouncer status: systemctl status circuitbreaker-pgbouncer"
+      "pgbouncer logs: journalctl -u circuitbreaker-pgbouncer -n 30"
+    )
     stage3_configure_pgbouncer
+    CB_STAGE_HINTS=()
+
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "Redis status: systemctl status circuitbreaker-redis"
+      "Redis logs: journalctl -u circuitbreaker-redis -n 30"
+      "Port check: ss -tlnp | grep 6379"
+    )
     stage3_configure_redis
+    CB_STAGE_HINTS=()
+
+    CB_STAGE_HINTS=(
+      "Full log: tail -50 ${CB_DATA_DIR}/logs/install.log"
+      "NATS status: systemctl status circuitbreaker-nats"
+      "NATS logs: journalctl -u circuitbreaker-nats -n 30"
+      "NATS binary: ls -la /opt/circuitbreaker/bin/nats-server"
+    )
     stage3_configure_nats
+    CB_STAGE_HINTS=()
+
     stage3_configure_nginx
     stage3_configure_docker_proxy
     write_wait_for_services_script
     write_service_scripts
     stage6_apply_binary
     stage9_install_cb_cli
+
+    CB_STAGE_HINTS=(
+      "Service status: systemctl status circuitbreaker.target"
+      "All CB logs: journalctl -u 'circuitbreaker-*' --no-pager -n 50"
+      "Check config: cat /etc/circuitbreaker/.env"
+      "Manual start: systemctl start circuitbreaker.target"
+    )
     stage8_start_services
+    CB_STAGE_HINTS=()
+
     stage10_final_output
   else
     cb_fail "Setup scripts not found" "Check bundle structure at /opt/circuitbreaker/deploy/"

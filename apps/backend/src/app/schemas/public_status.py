@@ -25,6 +25,9 @@ class PublicIncident(BaseModel):
     new_status: str
     detected_at: datetime
     resolved_at: datetime | None
+    reason: str | None = None
+    reason_by_name: str | None = None
+    reason_at: datetime | None = None
 
 
 class PublicGroup(BaseModel):

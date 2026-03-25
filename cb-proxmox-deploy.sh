@@ -117,6 +117,11 @@ die() {
   return 1
 }
 
+# Validate IPv4 CIDR notation (e.g. 192.168.1.50/24)
+validate_cidr4() {
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || return 1
+}
+
 # ── Preflight ─────────────────────────────────────────────────────────────────
 preflight() {
   if ! command -v pveversion &>/dev/null; then
@@ -514,11 +519,17 @@ adv_networking() {
     DHCP) IPV4_MODE="dhcp"; IPV4_ADDR=""; IPV4_GW="" ;;
     Static)
       IPV4_MODE="static"
-      local input
-      input=$(whiptail --backtitle "$BT" --title "IPv4 Address" \
-        --inputbox "IP/CIDR (e.g. 10.10.10.50/24):" 10 55 "$IPV4_ADDR" \
-        3>&1 1>&2 2>&3) || return 1
-      IPV4_ADDR="$input"
+      local input _prompt="IP/CIDR (e.g. 10.10.10.50/24):"
+      while true; do
+        input=$(whiptail --backtitle "$BT" --title "IPv4 Address" \
+          --inputbox "$_prompt" 10 60 "$IPV4_ADDR" \
+          3>&1 1>&2 2>&3) || return 1
+        if validate_cidr4 "$input"; then
+          IPV4_ADDR="$input"
+          break
+        fi
+        _prompt="Invalid format. Use x.x.x.x/prefix (e.g. 10.10.10.50/24):"
+      done
       input=$(whiptail --backtitle "$BT" --title "IPv4 Gateway" \
         --inputbox "Gateway (e.g. 10.10.10.1):" 10 55 "$IPV4_GW" \
         3>&1 1>&2 2>&3) || return 1
@@ -1007,8 +1018,9 @@ func_do_install() {
   if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | grep -q "$TEMPLATE"; then
     msg_info "Downloading $TEMPLATE..."
     pvesm set "$TEMPLATE_STORAGE" 2>/dev/null || true  # clear stale locks
-    if ! pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null 2>&1; then
-      msg_err "Template download failed."
+    if ! timeout 300 pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null 2>&1; then
+      msg_err "Template download failed or timed out (5m limit)."
+      msg_warn "Check: pvesm status && pvesm list $TEMPLATE_STORAGE"
       read -rp "  Press Enter to return to menu..."
       return 1
     fi
@@ -1020,14 +1032,16 @@ func_do_install() {
 
   # ── Build and run pct create ────────────────────────────────────────────────
   CLEANUP_CTID="$CTID"
-  pct unlock "$CTID" 2>/dev/null || true  # clear stale locks
+  # Clear any stale lock on this CTID before creation
+  pct unlock "$CTID" 2>/dev/null || true
   build_pct_cmd
 
   local create_err
-  create_err=$("${PCT_CMD[@]}" 2>&1)
+  create_err=$(timeout 120 "${PCT_CMD[@]}" 2>&1)
   if [[ $? -ne 0 ]]; then
     msg_err "pct create failed:"
     echo "       $create_err"
+    msg_warn "Debug: pvesm status | journalctl -u pvedaemon -n 20"
     CLEANUP_CTID=""
     read -rp "  Press Enter to return to menu..."
     return 1
@@ -1038,6 +1052,7 @@ func_do_install() {
   post_create_config
 
   # ── Start container ─────────────────────────────────────────────────────────
+  pct unlock "$CTID" 2>/dev/null || true
   if ! pct start "$CTID" 2>&1; then
     msg_err "Failed to start container $CTID."
     read -rp "  Press Enter to return to menu..."
@@ -1113,17 +1128,23 @@ func_do_install() {
 
   local install_log="/tmp/cb-install-${CTID}.log"
   if [[ "$VERBOSE" -eq 1 ]]; then
-    pct exec "$CTID" -- bash -c "$installer_cmd" 2>&1 | tee "$install_log"
+    timeout 600 pct exec "$CTID" -- bash -c "$installer_cmd" 2>&1 | tee "$install_log"
   else
-    pct exec "$CTID" -- bash -c "$installer_cmd" &>"$install_log"
+    timeout 600 pct exec "$CTID" -- bash -c "$installer_cmd" &>"$install_log"
   fi
   local install_rc=$?
   echo ""
   if [[ $install_rc -ne 0 ]]; then
     msg_err "Circuit Breaker installation failed (exit code $install_rc)."
-    msg_warn "Install log: $install_log"
-    msg_warn "Last 20 lines:"
+    msg_warn "Last 20 lines of install log ($install_log):"
     tail -20 "$install_log" 2>/dev/null | sed 's/^/    /'
+    echo ""
+    echo "  Debug steps:"
+    echo "    1. Enter container:  pct enter $CTID"
+    echo "    2. Full install log: tail -50 /var/lib/circuitbreaker/logs/install.log"
+    echo "    3. CB service:       systemctl status circuitbreaker.target"
+    echo "    4. All CB logs:      journalctl -u 'circuitbreaker-*' --no-pager -n 50"
+    echo "    5. Re-run installer: bash /tmp/cb-bundle/install.sh --unattended"
     echo ""
     CLEANUP_CTID=""
     read -rp "  Press Enter to return to menu..."
@@ -1222,13 +1243,14 @@ func_update() {
 
   clear
   echo -e "\n${bold}Updating Circuit Breaker in container $target${nc}\n"
-  pct exec "$target" -- bash -c \
+  timeout 600 pct exec "$target" -- bash -c \
     "curl -fsSL '${CB_INSTALL_URL}' | bash -s -- --unattended --upgrade"
   local rc=$?
   if [[ $rc -eq 0 ]]; then
     msg_ok "Update complete."
   else
-    msg_err "Update failed (exit code $rc). Check logs inside container."
+    msg_err "Update failed (exit code $rc)."
+    echo "  Debug: pct enter $target  →  journalctl -u 'circuitbreaker-*' -n 50"
   fi
   echo ""
   read -rp "  Press Enter to return to menu..."

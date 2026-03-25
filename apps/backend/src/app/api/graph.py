@@ -27,6 +27,7 @@ from app.db.models import (
     HardwareConnection,
     HardwareMonitor,
     HardwareNetwork,
+    MapPinnedEntity,
     MiscItem,
     Network,
     NetworkPeer,
@@ -38,6 +39,7 @@ from app.db.models import (
     ServiceStorage,
     Storage,
     Tag,
+    TopologyNode,
 )
 from app.db.session import get_db
 from app.services.ip_reservation import bulk_conflict_map
@@ -277,6 +279,7 @@ class LayoutUpdate(BaseModel):
     name: str = "default"
     layout_data: str  # JSON string
     constraints: dict = Field(default_factory=dict)
+    map_id: int | None = None
 
 
 class PlaceNodeInput(BaseModel):
@@ -1045,6 +1048,7 @@ def get_topology(
     environment_id: int | None = Query(None),
     rack_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
+    map_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Response:
     etag = _topology_etag(db, environment, environment_id, rack_id, include)
@@ -1058,12 +1062,56 @@ def get_topology(
         rack_id=rack_id,
         include=include,
     )
+    # Filter nodes/edges by map membership when map_id is specified
+    if map_id is not None:
+        member_rows = db.execute(
+            select(TopologyNode.entity_type, TopologyNode.entity_id).where(
+                TopologyNode.topology_id == map_id
+            )
+        ).all()
+        pinned_rows = db.execute(
+            select(MapPinnedEntity.entity_type, MapPinnedEntity.entity_id)
+        ).all()
+        # Build allowed node ID set using the same prefix format as build_topology_graph
+        _TYPE_PREFIX = {
+            "hardware": "hw",
+            "network": "net",
+            "cluster": "cluster",
+            "compute": "cu",
+            "service": "svc",
+            "storage": "st",
+            "misc": "misc",
+            "external": "ext",
+        }
+        allowed_ids = set()
+        for entity_type, entity_id in member_rows + pinned_rows:
+            prefix = _TYPE_PREFIX.get(entity_type, entity_type)
+            allowed_ids.add(f"{prefix}-{entity_id}")
+        nodes = [n for n in data.get("nodes", []) if n.get("id") in allowed_ids]
+        node_id_set = {n["id"] for n in nodes}
+        edges = [
+            e
+            for e in data.get("edges", [])
+            if e.get("source") in node_id_set and e.get("target") in node_id_set
+        ]
+        data = {**data, "nodes": nodes, "edges": edges}
     return JSONResponse(content=data, headers={"ETag": f'"{etag}"'})
 
 
 @router.get("/layout")
-def get_layout(name: str = "default", db: Session = Depends(get_db)) -> dict[str, Any]:
-    layout = db.execute(select(GraphLayout).where(GraphLayout.name == name)).scalar_one_or_none()
+def get_layout(
+    name: str = "default",
+    map_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if map_id is not None:
+        layout = db.execute(
+            select(GraphLayout).where(GraphLayout.topology_id == map_id)
+        ).scalar_one_or_none()
+    else:
+        layout = db.execute(
+            select(GraphLayout).where(GraphLayout.name == name)
+        ).scalar_one_or_none()
     if not layout:
         return {"layout_data": None}
     return {"layout_data": layout.layout_data, "updated_at": layout.updated_at}
@@ -1076,9 +1124,14 @@ async def save_layout(
     _: Any = Depends(require_write_auth),
 ) -> dict[str, Any]:
     try:
-        layout = db.execute(
-            select(GraphLayout).where(GraphLayout.name == data.name)
-        ).scalar_one_or_none()
+        if data.map_id is not None:
+            layout = db.execute(
+                select(GraphLayout).where(GraphLayout.topology_id == data.map_id)
+            ).scalar_one_or_none()
+        else:
+            layout = db.execute(
+                select(GraphLayout).where(GraphLayout.name == data.name)
+            ).scalar_one_or_none()
         try:
             parsed_layout: dict = json.loads(data.layout_data)
         except (json.JSONDecodeError, TypeError):
@@ -1086,7 +1139,11 @@ async def save_layout(
         if layout:
             layout.layout_data = parsed_layout
         else:
-            layout = GraphLayout(name=data.name, layout_data=parsed_layout)
+            layout = GraphLayout(
+                name=f"map-{data.map_id}" if data.map_id else data.name,
+                layout_data=parsed_layout,
+                topology_id=data.map_id,
+            )
             db.add(layout)
         db.commit()
     except Exception as e:

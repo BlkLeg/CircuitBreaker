@@ -270,58 +270,26 @@ stage0_preflight() {
   OS_VERSION="${VERSION_ID:-unknown}"
   
   case "$OS_ID" in
-    ubuntu)
+    ubuntu|debian)
       PKG_MGR="apt-get"
-      case "$OS_VERSION" in
-        22.04|24.04)
-          cb_ok "Ubuntu $OS_VERSION detected"
-          ;;
-        *)
-          cb_fail "Unsupported Ubuntu version: $OS_VERSION" "Supported: 22.04, 24.04"
-          ;;
-      esac
-      ;;
-    debian)
-      PKG_MGR="apt-get"
-      case "$OS_VERSION" in
-        11|12|13)
-          cb_ok "Debian $OS_VERSION detected"
-          ;;
-        *)
-          cb_fail "Unsupported Debian version: $OS_VERSION" "Supported: 11, 12, 13"
-          ;;
-      esac
+      cb_ok "${NAME:-$OS_ID} ${OS_VERSION} detected"
       ;;
     fedora)
       PKG_MGR="dnf"
-      case "$OS_VERSION" in
-        39|40|41)
-          cb_ok "Fedora $OS_VERSION detected"
-          ;;
-        *)
-          cb_fail "Unsupported Fedora version: $OS_VERSION" "Supported: 39, 40, 41"
-          ;;
-      esac
+      cb_ok "Fedora ${OS_VERSION} detected"
       ;;
-    rhel|rocky|almalinux)
+    rhel|rocky|almalinux|centos)
       PKG_MGR="dnf"
-      case "$OS_VERSION" in
-        9|9.*)
-          cb_ok "$OS_ID $OS_VERSION detected"
-          ;;
-        *)
-          cb_fail "Unsupported $OS_ID version: $OS_VERSION" "Supported: 9.x"
-          ;;
-      esac
+      cb_ok "${NAME:-$OS_ID} ${OS_VERSION} detected"
       ;;
-    arch)
-      OS_NAME="Arch Linux"
+    arch|manjaro)
       PKG_MGR="pacman"
       PG_BIN_DIR="/usr/bin"
-      cb_ok "Arch Linux detected"
+      cb_ok "${NAME:-$OS_ID} detected"
       ;;
     *)
-      cb_fail "Unsupported OS: $OS_ID" "Supported: Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux, Arch"
+      cb_fail "Unsupported OS family: $OS_ID" \
+        "Supported families: Ubuntu/Debian (apt-get), Fedora/RHEL/Rocky/AlmaLinux/CentOS (dnf), Arch/Manjaro (pacman)"
       ;;
   esac
 
@@ -398,12 +366,18 @@ stage0_preflight() {
 
 stage3_configure_postgres() {
   cb_section "Configuring PostgreSQL 15"
-  
+
+  # Idempotency: skip if already initialized and running
+  if [[ -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]] && systemctl is-active circuitbreaker-postgres &>/dev/null; then
+    cb_ok "PostgreSQL already initialized and running — skipping"
+    return 0
+  fi
+
   # Validate required secrets are set
   if [[ -z "${CB_DB_PASSWORD:-}" ]]; then
     cb_fail "Database password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
   fi
-  
+
   # Stop any existing postgres
   cb_step "Stopping existing PostgreSQL instances"
   systemctl stop postgresql 2>/dev/null || true
@@ -481,12 +455,18 @@ stage3_configure_postgres() {
 
 stage3_configure_pgbouncer() {
   cb_section "Configuring pgbouncer"
-  
+
+  # Idempotency: skip if already configured and running
+  if [[ -f "/etc/pgbouncer/pgbouncer.ini" ]] && systemctl is-active circuitbreaker-pgbouncer &>/dev/null; then
+    cb_ok "pgbouncer already configured and running — skipping"
+    return 0
+  fi
+
   # Validate required secrets are set
   if [[ -z "${CB_DB_PASSWORD:-}" ]]; then
     cb_fail "Database password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
   fi
-  
+
   # Stop any existing pgbouncer processes
   cb_step "Stopping any existing pgbouncer processes"
   systemctl stop circuitbreaker-pgbouncer 2>/dev/null || true
@@ -543,12 +523,18 @@ stage3_configure_pgbouncer() {
 
 stage3_configure_redis() {
   cb_section "Configuring Redis"
-  
+
+  # Idempotency: skip if already configured and running
+  if [[ -f "/etc/redis/redis.conf" ]] && systemctl is-active circuitbreaker-redis &>/dev/null; then
+    cb_ok "Redis already configured and running — skipping"
+    return 0
+  fi
+
   # Validate required secrets are set
   if [[ -z "${CB_REDIS_PASSWORD:-}" ]]; then
     cb_fail "Redis password not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
   fi
-  
+
   # Stop any existing Redis
   cb_step "Stopping existing Redis instances"
   systemctl stop redis 2>/dev/null || true
@@ -607,12 +593,18 @@ stage3_configure_redis() {
 
 stage3_configure_nats() {
   cb_section "Configuring NATS"
-  
+
+  # Idempotency: skip if already configured and running
+  if [[ -f "/etc/nats/nats.conf" ]] && systemctl is-active circuitbreaker-nats &>/dev/null; then
+    cb_ok "NATS already configured and running — skipping"
+    return 0
+  fi
+
   # Validate required secrets are set
   if [[ -z "${CB_NATS_TOKEN:-}" ]]; then
     cb_fail "NATS token not set" "This should have been generated in stage1_bootstrap — check /etc/circuitbreaker/.env"
   fi
-  
+
   # Stop any existing NATS
   cb_step "Stopping existing NATS instances"
   systemctl stop circuitbreaker-nats 2>/dev/null || true
@@ -1172,12 +1164,15 @@ stage2_dependencies() {
     # PG_BIN_DIR already set to /usr/bin in OS detection
   else
     local pg_repo_rpm=""
+    local _rpm_arch
+    _rpm_arch="$(uname -m)"  # PGDG RPM path uses native arch name (x86_64, aarch64)
     case "$OS_ID" in
       fedora)
-        pg_repo_rpm="https://download.postgresql.org/pub/repos/yum/reporpms/F-${OS_VERSION}-x86_64/pgdg-fedora-repo-latest.noarch.rpm"
+        pg_repo_rpm="https://download.postgresql.org/pub/repos/yum/reporpms/F-${OS_VERSION}-${_rpm_arch}/pgdg-fedora-repo-latest.noarch.rpm"
         ;;
-      rhel|rocky|almalinux)
-        pg_repo_rpm="https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+      rhel|rocky|almalinux|centos)
+        local _el_ver="${OS_VERSION%%.*}"
+        pg_repo_rpm="https://download.postgresql.org/pub/repos/yum/reporpms/EL-${_el_ver}-${_rpm_arch}/pgdg-redhat-repo-latest.noarch.rpm"
         ;;
     esac
     $PKG_MGR install -y -q "$pg_repo_rpm" >> "$LOG_FILE" 2>&1 || true

@@ -1,10 +1,10 @@
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
-from app.db.models import Hardware, Rack
+from app.db.models import Hardware, HardwareConnection, Rack
 from app.schemas.rack import RackCreate, RackUpdate
 
 _logger = logging.getLogger(__name__)
@@ -78,6 +78,23 @@ def delete_rack(db: Session, rack_id: int) -> None:
     db.commit()
 
 
+def get_rack_connections(db: Session, rack_id: int) -> list:
+    """Return connections where either endpoint is in the given rack."""
+    hw_ids = db.scalars(select(Hardware.id).where(Hardware.rack_id == rack_id)).all()
+    if not hw_ids:
+        return []
+    hw_id_set = set(hw_ids)
+    connections = db.scalars(
+        select(HardwareConnection).where(
+            or_(
+                HardwareConnection.source_hardware_id.in_(hw_id_set),
+                HardwareConnection.target_hardware_id.in_(hw_id_set),
+            )
+        )
+    ).all()
+    return connections
+
+
 def check_rack_overlap(
     db: Session,
     rack_id: int,
@@ -95,6 +112,7 @@ def check_rack_overlap(
         Hardware.rack_id == rack_id,
         Hardware.rack_unit.isnot(None),
         Hardware.u_height.isnot(None),
+        Hardware.side_rail.is_(None),  # exclude side-rail devices from U-slot conflict checks
     )
     if exclude_hardware_id is not None:
         stmt = stmt.where(Hardware.id != exclude_hardware_id)

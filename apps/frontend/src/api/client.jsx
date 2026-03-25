@@ -69,9 +69,7 @@ function getCookie(name) {
 
 const CSRF_METHODS = ['post', 'put', 'patch', 'delete'];
 
-// Session is sent via httpOnly cookie (cb_session). Do not attach token from storage.
-// Strip accidental plaintext password when password_hash is already present (defense in depth).
-// Inject X-CSRF-Token header for all mutating requests using the cb_csrf cookie.
+// Inject X-CSRF-Token and X-Tenant-ID headers.
 client.interceptors.request.use((config) => {
   if (
     config.data &&
@@ -90,6 +88,13 @@ client.interceptors.request.use((config) => {
     const csrf = getCookie('cb_csrf');
     if (csrf) config.headers['X-CSRF-Token'] = csrf;
   }
+
+  // Multi-tenancy support
+  const activeTenantId = localStorage.getItem('cb_active_tenant_id');
+  if (activeTenantId) {
+    config.headers['X-Tenant-ID'] = activeTenantId;
+  }
+
   return config;
 });
 
@@ -175,9 +180,10 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
-  addConnection: (sourceId, targetId) =>
-    client.post(`/hardware/${sourceId}/connections`, { target_hardware_id: targetId }),
-  removeConnection: (connectionId) => client.delete(`/hardware-connections/${connectionId}`),
+  createConnection: (hwId, data) =>
+    client.post(`/hardware/${hwId}/connections`, data).then((r) => r.data),
+  deleteConnection: (connId) =>
+    client.delete(`/hardware-connections/${connId}`).then((r) => r.data),
 };
 
 export const computeUnitsApi = {
@@ -296,8 +302,10 @@ export const docsApi = {
 
 export const graphApi = {
   topology: (params) => client.get('/graph/topology', { params }),
-  getLayout: (name = 'default') => client.get('/graph/layout', { params: { name } }),
-  saveLayout: (name, layout_data) => client.post('/graph/layout', { name, layout_data }),
+  getLayout: (name = 'default', mapId) =>
+    client.get('/graph/layout', { params: { name, ...(mapId != null && { map_id: mapId }) } }),
+  saveLayout: (name, layout_data, mapId) =>
+    client.post('/graph/layout', { name, layout_data, ...(mapId != null && { map_id: mapId }) }),
   placeNode: (node_id, environment = 'default') =>
     client.post('/graph/place-node', { node_id, environment }),
   deleteEdge: (edge_id) => client.delete(`/graph/edges/${edge_id}`),
@@ -351,6 +359,25 @@ export const adminApi = {
   testBackupConnection: () => client.post('/admin/settings/backup/test'),
 };
 
+// ── Masquerade interceptor helpers ──────────────────────────────────────────
+let _masqInterceptorId = null;
+
+export function activateMasqueradeInterceptor(token) {
+  deactivateMasqueradeInterceptor(); // eject any stale interceptor before registering a new one
+  _masqInterceptorId = client.interceptors.request.use((config) => {
+    config.headers = config.headers ?? {};
+    config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  });
+}
+
+export function deactivateMasqueradeInterceptor() {
+  if (_masqInterceptorId !== null) {
+    client.interceptors.request.eject(_masqInterceptorId);
+    _masqInterceptorId = null;
+  }
+}
+
 export const adminUsersApi = {
   listUsers: () => client.get('/admin/users'),
   createUser: (data) => client.post('/admin/users', data),
@@ -360,6 +387,8 @@ export const adminUsersApi = {
     client.delete(`/admin/users/${id}`, { params: permanent ? { permanent: true } : {} }),
   unlockUser: (id) => client.post(`/admin/users/${id}/unlock`),
   masquerade: (id) => client.post(`/admin/users/${id}/masquerade`),
+  resetPassword: (id) => client.post(`/admin/users/${id}/reset-password`),
+  revokeSessions: (id) => client.delete(`/admin/users/${id}/sessions`),
   getUserActions: (id, params) => client.get(`/admin/user-actions/${id}`, { params }),
   createInvite: (data) => client.post('/admin/invites', data),
   listInvites: (params) => client.get('/admin/invites', { params }),
@@ -534,6 +563,7 @@ export const racksApi = {
   create: (data) => client.post('/racks', data),
   update: (id, data) => client.patch(`/racks/${id}`, data),
   delete: (id) => client.delete(`/racks/${id}`),
+  connections: (rackId) => client.get(`/racks/${rackId}/connections`).then((r) => r.data),
 };
 
 export const eventsApi = {
@@ -546,6 +576,38 @@ export const discoveryApi = {
   getResultsWithInference: (jobId) =>
     client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
   batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
+};
+
+export const certificatesApi = {
+  list: (params) => client.get('/certificates', { params }),
+  get: (id) => client.get(`/certificates/${id}`),
+  create: (data) => client.post('/certificates', data),
+  update: (id, data) => client.put(`/certificates/${id}`, data),
+  delete: (id) => client.delete(`/certificates/${id}`),
+  renew: (id) => client.post(`/certificates/${id}/renew`),
+};
+
+export const tenantsApi = {
+  list: (params) => client.get('/tenants', { params }),
+  get: (id) => client.get(`/tenants/${id}`),
+  create: (data) => client.post('/tenants', data),
+  update: (id, data) => client.patch(`/tenants/${id}`, data),
+  delete: (id) => client.delete(`/tenants/${id}`),
+  getMembers: (id) => client.get(`/tenants/${id}/members`),
+  addMember: (id, data) => client.post(`/tenants/${id}/members`, data),
+  removeMember: (id, userId) => client.delete(`/tenants/${id}/members/${userId}`),
+};
+
+export const notificationsApi = {
+  listSinks: () => client.get('/notifications/sinks'),
+  createSink: (data) => client.post('/notifications/sinks', data),
+  updateSink: (id, data) => client.patch(`/notifications/sinks/${id}`, data),
+  deleteSink: (id) => client.delete(`/notifications/sinks/${id}`),
+  toggleSink: (id) => client.put(`/notifications/sinks/${id}/toggle`),
+  testSink: (id) => client.post(`/notifications/sinks/${id}/test`),
+  listRoutes: () => client.get('/notifications/routes'),
+  createRoute: (data) => client.post('/notifications/routes', data),
+  deleteRoute: (id) => client.delete(`/notifications/routes/${id}`),
 };
 
 export default client;

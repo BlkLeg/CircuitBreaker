@@ -119,6 +119,7 @@ class AppSettingsRead(BaseModel):
     login_lockout_minutes: int = 15
     invite_expiry_days: int = 7
     masquerade_enabled: bool = True
+    auto_monitor_on_discovery: bool = False
     dev_mode: bool = False
     audit_log_retention_days: int = 90
     audit_log_hide_ip: bool = False
@@ -353,6 +354,7 @@ class AppSettingsUpdate(BaseModel):
     login_lockout_minutes: int | None = None
     invite_expiry_days: int | None = None
     masquerade_enabled: bool | None = None
+    auto_monitor_on_discovery: bool | None = None
     dev_mode: bool | None = None
     audit_log_retention_days: int | None = None
     audit_log_hide_ip: bool | None = None

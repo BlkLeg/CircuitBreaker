@@ -17,7 +17,7 @@ export function useIPAMData(toast) {
     setLoading(true);
     try {
       const [ipRes, vlanRes, siteRes, netRes] = await Promise.all([
-        ipamApi.listIPs(),
+        ipamApi.listIPs({ include_discovered: true }),
         ipamApi.listVLANs(),
         ipamApi.listSites(),
         networksApi.list(),
@@ -127,6 +127,33 @@ export function useIPAMData(toast) {
     [load, toast]
   );
 
+  // ── Network helpers ─────────────────────────────────────────────────────────
+  const createNetwork = useCallback(
+    async (data) => {
+      await networksApi.create(data);
+      toast.success('Network created.');
+      await load();
+    },
+    [load, toast]
+  );
+
+  const updateNetwork = useCallback(
+    async (id, data) => {
+      await networksApi.update(id, data);
+      await load();
+    },
+    [load]
+  );
+
+  const deleteNetwork = useCallback(
+    async (id) => {
+      await networksApi.delete(id);
+      toast.success('Network deleted.');
+      await load();
+    },
+    [load, toast]
+  );
+
   return {
     ips,
     vlans,
@@ -144,5 +171,8 @@ export function useIPAMData(toast) {
     createSite,
     updateSite,
     deleteSite,
+    createNetwork,
+    updateNetwork,
+    deleteNetwork,
   };
 }

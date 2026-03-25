@@ -20,6 +20,7 @@ from app.schemas.settings import BrandingConfig
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["branding"])
+public_router = APIRouter(tags=["branding"])
 _logger = logging.getLogger(__name__)
 
 _BRANDING_DIR = Path(settings.uploads_dir) / "branding"
@@ -254,7 +255,7 @@ def delete_branding_asset(
 # ── Dynamic PWA Manifest ──────────────────────────────────────────────────────
 
 
-@router.get("/manifest.json")
+@public_router.get("/manifest.json")
 def dynamic_manifest(db: Annotated[Session, Depends(get_db)]) -> JSONResponse:
     """Generate a PWA manifest.json reflecting current branding settings."""
     row = get_or_create_settings(db)

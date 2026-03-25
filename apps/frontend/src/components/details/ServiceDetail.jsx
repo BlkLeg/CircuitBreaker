@@ -7,6 +7,7 @@ import logger from '../../utils/logger';
 import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Database, Box, Trash2, ArrowRight } from 'lucide-react';
 import VulnerabilityPanel from './VulnerabilityPanel';
+import MapAssignSection from './MapAssignSection';
 
 function ServiceDetail({ service, isOpen, onClose }) {
   const toast = useToast();
@@ -399,6 +400,7 @@ function ServiceDetail({ service, isOpen, onClose }) {
         .field-group label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
         .btn-icon.danger { color: var(--color-danger); background: none; border: none; cursor: pointer; }
       `}</style>
+      <MapAssignSection entityType="service" entityId={service?.id} />
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}

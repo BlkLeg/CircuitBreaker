@@ -7,6 +7,7 @@ import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
 import TagsCell from '../components/TagsCell';
 import { hardwareApi, clustersApi, computeUnitsApi, tagsApi } from '../api/client';
+import { integrationsApi } from '../api/integrations.js';
 import HardwareDetail from '../components/details/HardwareDetail';
 
 // 15-second TTL cache for the cluster list — refreshed on tab switch, invalidated after mutations
@@ -488,6 +489,20 @@ function HardwarePage() {
     });
   };
 
+  const handleAddMonitor = async (row) => {
+    try {
+      await integrationsApi.createNativeMonitor({ entity_type: 'hardware', entity_id: row.id });
+      toast.success('Monitor created — add it to a status page group to make it visible.');
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 409) {
+        toast.error('Monitor already exists for this entity.');
+      } else {
+        toast.error(err?.response?.data?.detail || err.message || 'Failed to create monitor.');
+      }
+    }
+  };
+
   const handleClusterSubmit = async (values) => {
     try {
       if (editCluster) {
@@ -609,6 +624,7 @@ function HardwarePage() {
                 setShowForm(true);
               }}
               onDelete={handleDelete}
+              onMonitor={handleAddMonitor}
               onRowClick={(row) => setDetailTarget(row)}
               editableColumns={HARDWARE_EDITABLE}
               onCellSave={handleCellSave}

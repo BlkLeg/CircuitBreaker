@@ -1,9 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    './src/components/discovery/**/*.{js,jsx}',
-    './src/components/map/CreateNodeModal.jsx',
-    './src/components/map/ContextMenu.jsx',
+    './src/components/**/*.{js,jsx}',
+    './src/pages/**/*.{js,jsx}',
+    './src/lib/**/*.{js,jsx}',
   ],
   // Restrict Tailwind to discovery bulk-actions components only.
   // This prevents Tailwind's reset/base from affecting existing CSS.

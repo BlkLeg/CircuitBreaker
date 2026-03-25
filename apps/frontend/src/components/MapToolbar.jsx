@@ -1,6 +1,7 @@
 import React from 'react';
 import PropTypes from 'prop-types';
 import { Maximize2, Minimize2 } from 'lucide-react';
+import MapSwitcher from './MapSwitcher';
 
 const LAYOUTS = [
   { id: 'dagre', label: 'Dagre (Hierarchical)', group: 'Standard' },
@@ -74,6 +75,12 @@ export default function MapToolbar({
   onFullscreen = null,
   isFullscreen = false,
   style = {},
+  maps = [],
+  activeMapId = null,
+  onMapSwitch = null,
+  onMapCreate = null,
+  onMapRename = null,
+  onMapDelete = null,
 }) {
   const standardLayouts = LAYOUTS.filter((l) => l.group === 'Standard');
   const advancedLayouts = LAYOUTS.filter((l) => l.group === 'Advanced');
@@ -94,6 +101,27 @@ export default function MapToolbar({
         ...style,
       }}
     >
+      {onMapSwitch && (
+        <>
+          <MapSwitcher
+            maps={maps}
+            activeMapId={activeMapId}
+            onSwitch={onMapSwitch}
+            onCreate={onMapCreate}
+            onRename={onMapRename}
+            onDelete={onMapDelete}
+          />
+          <div
+            style={{
+              width: 1,
+              height: 20,
+              background: 'var(--border, #333)',
+              margin: '0 6px',
+              flexShrink: 0,
+            }}
+          />
+        </>
+      )}
       <span style={_sep}>Layout:</span>
       <select value={layout} onChange={(e) => onChange(e.target.value)} style={_selectStyle}>
         <optgroup label="Standard">
@@ -219,6 +247,12 @@ MapToolbar.propTypes = {
   onFullscreen: PropTypes.func,
   isFullscreen: PropTypes.bool,
   style: PropTypes.object,
+  maps: PropTypes.array,
+  activeMapId: PropTypes.number,
+  onMapSwitch: PropTypes.func,
+  onMapCreate: PropTypes.func,
+  onMapRename: PropTypes.func,
+  onMapDelete: PropTypes.func,
 };
 
 export { LAYOUTS, PRESETS, EDGE_MODES, NODE_SPACINGS };

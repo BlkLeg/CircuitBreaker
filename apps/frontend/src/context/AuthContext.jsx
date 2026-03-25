@@ -2,14 +2,17 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth.js';
+import { activateMasqueradeInterceptor, deactivateMasqueradeInterceptor } from '../api/client.jsx';
 
 export const AuthContext = createContext({
   isAuthenticated: false,
   authReady: false,
   user: null,
   token: null,
+  isMasquerade: false,
   login: () => {},
   logout: () => {},
+  endMasquerade: () => {},
   openAuthModal: () => {},
   openProfileModal: () => {},
 });
@@ -22,30 +25,69 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [meReady, setMeReady] = useState(false);
+  const [isMasquerade, setIsMasquerade] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const pendingActionRef = useRef(null);
   const loginJustSucceededAtRef = useRef(0);
   const navigate = useNavigate();
 
-  // Validate session on mount via cookie (httpOnly); sets meReady when done
+  // Validate session on mount. If a masquerade token is in sessionStorage, activate
+  // the Bearer-header interceptor and load the masqueraded user. Falls back to the
+  // admin's own httpOnly cookie session if the masquerade token has expired.
   useEffect(() => {
     let cancelled = false;
-    authApi
-      .me()
-      .then((res) => {
-        if (cancelled) return;
-        setUser(res?.data || null);
-        setToken('cookie');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setUser(null);
-        setToken(null);
-      })
-      .finally(() => {
-        if (!cancelled) setMeReady(true);
-      });
+    const masqToken = sessionStorage.getItem('cb_masquerade_token');
+
+    if (masqToken) {
+      activateMasqueradeInterceptor(masqToken);
+      authApi
+        .meWithToken(masqToken)
+        .then((res) => {
+          if (cancelled) return;
+          setUser(res?.data || null);
+          setToken('masquerade');
+          setIsMasquerade(true);
+        })
+        .catch(() => {
+          // Masquerade token expired — clear it and fall back to the admin cookie session
+          if (cancelled) return;
+          sessionStorage.removeItem('cb_masquerade_token');
+          deactivateMasqueradeInterceptor();
+          authApi
+            .me()
+            .then((res) => {
+              if (cancelled) return;
+              setUser(res?.data || null);
+              setToken('cookie');
+            })
+            .catch(() => {
+              if (cancelled) return;
+              setUser(null);
+              setToken(null);
+            });
+        })
+        .finally(() => {
+          if (!cancelled) setMeReady(true);
+        });
+    } else {
+      authApi
+        .me()
+        .then((res) => {
+          if (cancelled) return;
+          setUser(res?.data || null);
+          setToken('cookie');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setUser(null);
+          setToken(null);
+        })
+        .finally(() => {
+          if (!cancelled) setMeReady(true);
+        });
+    }
+
     return () => {
       cancelled = true;
     };
@@ -93,13 +135,21 @@ export function AuthProvider({ children }) {
     setProfileModalOpen(true);
   }, []);
 
+  const endMasquerade = useCallback(() => {
+    sessionStorage.removeItem('cb_masquerade_token');
+    deactivateMasqueradeInterceptor();
+    window.location.reload();
+  }, []);
+
   const value = {
     isAuthenticated: !!user,
     authReady: meReady,
     user,
     token,
+    isMasquerade,
     login,
     logout,
+    endMasquerade,
     openAuthModal,
     openProfileModal,
     authModalOpen,

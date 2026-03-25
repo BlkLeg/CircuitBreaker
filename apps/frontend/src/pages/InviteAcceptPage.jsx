@@ -10,18 +10,30 @@ export default function InviteAcceptPage() {
   const { login } = useAuth();
   const toast = useToast();
   const token = searchParams.get('token');
+  const oauthError = searchParams.get('error');
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [oauthProviders, setOauthProviders] = useState([]);
 
   useEffect(() => {
     if (!token) {
       setError('Invalid or missing invite link');
+      return;
     }
-  }, [token]);
+    if (oauthError === 'oauth_mismatch') {
+      setError(
+        "The OAuth account email doesn't match this invite. Use the password form or ask your admin to re-invite with the correct email."
+      );
+    }
+    authApi
+      .getOAuthProviders()
+      .then((res) => setOauthProviders(res.data?.providers ?? []))
+      .catch(() => {});
+  }, [token, oauthError]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -50,6 +62,15 @@ export default function InviteAcceptPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleOAuthSignUp = (provider) => {
+    const base = '/api/v1/auth/oauth';
+    const url =
+      provider.type === 'oidc'
+        ? `${base}/oidc/${provider.name}?invite_token=${encodeURIComponent(token)}`
+        : `${base}/${provider.name}?invite_token=${encodeURIComponent(token)}`;
+    window.location.href = url;
   };
 
   if (!token) {
@@ -149,6 +170,38 @@ export default function InviteAcceptPage() {
             {submitting ? 'Creating account...' : 'Create account'}
           </button>
         </form>
+
+        {oauthProviders.length > 0 && (
+          <>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                margin: '20px 0 16px',
+                color: 'var(--color-text-muted)',
+                fontSize: 12,
+              }}
+            >
+              <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+              <span>or sign up with</span>
+              <div style={{ flex: 1, height: 1, background: 'var(--color-border)' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {oauthProviders.map((provider) => (
+                <button
+                  key={provider.name}
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => handleOAuthSignUp(provider)}
+                  style={{ width: '100%', padding: '10px 12px', fontSize: 14 }}
+                >
+                  {provider.label || provider.name}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

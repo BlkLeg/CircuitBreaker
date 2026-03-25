@@ -205,15 +205,15 @@ def test_cluster_overview_uses_quorate_and_online_fields(db, monkeypatch):
     assert cluster["nodes_online"] == 4
 
 
-def test_discover_queues_nodes_and_workloads_for_review(client, db, monkeypatch):
-    from app.db.models import Hardware, ScanJob, ScanResult
+def test_discover_imports_nodes_and_workloads_directly(client, db, monkeypatch):
+    from app.db.models import Hardware, ScanJob
     from app.services import proxmox_service
 
     _mock_vault(monkeypatch)
     create = client.post(
         "/api/v1/integrations/proxmox",
         json={
-            "name": "Queue Test",
+            "name": "Direct Import Test",
             "config_url": "https://8.8.8.8:8006",
             "api_token": "user@pam!tok=val",
         },
@@ -234,7 +234,9 @@ def test_discover_queues_nodes_and_workloads_for_review(client, db, monkeypatch)
         async def get_node_storage(self, _node):
             return []
 
+    from app.services import proxmox_discovery
     monkeypatch.setattr(proxmox_service, "_get_client", lambda _db, _cfg: _FakeClient())
+    monkeypatch.setattr(proxmox_discovery, "_get_client", lambda _db, _cfg: _FakeClient())
 
     resp = client.post(f"/api/v1/integrations/proxmox/{integration_id}/discover")
     assert resp.status_code == 200
@@ -243,19 +245,11 @@ def test_discover_queues_nodes_and_workloads_for_review(client, db, monkeypatch)
     assert data["nodes_imported"] == 1
     assert data["vms_imported"] == 1
     assert data["cts_imported"] == 1
-    assert data["results_queued"] == 3
-    assert data["review_job_id"] is not None
+    # Direct import — nothing queued for review
+    assert data["results_queued"] == 0
+    assert data.get("review_job_id") is None
 
-    job = db.query(ScanJob).filter(ScanJob.id == data["review_job_id"]).first()
-    assert job is not None
-    assert job.source_type == "proxmox"
-    assert job.hosts_new == 3
-
-    results = db.query(ScanResult).filter(ScanResult.scan_job_id == job.id).all()
-    assert len(results) == 3
-    assert all(r.source_type == "proxmox" for r in results)
-    assert all(r.merge_status == "pending" for r in results)
-
+    # Node is directly imported, not held in review queue
     imported_node = (
         db.query(Hardware)
         .filter(
@@ -264,7 +258,11 @@ def test_discover_queues_nodes_and_workloads_for_review(client, db, monkeypatch)
         )
         .first()
     )
-    assert imported_node is None
+    assert imported_node is not None
+
+    # No ScanJob created for direct import path
+    job = db.query(ScanJob).filter(ScanJob.source_type == "proxmox").first()
+    assert job is None
 
 
 def test_accepting_proxmox_node_reattaches_queued_storage(db):

@@ -290,6 +290,7 @@ export default function SettingsPage() {
       login_lockout_minutes: ctxSettings.login_lockout_minutes ?? 15,
       invite_expiry_days: ctxSettings.invite_expiry_days ?? 7,
       masquerade_enabled: ctxSettings.masquerade_enabled ?? true,
+      auto_monitor_on_discovery: ctxSettings.auto_monitor_on_discovery ?? false,
     };
     setForm(initialForm);
     setOrigForm(initialForm);
@@ -674,6 +675,23 @@ export default function SettingsPage() {
                         type="checkbox"
                         checked={form.show_external_nodes_on_map}
                         onChange={(e) => set('show_external_nodes_on_map', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
+                </SettingSection>
+
+                <SettingSection title="Monitoring">
+                  <SettingField
+                    label="Auto-monitor discovered hardware"
+                    hint="Automatically create a built-in monitor when a new hardware device is accepted from a discovery scan."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">Auto-monitor on discovery</span>
+                      <input
+                        type="checkbox"
+                        checked={form.auto_monitor_on_discovery ?? false}
+                        onChange={(e) => set('auto_monitor_on_discovery', e.target.checked)}
                       />
                       <span className="toggle-switch-track" />
                     </label>

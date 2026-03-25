@@ -1,5 +1,5 @@
 /**
- * IPAMPage — 3-tab IPAM management: IP Addresses | VLANs | Sites.
+ * IPAMPage — 4-tab IPAM management: Networks | IP Addresses | VLANs | Sites.
  * Thin shell: data owned by useIPAMData, rendering delegated to tab components.
  * ≤ 150 LOC, cognitive complexity ≤ 20.
  */
@@ -9,9 +9,9 @@ import { useIPAMData } from '../hooks/useIPAMData';
 import IPAddressesTab from '../components/ipam/IPAddressesTab';
 import VLANsTab from '../components/ipam/VLANsTab';
 import SitesTab from '../components/ipam/SitesTab';
-import FutureFeatureBanner from '../components/common/FutureFeatureBanner';
+import NetworksTab from '../components/ipam/NetworksTab';
 
-const TABS = ['IP Addresses', 'VLANs', 'Sites'];
+const TABS = ['Networks', 'IP Addresses', 'VLANs', 'Sites'];
 
 const TAB_STYLE = (active) => ({
   padding: '6px 16px',
@@ -36,13 +36,18 @@ export default function IPAMPage() {
     networks,
     loading,
     createIP,
+    updateIP,
     deleteIP,
     scanNetwork,
     createVLAN,
+    updateVLAN,
     deleteVLAN,
     createSite,
     updateSite,
     deleteSite,
+    createNetwork,
+    updateNetwork,
+    deleteNetwork,
   } = useIPAMData(toast);
 
   return (
@@ -50,8 +55,6 @@ export default function IPAMPage() {
       <div className="page-header">
         <h2>IPAM</h2>
       </div>
-      <FutureFeatureBanner message="IPAM is currently in early rollout. Additional workflows and automation will land in future updates." />
-
       {/* Tab bar */}
       <div
         style={{
@@ -75,21 +78,40 @@ export default function IPAMPage() {
 
       <div style={{ paddingTop: 16 }}>
         {activeTab === 0 && (
+          <NetworksTab
+            networks={networks}
+            sites={sites}
+            loading={loading}
+            onCreate={createNetwork}
+            onUpdate={updateNetwork}
+            onDelete={deleteNetwork}
+          />
+        )}
+        {activeTab === 1 && (
           <IPAddressesTab
             ips={ips}
             networks={networks}
             loading={loading}
             onAdd={createIP}
+            onUpdate={updateIP}
             onDelete={deleteIP}
             onScanNetwork={scanNetwork}
           />
         )}
-        {activeTab === 1 && (
-          <VLANsTab vlans={vlans} loading={loading} onCreate={createVLAN} onDelete={deleteVLAN} />
-        )}
         {activeTab === 2 && (
+          <VLANsTab
+            vlans={vlans}
+            networks={networks}
+            loading={loading}
+            onCreate={createVLAN}
+            onUpdate={updateVLAN}
+            onDelete={deleteVLAN}
+          />
+        )}
+        {activeTab === 3 && (
           <SitesTab
             sites={sites}
+            networks={networks}
             loading={loading}
             onCreate={createSite}
             onUpdate={updateSite}

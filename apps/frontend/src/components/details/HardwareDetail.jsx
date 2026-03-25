@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
+import MapAssignSection from './MapAssignSection';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
 import {
@@ -756,6 +757,8 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
 
         {activeTab === 'docs' && <DocsPanel entityType="hardware" entityId={hardware.id} />}
       </div>
+
+      <MapAssignSection entityType="hardware" entityId={hardware?.id} />
 
       <TelemetryPanel hardwareId={hardware.id} />
 

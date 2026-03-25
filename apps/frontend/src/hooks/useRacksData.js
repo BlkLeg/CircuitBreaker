@@ -8,6 +8,7 @@ import { racksApi, hardwareApi } from '../api/client';
 export function useRacksData(toast) {
   const [racks, setRacks] = useState([]);
   const [hardware, setHardware] = useState([]);
+  const [connections, setConnections] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -64,21 +65,88 @@ export function useRacksData(toast) {
 
   const unassignFromRack = useCallback(
     async (hwId) => {
-      await hardwareApi.update(hwId, { rack_id: null, rack_unit: null });
+      await hardwareApi.update(hwId, {
+        rack_id: null,
+        rack_unit: null,
+        side_rail: null,
+        mounting_orientation: null,
+      });
       toast.success('Removed from rack.');
       await load();
     },
     [load, toast]
   );
 
+  const assignToSideRail = useCallback(
+    async (hwId, rackId, side, position) => {
+      await hardwareApi.update(hwId, {
+        rack_id: rackId,
+        mounting_orientation: 'vertical',
+        side_rail: side,
+        rack_unit: position,
+      });
+      await load();
+    },
+    [load]
+  );
+
+  const loadConnections = useCallback(
+    async (rackId) => {
+      if (!rackId) {
+        setConnections([]);
+        return;
+      }
+      try {
+        const data = await racksApi.connections(rackId);
+        setConnections(data);
+      } catch {
+        toast.error('Failed to load connections.');
+      }
+    },
+    [toast]
+  );
+
+  const addConnection = useCallback(
+    async (sourceId, targetId, type, bw, rackId) => {
+      try {
+        await hardwareApi.createConnection(sourceId, {
+          target_hardware_id: targetId,
+          connection_type: type,
+          bandwidth_mbps: bw || null,
+        });
+        await loadConnections(rackId);
+      } catch {
+        toast.error('Failed to add connection.');
+      }
+    },
+    [loadConnections, toast]
+  );
+
+  const removeConnection = useCallback(
+    async (connectionId, rackId) => {
+      try {
+        await hardwareApi.deleteConnection(connectionId);
+        await loadConnections(rackId);
+      } catch {
+        toast.error('Failed to remove connection.');
+      }
+    },
+    [loadConnections, toast]
+  );
+
   return {
     racks,
     hardware,
+    connections,
     loading,
     createRack,
     updateRack,
     deleteRack,
     assignToRack,
     unassignFromRack,
+    assignToSideRail,
+    loadConnections,
+    addConnection,
+    removeConnection,
   };
 }

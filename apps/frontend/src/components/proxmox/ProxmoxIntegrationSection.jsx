@@ -19,9 +19,18 @@ function getErrorMessage(e, fallback = 'Request failed') {
 
 const STATUS_BADGE_MAP = new Map([
   ['ok', { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', label: 'Connected' }],
+  ['partial', { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', label: 'Partial' }],
   ['error', { color: '#ef4444', bg: 'rgba(239,68,68,0.1)', label: 'Error' }],
   ['syncing', { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', label: 'Syncing' }],
 ]);
+
+function relativeTime(iso) {
+  if (!iso) return null;
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  return `${Math.floor(diff / 3600)}h ago`;
+}
 
 function StatusBadge({ status }) {
   const s = STATUS_BADGE_MAP.get(status) || {
@@ -225,9 +234,116 @@ export default function ProxmoxIntegrationSection() {
         {loading && <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Loading...</p>}
 
         {!loading && configs.length === 0 && !showAdd && (
-          <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-            No Proxmox clusters configured. Add one to queue nodes, VMs, and containers for review.
-          </p>
+          <div
+            style={{
+              borderRadius: 10,
+              border: '1px solid var(--color-border)',
+              background: 'var(--color-bg-elevated, rgba(255,255,255,0.03))',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header strip */}
+            <div
+              style={{
+                padding: '10px 16px',
+                borderBottom: '1px solid var(--color-border)',
+                background: 'rgba(254,128,25,0.07)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 16 }}>🖥️</span>
+              <span
+                style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-primary, #fe8019)' }}
+              >
+                Getting started with Proxmox VE
+              </span>
+            </div>
+
+            <div
+              style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}
+            >
+              {/* Step 1 */}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1.4 }}>🔑</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                    Create an API token in Proxmox
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
+                    In the Proxmox UI go to <strong>Datacenter → Permissions → API Tokens</strong>,
+                    click <strong>Add</strong>, and generate a token for any user. Uncheck
+                    &ldquo;Privilege Separation&rdquo; to inherit the user&rsquo;s permissions.
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1.4 }}>🛡️</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                    Assign the <code style={{ fontSize: 12 }}>PVEAuditor</code> role
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
+                    Go to <strong>Datacenter → Permissions → Add → API Token Permission</strong>.
+                    Set <strong>Path</strong> to <code style={{ fontSize: 12 }}>/</code>, select
+                    your token, and assign the <strong>PVEAuditor</strong> role. This grants
+                    read-only access to nodes, VMs, and containers — no write access needed.
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1.4 }}>📋</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                    Copy the token string
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
+                    Proxmox shows the secret <strong>once</strong> after creation. Copy it and paste
+                    the full token in the form above. The expected format is:
+                  </div>
+                  <code
+                    style={{
+                      display: 'block',
+                      marginTop: 6,
+                      padding: '5px 10px',
+                      borderRadius: 5,
+                      fontSize: 11,
+                      background: 'rgba(0,0,0,0.25)',
+                      color: 'var(--color-primary, #fe8019)',
+                      letterSpacing: '0.02em',
+                    }}
+                  >
+                    user@pam!cb-integration=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+                  </code>
+                </div>
+              </div>
+
+              {/* Footer tip */}
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'flex-start',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  background: 'rgba(59,130,246,0.08)',
+                  border: '1px solid rgba(59,130,246,0.15)',
+                }}
+              >
+                <span style={{ fontSize: 15, flexShrink: 0 }}>💡</span>
+                <span style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                  Discovery is read-only — Circuit Breaker will never modify your Proxmox cluster.
+                  Discovered nodes, VMs, and containers are queued for your review before being
+                  added to the inventory.
+                </span>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Existing configs */}
@@ -316,10 +432,40 @@ export default function ProxmoxIntegrationSection() {
                     <span>CTs: {status.cts_count}</span>
                   </>
                 )}
-                {c.last_sync_at && (
-                  <span>Last sync: {new Date(c.last_sync_at).toLocaleString()}</span>
-                )}
+                {c.last_sync_at && <span>Last sync: {relativeTime(c.last_sync_at)}</span>}
               </div>
+
+              {status?.last_sync_error && (
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 11,
+                    padding: '6px 10px',
+                    borderRadius: 5,
+                    background: 'rgba(245,158,11,0.08)',
+                    color: '#f59e0b',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  ⚠ {status.last_sync_error}
+                </div>
+              )}
+
+              {status?.last_poll_error && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 11,
+                    padding: '6px 10px',
+                    borderRadius: 5,
+                    background: 'rgba(99,102,241,0.08)',
+                    color: '#818cf8',
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  ⚡ Telemetry: {status.last_poll_error}
+                </div>
+              )}
 
               {testResult && testing === null && (
                 <div

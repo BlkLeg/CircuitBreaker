@@ -10,7 +10,7 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -229,6 +229,7 @@ def _upsert_oauth_user(
     provider: str,
     oauth_tokens: dict,
     avatar_url: str | None = None,
+    role: str = "viewer",
 ) -> tuple[User, bool]:
     """Upsert an OAuth user. Returns (user, is_new)."""
     user = db.query(User).filter(User.email == email).first()
@@ -242,7 +243,7 @@ def _upsert_oauth_user(
             hashed_password=hash_password(secrets.token_urlsafe(32)),
             provider=provider,
             is_active=True,
-            role="viewer",
+            role=role,
             created_at=utcnow_iso(),
             profile_photo=avatar_url,
         )
@@ -358,11 +359,21 @@ def _json_or_502(resp: httpx.Response, provider: str, stage: str) -> dict:
 @router.get("/oauth/github")
 @limiter.limit(lambda: get_limit("auth"))
 def github_authorize(
-    request: Request, response: Response, db: Session = Depends(get_db)
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    invite_token: str | None = Query(None),
 ) -> RedirectResponse:
     cfg = _get_oauth_config(db, "github")
     state = secrets.token_urlsafe(32)
-    db.add(OAuthState(state=state, provider="github", created_at=datetime.now(UTC).isoformat()))
+    db.add(
+        OAuthState(
+            state=state,
+            provider="github",
+            created_at=datetime.now(UTC).isoformat(),
+            invite_token=invite_token,
+        )
+    )
     db.commit()
     params = urlencode({"client_id": cfg["client_id"], "state": state, "scope": "user:email"})
     return RedirectResponse(f"https://github.com/login/oauth/authorize?{params}", status_code=302)
@@ -373,7 +384,8 @@ def github_authorize(
 async def github_callback(
     request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
 ) -> RedirectResponse:
-    _pop_state_or_400(db, state, OAuthState.provider == "github")
+    oauth_state = _pop_state_or_400(db, state, OAuthState.provider == "github")
+    _invite_token = oauth_state.invite_token
 
     cfg = _get_oauth_config(db, "github")
     _ensure_provider_enabled(db, "github", cfg, provider_type="oauth")
@@ -421,6 +433,17 @@ async def github_callback(
 
     display_name = gh_user.get("name") or gh_user.get("login", "")
     avatar_url = gh_user.get("avatar_url")
+    invited_role = "viewer"
+    if _invite_token:
+        from app.services.user_service import consume_invite_for_oauth
+
+        try:
+            _, invited_role = consume_invite_for_oauth(db, _invite_token, email)
+        except HTTPException:
+            return RedirectResponse(
+                url=f"{base_url}/invite/accept?token={_invite_token}&error=oauth_mismatch",
+                status_code=302,
+            )
     user, is_new = _upsert_oauth_user(
         db,
         email,
@@ -428,6 +451,7 @@ async def github_callback(
         "github",
         {"access_token": access_token},
         avatar_url=avatar_url,
+        role=invited_role,
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "github", db, request)
     if bootstrap_redir:
@@ -443,11 +467,21 @@ async def github_callback(
 @router.get("/oauth/google")
 @limiter.limit(lambda: get_limit("auth"))
 def google_authorize(
-    request: Request, response: Response, db: Session = Depends(get_db)
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+    invite_token: str | None = Query(None),
 ) -> RedirectResponse:
     cfg = _get_oauth_config(db, "google")
     state = secrets.token_urlsafe(32)
-    db.add(OAuthState(state=state, provider="google", created_at=datetime.now(UTC).isoformat()))
+    db.add(
+        OAuthState(
+            state=state,
+            provider="google",
+            created_at=datetime.now(UTC).isoformat(),
+            invite_token=invite_token,
+        )
+    )
     db.commit()
     base_url = _get_app_base_url(db, request)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/google/callback"
@@ -471,7 +505,8 @@ def google_authorize(
 async def google_callback(
     request: Request, response: Response, code: str, state: str, db: Session = Depends(get_db)
 ) -> RedirectResponse:
-    _pop_state_or_400(db, state, OAuthState.provider == "google")
+    oauth_state = _pop_state_or_400(db, state, OAuthState.provider == "google")
+    _invite_token = oauth_state.invite_token
 
     cfg = _get_oauth_config(db, "google")
     _ensure_provider_enabled(db, "google", cfg, provider_type="oauth")
@@ -507,6 +542,17 @@ async def google_callback(
         raise HTTPException(400, "Could not obtain email from Google account")
     display_name = g_user.get("name", "")
     avatar_url = g_user.get("picture")
+    invited_role = "viewer"
+    if _invite_token:
+        from app.services.user_service import consume_invite_for_oauth
+
+        try:
+            _, invited_role = consume_invite_for_oauth(db, _invite_token, email)
+        except HTTPException:
+            return RedirectResponse(
+                url=f"{base_url}/invite/accept?token={_invite_token}&error=oauth_mismatch",
+                status_code=302,
+            )
     user, is_new = _upsert_oauth_user(
         db,
         email,
@@ -514,6 +560,7 @@ async def google_callback(
         "google",
         {"access_token": access_token},
         avatar_url=avatar_url,
+        role=invited_role,
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, "google", db, request)
     if bootstrap_redir:
@@ -529,7 +576,11 @@ async def google_callback(
 @router.get("/oauth/oidc/{provider_slug}")
 @limiter.limit(lambda: get_limit("auth"))
 async def oidc_authorize(
-    request: Request, response: Response, provider_slug: str, db: Session = Depends(get_db)
+    request: Request,
+    response: Response,
+    provider_slug: str,
+    db: Session = Depends(get_db),
+    invite_token: str | None = Query(None),
 ) -> RedirectResponse:
     cfg = _get_oidc_config(db, provider_slug)
     state = secrets.token_urlsafe(32)
@@ -545,6 +596,7 @@ async def oidc_authorize(
             state=state,
             provider=f"oidc:{provider_slug}:{verifier}",
             created_at=datetime.now(UTC).isoformat(),
+            invite_token=invite_token,
         )
     )
     db.commit()
@@ -580,7 +632,7 @@ async def oidc_callback(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     oauth_state = _pop_state_or_400(db, state, OAuthState.provider.like(f"oidc:{provider_slug}:%"))
-
+    _invite_token = oauth_state.invite_token
     verifier = oauth_state.provider.split(":", 2)[2]
 
     cfg = _get_oidc_config(db, provider_slug)
@@ -620,6 +672,17 @@ async def oidc_callback(
         raise HTTPException(400, "OIDC provider did not return email")
     display_name = userinfo.get("name") or userinfo.get("preferred_username", "")
     avatar_url = userinfo.get("picture")
+    invited_role = "viewer"
+    if _invite_token:
+        from app.services.user_service import consume_invite_for_oauth
+
+        try:
+            _, invited_role = consume_invite_for_oauth(db, _invite_token, email)
+        except HTTPException:
+            return RedirectResponse(
+                url=f"{base_url}/invite/accept?token={_invite_token}&error=oauth_mismatch",
+                status_code=302,
+            )
     user, is_new = _upsert_oauth_user(
         db,
         email,
@@ -627,6 +690,7 @@ async def oidc_callback(
         "oidc",
         {"access_token": access_token},
         avatar_url=avatar_url,
+        role=invited_role,
     )
     bootstrap_redir = _bootstrap_redirect_or_none(user, base_url, provider_slug, db, request)
     if bootstrap_redir:

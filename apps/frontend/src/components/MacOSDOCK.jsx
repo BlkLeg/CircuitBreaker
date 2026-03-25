@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { NAV_MAP as ALL_NAV_MAP } from '../data/navigation';
 import { useAuth } from '../context/AuthContext.jsx';
+import { useSettings } from '../context/SettingsContext';
 import { canEdit, isAdmin } from '../utils/rbac';
 
 export const NAV_MAP = ALL_NAV_MAP;
@@ -24,6 +25,7 @@ const ORIGINAL_DOCK_ORDER = [
   '/ipam',
   '/racks',
   '/status-pages',
+  '/certificates',
   '/docs',
   '/logs',
   '/settings',
@@ -53,6 +55,7 @@ export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) 
   const location = useLocation();
   const isMobile = useIsMobile();
   const { user } = useAuth();
+  const { settings } = useSettings();
   const [dockVisible, setDockVisible] = useState(true);
   const dockRef = useRef(null);
   const hideTimerRef = useRef(null);
@@ -128,10 +131,15 @@ export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) 
       .filter(Boolean);
   }, [user]);
 
-  const visibleItems = useMemo(
-    () => (isMobile ? dockItems.filter((item) => MOBILE_DOCK_ITEMS.has(item.path)) : dockItems),
-    [dockItems, isMobile]
+  const hiddenPaths = useMemo(
+    () => new Set(settings?.dock_hidden_items ?? []),
+    [settings?.dock_hidden_items]
   );
+
+  const visibleItems = useMemo(() => {
+    const filtered = dockItems.filter((item) => !hiddenPaths.has(item.path));
+    return isMobile ? filtered.filter((item) => MOBILE_DOCK_ITEMS.has(item.path)) : filtered;
+  }, [dockItems, hiddenPaths, isMobile]);
 
   return (
     <div

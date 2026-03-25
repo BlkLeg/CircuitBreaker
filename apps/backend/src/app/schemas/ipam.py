@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +13,7 @@ class IPAddressBase(BaseModel):
     hardware_id: int | None = None
     service_id: int | None = None
     hostname: str | None = None
+    notes: str | None = None
 
 
 class IPAddressCreate(IPAddressBase):
@@ -23,14 +25,16 @@ class IPAddressUpdate(BaseModel):
     hardware_id: int | None = None
     service_id: int | None = None
     hostname: str | None = None
+    notes: str | None = None
 
 
 class IPAddressRead(IPAddressBase):
-    id: int
+    id: int | None = None
     tenant_id: int | None = None
     allocated_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    source: Literal["manual", "discovered"] = "manual"
 
     model_config = {"from_attributes": True}
 

@@ -30,6 +30,7 @@ from app.db.models import (
     ScanJob,
     ScanResult,
     Storage,
+    TopologyNode,
 )
 from app.integrations.proxmox_client import ProxmoxIntegration
 from app.services.proxmox_client import (
@@ -359,6 +360,16 @@ async def discover_and_import(
                 qemu_vms = [r for r in resources if r.get("type") == "qemu"]
                 lxc_cts = [r for r in resources if r.get("type") == "lxc"]
 
+                # cluster/resources has no IP; cluster/status does — inject them
+                node_ip_map: dict[str, str] = {}
+                for item in cluster_status:
+                    if item.get("type") == "node" and item.get("ip"):
+                        node_ip_map[item.get("name", "")] = item["ip"]
+                for node_res in nodes:
+                    nn = node_res.get("node", "")
+                    if nn and nn in node_ip_map and not node_res.get("ip"):
+                        node_res["ip"] = node_ip_map[nn]
+
                 # Fallback: if cluster/resources returned nodes but no VMs/CTs,
                 # query each node directly (handles tokens with limited Datacenter perms)
                 if nodes and not qemu_vms and not lxc_cts:
@@ -373,14 +384,14 @@ async def discover_and_import(
                                 vm.setdefault("node", nn)
                             qemu_vms.extend(per_node_qemu)
                         except Exception as e:
-                            _logger.debug("Per-node qemu query failed for %s: %s", nn, e)
+                            _logger.warning("Per-node qemu query failed for %s: %s", nn, e)
                         try:
                             per_node_lxc = await client.get_node_vms(nn, "lxc")
                             for ct in per_node_lxc:
                                 ct.setdefault("node", nn)
                             lxc_cts.extend(per_node_lxc)
                         except Exception as e:
-                            _logger.debug("Per-node lxc query failed for %s: %s", nn, e)
+                            _logger.warning("Per-node lxc query failed for %s: %s", nn, e)
 
                     if not qemu_vms and not lxc_cts:
                         privsep_hint = await _check_token_privsep(client)
@@ -430,6 +441,23 @@ async def discover_and_import(
                     except Exception as e:
                         result["errors"].append(f"Storage import: {e}")
                 else:
+                    from sqlalchemy import select as _sel
+
+                    from app.services.discovery_merge import _assign_to_default_map
+
+                    # Remove stale "compute_unit" entries inserted by earlier buggy runs
+                    stale_tn = (
+                        db.execute(
+                            _sel(TopologyNode).where(TopologyNode.entity_type == "compute_unit")
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for _row in stale_tn:
+                        db.delete(_row)
+                    if stale_tn:
+                        db.flush()
+
                     # ── Import nodes ─────────────────────────────────────────────
                     node_hw_map: dict[str, Hardware] = {}
                     if cluster is not None:
@@ -444,19 +472,27 @@ async def discover_and_import(
                                 _logger.warning("Failed to import node %s: %s", node_name, e)
 
                     # Reconcile: remove nodes that disappeared from Proxmox
-                    try:
-                        result["nodes_removed"] = await _reconcile_nodes(
-                            db, config, set(node_hw_map.keys())
+                    if node_hw_map:
+                        try:
+                            result["nodes_removed"] = await _reconcile_nodes(
+                                db, config, set(node_hw_map.keys())
+                            )
+                        except Exception as e:
+                            result["errors"].append(f"Node reconciliation: {e}")
+                    else:
+                        _logger.warning(
+                            "Proxmox integration %d: skipping node reconciliation"
+                            " — no nodes imported this run",
+                            config.id,
                         )
-                    except Exception as e:
-                        result["errors"].append(f"Node reconciliation: {e}")
 
                     # ── Import VMs ───────────────────────────────────────────────
                     total_vms = len(qemu_vms) + len(lxc_cts)
                     imported = 0
                     for vm_res in qemu_vms:
                         try:
-                            _upsert_vm(db, config, vm_res, "qemu", node_hw_map, client)
+                            cu = _upsert_vm(db, config, vm_res, "qemu", node_hw_map, client)
+                            _assign_to_default_map(db, "compute", cu.id)
                             result["vms_imported"] += 1
                         except Exception as e:
                             vmid = vm_res.get("vmid", "?")
@@ -478,7 +514,8 @@ async def discover_and_import(
                     # ── Import CTs ───────────────────────────────────────────────
                     for ct_res in lxc_cts:
                         try:
-                            _upsert_vm(db, config, ct_res, "lxc", node_hw_map, client)
+                            cu = _upsert_vm(db, config, ct_res, "lxc", node_hw_map, client)
+                            _assign_to_default_map(db, "compute", cu.id)
                             result["cts_imported"] += 1
                         except Exception as e:
                             vmid = ct_res.get("vmid", "?")
@@ -490,10 +527,29 @@ async def discover_and_import(
                     seen_vmids = {
                         int(v["vmid"]) for v in qemu_vms + lxc_cts if v.get("vmid") is not None
                     }
-                    try:
-                        result["vms_removed"] = await _reconcile_vms(db, config, seen_vmids)
-                    except Exception as e:
-                        result["errors"].append(f"VM reconciliation: {e}")
+                    if seen_vmids:
+                        try:
+                            result["vms_removed"] = await _reconcile_vms(db, config, seen_vmids)
+                        except Exception as e:
+                            result["errors"].append(f"VM reconciliation: {e}")
+                    else:
+                        _logger.warning(
+                            "Proxmox integration %d: skipping VM reconciliation"
+                            " — API returned 0 VMs/CTs (token permission issue or empty cluster?)",
+                            config.id,
+                        )
+
+                    # ── Assign all imported nodes + cluster to the default topology map ─
+                    if cluster is not None:
+                        try:
+                            _assign_to_default_map(db, "cluster", cluster.id)
+                        except Exception as e:
+                            result["errors"].append(f"Map assignment for cluster: {e}")
+                    for hw in node_hw_map.values():
+                        try:
+                            _assign_to_default_map(db, "hardware", hw.id)
+                        except Exception as e:
+                            result["errors"].append(f"Map assignment for node {hw.name}: {e}")
 
                     # ── Import networks ──────────────────────────────────────────
                     for node_name, hw in node_hw_map.items():
@@ -511,6 +567,9 @@ async def discover_and_import(
                             )
                             result["storage_imported"] += upserted
                             result["storage_removed"] += removed
+                            # Assign this node's storage pools to the default topology map
+                            for st in db.query(Storage).filter(Storage.hardware_id == hw.id).all():
+                                _assign_to_default_map(db, "storage", st.id)
                         except Exception as e:
                             result["errors"].append(f"Storage for {node_name}: {e}")
 
@@ -645,6 +704,7 @@ def _upsert_node(
     if not hw:
         hw = Hardware(
             name=node_name,
+            hostname=node_name,
             role="hypervisor",
             vendor="Proxmox",
             vendor_icon_slug="proxmox-dark",
@@ -677,6 +737,11 @@ def _upsert_node(
         hw.memory_gb = round(maxmem / (1024**3)) if maxmem else hw.memory_gb
         if not hw.vendor_icon_slug:
             hw.vendor_icon_slug = "proxmox-dark"
+        node_ip = node_res.get("ip")
+        if node_ip:
+            hw.ip_address = node_ip
+        if not hw.hostname:
+            hw.hostname = node_name
 
     db.flush()
     return hw
@@ -733,7 +798,32 @@ def _upsert_vm(
 
     hw = node_hw_map.get(node_name)
     if not hw:
-        raise ValueError(f"Parent node '{node_name}' not found")
+        # Node wasn't imported this run (offline, failed, or VM migrated to unknown node).
+        # Create a minimal placeholder so the VM is never silently dropped.
+        now_dt = utcnow()
+        now_iso = now_dt.isoformat()
+        hw = Hardware(
+            name=node_name or f"Proxmox node {config.id}",
+            role="hypervisor",
+            vendor="Proxmox",
+            vendor_icon_slug="proxmox-dark",
+            proxmox_node_name=node_name or None,
+            integration_config_id=config.id,
+            status="unknown",
+            source="discovery",
+            discovered_at=now_iso,
+            last_seen=now_iso,
+            created_at=now_dt,
+            updated_at=now_dt,
+        )
+        db.add(hw)
+        db.flush()
+        node_hw_map[node_name] = hw
+        _logger.info(
+            "Created placeholder node '%s' for VM %s (node not found in this sync run)",
+            node_name,
+            vm_res.get("vmid"),
+        )
 
     cu = (
         db.query(ComputeUnit)

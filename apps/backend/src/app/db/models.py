@@ -139,6 +139,11 @@ class Hardware(Base):
     )
     # v0.1.4-cortex: rack assignment + discovery lineage
     rack_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_RACKS_ID), nullable=True)
+    # v2.0: rack mounting orientation (horizontal = standard U-slot, vertical = side rail)
+    mounting_orientation: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="horizontal"
+    )
+    side_rail: Mapped[str | None] = mapped_column(String, nullable=True)
     source_scan_result_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("scan_results.id"), nullable=True
     )
@@ -204,6 +209,11 @@ class Hardware(Base):
     )
     monitor: Mapped["HardwareMonitor | None"] = relationship(
         "HardwareMonitor", back_populates="hardware", uselist=False
+    )
+    integration_monitors: Mapped[list["IntegrationMonitor"]] = relationship(
+        "IntegrationMonitor",
+        foreign_keys="IntegrationMonitor.linked_hardware_id",
+        back_populates="linked_hardware",
     )
 
 
@@ -519,6 +529,9 @@ class Network(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    site_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("sites.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -545,6 +558,7 @@ class Network(Base):
         back_populates="network_b",
         cascade="all, delete-orphan",
     )
+    site: Mapped["Site | None"] = relationship("Site", foreign_keys=[site_id])
 
 
 class NetworkPeer(Base):
@@ -815,6 +829,9 @@ class GraphLayout(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+    topology_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("topologies.id", ondelete="CASCADE"), nullable=True, index=True
+    )
 
 
 # ── App Settings ──────────────────────────────────────────────────────────────
@@ -971,6 +988,8 @@ class AppSettings(Base):
     )
     backup_s3_retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     backup_local_retention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    # Native monitor pipeline
+    auto_monitor_on_discovery: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1030,6 +1049,8 @@ class IntegrationConfig(Base):
     sync_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_sync_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_poll_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     extra_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
     # v0.2.0: multi-tenancy (renamed from team_id in v0.3.0)
     tenant_id: Mapped[int | None] = mapped_column(
@@ -1323,6 +1344,7 @@ class UserInvite(Base):
     expires: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Email delivery tracking
     email_sent_at: Mapped[str | None] = mapped_column(String)
     email_status: Mapped[str] = mapped_column(String, nullable=False, default="not_sent")
@@ -1578,6 +1600,7 @@ class OAuthState(Base):
     state: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+    invite_token: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ── Status Page ──────────────────────────────────────────────────────────────
@@ -1682,6 +1705,7 @@ class Topology(Base):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1733,6 +1757,15 @@ class TopologyEdge(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     topology: Mapped["Topology"] = relationship("Topology", back_populates="edges")
+
+
+class MapPinnedEntity(Base):
+    """Entities that appear on every map regardless of topology_nodes membership."""
+
+    __tablename__ = "map_pinned_entities"
+
+    entity_type: Mapped[str] = mapped_column(String(50), primary_key=True, nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
 
 
 # ── Certificates ──────────────────────────────────────────────────────────────
@@ -1809,6 +1842,7 @@ class IPAddress(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     network: Mapped["Network | None"] = relationship("Network", foreign_keys=[network_id])
     hardware: Mapped["Hardware | None"] = relationship("Hardware", foreign_keys=[hardware_id])
@@ -1894,7 +1928,7 @@ class Integration(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    base_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     api_key: Mapped[str | None] = mapped_column(Text, nullable=True)  # Fernet-encrypted
     # integration-specific slug (e.g. status page slug)
     slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -1929,6 +1963,22 @@ class IntegrationMonitor(Base):
     uptime_7d: Mapped[float | None] = mapped_column(Float, nullable=True)
     uptime_30d: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    avg_response_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cert_expiry_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    linked_hardware_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("hardware.id", ondelete="SET NULL"), nullable=True
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Native probe configuration (NULL for Uptime Kuma monitors)
+    linked_service_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("services.id", ondelete="SET NULL"), nullable=True
+    )
+    probe_type: Mapped[str | None] = mapped_column(String, nullable=True)  # icmp | http | tcp
+    probe_target: Mapped[str | None] = mapped_column(Text, nullable=True)
+    probe_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    probe_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -1937,6 +1987,12 @@ class IntegrationMonitor(Base):
     integration: Mapped["Integration"] = relationship("Integration", back_populates="monitors")
     events: Mapped[list["IntegrationMonitorEvent"]] = relationship(
         "IntegrationMonitorEvent", back_populates="monitor", cascade="all, delete-orphan"
+    )
+    linked_hardware: Mapped["Hardware | None"] = relationship(
+        "Hardware", foreign_keys=[linked_hardware_id], back_populates="integration_monitors"
+    )
+    linked_service: Mapped["Service | None"] = relationship(
+        "Service", foreign_keys=[linked_service_id]
     )
 
 
@@ -1953,6 +2009,12 @@ class IntegrationMonitorEvent(Base):
     previous_status: Mapped[str] = mapped_column(String(16), nullable=False)
     new_status: Mapped[str] = mapped_column(String(16), nullable=False)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Admin annotation — reason for this state change
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason_by: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reason_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     monitor: Mapped["IntegrationMonitor"] = relationship(
         "IntegrationMonitor", back_populates="events"

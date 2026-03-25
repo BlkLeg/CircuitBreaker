@@ -97,7 +97,7 @@ async def refresh_proxmox_storage(db: AsyncSession) -> None:
 # ── Telemetry polling ────────────────────────────────────────────────────────
 
 
-async def poll_node_telemetry(db: AsyncSession) -> None:
+async def poll_node_telemetry(db: AsyncSession) -> dict[int, Exception | None]:
     """Poll all active Proxmox nodes for CPU/RAM/load metrics (parallel per integration)."""
     configs = (
         (
@@ -112,6 +112,8 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
         .all()
     )
 
+    poll_outcomes: dict[int, Exception | None] = {}
+
     from app.core.circuit_breaker import get_breaker
 
     for config in configs:
@@ -121,6 +123,7 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
             _logger.debug(
                 "Proxmox integration %d circuit open — skipping telemetry poll", config_id
             )
+            poll_outcomes[config_id] = RuntimeError("Circuit breaker open — telemetry poll skipped")
             continue
         try:
             client = await _get_client_async(db, config)
@@ -146,9 +149,13 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
             )
 
             now = utcnow()
+            node_success_count = 0
+            node_fail_errors: list[str] = []
             for result in results:
                 if isinstance(result, Exception):
+                    err_str = str(result)
                     _logger.debug("Telemetry poll failed for a node: %s", result)
+                    node_fail_errors.append(err_str)
                     continue
                 hw, status = result  # type: ignore[misc]
                 try:
@@ -173,23 +180,21 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
                     swap_used = status.get("swap", 0)
                     maxswap = status.get("maxswap", 0)
 
-                    telemetry = json.dumps(
-                        {
-                            "cpu_pct": cpu_pct,
-                            "mem_used_gb": round(mem_used / (1024**3), 1) if mem_used else 0,
-                            "mem_total_gb": round(mem_total / (1024**3), 1) if mem_total else 0,
-                            "load_1m": load[0] if load else 0,
-                            "load_5m": load[1] if len(load) > 1 else 0,
-                            "load_15m": load[2] if len(load) > 2 else 0,
-                            "disk_used_gb": round((root_used or 0) / (1024**3), 1),
-                            "disk_total_gb": round((root_total or 0) / (1024**3), 1),
-                            "uptime_s": status.get("uptime", 0),
-                            "netin": netin,
-                            "netout": netout,
-                            "swap_gb": round(swap_used / (1024**3), 1) if swap_used else 0,
-                            "maxswap_gb": round(maxswap / (1024**3), 1) if maxswap else 0,
-                        }
-                    )
+                    telemetry = {
+                        "cpu_pct": cpu_pct,
+                        "mem_used_gb": round(mem_used / (1024**3), 1) if mem_used else 0,
+                        "mem_total_gb": round(mem_total / (1024**3), 1) if mem_total else 0,
+                        "load_1m": load[0] if load else 0,
+                        "load_5m": load[1] if len(load) > 1 else 0,
+                        "load_15m": load[2] if len(load) > 2 else 0,
+                        "disk_used_gb": round((root_used or 0) / (1024**3), 1),
+                        "disk_total_gb": round((root_total or 0) / (1024**3), 1),
+                        "uptime_s": status.get("uptime", 0),
+                        "netin": netin,
+                        "netout": netout,
+                        "swap_gb": round(swap_used / (1024**3), 1) if swap_used else 0,
+                        "maxswap_gb": round(maxswap / (1024**3), 1) if maxswap else 0,
+                    }
 
                     hw.telemetry_data = telemetry
                     hw.telemetry_last_polled = now
@@ -223,7 +228,7 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
                         {
                             "hardware_id": hw.id,
                             "node": hw.proxmox_node_name,
-                            "telemetry": json.loads(telemetry),
+                            "telemetry": telemetry,
                             "status": hw.telemetry_status,
                         },
                     )
@@ -235,21 +240,42 @@ async def poll_node_telemetry(db: AsyncSession) -> None:
                         publish_telemetry as _redis_pub,
                     )
 
-                    _tdata = {"data": json.loads(telemetry), "status": hw.telemetry_status}
+                    _tdata = {"data": telemetry, "status": hw.telemetry_status}
                     await _redis_cache(hw.id, _tdata)
                     await _redis_pub(hw.id, _tdata)
 
+                    node_success_count += 1
                 except Exception as e:
                     _logger.debug("Telemetry apply failed for node %s: %s", hw.proxmox_node_name, e)
 
+            # Surface auth/permission failures when every node poll failed
+            if nodes and node_success_count == 0 and node_fail_errors:
+                first_err = node_fail_errors[0]
+                is_auth = any(
+                    kw in first_err for kw in ("403", "Forbidden", "Permission check failed", "401")
+                )
+                if is_auth:
+                    hint = (
+                        f"All {len(nodes)} node(s) returned permission errors "
+                        f"({first_err.strip()[:120]}). "
+                        "The API token likely lacks Sys.Audit. Fix: Proxmox → Datacenter → "
+                        "Permissions → Add → API Token Permission, "
+                        "Role=PVEAuditor, Path=/, Propagate=yes."
+                    )
+                    _logger.warning("Proxmox integration %d: %s", config_id, hint)
+                    config.last_poll_error = hint
+
             await db.commit()
             breaker.record_success()
+            poll_outcomes[config_id] = None
         except Exception as e:
             breaker.record_failure()
             _logger.warning("Telemetry poll failed for integration %d: %s", config_id, e)
+            poll_outcomes[config_id] = e
+    return poll_outcomes
 
 
-async def poll_rrd_telemetry(db: AsyncSession) -> None:
+async def poll_rrd_telemetry(db: AsyncSession) -> dict[int, Exception | None]:
     """Poll RRD data for each Proxmox node and store in TelemetryTimeseries (source=proxmox_rrd).
     Provides time-series for CPU, memory, disk, network, io_delay for cluster overview charts."""
     configs = (
@@ -264,6 +290,8 @@ async def poll_rrd_telemetry(db: AsyncSession) -> None:
         .scalars()
         .all()
     )
+    poll_outcomes: dict[int, Exception | None] = {}
+
     for config in configs:
         try:
             client = await _get_client_async(db, config)
@@ -364,12 +392,15 @@ async def poll_rrd_telemetry(db: AsyncSession) -> None:
                                 )
                             )
             await db.commit()
+            poll_outcomes[config.id] = None
         except Exception as e:
             _logger.warning("RRD telemetry poll failed for integration %d: %s", config.id, e)
+            poll_outcomes[config.id] = e
             await db.rollback()
+    return poll_outcomes
 
 
-async def poll_vm_telemetry(db: AsyncSession) -> None:
+async def poll_vm_telemetry(db: AsyncSession) -> dict[int, Exception | None]:
     """Poll all active Proxmox VMs/CTs for live stats (parallel per integration)."""
     configs = (
         (
@@ -383,6 +414,8 @@ async def poll_vm_telemetry(db: AsyncSession) -> None:
         .scalars()
         .all()
     )
+
+    poll_outcomes: dict[int, Exception | None] = {}
 
     for config in configs:
         config_id = config.id
@@ -502,5 +535,8 @@ async def poll_vm_telemetry(db: AsyncSession) -> None:
                     _logger.debug("Telemetry apply failed for VM %s: %s", cu.proxmox_vmid, e)
 
             await db.commit()
+            poll_outcomes[config_id] = None
         except Exception as e:
             _logger.warning("VM telemetry poll failed for integration %d: %s", config_id, e)
+            poll_outcomes[config_id] = e
+    return poll_outcomes

@@ -319,6 +319,7 @@ function ProfileModal({ isOpen, onClose }) {
             gap: 4,
             marginBottom: 20,
             borderBottom: '1px solid var(--color-border)',
+            overflowX: 'auto',
           }}
         >
           {TABS.filter((t) => t !== 'apiTokens' || user?.is_admin).map((t) => (
@@ -327,7 +328,7 @@ function ProfileModal({ isOpen, onClose }) {
               type="button"
               onClick={() => setActiveTab(t)}
               style={{
-                padding: '8px 16px',
+                padding: '6px 10px',
                 background: activeTab === t ? 'var(--color-glow)' : 'transparent',
                 border: 'none',
                 borderBottom:
@@ -337,6 +338,7 @@ function ProfileModal({ isOpen, onClose }) {
                 fontSize: 13,
                 fontWeight: 500,
                 textTransform: 'capitalize',
+                whiteSpace: 'nowrap',
               }}
             >
               {t === 'apiTokens' ? 'API tokens' : t}

@@ -125,6 +125,8 @@ class ProxmoxSyncStatus(BaseModel):
     vms_count: int = 0
     cts_count: int = 0
     storage_count: int = 0
+    last_sync_error: str | None = None
+    last_poll_error: str | None = None
 
 
 # ── VM action ────────────────────────────────────────────────────────────────
