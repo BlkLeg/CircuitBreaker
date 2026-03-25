@@ -55,7 +55,7 @@ class AddMemberRequest(BaseModel):
 
 @router.get("", response_model=list[TenantOut])
 def list_tenants(db: Session = Depends(get_db)) -> list[Tenant]:
-    return db.execute(select(Tenant).order_by(Tenant.name)).scalars().all()
+    return list(db.execute(select(Tenant).order_by(Tenant.name)).scalars().all())
 
 
 @router.get("/{tenant_id}", response_model=TenantOut)

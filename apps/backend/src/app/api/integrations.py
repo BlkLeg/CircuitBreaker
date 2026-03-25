@@ -367,7 +367,7 @@ def create_native_monitor(
 
     monitor = IntegrationMonitor(
         integration_id=native.id,
-        external_id=f"native-{'hw' if body.entity_type == 'hardware' else 'svc'}-{entity.id}",
+        external_id=f"native-{'hw' if body.entity_type == 'hardware' else 'svc'}-{body.entity_id}",
         name=body.name or default_name,
         probe_type=final_probe_type,
         probe_target=final_probe_target,
