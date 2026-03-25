@@ -1,6 +1,6 @@
 import ipaddress
 
-from sqlalchemy import func, or_, select, union_all
+from sqlalchemy import func, literal, or_, select, union_all
 from sqlalchemy.dialects.postgresql import INET as PG_INET
 from sqlalchemy.orm import Session
 
@@ -196,18 +196,19 @@ def get_network(db: Session, network_id: int) -> dict:
     )
     sources = [q1]
     if net.cidr:
+        _cidr_lit = literal(net.cidr)
         q2 = select(Hardware.ip_address.label("ip")).where(
             Hardware.ip_address.isnot(None),
-            func.cast(Hardware.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+            func.cast(Hardware.ip_address, PG_INET).op("<<")(func.cast(_cidr_lit, PG_INET)),
         )
         q3 = select(ComputeUnit.ip_address.label("ip")).where(
             ComputeUnit.ip_address.isnot(None),
-            func.cast(ComputeUnit.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+            func.cast(ComputeUnit.ip_address, PG_INET).op("<<")(func.cast(_cidr_lit, PG_INET)),
         )
         q4 = select(ScanResult.ip_address.label("ip")).where(
             ScanResult.ip_address.isnot(None),
             ~ScanResult.ip_address.contains(":"),
-            func.cast(ScanResult.ip_address, PG_INET).op("<<")(func.cast(net.cidr, PG_INET)),
+            func.cast(ScanResult.ip_address, PG_INET).op("<<")(func.cast(_cidr_lit, PG_INET)),
         )
         sources = [q1, q2, q3, q4]
     combined = union_all(*sources).subquery()

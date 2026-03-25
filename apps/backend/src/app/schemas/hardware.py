@@ -243,7 +243,7 @@ class Hardware(HardwareBase):
                 return parsed if isinstance(parsed, dict) else None
             except Exception:
                 return None
-        return v
+        return v if isinstance(v, dict) else None
 
     telemetry_status: str | None = "unknown"
     telemetry_last_polled: datetime | None = None

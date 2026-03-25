@@ -63,7 +63,7 @@ def _to_read(integ: Integration, db: Session) -> IntegrationRead:
         id=integ.id,
         type=integ.type,
         name=integ.name,
-        base_url=integ.base_url,
+        base_url=integ.base_url or "",
         slug=integ.slug,
         sync_interval_s=integ.sync_interval_s,
         enabled=integ.enabled,
@@ -332,13 +332,13 @@ def create_native_monitor(
     else:
         from app.db.models import Service
 
-        entity = db.get(Service, body.entity_id)
-        if entity is None:
+        svc_entity = db.get(Service, body.entity_id)
+        if svc_entity is None:
             raise HTTPException(status_code=404, detail="Service not found")
-        default_name = entity.name
-        probe_type, probe_target, probe_port = derive_probe_config(service=entity)
+        default_name = svc_entity.name
+        probe_type, probe_target, probe_port = derive_probe_config(service=svc_entity)
         linked_hardware_id = None
-        linked_service_id = entity.id
+        linked_service_id = svc_entity.id
 
     # Check for duplicate
     existing = (

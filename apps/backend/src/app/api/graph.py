@@ -1084,7 +1084,7 @@ def get_topology(
             "external": "ext",
         }
         allowed_ids = set()
-        for entity_type, entity_id in member_rows + pinned_rows:
+        for entity_type, entity_id in list(member_rows) + list(pinned_rows):
             prefix = _TYPE_PREFIX.get(entity_type, entity_type)
             allowed_ids.add(f"{prefix}-{entity_id}")
         nodes = [n for n in data.get("nodes", []) if n.get("id") in allowed_ids]

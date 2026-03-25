@@ -310,7 +310,7 @@ def _publish_alert(cert: Certificate, severity: str, message: str) -> None:
         "certificate_id": cert.id,
     }
 
-    async def _pub():
+    async def _pub() -> None:
         await nats_client.js_publish(f"alert.certificate.expiring.{cert.id}", payload)
 
     try:

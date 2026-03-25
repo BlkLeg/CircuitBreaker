@@ -92,7 +92,7 @@ def get_rack_connections(db: Session, rack_id: int) -> list:
             )
         )
     ).all()
-    return connections
+    return list(connections)
 
 
 def check_rack_overlap(

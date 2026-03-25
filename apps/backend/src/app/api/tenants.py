@@ -54,7 +54,7 @@ class AddMemberRequest(BaseModel):
 
 
 @router.get("", response_model=list[TenantOut])
-def list_tenants(db: Session = Depends(get_db)):
+def list_tenants(db: Session = Depends(get_db)) -> list[Tenant]:
     return db.execute(select(Tenant).order_by(Tenant.name)).scalars().all()
 
 
@@ -62,7 +62,7 @@ def list_tenants(db: Session = Depends(get_db)):
 def get_tenant(
     tenant_id: int,
     db: Session = Depends(get_db),
-):
+) -> Tenant:
     tenant = db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -74,7 +74,7 @@ def create_tenant(
     body: TenantCreateRequest,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> Tenant:
     tenant = Tenant(name=body.name, slug=body.slug or None)
     db.add(tenant)
     db.commit()
@@ -88,7 +88,7 @@ def update_tenant(
     body: TenantUpdateRequest,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> Tenant:
     tenant = db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -106,7 +106,7 @@ def delete_tenant(
     tenant_id: int,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> None:
     tenant = db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -119,7 +119,7 @@ def get_members(
     tenant_id: int,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> list[MemberOut]:
     if not db.get(Tenant, tenant_id):
         raise HTTPException(status_code=404, detail="Tenant not found")
     rows = db.execute(
@@ -144,7 +144,7 @@ def add_member(
     body: AddMemberRequest,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> dict[str, bool]:
     if not db.get(Tenant, tenant_id):
         raise HTTPException(status_code=404, detail="Tenant not found")
     if not db.get(User, body.user_id):
@@ -173,7 +173,7 @@ def remove_member(
     user_id: int,
     _user: Annotated[User, require_role("admin")],
     db: Session = Depends(get_db),
-):
+) -> None:
     db.execute(
         delete(tenant_members).where(
             tenant_members.c.tenant_id == tenant_id,

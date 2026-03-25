@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import timedelta
 from typing import Any
@@ -217,9 +216,7 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     if nodes:
         try:
             _raw = nodes[0].telemetry_data
-            if isinstance(_raw, str):
-                td = json.loads(_raw) if _raw else {}
-            elif isinstance(_raw, dict):
+            if isinstance(_raw, dict):
                 td = _raw
             else:
                 td = {}
