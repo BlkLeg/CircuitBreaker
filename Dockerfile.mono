@@ -99,12 +99,18 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
     && ln -sf /usr/local/bin/python3 /usr/bin/python
 
 # TimescaleDB extension for PostgreSQL 15 (time-series hypertables + compression)
-# hadolint ignore=DL3008
-RUN curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
-      | gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] \
-https://packagecloud.io/timescale/timescaledb/debian/ bookworm main" \
-      > /etc/apt/sources.list.d/timescaledb.list \
+# PGDG repo is added here so postgresql-15 >= 15.17 is available; Debian bookworm default
+# ships 15.16 which is too old to satisfy timescaledb's dependency. apt will upgrade
+# postgresql-15 automatically when resolving the timescaledb install.
+# hadolint ignore=DL3008,DL3005
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+         | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+         | gpg --dearmor -o /usr/share/keyrings/timescaledb.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ bookworm main" \
+         > /etc/apt/sources.list.d/timescaledb.list \
     && apt-get update -qq \
     && apt-get install -y --no-install-recommends timescaledb-2-postgresql-15 \
     && rm -rf /var/lib/apt/lists/*
