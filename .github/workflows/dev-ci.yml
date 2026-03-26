@@ -1,0 +1,153 @@
+name: Dev CI
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  # ── Lint ─────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Ruff check
+        run: cd apps/backend && ../../.venv/bin/ruff check src/app
+
+      - name: Mypy
+        run: cd apps/backend && PYTHONPATH=src ../../.venv/bin/mypy src/app
+
+      - name: ESLint
+        run: cd apps/frontend && npm run lint
+
+  # ── Tests ─────────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Install frontend deps
+        run: cd apps/frontend && npm ci
+
+      - name: Frontend tests
+        run: cd apps/frontend && npm test
+
+  # ── Security Gate ─────────────────────────────────────────────────────────────
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install scan tools
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install bandit semgrep
+
+      - name: Run security gate (fails on HIGH/CRIT)
+        run: ./scripts/security_scan.sh --gate
+
+      - name: Upload scan report
+        uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: security-scan-report
+          path: security_scan_report.md
+          retention-days: 30
+
+  # ── Native Build (amd64 only) ─────────────────────────────────────────────────
+  build-native:
+    name: Build Native (amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Derive version
+        id: ver
+        run: echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install build deps
+        run: bash scripts/install-build-deps.sh
+
+      - name: Install Python deps
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e "apps/backend/[dev]"
+
+      - name: Build frontend
+        run: cd apps/frontend && npm ci && npm run build
+
+      - name: Build packages
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          .venv/bin/python scripts/build_native_release.py \
+            --version "$CB_VERSION" \
+            --clean
+
+      - name: List artifacts
+        run: ls -lh dist/native/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: dev-packages-amd64
+          path: dist/native/
+          if-no-files-found: error
+          retention-days: 3
+
+  # ── Docker Smoke Build ────────────────────────────────────────────────────────
+  build-docker:
+    name: Build Docker (smoke test)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Derive version
+        id: ver
+        run: echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          docker build -f Dockerfile.mono \
+            -t "circuitbreaker:${CB_VERSION}" \
+            .
