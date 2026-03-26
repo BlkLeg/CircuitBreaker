@@ -11,6 +11,10 @@ vi.mock('../api/client', () => ({
   },
 }));
 
+vi.mock('../context/AuthContext.jsx', () => ({
+  useAuth: () => ({ isAuthenticated: true }),
+}));
+
 const TestComponent = () => {
   const { activeTenantId, tenants, switchTenant } = useTenant();
   return (

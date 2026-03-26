@@ -57,6 +57,7 @@ jobs:
           # exit-code 1 — block PRs on HIGH/CRIT IaC misconfigurations
           exit-code: '1'
           skip-dirs: '.venv,node_modules,dist'
+          trivyignores: '.trivyignore'
       - name: Upload Trivy config results
         uses: github/codeql-action/upload-sarif@v4
         if: always()

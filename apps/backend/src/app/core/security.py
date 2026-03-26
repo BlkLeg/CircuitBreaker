@@ -248,7 +248,11 @@ def decode_access_token(token: str, secret: str | None = None) -> dict[str, Any]
         # Unverified fallback: secret unavailable (e.g. pre-bootstrap). Caller must
         # NEVER use the result for auth/authz decisions.
         raw = jwt.decode(  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
-            token, options={"verify_signature": False}, algorithms=["HS256"]
+            token,
+            options={"verify_signature": False},
+            algorithms=[
+                "HS256"
+            ],  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
         )
         # Expose only tenant_id — all other claims are suppressed on unverified path.
         return {"tenant_id": raw.get("tenant_id")} if raw else {}

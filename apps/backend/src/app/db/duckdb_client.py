@@ -94,9 +94,9 @@ def ingest_csv(path: str, table: str) -> int:
         )
         row_count = (
             conn.execute(
-                text(
+                text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
                     f"SELECT count(*) FROM {table_identifier}"
-                )  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
+                )
                 # Safe: table_identifier validated above.
             ).scalar()
             or 0

@@ -297,6 +297,18 @@ vi.mock('../hooks/useTelemetryStream', () => ({
   }),
 }));
 
+vi.mock('../hooks/useMapTabs', () => ({
+  useMapTabs: () => ({
+    maps: [{ id: 1, name: 'Main' }],
+    activeMapId: 1,
+    loading: false,
+    switchMap: vi.fn(),
+    createMap: vi.fn(),
+    renameMap: vi.fn(),
+    deleteMap: vi.fn(),
+  }),
+}));
+
 // Polyfill ResizeObserver for jsdom
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class ResizeObserver {

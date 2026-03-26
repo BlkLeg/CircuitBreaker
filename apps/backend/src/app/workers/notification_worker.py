@@ -152,7 +152,7 @@ async def _is_duplicate(subject: str, severity: str, title: str) -> bool:
     if r is None:
         return False
     raw = f"{subject}:{severity}:{title}"
-    key = f"cb:alert:dedup:{hashlib.md5(raw.encode()).hexdigest()}"  # noqa: S324
+    key = f"cb:alert:dedup:{hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()}"  # noqa: S324
     result = await r.set(key, 1, ex=_DEDUP_WINDOW_S, nx=True)
     return result is None  # None = key already existed = duplicate
 

@@ -26,3 +26,11 @@ docker/circuitbreaker-data/tls/
 # .claude/worktrees/ contains agent checkout copies that duplicate source files
 # already scanned from their canonical locations.
 .claude/worktrees/
+
+# ── Dockerfile.mono root user (DS-0002) ───────────────────────────────────────
+# Dockerfile.mono intentionally starts as root: supervisord requires root to
+# manage embedded system services (postgres, nats, redis, nginx). The breaker
+# user (uid 1000) is created and used for application processes. The entrypoint
+# drops privileges after initial volume ownership setup.
+# See: checkov:skip=CKV_DOCKER_3,CKV_DS_0002 justification in Dockerfile.mono.
+AVD-DS-0002
