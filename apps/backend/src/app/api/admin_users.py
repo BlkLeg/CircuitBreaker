@@ -16,6 +16,7 @@ from app.core.rbac import require_role
 from app.core.security import client_hash_password, create_token, hash_password
 from app.db.models import Log, User, UserInvite, UserSession
 from app.db.session import get_db
+from app.services.auth_service import _scopes_for_role
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import (
     create_invite,
@@ -71,7 +72,6 @@ class InviteListItem(BaseModel):
     id: int
     email: str
     role: str
-    token: str
     invited_by: int
     expires: datetime
     status: str
@@ -191,6 +191,7 @@ def create_user(
         is_active=True,
         created_at=now,
         role=role,
+        scopes=_scopes_for_role(role),
     )
     db.add(new_user)
     try:
@@ -262,6 +263,7 @@ def create_local_user(
         is_active=True,
         created_at=now,
         role=role,
+        scopes=_scopes_for_role(role),
         force_password_change=True,
     )
     db.add(new_user)

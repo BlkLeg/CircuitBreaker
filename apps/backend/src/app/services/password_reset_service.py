@@ -7,6 +7,7 @@ after a successful password change.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 
@@ -18,6 +19,11 @@ RESET_TOKEN_TTL = 900  # 15 minutes
 REDIS_KEY_PREFIX = "password_reset"
 
 
+def _token_key(token: str) -> str:
+    """Hash the token before use as a Redis key to prevent enumeration via SCAN."""
+    return f"{REDIS_KEY_PREFIX}:{hashlib.sha256(token.encode()).hexdigest()}"
+
+
 async def create_reset_token(user_id: int) -> str:
     """Generate a reset token, write it to Redis, and return the token string."""
     redis = await get_redis()
@@ -25,13 +31,13 @@ async def create_reset_token(user_id: int) -> str:
         raise RuntimeError("Redis is unavailable — cannot create password reset token")
 
     token = secrets.token_urlsafe(32)
-    redis_key = f"{REDIS_KEY_PREFIX}:{token}"
+    redis_key = _token_key(token)
 
     await redis.setex(redis_key, RESET_TOKEN_TTL, str(user_id))
 
     stored = await redis.get(redis_key)
     if not stored:
-        raise RuntimeError(f"Redis write verification failed for key={redis_key}")
+        raise RuntimeError("Redis write verification failed for password reset token")
 
     _logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         # Logs only token[:8] prefix — first 8 chars of token, not the full token value
@@ -49,7 +55,7 @@ async def resolve_reset_token(token: str) -> int | None:
     if redis is None:
         raise RuntimeError("Redis is unavailable — cannot resolve password reset token")
 
-    redis_key = f"{REDIS_KEY_PREFIX}:{token}"
+    redis_key = _token_key(token)
     stored = await redis.get(redis_key)
 
     if not stored:
@@ -70,7 +76,7 @@ async def consume_reset_token(token: str) -> None:
     if redis is None:
         raise RuntimeError("Redis is unavailable — cannot consume password reset token")
 
-    await redis.delete(f"{REDIS_KEY_PREFIX}:{token}")
+    await redis.delete(_token_key(token))
     _logger.info(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         # Safe: logs only first 8 chars of the token (opaque prefix) —
         # insufficient to reconstruct or reuse the token.

@@ -10,6 +10,7 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -584,6 +585,7 @@ async def oidc_authorize(
 ) -> RedirectResponse:
     cfg = _get_oidc_config(db, provider_slug)
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
 
     # PKCE
     verifier = secrets.token_urlsafe(64)
@@ -597,6 +599,7 @@ async def oidc_authorize(
             provider=f"oidc:{provider_slug}:{verifier}",
             created_at=datetime.now(UTC).isoformat(),
             invite_token=invite_token,
+            nonce=nonce,
         )
     )
     db.commit()
@@ -616,6 +619,7 @@ async def oidc_authorize(
             "scope": "openid email profile",
             "code_challenge": challenge,
             "code_challenge_method": "S256",
+            "nonce": nonce,
         }
     )
     return RedirectResponse(f"{disc['authorization_endpoint']}?{params}", status_code=302)
@@ -659,6 +663,15 @@ async def oidc_callback(
         access_token = token_data.get("access_token")
         if not access_token:
             raise HTTPException(400, "Failed to obtain access token from OIDC provider")
+
+        # Verify nonce in id_token to prevent token replay attacks
+        id_token = token_data.get("id_token")
+        if id_token and oauth_state.nonce:
+            _claims = jwt.decode(
+                id_token, options={"verify_signature": False}, algorithms=["RS256", "HS256"]
+            )
+            if _claims.get("nonce") != oauth_state.nonce:
+                raise HTTPException(400, "OIDC nonce mismatch — possible token replay")
 
         userinfo_resp = await client.get(
             disc["userinfo_endpoint"],

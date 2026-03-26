@@ -172,12 +172,13 @@ async def collect_once(
             await _dispatch_telemetry(hardware_id, payload, source)
     else:
         # Fallback: NATS unavailable — write directly to DB so monitoring never silently drops data.
-        with get_session_context() as db:
-            for item in results:
-                if isinstance(item, BaseException):
-                    logger.warning("Telemetry collector task failed unexpectedly: %s", item)
-                    continue
-                hardware_id, source, payload = item
+        # Each device gets its own session so a rollback on one never poisons the others.
+        for item in results:
+            if isinstance(item, BaseException):
+                logger.warning("Telemetry collector task failed unexpectedly: %s", item)
+                continue
+            hardware_id, source, payload = item
+            with get_session_context() as db:
                 try:
                     await write_telemetry(
                         hardware_id=hardware_id,

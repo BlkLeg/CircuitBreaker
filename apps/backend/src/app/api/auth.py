@@ -48,6 +48,7 @@ from app.schemas.auth import (
     UserUpdate,
     VaultResetRequest,
 )
+from app.services.auth_service import _to_profile
 from app.services.settings_service import get_or_create_settings
 
 _logger = logging.getLogger(__name__)
@@ -618,42 +619,6 @@ def vault_reset_password(
 # ---------------------------------------------------------------------------
 # Backward-compat: GET /api/v1/auth/me
 # ---------------------------------------------------------------------------
-
-
-def _to_profile(user: User) -> UserProfile:
-    profile_photo = getattr(user, "profile_photo", None)
-    if (
-        profile_photo
-        and isinstance(profile_photo, str)
-        and profile_photo.startswith(("http://", "https://"))
-    ):
-        photo_url = profile_photo
-    elif profile_photo:
-        photo_url = f"/uploads/profiles/{profile_photo}"
-    else:
-        photo_url = None
-    role = getattr(user, "role", None) or (
-        "admin" if getattr(user, "is_admin", False) else "viewer"
-    )
-    try:
-        scopes = json.loads(getattr(user, "scopes", "[]") or "[]")
-        if not isinstance(scopes, list):
-            scopes = []
-    except Exception:
-        scopes = []
-    return UserProfile(
-        id=user.id,
-        email=getattr(user, "email", "") or "",
-        display_name=getattr(user, "display_name", None),
-        gravatar_hash=getattr(user, "gravatar_hash", None),
-        is_admin=getattr(user, "is_admin", False),
-        is_superuser=getattr(user, "is_superuser", False),
-        language=getattr(user, "language", None) or "en",
-        profile_photo_url=photo_url,
-        mfa_enabled=bool(getattr(user, "mfa_enabled", False)),
-        role=role,
-        scopes=[str(s) for s in scopes if str(s).strip()],
-    )
 
 
 @router.get("/me", response_model=UserProfile, tags=["auth"])

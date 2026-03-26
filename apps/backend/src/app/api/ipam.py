@@ -207,8 +207,8 @@ def scan_network_addresses(
         raise HTTPException(status_code=400, detail=f"Invalid CIDR: {exc}") from exc
 
     hosts = list(network.hosts())
-    if len(hosts) > 1024:
-        raise HTTPException(status_code=400, detail="CIDR too large (max /22 = 1024 hosts)")
+    if len(hosts) > 1022:
+        raise HTTPException(status_code=400, detail="CIDR too large (max /22 = 1022 hosts)")
 
     created: list[IPAddress] = []
     for host in hosts:

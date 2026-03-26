@@ -15,3 +15,4 @@ class TelemetryResponse(BaseModel):
     last_polled: datetime | None = None
     error_msg: str | None = None
     telemetry_profile: str | None = None
+    config: dict[str, Any] | None = None

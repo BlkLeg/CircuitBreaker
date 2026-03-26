@@ -279,7 +279,11 @@ export default function TelemetryPanel({ hardwareId }) {
             >
               Test Connection
             </button>
-            <button className="btn btn-sm" onClick={handlePollNow} disabled={polling || !host}>
+            <button
+              className="btn btn-sm"
+              onClick={handlePollNow}
+              disabled={polling || saving || !host}
+            >
               {polling ? 'Polling…' : 'Poll Now'}
             </button>
           </div>

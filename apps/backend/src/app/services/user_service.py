@@ -55,6 +55,7 @@ def record_session(
             .where(UserSession.revoked == False)  # noqa: E712
             .where(UserSession.expires_at > utcnow())
             .order_by(UserSession.created_at.asc())
+            .with_for_update()
         )
         .scalars()
         .all()

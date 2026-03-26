@@ -390,6 +390,21 @@ async def lifespan(app: FastAPI):
 
     _assert_required_schema()
 
+    # ── Phase 1b: Warn if default client hash salt is in use ──────────────
+    from app.core.security import _DEFAULT_SALT, get_client_salt
+
+    try:
+        with get_session_context() as _salt_db:
+            if get_client_salt(_salt_db) == _DEFAULT_SALT:
+                _logger.warning(
+                    "SECURITY: CB_CLIENT_SALT is not set and no custom salt is stored in "
+                    "AppSettings. The default public salt 'circuitbreaker-salt-v1' is in use. "
+                    "Set CB_CLIENT_SALT to a unique random value to prevent rainbow table "
+                    "attacks on client-side password pre-hashes."
+                )
+    except Exception:
+        pass  # Non-fatal — vault may not be ready yet on first boot
+
     # ── Phase 1c: Auto-detect api_base_url ────────────────────────────────
     # On native installs api_base_url is often null, causing invite emails to
     # embed the backend URL (localhost:8000) instead of the frontend URL.
@@ -1175,9 +1190,9 @@ init_otel(app)
 
 # ── CORS ───────────────────────────────────────────────────────────────────
 # Default to same-origin only; never allow wildcard origins in production.
-_cors_origins = settings.cors_origins
-if not _cors_origins or _cors_origins == ["*"]:
-    _cors_origins = []
+_cors_origins = [o for o in (settings.cors_origins or []) if o != "*"]
+if not _cors_origins:
+    _logger.warning("CORS: no valid origins configured — same-origin only.")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

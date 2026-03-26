@@ -55,7 +55,9 @@ def poll_hardware(hardware: Any, vault: CredentialVault) -> dict:
     if not ClientClass:
         return {"error": f"Unknown telemetry profile: {profile}", "status": "unknown"}
 
-    host = config["host"]
+    host = config.get("host")
+    if not host:
+        return {"error": "No host configured", "status": "unknown"}
     password = vault.decrypt(config["password"]) if config.get("password") else None
 
     try:
@@ -95,6 +97,7 @@ def _fire_and_forget_publish(hardware_id: int, result: dict, ttl: int | None = N
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        _logger.debug("Skipping async telemetry publish — no running event loop")
         return
     loop.create_task(_async_cache_and_publish(hardware_id, result, ttl))
 

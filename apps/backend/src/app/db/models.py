@@ -1601,6 +1601,7 @@ class OAuthState(Base):
     provider: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     invite_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nonce: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ── Status Page ──────────────────────────────────────────────────────────────

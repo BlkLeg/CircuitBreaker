@@ -70,6 +70,24 @@ def _derive_disk_pct(data: dict[str, Any]) -> float | None:
     return round((used / total) * 100.0, 2)
 
 
+def _safe_config(telemetry_config: Any) -> dict[str, Any] | None:
+    """Parse telemetry_config and return it with password redacted."""
+    import json
+
+    if isinstance(telemetry_config, dict):
+        cfg = telemetry_config
+    elif isinstance(telemetry_config, str):
+        try:
+            cfg = json.loads(telemetry_config)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    else:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    return {k: v for k, v in cfg.items() if k != "password"}
+
+
 def _extract_profile(telemetry_config: Any) -> str | None:
     cfg = _safe_json(telemetry_config)
     if cfg is None:
@@ -146,6 +164,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
             last_polled=hw.telemetry_last_polled,
             error_msg=str(cached.get("error_msg")) if cached.get("error_msg") else None,
             telemetry_profile=telemetry_profile,
+            config=_safe_config(hw.telemetry_config),
         )
 
     row = (
@@ -165,6 +184,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
             last_polled=row.collected_at,
             error_msg=row.error_msg,
             telemetry_profile=telemetry_profile,
+            config=_safe_config(hw.telemetry_config),
         )
         try:
             await cache_telemetry(
@@ -197,6 +217,7 @@ async def get_telemetry_for_hardware(hardware_id: int, db: Session) -> Telemetry
         last_polled=hw.telemetry_last_polled,
         error_msg=unconfigured_msg,
         telemetry_profile=telemetry_profile,
+        config=_safe_config(hw.telemetry_config),
     )
 
 

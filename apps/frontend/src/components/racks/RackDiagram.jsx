@@ -33,18 +33,22 @@ function USlot({ unit, node }) {
         U{unit}
       </span>
       {occupied ? (
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 500,
-            color: 'var(--color-primary)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {node.name}
-        </span>
+        node._isContinuation ? (
+          <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>│</span>
+        ) : (
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 500,
+              color: 'var(--color-primary)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {node.name}
+          </span>
+        )
       ) : (
         <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>
       )}
@@ -61,10 +65,15 @@ export default function RackDiagram({ rack, hardware }) {
   const uHeight = rack.u_height ?? 42;
   const units = Array.from({ length: uHeight }, (_, i) => uHeight - i);
 
-  // Build a lookup of rack_unit → hardware item for this rack
+  // Build a lookup of rack_unit → hardware item for this rack.
+  // Multi-U devices fill every slot they span; continuation slots carry a flag
+  // so the label is suppressed on all rows except the base unit.
   const hwByUnit = hardware.reduce((acc, hw) => {
     if (hw.rack_id === rack.id && hw.rack_unit != null) {
-      acc.set(hw.rack_unit, hw);
+      const height = hw.u_height ?? 1;
+      for (let u = hw.rack_unit; u < hw.rack_unit + height; u++) {
+        acc.set(u, { ...hw, _isContinuation: u !== hw.rack_unit });
+      }
     }
     return acc;
   }, new Map());

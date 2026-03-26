@@ -9,7 +9,7 @@ from starlette.types import ASGIApp
 
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'strict-dynamic'; "
+    "script-src 'self' 'strict-dynamic'; "
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
     "font-src 'self' https://fonts.gstatic.com; "
     "img-src 'self' data: blob: https://www.gravatar.com "
@@ -18,7 +18,7 @@ _CSP = (
     "frame-ancestors 'none';"
 )
 
-_HSTS = "max-age=63072000; includeSubDomains"
+_HSTS = "max-age=63072000; includeSubDomains; preload"
 
 _PERMISSIONS_POLICY = (
     "camera=(), microphone=(), geolocation=(), "

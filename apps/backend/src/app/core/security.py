@@ -159,7 +159,7 @@ def client_hash_password(plain: str, salt: str | None = None) -> str:
     """SHA256(plain + salt) hex. Use when storing a password that will be
     sent by the client as password_hash on login (e.g. local user temp password).
     """
-    active_salt = salt or CLIENT_HASH_SALT
+    active_salt = salt or get_client_salt()
     return hashlib.sha256((plain + active_salt).encode()).hexdigest()
 
 
