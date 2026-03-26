@@ -175,8 +175,14 @@ stage0_download_bundle() {
       release_json=$(curl -fsSL "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
         || cb_fail "Release v${CB_VERSION} not found" "Check: https://github.com/${CB_GITHUB_REPO}/releases"
     else
-      release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null) \
-        || cb_fail "Failed to fetch latest release" "Check internet connectivity"
+      # /releases/latest returns 404 for pre-releases; fall back to the list
+      release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null)
+      if [[ -z "$release_json" ]] || echo "$release_json" | grep -q '"message"'; then
+        release_json=$(curl -fsSL "${CB_RELEASE_API}" 2>/dev/null | jq '[.[] | select(.draft==false and .prerelease==false)] | .[0]' 2>/dev/null)
+      fi
+      if [[ -z "$release_json" ]] || [[ "$release_json" == "null" ]]; then
+        cb_fail "Failed to fetch latest release" "Check internet connectivity or specify --version <version>"
+      fi
     fi
 
     CB_VERSION=$(echo "$release_json" | jq -r '.tag_name' | tr -d v)

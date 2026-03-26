@@ -176,11 +176,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          # setup.sh kept as backward-compat alias for install.sh
+          cp install.sh setup.sh
           gh release create "v${VERSION}" \
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
             dist/release/* \
             install.sh \
+            setup.sh \
             packaging/circuit-breaker-release-key.asc
 
   # ── Deploy install redirect to GitHub Pages ───────────────────────────────────
@@ -195,21 +198,21 @@ jobs:
       - name: Generate redirect page
         run: |
           mkdir -p _site
-          cat > _site/index.html <<'EOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/setup.sh">
-            <title>Circuit Breaker Installer</title>
-          </head>
-          <body>
-            <p>Redirecting to Circuit Breaker installer…
-              <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/setup.sh">Click here if not redirected.</a>
-            </p>
-          </body>
-          </html>
-          EOF
+          cat > _site/index.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">
+  <title>Circuit Breaker Installer</title>
+</head>
+<body>
+  <p>Redirecting to Circuit Breaker installer…
+    <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>
+  </p>
+</body>
+</html>
+HTMLEOF
           echo "circuitbreaker.shawnji.com" > _site/CNAME
 
       - name: Configure GitHub Pages
