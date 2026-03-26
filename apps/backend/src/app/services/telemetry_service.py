@@ -78,12 +78,13 @@ def _safe_config(telemetry_config: Any) -> dict[str, Any] | None:
         cfg = telemetry_config
     elif isinstance(telemetry_config, str):
         try:
-            cfg = json.loads(telemetry_config)
+            parsed = json.loads(telemetry_config)
         except (json.JSONDecodeError, TypeError):
             return None
+        if not isinstance(parsed, dict):
+            return None
+        cfg = parsed
     else:
-        return None
-    if not isinstance(cfg, dict):
         return None
     return {k: v for k, v in cfg.items() if k != "password"}
 

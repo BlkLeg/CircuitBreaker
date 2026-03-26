@@ -72,6 +72,7 @@ class InviteListItem(BaseModel):
     id: int
     email: str
     role: str
+    token: str
     invited_by: int
     expires: datetime
     status: str
