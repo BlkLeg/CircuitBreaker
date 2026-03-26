@@ -102,7 +102,7 @@ stage0_bootstrap_preflight() {
   # Privilege confirmation
   cb_step "Checking privileges"
   if [[ $EUID -ne 0 ]]; then
-    cb_fail "Root privileges required" "Run with: sudo bash install.sh"
+    cb_fail "Root privileges required" "Run as root: bash install.sh"
   fi
   cb_ok "Running as root"
 

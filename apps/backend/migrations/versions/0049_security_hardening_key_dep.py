@@ -8,9 +8,7 @@ Create Date: 2026-03-20 17:24:24.601652
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "715595fafdec"
@@ -21,14 +19,10 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema: add client_hash_salt to app_settings, scopes to api_tokens."""
-    # 1. Add client_hash_salt to app_settings
-    op.add_column("app_settings", sa.Column("client_hash_salt", sa.Text(), nullable=True))
-
-    # 2. Add scopes to api_tokens
-    op.add_column(
-        "api_tokens",
-        sa.Column("scopes", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
+    # Use IF NOT EXISTS to be idempotent — column may already exist if a prior
+    # install partially applied this migration without updating the version table.
+    op.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS client_hash_salt TEXT")
+    op.execute("ALTER TABLE api_tokens ADD COLUMN IF NOT EXISTS scopes JSONB")
 
 
 def downgrade() -> None:
