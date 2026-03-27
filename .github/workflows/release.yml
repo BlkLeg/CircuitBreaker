@@ -198,21 +198,7 @@ jobs:
       - name: Generate redirect page
         run: |
           mkdir -p _site
-          cat > _site/index.html << 'HTMLEOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">
-  <title>Circuit Breaker Installer</title>
-</head>
-<body>
-  <p>Redirecting to Circuit Breaker installer…
-    <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>
-  </p>
-</body>
-</html>
-HTMLEOF
+          printf '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <meta http-equiv="refresh" content="0; url=https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">\n  <title>Circuit Breaker Installer</title>\n</head>\n<body>\n  <p>Redirecting to Circuit Breaker installer...\n    <a href="https://github.com/BlkLeg/circuitbreaker/releases/latest/download/install.sh">Click here if not redirected.</a>\n  </p>\n</body>\n</html>\n' > _site/index.html
           echo "circuitbreaker.shawnji.com" > _site/CNAME
 
       - name: Configure GitHub Pages
