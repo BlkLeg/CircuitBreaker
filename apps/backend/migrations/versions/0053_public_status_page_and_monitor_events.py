@@ -7,6 +7,7 @@ Create Date: 2026-03-21
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect as sa_inspect
 
 revision = "0053_public_status_page_and_monitor_events"
 down_revision = "0052_add_slug_to_integrations"
@@ -16,11 +17,13 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
+    insp = sa_inspect(conn)
 
-    op.add_column(
-        "status_pages",
-        sa.Column("is_public", sa.Boolean(), nullable=False, server_default="false"),
-    )
+    if "is_public" not in {c["name"] for c in insp.get_columns("status_pages")}:
+        op.add_column(
+            "status_pages",
+            sa.Column("is_public", sa.Boolean(), nullable=False, server_default="false"),
+        )
 
     if not conn.dialect.has_table(conn, "integration_monitor_events"):
         op.create_table(

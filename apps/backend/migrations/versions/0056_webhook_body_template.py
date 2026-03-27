@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect as sa_inspect
 
 revision = "0056_webhook_body_template"
 down_revision = "0055_webhook_dlq"
@@ -17,10 +18,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "webhook_rules",
-        sa.Column("body_template", sa.Text(), nullable=True),
-    )
+    conn = op.get_bind()
+    insp = sa_inspect(conn)
+    if "body_template" not in {c["name"] for c in insp.get_columns("webhook_rules")}:
+        op.add_column(
+            "webhook_rules",
+            sa.Column("body_template", sa.Text(), nullable=True),
+        )
 
 
 def downgrade() -> None:

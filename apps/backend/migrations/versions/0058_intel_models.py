@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect as sa_inspect
 
 revision = "0058_intel_models"
 down_revision = "0057_backup_settings"
@@ -76,8 +77,11 @@ def upgrade() -> None:
             sa.Column("notified_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
         )
-    op.add_column("app_settings", sa.Column("telemetry_hot_days", sa.Integer, nullable=True))
-    op.add_column("app_settings", sa.Column("telemetry_warm_days", sa.Integer, nullable=True))
+    existing_cols = {c["name"] for c in sa_inspect(conn).get_columns("app_settings")}
+    if "telemetry_hot_days" not in existing_cols:
+        op.add_column("app_settings", sa.Column("telemetry_hot_days", sa.Integer, nullable=True))
+    if "telemetry_warm_days" not in existing_cols:
+        op.add_column("app_settings", sa.Column("telemetry_warm_days", sa.Integer, nullable=True))
 
 
 def downgrade() -> None:

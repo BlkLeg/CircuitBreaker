@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect as sa_inspect
 
 revision = "0065_multi_map"
 down_revision = "0064_integrations_base_url_nullable"
@@ -13,24 +14,29 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
+    insp = sa_inspect(conn)
 
     # 1. Add sort_order to topologies
-    op.add_column(
-        "topologies",
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-    )
+    if "sort_order" not in {c["name"] for c in insp.get_columns("topologies")}:
+        op.add_column(
+            "topologies",
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+        )
 
     # 2. Add topology_id FK to graph_layouts
-    op.add_column(
-        "graph_layouts",
-        sa.Column(
-            "topology_id",
-            sa.Integer(),
-            sa.ForeignKey("topologies.id", ondelete="CASCADE"),
-            nullable=True,
-        ),
-    )
-    op.create_index("ix_graph_layouts_topology_id", "graph_layouts", ["topology_id"])
+    if "topology_id" not in {c["name"] for c in insp.get_columns("graph_layouts")}:
+        op.add_column(
+            "graph_layouts",
+            sa.Column(
+                "topology_id",
+                sa.Integer(),
+                sa.ForeignKey("topologies.id", ondelete="CASCADE"),
+                nullable=True,
+            ),
+        )
+    existing_indexes = {idx["name"] for idx in insp.get_indexes("graph_layouts")}
+    if "ix_graph_layouts_topology_id" not in existing_indexes:
+        op.create_index("ix_graph_layouts_topology_id", "graph_layouts", ["topology_id"])
 
     # 3. New map_pinned_entities table
     if not conn.dialect.has_table(conn, "map_pinned_entities"):
