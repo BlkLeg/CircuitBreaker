@@ -12,6 +12,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+
     # 1. Add sort_order to topologies
     op.add_column(
         "topologies",
@@ -31,15 +33,15 @@ def upgrade() -> None:
     op.create_index("ix_graph_layouts_topology_id", "graph_layouts", ["topology_id"])
 
     # 3. New map_pinned_entities table
-    op.create_table(
-        "map_pinned_entities",
-        sa.Column("entity_type", sa.String(), nullable=False),
-        sa.Column("entity_id", sa.Integer(), nullable=False),
-        sa.PrimaryKeyConstraint("entity_type", "entity_id"),
-    )
+    if not conn.dialect.has_table(conn, "map_pinned_entities"):
+        op.create_table(
+            "map_pinned_entities",
+            sa.Column("entity_type", sa.String(), nullable=False),
+            sa.Column("entity_id", sa.Integer(), nullable=False),
+            sa.PrimaryKeyConstraint("entity_type", "entity_id"),
+        )
 
     # 4. Seed: create default Topology and link existing "default" layout
-    conn = op.get_bind()
     result = conn.execute(
         sa.text(
             """

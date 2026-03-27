@@ -15,35 +15,38 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+
     op.add_column(
         "status_pages",
         sa.Column("is_public", sa.Boolean(), nullable=False, server_default="false"),
     )
 
-    op.create_table(
-        "integration_monitor_events",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("monitor_id", sa.Integer(), nullable=False),
-        sa.Column("previous_status", sa.String(16), nullable=False),
-        sa.Column("new_status", sa.String(16), nullable=False),
-        sa.Column(
-            "detected_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.ForeignKeyConstraint(
-            ["monitor_id"],
-            ["integration_monitors.id"],
-            ondelete="CASCADE",
-        ),
-    )
+    if not conn.dialect.has_table(conn, "integration_monitor_events"):
+        op.create_table(
+            "integration_monitor_events",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("monitor_id", sa.Integer(), nullable=False),
+            sa.Column("previous_status", sa.String(16), nullable=False),
+            sa.Column("new_status", sa.String(16), nullable=False),
+            sa.Column(
+                "detected_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.text("now()"),
+            ),
+            sa.ForeignKeyConstraint(
+                ["monitor_id"],
+                ["integration_monitors.id"],
+                ondelete="CASCADE",
+            ),
+        )
 
-    op.create_index(
-        op.f("ix_integration_monitor_events_monitor_id"),
-        "integration_monitor_events",
-        ["monitor_id"],
-    )
+        op.create_index(
+            op.f("ix_integration_monitor_events_monitor_id"),
+            "integration_monitor_events",
+            ["monitor_id"],
+        )
 
 
 def downgrade() -> None:
