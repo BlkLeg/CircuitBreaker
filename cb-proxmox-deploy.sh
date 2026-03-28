@@ -22,7 +22,7 @@ CB_GITHUB_REPO="BlkLeg/CircuitBreaker"
 CB_RELEASE_API="https://api.github.com/repos/${CB_GITHUB_REPO}/releases"
 CB_PORT=8088
 CB_FQDN=""
-CB_NO_TLS=true
+CB_NO_TLS=false
 CB_DOCKER=false
 
 # ── Runtime state ─────────────────────────────────────────────────────────────
@@ -1170,10 +1170,12 @@ func_do_install() {
   echo -e "  ║   Circuit Breaker installed successfully!        ║"
   echo -e "  ╠══════════════════════════════════════════════════╣"
   printf  "  ║  Container ID : %-32s║\n" "$CTID"
-  printf  "  ║  URL          : %-32s║\n" "http://$CT_IP:$CB_PORT"
+  printf  "  ║  URL          : %-32s║\n" "https://$CT_IP:$CB_PORT"
   echo -e "  ╚══════════════════════════════════════════════════╝${nc}"
   echo ""
   echo -e "  Open the URL above to complete setup (OOBE wizard)."
+  echo -e "  ${yellow}Your browser will warn about the self-signed certificate."
+  echo -e "  Click Advanced → Proceed (or Accept the Risk) to continue.${nc}"
   echo -e "  ${blue}Log:${nc} $LOG_FILE"
   echo ""
   read -rp "  Press Enter to return to menu..."

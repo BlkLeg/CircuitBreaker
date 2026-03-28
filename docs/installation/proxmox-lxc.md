@@ -79,7 +79,7 @@ The script walks through an interactive TUI setup (~3 minutes total).
 After the script completes, a success banner shows the container IP:
 
 ```
-  URL : http://<container-ip>:8088
+  URL : https://<container-ip>:8088
 ```
 
 Open that URL in your browser to complete the [First-Run Setup](first-run.md) wizard.
@@ -116,7 +116,7 @@ You can assign these via **Datacenter → Permissions → Add → API Token Perm
 
 ## After Install
 
-1. Open `http://<container-ip>:8088` in your browser.
+1. Open `https://<container-ip>:8088` in your browser. Your browser will warn about the self-signed certificate — click **Advanced → Proceed** (Firefox) or **Advanced → Proceed anyway** (Chrome) to continue.
 2. Complete the **[First-Run Setup](first-run.md)** wizard.
 3. Back up your vault key — it is shown once at the end of the wizard.
 
