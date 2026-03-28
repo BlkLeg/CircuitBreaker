@@ -12,6 +12,33 @@ blue=$(tput setaf 4 2>/dev/null)
 bold=$(tput bold 2>/dev/null)
 nc=$(tput sgr0 2>/dev/null)
 
+# ── Whiptail color theme (orange/black) ───────────────────────────────────────
+export NEWT_COLORS='
+root=,black
+border=yellow,black
+window=black,yellow
+shadow=black,black
+title=black,yellow
+button=black,yellow
+actbutton=yellow,black
+checkbox=yellow,black
+actcheckbox=black,yellow
+entry=black,yellow
+label=yellow,black
+listbox=black,yellow
+actlistbox=yellow,black
+textbox=black,yellow
+acttextbox=yellow,black
+helpline=black,yellow
+roottext=yellow,black
+emptyscale=black,yellow
+fullscale=yellow,black
+disentry=black,yellow
+compactbutton=black,yellow
+actsellistbox=yellow,black
+sellistbox=black,yellow
+'
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 BT="Circuit Breaker — Proxmox Helper"
 LOG_FILE="/tmp/cb-proxmox.log"
@@ -417,6 +444,67 @@ build_installer_cmd() {
   [[ "$CB_PORT" != "8088" ]] && cmd+=" --port ${CB_PORT}"
   [[ "$CB_DOCKER" == true ]] && cmd+=" --docker"
   echo "$cmd"
+}
+
+# ── Post-install nginx TLS port patch ────────────────────────────────────────
+# Released bundles ship circuitbreaker-tls.conf with the HTTP redirect on
+# CB_PORT. This patches the running container so CB_PORT serves HTTPS directly,
+# fixing SSL_ERROR_RX_RECORD_TOO_LONG when accessing https://IP:CB_PORT/.
+patch_nginx_tls_port() {
+  local ctid="$1"
+
+  # Read CB_PORT from the container's env (default 8088)
+  local cb_port
+  cb_port=$(pct exec "$ctid" -- bash -c \
+    "grep -oP '^CB_PORT=\K[0-9]+' /etc/circuitbreaker/.env 2>/dev/null" 2>/dev/null)
+  cb_port="${cb_port//[^0-9]/}"
+  [[ -z "$cb_port" ]] && cb_port=8088
+
+  # Only applies in TLS mode
+  if ! pct exec "$ctid" -- bash -c \
+    "grep -q 'listen 443 ssl http2' /etc/nginx/conf.d/circuitbreaker.conf 2>/dev/null" 2>/dev/null; then
+    return 0
+  fi
+
+  # Skip if CB_PORT is already a TLS listener (already patched or new bundle)
+  if pct exec "$ctid" -- bash -c \
+    "grep -q 'listen ${cb_port} ssl http2' /etc/nginx/conf.d/circuitbreaker.conf 2>/dev/null" 2>/dev/null; then
+    return 0
+  fi
+
+  msg_info "Enabling HTTPS on port ${cb_port}..."
+
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" << NGINXFIX
+#!/usr/bin/env bash
+CB_PORT="${cb_port}"
+CONF=/etc/nginx/conf.d/circuitbreaker.conf
+
+# Move HTTP redirect from CB_PORT to port 80
+sed -i "s/^\( *\)listen \${CB_PORT};\$/\1listen 80;/" "\$CONF"
+sed -i "s/^\( *\)listen \[::\]:\${CB_PORT};\$/\1listen [::]:80;/" "\$CONF"
+
+# Add CB_PORT as an additional HTTPS listener
+awk -v port="\${CB_PORT}" '
+/^    listen 443 ssl http2;$/       { print; print "    listen " port " ssl http2;"; next }
+/^    listen \[::]:443 ssl http2;$/ { print; print "    listen [::]:" port " ssl http2;"; next }
+{ print }
+' "\$CONF" > "\${CONF}.new" && mv "\${CONF}.new" "\$CONF"
+
+nginx -t && systemctl reload nginx
+NGINXFIX
+
+  pct push "$ctid" "$tmp" /tmp/cb-nginx-tls.sh
+  rm -f "$tmp"
+
+  if pct exec "$ctid" -- bash /tmp/cb-nginx-tls.sh 2>/dev/null; then
+    pct exec "$ctid" -- rm -f /tmp/cb-nginx-tls.sh 2>/dev/null
+    msg_ok "nginx: HTTPS enabled on port ${cb_port}"
+  else
+    pct exec "$ctid" -- rm -f /tmp/cb-nginx-tls.sh 2>/dev/null
+    msg_err "nginx TLS patch failed — run: pct exec ${ctid} -- nginx -t"
+  fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1161,6 +1249,9 @@ func_do_install() {
     return 1
   fi
 
+  # ── Patch nginx so CB_PORT serves HTTPS (bundle ships with HTTP redirect) ───
+  [[ "$CB_NO_TLS" == false ]] && patch_nginx_tls_port "$CTID"
+
   # ── Done ────────────────────────────────────────────────────────────────────
   CLEANUP_CTID=""
   echo ""
@@ -1250,6 +1341,7 @@ func_update() {
   local rc=$?
   if [[ $rc -eq 0 ]]; then
     msg_ok "Update complete."
+    patch_nginx_tls_port "$target"
   else
     msg_err "Update failed (exit code $rc)."
     echo "  Debug: pct enter $target  →  journalctl -u 'circuitbreaker-*' -n 50"
