@@ -30,6 +30,10 @@ To see how to begin adding these components, proceed to [Getting Started](gettin
 ## Key Features Available Now
 
 - **[Auto-Discovery (Beta)](discovery.md):** Scan selected network ranges, review results, then merge approved items into your inventory.
+- **[IPAM](ipam.md):** Unified network management — prefixes, IP addresses, VLANs, and sites in one place.
+- **[Certificates](certificates.md):** Track TLS/SSL certificate expiry across your homelab.
+- **[External / Cloud Nodes](external-nodes.md):** Document cloud VMs, managed databases, and other external dependencies on the topology map.
+- **[Status Pages](status-pages.md):** Create public-facing status boards backed by your Circuit Breaker monitors.
 - **[Settings](settings.md):** Control language, timezone, appearance, map defaults, and system behavior.
 - **[Authentication & Access](auth-access.md):** Local auth, OAuth/OIDC, MFA, invites, and recovery workflows.
 - **[Webhooks & Notifications](integrations-webhooks-notifications.md):** Route events to external tools and manage delivery.

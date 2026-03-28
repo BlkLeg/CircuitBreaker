@@ -61,17 +61,17 @@ cb restart
 
 ### `cb update`
 
-Pulls the latest image from the registry and recreates the container in place.
+Pulls the latest image and restarts Circuit Breaker.
 
 ```
 cb update
 ```
 
-Available in **Docker mode only** (single-container installs). For compose installs, use:
+Behavior depends on your install mode:
 
-```bash
-docker compose pull && docker compose up -d
-```
+- **Docker mode**: pulls the latest image, stops and removes the old container, and recreates it in place. All data in the named volume is preserved.
+- **Compose mode**: runs `docker compose pull` followed by `docker compose up -d` against your production compose file. Requires `CB_INSTALL_DIR` or `CB_COMPOSE_FILE` to be set in `install.conf`.
+- **Binary mode**: not supported — exits with an error. Re-run the install script to upgrade a native binary install.
 
 ---
 

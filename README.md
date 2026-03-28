@@ -24,8 +24,14 @@
 - **Auto-Discovery**: Scan LAN with nmap/SNMP/ARP. Auto-populate Proxmox VMs, TrueNAS pools, UniFi APs. Review & merge into topology.
 - **Live Telemetry**: iDRAC/iLO/APC UPS/SNMP health badges update via WebSockets. Green/yellow/red health rings.
 - **Proxmox Integration**: One-click cluster import — nodes, VMs, and health metrics visualized instantly.
-- **Interactive Topology**: Hierarchical/cluster/radial layouts with live animations. Drag-to-save positions.
+- **Interactive Topology**: Hierarchical/cluster/radial layouts with live animations. Multi-map support. Drag-to-save positions.
 - **3D Rack Simulator**: U-height drag-drop, cable management, front/rear views, power modeling.
+- **IPAM**: Unified 4-tab network management — prefixes, IP addresses, VLANs, and sites.
+- **Status Pages**: Publish public-facing status boards at `/status/<slug>` backed by built-in monitors.
+- **Certificates**: Track TLS/SSL certificate expiry with visual health indicators.
+- **External Nodes**: Document cloud VMs, managed databases, and other external resources on the topology map.
+- **Native Monitoring**: Built-in ICMP, HTTP, and TCP monitors. No external tool required.
+- **Notifications**: Slack, Discord, Teams, and email sinks with per-severity routing rules.
 - **Vendor Catalog**: 100+ devices (Dell/HPE/Ubiquiti/Synology/APC). Freeform entry always works.
 - **Audit Logs**: Tamper-evident SHA-256 hash chain. Every change tracked with actor, IP, and diff.
 

@@ -7,12 +7,20 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 ## Available Now
 
 - Full inventory tracking for hardware, compute, services, storage, and networks.
-- Interactive topology map with dependency visibility.
+- Interactive topology map with multi-map support, dependency visibility, and live telemetry.
 - Notes and runbooks attached to assets.
-- Audit history with filters and search.
-- Auto-Discovery (Beta) with review-before-merge workflow.
+- Audit history with filters, search, and tamper-evident hash chain.
+- Auto-Discovery (Beta) with safe mode (no NET_RAW required) and review-before-merge workflow.
 - Backup export and restore import.
-- **Status Page (v2)**: Zabbix-density dashboard at `/status` with group cards, Plotly charts (uptime, events), events table, live WebSocket updates, and configurable groups via Settings.
+- **IPAM**: Unified 4-tab network management center — Networks, IP Addresses, VLANs, and Sites.
+- **Certificates**: Track TLS/SSL certificate expiry across your homelab.
+- **External / Cloud Nodes**: Document cloud VMs, managed databases, SaaS dependencies, and other external resources on the topology map.
+- **Status Pages**: Create public-facing status boards backed by your Circuit Breaker monitors.
+- **Interactive Rack Editor**: Drag-and-drop hardware placement, cable visualization, and U-slot management.
+- **Native Monitoring**: Built-in ICMP ping, HTTP health check, and TCP port monitors — no external tool required.
+- **Notifications Center**: Configure Slack, Discord, Teams, and email notification sinks with routing rules.
+- **Tenant Management**: Isolate different environments within the same Circuit Breaker installation.
+- **Proxmox Integration**: One-click cluster import with live telemetry for nodes, VMs, and LXC containers.
 
 ---
 
@@ -45,9 +53,8 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 
 ### Health and Alerts
 
-- Status Page v2: Zabbix-density dashboard, events API, status WebSocket, dashboard cache (v0.2.0).
 - Broader health status integrations.
-- More alert and notification options.
+- More alert and notification routing options.
 
 ### Collaboration and Access
 

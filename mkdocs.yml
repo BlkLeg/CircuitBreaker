@@ -25,8 +25,11 @@ nav:
       - Hardware: hardware.md
       - Compute: compute.md
       - Storage: storage.md
-      - Networks: networks.md
+      - Networks / IPAM: ipam.md
       - Services: services.md
+      - External / Cloud Nodes: external-nodes.md
+      - Status Pages: status-pages.md
+      - Certificates: certificates.md
       - Auto-Discovery (Beta): discovery.md
       - Settings: settings.md
       - Authentication & Access: auth-access.md
