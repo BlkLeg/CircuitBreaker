@@ -347,9 +347,9 @@ def import_as_network(
 
     batch_id_set = set(all_hw_ids)
     subnet_prefixes = {
-        _subnet_key(n["ip_address"])
-        for n in nodes
-        if n.get("ip_address") and _subnet_key(n["ip_address"]) != "__no_ip__"
+        _subnet_key(hw.ip_address)
+        for hw in hw_rows
+        if hw.ip_address and _subnet_key(hw.ip_address) != "__no_ip__"
     }
     if subnet_prefixes:
         all_hw_rows = (

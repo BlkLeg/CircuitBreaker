@@ -1060,12 +1060,12 @@ def _topology_etag(
         except Exception:
             parts.append(f"{model.__tablename__}=none")
     # Connection join tables have no updated_at — use row counts so any add/remove busts the ETag
-    for model in (HardwareNetwork, ComputeNetwork, NetworkPeer, HardwareConnection):
+    for join_model in (HardwareNetwork, ComputeNetwork, NetworkPeer, HardwareConnection):
         try:
-            cnt = db.execute(select(func.count()).select_from(model)).scalar_one()
-            parts.append(f"{model.__tablename__}_cnt={cnt}")
+            cnt = db.execute(select(func.count()).select_from(join_model)).scalar_one()
+            parts.append(f"{join_model.__tablename__}_cnt={cnt}")
         except Exception:
-            parts.append(f"{model.__tablename__}_cnt=none")
+            parts.append(f"{join_model.__tablename__}_cnt=none")
     h = hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
     return h
 

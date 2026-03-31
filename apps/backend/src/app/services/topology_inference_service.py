@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy.orm import Session
+
 ROLE_RANK: dict[str, int] = {
     "firewall": 1,
     "router": 2,
@@ -138,7 +140,7 @@ def infer_connections(
 
 
 def apply_inferred_topology(
-    db,
+    db: Session,
     hw_ids: list[int],
     map_id: int,
     actor: str = "system",
@@ -176,9 +178,9 @@ def apply_inferred_topology(
     # Expand to subnet peers already on this map
     batch_id_set = set(hw_ids)
     subnet_prefixes = {
-        _subnet_key(n["ip_address"])
-        for n in nodes
-        if n.get("ip_address") and _subnet_key(n["ip_address"]) != "__no_ip__"
+        _subnet_key(hw.ip_address)
+        for hw in hw_rows
+        if hw.ip_address and _subnet_key(hw.ip_address) != "__no_ip__"
     }
     if subnet_prefixes:
         all_hw = db.execute(select(Hardware).where(Hardware.ip_address.isnot(None))).scalars().all()
