@@ -305,6 +305,7 @@ class InferredScanResultOut(ScanResultOut):
     signals_used: list[str] = []
     exists_in_hardware: bool = False
     existing_hardware_id: int | None = None
+    existing_role: str | None = None
     is_new: bool = True
 
 
@@ -321,6 +322,7 @@ class BatchImportCreated(BaseModel):
     id: int
     ip: str | None = None
     position: dict | None = None
+    scan_result_id: int | None = None
 
 
 class BatchImportConflict(BaseModel):
@@ -335,3 +337,22 @@ class BatchImportResponse(BaseModel):
     updated: list[BatchImportCreated] = []
     conflicts: list[BatchImportConflict] = []
     skipped: list[int] = []
+
+
+class ImportAsNetworkRequest(BaseModel):
+    items: list[BatchImportItem]
+    map_id: int | None = None  # None = auto-select main map (lowest topology id)
+    environment_id: int | None = None
+
+
+class ImportAsNetworkPlaceholder(BaseModel):
+    id: int
+    subnet: str
+
+
+class ImportAsNetworkResponse(BaseModel):
+    created: list[BatchImportCreated] = []
+    updated: list[BatchImportCreated] = []
+    placeholders: list[ImportAsNetworkPlaceholder] = []
+    edges_created: int = 0
+    conflicts: list[BatchImportConflict] = []

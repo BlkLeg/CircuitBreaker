@@ -14,6 +14,7 @@ const PROFILES = [
   { value: 'cyberpower_ups', label: 'CyberPower UPS (SNMP)' },
   { value: 'snmp_generic', label: 'Generic SNMP' },
   { value: 'ipmi_generic', label: 'IPMI / Generic' },
+  { value: 'snmp_network_device', label: 'Network Device (SNMP)' },
 ];
 
 const STATUS_STYLES = {
@@ -23,6 +24,14 @@ const STATUS_STYLES = {
   unknown: { color: 'var(--color-text-muted)', label: '— Unknown' },
 };
 
+function formatUptime(ticks) {
+  const seconds = Math.floor(Number(ticks) / 100);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${days}d ${hours}h ${minutes}m`;
+}
+
 function relativeTime(isoStr) {
   if (!isoStr) return null;
   const diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
@@ -31,7 +40,7 @@ function relativeTime(isoStr) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export default function TelemetryPanel({ hardwareId }) {
+export default function TelemetryPanel({ hardwareId, role }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -40,7 +49,13 @@ export default function TelemetryPanel({ hardwareId }) {
   const [msg, setMsg] = useState(null); // inline feedback string
 
   // Form state
-  const [profile, setProfile] = useState('idrac9');
+  const NETWORK_DEVICE_ROLES = new Set(['switch', 'router', 'firewall', 'access_point']);
+  const [profile, setProfile] = useState(() => {
+    if (role && NETWORK_DEVICE_ROLES.has(role)) {
+      return 'snmp_network_device';
+    }
+    return 'idrac9';
+  });
   const [host, setHost] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -318,6 +333,101 @@ export default function TelemetryPanel({ hardwareId }) {
               )}
             </div>
           )}
+
+          {profile === 'snmp_network_device' && result?.data && (
+            <div style={{ marginBottom: '8px', fontSize: '12px' }}>
+              {result.data.sys_uptime_ticks && (
+                <div>
+                  <span style={{ color: '#aaa' }}>Uptime:</span>{' '}
+                  {formatUptime(result.data.sys_uptime_ticks)}
+                </div>
+              )}
+              {result.data.cpu_percent != null && (
+                <div>
+                  <span style={{ color: '#aaa' }}>CPU:</span>{' '}
+                  <span
+                    style={{
+                      color:
+                        result.data.cpu_percent > 80
+                          ? '#e74c3c'
+                          : result.data.cpu_percent > 50
+                            ? '#f39c12'
+                            : '#2ecc71',
+                    }}
+                  >
+                    {result.data.cpu_percent}%
+                  </span>
+                </div>
+              )}
+              {result.data.memory_percent != null && (
+                <div>
+                  <span style={{ color: '#aaa' }}>Memory:</span>{' '}
+                  <span
+                    style={{
+                      color:
+                        result.data.memory_percent > 80
+                          ? '#e74c3c'
+                          : result.data.memory_percent > 50
+                            ? '#f39c12'
+                            : '#2ecc71',
+                    }}
+                  >
+                    {result.data.memory_percent}%
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {profile === 'snmp_network_device' && result?.data?.interfaces?.length > 0 && (
+            <div style={{ marginTop: '12px' }}>
+              <div
+                style={{
+                  fontSize: '11px',
+                  textTransform: 'uppercase',
+                  color: '#aaa',
+                  marginBottom: '6px',
+                }}
+              >
+                Interfaces
+              </div>
+              {result.data.interfaces.map((iface, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '12px',
+                    padding: '2px 0',
+                  }}
+                >
+                  <span
+                    style={{
+                      color:
+                        iface.status === 'up'
+                          ? '#2ecc71'
+                          : iface.status === 'down'
+                            ? '#e74c3c'
+                            : '#95a5a6',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    ●
+                  </span>
+                  <span style={{ flex: 1 }}>{iface.name}</span>
+                  {iface.status === 'up' && iface.in_mbps != null && (
+                    <span style={{ color: '#aaa', fontSize: '11px' }}>
+                      ↑{iface.in_mbps} ↓{iface.out_mbps} Mbps
+                    </span>
+                  )}
+                  {iface.status === 'notPresent' && (
+                    <span style={{ color: '#555', fontSize: '11px' }}>not present</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </details>
@@ -326,4 +436,5 @@ export default function TelemetryPanel({ hardwareId }) {
 
 TelemetryPanel.propTypes = {
   hardwareId: PropTypes.number.isRequired,
+  role: PropTypes.string,
 };

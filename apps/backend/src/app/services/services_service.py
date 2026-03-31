@@ -483,11 +483,20 @@ def get_service_storage(db: Session, service_id: int) -> list[ServiceStorage]:
 
 
 def add_storage_link(
-    db: Session, service_id: int, storage_id: int, purpose: str | None
+    db: Session,
+    service_id: int,
+    storage_id: int,
+    purpose: str | None,
+    connection_type: str | None = None,
 ) -> ServiceStorage:
     if db.get(Service, service_id) is None:
         raise ValueError(f"Service {service_id} not found")
-    link = ServiceStorage(service_id=service_id, storage_id=storage_id, purpose=purpose)
+    link = ServiceStorage(
+        service_id=service_id,
+        storage_id=storage_id,
+        purpose=purpose,
+        connection_type=connection_type,
+    )
     db.add(link)
     db.commit()
     db.refresh(link)
@@ -516,10 +525,18 @@ def get_service_misc(db: Session, service_id: int) -> list[ServiceMisc]:
     )
 
 
-def add_misc_link(db: Session, service_id: int, misc_id: int, purpose: str | None) -> ServiceMisc:
+def add_misc_link(
+    db: Session,
+    service_id: int,
+    misc_id: int,
+    purpose: str | None,
+    connection_type: str | None = None,
+) -> ServiceMisc:
     if db.get(Service, service_id) is None:
         raise ValueError(f"Service {service_id} not found")
-    link = ServiceMisc(service_id=service_id, misc_id=misc_id, purpose=purpose)
+    link = ServiceMisc(
+        service_id=service_id, misc_id=misc_id, purpose=purpose, connection_type=connection_type
+    )
     db.add(link)
     db.commit()
     db.refresh(link)

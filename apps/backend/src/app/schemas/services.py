@@ -92,6 +92,7 @@ class ServiceDependency(BaseModel):
 class ServiceStorageLink(BaseModel):
     storage_id: int
     purpose: str | None = None
+    connection_type: str | None = None
 
 
 class ServiceStorageRead(BaseModel):
@@ -106,6 +107,7 @@ class ServiceStorageRead(BaseModel):
 class ServiceMiscLink(BaseModel):
     misc_id: int
     purpose: str | None = None
+    connection_type: str | None = None
 
 
 class ServiceMiscRead(BaseModel):

@@ -21,10 +21,21 @@ import {
 // Pure helpers (extracted to keep component cognitive complexity ≤ 15)
 // ---------------------------------------------------------------------------
 
-function resolveEdgeStyle(connStyle, style, isCluster) {
+function resolveEdgeStyle(connStyle, style, isCluster, isAdHoc) {
   const strokeColor = connStyle?.stroke || style.stroke || '#6c7086';
   const strokeWidth = connStyle?.strokeWidth || style.strokeWidth || 1.5;
-  const dashArray = isCluster ? '6 3' : connStyle?.strokeDasharray || null;
+
+  let dashArray = null;
+  if (isCluster) {
+    dashArray = '6 3';
+  } else if (connStyle) {
+    // Use the type-specific pattern (which might be null for solid lines)
+    dashArray = connStyle.strokeDasharray;
+  } else if (isAdHoc) {
+    // Fallback for adhoc edges with no type selected
+    dashArray = '5 4';
+  }
+
   const opacity = isCluster ? 0.7 : (style.opacity ?? 0.75);
   return { strokeColor, strokeWidth, dashArray, opacity };
 }
@@ -96,7 +107,8 @@ export default function CustomEdge({
   const { strokeColor, strokeWidth, dashArray, opacity } = resolveEdgeStyle(
     connStyle,
     style,
-    isClusterEdge
+    isClusterEdge,
+    data?.isAdHoc
   );
 
   // Only show bandwidth label when explicitly set on the edge (> 0).

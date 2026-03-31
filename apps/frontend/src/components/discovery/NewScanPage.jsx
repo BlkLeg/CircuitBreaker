@@ -63,7 +63,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const [scanMode, setScanMode] = useState(() => settings?.discovery_mode || 'safe');
   const [cidrs, setCidrs] = useState([defaultCidr || '']);
   const [scanTypes, setScanTypes] = useState(() =>
-    settings?.discovery_mode === 'full' ? ['nmap', 'snmp', 'http'] : ['snmp', 'http']
+    settings?.discovery_mode === 'full' ? ['nmap', 'arp', 'snmp', 'http'] : ['snmp', 'http']
   );
   const [nmapArgs, setNmapArgs] = useState(defaultNmapArgs);
   const [ports, setPorts] = useState('');
@@ -170,7 +170,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
   const handleModeSelect = (key) => {
     setScanMode(key);
     if (key === 'safe') setScanTypes(['snmp', 'http']);
-    if (key === 'full') setScanTypes(['nmap', 'snmp', 'http']);
+    if (key === 'full') setScanTypes(['nmap', 'arp', 'snmp', 'http']);
     if (key === 'docker') setScanTypes(['docker']);
   };
 
@@ -488,7 +488,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               <div className="cb-field">
                 <span className="cb-label">Scan Types</span>
                 <div className="cb-scan-type-row">
-                  {(scanMode === 'safe' ? ['snmp', 'http'] : ['nmap', 'snmp', 'http']).map(
+                  {(scanMode === 'safe' ? ['snmp', 'http'] : ['nmap', 'arp', 'snmp', 'http']).map(
                     (type) => (
                       <label key={type} className="cb-scan-type-option">
                         <input

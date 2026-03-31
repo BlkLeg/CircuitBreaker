@@ -548,6 +548,7 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
     merged = 0
     skipped = 0
     hardware_ids = []
+    hw_role_overrides: dict[int, str] = {}
     created_clusters = 0
     created_networks = 0
     created_services = 0
@@ -655,6 +656,8 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
 
         if entity_id:
             hardware_ids.append(entity_id)
+            if assignment and assignment.role:
+                hw_role_overrides[entity_id] = assignment.role
 
             # Link to cluster
             if cluster_id:
@@ -718,6 +721,29 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
                         created_services += 1
 
     db.commit()
+
+    # Infer topology for the accepted cohort
+    if hardware_ids:
+        from sqlalchemy import select as _sel
+
+        from app.services.topology_inference_service import apply_inferred_topology
+
+        topo = db.execute(
+            _sel(Topology).where(Topology.is_default == True)  # noqa: E712
+        ).scalar_one_or_none()
+        if topo is None:
+            topo = db.execute(
+                _sel(Topology).order_by(Topology.sort_order, Topology.id)
+            ).scalar_one_or_none()
+        if topo is not None:
+            apply_inferred_topology(
+                db,
+                list(hardware_ids),
+                topo.id,
+                actor=actor,
+                role_overrides=hw_role_overrides or None,
+            )
+            db.commit()
 
     return {
         "merged": merged,

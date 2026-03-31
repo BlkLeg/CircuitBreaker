@@ -20,7 +20,9 @@ def upgrade() -> None:
     if "mounting_orientation" not in existing_cols:
         op.add_column(
             "hardware",
-            sa.Column("mounting_orientation", sa.String(), nullable=True, server_default="horizontal"),
+            sa.Column(
+                "mounting_orientation", sa.String(), nullable=True, server_default="horizontal"
+            ),
         )
     if "side_rail" not in existing_cols:
         op.add_column(

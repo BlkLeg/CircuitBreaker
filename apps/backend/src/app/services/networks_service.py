@@ -285,11 +285,20 @@ def list_compute_members(db: Session, network_id: int) -> list[ComputeNetwork]:
 
 
 def add_compute_member(
-    db: Session, network_id: int, compute_id: int, ip_address: str | None
+    db: Session,
+    network_id: int,
+    compute_id: int,
+    ip_address: str | None,
+    connection_type: str | None = None,
 ) -> ComputeNetwork:
     if db.get(Network, network_id) is None:
         raise ValueError(f"Network {network_id} not found")
-    cn = ComputeNetwork(network_id=network_id, compute_id=compute_id, ip_address=ip_address)
+    cn = ComputeNetwork(
+        network_id=network_id,
+        compute_id=compute_id,
+        ip_address=ip_address,
+        connection_type=connection_type,
+    )
     db.add(cn)
     db.commit()
     db.refresh(cn)
@@ -321,13 +330,22 @@ def list_hardware_members(db: Session, network_id: int) -> list[HardwareNetwork]
 
 
 def add_hardware_member(
-    db: Session, network_id: int, hardware_id: int, ip_address: str | None
+    db: Session,
+    network_id: int,
+    hardware_id: int,
+    ip_address: str | None,
+    connection_type: str | None = None,
 ) -> HardwareNetwork:
     from app.db.models import Network as _Network  # avoid circular at top-level
 
     if db.get(_Network, network_id) is None:
         raise ValueError(f"Network {network_id} not found")
-    hn = HardwareNetwork(network_id=network_id, hardware_id=hardware_id, ip_address=ip_address)
+    hn = HardwareNetwork(
+        network_id=network_id,
+        hardware_id=hardware_id,
+        ip_address=ip_address,
+        connection_type=connection_type,
+    )
     db.add(hn)
     db.commit()
     db.refresh(hn)
@@ -362,7 +380,9 @@ def list_peers(db: Session, network_id: int) -> list[NetworkPeer]:
     )
 
 
-def add_peer(db: Session, network_id: int, peer_id: int) -> NetworkPeer:
+def add_peer(
+    db: Session, network_id: int, peer_id: int, connection_type: str | None = None
+) -> NetworkPeer:
     if network_id == peer_id:
         raise ValueError("A network cannot peer with itself.")
     if db.get(Network, network_id) is None:
@@ -377,7 +397,7 @@ def add_peer(db: Session, network_id: int, peer_id: int) -> NetworkPeer:
     ).scalar_one_or_none()
     if existing:
         return existing
-    peer = NetworkPeer(network_a_id=a_id, network_b_id=b_id)
+    peer = NetworkPeer(network_a_id=a_id, network_b_id=b_id, connection_type=connection_type)
     db.add(peer)
     db.commit()
     db.refresh(peer)

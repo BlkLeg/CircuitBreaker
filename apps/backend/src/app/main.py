@@ -991,7 +991,7 @@ async def lifespan(app: FastAPI):
     # ── Phase 4: ARP Prober — scheduled subnet sweep ───────────────────────
     with get_session_context() as phase4_db:
         phase4_settings = phase4_db.query(models.AppSettings).first()
-        if phase4_settings and getattr(phase4_settings, "arp_enabled", True):
+        if phase4_settings and getattr(phase4_settings, "arp_enabled", False):
             prober_interval = getattr(phase4_settings, "prober_interval_minutes", 15) or 15
             from app.services.prober_service import run_prober_job
 

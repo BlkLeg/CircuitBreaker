@@ -48,6 +48,7 @@ class ExternalNodeNetworkLink(BaseModel):
     network_id: int
     link_type: str | None = None
     notes: str | None = None
+    connection_type: str | None = None
 
 
 class ExternalNodeNetworkRead(BaseModel):
@@ -62,6 +63,7 @@ class ExternalNodeNetworkRead(BaseModel):
 class ServiceExternalNodeLink(BaseModel):
     external_node_id: int
     purpose: str | None = None
+    connection_type: str | None = None
 
 
 class ServiceExternalNodeRead(BaseModel):

@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-object-injection -- internal node/status keys */
-import React, { memo, useMemo } from 'react';
+import React, { memo, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { useStore } from 'reactflow';
 import { STATUS_COLORS } from '../../config/mapTheme';
@@ -133,6 +133,7 @@ function CustomNode({ id, data, selected }) {
   const zoom = useStore((s) => s.transform[2]);
   const edges = useStore((s) => (Array.isArray(s.edges) ? s.edges : []));
   const { isConnecting } = useConnectionStateContext();
+  const [isHovered, setIsHovered] = useState(false);
   const connectedHandleIds = useMemo(() => getConnectedHandleIds(id, edges), [id, edges]);
 
   // status_override takes precedence over auto-derived status
@@ -153,7 +154,10 @@ function CustomNode({ id, data, selected }) {
           boxShadow: selected ? `0 0 0 2px var(--bg-color), 0 0 0 4px ${glow}` : 'none',
         }}
       >
-        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
       </div>
     );
   }
@@ -204,7 +208,10 @@ function CustomNode({ id, data, selected }) {
             {data.memberCount} nodes
           </div>
         )}
-        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
       </div>
     );
   }
@@ -396,10 +403,15 @@ function CustomNode({ id, data, selected }) {
         cursor: 'pointer',
         position: 'relative',
       }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
       {/* Glow ring + icon */}
       <div style={{ position: 'relative', marginBottom: 8, flexShrink: 0 }}>
-        <NodeHandles connectedHandleIds={connectedHandleIds} isConnecting={isConnecting} />
+        <NodeHandles
+          connectedHandleIds={connectedHandleIds}
+          isConnecting={isConnecting || isHovered}
+        />
 
         {data.isClusterMember && (
           <div

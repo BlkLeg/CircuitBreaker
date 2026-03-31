@@ -180,8 +180,7 @@ export const hardwareApi = {
   delete: (id) => client.delete(`/hardware/${id}`),
   getNetworkMemberships: (id) => client.get(`/hardware/${id}/network-memberships`),
   getClusters: (id) => client.get(`/hardware/${id}/clusters`),
-  createConnection: (hwId, data) =>
-    client.post(`/hardware/${hwId}/connections`, data).then((r) => r.data),
+  createConnection: (hwId, data) => client.post(`/hardware/${hwId}/connections`, data),
   deleteConnection: (connId) =>
     client.delete(`/hardware-connections/${connId}`).then((r) => r.data),
 };
@@ -259,8 +258,11 @@ export const networksApi = {
   removeHardwareMember: (id, hardwareId) =>
     client.delete(`/networks/${id}/hardware-members/${hardwareId}`),
   getPeers: (id) => client.get(`/networks/${id}/peers`),
-  addPeer: (id, peerNetworkId) =>
-    client.post(`/networks/${id}/peers`, { peer_network_id: peerNetworkId }),
+  addPeer: (id, peerNetworkId, connectionType = null) =>
+    client.post(`/networks/${id}/peers`, {
+      peer_network_id: peerNetworkId,
+      connection_type: connectionType,
+    }),
   removePeer: (id, peerNetworkId) => client.delete(`/networks/${id}/peers/${peerNetworkId}`),
 };
 
@@ -576,6 +578,8 @@ export const discoveryApi = {
   getResultsWithInference: (jobId) =>
     client.get(`/discovery/jobs/${jobId}/results`, { params: { with_inference: true } }),
   batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
+  importAsNetwork: (jobId, payload) =>
+    client.post(`/discovery/jobs/${jobId}/import-as-network`, payload),
 };
 
 export const certificatesApi = {

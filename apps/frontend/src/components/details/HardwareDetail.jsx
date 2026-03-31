@@ -760,7 +760,7 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
 
       <MapAssignSection entityType="hardware" entityId={hardware?.id} />
 
-      <TelemetryPanel hardwareId={hardware.id} />
+      <TelemetryPanel hardwareId={hardware.id} role={hardware.role} />
 
       <style>{`
         .tabs { display: flex; border-bottom: 1px solid var(--color-border); gap: 16px; flex-wrap: wrap; }

@@ -193,6 +193,7 @@ def link_network(db: Session, node_id: int, payload: ExternalNodeNetworkLink) ->
         network_id=payload.network_id,
         link_type=payload.link_type,
         notes=payload.notes,
+        connection_type=payload.connection_type,
     )
     db.add(link)
     db.commit()
@@ -249,6 +250,7 @@ def link_service(db: Session, service_id: int, payload: ServiceExternalNodeLink)
         service_id=service_id,
         external_node_id=payload.external_node_id,
         purpose=payload.purpose,
+        connection_type=payload.connection_type,
     )
     db.add(link)
     db.commit()

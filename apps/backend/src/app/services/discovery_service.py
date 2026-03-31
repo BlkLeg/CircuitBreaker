@@ -5,6 +5,7 @@ import time as _time_module
 from datetime import UTC, datetime
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.nmap_args import validate_nmap_arguments
@@ -396,6 +397,42 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
             if source == "docker" and network_id is None and ip:
                 network_id, vlan_id = _match_ip_to_network(db, ip)
 
+            # Dedup: for prober-triggered jobs, skip creating a new ScanResult row
+            # when an identical pending row (same MAC or IP) already exists.
+            if setup.get("triggered_by") == "prober":
+                existing_pending = None
+                if mac_address:
+                    existing_pending = (
+                        db.query(ScanResult)
+                        .filter(
+                            ScanResult.mac_address == mac_address,
+                            ScanResult.merge_status == "pending",
+                        )
+                        .first()
+                    )
+                if not existing_pending and ip:
+                    existing_pending = (
+                        db.query(ScanResult)
+                        .filter(
+                            ScanResult.ip_address == ip,
+                            ScanResult.merge_status == "pending",
+                        )
+                        .first()
+                    )
+                if existing_pending:
+                    # Touch last_seen on matched Hardware if one exists
+                    matched_hw = None
+                    if mac_address:
+                        matched_hw = (
+                            db.query(Hardware).filter(Hardware.mac_address == mac_address).first()
+                        )
+                    if not matched_hw and ip:
+                        matched_hw = db.query(Hardware).filter(Hardware.ip_address == ip).first()
+                    if matched_hw:
+                        matched_hw.last_seen = utcnow_iso()
+                        db.flush()
+                    continue  # skip new ScanResult row creation
+
             res = ScanResult(
                 scan_job_id=job_id,
                 ip_address=ip,
@@ -515,6 +552,44 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
         db.close()
 
 
+def _auto_merge_known_devices(db: Session, job_id: int) -> None:
+    """
+    Auto-update Hardware rows for already-known devices.
+    Only new/changed devices stay pending.
+    """
+    pending = (
+        db.execute(
+            select(ScanResult).where(
+                ScanResult.scan_job_id == job_id,
+                ScanResult.merge_status == "pending",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for result in pending:
+        hw = None
+        if result.mac_address:
+            hw = db.execute(
+                select(Hardware).where(Hardware.mac_address == result.mac_address)
+            ).scalar_one_or_none()
+        if not hw and result.ip_address:
+            hw = db.execute(
+                select(Hardware).where(Hardware.ip_address == result.ip_address)
+            ).scalar_one_or_none()
+        if not hw:
+            continue  # genuinely new — leave pending
+        ip_changed = result.ip_address and hw.ip_address != result.ip_address
+        mac_changed = result.mac_address and hw.mac_address != result.mac_address
+        if ip_changed or mac_changed:
+            continue  # significant change — leave pending for user review
+        hw.last_seen = datetime.now(UTC).isoformat()
+        if result.hostname and hw.hostname != result.hostname:
+            hw.hostname = result.hostname
+        result.merge_status = "auto_updated"
+    db.commit()
+
+
 def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
     """Phase 4 (sync, runs in executor): finalize job status, write audit log, schedule queued scans."""  # noqa: E501
     db = SessionLocal()
@@ -533,6 +608,7 @@ def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
         db.commit()
 
         if final_status == "completed":
+            _auto_merge_known_devices(db, job_id)
             write_log(
                 db,
                 action="scan_completed",

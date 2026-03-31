@@ -148,7 +148,7 @@ def add_member(
 ) -> Any:
     try:
         return networks_service.add_compute_member(
-            db, network_id, payload.compute_id, payload.ip_address
+            db, network_id, payload.compute_id, payload.ip_address, payload.connection_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -189,7 +189,7 @@ def add_hardware_member(
 ) -> Any:
     try:
         return networks_service.add_hardware_member(
-            db, network_id, payload.hardware_id, payload.ip_address
+            db, network_id, payload.hardware_id, payload.ip_address, payload.connection_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -229,7 +229,9 @@ def add_peer(
     _: Any = Depends(require_write_auth),
 ) -> Any:
     try:
-        return networks_service.add_peer(db, network_id, payload.peer_network_id)
+        return networks_service.add_peer(
+            db, network_id, payload.peer_network_id, payload.connection_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IntegrityError as exc:

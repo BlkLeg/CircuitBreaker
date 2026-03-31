@@ -230,7 +230,7 @@ def add_storage_link(
 ) -> Any:
     try:
         return services_service.add_storage_link(
-            db, service_id, payload.storage_id, payload.purpose
+            db, service_id, payload.storage_id, payload.purpose, payload.connection_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -265,7 +265,9 @@ def add_misc_link(
     _: Any = Depends(require_write_auth),
 ) -> Any:
     try:
-        return services_service.add_misc_link(db, service_id, payload.misc_id, payload.purpose)
+        return services_service.add_misc_link(
+            db, service_id, payload.misc_id, payload.purpose, payload.connection_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

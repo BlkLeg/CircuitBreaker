@@ -117,7 +117,7 @@ docker-compose.datadog.yml
 # AI/generated frontend tool data
 # apps/frontend/src/data/ — removed; navigation.js is a tracked source file
 conductor/
-
+docs/superpowers/
 # Internal / auto-generated
 .INTERNAL/
 .claude/worktrees/

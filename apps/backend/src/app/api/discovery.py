@@ -10,7 +10,7 @@ from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role, require_scope
 from app.core.scheduler import get_scheduler
 from app.core.security import require_write_auth
-from app.db.models import Hardware, ListenerEvent, ScanJob, ScanLog, ScanResult, User
+from app.db.models import Hardware, ListenerEvent, ScanJob, ScanLog, ScanResult, Topology, User
 from app.db.session import get_db
 from app.schemas.discovery import (
     AdHocScanRequest,
@@ -22,6 +22,7 @@ from app.schemas.discovery import (
     DiscoveryProfileUpdate,
     DiscoveryStatusOut,
     EnhancedBulkMergeRequest,
+    ImportAsNetworkRequest,
     MergeRequest,
     ScanJobOut,
     ScanLogOut,
@@ -454,6 +455,9 @@ def get_job_results(
         out.exists_in_hardware = hw_id is not None
         out.existing_hardware_id = hw_id
         out.is_new = hw_id is None
+        if hw_id is not None:
+            hw_row = db.get(Hardware, hw_id)
+            out.existing_role = hw_row.role if hw_row else None
         enriched.append(out)
     return enriched
 
@@ -472,6 +476,26 @@ def batch_import_results(
     if not job:
         raise HTTPException(status_code=404, detail="Scan job not found")
     return batch_import(db, job_id, payload, actor="api")
+
+
+@router.post("/jobs/{job_id}/import-as-network")
+def import_as_network_endpoint(
+    job_id: int,
+    payload: ImportAsNetworkRequest,
+    _user=require_write_auth,
+    db: Session = Depends(get_db),
+):
+    """Import scan results as a connected network topology into a map. Requires write role."""
+    from app.services.discovery_import_service import import_as_network
+
+    job = db.get(ScanJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Scan job not found")
+    if payload.map_id is not None:
+        topology = db.get(Topology, payload.map_id)
+        if not topology:
+            raise HTTPException(status_code=404, detail="Map not found")
+    return import_as_network(db, job_id, payload, actor="api")
 
 
 @router.get("/jobs/{job_id}/logs", response_model=list[ScanLogOut])

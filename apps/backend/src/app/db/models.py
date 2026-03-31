@@ -154,6 +154,7 @@ class Hardware(Base):
     last_seen: Mapped[str | None] = mapped_column(String, nullable=True)
     discovered_at: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="manual")
+    is_placeholder: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     os_version: Mapped[str | None] = mapped_column(String, nullable=True)
     # v0.1.7: Networking (Router/AP) hardware extensions — JSONB as of v0.2.0
     wifi_standards: Mapped[list | None] = mapped_column(JSONB, nullable=True)
@@ -569,6 +570,8 @@ class NetworkPeer(Base):
     network_a_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     network_b_id: Mapped[int] = mapped_column(Integer, ForeignKey("networks.id"), nullable=False)
     relation: Mapped[str] = mapped_column(String, nullable=False, default="peers_with")
+    connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     network_a: Mapped["Network"] = relationship(
@@ -626,6 +629,7 @@ class HardwareConnection(Base):
     )
     connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
     bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -938,7 +942,7 @@ class AppSettings(Base):
         JSONB
     )  # JSONB: {"github": {...}, "google": {...}}
     oidc_providers: Mapped[list | None] = mapped_column(JSONB)  # JSONB array of OIDC providers
-    arp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    arp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tcp_probe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # v0.2.0: Self-aware cluster
     self_cluster_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

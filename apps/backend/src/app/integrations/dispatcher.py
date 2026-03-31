@@ -6,6 +6,7 @@ from app.integrations.apc_ups import APCUPSClient
 from app.integrations.idrac import IDRACClient
 from app.integrations.ilo import ILOClient
 from app.integrations.snmp_generic import SNMPGenericClient
+from app.integrations.snmp_network_device import SNMPNetworkDeviceClient
 from app.services.credential_vault import CredentialVault
 
 _logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ PROFILE_MAP = {
     "cyberpower_ups": APCUPSClient,  # CyberPower uses same SNMP MIB structure as APC
     "snmp_generic": SNMPGenericClient,
     "ipmi_generic": SNMPGenericClient,  # Generic IPMI fallback (Supermicro, etc.)
+    "snmp_network_device": SNMPNetworkDeviceClient,
 }
 
 
@@ -75,6 +77,12 @@ def poll_hardware(hardware: Any, vault: CredentialVault) -> dict:
         elif profile in ("snmp_generic", "ipmi_generic"):
             client = ClientClass(
                 host, config.get("snmp_community", "public"), config.get("custom_oids", {})
+            )
+        elif profile == "snmp_network_device":
+            client = SNMPNetworkDeviceClient(
+                host=config.get("host") or hardware.ip_address,
+                community=config.get("snmp_community") or "public",
+                port=config.get("port") or 161,
             )
         else:
             client = ClientClass(host, config.get("snmp_community", "public"))

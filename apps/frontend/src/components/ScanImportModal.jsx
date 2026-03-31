@@ -5,7 +5,7 @@
  *   scanId (number)     — the ScanJob id to import from
  *   results (array)     — pre-fetched InferredScanResultOut array
  *   onClose ()          — called when user dismisses without importing
- *   onImported (resp)   — called with BatchImportResponse after successful import
+ *   onImported (resp)   — called after successful import
  */
 import React, { useState, useMemo } from 'react';
 import { discoveryApi } from '../api/client';
@@ -36,7 +36,6 @@ const ROLE_OPTIONS = [
 export default function ScanImportModal({ scanId, results = [], onClose, onImported }) {
   const toast = useToast();
 
-  // Pre-check all rows with confidence > 0 or that already exist on the map
   const initialSelected = useMemo(() => {
     const s = new Set();
     results.forEach((r) => {
@@ -52,11 +51,8 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
   const toggleRow = (id) =>
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -70,30 +66,19 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
   }).length;
 
   const handleImport = async () => {
-    const items = results
-      .filter((r) => selected.has(r.id) && !r._conflict)
-      .map((r) => ({
-        scan_result_id: r.id,
-        overrides: roleOverrides[r.id] ? { role: roleOverrides[r.id] } : {},
-      }));
-
-    if (items.length === 0) {
-      onClose();
-      return;
-    }
-
     setImporting(true);
     try {
-      const { data: resp } = await discoveryApi.batchImport(scanId, items);
-      const parts = [
-        resp.created.length &&
-          `${resp.created.length} device${resp.created.length !== 1 ? 's' : ''} added`,
-        resp.updated.length && `${resp.updated.length} updated`,
-      ].filter(Boolean);
-      toast.success(parts.join('. ') || 'Import complete');
-      onImported(resp);
+      const items = results
+        .filter((r) => selected.has(r.id) && !r._conflict)
+        .map((r) => ({
+          scan_result_id: r.id,
+          overrides: roleOverrides[r.id] ? { role: roleOverrides[r.id] } : {},
+        }));
+      await discoveryApi.importAsNetwork(scanId, { items });
+      onImported?.();
+      onClose();
     } catch (err) {
-      toast.error(err.message || 'Import failed');
+      toast.error('Import failed: ' + err.message);
     } finally {
       setImporting(false);
     }
@@ -148,7 +133,7 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
                   <td>{r.inferred_vendor || '—'}</td>
                   <td>
                     <select
-                      value={roleOverrides[r.id] || r.inferred_role || ''}
+                      value={roleOverrides[r.id] || r.existing_role || r.inferred_role || ''}
                       onChange={(e) =>
                         setRoleOverrides((prev) => ({ ...prev, [r.id]: e.target.value }))
                       }
@@ -186,7 +171,7 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
             className="btn-primary"
             disabled={importing || selectedCount === 0}
           >
-            {importing ? 'Importing…' : `Import selected (${selectedCount})`}
+            {importing ? 'Importing…' : 'Import as Network'}
           </button>
         </div>
       </div>

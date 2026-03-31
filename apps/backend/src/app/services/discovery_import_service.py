@@ -21,6 +21,8 @@ from app.schemas.discovery import (
     BatchImportCreated,
     BatchImportRequest,
     BatchImportResponse,
+    ImportAsNetworkRequest,
+    ImportAsNetworkResponse,
 )
 from app.services.inference_service import annotate_result
 from app.services.layout_service import compute_subnet_layout
@@ -107,13 +109,26 @@ def batch_import(
                     existing.mac_address = mac
                 if scan_result.hostname and existing.hostname != scan_result.hostname:
                     existing.hostname = scan_result.hostname
-                # Only overwrite discovery-sourced fields to preserve manual edits
+                # Role override applies regardless of source — user made an explicit choice.
+                if "role" in overrides:
+                    existing.role = overrides.pop("role")
+                # Other fields (name, vendor, notes) only overwrite discovery-sourced records
+                # to preserve manual edits on non-discovery hardware.
                 if getattr(existing, "source", None) == "discovery":
                     for k, v in overrides.items():
                         setattr(existing, k, v)
                 existing.source_scan_result_id = scan_result.id
                 db.flush()
-                response.updated.append(BatchImportCreated(id=existing.id, ip=ip))
+                scan_result.merge_status = "accepted"
+                scan_result.reviewed_at = _now_iso()
+                scan_result.reviewed_by = actor
+                if not scan_result.matched_entity_id:
+                    scan_result.matched_entity_type = "hardware"
+                    scan_result.matched_entity_id = existing.id
+                db.flush()
+                response.updated.append(
+                    BatchImportCreated(id=existing.id, ip=ip, scan_result_id=scan_result.id)
+                )
             else:
                 ann = annotate_result(scan_result)
                 name = (
@@ -135,13 +150,21 @@ def batch_import(
                     discovered_at=_now_iso(),
                     last_seen=_now_iso(),
                     source_scan_result_id=scan_result.id,
-                    node_type="hardware",
                 )
                 for k, v in overrides.items():
                     setattr(hw, k, v)
                 db.add(hw)
                 db.flush()
-                response.created.append(BatchImportCreated(id=hw.id, ip=ip))
+                scan_result.merge_status = "accepted"
+                scan_result.reviewed_at = _now_iso()
+                scan_result.reviewed_by = actor
+                if not scan_result.matched_entity_id:
+                    scan_result.matched_entity_type = "hardware"
+                    scan_result.matched_entity_id = hw.id
+                db.flush()
+                response.created.append(
+                    BatchImportCreated(id=hw.id, ip=ip, scan_result_id=scan_result.id)
+                )
 
     # Compute layout for newly created nodes only (updated nodes keep their positions)
     if response.created:
@@ -168,3 +191,221 @@ def _persist_layout(db: Session, positions: dict[int, dict]) -> None:
         save_layout(db, "default", str_positions)
     except Exception as exc:
         _logger.warning("Layout persistence failed (non-fatal): %s", exc)
+
+
+def _ensure_placeholder_gateways(
+    db: Session,
+    nodes: list[dict],
+    map_id: int,
+) -> list[dict]:
+    """
+    For each /24 subnet that has only endpoint nodes (no firewall/router/switch),
+    create a placeholder Hardware row and assign it to the map.
+    Returns list of {id, ip_address, role} dicts for the new placeholders.
+    """
+    from app.db.models import TopologyNode
+    from app.services.topology_inference_service import ROLE_RANK, _subnet_key
+
+    subnets: dict[str, list[dict]] = {}
+    for node in nodes:
+        key = _subnet_key(node.get("ip_address"))
+        subnets.setdefault(key, []).append(node)
+
+    created: list[dict] = []
+    for subnet_key_val, subnet_nodes in subnets.items():
+        has_chain = any(ROLE_RANK.get(n.get("role") or "misc", 5) <= 3 for n in subnet_nodes)
+        if has_chain or subnet_key_val == "__no_ip__":
+            continue
+
+        existing_placeholder = db.execute(
+            select(Hardware).where(
+                Hardware.is_placeholder.is_(True),
+                Hardware.name == f"Unknown Gateway ({subnet_key_val}.0/24)",
+            )
+        ).scalar_one_or_none()
+        if existing_placeholder:
+            existing_assignment = db.execute(
+                select(TopologyNode).where(
+                    TopologyNode.topology_id == map_id,
+                    TopologyNode.entity_type == "hardware",
+                    TopologyNode.entity_id == existing_placeholder.id,
+                )
+            ).scalar_one_or_none()
+            if not existing_assignment:
+                db.add(
+                    TopologyNode(
+                        topology_id=map_id,
+                        entity_type="hardware",
+                        entity_id=existing_placeholder.id,
+                    )
+                )
+                db.flush()
+            created.append(
+                {
+                    "id": existing_placeholder.id,
+                    "ip_address": None,
+                    "role": "router",
+                    "subnet": subnet_key_val,
+                }
+            )
+            continue
+
+        placeholder = Hardware(
+            name=f"Unknown Gateway ({subnet_key_val}.0/24)",
+            ip_address=None,
+            role="router",
+            source="discovery",
+            is_placeholder=True,
+            discovered_at=_now_iso(),
+            last_seen=_now_iso(),
+        )
+        db.add(placeholder)
+        db.flush()
+
+        db.add(TopologyNode(topology_id=map_id, entity_type="hardware", entity_id=placeholder.id))
+        db.flush()
+
+        created.append(
+            {
+                "id": placeholder.id,
+                "ip_address": None,
+                "role": "router",
+                "subnet": subnet_key_val,
+            }
+        )
+
+    return created
+
+
+def import_as_network(
+    db: Session,
+    job_id: int,
+    request: ImportAsNetworkRequest,
+    actor: str = "api",
+) -> ImportAsNetworkResponse:
+    from app.db.models import GraphLayout, Hardware, Topology, TopologyNode
+    from app.schemas.discovery import (
+        BatchImportRequest,
+        ImportAsNetworkPlaceholder,
+        ImportAsNetworkResponse,
+    )
+    from app.services.layout_service import compute_subnet_layout
+    from app.services.topology_inference_service import apply_inferred_topology
+
+    # Resolve map_id: use provided value or auto-select main map (lowest id)
+    map_id = request.map_id
+    if map_id is None:
+        main_map = db.execute(select(Topology).order_by(Topology.id.asc())).scalars().first()
+        if main_map is None:
+            main_map = Topology(name="Main")
+            db.add(main_map)
+            db.flush()
+        map_id = main_map.id
+
+    # Step 1: Create hardware nodes using existing dedup logic
+    batch_req = BatchImportRequest(items=request.items)
+    batch_resp = batch_import(db, job_id, batch_req, actor)
+
+    # Build role overrides from items that explicitly set a role
+    _scan_result_to_role: dict[int, str] = {
+        item.scan_result_id: item.overrides["role"]
+        for item in request.items
+        if item.overrides.get("role")
+    }
+    hw_role_overrides: dict[int, str] = {}
+    for c in batch_resp.created + batch_resp.updated:
+        if c.scan_result_id and c.scan_result_id in _scan_result_to_role:
+            hw_role_overrides[c.id] = _scan_result_to_role[c.scan_result_id]
+
+    # Step 2: Assign all created/updated nodes to the map
+    all_hw_ids = [c.id for c in batch_resp.created] + [u.id for u in batch_resp.updated]
+    for hw_id in all_hw_ids:
+        already = db.execute(
+            select(TopologyNode).where(
+                TopologyNode.topology_id == map_id,
+                TopologyNode.entity_type == "hardware",
+                TopologyNode.entity_id == hw_id,
+            )
+        ).scalar_one_or_none()
+        if not already:
+            db.add(
+                TopologyNode(
+                    topology_id=map_id,
+                    entity_type="hardware",
+                    entity_id=hw_id,
+                )
+            )
+    db.flush()
+
+    # Step 3: Build node list for inference
+    hw_rows = db.execute(select(Hardware).where(Hardware.id.in_(all_hw_ids))).scalars().all()
+    nodes = [{"id": hw.id, "ip_address": hw.ip_address, "role": hw.role} for hw in hw_rows]
+
+    # Step 3b: Include all Hardware records on the same /24 subnets so that
+    # pre-existing routers/switches not in this scan batch can anchor topology.
+    from app.services.topology_inference_service import _subnet_key
+
+    batch_id_set = set(all_hw_ids)
+    subnet_prefixes = {
+        _subnet_key(n["ip_address"])
+        for n in nodes
+        if n.get("ip_address") and _subnet_key(n["ip_address"]) != "__no_ip__"
+    }
+    if subnet_prefixes:
+        all_hw_rows = (
+            db.execute(select(Hardware).where(Hardware.ip_address.isnot(None))).scalars().all()
+        )
+        for hw in all_hw_rows:
+            if hw.id in batch_id_set:
+                continue
+            if _subnet_key(hw.ip_address) in subnet_prefixes:
+                nodes.append({"id": hw.id, "ip_address": hw.ip_address, "role": hw.role})
+
+    # Step 4: Create placeholder gateways for subnets with no chain nodes
+    stub_dicts = _ensure_placeholder_gateways(db, nodes, map_id)
+    nodes.extend(stub_dicts)
+
+    # Step 5: Infer topology and persist edges
+    all_node_ids = all_hw_ids + [s["id"] for s in stub_dicts]
+    edges_created = apply_inferred_topology(
+        db,
+        all_node_ids,
+        map_id,
+        actor=actor,
+        role_overrides=hw_role_overrides or None,
+    )
+
+    # Step 7: Compute layout and save
+    layout_input = [
+        {"id": n["id"], "ip_address": n.get("ip_address"), "role": n.get("role")} for n in nodes
+    ]
+    positions = compute_subnet_layout(layout_input)
+    layout_row = db.execute(
+        select(GraphLayout).where(GraphLayout.topology_id == map_id)
+    ).scalar_one_or_none()
+    if layout_row:
+        merged = dict(layout_row.layout_data) if layout_row.layout_data else {}
+        merged.update({str(k): v for k, v in positions.items()})
+        layout_row.layout_data = merged
+    else:
+        db.add(
+            GraphLayout(
+                name=f"map-{map_id}",
+                topology_id=map_id,
+                layout_data={str(k): v for k, v in positions.items()},
+            )
+        )
+    db.flush()
+    db.commit()
+
+    stubs = [
+        ImportAsNetworkPlaceholder(id=s["id"], subnet=s.get("subnet", "unknown"))
+        for s in stub_dicts
+    ]
+    return ImportAsNetworkResponse(
+        created=batch_resp.created,
+        updated=batch_resp.updated,
+        placeholders=stubs,
+        edges_created=edges_created,
+        conflicts=batch_resp.conflicts,
+    )

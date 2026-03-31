@@ -112,13 +112,17 @@ export function useMapDataLoad({
   const autoPlaceNew = useCallback(
     async (newNodeId) => {
       pendingPlacementCountRef.current += 1;
+      // Optimistically mark as placed so fetchData re-runs during this API call
+      // don't re-tag the node as _needsAutoPlace and queue a second placement.
+      autoPlacedIdsRef.current.add(newNodeId);
       try {
         const res = await graphApi.placeNode(newNodeId, envFilter || 'default');
-        autoPlacedIdsRef.current.add(newNodeId);
         placingNodesRef.current.delete(newNodeId);
         updateNodePos(newNodeId, { x: res.data.x, y: res.data.y });
         batchPlacedCountRef.current += 1;
       } catch (e) {
+        // Placement failed: remove optimistic mark so the node can be retried.
+        autoPlacedIdsRef.current.delete(newNodeId);
         placingNodesRef.current.delete(newNodeId);
         console.error('Auto-place failed', e);
         // Circuit breaker: clear flag with fallback position so the drain
@@ -133,9 +137,13 @@ export function useMapDataLoad({
             toastId: 'auto-place-batch',
             autoClose: 2000,
           });
-          saveLayoutRef
-            .current?.()
-            .catch((err) => console.error('Auto-save after placement failed', err));
+          // Defer save until after React flushes setNodes so nodesRef.current
+          // holds real positions (not zeros) when the layout is written to the DB.
+          requestAnimationFrame(() => {
+            saveLayoutRef
+              .current?.()
+              .catch((err) => console.error('Auto-save after placement failed', err));
+          });
           // Fit view after all auto-placed nodes are positioned
           setTimeout(() => {
             fitView({ ...VIEWPORT_FIT_DEFAULTS, duration: 600 });
@@ -254,7 +262,7 @@ export function useMapDataLoad({
           _relation: e.relation,
           data: {
             label: showLabels ? relation : '',
-            relation: showLabels ? relation : '',
+            relation: relation,
             controlPoint: null,
             connection_type: normalizeConnectionType(e.data?.connection_type),
             bandwidth: e.data?.bandwidth || null,

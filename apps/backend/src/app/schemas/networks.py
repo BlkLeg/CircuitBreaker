@@ -58,6 +58,7 @@ class Network(NetworkBase):
 class ComputeNetworkLink(BaseModel):
     compute_id: int
     ip_address: str | None = None
+    connection_type: str | None = None
 
 
 class ComputeNetworkRead(BaseModel):
@@ -72,6 +73,7 @@ class ComputeNetworkRead(BaseModel):
 class HardwareNetworkLink(BaseModel):
     hardware_id: int
     ip_address: str | None = None
+    connection_type: str | None = None
 
 
 class HardwareNetworkRead(BaseModel):
@@ -85,6 +87,7 @@ class HardwareNetworkRead(BaseModel):
 
 class NetworkPeerCreate(BaseModel):
     peer_network_id: int
+    connection_type: str | None = None
 
 
 class NetworkPeerRead(BaseModel):

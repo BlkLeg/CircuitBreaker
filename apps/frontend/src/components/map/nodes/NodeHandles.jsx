@@ -51,7 +51,7 @@ export default function NodeHandles({ connectedHandleIds = new Set(), isConnecti
   return HANDLE_DEFINITIONS.flatMap((def) => {
     const isVisible = isConnecting || connectedHandleIds.has(def.id);
     const isConnected = connectedHandleIds.has(def.id);
-    const sharedStyle = {
+    const baseStyle = {
       ...def.style,
       width: handleSize,
       height: handleSize,
@@ -63,9 +63,12 @@ export default function NodeHandles({ connectedHandleIds = new Set(), isConnecti
       boxShadow: isVisible ? '0 0 0 2px rgba(10, 14, 28, 0.9)' : 'none',
       opacity: isVisible ? 1 : 0,
       transition: 'width 120ms ease, height 120ms ease, opacity 120ms ease',
-      zIndex: isConnecting ? 8 : 6,
       pointerEvents: isVisible ? 'auto' : 'none',
     };
+    // Source handles sit on top when idle so the user can initiate a drag.
+    // Target handles sit on top when a connection is in progress so the drop lands.
+    const sourceStyle = { ...baseStyle, zIndex: isConnecting ? 6 : 8 };
+    const targetStyle = { ...baseStyle, zIndex: isConnecting ? 8 : 6 };
 
     return [
       <Handle
@@ -73,14 +76,14 @@ export default function NodeHandles({ connectedHandleIds = new Set(), isConnecti
         type="source"
         id={`s-${def.id}`}
         position={def.position}
-        style={sharedStyle}
+        style={sourceStyle}
       />,
       <Handle
         key={`t-${def.id}`}
         type="target"
         id={`t-${def.id}`}
         position={def.position}
-        style={sharedStyle}
+        style={targetStyle}
       />,
     ];
   });

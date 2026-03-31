@@ -65,17 +65,18 @@ function parseNodeId(nodeId) {
   return m ? { prefix: m[1], id: parseInt(m[2], 10) } : null;
 }
 
-function edgeMeta({ relation, edgePrefix, sourceNodeId, targetNodeId, updatable }) {
+function edgeMeta({ relation, edgePrefix, sourceNodeId, targetNodeId, updatable, edgeId }) {
   return {
     relation,
     edgePrefix,
     sourceNodeId,
     targetNodeId,
     updatable: Boolean(updatable),
+    edgeId: edgeId ?? null,
   };
 }
 
-async function createLinkDirectional(sourceNode, targetNode) {
+async function createLinkDirectional(sourceNode, targetNode, connectionType = null) {
   const srcId = sourceNode._refId;
   const tgtId = targetNode._refId;
   const srcType = normaliseType(sourceNode.originalType);
@@ -103,23 +104,31 @@ async function createLinkDirectional(sourceNode, targetNode) {
       });
     }
     if (targetType === 'storage') {
-      await servicesApi.addStorage(srcId, { storage_id: tgtId });
+      const res = await servicesApi.addStorage(srcId, {
+        storage_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'uses',
         edgePrefix: 'e-ss-',
         sourceNodeId: `svc-${srcId}`,
         targetNodeId: `st-${tgtId}`,
         updatable: true,
+        edgeId: `e-ss-${res.data.id}`,
       });
     }
     if (targetType === 'misc') {
-      await servicesApi.addMisc(srcId, { misc_id: tgtId });
+      const res = await servicesApi.addMisc(srcId, {
+        misc_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'integrates_with',
         edgePrefix: 'e-sm-',
         sourceNodeId: `svc-${srcId}`,
         targetNodeId: `misc-${tgtId}`,
         updatable: true,
+        edgeId: `e-sm-${res.data.id}`,
       });
     }
     if (targetType === 'network') {
@@ -146,13 +155,17 @@ async function createLinkDirectional(sourceNode, targetNode) {
       throw new Error('Service has no hosting compute or hardware and cannot join a network.');
     }
     if (targetType === 'external') {
-      await servicesApi.addExternalDep(srcId, { external_node_id: tgtId });
+      const res = await servicesApi.addExternalDep(srcId, {
+        external_node_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'depends_on',
         edgePrefix: 'e-svc-ext-',
         sourceNodeId: `svc-${srcId}`,
         targetNodeId: `ext-${tgtId}`,
         updatable: true,
+        edgeId: `e-svc-ext-${res.data.id}`,
       });
     }
   }
@@ -179,26 +192,34 @@ async function createLinkDirectional(sourceNode, targetNode) {
       });
     }
     if (targetType === 'network') {
-      await networksApi.addMember(tgtId, { compute_id: srcId });
+      const res = await networksApi.addMember(tgtId, {
+        compute_id: srcId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-cn-',
         sourceNodeId: `cu-${srcId}`,
         targetNodeId: `net-${tgtId}`,
         updatable: true,
+        edgeId: `e-cn-${res.data.id}`,
       });
     }
   }
 
   if (srcType === 'hardware') {
     if (targetType === 'hardware') {
-      await hardwareApi.createConnection(srcId, { target_hardware_id: tgtId });
+      const res = await hardwareApi.createConnection(srcId, {
+        target_hardware_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-hh-',
         sourceNodeId: `hw-${srcId}`,
         targetNodeId: `hw-${tgtId}`,
         updatable: true,
+        edgeId: `e-hh-${res.data.id}`,
       });
     }
     if (targetType === 'compute') {
@@ -232,36 +253,48 @@ async function createLinkDirectional(sourceNode, targetNode) {
       });
     }
     if (targetType === 'network') {
-      await networksApi.addHardwareMember(tgtId, { hardware_id: srcId });
+      const res = await networksApi.addHardwareMember(tgtId, {
+        hardware_id: srcId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'on_network',
         edgePrefix: 'e-hn-',
         sourceNodeId: `hw-${srcId}`,
         targetNodeId: `net-${tgtId}`,
         updatable: true,
+        edgeId: `e-hn-${res.data.id}`,
       });
     }
   }
 
   if (srcType === 'network') {
     if (targetType === 'hardware') {
-      await networksApi.addHardwareMember(srcId, { hardware_id: tgtId });
+      const res = await networksApi.addHardwareMember(srcId, {
+        hardware_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'on_network',
         edgePrefix: 'e-hn-',
         sourceNodeId: `hw-${tgtId}`,
         targetNodeId: `net-${srcId}`,
         updatable: true,
+        edgeId: `e-hn-${res.data.id}`,
       });
     }
     if (targetType === 'compute') {
-      await networksApi.addMember(srcId, { compute_id: tgtId });
+      const res = await networksApi.addMember(srcId, {
+        compute_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-cn-',
         sourceNodeId: `cu-${tgtId}`,
         targetNodeId: `net-${srcId}`,
         updatable: true,
+        edgeId: `e-cn-${res.data.id}`,
       });
     }
     if (targetType === 'service') {
@@ -283,25 +316,28 @@ async function createLinkDirectional(sourceNode, targetNode) {
       });
     }
     if (targetType === 'external') {
-      await externalNodesApi.addNetwork(tgtId, { network_id: srcId });
+      const res = await externalNodesApi.addNetwork(tgtId, {
+        network_id: srcId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-ext-net-',
         sourceNodeId: `ext-${tgtId}`,
         targetNodeId: `net-${srcId}`,
         updatable: true,
+        edgeId: `e-ext-net-${res.data.id}`,
       });
     }
     if (targetType === 'network') {
-      await networksApi.addPeer(srcId, tgtId);
-      const aId = Math.min(srcId, tgtId);
-      const bId = Math.max(srcId, tgtId);
+      const res = await networksApi.addPeer(srcId, tgtId, connectionType);
       return edgeMeta({
         relation: 'peers_with',
         edgePrefix: 'e-np-',
-        sourceNodeId: `net-${aId}`,
-        targetNodeId: `net-${bId}`,
+        sourceNodeId: `net-${Math.min(srcId, tgtId)}`,
+        targetNodeId: `net-${Math.max(srcId, tgtId)}`,
         updatable: true,
+        edgeId: `e-np-${res.data.id}`,
       });
     }
   }
@@ -330,13 +366,17 @@ async function createLinkDirectional(sourceNode, targetNode) {
 
   if (srcType === 'storage') {
     if (targetType === 'service') {
-      await servicesApi.addStorage(tgtId, { storage_id: srcId });
+      const res = await servicesApi.addStorage(tgtId, {
+        storage_id: srcId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'uses',
         edgePrefix: 'e-ss-',
         sourceNodeId: `svc-${tgtId}`,
         targetNodeId: `st-${srcId}`,
         updatable: true,
+        edgeId: `e-ss-${res.data.id}`,
       });
     }
     if (targetType === 'hardware') {
@@ -353,26 +393,34 @@ async function createLinkDirectional(sourceNode, targetNode) {
 
   if (srcType === 'misc') {
     if (targetType === 'service') {
-      await servicesApi.addMisc(tgtId, { misc_id: srcId });
+      const res = await servicesApi.addMisc(tgtId, {
+        misc_id: srcId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'integrates_with',
         edgePrefix: 'e-sm-',
         sourceNodeId: `svc-${tgtId}`,
         targetNodeId: `misc-${srcId}`,
         updatable: true,
+        edgeId: `e-sm-${res.data.id}`,
       });
     }
   }
 
   if (srcType === 'external') {
     if (targetType === 'network') {
-      await externalNodesApi.addNetwork(srcId, { network_id: tgtId });
+      const res = await externalNodesApi.addNetwork(srcId, {
+        network_id: tgtId,
+        connection_type: connectionType,
+      });
       return edgeMeta({
         relation: 'connects_to',
         edgePrefix: 'e-ext-net-',
         sourceNodeId: `ext-${srcId}`,
         targetNodeId: `net-${tgtId}`,
         updatable: true,
+        edgeId: `e-ext-net-${res.data.id}`,
       });
     }
   }
@@ -380,25 +428,35 @@ async function createLinkDirectional(sourceNode, targetNode) {
   throw new Error(`No link mapping for ${srcType} -> ${targetType}`);
 }
 
-export async function createLinkByNodes(sourceNode, targetNode, allowReverse = true) {
+export async function createLinkByNodes(
+  sourceNode,
+  targetNode,
+  allowReverse = true,
+  connectionType = null
+) {
   if (!sourceNode || !targetNode) throw new Error('Missing source/target nodes for link creation.');
   try {
-    return await createLinkDirectional(sourceNode, targetNode);
+    return await createLinkDirectional(sourceNode, targetNode, connectionType);
   } catch (err) {
     const noMapping = typeof err?.message === 'string' && err.message.startsWith('No link mapping');
     if (!allowReverse || !noMapping) throw err;
-    return createLinkDirectional(targetNode, sourceNode);
+    return createLinkDirectional(targetNode, sourceNode, connectionType);
   }
 }
 
-export async function createLinkByNodeIds(sourceNodeId, targetNodeId, nodes) {
+export async function createLinkByNodeIds(
+  sourceNodeId,
+  targetNodeId,
+  nodes,
+  connectionType = null
+) {
   const nodeMap = Array.isArray(nodes) ? new Map(nodes.map((n) => [n.id, n])) : nodes;
   const sourceNode = nodeMap?.get(sourceNodeId);
   const targetNode = nodeMap?.get(targetNodeId);
   if (!sourceNode || !targetNode) {
     throw new Error('Unable to resolve source/target entities for link creation.');
   }
-  return createLinkByNodes(sourceNode, targetNode, true);
+  return createLinkByNodes(sourceNode, targetNode, true, connectionType);
 }
 
 export function isUpdatableEdgeId(edgeId) {

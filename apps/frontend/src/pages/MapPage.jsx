@@ -20,6 +20,7 @@ import {
   hardwareApi,
   discoveryApi,
 } from '../api/client';
+import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
 import { createMonitor, updateMonitor, runImmediateCheck } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
@@ -57,7 +58,6 @@ import { HARDWARE_ROLES } from '../config/hardwareRoles';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import {
   createLinkByNodeIds,
-  inferEdgeNodeIdsFromMeta,
   unlinkByEdge,
   isUpdatableEdgeId,
 } from '../components/map/linkMutations';
@@ -678,25 +678,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     );
   }, [hwRoleFilter, setNodes]);
 
-  const getIncludeCSV = (types) => {
-    const MAP = {
-      hardware: 'hardware',
-      compute: 'compute',
-      service: 'services',
-      storage: 'storage',
-      network: 'networks',
-      misc: 'misc',
-      external: 'external',
-    };
-    return (
-      Object.entries(types)
-        .filter(([, v]) => v)
-        .map(([k]) => MAP[k])
-        .filter(Boolean)
-        .join(',') || 'hardware'
-    );
-  };
-
   const handleSaveFilters = useCallback(async () => {
     setFilterSaving(true);
     setFilterSaved(false);
@@ -725,24 +706,6 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     const clampedX = Math.max(8, Math.min(x, rect.width - width - 8));
     const clampedY = Math.max(8, Math.min(y, rect.height - height - 8));
     return { x: clampedX, y: clampedY };
-  }, []);
-
-  const getTopologyParams = useCallback(
-    () => ({
-      environment_id: envFilter || undefined,
-      include: getIncludeCSV(includeTypes),
-    }),
-    [envFilter, includeTypes]
-  );
-
-  const getNewestEdgeId = useCallback((edgesArr, predicate) => {
-    const candidates = edgesArr.filter(predicate);
-    candidates.sort((a, b) => {
-      const aNum = Number((a.id.match(/(\\d+)(?!.*\\d)/) || [])[1] || 0);
-      const bNum = Number((b.id.match(/(\\d+)(?!.*\\d)/) || [])[1] || 0);
-      return bNum - aNum;
-    });
-    return candidates[0]?.id || null;
   }, []);
 
   const { fetchData, autoPlaceNew, updateNodePos } = useMapDataLoad({
@@ -815,10 +778,12 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       (n) => n._needsAutoPlace && !placingNodesRef.current.has(n.id)
     );
     if (nodesToPlace.length > 0) {
-      // Mark all as in-flight before kicking off parallel placements so this
-      // effect doesn't re-fire for the same nodes while API calls are pending.
+      // Mark all as in-flight before starting so this effect doesn't re-fire
+      // for the same nodes while API calls are pending.
       nodesToPlace.forEach((n) => placingNodesRef.current.add(n.id));
-      nodesToPlace.forEach((n) => autoPlaceNew(n.id));
+      // Serialize placements: each backend call sees the previous node's
+      // committed position, preventing identical spiral coordinates.
+      nodesToPlace.reduce((chain, n) => chain.then(() => autoPlaceNew(n.id)), Promise.resolve());
     }
   }, [nodes, autoPlaceNew, error]);
 
@@ -899,6 +864,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         const res = await hardwareApi.create(payload);
 
         if (res.data?.id) {
+          if (mapId != null) {
+            await mapsApi.assignEntity(mapId, 'hardware', res.data.id);
+          }
           updateNodePos(res.data.id, nodeData.position);
         }
 
@@ -909,7 +877,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         toast.error('Failed to create node: ' + err.message);
       }
     },
-    [envFilter, fetchData, updateNodePos, toast]
+    [envFilter, fetchData, mapId, updateNodePos, toast]
   );
 
   const handleUpdateStatusAction = useCallback(
@@ -1715,12 +1683,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     setPendingConnection,
     pendingConnection,
     createLinkByNodeIds,
-    inferEdgeNodeIdsFromMeta,
-    getTopologyParams,
-    getNewestEdgeId,
     unlinkByEdge,
     fetchData,
     toast,
+    saveLayoutSnapshot,
   });
 
   const { handleNodeDragStart, handleNodeDragStop } = useMapNodeDragSnap({
@@ -2264,6 +2230,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
                 onMoveEnd={(_, vp) => localStorage.setItem('cb_map_viewport', JSON.stringify(vp))}
                 onPaneMouseMove={handlePanePointerMove}
                 connectionLineType="smoothstep"
+                connectionMode="loose"
                 connectionRadius={14}
                 connectionLineStyle={CONNECTION_LINE_STYLE}
                 defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}

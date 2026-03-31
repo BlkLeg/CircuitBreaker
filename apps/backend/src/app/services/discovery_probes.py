@@ -107,17 +107,41 @@ def _sanitise_nmap_args_for_unpriv(args: str) -> str:
     return " ".join(filtered)
 
 
+def _nmap_os_capable() -> bool:
+    """Return True if nmap can perform OS detection.
+
+    Requires either root (uid 0) or cap_net_raw on the nmap binary itself.
+    CAP_NET_RAW on the Python process does NOT propagate to nmap subprocesses.
+    Grant with: sudo setcap cap_net_raw+eip $(which nmap)
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if os.geteuid() == 0:
+        return True
+    nmap_path = shutil.which("nmap")
+    if not nmap_path:
+        return False
+    try:
+        r = subprocess.run(["getcap", nmap_path], capture_output=True, text=True, timeout=2)
+        return "cap_net_raw" in r.stdout
+    except Exception:
+        return False
+
+
 async def _run_nmap_scan(cidr: str, args: str) -> dict:
     if not nmap:
         logger.error("python-nmap is not installed. Unable to run scan.")
         return {}
 
     safe_args = validate_nmap_arguments(args)
-    privileged = _has_raw_socket_privilege()
-    effective_args = safe_args if privileged else _sanitise_nmap_args_for_unpriv(safe_args)
-    if not privileged and effective_args != safe_args:
+    effective_args = safe_args if _nmap_os_capable() else _sanitise_nmap_args_for_unpriv(safe_args)
+    if effective_args != safe_args:
         logger.warning(
-            "Running unprivileged — nmap args adjusted from '%s' to '%s'", safe_args, effective_args
+            "nmap lacks OS-detection privilege — args adjusted from '%s' to '%s'",
+            safe_args,
+            effective_args,
         )
 
     nm = nmap.PortScanner()

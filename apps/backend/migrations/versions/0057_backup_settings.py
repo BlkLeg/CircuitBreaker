@@ -25,11 +25,17 @@ def upgrade() -> None:
     if "backup_s3_bucket" not in existing_cols:
         op.add_column("app_settings", sa.Column("backup_s3_bucket", sa.String(), nullable=True))
     if "backup_s3_endpoint_url" not in existing_cols:
-        op.add_column("app_settings", sa.Column("backup_s3_endpoint_url", sa.String(), nullable=True))
+        op.add_column(
+            "app_settings", sa.Column("backup_s3_endpoint_url", sa.String(), nullable=True)
+        )
     if "backup_s3_access_key_id" not in existing_cols:
-        op.add_column("app_settings", sa.Column("backup_s3_access_key_id", sa.String(), nullable=True))
+        op.add_column(
+            "app_settings", sa.Column("backup_s3_access_key_id", sa.String(), nullable=True)
+        )
     if "backup_s3_secret_key_enc" not in existing_cols:
-        op.add_column("app_settings", sa.Column("backup_s3_secret_key_enc", sa.Text(), nullable=True))
+        op.add_column(
+            "app_settings", sa.Column("backup_s3_secret_key_enc", sa.Text(), nullable=True)
+        )
     if "backup_s3_region" not in existing_cols:
         op.add_column(
             "app_settings",
@@ -48,12 +54,16 @@ def upgrade() -> None:
     if "backup_s3_retention_count" not in existing_cols:
         op.add_column(
             "app_settings",
-            sa.Column("backup_s3_retention_count", sa.Integer(), nullable=False, server_default="30"),
+            sa.Column(
+                "backup_s3_retention_count", sa.Integer(), nullable=False, server_default="30"
+            ),
         )
     if "backup_local_retention_count" not in existing_cols:
         op.add_column(
             "app_settings",
-            sa.Column("backup_local_retention_count", sa.Integer(), nullable=False, server_default="7"),
+            sa.Column(
+                "backup_local_retention_count", sa.Integer(), nullable=False, server_default="7"
+            ),
         )
 
 

@@ -91,7 +91,7 @@ def _preload_edge_maps(db: Session) -> dict:
         _edge_arm("hn", HardwareNetwork, "hardware_id", "network_id"),
         _edge_arm("cn", ComputeNetwork, "compute_id", "network_id"),
         _edge_arm("hh", HardwareConnection, "source_hardware_id", "target_hardware_id"),
-        _edge_arm("np", NetworkPeer, "network_a_id", "network_b_id", has_conn=False, has_bw=False),
+        _edge_arm("np", NetworkPeer, "network_a_id", "network_b_id"),
         _edge_arm("dep", ServiceDependency, "service_id", "depends_on_id"),
         _edge_arm("ss", ServiceStorage, "service_id", "storage_id"),
         _edge_arm("sm", ServiceMisc, "service_id", "misc_id"),
@@ -121,7 +121,20 @@ def _preload_edge_maps(db: Session) -> dict:
     return result
 
 
-_ALLOWED_CONNECTION_TYPES = {"ethernet", "wireless", "tunnel", "wg", "vpn", "ssh"}
+_ALLOWED_CONNECTION_TYPES = {
+    "ethernet",
+    "wireless",
+    "tunnel",
+    "wg",
+    "vpn",
+    "ssh",
+    "fiber",
+    "bgp",
+    "vlan",
+    "management",
+    "backup",
+    "heartbeat",
+}
 _CONNECTION_TYPE_ALIASES = {"wireguard": "wg"}
 
 
@@ -160,8 +173,6 @@ def build_edge_dict(
     if bandwidth_mbps is not None:
         data["bandwidth"] = bandwidth_mbps
         data["label"] = f"{bandwidth_mbps}Mbps"
-    elif normalized_type is not None:
-        data["bandwidth"] = 1000
 
     return {
         "id": id,
@@ -186,6 +197,7 @@ _DELETABLE_EDGES = [
     ("e-cn-", ComputeNetwork),
     ("e-hn-", HardwareNetwork),
     ("e-hh-", HardwareConnection),
+    ("e-np-", NetworkPeer),
 ]
 
 
@@ -263,6 +275,8 @@ def update_edge_type(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if hasattr(row, "connection_type"):
         row.connection_type = normalized
+        if hasattr(row, "source"):
+            row.source = "manual"
         db.commit()
     log_audit(
         db,
@@ -420,6 +434,7 @@ def build_topology_graph(
                         source=f"hw-{net.gateway_hardware_id}",
                         target=f"net-{net.id}",
                         relation="routes",
+                        connection_type="ethernet",
                     )
                 )
 
@@ -443,10 +458,12 @@ def build_topology_graph(
         for peer in all_peers:
             edges.append(
                 build_edge_dict(
-                    id=f"e-np-{peer.network_a_id}-{peer.network_b_id}",
+                    id=f"e-np-{peer.id}",
                     source=f"net-{peer.network_a_id}",
                     target=f"net-{peer.network_b_id}",
                     relation="peers_with",
+                    connection_type=getattr(peer, "connection_type", None),
+                    bandwidth_mbps=getattr(peer, "bandwidth_mbps", None),
                 )
             )
 
@@ -922,13 +939,18 @@ def build_topology_graph(
         # External → Network edges
         if "networks" in include_set:
             for link in db.execute(select(ExternalNodeNetwork)).scalars().all():  # type: ignore[assignment]
+                _conn_type = getattr(link, "connection_type", None)
+                if not _conn_type or _conn_type == "ethernet":
+                    _raw_lt = getattr(link, "link_type", None)
+                    if _raw_lt:
+                        _conn_type = _raw_lt
                 edges.append(
                     build_edge_dict(
                         id=f"e-ext-net-{link.id}",
                         source=f"ext-{link.external_node_id}",  # type: ignore[attr-defined]
                         target=f"net-{link.network_id}",  # type: ignore[attr-defined]
                         relation="connects_to",
-                        connection_type=getattr(link, "connection_type", None),
+                        connection_type=_conn_type,
                         bandwidth_mbps=getattr(link, "bandwidth_mbps", None),
                     )
                 )
@@ -1037,6 +1059,13 @@ def _topology_etag(
             parts.append(f"{model.__tablename__}={row!s}")
         except Exception:
             parts.append(f"{model.__tablename__}=none")
+    # Connection join tables have no updated_at — use row counts so any add/remove busts the ETag
+    for model in (HardwareNetwork, ComputeNetwork, NetworkPeer, HardwareConnection):
+        try:
+            cnt = db.execute(select(func.count()).select_from(model)).scalar_one()
+            parts.append(f"{model.__tablename__}_cnt={cnt}")
+        except Exception:
+            parts.append(f"{model.__tablename__}_cnt=none")
     h = hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
     return h
 
@@ -1095,7 +1124,7 @@ def get_topology(
             if e.get("source") in node_id_set and e.get("target") in node_id_set
         ]
         data = {**data, "nodes": nodes, "edges": edges}
-    return JSONResponse(content=data, headers={"ETag": f'"{etag}"'})
+    return JSONResponse(content=data, headers={"ETag": f'"{etag}"', "Cache-Control": "no-cache"})
 
 
 @router.get("/layout")

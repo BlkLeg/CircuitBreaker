@@ -463,9 +463,17 @@ export default function ReviewQueuePanel({ onCountChange }) {
             ...(selectedNetwork.cidr ? { cidr: selectedNetwork.cidr } : {}),
           };
 
+      const assignments = pendingAccept.resultIds.map((id) => {
+        const result = results.find((r) => r.id === id);
+        const edits = localEdits.get(id) || {};
+        const role = edits.role ?? (result && isDockerResult(result) ? 'lxc' : 'server');
+        return { result_id: id, role };
+      });
+
       await enhancedBulkMerge({
         result_ids: pendingAccept.resultIds,
         network: networkPayload,
+        assignments,
       });
 
       setPendingAccept(null);
@@ -481,7 +489,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
       opLock.current = false;
       setSubmitting(false);
     }
-  }, [pendingAccept, selectedNetwork, toast, load]);
+  }, [pendingAccept, selectedNetwork, toast, load, results, localEdits]);
 
   const handleBulkReject = async (ids) => {
     if (ids.size === 0 || !_beginOp()) return;

@@ -20,12 +20,10 @@ export function useMapEdgeInteractions({
   setPendingConnection,
   pendingConnection,
   createLinkByNodeIds,
-  inferEdgeNodeIdsFromMeta,
-  getTopologyParams,
-  getNewestEdgeId,
   unlinkByEdge,
   fetchData,
   toast,
+  saveLayoutSnapshot,
 }) {
   const handleEdgeContextMenu = useCallback(
     (event, edge) => {
@@ -218,51 +216,21 @@ export function useMapEdgeInteractions({
     [clampPickerPosition, lastPointerRef, setPendingConnection]
   );
 
-  const findCreatedEdgeId = useCallback(
-    async (linkMeta, fallbackConnection) => {
-      const topoRes = await graphApi.topology(getTopologyParams());
-      const edgeList = topoRes?.data?.edges || [];
-      const nodeIds = inferEdgeNodeIdsFromMeta(
-        linkMeta,
-        fallbackConnection.source,
-        fallbackConnection.target
-      );
-      return getNewestEdgeId(edgeList, (edge) => {
-        const relation = edge?.data?.relation || edge?.relation;
-        const relationMatch = !linkMeta?.relation || relation === linkMeta.relation;
-        const prefixMatch = !linkMeta?.edgePrefix || edge.id.startsWith(linkMeta.edgePrefix);
-        return (
-          edge.source === nodeIds.sourceNodeId &&
-          edge.target === nodeIds.targetNodeId &&
-          relationMatch &&
-          prefixMatch
-        );
-      });
-    },
-    [getNewestEdgeId, getTopologyParams, graphApi, inferEdgeNodeIdsFromMeta]
-  );
-
   const createConnection = useCallback(
     async (connection, connectionType) => {
       const linkMeta = await createLinkByNodeIds(
         connection.source,
         connection.target,
-        nodesRef.current
+        nodesRef.current,
+        connectionType
       );
-      if (linkMeta.updatable) {
-        const createdEdgeId = await findCreatedEdgeId(linkMeta, connection);
-        if (!createdEdgeId) {
-          toast.warn('Connection created, but edge ID lookup failed. Type may not persist.');
-        } else if (connectionType !== 'ethernet') {
-          await persistEdgeType(createdEdgeId, connectionType);
-        }
-      } else if (connectionType !== 'ethernet') {
+      if (!linkMeta.updatable && connectionType && connectionType !== 'ethernet') {
         toast.info(
           'Connection created, but this structural link does not store a connection type.'
         );
       }
     },
-    [createLinkByNodeIds, findCreatedEdgeId, nodesRef, persistEdgeType, toast]
+    [createLinkByNodeIds, nodesRef, toast]
   );
 
   const reconnectEdge = useCallback(
@@ -283,20 +251,14 @@ export function useMapEdgeInteractions({
       const linkMeta = await createLinkByNodeIds(
         connection.source,
         connection.target,
-        nodesRef.current
+        nodesRef.current,
+        connectionType
       );
-      if (linkMeta.updatable) {
-        const createdEdgeId = await findCreatedEdgeId(linkMeta, connection);
-        if (!createdEdgeId) {
-          toast.warn('New connection created, but edge ID lookup failed. Type may not persist.');
-        } else if (connectionType !== 'ethernet') {
-          await persistEdgeType(createdEdgeId, connectionType);
-        }
-      } else if (connectionType !== 'ethernet') {
+      if (!linkMeta.updatable && connectionType && connectionType !== 'ethernet') {
         toast.info('Reconnected link, but this structural link does not store a connection type.');
       }
     },
-    [createLinkByNodeIds, findCreatedEdgeId, nodesRef, persistEdgeType, toast, unlinkByEdge]
+    [createLinkByNodeIds, nodesRef, persistEdgeType, toast, unlinkByEdge]
   );
 
   const handleConnect = useCallback(
@@ -325,9 +287,11 @@ export function useMapEdgeInteractions({
       try {
         if (current.mode === 'new') await createConnection(current.connection, connectionType);
         else await reconnectEdge(current.oldEdge, current.connection, connectionType);
+        await saveLayoutSnapshot();
         await fetchData();
       } catch (err) {
         toast.error(err.message || 'Connection update failed.');
+        await saveLayoutSnapshot();
         await fetchData();
       }
     },
@@ -337,6 +301,7 @@ export function useMapEdgeInteractions({
       normalizeConnectionType,
       pendingConnection,
       reconnectEdge,
+      saveLayoutSnapshot,
       setPendingConnection,
       toast,
     ]

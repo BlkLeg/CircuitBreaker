@@ -17,6 +17,7 @@ EnvironmentFile=-/run/circuitbreaker/vault.env
 ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
 ExecStartPre=/opt/circuitbreaker/scripts/wait-for-services.sh
 ExecStart=/opt/circuitbreaker/bin/circuit-breaker --host 127.0.0.1 --port 8000 --workers 1
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 Restart=on-failure
 RestartSec=10s
 MemoryMax=1G

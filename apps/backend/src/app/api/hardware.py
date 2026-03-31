@@ -244,6 +244,7 @@ def update_hardware_ports(
 
 class HardwareConnectionCreate(BaseModel):
     target_hardware_id: int
+    connection_type: str | None = None
 
 
 @router.post("/{hardware_id}/connections", status_code=201)
@@ -255,7 +256,9 @@ async def create_hardware_connection(
 ) -> Any:
     """Create a direct physical connection between two hardware nodes."""
     try:
-        conn = hardware_service.add_hardware_connection(db, hardware_id, payload.target_hardware_id)
+        conn = hardware_service.add_hardware_connection(
+            db, hardware_id, payload.target_hardware_id, payload.connection_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except IntegrityError as exc:

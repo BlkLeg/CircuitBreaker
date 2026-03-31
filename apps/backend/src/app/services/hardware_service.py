@@ -2,7 +2,7 @@ import logging
 import re
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -553,14 +553,57 @@ def list_hardware_groups(db: Session) -> list[dict]:
     return [{"vendor": r.vendor, "model": r.model, "count": r.count} for r in rows]
 
 
-def add_hardware_connection(db: Session, source_id: int, target_id: int) -> dict:
-    """Create a direct hardware-to-hardware physical connection."""
+def add_hardware_connection(
+    db: Session, source_id: int, target_id: int, connection_type: str | None = None
+) -> dict:
+    """Create a direct hardware-to-hardware physical connection.
+
+    Deduplicates: if a connection already exists in either direction, returns the
+    existing row (promoting source to "manual" if it was discovery_inferred).
+    """
     get_hardware(db, source_id)  # 404 guard
     get_hardware(db, target_id)  # 404 guard
+    existing = (
+        db.execute(
+            select(HardwareConnection).where(
+                or_(
+                    and_(
+                        HardwareConnection.source_hardware_id == source_id,
+                        HardwareConnection.target_hardware_id == target_id,
+                    ),
+                    and_(
+                        HardwareConnection.source_hardware_id == target_id,
+                        HardwareConnection.target_hardware_id == source_id,
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        changed = False
+        if existing.source == "discovery_inferred":
+            existing.source = "manual"
+            changed = True
+        if connection_type and existing.connection_type != connection_type:
+            existing.connection_type = connection_type
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(existing)
+        return {
+            "id": existing.id,
+            "source_hardware_id": existing.source_hardware_id,
+            "target_hardware_id": existing.target_hardware_id,
+            "connection_type": existing.connection_type,
+            "bandwidth_mbps": existing.bandwidth_mbps,
+        }
     conn = HardwareConnection(
         source_hardware_id=source_id,
         target_hardware_id=target_id,
-        connection_type="ethernet",
+        connection_type=connection_type,
+        source="manual",
     )
     db.add(conn)
     db.commit()
