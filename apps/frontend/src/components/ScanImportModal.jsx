@@ -7,9 +7,10 @@
  *   onClose ()          — called when user dismisses without importing
  *   onImported (resp)   — called after successful import
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { discoveryApi } from '../api/client';
 import { useToast } from './common/Toast';
+import LLDPReviewModal from './LLDPReviewModal';
 
 const CONFIDENCE_DOTS = (c) => {
   if (c >= 0.75) return '●●●';
@@ -47,6 +48,9 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
   const [selected, setSelected] = useState(initialSelected);
   const [roleOverrides, setRoleOverrides] = useState({});
   const [importing, setImporting] = useState(false);
+  const [importedIds, setImportedIds] = useState(null);   // set on success → shows LLDP button
+  const [lldpJobId, setLldpJobId] = useState(null);
+  const [lldpEnriching, setLldpEnriching] = useState(false);
 
   const toggleRow = (id) =>
     setSelected((prev) => {
@@ -74,15 +78,42 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
           scan_result_id: r.id,
           overrides: roleOverrides[r.id] ? { role: roleOverrides[r.id] } : {},
         }));
-      await discoveryApi.importAsNetwork(scanId, { items });
+      const resp = await discoveryApi.importAsNetwork(scanId, { items });
+      const allIds = [
+        ...(resp.data.created || []),
+        ...(resp.data.updated || []),
+      ].map((n) => n.id).filter(Boolean);
+      setImportedIds(allIds);
       onImported?.();
-      onClose();
     } catch (err) {
       toast.error('Import failed: ' + err.message);
     } finally {
       setImporting(false);
     }
   };
+
+  const handleLLDPEnrich = useCallback(async () => {
+    if (!importedIds?.length) return;
+    setLldpEnriching(true);
+    try {
+      const res = await discoveryApi.lldpEnrich({ hardware_ids: importedIds });
+      const jobId = res.data.job_id;
+      const poll = setInterval(async () => {
+        try {
+          const jobRes = await discoveryApi.getJob(jobId);
+          if (jobRes.data.status === 'completed' || jobRes.data.status === 'failed') {
+            clearInterval(poll);
+            setLldpEnriching(false);
+            if (jobRes.data.status === 'completed') setLldpJobId(jobId);
+            else toast.error('LLDP scan failed');
+          }
+        } catch { clearInterval(poll); setLldpEnriching(false); }
+      }, 2000);
+    } catch (err) {
+      toast.error('LLDP enrichment failed: ' + err.message);
+      setLldpEnriching(false);
+    }
+  }, [importedIds, toast]);
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -163,18 +194,46 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
         </div>
 
         <div className="modal-footer">
-          <button onClick={onClose} className="btn-secondary" disabled={importing}>
-            Skip all
-          </button>
-          <button
-            onClick={handleImport}
-            className="btn-primary"
-            disabled={importing || selectedCount === 0}
-          >
-            {importing ? 'Importing…' : 'Import as Network'}
-          </button>
+          {importedIds ? (
+            <>
+              <span style={{ marginRight: 'auto', fontSize: 13, color: 'var(--text-muted, #aaa)' }}>
+                Import complete — {importedIds.length} device{importedIds.length !== 1 ? 's' : ''}
+              </span>
+              <button
+                onClick={handleLLDPEnrich}
+                disabled={lldpEnriching}
+                className="btn-secondary"
+              >
+                {lldpEnriching ? 'Running LLDP…' : 'Enrich with LLDP'}
+              </button>
+              <button onClick={onClose} className="btn-primary">
+                Close
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={onClose} className="btn-secondary" disabled={importing}>
+                Skip all
+              </button>
+              <button
+                onClick={handleImport}
+                className="btn-primary"
+                disabled={importing || selectedCount === 0}
+              >
+                {importing ? 'Importing…' : 'Import as Network'}
+              </button>
+            </>
+          )}
         </div>
       </div>
+
+      {lldpJobId && (
+        <LLDPReviewModal
+          jobId={lldpJobId}
+          onApply={() => setLldpJobId(null)}
+          onClose={() => setLldpJobId(null)}
+        />
+      )}
     </div>
   );
 }

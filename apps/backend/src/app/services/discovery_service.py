@@ -33,12 +33,23 @@ from app.services.discovery_network import (
     _validate_cidr,
     resolve_vlans_to_cidrs,
 )
+from app.services.discovery_fingerprint import (
+    _coalesce_host_info,
+    _parse_banner_for_hints,
+    _run_http_fingerprint_probe,
+    _run_mdns_probe,
+    _run_netbios_probe,
+    _run_rdns_probe,
+    _run_ssdp_unicast_probe,
+    _run_vendor_lookup_local,
+)
 from app.services.discovery_probes import (
     _ARP_CAPABLE,  # noqa: F401
     _arp_available,
     _has_raw_socket_privilege,
     _run_arp_scan,
     _run_banner_grab,
+    _run_lldp_probe,
     _run_nmap_scan,
     _run_snmp_probe,
     _run_vendor_lookup,
@@ -103,6 +114,7 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
         "job_update": subjects.DISCOVERY_SCAN_COMPLETED,
         "scan_log_entry": subjects.DISCOVERY_SCAN_PROGRESS,
         "result_added": subjects.DISCOVERY_DEVICE_FOUND,
+        "result_enriched": subjects.DISCOVERY_DEVICE_FOUND,
         "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
     }
     subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
@@ -116,8 +128,13 @@ async def _update_job_progress(
     percent: int | None = None,
     processed: int | None = None,
     total: int | None = None,
+    eta_seconds: int | None = None,
 ) -> None:
-    """Persist progress phase in DB and push a job_progress WebSocket event."""
+    """Persist progress phase in DB and push a job_progress WebSocket event.
+
+    If ``eta_seconds`` is provided it overrides the EMA-based estimate — use this
+    for stage-specific calculations (e.g. probe-phase wall-clock extrapolation).
+    """
     started_at: str | None = None
     with get_session_context() as _db:
         _job = _db.query(ScanJob).filter(ScanJob.id == job_id).first()
@@ -134,7 +151,11 @@ async def _update_job_progress(
     if percent is not None:
         clamped = max(0, min(100, int(percent)))
         payload["percent"] = clamped
-        if clamped > 0 and started_at:
+        if eta_seconds is not None:
+            # Caller supplied an accurate stage-based estimate — use it directly.
+            payload["eta_seconds"] = int(max(0, eta_seconds))
+            _last_progress_snap[job_id] = (_time_module.monotonic(), float(clamped))
+        elif clamped > 0 and started_at:
             try:
                 EMA_ALPHA = 0.2
                 now_mono = _time_module.monotonic()
@@ -442,6 +463,8 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                 os_family=raw.get("os_family"),
                 os_vendor=raw.get("os_vendor"),
                 os_accuracy=raw.get("os_accuracy"),
+                device_type=raw.get("device_type"),
+                device_confidence=raw.get("device_confidence"),
                 banner=raw.get("banner"),
                 source_type=raw.get("source_type", source),
                 snmp_sys_name=snmp_data.get("sys_name"),
@@ -449,6 +472,7 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                 raw_nmap_xml=raw.get("raw_nmap_xml", ""),
                 network_id=network_id,
                 vlan_id=vlan_id,
+                lldp_neighbors_json=raw.get("lldp_neighbors"),
                 state="new",
                 merge_status="pending",
                 created_at=utcnow_iso(),
@@ -674,7 +698,7 @@ async def run_scan_job(job_id: int) -> None:
     snmp_community_plain: str = setup.get("snmp_community_plain", "")
     snmp_version: str = setup.get("snmp_version", "2c")
     snmp_port: int = setup.get("snmp_port", 161)
-    http_probe: bool = setup.get("http_probe", False)
+
     docker_discovery_enabled: bool = setup.get("docker_discovery_enabled", False)
     docker_socket_path: str = setup.get("docker_socket_path", "/var/run/docker.sock")
     docker_network_types: list = setup.get("docker_network_types", ["bridge"])
@@ -853,7 +877,7 @@ async def run_scan_job(job_id: int) -> None:
             async def _arp_phase() -> list[dict]:
                 if "arp" in scan_types and _arp_available():
                     await _update_job_progress(
-                        job_id, "arp", "Running ARP discovery...", percent=12
+                        job_id, "arp", "Running ARP discovery...", percent=2
                     )
                     await _log_scan_event(job_id, "INFO", "Starting ARP discovery phase", "arp")
                     try:
@@ -887,7 +911,7 @@ async def run_scan_job(job_id: int) -> None:
                     return {}
                 if "nmap" in scan_types:
                     await _update_job_progress(
-                        job_id, "nmap", "Running nmap host discovery...", percent=42
+                        job_id, "nmap", "Running nmap host discovery...", percent=16
                     )
                     await _log_scan_event(
                         job_id, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap"
@@ -938,103 +962,188 @@ async def run_scan_job(job_id: int) -> None:
             for ip in nmap_results.keys():
                 active_ips.add(ip)
 
-        # ── Per-host probing: collect raw probe data ──────────────────────────
+        # ── Per-host probing: parallel pipeline ──────────────────────────────
         n_active = len(active_ips)
-        if n_active > 0 and "snmp" in scan_types and snmp_community_plain:
+
+        if n_active > 0:
             await _update_job_progress(
                 job_id,
-                "snmp",
-                f"Preparing deep probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58,
+                "fingerprint",
+                f"Fingerprinting {n_active} host{'s' if n_active != 1 else ''}...",
+                percent=47,
                 processed=0,
                 total=n_active,
             )
-            await _log_scan_event(
-                job_id, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp"
-            )
-        elif n_active > 0 and http_probe and "http" in scan_types:
-            await _update_job_progress(
-                job_id,
-                "http",
-                f"Preparing HTTP probes for {n_active} host{'s' if n_active != 1 else ''}...",
-                percent=58,
-                processed=0,
-                total=n_active,
-            )
-
-        for index, ip in enumerate(active_ips, start=1):
-            await _emit_ws_event(
-                "job_progress",
-                {
-                    "job_id": job_id,
-                    "message": f"Probing host {index}/{n_active}: {ip}",
-                    "processed": index - 1,
-                    "total": n_active,
-                    "percent": 58 + int(((index - 1) / max(n_active, 1)) * 35),
-                },
-            )
-
-            n_data = nmap_results.get(ip, {})
-            mac_address = n_data.get("mac") or arp_mac_by_ip.get(ip)
-            hostname = n_data.get("hostname")
-            os_family = n_data.get("os_family")
-            os_vendor = n_data.get("os_vendor")
-            os_accuracy = n_data.get("os_accuracy")
-            open_ports = n_data.get("open_ports", [])
-            raw_xml = n_data.get("raw", "")
-
-            snmp_data: dict = {}
             if "snmp" in scan_types and snmp_community_plain:
-                snmp_data = await _run_snmp_probe(ip, snmp_community_plain, snmp_version, snmp_port)
+                await _log_scan_event(
+                    job_id, "INFO", f"Starting SNMP discovery on {n_active} active hosts", "snmp"
+                )
 
-            if http_probe and not hostname:
-                has_web = any(p["port"] in (80, 443) for p in open_ports)
-                if has_web:
-                    try:
-                        async with httpx.AsyncClient(timeout=2.0, verify=True) as client:
-                            await client.get(f"http://{ip}")
-                    except Exception as e:
-                        logger.debug(
-                            "Discovery: HTTP probe fallback for %s: %s", ip, e, exc_info=True
-                        )
+        # ── Ephemeral WS events: show devices in review queue immediately ────────
+        # We emit lightweight "discovering" events before probes run. The frontend
+        # shows skeleton rows. _scan_import later emits real result_added events
+        # with DB-backed scan_result_ids that replace these ephemeral rows.
+        if n_active > 0:
+            for ip in active_ips:
+                _nmap_stub = nmap_results.get(ip, {})
+                await _emit_ws_event("result_added", {
+                    "job_id": job_id,
+                    "ip_address": ip,
+                    "mac_address": _nmap_stub.get("mac") or arp_mac_by_ip.get(ip),
+                    "hostname": _nmap_stub.get("hostname"),
+                    "_ephemeral": True,
+                })
 
-            banner_text: str | None = None
-            if "deep_dive" in scan_types and open_ports:
+        # ── Parallel L0 probe loop (up to 8 hosts concurrently) ──────────────
+        _probe_semaphore = asyncio.Semaphore(8)
+        _probe_phase_started_at = _time_module.time()
+        _hosts_done = 0
+
+        async def _probe_host(ip: str) -> dict:
+            nonlocal _hosts_done
+            async with _probe_semaphore:
+                n_data = nmap_results.get(ip, {})
+                mac_address = n_data.get("mac") or arp_mac_by_ip.get(ip)
+                hostname = n_data.get("hostname")
+                os_family = n_data.get("os_family")
+                os_vendor = n_data.get("os_vendor")
+                os_accuracy = n_data.get("os_accuracy")
+                open_ports = n_data.get("open_ports", [])
+                raw_xml = n_data.get("raw", "")
+
+                snmp_data: dict = {}
+                if "snmp" in scan_types and snmp_community_plain:
+                    snmp_data = await _run_snmp_probe(
+                        ip, snmp_community_plain, snmp_version, snmp_port
+                    )
+
                 port_nums = [p["port"] for p in open_ports if isinstance(p.get("port"), int)]
-                if port_nums:
-                    banners = await _run_banner_grab(ip, port_nums)
-                    if banners:
-                        for preferred in (22, 21, 80, 443):
-                            if preferred in banners:
-                                banner_text = banners[preferred]
-                                break
-                        if not banner_text:
-                            banner_text = next(iter(banners.values()))
-                if not os_vendor and mac_address:
-                    os_vendor = await _run_vendor_lookup(mac_address) or os_vendor
 
-            if "deep_dive" in scan_types:
-                result_source = "deep_dive"
-            elif not n_data:
-                result_source = "arp"
-            else:
-                result_source = "nmap"
+                (
+                    rdns_hostname,
+                    netbios_data,
+                    ssdp_data,
+                    mdns_data,
+                    http_hints,
+                    banners,
+                ) = await asyncio.gather(
+                    asyncio.wait_for(_run_rdns_probe(ip), timeout=3.0),
+                    asyncio.wait_for(_run_netbios_probe(ip), timeout=3.0),
+                    asyncio.wait_for(_run_ssdp_unicast_probe(ip, open_ports), timeout=3.0),
+                    (
+                        asyncio.wait_for(_run_mdns_probe(ip), timeout=4.0)
+                        if setup.get("mdns_enabled", True)
+                        else asyncio.sleep(0, result={})
+                    ),
+                    asyncio.wait_for(_run_http_fingerprint_probe(ip, open_ports), timeout=5.0),
+                    (
+                        asyncio.wait_for(_run_banner_grab(ip, port_nums), timeout=4.0)
+                        if port_nums
+                        else asyncio.sleep(0, result={})
+                    ),
+                    return_exceptions=True,
+                )
 
-            raw_results.append(
-                {
+                if isinstance(rdns_hostname, Exception):
+                    rdns_hostname = None
+                if isinstance(netbios_data, (Exception, type(None))):
+                    netbios_data = {}
+                if isinstance(ssdp_data, Exception):
+                    ssdp_data = {}
+                if isinstance(mdns_data, Exception):
+                    mdns_data = {}
+                if isinstance(http_hints, Exception):
+                    http_hints = {}
+                if isinstance(banners, Exception):
+                    banners = {}
+
+                banner_text: str | None = None
+                if banners:
+                    for preferred in (22, 21, 25, 80, 443):
+                        if preferred in banners:
+                            banner_text = banners[preferred]
+                            break
+                    if not banner_text:
+                        banner_text = next(iter(banners.values()))
+
+                banner_hints = _parse_banner_for_hints(banner_text)
+                oui_vendor = await _run_vendor_lookup_local(mac_address)
+
+                coalesced = _coalesce_host_info(
+                    nmap_data=n_data,
+                    snmp_data=snmp_data,
+                    mdns_data=mdns_data if isinstance(mdns_data, dict) else {},
+                    netbios=netbios_data if isinstance(netbios_data, dict) else {},
+                    ssdp_data=ssdp_data if isinstance(ssdp_data, dict) else {},
+                    banner_hints=banner_hints,
+                    http_hints=http_hints if isinstance(http_hints, dict) else {},
+                    rdns_hostname=rdns_hostname if isinstance(rdns_hostname, str) else None,
+                    oui_vendor=oui_vendor,
+                    open_ports=open_ports,
+                )
+
+                hostname = coalesced.get("hostname") or hostname
+                os_family = coalesced.get("os_family") or os_family
+                os_vendor = coalesced.get("os_vendor") or os_vendor
+                device_type = coalesced.get("device_type")
+                device_confidence = coalesced.get("device_confidence")
+
+                if "deep_dive" in scan_types:
+                    result_source = "deep_dive"
+                elif not n_data:
+                    result_source = "arp"
+                else:
+                    result_source = "nmap"
+
+                # Emit enriched data — frontend updates the ephemeral skeleton row
+                await _emit_ws_event("result_enriched", {
+                    "job_id": job_id,
+                    "ip_address": ip,
+                    "mac_address": mac_address,
+                    "hostname": hostname,
+                    "vendor": oui_vendor,
+                    "os_family": os_family,
+                    "device_type": device_type,
+                    "open_ports": open_ports,
+                    "_ephemeral": True,
+                })
+
+                # Stage-accurate ETA: wall-clock extrapolation over the probe phase
+                _hosts_done += 1
+                _probe_elapsed = _time_module.time() - _probe_phase_started_at
+                _completion_ratio = _hosts_done / max(n_active, 1)
+                _probe_eta = (
+                    int(_probe_elapsed / _completion_ratio - _probe_elapsed)
+                    if _completion_ratio > 0 else None
+                )
+                await _update_job_progress(
+                    job_id,
+                    "fingerprint",
+                    f"Fingerprinting host {_hosts_done}/{n_active}: {ip}",
+                    percent=50 + int(_completion_ratio * 40),
+                    processed=_hosts_done,
+                    total=n_active,
+                    eta_seconds=_probe_eta,
+                )
+
+                return {
                     "ip": ip,
                     "mac_address": mac_address,
                     "hostname": hostname,
                     "os_family": os_family,
                     "os_vendor": os_vendor,
                     "os_accuracy": os_accuracy,
+                    "device_type": device_type,
+                    "device_confidence": device_confidence,
                     "open_ports_json": json.dumps(open_ports) if open_ports else None,
                     "raw_nmap_xml": raw_xml,
                     "banner": banner_text,
                     "source_type": result_source,
                     "snmp_data": snmp_data,
                 }
-            )
+
+        if n_active > 0:
+            raw_results = list(await asyncio.gather(*[_probe_host(ip) for ip in active_ips]))
 
         # Supplemental Docker discovery
         if docker_discovery_enabled and is_docker_socket_available():
@@ -1120,3 +1229,46 @@ async def run_scan_job(job_id: int) -> None:
         )
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
+
+
+def enqueue_lldp_job(
+    db,
+    ips: list[str],
+    community: str = "public",
+    port: int = 161,
+) -> int:
+    """Create a scan job of type lldp targeting the given IPs. Returns job_id."""
+    import json
+    from app.core.time import utcnow_iso as _utcnow_iso
+    from app.db.models import DiscoveryProfile, ScanJob
+    from app.services.credential_vault import get_vault
+
+    now = _utcnow_iso()
+    encrypted_community = get_vault().encrypt(community)
+
+    profile = DiscoveryProfile(
+        name="_lldp_enrich_transient",
+        cidr=",".join(ips),
+        scan_types=json.dumps(["lldp"]),
+        snmp_community_encrypted=encrypted_community,
+        snmp_port=port,
+        enabled=1,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(profile)
+    db.flush()
+
+    job = ScanJob(
+        profile_id=profile.id,
+        target_cidr=",".join(ips),
+        scan_types_json=json.dumps(["lldp"]),
+        status="queued",
+        source_type="api",
+        triggered_by="api",
+        created_at=now,
+    )
+    db.add(job)
+    db.flush()
+    db.commit()
+    return job.id

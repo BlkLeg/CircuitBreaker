@@ -7,7 +7,7 @@ import { useToast } from '../common/Toast';
 import NmapArgsField from './NmapArgsField.jsx';
 import '../../styles/discovery.css';
 
-const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'docker', 'proxmox'];
+const SCAN_TYPES = ['nmap', 'snmp', 'arp', 'http', 'deep_dive', 'docker', 'proxmox'];
 
 const isValidCron = (val) => {
   if (!val) return false;

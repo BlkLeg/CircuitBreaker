@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { ArrowLeft, Box, Play, ShieldCheck, Zap, X } from 'lucide-react';
+import { ArrowLeft, Box, Layers, Play, ShieldCheck, Zap, X } from 'lucide-react';
 import { startAdHocScan, runProfile, getDockerNetworks } from '../../api/discovery.js';
 import { MAX_NETWORKS_PER_SCAN, MIN_NETWORKS_PER_SCAN } from '../../lib/constants.js';
 import { networksApi } from '../../api/client.jsx';
@@ -38,6 +38,14 @@ const SCAN_MODES = [
     desc: 'ARP sweep + nmap OS fingerprint. Requires NET_RAW.',
   },
   {
+    key: 'deep_dive',
+    label: 'Deep Dive',
+    Icon: Layers,
+    color: '#f43f5e',
+    bg: 'rgba(244,63,94,0.08)',
+    desc: 'Full scan + L0 fingerprinting (rDNS, NetBIOS, mDNS, SSDP, HTTP). Requires NET_RAW.',
+  },
+  {
     key: 'docker',
     label: 'Docker',
     Icon: Box,
@@ -62,9 +70,12 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
 
   const [scanMode, setScanMode] = useState(() => settings?.discovery_mode || 'safe');
   const [cidrs, setCidrs] = useState([defaultCidr || '']);
-  const [scanTypes, setScanTypes] = useState(() =>
-    settings?.discovery_mode === 'full' ? ['nmap', 'arp', 'snmp', 'http'] : ['snmp', 'http']
-  );
+  const [scanTypes, setScanTypes] = useState(() => {
+    const mode = settings?.discovery_mode;
+    if (mode === 'full') return ['nmap', 'arp', 'snmp', 'http'];
+    if (mode === 'deep_dive') return ['nmap', 'arp', 'snmp', 'http', 'deep_dive'];
+    return ['snmp', 'http'];
+  });
   const [nmapArgs, setNmapArgs] = useState(defaultNmapArgs);
   const [ports, setPorts] = useState('');
   const [snmpCom, setSnmpCom] = useState('');
@@ -171,6 +182,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
     setScanMode(key);
     if (key === 'safe') setScanTypes(['snmp', 'http']);
     if (key === 'full') setScanTypes(['nmap', 'arp', 'snmp', 'http']);
+    if (key === 'deep_dive') setScanTypes(['nmap', 'arp', 'snmp', 'http', 'deep_dive']);
     if (key === 'docker') setScanTypes(['docker']);
   };
 
@@ -202,7 +214,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               ? { cidrs: cidrs.map((c) => c.trim()).filter(Boolean) }
               : { vlan_ids: selectedVlans }),
             scan_types: types,
-            nmap_arguments: scanMode === 'full' ? composeNmapArgs(nmapArgs, '3', ports) : undefined,
+            nmap_arguments: (scanMode === 'full' || scanMode === 'deep_dive') ? composeNmapArgs(nmapArgs, '3', ports) : undefined,
             snmp_community: snmpCom.trim() || undefined,
           });
           toast.success('Scan started');
@@ -287,8 +299,11 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                 type="button"
                 className={`scan-mode-card${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}
                 onClick={() => !disabled && handleModeSelect(key)}
-                style={selected ? { borderColor: color, background: bg } : {}}
+                style={selected ? { borderColor: color, background: bg, position: 'relative' } : { position: 'relative' }}
               >
+                {key === 'deep_dive' && (
+                  <span className="scan-mode-time-badge">~1-3 min</span>
+                )}
                 <div className="scan-mode-card-icon">
                   <Icon size={22} style={{ color: disabled ? 'var(--color-text-muted)' : color }} />
                 </div>
@@ -488,23 +503,27 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               <div className="cb-field">
                 <span className="cb-label">Scan Types</span>
                 <div className="cb-scan-type-row">
-                  {(scanMode === 'safe' ? ['snmp', 'http'] : ['nmap', 'arp', 'snmp', 'http']).map(
-                    (type) => (
-                      <label key={type} className="cb-scan-type-option">
-                        <input
-                          type="checkbox"
-                          checked={scanTypes.includes(type)}
-                          onChange={(e) => handleToggleScanType(type, e.target.checked)}
-                        />
-                        {type.toUpperCase()}
-                      </label>
-                    )
-                  )}
+                  {(scanMode === 'safe'
+                    ? ['snmp', 'http']
+                    : scanMode === 'deep_dive'
+                    ? ['nmap', 'arp', 'snmp', 'http', 'deep_dive']
+                    : ['nmap', 'arp', 'snmp', 'http']
+                  ).map((type) => (
+                    <label key={type} className="cb-scan-type-option">
+                      <input
+                        type="checkbox"
+                        checked={scanTypes.includes(type)}
+                        disabled={scanMode === 'deep_dive'}
+                        onChange={(e) => handleToggleScanType(type, e.target.checked)}
+                      />
+                      {type.toUpperCase()}
+                    </label>
+                  ))}
                 </div>
               </div>
             </div>
 
-            {scanMode === 'full' && <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />}
+            {(scanMode === 'full' || scanMode === 'deep_dive') && <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />}
 
             {advanced && (
               <div className="cb-scan-modal-grid">

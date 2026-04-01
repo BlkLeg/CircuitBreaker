@@ -160,6 +160,8 @@ class ScanResultOut(BaseModel):
     vlan_id: int | None = None
     network_id: int | None = None
     # raw_nmap_xml NEVER included
+    device_type: str | None = None
+    device_confidence: int | None = None
     state: str
     conflicts_json: str | None
     matched_entity_type: str | None
@@ -356,3 +358,43 @@ class ImportAsNetworkResponse(BaseModel):
     placeholders: list[ImportAsNetworkPlaceholder] = []
     edges_created: int = 0
     conflicts: list[BatchImportConflict] = []
+
+
+class LLDPEnrichRequest(BaseModel):
+    hardware_ids: list[int]
+    snmp_community: str = "public"
+    snmp_port: int = 161
+
+
+class LLDPConnectionSelection(BaseModel):
+    source_scan_result_id: int
+    neighbor_index: int
+
+
+class LLDPApplyRequest(BaseModel):
+    connections: list[LLDPConnectionSelection]
+
+
+class LLDPApplyResponse(BaseModel):
+    edges_created: int = 0
+    stubs_created: int = 0
+
+
+class LLDPNeighborOut(BaseModel):
+    source_scan_result_id: int
+    neighbor_index: int
+    source_hardware_id: int | None
+    source_hardware_name: str | None
+    local_port_desc: str | None
+    remote_chassis_id: str | None
+    remote_port_desc: str | None
+    remote_sys_name: str | None
+    remote_mgmt_ip: str | None
+    remote_hardware_id: int | None
+    remote_hardware_name: str | None
+    is_new_stub: bool
+
+
+class LLDPJobResultsOut(BaseModel):
+    job_id: int
+    neighbors: list[LLDPNeighborOut]

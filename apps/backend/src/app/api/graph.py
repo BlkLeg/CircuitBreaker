@@ -32,6 +32,7 @@ from app.db.models import (
     Network,
     NetworkPeer,
     Rack,
+    ScanResult,
     Service,
     ServiceDependency,
     ServiceExternalNode,
@@ -570,6 +571,13 @@ def build_topology_graph(
                     "telemetry_data": telemetry_data,
                     "telemetry_last_polled": hw.telemetry_last_polled.isoformat()
                     if hw.telemetry_last_polled
+                    else None,
+                    "device_type": (
+                        db.query(ScanResult.device_type)
+                        .filter(ScanResult.id == hw.source_scan_result_id)
+                        .scalar()
+                    )
+                    if hw.source_scan_result_id
                     else None,
                     "u_height": hw.u_height,
                     "rack_unit": hw.rack_unit,

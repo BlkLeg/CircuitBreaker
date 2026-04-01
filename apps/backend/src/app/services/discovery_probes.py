@@ -153,7 +153,29 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, lambda: nm.scan(hosts=cidr, arguments=effective_args))
+    except Exception as e:
+        if "root privileges" in str(e) or "QUITTING" in str(e):
+            fallback_args = _sanitise_nmap_args_for_unpriv(effective_args)
+            if fallback_args != effective_args:
+                logger.warning(
+                    "nmap OS-detection failed at runtime — retrying without -O: '%s'", fallback_args
+                )
+                nm = nmap.PortScanner()
+                try:
+                    await loop.run_in_executor(
+                        None, lambda: nm.scan(hosts=cidr, arguments=fallback_args)
+                    )
+                except Exception as e2:
+                    logger.error(f"Nmap scan failed on fallback: {e2}")
+                    return {}
+            else:
+                logger.error(f"Nmap scan failed: {e}")
+                return {}
+        else:
+            logger.error(f"Nmap scan failed: {e}")
+            return {}
 
+    try:
         results = {}
         for host in nm.all_hosts():
             host_data = nm[host]
@@ -286,3 +308,97 @@ async def _run_vendor_lookup(mac: str) -> str | None:
     except Exception as e:
         logger.debug("Discovery: MAC vendor lookup failed: %s", e, exc_info=True)
     return None
+
+
+def _parse_lldp_neighbor_row(row: dict) -> dict:
+    """Normalize a raw lldpRemTable row dict into the canonical neighbor format."""
+    return {
+        "local_port_desc": row.get("lldpLocPortDescr"),
+        "remote_chassis_id": row.get("lldpRemChassisId"),
+        "remote_port_id": row.get("lldpRemPortId"),
+        "remote_port_desc": row.get("lldpRemPortDescr"),
+        "remote_sys_name": row.get("lldpRemSysName"),
+        "remote_mgmt_ip": row.get("lldpRemManAddr"),
+        "capabilities": row.get("capabilities") or [],
+    }
+
+
+async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict]:
+    """
+    Walk lldpRemTable on the target device via SNMP.
+    Returns a list of neighbor dicts; empty list if device doesn't support LLDP or is unreachable.
+    """
+    if not community or not _SNMP_AVAILABLE:
+        return []
+
+    try:
+        community = validate_snmp_community(community)
+    except ValueError:
+        return []
+
+    # LLDP-MIB OIDs
+    OID_LLDP_REM_CHASSIS = "1.0.8802.1.1.2.1.4.1.1.5"
+    OID_LLDP_REM_PORT_ID = "1.0.8802.1.1.2.1.4.1.1.7"
+    OID_LLDP_REM_PORT_DESCR = "1.0.8802.1.1.2.1.4.1.1.8"
+    OID_LLDP_REM_SYS_NAME = "1.0.8802.1.1.2.1.4.1.1.9"
+    OID_LLDP_REM_CAP = "1.0.8802.1.1.2.1.4.1.1.12"
+    OID_LLDP_LOC_PORT_DESCR = "1.0.8802.1.1.2.1.3.7.1.4"
+
+    # Capability bitmask to human-readable names
+    CAP_BITS = {
+        0: "other", 1: "repeater", 2: "bridge", 3: "wlanAccessPoint",
+        4: "router", 5: "telephone", 6: "docsisCableDevice", 7: "stationOnly",
+    }
+
+    try:
+        transport = await UdpTransportTarget.create((ip, port), timeout=2.0, retries=1)
+    except Exception as e:
+        logger.debug(f"LLDP probe transport failed for {ip}: {e}")
+        return []
+
+    # Collect rows indexed by (local_port_idx, rem_index)
+    rows: dict[str, dict] = {}
+
+    async def _walk_oid(oid_str: str, field: str) -> None:
+        try:
+            from pysnmp.hlapi.v3arch.asyncio.cmdgen import next_cmd
+            async for err_ind, err_stat, _, var_binds in next_cmd(
+                SnmpEngine(),
+                CommunityData(community, mpModel=1),
+                transport,
+                ContextData(),
+                ObjectType(ObjectIdentity(oid_str)),
+                lexicographicMode=False,
+            ):
+                if err_ind or err_stat:
+                    break
+                for name, val in var_binds:
+                    idx = str(name).rsplit(".", 2)[-2:]  # (localPortNum, remIndex)
+                    key = ".".join(idx)
+                    rows.setdefault(key, {})[field] = val.prettyPrint()
+        except Exception as e:
+            logger.debug(f"LLDP walk {field} failed for {ip}: {e}")
+
+    # Walk all relevant OIDs
+    await _walk_oid(OID_LLDP_REM_CHASSIS, "lldpRemChassisId")
+    await _walk_oid(OID_LLDP_REM_PORT_ID, "lldpRemPortId")
+    await _walk_oid(OID_LLDP_REM_PORT_DESCR, "lldpRemPortDescr")
+    await _walk_oid(OID_LLDP_REM_SYS_NAME, "lldpRemSysName")
+    await _walk_oid(OID_LLDP_REM_CAP, "lldpRemSysCapEnabled")
+    await _walk_oid(OID_LLDP_LOC_PORT_DESCR, "lldpLocPortDescr")
+
+    # Parse capability bitmask
+    neighbors = []
+    for row in rows.values():
+        cap_raw = row.pop("lldpRemSysCapEnabled", "")
+        caps = []
+        try:
+            bits = int(cap_raw)
+            caps = [name for bit, name in CAP_BITS.items() if bits & (1 << bit)]
+        except (ValueError, TypeError):
+            pass
+        row["capabilities"] = caps
+        neighbors.append(_parse_lldp_neighbor_row(row))
+
+    logger.info(f"LLDP probe {ip}: found {len(neighbors)} neighbors")
+    return neighbors

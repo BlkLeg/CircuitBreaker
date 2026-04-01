@@ -3941,3 +3941,39 @@ body {
 .map-switcher__create:not(:disabled):hover {
   background: color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
+
+/* ── Smart-shape node overlays ──────────────────────────────────────────────── */
+.node-status-dot {
+  position: absolute;
+  bottom: 4px;
+  right: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-bg, #0d0d1a);
+  pointer-events: none;
+}
+.node-status-dot.online  { background: #00ff9d; box-shadow: 0 0 5px #00ff9d; }
+.node-status-dot.offline { background: #ff3366; box-shadow: 0 0 5px #ff3366; }
+.node-status-dot.unknown { background: #6b7280; }
+
+.node-vendor-badge {
+  position: absolute;
+  bottom: -5px;
+  left: -5px;
+  width: 18px;
+  height: 18px;
+  background: #0a1520;
+  border: 1.5px solid rgba(0, 240, 255, 0.25);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+.node-vendor-badge img {
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}

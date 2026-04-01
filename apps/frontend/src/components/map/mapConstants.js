@@ -9,6 +9,26 @@
 import { getIconEntry } from '../common/IconPickerModal';
 import { getVendorIcon } from '../../icons/vendorIcons';
 import {
+  Router,
+  Network,
+  Shield,
+  Wifi,
+  Database,
+  BatteryCharging,
+  Zap,
+  Cpu,
+  Server,
+  Monitor,
+  Cctv,
+  Tv,
+  PcCase,
+  Laptop,
+  Smartphone,
+  Cloud,
+  Printer,
+  HardDrive,
+} from 'lucide-react';
+import {
   clustersApi,
   hardwareApi,
   computeUnitsApi,
@@ -46,6 +66,55 @@ export const EDGE_COLORS = new Map([
   ['has_storage', '#c47a2a'],
   ['cluster_member', '#a78bfa'],
 ]);
+
+// ── Device icon map — role/device_type → Lucide component ───────────────────
+export const DEVICE_ICON_MAP = {
+  // From role
+  router:        Router,
+  switch:        Network,
+  firewall:      Shield,
+  access_point:  Wifi,
+  nas:           Database,
+  ups:           BatteryCharging,
+  pdu:           Zap,
+  sbc:           Cpu,
+  hypervisor:    Server,
+  storage:       Database,
+  server:        Server,
+  compute:       Monitor,
+  // From device_type (scan result — more specific)
+  ip_camera:     Cctv,
+  smart_tv:      Tv,
+  windows_pc:    PcCase,
+  linux_server:  Server,
+  printer:       Printer,
+  iot_device:    Cpu,
+  desktop:       PcCase,
+  laptop:        Laptop,
+  phone:         Smartphone,
+  cloud:         Cloud,
+  database:      Database,
+  // Fallback
+  default:       HardDrive,
+};
+
+/**
+ * Returns the Lucide icon component for a hardware node.
+ * Priority: device_type (scan result) → role → HardDrive fallback.
+ */
+export function resolveDeviceIcon(nodeData) {
+  // Manual override from Node Icon picker takes highest priority
+  if (nodeData.nodeShape && DEVICE_ICON_MAP[nodeData.nodeShape]) {
+    return DEVICE_ICON_MAP[nodeData.nodeShape];
+  }
+  if (nodeData.device_type && DEVICE_ICON_MAP[nodeData.device_type]) {
+    return DEVICE_ICON_MAP[nodeData.device_type];
+  }
+  if (nodeData.role && DEVICE_ICON_MAP[nodeData.role]) {
+    return DEVICE_ICON_MAP[nodeData.role];
+  }
+  return DEVICE_ICON_MAP.default;
+}
 
 export function getEdgeColor(relation) {
   if (relation === 'peers_with') {

@@ -6,6 +6,7 @@ import { STATUS_COLORS } from '../../config/mapTheme';
 import { getConnectedHandleIds } from '../../utils/mapHandleHelpers';
 import NodeHandles from './nodes/NodeHandles';
 import { useConnectionStateContext } from '../../providers/ConnectionStateProvider';
+import { resolveDeviceIcon } from './mapConstants';
 
 /**
  * CustomNode — enhanced topology node supporting:
@@ -18,50 +19,11 @@ import { useConnectionStateContext } from '../../providers/ConnectionStateProvid
  *  - Storage capacity bar
  *  - Telemetry CPU temp / power badges
  *  - 8-point dynamic handles with connect-aware visibility
- *  - Role-aware SVG shapes (server/switch/rack/ups/router/nas/sbc) with icon overlay
+ *  - Smart node rendering: hardware nodes use Lucide icon as shape (neon cyan glow)
  *
  * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
  */
 
-// ── SVG Shape Definitions ─────────────────────────────────────────────────────
-// All shapes normalized to a 0 0 40 40 viewBox so they scale cleanly into the
-// 64×64 node container without coordinate-space mismatch distortion.
-// Paths are pure geometric outlines — no internal pictograms or detail lines.
-// The app icon library renders inside the frame as a separate layer.
-// iconScale: scales the icon to fit within the shape's visible inner area so it
-// doesn't overflow the frame (especially important for flat/narrow shapes).
-// Exported so the shape picker in ContextMenu can render previews.
-export const NODE_SHAPES = {
-  // 1U server — wide landscape rectangle; inner height ~26px in 64px container
-  server: { viewBox: '0 0 40 40', path: 'M4 12 H36 V28 H4 Z', iconScale: 0.65 },
-  // Network switch — flat bar; path slightly less extreme for icon legibility
-  switch: { viewBox: '0 0 40 40', path: 'M2 13 H38 V27 H2 Z', iconScale: 0.58 },
-  // Rack enclosure — tall portrait rectangle; inner width ~32px
-  rack: { viewBox: '0 0 40 40', path: 'M10 2 H30 V38 H10 Z', iconScale: 0.8 },
-  // UPS — narrow tall portrait rectangle; inner width ~22px
-  ups: { viewBox: '0 0 40 40', path: 'M13 3 H27 V37 H13 Z', iconScale: 0.55 },
-  // Router / firewall — upward-pointing triangle; centroid ~60% down
-  router: { viewBox: '0 0 40 40', path: 'M20 4 L37 34 H3 Z', iconScale: 0.6 },
-  // NAS — near-square box; inner ~48px sq
-  nas: { viewBox: '0 0 40 40', path: 'M5 5 H35 V35 H5 Z', iconScale: 0.95 },
-  // Cold storage — wide landscape rectangle; inner height ~32px
-  storage: { viewBox: '0 0 40 40', path: 'M3 10 H37 V30 H3 Z', iconScale: 0.8 },
-  // SBC — compact square; inner ~38px sq
-  sbc: { viewBox: '0 0 40 40', path: 'M8 8 H32 V32 H8 Z', iconScale: 0.95 },
-  // Cloud — bumpy top silhouette for cloud/hosted resources
-  cloud: {
-    viewBox: '0 0 40 40',
-    path: 'M10 30 Q4 30 4 24 Q4 18 10 18 Q10 12 16 10 Q22 8 27 13 Q30 11 34 14 Q38 17 36 22 Q38 26 36 30 Z',
-    iconScale: 0.65,
-  },
-};
-
-// Shape is stored per-node as data.nodeShape (set by the shape picker in the
-// context menu and persisted in the layout JSON). Falls back to the circle when
-// nodeShape is absent or unrecognised.
-function getNodeShape(data) {
-  return data.nodeShape ? NODE_SHAPES[data.nodeShape] || null : null;
-}
 
 const TELEMETRY_RING = {
   healthy: {
@@ -79,33 +41,6 @@ const USER_ICON_SIZED_ICON_SOURCES = [
   '/icons/vendors/CB_NIGHT_HALF.png',
 ];
 
-function resolveShapeRingColor(isConnectSource, tRing) {
-  if (isConnectSource) return 'var(--color-primary)';
-  if (tRing === TELEMETRY_RING.healthy) return '#22c55e';
-  if (tRing === TELEMETRY_RING.degraded) return '#eab308';
-  return '#ef4444';
-}
-
-function ShapeStatusRing({ path, isConnectSource, tRing }) {
-  const color = resolveShapeRingColor(isConnectSource, tRing);
-  return (
-    <path
-      d={path}
-      fill="none"
-      stroke={color}
-      strokeWidth={3.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ filter: `drop-shadow(0 0 5px ${color})` }}
-    />
-  );
-}
-
-ShapeStatusRing.propTypes = {
-  path: PropTypes.string.isRequired,
-  isConnectSource: PropTypes.bool,
-  tRing: PropTypes.object,
-};
 
 function getStorageBarColor(pct) {
   if (pct >= 85) return 'var(--color-danger)';
@@ -274,16 +209,15 @@ function CustomNode({ id, data, selected }) {
     </span>
   );
 
-  // ── Shape-aware node body ───────────────────────────────────────────────
-  const nodeShape = getNodeShape(data);
+  // ── Smart node body — Lucide icon as shape (hardware), circle fallback ──
+  const isHardwareNode = data.type === 'hardware';
+  const DeviceIcon = isHardwareNode ? resolveDeviceIcon(data) : null;
+  // Smart node icon is always neon cyan — status is expressed via ring/ping only
+  const iconColor = '#00f0ff';
+  const circleStrokeWidth = statusColors ? 2.5 : selected ? 2 : 1.5;
 
-  // Stroke width: status alert → 2.5, selected → 2, default → 1.5
-  const shapeStrokeWidth = statusColors ? 2.5 : selected ? 2 : 1.5;
-
-  const nodeBody = nodeShape ? (
-    // SVG shape with icon overlay.
-    // No box-shadow on this container — box-shadow on a non-rounded div creates a
-    // rectangular halo that obscures the shape. All glow comes from SVG paths.
+  const nodeBody = DeviceIcon ? (
+    // Smart node: Lucide icon IS the shape — neon cyan glow, no SVG frame
     <div
       style={{
         width: 64,
@@ -294,59 +228,69 @@ function CustomNode({ id, data, selected }) {
         justifyContent: 'center',
       }}
     >
-      <svg
-        viewBox={nodeShape.viewBox}
-        width="100%"
-        height="100%"
-        preserveAspectRatio="xMidYMid meet"
-        style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
-        aria-hidden="true"
-      >
-        {/* Glow halo — wide blurred stroke that follows the shape outline */}
-        <path
-          d={nodeShape.path}
-          fill="none"
-          stroke={glow}
-          strokeWidth={selected ? 7 : 5}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          opacity={0.45}
-          style={{ filter: `blur(3px)` }}
+      {/* Telemetry / connect-source ring */}
+      {(tRing || isConnectSource) && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: -3,
+            borderRadius: '50%',
+            boxShadow: isConnectSource ? CONNECT_SOURCE_SHADOW : tRing.shadow,
+            animation: isConnectSource
+              ? 'node-connect-pulse 1s ease-in-out infinite'
+              : tRing.animation,
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
         />
-        {/* Solid outline frame */}
-        <path
-          d={nodeShape.path}
-          fill={fillBg || `${glow}18`}
-          stroke={glow}
-          strokeWidth={shapeStrokeWidth}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{ filter: `drop-shadow(0 0 3px ${glow}88)` }}
-        />
-        {/* Telemetry / connect-source colored ring — SVG stroke replaces box-shadow */}
-        {(tRing || isConnectSource) && (
-          <ShapeStatusRing path={nodeShape.path} isConnectSource={isConnectSource} tRing={tRing} />
-        )}
-      </svg>
-      {/* Icon scaled to fit within the shape's visible inner area */}
-      <div
+      )}
+      <DeviceIcon
+        size={48}
+        strokeWidth={1.2}
         style={{
           position: 'relative',
           zIndex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          transform: `scale(${nodeShape.iconScale})`,
-          transformOrigin: 'center',
+          color: isConnectSource ? 'var(--color-primary)' : iconColor,
+          filter: selected
+            ? `drop-shadow(0 0 12px ${iconColor})`
+            : `drop-shadow(0 0 5px ${iconColor}88)`,
+          transition: 'filter 0.3s ease, transform 0.3s ease',
+          transform: selected ? 'scale(1.1)' : 'scale(1)',
         }}
-      >
-        {iconContent}
-      </div>
+      />
+
+      {/* Bottom-left branded icon badge — shown only when a real branded icon exists (not generic fallback) */}
+      {data.iconSrc && !data.iconSrc.includes('generic') && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: -4,
+            left: -4,
+            width: 22,
+            height: 22,
+            borderRadius: 5,
+            background: 'rgba(5,11,20,0.85)',
+            border: '1px solid rgba(0,240,255,0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10,
+            pointerEvents: 'none',
+          }}
+        >
+          <img
+            src={data.iconSrc}
+            alt=""
+            width={14}
+            height={14}
+            style={{ objectFit: 'contain', display: 'block' }}
+            onError={(e) => { e.target.parentElement.style.display = 'none'; }}
+          />
+        </div>
+      )}
     </div>
   ) : (
-    // Fallback: original circle — SVG circle preserves crisp pan/zoom scaling
-    // borderRadius: '50%' ensures the box-shadow glow follows the circular
-    // outline rather than spreading as a rectangular box.
+    // Classic circle node with vendor icon
     <div
       style={{
         width: 64,
@@ -374,7 +318,7 @@ function CustomNode({ id, data, selected }) {
           r="16"
           fill={fillBg || `${glow}18`}
           stroke={glow}
-          strokeWidth={shapeStrokeWidth}
+          strokeWidth={circleStrokeWidth}
         />
       </svg>
       <div

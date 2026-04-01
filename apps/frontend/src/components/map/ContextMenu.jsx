@@ -22,8 +22,121 @@ import {
   FileText,
   ExternalLink,
 } from 'lucide-react';
-import { NODE_SHAPES } from './CustomNode';
 import { mapsApi } from '../../api/maps';
+import { DEVICE_ICON_MAP } from './mapConstants';
+
+// Curated list of icons available in the icon picker (role-based keys from DEVICE_ICON_MAP)
+const ICON_PICKER_OPTIONS = [
+  { key: 'router',        label: 'Router' },
+  { key: 'switch',        label: 'Switch' },
+  { key: 'firewall',      label: 'Firewall' },
+  { key: 'access_point',  label: 'WiFi AP' },
+  { key: 'server',        label: 'Server' },
+  { key: 'hypervisor',    label: 'Hypervisor' },
+  { key: 'nas',           label: 'NAS' },
+  { key: 'ups',           label: 'UPS' },
+  { key: 'pdu',           label: 'PDU' },
+  { key: 'sbc',           label: 'SBC' },
+  { key: 'compute',       label: 'Monitor' },
+  { key: 'ip_camera',     label: 'Camera' },
+  { key: 'smart_tv',      label: 'TV' },
+  { key: 'desktop',       label: 'Desktop' },
+  { key: 'laptop',        label: 'Laptop' },
+  { key: 'phone',         label: 'Phone' },
+  { key: 'printer',       label: 'Printer' },
+  { key: 'cloud',         label: 'Cloud' },
+  { key: 'database',      label: 'Database' },
+  { key: 'default',       label: 'Generic' },
+];
+
+function IconPickerPanel({ currentShape, nodeId, onAction, onClose }) {
+  return (
+    <div className="tw-px-2 tw-pt-1 tw-pb-2">
+      <div className="tw-text-xs tw-text-cb-text tw-mb-2 tw-font-semibold tw-uppercase tw-tracking-wider tw-opacity-60 tw-px-1">
+        Node Icon
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 3 }}>
+        {/* Auto option — clears manual override */}
+        <button
+          title="Auto (inferred)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction('set_node_shape', { nodeId, shape: null });
+            onClose();
+          }}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 2,
+            padding: '5px 2px',
+            borderRadius: 5,
+            border: !currentShape
+              ? '1.5px solid var(--color-primary, #4a7fa5)'
+              : '1px solid rgba(255,255,255,0.1)',
+            background: !currentShape ? 'rgba(74,127,165,0.15)' : 'rgba(255,255,255,0.03)',
+            cursor: 'pointer',
+          }}
+        >
+          <CircleDot size={14} style={{ opacity: 0.5 }} />
+          <span style={{ fontSize: 7, color: 'rgba(255,255,255,0.5)', lineHeight: 1 }}>Auto</span>
+        </button>
+        {ICON_PICKER_OPTIONS.map(({ key, label }) => {
+          // eslint-disable-next-line security/detect-object-injection
+          const Icon = Object.hasOwn(DEVICE_ICON_MAP, key) ? DEVICE_ICON_MAP[key] : null;
+          const isActive = currentShape === key;
+          if (!Icon) return null;
+          return (
+            <button
+              key={key}
+              title={label}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAction('set_node_shape', { nodeId, shape: key });
+                onClose();
+              }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 2,
+                padding: '5px 2px',
+                borderRadius: 5,
+                border: isActive ? '1.5px solid #00f0ff' : '1px solid rgba(255,255,255,0.1)',
+                background: isActive ? 'rgba(0,240,255,0.1)' : 'rgba(255,255,255,0.03)',
+                cursor: 'pointer',
+              }}
+            >
+              <Icon
+                size={14}
+                style={{ stroke: isActive ? '#00f0ff' : 'rgba(255,255,255,0.6)', fill: 'none' }}
+              />
+              <span
+                style={{
+                  fontSize: 7,
+                  color: isActive ? '#00f0ff' : 'rgba(255,255,255,0.5)',
+                  lineHeight: 1,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+IconPickerPanel.propTypes = {
+  currentShape: PropTypes.string,
+  nodeId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+  onAction: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+};
 
 function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
   const submenuRowClass =
@@ -99,107 +212,6 @@ function shiftAwayFrom(pos, menuW, menuH, avoidRect, MENU_PADDING, viewportW, vi
   return pos; // no clean fit — keep original
 }
 
-// Shape picker definitions: circle first (the default), then the 8 SVG shapes.
-const SHAPE_OPTIONS = [
-  { key: 'circle', label: 'Circle', svgContent: null },
-  ...Object.entries(NODE_SHAPES).map(([key, shape]) => ({
-    key,
-    label: key.charAt(0).toUpperCase() + key.slice(1),
-    svgContent: shape,
-  })),
-];
-
-function ShapePickerPanel({ currentShape, nodeId, onAction, onClose }) {
-  return (
-    <div className="tw-px-3 tw-pt-1 tw-pb-2">
-      <div className="tw-text-xs tw-text-cb-text tw-mb-2 tw-font-semibold tw-uppercase tw-tracking-wider tw-opacity-60">
-        Node Shape
-      </div>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: 6,
-        }}
-      >
-        {SHAPE_OPTIONS.map(({ key, label, svgContent }) => {
-          const isActive = (currentShape || 'circle') === key;
-          return (
-            <button
-              key={key}
-              title={label}
-              onClick={(e) => {
-                e.stopPropagation();
-                onAction('set_node_shape', { nodeId, shape: key === 'circle' ? null : key });
-                onClose();
-              }}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 3,
-                padding: '6px 4px',
-                borderRadius: 6,
-                border: isActive
-                  ? '1.5px solid var(--color-primary, #4a7fa5)'
-                  : '1px solid rgba(255,255,255,0.1)',
-                background: isActive ? 'rgba(74, 127, 165, 0.15)' : 'rgba(255,255,255,0.03)',
-                cursor: 'pointer',
-                transition: 'all 0.1s ease',
-              }}
-            >
-              <svg
-                viewBox="0 0 40 40"
-                width={28}
-                height={28}
-                aria-hidden="true"
-                style={{ overflow: 'visible' }}
-              >
-                {svgContent ? (
-                  <path
-                    d={svgContent.path}
-                    fill="rgba(74,127,165,0.15)"
-                    stroke={isActive ? 'var(--color-primary, #4a7fa5)' : 'rgba(255,255,255,0.5)'}
-                    strokeWidth={1.5}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ) : (
-                  <circle
-                    cx="20"
-                    cy="20"
-                    r="16"
-                    fill="rgba(74,127,165,0.15)"
-                    stroke={isActive ? 'var(--color-primary, #4a7fa5)' : 'rgba(255,255,255,0.5)'}
-                    strokeWidth={1.5}
-                  />
-                )}
-              </svg>
-              <span
-                style={{
-                  fontSize: 9,
-                  color: isActive ? 'var(--color-primary, #4a7fa5)' : 'rgba(255,255,255,0.5)',
-                  fontWeight: isActive ? 700 : 400,
-                  lineHeight: 1,
-                }}
-              >
-                {label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-ShapePickerPanel.propTypes = {
-  currentShape: PropTypes.string,
-  nodeId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
-  onAction: PropTypes.func.isRequired,
-  onClose: PropTypes.func.isRequired,
-};
 
 function ContextMenu({
   position,
@@ -231,14 +243,35 @@ function ContextMenu({
     if (dashIdx < 0) return null;
     const prefix = str.slice(0, dashIdx);
     const id = parseInt(str.slice(dashIdx + 1), 10);
-    const entityType = _PREFIX_MAP[prefix];
+    // eslint-disable-next-line security/detect-object-injection
+    const entityType = Object.hasOwn(_PREFIX_MAP, prefix) ? _PREFIX_MAP[prefix] : undefined;
     return entityType && !isNaN(id) ? { entityType, entityId: id } : null;
   };
 
   const menuRef = useRef(null);
+  const shapeMenuTriggerRef = useRef(null);
   const [activeSubmenu, setActiveSubmenu] = useState(null);
   const [menuPosition, setMenuPosition] = useState({ x: -9999, y: -9999 });
   const [submenuDirection, setSubmenuDirection] = useState('right');
+  const [iconPickerVDir, setIconPickerVDir] = useState('down');
+
+  // Delayed close prevents the flyout from dismissing during diagonal mouse movement
+  const submenuCloseTimer = useRef(null);
+  const openSubmenu = (name) => {
+    if (submenuCloseTimer.current) clearTimeout(submenuCloseTimer.current);
+    setActiveSubmenu(name);
+  };
+  const openShapeSubmenu = () => {
+    if (submenuCloseTimer.current) clearTimeout(submenuCloseTimer.current);
+    setActiveSubmenu('shape');
+    if (shapeMenuTriggerRef.current) {
+      const rect = shapeMenuTriggerRef.current.getBoundingClientRect();
+      setIconPickerVDir(rect.top + 420 > window.innerHeight ? 'up' : 'down');
+    }
+  };
+  const scheduleCloseSubmenu = () => {
+    submenuCloseTimer.current = setTimeout(() => setActiveSubmenu(null), 200);
+  };
 
   useLayoutEffect(() => {
     if (!node || !menuRef.current) return;
@@ -606,8 +639,8 @@ function ContextMenu({
 
         <div
           className="tw-relative"
-          onPointerEnter={() => setActiveSubmenu('compute')}
-          onPointerLeave={() => setActiveSubmenu(null)}
+          onPointerEnter={() => openSubmenu('compute')}
+          onPointerLeave={scheduleCloseSubmenu}
         >
           <button className={`${menuRowClass} tw-justify-between`}>
             <div className="tw-flex tw-items-center tw-gap-3">
@@ -631,8 +664,8 @@ function ContextMenu({
 
         <div
           className="tw-relative"
-          onPointerEnter={() => setActiveSubmenu('storage')}
-          onPointerLeave={() => setActiveSubmenu(null)}
+          onPointerEnter={() => openSubmenu('storage')}
+          onPointerLeave={scheduleCloseSubmenu}
         >
           <button className={`${menuRowClass} tw-justify-between`}>
             <div className="tw-flex tw-items-center tw-gap-3">
@@ -656,8 +689,8 @@ function ContextMenu({
 
         <div
           className="tw-relative"
-          onPointerEnter={() => setActiveSubmenu('network')}
-          onPointerLeave={() => setActiveSubmenu(null)}
+          onPointerEnter={() => openSubmenu('network')}
+          onPointerLeave={scheduleCloseSubmenu}
         >
           <button className={`${menuRowClass} tw-justify-between`}>
             <div className="tw-flex tw-items-center tw-gap-3">
@@ -691,37 +724,6 @@ function ContextMenu({
         </button>
 
         <div className="tw-my-1 tw-border-t tw-border-cb-border" />
-
-        {/* Shape picker — inline 3×3 grid, no fly-out needed */}
-        <div
-          className="tw-relative"
-          onPointerEnter={() => setActiveSubmenu('shape')}
-          onPointerLeave={() => setActiveSubmenu(null)}
-        >
-          <button className={`${menuRowClass} tw-justify-between`}>
-            <div className="tw-flex tw-items-center tw-gap-3">
-              <Shapes className={iconClass} />
-              Node Shape
-            </div>
-            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
-          </button>
-          {activeSubmenu === 'shape' && (
-            <div
-              className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-top-0 tw-mr-1' : 'tw-absolute tw-left-full tw-top-0 tw-ml-1'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
-              style={{ width: 210 }}
-            >
-              <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-rounded-t-xl">
-                Select Shape
-              </div>
-              <ShapePickerPanel
-                currentShape={node.data?.nodeShape}
-                nodeId={node.id}
-                onAction={onAction}
-                onClose={onClose}
-              />
-            </div>
-          )}
-        </div>
 
         <button
           onClick={() => {
@@ -760,8 +762,8 @@ function ContextMenu({
                 <div
                   className={menuRowClass}
                   style={{ position: 'relative' }}
-                  onMouseEnter={() => setActiveSubmenu('move_map')}
-                  onMouseLeave={() => setActiveSubmenu(null)}
+                  onMouseEnter={() => openSubmenu('move_map')}
+                  onMouseLeave={scheduleCloseSubmenu}
                 >
                   <Layers className={iconClass} />
                   Move to map
@@ -809,6 +811,55 @@ function ContextMenu({
               </>
             );
           })()}
+
+        {node.originalType === 'hardware' && (
+          <button
+            onClick={() => {
+              onAction('lldp_enrich', { nodeId: node.id });
+              onClose();
+            }}
+            className={menuRowClass}
+          >
+            <Network className={iconClass} />
+            Enrich with LLDP
+          </button>
+        )}
+
+        {node.originalType === 'hardware' && (
+          <>
+            <div className="tw-my-1 tw-border-t tw-border-cb-border" />
+            <div
+              ref={shapeMenuTriggerRef}
+              className="tw-relative"
+              onPointerEnter={openShapeSubmenu}
+              onPointerLeave={scheduleCloseSubmenu}
+            >
+              <button className={`${menuRowClass} tw-justify-between`}>
+                <div className="tw-flex tw-items-center tw-gap-3">
+                  <Shapes className={iconClass} />
+                  Node Icon
+                </div>
+                <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
+              </button>
+              {activeSubmenu === 'shape' && (
+                <div
+                  className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-mr-1' : 'tw-absolute tw-left-full tw-ml-1'} ${iconPickerVDir === 'up' ? 'tw-bottom-0' : 'tw-top-0'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                  style={{ width: 220 }}
+                >
+                  <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-rounded-t-xl">
+                    Select Icon
+                  </div>
+                  <IconPickerPanel
+                    currentShape={node.data?.nodeShape}
+                    nodeId={node.id}
+                    onAction={onAction}
+                    onClose={onClose}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        )}
 
         <button
           onClick={() => {

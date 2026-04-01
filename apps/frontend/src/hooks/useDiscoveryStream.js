@@ -240,8 +240,24 @@ export function useDiscoveryStream() {
           });
           break;
         case 'result_added':
-          discoveryEmitter.emit('result:added', msg.result);
-          setPendingCount((c) => c + 1);
+          if (msg._ephemeral) {
+            discoveryEmitter.emit('result:added', { ...msg });
+          } else {
+            discoveryEmitter.emit('result:added', msg.result);
+            setPendingCount((c) => c + 1);
+          }
+          break;
+        case 'result_enriched':
+          discoveryEmitter.emit('result:enriched', {
+            job_id: msg.job_id,
+            scan_result_id: msg.scan_result_id,
+            ip_address: msg.ip_address,
+            hostname: msg.hostname,
+            vendor: msg.vendor,
+            device_type: msg.device_type,
+            open_ports: msg.open_ports,
+            status: msg.status,
+          });
           break;
         case 'result_processed':
           // Server-side event when results are accepted/rejected

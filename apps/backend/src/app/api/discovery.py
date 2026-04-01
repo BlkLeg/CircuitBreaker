@@ -23,6 +23,11 @@ from app.schemas.discovery import (
     DiscoveryStatusOut,
     EnhancedBulkMergeRequest,
     ImportAsNetworkRequest,
+    LLDPApplyRequest,
+    LLDPApplyResponse,
+    LLDPEnrichRequest,
+    LLDPJobResultsOut,
+    LLDPNeighborOut,
     MergeRequest,
     ScanJobOut,
     ScanLogOut,
@@ -496,6 +501,193 @@ def import_as_network_endpoint(
         if not topology:
             raise HTTPException(status_code=404, detail="Map not found")
     return import_as_network(db, job_id, payload, actor="api")
+
+
+@router.post("/lldp-enrich")
+def lldp_enrich(
+    payload: LLDPEnrichRequest,
+    _user=require_write_auth,
+    db: Session = Depends(get_db),
+):
+    from app.db.models import Hardware
+    from app.services.discovery_service import enqueue_lldp_job
+
+    hw_rows = db.execute(
+        select(Hardware).where(Hardware.id.in_(payload.hardware_ids))
+    ).scalars().all()
+    ips = [hw.ip_address for hw in hw_rows if hw.ip_address]
+    if not ips:
+        raise HTTPException(status_code=400, detail="No valid IP addresses for selected nodes")
+
+    job_id = enqueue_lldp_job(
+        db,
+        ips=ips,
+        community=payload.snmp_community,
+        port=payload.snmp_port,
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/lldp-jobs/{job_id}/results", response_model=LLDPJobResultsOut)
+def lldp_job_results(
+    job_id: int,
+    db: Session = Depends(get_db),
+):
+    from app.db.models import Hardware, ScanJob, ScanResult
+
+    job = db.get(ScanJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    results = db.execute(
+        select(ScanResult).where(ScanResult.scan_job_id == job_id)
+    ).scalars().all()
+
+    neighbors_out = []
+    for result in results:
+        if not result.lldp_neighbors_json:
+            continue
+        src_hw = db.execute(
+            select(Hardware).where(Hardware.ip_address == result.ip_address)
+        ).scalar_one_or_none()
+
+        for idx, neighbor in enumerate(result.lldp_neighbors_json):
+            remote_hw = None
+            if neighbor.get("remote_chassis_id"):
+                remote_hw = db.execute(
+                    select(Hardware).where(Hardware.mac_address == neighbor["remote_chassis_id"])
+                ).scalar_one_or_none()
+            if not remote_hw and neighbor.get("remote_mgmt_ip"):
+                remote_hw = db.execute(
+                    select(Hardware).where(Hardware.ip_address == neighbor["remote_mgmt_ip"])
+                ).scalar_one_or_none()
+
+            neighbors_out.append(LLDPNeighborOut(
+                source_scan_result_id=result.id,
+                neighbor_index=idx,
+                source_hardware_id=src_hw.id if src_hw else None,
+                source_hardware_name=src_hw.name if src_hw else result.ip_address,
+                local_port_desc=neighbor.get("local_port_desc"),
+                remote_chassis_id=neighbor.get("remote_chassis_id"),
+                remote_port_desc=neighbor.get("remote_port_desc"),
+                remote_sys_name=neighbor.get("remote_sys_name"),
+                remote_mgmt_ip=neighbor.get("remote_mgmt_ip"),
+                remote_hardware_id=remote_hw.id if remote_hw else None,
+                remote_hardware_name=(
+                    remote_hw.name if remote_hw else neighbor.get("remote_sys_name")
+                ),
+                is_new_stub=remote_hw is None,
+            ))
+
+    return LLDPJobResultsOut(job_id=job_id, neighbors=neighbors_out)
+
+
+@router.post("/lldp-jobs/{job_id}/apply", response_model=LLDPApplyResponse)
+def lldp_apply(
+    job_id: int,
+    payload: LLDPApplyRequest,
+    _user=require_write_auth,
+    db: Session = Depends(get_db),
+):
+    from datetime import datetime, timezone
+
+    from app.db.models import Hardware, HardwareConnection, ScanResult, TopologyNode
+
+    CAPS_TO_ROLE = {
+        "bridge": "switch",
+        "router": "router",
+        "wlanAccessPoint": "access_point",
+    }
+
+    edges_created = 0
+    stubs_created = 0
+    seen_pairs: set[tuple[int, int]] = set()
+
+    for selection in payload.connections:
+        result = db.get(ScanResult, selection.source_scan_result_id)
+        if not result or not result.lldp_neighbors_json:
+            continue
+        if selection.neighbor_index >= len(result.lldp_neighbors_json):
+            continue
+
+        neighbor = result.lldp_neighbors_json[selection.neighbor_index]
+
+        src_hw = db.execute(
+            select(Hardware).where(Hardware.ip_address == result.ip_address)
+        ).scalar_one_or_none()
+        if not src_hw:
+            continue
+
+        remote_hw = None
+        if neighbor.get("remote_chassis_id"):
+            remote_hw = db.execute(
+                select(Hardware).where(Hardware.mac_address == neighbor["remote_chassis_id"])
+            ).scalar_one_or_none()
+        if not remote_hw and neighbor.get("remote_mgmt_ip"):
+            remote_hw = db.execute(
+                select(Hardware).where(Hardware.ip_address == neighbor["remote_mgmt_ip"])
+            ).scalar_one_or_none()
+
+        if not remote_hw:
+            caps = neighbor.get("capabilities") or []
+            role = next((CAPS_TO_ROLE[c] for c in caps if c in CAPS_TO_ROLE), "misc")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            remote_hw = Hardware(
+                name=(
+                    neighbor.get("remote_sys_name")
+                    or neighbor.get("remote_chassis_id")
+                    or "Unknown Device"
+                ),
+                ip_address=neighbor.get("remote_mgmt_ip"),
+                mac_address=neighbor.get("remote_chassis_id"),
+                role=role,
+                source="discovery",
+                is_placeholder=True,
+                discovered_at=now_iso,
+                last_seen=now_iso,
+            )
+            db.add(remote_hw)
+            db.flush()
+
+            # Assign stub to same topologies as source device
+            src_topology_nodes = db.execute(
+                select(TopologyNode).where(
+                    TopologyNode.entity_type == "hardware",
+                    TopologyNode.entity_id == src_hw.id,
+                )
+            ).scalars().all()
+            for tn in src_topology_nodes:
+                db.add(TopologyNode(
+                    topology_id=tn.topology_id,
+                    entity_type="hardware",
+                    entity_id=remote_hw.id,
+                ))
+            db.flush()
+            stubs_created += 1
+
+        pair = (min(src_hw.id, remote_hw.id), max(src_hw.id, remote_hw.id))
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+
+        exists = db.execute(
+            select(HardwareConnection).where(
+                HardwareConnection.source_hardware_id == src_hw.id,
+                HardwareConnection.target_hardware_id == remote_hw.id,
+            )
+        ).scalar_one_or_none()
+        if not exists:
+            db.add(HardwareConnection(
+                source_hardware_id=src_hw.id,
+                target_hardware_id=remote_hw.id,
+                connection_type="ethernet",
+                source_port=neighbor.get("local_port_desc"),
+                target_port=neighbor.get("remote_port_desc"),
+            ))
+            edges_created += 1
+
+    db.commit()
+    return LLDPApplyResponse(edges_created=edges_created, stubs_created=stubs_created)
 
 
 @router.get("/jobs/{job_id}/logs", response_model=list[ScanLogOut])

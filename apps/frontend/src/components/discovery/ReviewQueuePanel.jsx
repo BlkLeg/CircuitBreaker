@@ -11,6 +11,7 @@ import ReviewDrawer from './ReviewDrawer.jsx';
 import { HARDWARE_ROLES } from '../../config/hardwareRoles.js';
 import IconPickerModal, { IconImg } from '../common/IconPickerModal.jsx';
 import NetworkSelectorDropdown from './NetworkSelectorDropdown.jsx';
+import { discoveryEmitter } from '../../hooks/useDiscoveryStream.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -254,12 +255,53 @@ export default function ReviewQueuePanel({ onCountChange }) {
   }, []);
 
   useEffect(() => {
-    setTotal(results.length);
-    onCountChange?.(results.length);
-  }, [results.length, onCountChange]);
+    const realCount = results.filter((r) => !r._discovering).length;
+    setTotal(realCount);
+    onCountChange?.(realCount);
+  }, [results, onCountChange]);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Live WS updates — ephemeral skeleton rows during active scan
+  useEffect(() => {
+    const onAdded = (ev) => {
+      if (!ev._ephemeral) return;
+      setResults((prev) => {
+        const ephId = `_eph_${ev.ip_address}`;
+        if (prev.find((r) => r.id === ephId || r.ip_address === ev.ip_address)) return prev;
+        return [
+          ...prev,
+          { id: ephId, ip_address: ev.ip_address, mac_address: ev.mac_address || null, _discovering: true },
+        ];
+      });
+    };
+
+    const onEnriched = (ev) => {
+      setResults((prev) =>
+        prev.map((r) =>
+          r._discovering && r.ip_address === ev.ip_address
+            ? { ...r, hostname: ev.hostname, os_vendor: ev.vendor, device_type: ev.device_type, _discovering: false }
+            : r
+        )
+      );
+    };
+
+    const onJobUpdate = (job) => {
+      if (job.status === 'completed' || job.status === 'done') {
+        setTimeout(() => load(), 800);
+      }
+    };
+
+    discoveryEmitter.on('result:added', onAdded);
+    discoveryEmitter.on('result:enriched', onEnriched);
+    discoveryEmitter.on('job:update', onJobUpdate);
+    return () => {
+      discoveryEmitter.off('result:added', onAdded);
+      discoveryEmitter.off('result:enriched', onEnriched);
+      discoveryEmitter.off('job:update', onJobUpdate);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -867,6 +909,23 @@ export default function ReviewQueuePanel({ onCountChange }) {
               </thead>
               <tbody>
                 {displayResults.map((r) => {
+                  if (r._discovering) {
+                    return (
+                      <tr key={r.id} style={{ opacity: 0.7 }}>
+                        <td className="col-checkbox" />
+                        <td className="col-target" style={{ fontFamily: 'monospace' }}>{r.ip_address}</td>
+                        <td><span className="skeleton-pulse" style={{ display: 'block', height: 14, width: 110, borderRadius: 4 }} /></td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.mac_address || '—'}</td>
+                        <td />
+                        <td><span className="skeleton-pulse" style={{ display: 'block', height: 14, width: 80, borderRadius: 4 }} /></td>
+                        <td />
+                        <td />
+                        <td><span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>scanning…</span></td>
+                        <td />
+                        <td />
+                      </tr>
+                    );
+                  }
                   const edits = localEdits.get(r.id) || {};
                   const docker = isDockerResult(r);
                   const hostname = edits.hostname ?? (r.hostname || r.snmp_sys_name || '');

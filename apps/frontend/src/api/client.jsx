@@ -580,6 +580,9 @@ export const discoveryApi = {
   batchImport: (jobId, items) => client.post(`/discovery/jobs/${jobId}/batch-import`, { items }),
   importAsNetwork: (jobId, payload) =>
     client.post(`/discovery/jobs/${jobId}/import-as-network`, payload),
+  lldpEnrich: (payload) => client.post('/discovery/lldp-enrich', payload),
+  lldpJobResults: (jobId) => client.get(`/discovery/lldp-jobs/${jobId}/results`),
+  lldpApply: (jobId, payload) => client.post(`/discovery/lldp-jobs/${jobId}/apply`, payload),
 };
 
 export const certificatesApi = {

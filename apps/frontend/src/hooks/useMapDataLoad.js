@@ -194,6 +194,7 @@ export function useMapDataLoad({
         const rank = getNodeRank(nodeShell);
         nodeShell.data = {
           label: n.label,
+          type: n.type,
           role: n.role || null,
           iconSrc: resolveNodeIcon(n.type, n.icon_slug, n.vendor, n.kind, n.role, n.cluster_type),
           icon_slug: n.icon_slug ?? null,
@@ -234,6 +235,7 @@ export function useMapDataLoad({
           proxmox_status: n.proxmox_status ?? null,
           proxmox_node_name: n.proxmox_node_name ?? null,
           integration_config_id: n.integration_config_id ?? null,
+          device_type: n.device_type ?? null,
           docs: Array.isArray(n.docs) ? n.docs : [],
         };
         return nodeShell;

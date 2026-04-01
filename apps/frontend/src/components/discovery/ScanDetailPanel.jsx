@@ -377,6 +377,24 @@ export default function ScanDetailPanel({
                       {computeEta(job, pct, etaSeconds)}
                     </span>
                   </div>
+                  {/* Progress bar + stage label (running only) */}
+                  {job.status === 'running' && pct > 0 && (
+                    <div style={{ gridColumn: '1 / -1', marginTop: 4, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div className="scan-progress-bar-wrap">
+                        <div className="scan-progress-bar-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                      {job.current_message && (
+                        <div className="scan-stage-label">{job.current_message}</div>
+                      )}
+                      {scanTypes.includes('deep_dive') && (
+                        <div className="scan-probe-tags">
+                          {['rDNS', 'NetBIOS', 'mDNS', 'SSDP', 'HTTP'].map((p) => (
+                            <span key={p} className="probe-tag">{p}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="scan-detail-empty" style={{ gridColumn: '1 / -1' }}>

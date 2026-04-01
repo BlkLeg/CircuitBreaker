@@ -22,6 +22,7 @@ import {
 } from '../api/client';
 import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
+import LLDPReviewModal from '../components/LLDPReviewModal';
 import { createMonitor, updateMonitor, runImmediateCheck } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -408,6 +409,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
   const [createNodeModal, setCreateNodeModal] = useState({ isOpen: false, position: null });
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [iconPickerNode, setIconPickerNode] = useState(null);
+  const [lldpJobId, setLldpJobId] = useState(null);
+  const lldpEnrichingRef = useRef(false);
   const [quickActionModal, setQuickActionModal] = useState(null);
   const [quickActionValue, setQuickActionValue] = useState('');
   const [quickActionSaving, setQuickActionSaving] = useState(false);
@@ -1214,12 +1217,12 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           dirtyRef.current = true;
         } else if (action === 'set_node_shape') {
           const { shape } = data;
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, data: { ...n.data, nodeShape: shape || undefined } } : n
-            )
+          const updatedNodes = nodesRef.current.map((n) =>
+            n.id === nodeId ? { ...n, data: { ...n.data, nodeShape: shape || undefined } } : n
           );
-          dirtyRef.current = true;
+          nodesRef.current = updatedNodes;
+          setNodes(updatedNodes);
+          saveLayoutSnapshot().catch((err) => toast.error('Failed to save icon: ' + err.message));
         } else if (
           action === 'proxmox_vm_start' ||
           action === 'proxmox_vm_stop' ||
@@ -1281,6 +1284,23 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           await runImmediateCheck(nd._refId);
           toast.success('Probe triggered');
           fetchData();
+        } else if (action === 'lldp_enrich') {
+          const nd = nodesRef.current.find((n) => n.id === nodeId);
+          if (!nd?._refId) { toast.error('No hardware ID for this node'); return; }
+          lldpEnrichingRef.current = true;
+          const res = await discoveryApi.lldpEnrich({ hardware_ids: [nd._refId] });
+          const jobId = res.data.job_id;
+          const poll = setInterval(async () => {
+            try {
+              const jobRes = await discoveryApi.getJob(jobId);
+              if (jobRes.data.status === 'completed' || jobRes.data.status === 'failed') {
+                clearInterval(poll);
+                lldpEnrichingRef.current = false;
+                if (jobRes.data.status === 'completed') setLldpJobId(jobId);
+                else toast.error('LLDP scan failed');
+              }
+            } catch { clearInterval(poll); lldpEnrichingRef.current = false; }
+          }, 2000);
         } else {
           toast.info(`Action ${action} triggered but specific handler not implemented yet`);
         }
@@ -1295,6 +1315,9 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       handleQuickCreateAction,
       handleRoleAction,
       handleUpdateStatusAction,
+      saveLayoutSnapshot,
+
+      setLldpJobId,
       setNodes,
       toast,
     ]
@@ -2391,6 +2414,14 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
               onClose={() => setCreateNodeModal({ isOpen: false, position: null })}
               onConfirm={handleCreateNode}
             />
+
+            {lldpJobId && (
+              <LLDPReviewModal
+                jobId={lldpJobId}
+                onApply={() => { setLldpJobId(null); fetchData(); }}
+                onClose={() => setLldpJobId(null)}
+              />
+            )}
 
             {iconPickerOpen && iconPickerNode && (
               <IconPickerModal

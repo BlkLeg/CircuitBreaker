@@ -1833,3 +1833,69 @@ select.cb-input {
   margin: 0 12px 8px;
   padding: 0;
 }
+
+/* ── Scan progress bar ─────────────────────────────────────────────────────── */
+
+.scan-progress-bar-wrap {
+  height: 4px;
+  width: 100%;
+  border-radius: 2px;
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.scan-progress-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-primary);
+  transition: width 0.4s ease;
+}
+
+.scan-stage-label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.scan-probe-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.probe-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-border);
+  color: var(--color-text-muted);
+  font-family: monospace;
+  letter-spacing: 0.03em;
+}
+
+/* ── Skeleton pulse (discovering rows) ─────────────────────────────────────── */
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.skeleton-pulse {
+  background: var(--color-border);
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+/* ── Deep Dive time badge ──────────────────────────────────────────────────── */
+
+.scan-mode-time-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(217, 119, 6, 0.15);
+  color: #d97706;
+  pointer-events: none;
+}

@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     PrimaryKeyConstraint,
+    SmallInteger,
     String,
     Table,
     Text,
@@ -629,6 +630,8 @@ class HardwareConnection(Base):
     )
     connection_type: Mapped[str | None] = mapped_column(String, default="ethernet")
     bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+    source_port: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_port: Mapped[str | None] = mapped_column(String, nullable=True)
     source: Mapped[str] = mapped_column(String, nullable=False, default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1194,6 +1197,7 @@ class ScanResult(Base):
     snmp_storage_json: Mapped[list | None] = mapped_column(
         JSONB, nullable=True
     )  # JSONB as of v0.2.0
+    lldp_neighbors_json: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     network_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("networks.id"), nullable=True
@@ -1203,6 +1207,12 @@ class ScanResult(Base):
     os_accuracy: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )  # 0–100 nmap OS confidence
+    device_type: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # ios_device|android_device|fire_tv|router|printer|nas|smart_tv|ip_camera|windows_pc|…
+    device_confidence: Mapped[int | None] = mapped_column(
+        SmallInteger, nullable=True
+    )  # 0–100 classification confidence
     source_type: Mapped[str] = mapped_column(
         String, default="nmap"
     )  # nmap|arp|listener|prober|deep_dive|docker
