@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -14,12 +14,14 @@ from app.db.models import (
     Hardware,
     Integration,
     IntegrationMonitor,
+    KbOui,
     ScanResult,
     Service,
     Topology,
     TopologyNode,
 )
 from app.schemas.discovery import ScanResultOut
+from app.services.discovery_fingerprint import _kb_oui_lookup
 from app.services.discovery_network import PORT_SERVICE_MAP, _norm_mac
 from app.services.discovery_proxmox_merge import _merge_proxmox_result
 from app.services.log_service import write_log
@@ -283,6 +285,51 @@ def _auto_merge_result(db: Session, result: ScanResult, actor: str = "system") -
         )
 
 
+def maybe_learn_oui(scan_result: ScanResult, db: Session) -> None:
+    """If the accepted device has a valid unicast MAC and a confirmed vendor,
+    upsert its OUI prefix into the learned kb_oui table.
+
+    Skips locally-administered MACs (bit 1 of first byte set) and prefixes
+    already covered by the curated device_kb.json.
+    """
+    mac = scan_result.mac_address
+    vendor = scan_result.os_vendor
+    if not mac or not vendor:
+        return
+
+    # Skip locally-administered MACs — they have no OUI meaning
+    try:
+        first_byte = int(mac.split(":")[0], 16)
+    except (ValueError, IndexError):
+        return
+    if first_byte & 0x02:
+        return
+
+    prefix = mac.upper().replace(":", "").replace("-", "")[:6]
+    if len(prefix) != 6:
+        return
+
+    # Don't shadow entries already in the curated JSON
+    if _kb_oui_lookup(mac):
+        return
+
+    existing = db.get(KbOui, prefix)
+    if existing:
+        existing.seen_count += 1
+        existing.last_seen_at = datetime.now(UTC)
+        # Don't overwrite a confirmed vendor — increment count only
+    else:
+        db.add(
+            KbOui(
+                prefix=prefix,
+                vendor=vendor[:128],
+                device_type=getattr(scan_result, "device_type", None),
+                source="learned",
+            )
+        )
+    db.commit()
+
+
 def merge_scan_result(
     db: Session,
     result_id: int,
@@ -379,6 +426,7 @@ def merge_scan_result(
                 db.flush()
                 sp.commit()
                 db.commit()
+                maybe_learn_oui(result, db)
                 write_log(
                     db,
                     action="result_accepted",
@@ -453,6 +501,7 @@ def merge_scan_result(
                 sp.commit()
                 db.commit()
                 db.refresh(hw)
+                maybe_learn_oui(result, db)
 
                 write_log(
                     db,
@@ -606,8 +655,12 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
                 created_networks = 1
 
     # ── Step C: Merge each result ────────────────────────────────────────────
+    # ── Batch pre-load all ScanResults in one query ──────────────────────────
+    _all_results = db.query(ScanResult).filter(ScanResult.id.in_(payload.result_ids)).all()
+    _results_by_id: dict[int, ScanResult] = {r.id: r for r in _all_results}
+
     for rid in payload.result_ids:
-        result = db.query(ScanResult).filter(ScanResult.id == rid).first()
+        result = _results_by_id.get(rid)
         if not result:
             skipped += 1
             continue

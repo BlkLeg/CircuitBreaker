@@ -300,7 +300,7 @@ def rotate_vault_key(db: Session) -> None:
         plain = vault.decrypt(ciphertext)
         return new_fernet.encrypt(plain.encode()).decode()
 
-    # Re-encrypt AppSettings.smtp_password_enc
+    # Re-encrypt AppSettings.smtp_password_enc + DHCP router credentials
     cfg = db.get(AppSettings, 1)  # AppSettings already imported above
     if cfg and cfg.smtp_password_enc:
         try:
@@ -309,6 +309,26 @@ def rotate_vault_key(db: Session) -> None:
             _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
                 # Logs only type(exc).__name__ — exception class name, not any credential value
                 "Could not re-encrypt SMTP password during rotation (reason: %s)",
+                type(exc).__name__,
+            )
+    if cfg and getattr(cfg, "dhcp_router_user_enc", None):
+        try:
+            _user_enc: str = cfg.dhcp_router_user_enc  # type: ignore[assignment]
+            cfg.dhcp_router_user_enc = _reencrypt(_user_enc)
+        except Exception as exc:
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs only type(exc).__name__ — exception class name, not any credential value
+                "Could not re-encrypt DHCP router username during rotation (reason: %s)",
+                type(exc).__name__,
+            )
+    if cfg and getattr(cfg, "dhcp_router_pass_enc", None):
+        try:
+            _pass_enc: str = cfg.dhcp_router_pass_enc  # type: ignore[assignment]
+            cfg.dhcp_router_pass_enc = _reencrypt(_pass_enc)
+        except Exception as exc:
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs only type(exc).__name__ — exception class name, not any credential value
+                "Could not re-encrypt DHCP router password during rotation (reason: %s)",
                 type(exc).__name__,
             )
 

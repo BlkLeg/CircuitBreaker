@@ -165,6 +165,16 @@ class AppSettingsRead(BaseModel):
     ssdp_enabled: bool = True
     arp_enabled: bool = True
     tcp_probe_enabled: bool = True
+    # Mobile / phone discovery
+    mobile_discovery_enabled: bool = True
+    mdns_multicast_enabled: bool = True
+    mdns_listener_duration: int = 8
+    dhcp_lease_file_path: str = ""
+    dhcp_router_host: str = ""
+    dhcp_router_user_enc: str | None = Field(default=None, exclude=True)  # never returned
+    dhcp_router_pass_enc: str | None = Field(default=None, exclude=True)  # never returned
+    dhcp_router_command: str = "cat /var/lib/misc/dnsmasq.leases"
+    dhcp_router_credentials_set: bool = False  # computed in model_validator
     # v0.2.0: Self-aware cluster topology
     self_cluster_enabled: bool = False
     # SMTP / Email delivery
@@ -200,6 +210,9 @@ class AppSettingsRead(BaseModel):
     @model_validator(mode="after")
     def build_smtp_password_set(self) -> "AppSettingsRead":
         self.smtp_password_set = bool(self.smtp_password_enc)
+        self.dhcp_router_credentials_set = bool(
+            self.dhcp_router_user_enc or self.dhcp_router_pass_enc
+        )
         return self
 
     @model_validator(mode="after")
@@ -414,6 +427,15 @@ class AppSettingsUpdate(BaseModel):
     smtp_tls: bool | None = None
     # Accepts a flat {primary,…} dict OR the frontend's structured {dark:{…},light:{…}} object.
     theme_colors: dict[str, Any] | None = None
+    # Mobile / phone discovery
+    mobile_discovery_enabled: bool | None = None
+    mdns_multicast_enabled: bool | None = None
+    mdns_listener_duration: int | None = None
+    dhcp_lease_file_path: str | None = None
+    dhcp_router_host: str | None = None
+    dhcp_router_username: str | None = None  # plaintext → encrypted on write
+    dhcp_router_password: str | None = None  # plaintext → encrypted on write
+    dhcp_router_command: str | None = None
 
     @field_validator("theme_preset")
     @classmethod

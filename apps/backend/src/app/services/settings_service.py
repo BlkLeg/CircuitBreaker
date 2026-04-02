@@ -60,6 +60,13 @@ _DEFAULTS = dict(
     docker_sync_interval_minutes=5,
     graph_default_layout="dagre",
     map_title="Topology",
+    # Mobile / phone discovery
+    mobile_discovery_enabled=True,
+    mdns_multicast_enabled=True,
+    mdns_listener_duration=20,
+    dhcp_lease_file_path="",
+    dhcp_router_host="",
+    dhcp_router_command="cat /var/lib/misc/dnsmasq.leases",
 )
 
 
@@ -151,6 +158,40 @@ def update_settings(
                     raise
             # If value is None we leave smtp_password_enc untouched so
             # callers can omit the field to keep the existing password.
+            continue
+        elif field == "dhcp_router_username":
+            from app.services.credential_vault import get_vault
+
+            if value:
+                try:
+                    row.dhcp_router_user_enc = get_vault().encrypt(value)
+                except RuntimeError as e:
+                    if "not initialized" in str(e).lower():
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Vault is not initialized — cannot store"
+                                " router credentials securely."
+                            ),
+                        ) from e
+                    raise
+            continue
+        elif field == "dhcp_router_password":
+            from app.services.credential_vault import get_vault
+
+            if value:
+                try:
+                    row.dhcp_router_pass_enc = get_vault().encrypt(value)
+                except RuntimeError as e:
+                    if "not initialized" in str(e).lower():
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Vault is not initialized — cannot store"
+                                " router credentials securely."
+                            ),
+                        ) from e
+                    raise
             continue
         setattr(row, field, value)
     row.updated_at = utcnow()

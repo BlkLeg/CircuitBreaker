@@ -216,6 +216,10 @@ export function useDiscoveryStream() {
       switch (msg.type) {
         case 'job_update':
           discoveryEmitter.emit('job:update', msg.job);
+          if (typeof msg.pending_count === 'number') {
+            setPendingCount(msg.pending_count);
+            actionsPendingRef.current.clear();
+          }
           break;
         case 'job_progress':
           discoveryEmitter.emit('job:progress', {
@@ -416,6 +420,11 @@ export function useDiscoveryStream() {
       discoveryEmitter.off('badge:increment', onBadgeIncrement);
     };
   }, []);
+
+  // Propagate authoritative pendingCount to any component via badge:update event
+  useEffect(() => {
+    discoveryEmitter.emit('badge:update', pendingCount);
+  }, [pendingCount]);
 
   // Periodic sync with backend to catch missed events (every 30 seconds when connected)
   useEffect(() => {

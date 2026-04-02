@@ -57,6 +57,15 @@ def _arp_available() -> bool:
 
 async def _run_arp_scan(cidr: str) -> list[dict]:
     """Fallback mechanism if ARP capable is found."""
+    import ipaddress as _ipaddress
+
+    _net = _ipaddress.ip_network(cidr, strict=False)
+    if _net.prefixlen < 16:
+        raise ValueError(
+            f"Subnet {cidr} is too large for ARP scan (prefixlen {_net.prefixlen} < 16). "
+            "Use nmap host sweep for large subnets."
+        )
+
     if not _arp_available():
         logger.info(f"ARP not capable, skipping pure scapy ARP ping for {cidr}")
         return []
@@ -74,6 +83,27 @@ async def _run_arp_scan(cidr: str) -> list[dict]:
     except Exception as e:
         logger.error(f"ARP scan failed: {e}")
         return []
+
+
+async def _run_host_discovery_sweep(cidr: str) -> set[str]:
+    """Fast host-up sweep: returns IPs for all live hosts regardless of open ports.
+
+    Uses nmap -sn -PE -PS80,443,8080 so phones responding to ICMP or returning
+    TCP RST on closed ports are detected. Falls back to empty set on any error.
+    """
+    try:
+        import nmap as _nmap
+
+        nm = _nmap.PortScanner()
+        args = "-sn -PE -PS80,443,8080 -T4 --min-parallelism 100"
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: nm.scan(hosts=cidr, arguments=args))
+        live = {host for host in nm.all_hosts() if nm[host].state() == "up"}
+        logger.info("Host pre-sweep %s: %d live host(s) found", cidr, len(live))
+        return live
+    except Exception as exc:
+        logger.warning("Host pre-sweep failed for %s — skipping: %s", cidr, exc)
+        return set()
 
 
 def _has_raw_socket_privilege() -> bool:
@@ -128,6 +158,34 @@ def _nmap_os_capable() -> bool:
         return "cap_net_raw" in r.stdout
     except Exception:
         return False
+
+
+def _read_proc_arp_cache(target_ips: set[str]) -> dict[str, str]:
+    """Read kernel ARP cache from /proc/net/arp (no root required).
+
+    The kernel populates this cache even for TCP connect scans — any connection
+    to a local-subnet host triggers an ARP request internally.  Reading this
+    file is always permitted regardless of process privilege.
+
+    Returns {ip: mac_upper} for each *target_ip* found with a valid entry.
+    """
+    result: dict[str, str] = {}
+    try:
+        with open("/proc/net/arp") as fh:
+            next(fh)  # skip header line
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                ip, mac = parts[0], parts[3]
+                if ip not in target_ips:
+                    continue
+                if mac in ("00:00:00:00:00:00", ""):
+                    continue
+                result[ip] = mac.upper()
+    except Exception:
+        pass
+    return result
 
 
 async def _run_nmap_scan(cidr: str, args: str) -> dict:
@@ -227,6 +285,17 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
                 "open_ports": open_ports,
                 "raw": raw_xml,
             }
+        # Supplement any missing MACs from the kernel ARP cache (works without root)
+        missing_mac_ips = {ip for ip, data in results.items() if not data["mac"]}
+        if missing_mac_ips:
+            arp_cache = _read_proc_arp_cache(missing_mac_ips)
+            if arp_cache:
+                logger.info(
+                    "Supplemented %d MAC(s) from /proc/net/arp (TCP connect scan)", len(arp_cache)
+                )
+            for ip, mac in arp_cache.items():
+                results[ip]["mac"] = mac
+
         return results
     except Exception as e:
         logger.error(f"Nmap scan failed: {e}")
@@ -346,8 +415,14 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
 
     # Capability bitmask to human-readable names
     CAP_BITS = {
-        0: "other", 1: "repeater", 2: "bridge", 3: "wlanAccessPoint",
-        4: "router", 5: "telephone", 6: "docsisCableDevice", 7: "stationOnly",
+        0: "other",
+        1: "repeater",
+        2: "bridge",
+        3: "wlanAccessPoint",
+        4: "router",
+        5: "telephone",
+        6: "docsisCableDevice",
+        7: "stationOnly",
     }
 
     try:
@@ -362,6 +437,7 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
     async def _walk_oid(oid_str: str, field: str) -> None:
         try:
             from pysnmp.hlapi.v3arch.asyncio.cmdgen import next_cmd
+
             async for err_ind, err_stat, _, var_binds in next_cmd(
                 SnmpEngine(),
                 CommunityData(community, mpModel=1),
@@ -380,12 +456,14 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
             logger.debug(f"LLDP walk {field} failed for {ip}: {e}")
 
     # Walk all relevant OIDs
-    await _walk_oid(OID_LLDP_REM_CHASSIS, "lldpRemChassisId")
-    await _walk_oid(OID_LLDP_REM_PORT_ID, "lldpRemPortId")
-    await _walk_oid(OID_LLDP_REM_PORT_DESCR, "lldpRemPortDescr")
-    await _walk_oid(OID_LLDP_REM_SYS_NAME, "lldpRemSysName")
-    await _walk_oid(OID_LLDP_REM_CAP, "lldpRemSysCapEnabled")
-    await _walk_oid(OID_LLDP_LOC_PORT_DESCR, "lldpLocPortDescr")
+    await asyncio.gather(
+        _walk_oid(OID_LLDP_REM_CHASSIS, "lldpRemChassisId"),
+        _walk_oid(OID_LLDP_REM_PORT_ID, "lldpRemPortId"),
+        _walk_oid(OID_LLDP_REM_PORT_DESCR, "lldpRemPortDescr"),
+        _walk_oid(OID_LLDP_REM_SYS_NAME, "lldpRemSysName"),
+        _walk_oid(OID_LLDP_REM_CAP, "lldpRemSysCapEnabled"),
+        _walk_oid(OID_LLDP_LOC_PORT_DESCR, "lldpLocPortDescr"),
+    )
 
     # Parse capability bitmask
     neighbors = []
@@ -402,3 +480,173 @@ async def _run_lldp_probe(ip: str, community: str, port: int = 161) -> list[dict
 
     logger.info(f"LLDP probe {ip}: found {len(neighbors)} neighbors")
     return neighbors
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mobile device discovery helpers — Layer 3 & gateway detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _detect_default_gateway(target_cidr: str = "") -> str | None:  # noqa: ARG001
+    """Auto-detect the default gateway IP for the current host.
+
+    Strategy:
+      1. Parse /proc/net/route (Linux) for the route with Destination=0 and
+         RTF_GATEWAY flag set (Flags & 0x0002 != 0).
+      2. Fall back to the ``netifaces`` library if available.
+      3. Return None if neither method works.
+
+    The ``target_cidr`` parameter is accepted for future per-subnet routing
+    table lookup but is currently unused (we return the default route).
+    """
+    import socket
+    import struct
+
+    # Method 1: /proc/net/route (Linux only)
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.readlines()[1:]:  # skip header
+                parts = line.strip().split()
+                if len(parts) < 8:
+                    continue
+                dest_hex = parts[1]
+                gw_hex = parts[2]
+                flags_hex = parts[3]
+                try:
+                    dest = int(dest_hex, 16)
+                    flags = int(flags_hex, 16)
+                    gw = int(gw_hex, 16)
+                except ValueError:
+                    continue
+                # RTF_UP (0x0001) | RTF_GATEWAY (0x0002) = 0x0003; Destination = 0
+                if dest == 0 and (flags & 0x0003) == 0x0003 and gw != 0:
+                    # Kernel stores as little-endian 32-bit int
+                    gw_bytes = struct.pack("<I", gw)
+                    return socket.inet_ntoa(gw_bytes)
+    except Exception:
+        pass
+
+    # Method 2: netifaces (cross-platform)
+    try:
+        import netifaces  # type: ignore[import]
+
+        gws = netifaces.gateways()
+        default_gw = gws.get("default", {}).get(netifaces.AF_INET)
+        if default_gw:
+            return default_gw[0]
+    except Exception:
+        pass
+
+    return None
+
+
+# ipNetToMediaTable OID (router ARP table)
+_OID_IP_NET_TO_MEDIA = "1.3.6.1.2.1.4.22.1"
+_OID_IP_NET_TO_MEDIA_PHYS_ADDR = "1.3.6.1.2.1.4.22.1.2"  # MAC
+_OID_IP_NET_TO_MEDIA_NET_ADDR = "1.3.6.1.2.1.4.22.1.3"  # IP
+# type values: 1=other, 2=invalid, 3=dynamic, 4=static
+_OID_IP_NET_TO_MEDIA_TYPE = "1.3.6.1.2.1.4.22.1.4"
+
+
+async def _run_router_arp_table(
+    gateway_ip: str,
+    community: str,
+    port: int = 161,
+) -> list[dict]:
+    """Walk the router's ipNetToMediaTable to get its full ARP cache.
+
+    The router's ARP table is ground truth: it contains every device that
+    communicated with the gateway recently (typically up to 4 minutes after
+    last activity), including phones that are asleep.
+
+    Returns [{\"ip\": str, \"mac\": str, \"type\": str}] where type is one of
+    \"other\" | \"invalid\" | \"dynamic\" | \"static\".
+
+    Invalid entries (type=2) are excluded.
+    """
+    if not _SNMP_AVAILABLE:
+        logger.debug("_run_router_arp_table: pysnmp not available")
+        return []
+
+    try:
+        from pysnmp.hlapi.v3arch.asyncio.cmdgen import next_cmd
+    except ImportError:
+        return []
+
+    # Validate community string
+    try:
+        validate_snmp_community(community)
+    except Exception as exc:
+        logger.warning("_run_router_arp_table: invalid SNMP community (%s)", exc)
+        return []
+
+    TYPE_MAP = {1: "other", 2: "invalid", 3: "dynamic", 4: "static"}
+
+    rows: dict[str, dict] = {}  # ifIndex.ipAddr key → {mac, ip, type}
+
+    async def _walk(oid_str: str, field: str) -> None:
+        try:
+            transport = await UdpTransportTarget.create((gateway_ip, port), timeout=2.0, retries=1)
+        except Exception as exc:
+            logger.debug("_run_router_arp_table transport error: %s", exc)
+            return
+
+        try:
+            async for err_ind, err_stat, _, var_binds in next_cmd(
+                SnmpEngine(),
+                CommunityData(community, mpModel=1),
+                transport,
+                ContextData(),
+                ObjectType(ObjectIdentity(oid_str)),
+                lexicographicMode=False,
+            ):
+                if err_ind or err_stat:
+                    break
+                for oid, val in var_binds:
+                    # OID suffix is ifIndex.a.b.c.d where a.b.c.d is the IP
+                    suffix = str(oid).replace(oid_str + ".", "").lstrip(".")
+                    rows.setdefault(suffix, {})[field] = val.prettyPrint()
+        except Exception as exc:
+            logger.debug("_run_router_arp_table walk '%s' error: %s", oid_str, exc)
+
+    await asyncio.gather(
+        _walk(_OID_IP_NET_TO_MEDIA_PHYS_ADDR, "mac"),
+        _walk(_OID_IP_NET_TO_MEDIA_NET_ADDR, "ip"),
+        _walk(_OID_IP_NET_TO_MEDIA_TYPE, "type_code"),
+    )
+
+    results = []
+    for row in rows.values():
+        ip_str = row.get("ip", "")
+        mac_raw = row.get("mac", "")
+        type_code = row.get("type_code", "")
+        # Skip invalid entries
+        try:
+            t = int(type_code)
+        except (ValueError, TypeError):
+            t = 0
+        if t == 2:  # invalid/incomplete
+            continue
+
+        # Normalise MAC (pysnmp returns hex e.g. "0x001122334455" or "00:11:22:33:44:55")
+        mac_clean = mac_raw.replace("0x", "").replace(":", "").replace("-", "").upper()
+        if len(mac_clean) == 12:
+            mac_fmt = ":".join(mac_clean[i : i + 2] for i in range(0, 12, 2))
+        else:
+            mac_fmt = mac_raw  # keep as-is
+
+        results.append(
+            {
+                "ip": ip_str,
+                "mac": mac_fmt,
+                "type": TYPE_MAP.get(t, "other"),
+            }
+        )
+
+    logger.info(
+        "_run_router_arp_table %s: %d entries (%d valid)",
+        gateway_ip,
+        len(rows),
+        len(results),
+    )
+    return results

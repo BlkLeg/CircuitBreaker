@@ -1,10 +1,10 @@
 import asyncio
 import json
 import logging
+import os
 import time as _time_module
 from datetime import UTC, datetime
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,12 +13,31 @@ from app.core.time import utcnow_iso
 from app.core.ws_manager import ws_manager
 from app.db.models import (
     Hardware,
+    KbHostname,
+    KbOui,
     ScanJob,
     ScanLog,
     ScanResult,
 )
 from app.db.session import SessionLocal, get_session_context
 from app.schemas.discovery import ScanResultOut
+from app.services.discovery_dhcp import run_dhcp_lease_discovery
+from app.services.discovery_fingerprint import (
+    _coalesce_host_info,
+    _is_randomized_mac,
+    _kb_hostname_hints,
+    _load_device_kb,
+    _parse_banner_for_hints,
+    _probe_ip_ttl,
+    _run_http_fingerprint_probe,
+    _run_mdns_browse,
+    _run_mdns_multicast_listener,
+    _run_mdns_probe,
+    _run_netbios_probe,
+    _run_rdns_probe,
+    _run_ssdp_unicast_probe,
+    _run_vendor_lookup_local,
+)
 from app.services.discovery_merge import (
     _auto_merge_result,
     bulk_merge_results,  # noqa: F401
@@ -33,26 +52,17 @@ from app.services.discovery_network import (
     _validate_cidr,
     resolve_vlans_to_cidrs,
 )
-from app.services.discovery_fingerprint import (
-    _coalesce_host_info,
-    _parse_banner_for_hints,
-    _run_http_fingerprint_probe,
-    _run_mdns_probe,
-    _run_netbios_probe,
-    _run_rdns_probe,
-    _run_ssdp_unicast_probe,
-    _run_vendor_lookup_local,
-)
 from app.services.discovery_probes import (
     _ARP_CAPABLE,  # noqa: F401
     _arp_available,
+    _detect_default_gateway,
     _has_raw_socket_privilege,
     _run_arp_scan,
     _run_banner_grab,
-    _run_lldp_probe,
+    _run_host_discovery_sweep,
     _run_nmap_scan,
+    _run_router_arp_table,
     _run_snmp_probe,
-    _run_vendor_lookup,
 )
 from app.services.discovery_safe import (
     docker_discover,
@@ -77,6 +87,14 @@ except ImportError:
     nmap = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+_AUTO_DHCP_PATHS: list[str] = [
+    "/var/lib/misc/dnsmasq.leases",
+    "/tmp/dhcp.leases",
+    "/var/lib/dhcp/dhcpd.leases",
+    "/etc/pihole/dhcp.leases",
+    "/var/lib/dhcpcd/dnsmasq.leases",
+]
 
 
 _scan_start_gate = asyncio.Lock()
@@ -384,6 +402,18 @@ def _scan_setup(job_id: int) -> dict | None:
             "error_reason": error_reason,
             "started_at": job.started_at,
             "label": job.label,
+            # Mobile discovery settings
+            "mobile_discovery_enabled": getattr(settings, "mobile_discovery_enabled", True),
+            "mdns_multicast_enabled": getattr(settings, "mdns_multicast_enabled", True),
+            "mdns_listener_duration": getattr(settings, "mdns_listener_duration", 8),
+            "mdns_enabled": getattr(settings, "mdns_enabled", True),
+            "dhcp_lease_file_path": getattr(settings, "dhcp_lease_file_path", ""),
+            "dhcp_router_host": getattr(settings, "dhcp_router_host", ""),
+            "dhcp_router_user_enc": getattr(settings, "dhcp_router_user_enc", None),
+            "dhcp_router_pass_enc": getattr(settings, "dhcp_router_pass_enc", None),
+            "dhcp_router_command": getattr(
+                settings, "dhcp_router_command", "cat /var/lib/misc/dnsmasq.leases"
+            ),
         }
     finally:
         db.close()
@@ -405,6 +435,19 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
         hosts_conflict = 0
         results_out: list[dict] = []
 
+        # Deduplicate by IP — first entry wins (nmap probe data takes priority over Docker appends)
+        _seen_ips: set[str] = set()
+        _deduped: list[dict] = []
+        for _r in raw_results:
+            _ip = _r.get("ip")
+            if _ip and _ip in _seen_ips:
+                continue
+            if _ip:
+                _seen_ips.add(_ip)
+            _deduped.append(_r)
+        raw_results = _deduped
+
+        _res_list: list[ScanResult] = []
         for raw in raw_results:
             ip = raw.get("ip")
             mac_address = raw.get("mac_address")
@@ -539,9 +582,15 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
                 hosts_new += 1
 
             hosts_found += 1
-            db.commit()
-            db.refresh(res)
-            results_out.append(ScanResultOut.model_validate(res).model_dump())
+            _res_list.append(res)
+
+        db.flush()
+        for _r in _res_list:
+            try:
+                results_out.append(ScanResultOut.model_validate(_r).model_dump())
+            except Exception:
+                pass
+        db.commit()
 
         # Auto-merge
         if auto_merge:
@@ -614,13 +663,18 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
     db.commit()
 
 
-def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
-    """Phase 4 (sync, runs in executor): finalize job status, write audit log, schedule queued scans."""  # noqa: E501
+def _scan_finalize(job_id: int, stats: dict, final_status: str, auto_merge: bool = False) -> int:
+    """Phase 4 (sync, runs in executor): finalize job status, write audit log,
+    schedule queued scans.
+
+    Returns the total count of ScanResult rows with merge_status='pending' so callers can
+    include it in the completion job_update WS event for immediate badge sync.
+    """
     db = SessionLocal()
     try:
         job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
         if not job:
-            return
+            return 0
 
         hosts_found = stats.get("hosts_found", 0)
         job.hosts_found = stats.get("hosts_found", job.hosts_found or 0)
@@ -632,7 +686,8 @@ def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
         db.commit()
 
         if final_status == "completed":
-            _auto_merge_known_devices(db, job_id)
+            if auto_merge:
+                _auto_merge_known_devices(db, job_id)
             write_log(
                 db,
                 action="scan_completed",
@@ -668,8 +723,64 @@ def _scan_finalize(job_id: int, stats: dict, final_status: str) -> None:
             )
 
         _schedule_queued_scan_jobs(db)
+
+        # Return the live pending count so callers can include it in the WS completion event
+        return db.query(ScanResult).filter(ScanResult.merge_status == "pending").count()
     finally:
         db.close()
+
+
+def build_scan_oui_cache() -> dict[str, dict]:
+    """Build a merged OUI lookup dict for one scan job.
+
+    Merges curated device_kb.json + learned kb_oui DB table into a single dict.
+    DB entries take priority (user-confirmed learning is more authoritative than static seed).
+    Called once per scan in an executor before the probe loop — not per device.
+    """
+    cache: dict[str, dict] = dict(_load_device_kb().get("mac_oui_prefixes", {}))
+    db = SessionLocal()
+    try:
+        for row in db.execute(select(KbOui)).scalars():
+            cache[row.prefix] = {
+                "vendor": row.vendor,
+                "device_type": row.device_type,
+                "os_family": row.os_family,
+                "source": row.source,
+            }
+    except Exception:
+        pass  # If DB is unavailable, curated JSON cache is still useful
+    finally:
+        db.close()
+    return cache
+
+
+def build_scan_hostname_cache() -> list[dict]:
+    """Build a merged hostname pattern list for one scan job.
+
+    Starts from device_kb.json hostname_patterns, then overlays KbHostname DB rows.
+    DB entries take priority — user-confirmed patterns override static seed.
+    Called once per scan in an executor before the probe loop — not per device.
+    """
+    patterns: list[dict] = list(_load_device_kb().get("hostname_patterns", []))
+    existing = {r["pattern"].lower() for r in patterns}
+    db = SessionLocal()
+    try:
+        for row in db.execute(select(KbHostname)).scalars():
+            entry = {
+                "pattern": row.pattern,
+                "match_type": row.match_type,
+                "vendor": row.vendor,
+                "device_type": row.device_type,
+                "os_family": row.os_family,
+            }
+            if row.pattern.lower() in existing:
+                patterns = [e for e in patterns if e["pattern"].lower() != row.pattern.lower()]
+            patterns.append(entry)
+    except Exception:
+        pass  # If DB is unavailable, curated JSON patterns are still useful
+    finally:
+        db.close()
+    return patterns
 
 
 async def run_scan_job(job_id: int) -> None:
@@ -705,6 +816,7 @@ async def run_scan_job(job_id: int) -> None:
     docker_port_scan: bool = setup.get("docker_port_scan", False)
     effective_mode: str = setup.get("effective_mode", "safe")
     label: str | None = setup.get("label")
+    auto_merge: bool = setup.get("auto_merge", False)
 
     # Publish NATS scan started event
     from app.core.nats_client import nats_client
@@ -722,6 +834,7 @@ async def run_scan_job(job_id: int) -> None:
                 "status": "running",
                 "target_cidr": target_cidr,
                 "triggered_by": triggered_by,
+                "started_at": setup.get("started_at"),
             }
         },
     )
@@ -793,16 +906,32 @@ async def run_scan_job(job_id: int) -> None:
                 f"Docker scan complete. {hosts_found} container(s) discovered.",
                 percent=100,
             )
-            await loop.run_in_executor(None, _scan_finalize, job_id, stats, "completed")
-            await _emit_ws_event("job_update", {"job": {"id": job_id, "status": "completed"}})
+            _pending_count = await loop.run_in_executor(
+                None, _scan_finalize, job_id, stats, "completed", auto_merge
+            )
+            await _emit_ws_event(
+                "job_update",
+                {"job": {"id": job_id, "status": "completed"}, "pending_count": _pending_count},
+            )
             _ema_eta.pop(job_id, None)
             _last_progress_snap.pop(job_id, None)
             return
 
-        # ── Phase 2: Network Discovery ────────────────────────────────────────
+        # ── Phase 2: Network Discovery ─────────────────────────────────────
         active_ips: set[str] = set()
         nmap_results: dict = {}
         arp_mac_by_ip: dict[str, str] = {}
+
+        # Layer 1: Start mDNS multicast listener as background task so it runs
+        # concurrently with the ARP/nmap scan phases (max benefit from overlap).
+        _mdns_listener_task: asyncio.Task | None = None
+        _mob_enabled = setup.get("mobile_discovery_enabled", True)
+        _mdns_mc_enabled = setup.get("mdns_multicast_enabled", True)
+        if _mob_enabled and _mdns_mc_enabled:
+            _listener_duration = float(setup.get("mdns_listener_duration", 8))
+            _mdns_listener_task = asyncio.ensure_future(
+                _run_mdns_multicast_listener(duration_s=_listener_duration)
+            )
 
         if effective_mode == "full" and not _has_raw_socket_privilege():
             logger.warning(
@@ -876,9 +1005,7 @@ async def run_scan_job(job_id: int) -> None:
 
             async def _arp_phase() -> list[dict]:
                 if "arp" in scan_types and _arp_available():
-                    await _update_job_progress(
-                        job_id, "arp", "Running ARP discovery...", percent=2
-                    )
+                    await _update_job_progress(job_id, "arp", "Running ARP discovery...", percent=2)
                     await _log_scan_event(job_id, "INFO", "Starting ARP discovery phase", "arp")
                     try:
                         results = await _run_arp_scan(target_cidr)
@@ -916,6 +1043,23 @@ async def run_scan_job(job_id: int) -> None:
                     await _log_scan_event(
                         job_id, "INFO", f"Starting nmap scan with args: {nmap_args}", "nmap"
                     )
+
+                    _nmap_start_time = _time_module.monotonic()
+
+                    async def _progress_interpolator() -> None:
+                        while True:
+                            await asyncio.sleep(3)
+                            elapsed = _time_module.monotonic() - _nmap_start_time
+                            pct = 16 + int(30 * min(elapsed / 175.0, 1.0))
+                            try:
+                                await _update_job_progress(
+                                    job_id, "nmap", "Running nmap host discovery...", percent=pct
+                                )
+                            except Exception:
+                                pass
+
+                    prog_task = asyncio.create_task(_progress_interpolator())
+
                     try:
                         results = await _run_nmap_scan(target_cidr, nmap_args)
                         host_count = len(results)
@@ -951,10 +1095,18 @@ async def run_scan_job(job_id: int) -> None:
                             job_id, "ERROR", f"Nmap scan failed: {str(e)}", "nmap", str(e)
                         )
                         raise
+                    finally:
+                        prog_task.cancel()
                 await _log_scan_event(job_id, "INFO", "Nmap scan skipped (not requested)", "nmap")
                 return {}
 
-            arp_results, nmap_scan = await asyncio.gather(_arp_phase(), _nmap_phase())
+            # Phone detection: pre-sweep runs concurrently with ARP and nmap
+            _presweep_ips, arp_results, nmap_scan = await asyncio.gather(
+                _run_host_discovery_sweep(target_cidr),
+                _arp_phase(),
+                _nmap_phase(),
+            )
+            active_ips.update(_presweep_ips)
             nmap_results = nmap_scan
             arp_mac_by_ip = {r["ip"]: r["mac"] for r in arp_results if r.get("mac")}
             for ip in arp_mac_by_ip:
@@ -962,9 +1114,192 @@ async def run_scan_job(job_id: int) -> None:
             for ip in nmap_results.keys():
                 active_ips.add(ip)
 
+        # Inject stubs for ARP-found hosts that nmap --open filtered out (phones with no open ports)
+        for _arp_ip, _arp_mac in arp_mac_by_ip.items():
+            nmap_results.setdefault(
+                _arp_ip,
+                {
+                    "mac": _arp_mac,
+                    "hostname": None,
+                    "os_family": None,
+                    "open_ports": [],
+                    "raw": "",
+                },
+            )
+
+        # ── Mobile device discovery layers (always-on, parallel where possible) ──────
+        mobile_enabled = setup.get("mobile_discovery_enabled", True)
+        if mobile_enabled:
+            # Layer 1: await mDNS multicast listener (was launched concurrently above)
+            if _mdns_listener_task is not None:
+                try:
+                    mdns_listener_results = await asyncio.wait_for(
+                        asyncio.shield(_mdns_listener_task), timeout=2.0
+                    )
+                except (TimeoutError, asyncio.CancelledError):
+                    _mdns_listener_task.cancel()
+                    mdns_listener_results = []
+                except Exception as exc:
+                    logger.warning("Mobile Layer 1 (mDNS passive) failed: %s", exc)
+                    mdns_listener_results = []
+                for r in mdns_listener_results:
+                    ip = r.get("ip")
+                    if ip and ip not in active_ips:
+                        active_ips.add(ip)
+                        nmap_results.setdefault(
+                            ip,
+                            {
+                                "mac": None,
+                                "hostname": r.get("hostname"),
+                                "os_family": r.get("os_hint"),
+                                "open_ports": [],
+                                "raw": "",
+                                "_mdns_services": r.get("services", []),
+                                "_mdns_device_hint": r.get("device_type_hint"),
+                                "_is_mobile_mdns": r.get("is_mobile_mdns", False),
+                            },
+                        )
+                    elif ip:
+                        # Enrich already-found IP with mDNS data
+                        ex = nmap_results.get(ip, {})
+                        ex.setdefault("_mdns_services", r.get("services", []))
+                        ex.setdefault("_mdns_device_hint", r.get("device_type_hint"))
+                        _prev = ex.get("_is_mobile_mdns")
+                        ex["_is_mobile_mdns"] = _prev or r.get("is_mobile_mdns", False)
+
+            # Layer 2: DNS-SD active browse
+            try:
+                browse_results = await asyncio.wait_for(
+                    _run_mdns_browse(timeout=min(setup.get("mdns_listener_duration", 8), 6.0)),
+                    timeout=10.0,
+                )
+            except Exception as exc:
+                logger.warning("Mobile Layer 2 (DNS-SD browse) failed: %s", exc)
+                browse_results = []
+            for r in browse_results:
+                ip = r.get("ip")
+                if ip and ip not in active_ips:
+                    active_ips.add(ip)
+                    nmap_results.setdefault(
+                        ip,
+                        {
+                            "mac": None,
+                            "hostname": r.get("hostname"),
+                            "os_family": None,
+                            "open_ports": [],
+                            "raw": "",
+                            "_mdns_services": r.get("services", []),
+                            "_mdns_device_hint": r.get("device_type_hint"),
+                            "_is_mobile_mdns": False,
+                        },
+                    )
+
+            # Layer 3: Router SNMP ARP table walk
+            if not snmp_community_plain:
+                logger.debug(
+                    "Mobile Layer 3 (SNMP ARP walk) skipped — no SNMP community configured"
+                )
+            if snmp_community_plain:
+                _gateway = _detect_default_gateway(setup.get("target_cidr", ""))
+                if _gateway:
+                    try:
+                        gw_arp_entries = await asyncio.wait_for(
+                            _run_router_arp_table(
+                                _gateway,
+                                snmp_community_plain,
+                                setup.get("snmp_port", 161),
+                            ),
+                            timeout=10.0,
+                        )
+                    except Exception as exc:
+                        logger.warning("Mobile Layer 3 (SNMP ARP walk) failed: %s", exc)
+                        gw_arp_entries = []
+                    for entry in gw_arp_entries:
+                        ip, mac = entry.get("ip", ""), entry.get("mac", "")
+                        if ip and ip not in active_ips:
+                            active_ips.add(ip)
+                            nmap_results.setdefault(
+                                ip,
+                                {
+                                    "mac": mac or None,
+                                    "hostname": None,
+                                    "os_family": None,
+                                    "open_ports": [],
+                                    "raw": "",
+                                },
+                            )
+                        if ip and mac and not arp_mac_by_ip.get(ip):
+                            arp_mac_by_ip[ip] = mac  # real MAC from gateway ARP cache
+
+            # Layer 4: DHCP lease snooping (opt-in — runs if file path or router SSH set)
+            dhcp_file = setup.get("dhcp_lease_file_path", "").strip()
+            dhcp_router_host = setup.get("dhcp_router_host", "").strip()
+            dhcp_router_user_enc = setup.get("dhcp_router_user_enc") or ""
+            dhcp_router_pass_enc = setup.get("dhcp_router_pass_enc") or ""
+            # Auto-detect DHCP lease file for standard homelab setups
+            if not dhcp_file:
+                for _p in _AUTO_DHCP_PATHS:
+                    if os.path.isfile(_p) and os.access(_p, os.R_OK):  # noqa: ASYNC240
+                        dhcp_file = _p
+                        logger.debug("Mobile Layer 4: auto-detected DHCP lease file at %s", _p)
+                        break
+            if not dhcp_file and not (
+                dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc
+            ):
+                logger.debug(
+                    "Mobile Layer 4 (DHCP snooping) skipped"
+                    " — no lease file or SSH credentials configured"
+                )
+            if dhcp_file or (dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc):
+                try:
+                    dhcp_entries = await asyncio.wait_for(
+                        run_dhcp_lease_discovery(
+                            {
+                                "lease_file_path": dhcp_file,
+                                "router_ssh_host": dhcp_router_host,
+                                "router_ssh_user_enc": dhcp_router_user_enc,
+                                "router_ssh_pass_enc": dhcp_router_pass_enc,
+                                "router_ssh_command": setup.get(
+                                    "dhcp_router_command", "cat /var/lib/misc/dnsmasq.leases"
+                                ),
+                            }
+                        ),
+                        timeout=15.0,
+                    )
+                except Exception as exc:
+                    logger.warning("Mobile Layer 4 (DHCP snooping) failed: %s", exc)
+                    dhcp_entries = []
+                for entry in dhcp_entries:
+                    ip = entry.get("ip", "")
+                    mac = entry.get("mac", "")
+                    hostname = entry.get("hostname")
+                    if ip and ip not in active_ips:
+                        active_ips.add(ip)
+                        nmap_results.setdefault(
+                            ip,
+                            {
+                                "mac": mac or None,
+                                "hostname": hostname,
+                                "os_family": None,
+                                "open_ports": [],
+                                "raw": "",
+                            },
+                        )
+                    if ip and mac and not arp_mac_by_ip.get(ip):
+                        arp_mac_by_ip[ip] = mac
+                    # Hostname from DHCP is high-priority (it's the registered device name)
+                    if ip and hostname and ip in nmap_results:
+                        nmap_results[ip].setdefault("hostname", hostname)
+
+            logger.info(
+                "Mobile discovery layers complete — DNS-SD: %d entries,"
+                " total active IPs after mobile: %d",
+                len(browse_results),
+                len(active_ips),
+            )
+
         # ── Per-host probing: parallel pipeline ──────────────────────────────
         n_active = len(active_ips)
-
         if n_active > 0:
             await _update_job_progress(
                 job_id,
@@ -986,13 +1321,22 @@ async def run_scan_job(job_id: int) -> None:
         if n_active > 0:
             for ip in active_ips:
                 _nmap_stub = nmap_results.get(ip, {})
-                await _emit_ws_event("result_added", {
-                    "job_id": job_id,
-                    "ip_address": ip,
-                    "mac_address": _nmap_stub.get("mac") or arp_mac_by_ip.get(ip),
-                    "hostname": _nmap_stub.get("hostname"),
-                    "_ephemeral": True,
-                })
+                await _emit_ws_event(
+                    "result_added",
+                    {
+                        "job_id": job_id,
+                        "ip_address": ip,
+                        "mac_address": _nmap_stub.get("mac") or arp_mac_by_ip.get(ip),
+                        "hostname": _nmap_stub.get("hostname"),
+                        "_ephemeral": True,
+                    },
+                )
+
+        # ── Build OUI + hostname caches once (curated JSON + learned DB) ───────
+        scan_oui_cache: dict[str, dict] = await loop.run_in_executor(None, build_scan_oui_cache)
+        scan_hostname_cache: list[dict] = await loop.run_in_executor(
+            None, build_scan_hostname_cache
+        )
 
         # ── Parallel L0 probe loop (up to 8 hosts concurrently) ──────────────
         _probe_semaphore = asyncio.Semaphore(8)
@@ -1057,6 +1401,30 @@ async def run_scan_job(job_id: int) -> None:
                 if isinstance(banners, Exception):
                     banners = {}
 
+                # Merge mDNS multicast listener data (from Layer 1, stored in nmap_results stub)
+                _mdns_extra: dict = {}
+                if not isinstance(mdns_data, dict):
+                    mdns_data = {}
+                _extra_svcs = n_data.get("_mdns_services", [])
+                _extra_hint = n_data.get("_mdns_device_hint")
+                _is_mobile_mdns = n_data.get("_is_mobile_mdns", False)
+                if _extra_svcs or _is_mobile_mdns:
+                    _mdns_extra = {
+                        "services": list(set(mdns_data.get("services", [])) | set(_extra_svcs)),
+                        "hostname": mdns_data.get("hostname"),
+                        "device_type_hint": _extra_hint or mdns_data.get("device_type_hint"),
+                        "is_mobile_mdns": _is_mobile_mdns or mdns_data.get("is_mobile_mdns", False),
+                    }
+                    mdns_data = _mdns_extra
+
+                # Layer 5: TTL-based OS fingerprinting for randomized-MAC devices
+                ttl_hint: int | None = None
+                if not mac_address or _is_randomized_mac(mac_address):
+                    try:
+                        ttl_hint = await asyncio.wait_for(_probe_ip_ttl(ip), timeout=3.0)
+                    except Exception:
+                        ttl_hint = None
+
                 banner_text: str | None = None
                 if banners:
                     for preferred in (22, 21, 25, 80, 443):
@@ -1067,7 +1435,12 @@ async def run_scan_job(job_id: int) -> None:
                         banner_text = next(iter(banners.values()))
 
                 banner_hints = _parse_banner_for_hints(banner_text)
-                oui_vendor = await _run_vendor_lookup_local(mac_address)
+                oui_vendor, kb_entry = await _run_vendor_lookup_local(
+                    mac_address, scan_oui_cache=scan_oui_cache
+                )
+                hostname_hints = _kb_hostname_hints(
+                    hostname or "", scan_hostname_cache=scan_hostname_cache
+                )
 
                 coalesced = _coalesce_host_info(
                     nmap_data=n_data,
@@ -1080,6 +1453,10 @@ async def run_scan_job(job_id: int) -> None:
                     rdns_hostname=rdns_hostname if isinstance(rdns_hostname, str) else None,
                     oui_vendor=oui_vendor,
                     open_ports=open_ports,
+                    kb_entry=kb_entry,
+                    hostname_hints=hostname_hints,
+                    mac=mac_address,
+                    ttl_hint=ttl_hint,
                 )
 
                 hostname = coalesced.get("hostname") or hostname
@@ -1096,17 +1473,20 @@ async def run_scan_job(job_id: int) -> None:
                     result_source = "nmap"
 
                 # Emit enriched data — frontend updates the ephemeral skeleton row
-                await _emit_ws_event("result_enriched", {
-                    "job_id": job_id,
-                    "ip_address": ip,
-                    "mac_address": mac_address,
-                    "hostname": hostname,
-                    "vendor": oui_vendor,
-                    "os_family": os_family,
-                    "device_type": device_type,
-                    "open_ports": open_ports,
-                    "_ephemeral": True,
-                })
+                await _emit_ws_event(
+                    "result_enriched",
+                    {
+                        "job_id": job_id,
+                        "ip_address": ip,
+                        "mac_address": mac_address,
+                        "hostname": hostname,
+                        "vendor": oui_vendor,
+                        "os_family": os_family,
+                        "device_type": device_type,
+                        "open_ports": open_ports,
+                        "_ephemeral": True,
+                    },
+                )
 
                 # Stage-accurate ETA: wall-clock extrapolation over the probe phase
                 _hosts_done += 1
@@ -1114,7 +1494,8 @@ async def run_scan_job(job_id: int) -> None:
                 _completion_ratio = _hosts_done / max(n_active, 1)
                 _probe_eta = (
                     int(_probe_elapsed / _completion_ratio - _probe_elapsed)
-                    if _completion_ratio > 0 else None
+                    if _completion_ratio > 0
+                    else None
                 )
                 await _update_job_progress(
                     job_id,
@@ -1143,7 +1524,14 @@ async def run_scan_job(job_id: int) -> None:
                 }
 
         if n_active > 0:
-            raw_results = list(await asyncio.gather(*[_probe_host(ip) for ip in active_ips]))
+            _raw_gathered = await asyncio.gather(
+                *[_probe_host(ip) for ip in active_ips],
+                return_exceptions=True,
+            )
+            raw_results = [r for r in _raw_gathered if not isinstance(r, BaseException)]
+            _failed = len(_raw_gathered) - len(raw_results)
+            if _failed:
+                logger.warning("Probe phase: %d host(s) raised and were skipped", _failed)
 
         # Supplemental Docker discovery
         if docker_discovery_enabled and is_docker_socket_available():
@@ -1203,8 +1591,13 @@ async def run_scan_job(job_id: int) -> None:
         )
 
         # ── Phase 4: Finalize ─────────────────────────────────────────────────
-        await loop.run_in_executor(None, _scan_finalize, job_id, stats, "completed")
-        await _emit_ws_event("job_update", {"job": {"id": job_id, "status": "completed"}})
+        _pending_count = await loop.run_in_executor(
+            None, _scan_finalize, job_id, stats, "completed", auto_merge
+        )
+        await _emit_ws_event(
+            "job_update",
+            {"job": {"id": job_id, "status": "completed"}, "pending_count": _pending_count},
+        )
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
 
@@ -1218,9 +1611,14 @@ async def run_scan_job(job_id: int) -> None:
                 else f"scan_error: {type(e).__name__}"
             ),
         }
-        await loop.run_in_executor(None, _scan_finalize, job_id, error_stats, "failed")
+        _pending_count = await loop.run_in_executor(
+            None, _scan_finalize, job_id, error_stats, "failed", auto_merge
+        )
         await asyncio.gather(
-            _emit_ws_event("job_update", {"job": {"id": job_id, "status": "failed"}}),
+            _emit_ws_event(
+                "job_update",
+                {"job": {"id": job_id, "status": "failed"}, "pending_count": _pending_count},
+            ),
             _emit_ws_event(
                 "job_progress",
                 {"job_id": job_id, "phase": "failed", "message": str(e), "percent": 100},
@@ -1239,6 +1637,7 @@ def enqueue_lldp_job(
 ) -> int:
     """Create a scan job of type lldp targeting the given IPs. Returns job_id."""
     import json
+
     from app.core.time import utcnow_iso as _utcnow_iso
     from app.db.models import DiscoveryProfile, ScanJob
     from app.services.credential_vault import get_vault

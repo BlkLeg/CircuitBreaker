@@ -1834,6 +1834,42 @@ select.cb-input {
   padding: 0;
 }
 
+/* ── History table progress bar ─────────────────────────────────────────────── */
+
+.history-progress-track {
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-border, #2e3650) 60%, transparent);
+  overflow: hidden;
+  margin-top: 5px;
+  min-width: 80px;
+}
+
+.history-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  background: var(--color-primary, #f5a623);
+}
+
+.history-progress-fill.status-running {
+  background: #22c55e;
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.4);
+}
+
+.history-progress-fill.status-done,
+.history-progress-fill.status-completed {
+  background: #22c55e;
+}
+
+.history-progress-fill.status-failed {
+  background: #ef4444;
+}
+
+.history-progress-fill.status-cancelled {
+  background: #6b7280;
+}
+
 /* ── Scan progress bar ─────────────────────────────────────────────────────── */
 
 .scan-progress-bar-wrap {
@@ -1876,8 +1912,13 @@ select.cb-input {
 /* ── Skeleton pulse (discovering rows) ─────────────────────────────────────── */
 
 @keyframes skeleton-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .skeleton-pulse {

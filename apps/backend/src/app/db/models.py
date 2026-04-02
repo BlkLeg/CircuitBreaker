@@ -947,6 +947,22 @@ class AppSettings(Base):
     oidc_providers: Mapped[list | None] = mapped_column(JSONB)  # JSONB array of OIDC providers
     arp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tcp_probe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Mobile / phone discovery
+    mobile_discovery_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mdns_multicast_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mdns_listener_duration: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    dhcp_lease_file_path: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # Router SSH for DHCP snooping (opt-in, vault-encrypted)
+    dhcp_router_host: Mapped[str] = mapped_column(String, nullable=False, default="")
+    dhcp_router_user_enc: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Fernet-encrypted
+    dhcp_router_pass_enc: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Fernet-encrypted
+    dhcp_router_command: Mapped[str] = mapped_column(
+        String, nullable=False, default="cat /var/lib/misc/dnsmasq.leases"
+    )
     # v0.2.0: Self-aware cluster
     self_cluster_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Phase 6.5: User management
@@ -2093,3 +2109,67 @@ class FlapIncident(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ── Knowledge Base: OUI → Vendor ──────────────────────────────────────────────
+
+
+class KbOui(Base):
+    """Learned + manually added MAC OUI → vendor mappings."""
+
+    __tablename__ = "kb_oui"
+
+    prefix: Mapped[str] = mapped_column(String(6), primary_key=True)  # e.g. "BC2411"
+    vendor: Mapped[str] = mapped_column(String(128), nullable=False)
+    device_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    os_family: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source: Mapped[str] = mapped_column(  # "learned" | "manual"
+        String(32), nullable=False, default="learned"
+    )
+    seen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )
+
+
+# ── Knowledge Base: Hostname → Device Hints ───────────────────────────────────
+
+
+class KbHostname(Base):
+    """Learned + manually added hostname pattern → device hints."""
+
+    __tablename__ = "kb_hostname"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern: Mapped[str] = mapped_column(String(128), nullable=False)
+    match_type: Mapped[str] = mapped_column(  # "prefix" | "exact" | "contains"
+        String(32), nullable=False, default="prefix"
+    )
+    vendor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    device_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    os_family: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source: Mapped[str] = mapped_column(  # "learned" | "manual"
+        String(32), nullable=False, default="learned"
+    )
+    seen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now
+    )

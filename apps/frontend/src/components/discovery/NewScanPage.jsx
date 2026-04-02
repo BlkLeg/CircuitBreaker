@@ -214,7 +214,10 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               ? { cidrs: cidrs.map((c) => c.trim()).filter(Boolean) }
               : { vlan_ids: selectedVlans }),
             scan_types: types,
-            nmap_arguments: (scanMode === 'full' || scanMode === 'deep_dive') ? composeNmapArgs(nmapArgs, '3', ports) : undefined,
+            nmap_arguments:
+              scanMode === 'full' || scanMode === 'deep_dive'
+                ? composeNmapArgs(nmapArgs, '3', ports)
+                : undefined,
             snmp_community: snmpCom.trim() || undefined,
           });
           toast.success('Scan started');
@@ -299,11 +302,13 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                 type="button"
                 className={`scan-mode-card${selected ? ' selected' : ''}${disabled ? ' disabled' : ''}`}
                 onClick={() => !disabled && handleModeSelect(key)}
-                style={selected ? { borderColor: color, background: bg, position: 'relative' } : { position: 'relative' }}
+                style={
+                  selected
+                    ? { borderColor: color, background: bg, position: 'relative' }
+                    : { position: 'relative' }
+                }
               >
-                {key === 'deep_dive' && (
-                  <span className="scan-mode-time-badge">~1-3 min</span>
-                )}
+                {key === 'deep_dive' && <span className="scan-mode-time-badge">~1-3 min</span>}
                 <div className="scan-mode-card-icon">
                   <Icon size={22} style={{ color: disabled ? 'var(--color-text-muted)' : color }} />
                 </div>
@@ -351,8 +356,8 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
           })}
         </div>
 
-        {/* Safe / Full fields */}
-        {(scanMode === 'safe' || scanMode === 'full') && (
+        {/* Safe / Full / Deep Dive fields */}
+        {(scanMode === 'safe' || scanMode === 'full' || scanMode === 'deep_dive') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div className="cb-scan-modal-grid">
               <div className="cb-field">
@@ -506,8 +511,8 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                   {(scanMode === 'safe'
                     ? ['snmp', 'http']
                     : scanMode === 'deep_dive'
-                    ? ['nmap', 'arp', 'snmp', 'http', 'deep_dive']
-                    : ['nmap', 'arp', 'snmp', 'http']
+                      ? ['nmap', 'arp', 'snmp', 'http', 'deep_dive']
+                      : ['nmap', 'arp', 'snmp', 'http']
                   ).map((type) => (
                     <label key={type} className="cb-scan-type-option">
                       <input
@@ -523,7 +528,9 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               </div>
             </div>
 
-            {(scanMode === 'full' || scanMode === 'deep_dive') && <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />}
+            {(scanMode === 'full' || scanMode === 'deep_dive') && (
+              <NmapArgsField value={nmapArgs} onChange={setNmapArgs} />
+            )}
 
             {advanced && (
               <div className="cb-scan-modal-grid">

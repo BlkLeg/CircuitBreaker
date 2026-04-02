@@ -53,6 +53,10 @@ analytics = [
     "duckdb>=1.0.0",
     "duckdb-engine>=0.13.0",
 ]
+mobile = [
+    # Optional: SSH-based DHCP lease snooping (Layer 4 phone discovery)
+    "asyncssh>=2.14.0",
+]
 otel = [
     "opentelemetry-sdk>=1.24.0",
     "opentelemetry-instrumentation-fastapi>=0.45b0",
@@ -148,6 +152,16 @@ module = [
 # on the `nmap = None` fallback is correct when mypy sees a Module type,
 # but triggers [unused-ignore] when mypy infers Any. Disabling
 # warn_unused_ignores here keeps the ignore stable in both environments.
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.discovery_dhcp",
+    "app.services.discovery_fingerprint",
+]
+# asyncssh and ping3 are optional; imported inside try/except so mypy
+# may flag them differently depending on the environment. Suppress to keep
+# the type-ignore stable across environments.
 warn_unused_ignores = false
 
 [[tool.mypy.overrides]]

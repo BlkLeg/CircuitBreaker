@@ -214,23 +214,21 @@ export default function DiscoveryPage() {
       });
     };
 
-    const onResultAdded = () => {
-      setPendingReviewCount((c) => c + 1);
-    };
+    const onBadgeUpdate = (count) => setPendingReviewCount(count);
 
     const onWsReconnected = () => loadJobs();
 
     discoveryEmitter.on('job:update', onJobUpdate);
     discoveryEmitter.on('job:progress', onJobProgress);
     discoveryEmitter.on('scan:log_entry', onScanLogEntry);
-    discoveryEmitter.on('result:added', onResultAdded);
+    discoveryEmitter.on('badge:update', onBadgeUpdate);
     discoveryEmitter.on('ws:reconnected', onWsReconnected);
 
     return () => {
       discoveryEmitter.off('job:update', onJobUpdate);
       discoveryEmitter.off('job:progress', onJobProgress);
       discoveryEmitter.off('scan:log_entry', onScanLogEntry);
-      discoveryEmitter.off('result:added', onResultAdded);
+      discoveryEmitter.off('badge:update', onBadgeUpdate);
       discoveryEmitter.off('ws:reconnected', onWsReconnected);
     };
   }, [loadJobs]);

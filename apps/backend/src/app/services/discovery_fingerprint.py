@@ -15,10 +15,13 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 import logging
 import re
 import socket
 import struct
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -31,6 +34,8 @@ _NETBIOS_TIMEOUT: float = 2.0
 _SSDP_TIMEOUT: float = 3.0
 _MDNS_TIMEOUT: float = 4.0
 _HTTP_TIMEOUT: float = 3.0
+_MDNS_MULTICAST_GROUP = "224.0.0.251"
+_MDNS_PORT = 5353
 
 # ── Optional dependency guards ────────────────────────────────────────────────
 try:
@@ -50,6 +55,481 @@ try:
 except Exception:
     _MANUF_PARSER = None
     _MANUF_AVAILABLE = False
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Mobile device helpers
+# ───────────────────────────────────────────────────────────────────────────────
+
+
+def _is_randomized_mac(mac: str) -> bool:
+    """Return True if *mac* has the locally-administered (randomized) bit set.
+
+    According to IEEE 802, the U/L (Universal/Local) bit is bit 1 of the first octet.
+    When set to 1 the address was generated locally (privacy / randomized MAC).
+    Example OUIs with this bit set: 02:xx, 06:xx, 0a:xx, 0e:xx, ...
+    """
+    if not mac:
+        return False
+    try:
+        first_octet = int(mac.split(":")[0], 16)
+        return bool(first_octet & 0x02)
+    except (ValueError, IndexError):
+        return False
+
+
+async def _probe_ip_ttl(ip: str) -> int | None:
+    """Ping *ip* once and return the TTL from the ICMP response.
+
+    TTL interpretation:
+      55–65  → Linux / Android / iOS (kernel default 64 with some hops)
+      120–130 → Windows (default TTL 128)
+      250–260 → Network device (router/switch, default 255)
+
+    Uses the ``ping3`` library if available, otherwise falls back to
+    subprocess ``ping -c1 -W1``.
+
+    Returns None on failure (host unreachable, no response, etc.).
+    """
+    # Try ping3 first (no subprocess overhead)
+    try:
+        import ping3  # type: ignore[import]
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, lambda: ping3.ping(ip, timeout=1, unit="ms", ttl=False)
+        )
+        if result is not None and result is not False:
+            # ping3 returns round-trip time in ms; TTL is in result but
+            # the library doesn't expose it in all versions. Fall through.
+            pass
+    except Exception:
+        pass
+
+    # Subprocess fallback — parse TTL from ping output
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ping",
+            "-c1",
+            "-W1",
+            ip,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        output = stdout.decode(errors="replace")
+        # Matches: "ttl=64" or "TTL=128"
+        ttl_m = re.search(r"\bttl=(\d+)\b", output, re.IGNORECASE)
+        if ttl_m:
+            return int(ttl_m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+# mDNS service types that indicate a phone or mobile device
+_MOBILE_MDNS_SERVICES = frozenset(
+    {
+        "_apple-mobdev2._tcp",
+        "_apple-mobdev._tcp",
+        "_companion-link._tcp",  # iPhone/iPad Handoff / Continuity
+        "_rdlink._tcp",  # iPhone Universal Clipboard
+        "_androidtvremote2._tcp",
+        "_googlecast._tcp",  # Chromecast / Android phones with cast
+        "_sleep-proxy._udp",  # iOS network wake proxy
+        "_remotepairing._tcp",  # iPhone/Mac Remote Pairing
+    }
+)
+
+
+async def _run_mdns_multicast_listener(duration_s: float = 8.0) -> list[dict]:
+    """Passive mDNS multicast listener.
+
+    Joins the mDNS multicast group 224.0.0.251 on UDP port 5353 and
+    collects ALL mDNS announcements for *duration_s* seconds.  Any
+    announcement reveals both the source IP and (via PTR records) the
+    service type the device is advertising.
+
+    This complements _run_mdns_probe (which sends unicast queries to
+    *named* service instances) by discovering devices before we know
+    their instance names — exactly what is needed for phones.
+
+    No root privileges required: multicast group joins are unprivileged
+    on Linux/macOS as long as we bind to a non-reserved port or use
+    SO_REUSEPORT.  We bind to 5353 with SO_REUSEADDR so multiple
+    processes can co-exist.
+
+    Returns [{"ip", "hostname", "services": [str], "device_type_hint",
+               "os_hint", "is_mobile_mdns": bool}]
+    """
+    import socket as _socket
+    import struct as _struct
+    import threading
+
+    discovered: dict[str, dict] = {}  # ip → accumulated info
+    lock = threading.Lock()
+
+    def _parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
+        """Parse a DNS name from wire format, handling compression pointers."""
+        labels: list[str] = []
+        visited: set[int] = set()
+        while offset < len(data):
+            if offset in visited:
+                break
+            visited.add(offset)
+            length = data[offset]
+            if length == 0:
+                offset += 1
+                break
+            if (length & 0xC0) == 0xC0:  # Compression pointer
+                if offset + 1 >= len(data):
+                    break
+                ptr = ((length & 0x3F) << 8) | data[offset + 1]
+                name_suffix, _ = _parse_dns_name(data, ptr)
+                if name_suffix:
+                    labels.append(name_suffix)
+                offset += 2
+                break
+            try:
+                labels.append(
+                    data[offset + 1 : offset + 1 + length].decode("utf-8", errors="replace")
+                )
+            except Exception:
+                pass
+            offset += 1 + length
+        return ".".join(labels), offset
+
+    def _parse_mdns_packet(data: bytes, src_ip: str) -> None:
+        """Extract service / hostname info from a raw mDNS DNS packet."""
+        if len(data) < 12:
+            return
+        try:
+            an_count = _struct.unpack_from("!H", data, 6)[0]
+            ar_count = _struct.unpack_from("!H", data, 10)[0]
+        except Exception:
+            return
+
+        offset = 12
+        # Skip question section (qdcount answers in query, we mostly see responses)
+        qdcount = _struct.unpack_from("!H", data, 4)[0]
+        for _ in range(qdcount):
+            try:
+                _, offset = _parse_dns_name(data, offset)
+                offset += 4  # QTYPE + QCLASS
+            except Exception:
+                return
+
+        services_found: list[str] = []
+        hostname_found: str | None = None
+
+        for _ in range(an_count + ar_count):
+            if offset >= len(data):
+                break
+            try:
+                name, offset = _parse_dns_name(data, offset)
+                if offset + 10 > len(data):
+                    break
+                rtype, _, _, rdlen = _struct.unpack_from("!HHIH", data, offset)
+                offset += 10
+                _rdata = data[offset : offset + rdlen]  # noqa: F841
+                offset += rdlen
+
+                if rtype == 12:  # PTR — service advertisement
+                    # name is like "_apple-mobdev2._tcp.local." — extract type
+                    if "._tcp." in name or "._udp." in name:
+                        svc_type = name.split(".")[0] + ("._tcp" if "._tcp." in name else "._udp")
+                        services_found.append(svc_type)
+                elif rtype == 1 and rdlen == 4:  # A record — IP
+                    pass  # src_ip from socket is more reliable
+                elif rtype == 33:  # SRV
+                    pass
+                elif rtype == 28:  # AAAA — IPv6, skip
+                    pass
+            except Exception:
+                break
+
+        with lock:
+            entry = discovered.setdefault(
+                src_ip,
+                {
+                    "ip": src_ip,
+                    "hostname": hostname_found,
+                    "services": [],
+                    "device_type_hint": None,
+                    "os_hint": None,
+                    "is_mobile_mdns": False,
+                },
+            )
+            for svc in services_found:
+                if svc not in entry["services"]:
+                    entry["services"].append(svc)
+            if hostname_found and not entry["hostname"]:
+                entry["hostname"] = hostname_found
+            if any(s in _MOBILE_MDNS_SERVICES for s in services_found):
+                entry["is_mobile_mdns"] = True
+                entry["device_type_hint"] = "mobile_device"
+            # Apple services broadly → ios_device if no better hint yet
+            if any("apple" in s for s in services_found) and not entry.get("device_type_hint"):
+                entry["device_type_hint"] = "ios_device"
+                entry["os_hint"] = "iOS"
+
+    # Set up the multicast socket
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        try:
+            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEPORT, 1)
+        except AttributeError:
+            pass  # Not available on all platforms
+        sock.bind(("", _MDNS_PORT))
+        mreq = _struct.pack("4sL", _socket.inet_aton(_MDNS_MULTICAST_GROUP), _socket.INADDR_ANY)
+        sock.setsockopt(_socket.IPPROTO_IP, _socket.IP_ADD_MEMBERSHIP, mreq)
+        sock.settimeout(0.1)  # Non-blocking reads
+    except Exception as exc:
+        logger.warning("mDNS multicast listener: socket setup failed: %s", exc)
+        return []
+
+    loop = asyncio.get_running_loop()
+    end_time = loop.time() + duration_s
+
+    try:
+        while loop.time() < end_time:
+            remaining = end_time - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: _recv_and_parse(sock, _parse_mdns_packet),
+                    ),
+                    timeout=min(remaining, 0.5),
+                )
+            except (TimeoutError, Exception):
+                pass
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+    results = list(discovered.values())
+    mobile_count = sum(1 for r in results if r.get("is_mobile_mdns"))
+    logger.info(
+        "mDNS multicast listener: %.1fs, %d unique IPs (%d mobile)",
+        duration_s,
+        len(results),
+        mobile_count,
+    )
+    return results
+
+
+def _recv_and_parse(
+    sock: socket.socket,  # type: ignore[name-defined]
+    callback: Any,
+) -> None:
+    """Blocking recv loop called from run_in_executor for 0.5s."""
+    import time
+
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            data, addr = sock.recvfrom(4096)
+            callback(data, addr[0])
+        except Exception:
+            break
+
+
+async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC109
+    """Active DNS-SD browse — enumerate ALL service types on the network.
+
+    Queries ``_services._dns-sd._udp.local.`` PTR, which returns the list
+    of all service types currently registered on the link-local network.
+    For each service type, resolves instances via PTR→SRV→A to obtain
+    the IP address.
+
+    This discovers devices that haven't responded to any unicast queries
+    because we didn't know their instance names beforehand.
+
+    Requires ``zeroconf`` (already in requirements.txt).
+
+    Returns [{"ip", "hostname", "services": [str], "device_type_hint"}]
+    """
+    if not _ZEROCONF_AVAILABLE:
+        logger.debug("_run_mdns_browse: zeroconf not available")
+        return []
+
+    from zeroconf import ServiceBrowser  # type: ignore[import]
+    from zeroconf.asyncio import AsyncZeroconf  # type: ignore[import]
+
+    discovered: dict[str, dict] = {}  # ip → info
+
+    all_service_types: list[str] = []
+    _COMMON_MOBILE_SERVICES = [
+        "_apple-mobdev2._tcp.local.",
+        "_apple-mobdev._tcp.local.",
+        "_companion-link._tcp.local.",
+        "_rdlink._tcp.local.",
+        "_androidtvremote2._tcp.local.",
+        "_googlecast._tcp.local.",
+        "_sleep-proxy._udp.local.",
+        "_remotepairing._tcp.local.",
+        # Broad services that phones advertise
+        "_http._tcp.local.",
+        "_ipp._tcp.local.",
+        "_airplay._tcp.local.",
+        "_raop._tcp.local.",
+    ]
+
+    try:
+        aiozc = AsyncZeroconf()
+        await aiozc.zeroconf.async_wait_for_start()
+
+        class _BrowseListener:
+            def add_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+                all_service_types.append(type_)
+
+            def remove_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+                pass
+
+            def update_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
+                pass
+
+        # Browse the meta-query type
+        ServiceBrowser(aiozc.zeroconf, "_services._dns-sd._udp.local.", listener=_BrowseListener())
+        # Also browse common mobile types directly for faster results
+        for svc in _COMMON_MOBILE_SERVICES:
+            ServiceBrowser(aiozc.zeroconf, svc, listener=_BrowseListener())
+
+        await asyncio.sleep(min(timeout, 6.0))
+
+        # Gather service info for any types found
+        from zeroconf import ServiceInfo  # type: ignore[import]
+
+        for svc_type in set(all_service_types) | set(_COMMON_MOBILE_SERVICES):
+            try:
+                info = ServiceInfo(svc_type, svc_type)
+                # ServiceInfo.request is synchronous in older zeroconf; wrap it
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda i=info: i.request(aiozc.zeroconf, 2000),
+                )
+                if info.addresses:
+                    import ipaddress
+
+                    for raw_addr in info.addresses:
+                        try:
+                            ip = str(ipaddress.IPv4Address(raw_addr))
+                        except Exception:
+                            continue
+                        svc_key = svc_type.rstrip(".").replace(".local", "")
+                        entry = discovered.setdefault(
+                            ip,
+                            {
+                                "ip": ip,
+                                "hostname": info.server,
+                                "services": [],
+                                "device_type_hint": None,
+                            },
+                        )
+                        if svc_key not in entry["services"]:
+                            entry["services"].append(svc_key)
+                        clean = svc_key.split(".")[0]
+                        if clean in _MOBILE_MDNS_SERVICES:
+                            entry["device_type_hint"] = "mobile_device"
+            except Exception:
+                continue
+
+    except Exception as exc:
+        logger.debug("_run_mdns_browse: error: %s", exc)
+    finally:
+        try:
+            await aiozc.async_close()
+        except Exception:
+            pass
+
+    logger.info("_run_mdns_browse: found %d unique IPs", len(discovered))
+    return list(discovered.values())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KB loader + lookup helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@functools.lru_cache(maxsize=1)
+def _load_device_kb() -> dict:
+    """Load device_kb.json once. Returns empty dicts on failure."""
+    kb_path = Path(__file__).parent.parent / "data" / "device_kb.json"
+    try:
+        with open(kb_path) as f:
+            return json.load(f)
+    except Exception:
+        logger.warning("Discovery: device_kb.json missing or invalid — KB lookups disabled")
+        return {"mac_oui_prefixes": {}, "hostname_patterns": []}
+
+
+def _kb_oui_lookup(mac: str) -> dict | None:
+    """Check curated KB for 6-char OUI prefix. Returns entry dict or None."""
+    if not mac:
+        return None
+    normalized = mac.upper().replace(":", "").replace("-", "")[:6]
+    return _load_device_kb()["mac_oui_prefixes"].get(normalized)
+
+
+def _kb_hostname_hints(hostname: str, scan_hostname_cache: list[dict] | None = None) -> dict:
+    """Return vendor/os_family/device_type hints from hostname pattern rules.
+
+    When scan_hostname_cache is provided (pre-built per-scan merged list), it is used
+    directly — avoiding repeated JSON loads and DB queries per device.
+    Falls back to device_kb.json when no cache is injected (e.g. standalone callers).
+    Handles both 'match' (JSON legacy key) and 'match_type' (DB column name).
+    """
+    if not hostname:
+        return {}
+    rules = (
+        scan_hostname_cache
+        if scan_hostname_cache is not None
+        else _load_device_kb().get("hostname_patterns", [])
+    )
+    hn = hostname.lower().strip()
+    for rule in rules:
+        pat = rule["pattern"].lower()
+        m = rule.get("match_type") or rule.get("match", "prefix")
+        if (
+            (m == "prefix" and hn.startswith(pat))
+            or (m == "exact" and hn == pat)
+            or (m == "contains" and pat in hn)
+        ):
+            return {
+                k: v
+                for k, v in rule.items()
+                if k not in ("pattern", "match", "match_type") and v is not None
+            }
+    return {}
+
+
+def _parse_snmp_sysdescr(sysdescr: str) -> dict:
+    """Extract vendor/os_family hints from SNMP sysDescr string."""
+    if not sysdescr:
+        return {}
+    desc = sysdescr.lower()
+    for keyword, result in [
+        ("proxmox", {"vendor": "Proxmox Server Solutions GmbH", "os_family": "Linux"}),
+        ("opnsense", {"vendor": "OPNsense", "os_family": "FreeBSD"}),
+        ("pfsense", {"vendor": "pfSense", "os_family": "FreeBSD"}),
+        ("truenas", {"vendor": "TrueNAS", "os_family": "Linux"}),
+        ("synology", {"vendor": "Synology", "os_family": "Linux"}),
+        ("ubuntu", {"vendor": "Ubuntu", "os_family": "Linux"}),
+        ("debian", {"vendor": "Debian", "os_family": "Linux"}),
+        ("centos", {"vendor": "CentOS", "os_family": "Linux"}),
+        ("windows", {"os_family": "Windows"}),
+        ("freebsd", {"os_family": "FreeBSD"}),
+        ("linux", {"os_family": "Linux"}),
+    ]:
+        if keyword in desc:
+            return result
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,18 +559,18 @@ _NETBIOS_NS_PORT = 137
 
 # Fixed 50-byte NBSTAT request per RFC 1002 §4.2.18
 _NBSTAT_REQUEST = (
-    b"\xab\xcd"          # transaction ID (arbitrary)
-    b"\x00\x00"          # flags: request, not recursive
-    b"\x00\x01"          # QDCOUNT = 1
-    b"\x00\x00"          # ANCOUNT
-    b"\x00\x00"          # NSCOUNT
-    b"\x00\x00"          # ARCOUNT
+    b"\xab\xcd"  # transaction ID (arbitrary)
+    b"\x00\x00"  # flags: request, not recursive
+    b"\x00\x01"  # QDCOUNT = 1
+    b"\x00\x00"  # ANCOUNT
+    b"\x00\x00"  # NSCOUNT
+    b"\x00\x00"  # ARCOUNT
     # Question: encoded "*" wildcard (single asterisk encodes to 32 bytes of CA/CB)
-    b"\x20"              # length prefix: 32
+    b"\x20"  # length prefix: 32
     b"CKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # encoded "*"
-    b"\x00"              # root label
-    b"\x00\x21"          # QTYPE: NBSTAT (0x0021)
-    b"\x00\x01"          # QCLASS: IN
+    b"\x00"  # root label
+    b"\x00\x21"  # QTYPE: NBSTAT (0x0021)
+    b"\x00\x01"  # QCLASS: IN
 )
 
 
@@ -214,23 +694,23 @@ async def _run_ssdp_unicast_probe(ip: str, open_ports: list[dict]) -> dict[str, 
 
 # Service types to query — ordered by fingerprinting specificity
 _MDNS_SERVICE_TYPES = [
-    "_apple-mobdev2._tcp.local.",       # iPhone / iPad (Apple Mobile Device v2)
-    "_device-info._tcp.local.",         # Apple device model info
-    "_androidtvremote2._tcp.local.",    # Android TV
-    "_googlecast._tcp.local.",          # Chromecast / Google Home / Android
-    "_airplay._tcp.local.",             # Apple TV / HomePod / AirPlay speaker
-    "_appletv-v2._tcp.local.",          # Apple TV (older protocol)
-    "_ipp._tcp.local.",                 # IPP printers
-    "_pdl-datastream._tcp.local.",      # PCL/PostScript printers
-    "_printer._tcp.local.",             # Generic printers
-    "_rtsp._tcp.local.",                # IP cameras (RTSP stream)
-    "_smb._tcp.local.",                 # SMB / NAS / Windows
-    "_afpovertcp._tcp.local.",          # AFP / Mac file sharing (NAS / Mac)
-    "_ssh._tcp.local.",                 # Linux / Mac SSH
-    "_workstation._tcp.local.",         # Linux / Mac Avahi workstation
-    "_rfb._tcp.local.",                 # VNC / Apple Screen Sharing
-    "_sip._tcp.local.",                 # VoIP phone
-    "_http._tcp.local.",                # Generic HTTP (IoT, routers)
+    "_apple-mobdev2._tcp.local.",  # iPhone / iPad (Apple Mobile Device v2)
+    "_device-info._tcp.local.",  # Apple device model info
+    "_androidtvremote2._tcp.local.",  # Android TV
+    "_googlecast._tcp.local.",  # Chromecast / Google Home / Android
+    "_airplay._tcp.local.",  # Apple TV / HomePod / AirPlay speaker
+    "_appletv-v2._tcp.local.",  # Apple TV (older protocol)
+    "_ipp._tcp.local.",  # IPP printers
+    "_pdl-datastream._tcp.local.",  # PCL/PostScript printers
+    "_printer._tcp.local.",  # Generic printers
+    "_rtsp._tcp.local.",  # IP cameras (RTSP stream)
+    "_smb._tcp.local.",  # SMB / NAS / Windows
+    "_afpovertcp._tcp.local.",  # AFP / Mac file sharing (NAS / Mac)
+    "_ssh._tcp.local.",  # Linux / Mac SSH
+    "_workstation._tcp.local.",  # Linux / Mac Avahi workstation
+    "_rfb._tcp.local.",  # VNC / Apple Screen Sharing
+    "_sip._tcp.local.",  # VoIP phone
+    "_http._tcp.local.",  # Generic HTTP (IoT, routers)
 ]
 
 # Map service type → device type hint
@@ -272,51 +752,49 @@ async def _run_mdns_probe(ip: str) -> dict[str, Any]:
 
         aiozc = AsyncZeroconf()
         try:
-            for stype in _MDNS_SERVICE_TYPES:
+
+            async def _query_one(stype: str) -> tuple[str, ServiceInfo | None]:
+                name_to_probe = f"{ip.replace('.', '-')}.{stype}"
                 try:
-                    name_to_probe = f"{ip.replace('.', '-')}.{stype}"
-                    info: ServiceInfo | None = await asyncio.wait_for(
+                    return stype, await asyncio.wait_for(
                         aiozc.async_get_service_info(stype, name_to_probe),
                         timeout=0.5,
                     )
-                    if info is None:
-                        continue
-                    found_services.append(stype)
-                    if not hostname_from_mdns and info.server:
-                        hostname_from_mdns = info.server.rstrip(".")
-                    # Probe OS hint from TXT records
-                    if info.properties:
-                        props = {
-                            k.decode("utf-8", errors="replace")
-                            if isinstance(k, bytes)
-                            else k: (
-                                v.decode("utf-8", errors="replace")
-                                if isinstance(v, bytes)
-                                else v
-                            )
-                            for k, v in info.properties.items()
-                        }
-                        if "model" in props:
-                            model: str = props["model"] or ""
-                            if (
-                                model.startswith("iPhone")
-                                or model.startswith("iPad")
-                                or model.startswith("iPod")
-                            ):
-                                device_hint = "ios_device"
-                                os_hint = "iOS"
-                            elif model.startswith("AppleTV"):
-                                device_hint = "apple_tv"
-                                os_hint = "tvOS"
-                        if "osName" in props:
-                            os_hint = props["osName"]
-                    # First matched service determines device hint
-                    if not device_hint:
-                        device_hint = _MDNS_SERVICE_TO_DEVICE.get(stype)
-                except asyncio.TimeoutError:
+                except Exception:
+                    return stype, None
+
+            gathered = await asyncio.gather(
+                *[_query_one(stype) for stype in _MDNS_SERVICE_TYPES],
+                return_exceptions=True,
+            )
+            for _entry in gathered:
+                if isinstance(_entry, BaseException):
                     continue
-                except Exception as e:
-                    logger.debug("mDNS probe for %s service %s: %s", ip, stype, e)
+                _stype, _info = _entry
+                if _info is None:
+                    continue
+                found_services.append(_stype)
+                if not hostname_from_mdns and _info.server:
+                    hostname_from_mdns = _info.server.rstrip(".")
+                if _info.properties:
+                    _props = {
+                        k.decode("utf-8", errors="replace") if isinstance(k, bytes) else k: (
+                            v.decode("utf-8", errors="replace") if isinstance(v, bytes) else v
+                        )
+                        for k, v in _info.properties.items()
+                    }
+                    if "model" in _props:
+                        _model: str = _props["model"] or ""
+                        if _model.startswith(("iPhone", "iPad", "iPod")):
+                            device_hint = "ios_device"
+                            os_hint = "iOS"
+                        elif _model.startswith("AppleTV"):
+                            device_hint = "apple_tv"
+                            os_hint = "tvOS"
+                    if "osName" in _props:
+                        os_hint = _props["osName"]
+                if not device_hint:
+                    device_hint = _MDNS_SERVICE_TO_DEVICE.get(_stype)
         finally:
             await aiozc.async_close()
     except Exception as e:
@@ -338,115 +816,105 @@ async def _run_mdns_probe(ip: str) -> dict[str, Any]:
 # Each entry: (regex_pattern, result_dict).  First match wins within a port group.
 _BANNER_RULES: list[tuple[re.Pattern[str], dict[str, str | None]]] = [
     # SSH banners ─────────────────────────────────────────────────────────────
-    (re.compile(r"SSH-\d+\.\d+-OpenSSH[_/]for_Windows", re.I),
-     {"os_family": "Windows", "os_vendor": "Microsoft", "device_type": "windows_pc"}),
-    (re.compile(r"SSH-\d+\.\d+.*Debian", re.I),
-     {"os_family": "Linux", "os_vendor": "Debian"}),
-    (re.compile(r"SSH-\d+\.\d+.*Ubuntu", re.I),
-     {"os_family": "Linux", "os_vendor": "Ubuntu"}),
-    (re.compile(r"SSH-\d+\.\d+.*CentOS|SSH-\d+\.\d+.*RedHat|SSH-\d+\.\d+.*RHEL", re.I),
-     {"os_family": "Linux", "os_vendor": "Red Hat"}),
-    (re.compile(r"SSH-\d+\.\d+.*Alpine", re.I),
-     {"os_family": "Linux", "os_vendor": "Alpine"}),
-    (re.compile(r"SSH-\d+\.\d+.*FreeBSD", re.I),
-     {"os_family": "BSD", "os_vendor": "FreeBSD"}),
-    (re.compile(r"SSH-\d+\.\d+.*NetBSD", re.I),
-     {"os_family": "BSD", "os_vendor": "NetBSD"}),
-    (re.compile(r"SSH-\d+\.\d+.*OpenBSD", re.I),
-     {"os_family": "BSD", "os_vendor": "OpenBSD"}),
+    (
+        re.compile(r"SSH-\d+\.\d+-OpenSSH[_/]for_Windows", re.I),
+        {"os_family": "Windows", "os_vendor": "Microsoft", "device_type": "windows_pc"},
+    ),
+    (re.compile(r"SSH-\d+\.\d+.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
+    (re.compile(r"SSH-\d+\.\d+.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
+    (
+        re.compile(r"SSH-\d+\.\d+.*CentOS|SSH-\d+\.\d+.*RedHat|SSH-\d+\.\d+.*RHEL", re.I),
+        {"os_family": "Linux", "os_vendor": "Red Hat"},
+    ),
+    (re.compile(r"SSH-\d+\.\d+.*Alpine", re.I), {"os_family": "Linux", "os_vendor": "Alpine"}),
+    (re.compile(r"SSH-\d+\.\d+.*FreeBSD", re.I), {"os_family": "BSD", "os_vendor": "FreeBSD"}),
+    (re.compile(r"SSH-\d+\.\d+.*NetBSD", re.I), {"os_family": "BSD", "os_vendor": "NetBSD"}),
+    (re.compile(r"SSH-\d+\.\d+.*OpenBSD", re.I), {"os_family": "BSD", "os_vendor": "OpenBSD"}),
     # RouterOS / MikroTik
-    (re.compile(r"SSH-\d+\.\d+.*(ROSSSH|RouterOS)", re.I),
-     {"os_family": "RouterOS", "os_vendor": "MikroTik", "device_type": "router"}),
+    (
+        re.compile(r"SSH-\d+\.\d+.*(ROSSSH|RouterOS)", re.I),
+        {"os_family": "RouterOS", "os_vendor": "MikroTik", "device_type": "router"},
+    ),
     # Cisco / Arista / Juniper
-    (re.compile(r"SSH-\d+\.\d+.*Cisco", re.I),
-     {"os_vendor": "Cisco", "device_type": "router"}),
-    (re.compile(r"User Access Verification|Cisco IOS", re.I),
-     {"os_vendor": "Cisco", "device_type": "router"}),
-    (re.compile(r"SSH-\d+\.\d+.*Arista", re.I),
-     {"os_vendor": "Arista", "device_type": "switch"}),
-    (re.compile(r"SSH-\d+\.\d+.*Juniper|SSH-\d+\.\d+.*JUNOS", re.I),
-     {"os_vendor": "Juniper", "device_type": "router"}),
+    (re.compile(r"SSH-\d+\.\d+.*Cisco", re.I), {"os_vendor": "Cisco", "device_type": "router"}),
+    (
+        re.compile(r"User Access Verification|Cisco IOS", re.I),
+        {"os_vendor": "Cisco", "device_type": "router"},
+    ),
+    (re.compile(r"SSH-\d+\.\d+.*Arista", re.I), {"os_vendor": "Arista", "device_type": "switch"}),
+    (
+        re.compile(r"SSH-\d+\.\d+.*Juniper|SSH-\d+\.\d+.*JUNOS", re.I),
+        {"os_vendor": "Juniper", "device_type": "router"},
+    ),
     # Ubiquiti
-    (re.compile(r"SSH-\d+\.\d+.*Ubiquiti|SSH-\d+\.\d+.*UniFi|SSH-\d+\.\d+.*AirOS", re.I),
-     {"os_vendor": "Ubiquiti", "device_type": "access_point"}),
+    (
+        re.compile(r"SSH-\d+\.\d+.*Ubiquiti|SSH-\d+\.\d+.*UniFi|SSH-\d+\.\d+.*AirOS", re.I),
+        {"os_vendor": "Ubiquiti", "device_type": "access_point"},
+    ),
     # DD-WRT / OpenWrt / Tomato
-    (re.compile(r"SSH-\d+\.\d+.*(DD-WRT|OpenWrt|Tomato)", re.I),
-     {"os_family": "Linux", "device_type": "router"}),
+    (
+        re.compile(r"SSH-\d+\.\d+.*(DD-WRT|OpenWrt|Tomato)", re.I),
+        {"os_family": "Linux", "device_type": "router"},
+    ),
     # Generic Linux SSH
-    (re.compile(r"SSH-\d+\.\d+-OpenSSH", re.I),
-     {"os_family": "Linux"}),
-
+    (re.compile(r"SSH-\d+\.\d+-OpenSSH", re.I), {"os_family": "Linux"}),
     # FTP banners ──────────────────────────────────────────────────────────────
-    (re.compile(r"220.*Microsoft FTP", re.I),
-     {"os_family": "Windows", "os_vendor": "Microsoft"}),
-    (re.compile(r"220.*ProFTPD.*Debian", re.I),
-     {"os_family": "Linux", "os_vendor": "Debian"}),
-    (re.compile(r"220.*ProFTPD.*Ubuntu", re.I),
-     {"os_family": "Linux", "os_vendor": "Ubuntu"}),
-    (re.compile(r"220.*Pure-FTPd", re.I),
-     {"os_family": "Linux"}),
-    (re.compile(r"220.*vsftpd", re.I),
-     {"os_family": "Linux"}),
-    (re.compile(r"220.*Synology", re.I),
-     {"os_vendor": "Synology", "device_type": "nas"}),
-    (re.compile(r"220.*QNAP", re.I),
-     {"os_vendor": "QNAP", "device_type": "nas"}),
-    (re.compile(r"220.*TrueNAS|220.*FreeNAS", re.I),
-     {"os_vendor": "iXsystems", "device_type": "nas"}),
-    (re.compile(r"220.*WD MyCloud", re.I),
-     {"os_vendor": "Western Digital", "device_type": "nas"}),
-
+    (re.compile(r"220.*Microsoft FTP", re.I), {"os_family": "Windows", "os_vendor": "Microsoft"}),
+    (re.compile(r"220.*ProFTPD.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
+    (re.compile(r"220.*ProFTPD.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
+    (re.compile(r"220.*Pure-FTPd", re.I), {"os_family": "Linux"}),
+    (re.compile(r"220.*vsftpd", re.I), {"os_family": "Linux"}),
+    (re.compile(r"220.*Synology", re.I), {"os_vendor": "Synology", "device_type": "nas"}),
+    (re.compile(r"220.*QNAP", re.I), {"os_vendor": "QNAP", "device_type": "nas"}),
+    (
+        re.compile(r"220.*TrueNAS|220.*FreeNAS", re.I),
+        {"os_vendor": "iXsystems", "device_type": "nas"},
+    ),
+    (re.compile(r"220.*WD MyCloud", re.I), {"os_vendor": "Western Digital", "device_type": "nas"}),
     # SMTP banners ─────────────────────────────────────────────────────────────
-    (re.compile(r"220.*ESMTP.*Postfix.*Ubuntu", re.I),
-     {"os_family": "Linux", "os_vendor": "Ubuntu"}),
-    (re.compile(r"220.*ESMTP.*Postfix.*Debian", re.I),
-     {"os_family": "Linux", "os_vendor": "Debian"}),
-    (re.compile(r"220.*Microsoft ESMTP|220.*Exchange", re.I),
-     {"os_family": "Windows", "os_vendor": "Microsoft"}),
-
+    (
+        re.compile(r"220.*ESMTP.*Postfix.*Ubuntu", re.I),
+        {"os_family": "Linux", "os_vendor": "Ubuntu"},
+    ),
+    (
+        re.compile(r"220.*ESMTP.*Postfix.*Debian", re.I),
+        {"os_family": "Linux", "os_vendor": "Debian"},
+    ),
+    (
+        re.compile(r"220.*Microsoft ESMTP|220.*Exchange", re.I),
+        {"os_family": "Windows", "os_vendor": "Microsoft"},
+    ),
     # HTTP banners (port 80 first-line or Server header) ──────────────────────
-    (re.compile(r"Server:\s*Microsoft-IIS", re.I),
-     {"os_family": "Windows", "os_vendor": "Microsoft"}),
-    (re.compile(r"Server:\s*nginx.*Ubuntu", re.I),
-     {"os_family": "Linux", "os_vendor": "Ubuntu"}),
-    (re.compile(r"Server:\s*nginx.*Debian", re.I),
-     {"os_family": "Linux", "os_vendor": "Debian"}),
-    (re.compile(r"Server:\s*Apache.*Ubuntu", re.I),
-     {"os_family": "Linux", "os_vendor": "Ubuntu"}),
-    (re.compile(r"Server:\s*Apache.*Debian", re.I),
-     {"os_family": "Linux", "os_vendor": "Debian"}),
-    (re.compile(r"Server:\s*ArubaOS", re.I),
-     {"os_vendor": "Aruba", "device_type": "access_point"}),
-    (re.compile(r"Server:\s*HP.?ProCurve", re.I),
-     {"os_vendor": "HP", "device_type": "switch"}),
-    (re.compile(r"Server:\s*Axis", re.I),
-     {"os_vendor": "Axis", "device_type": "ip_camera"}),
-    (re.compile(r"Server:\s*Hikvision|Server:\s*DNVRS-Webs", re.I),
-     {"os_vendor": "Hikvision", "device_type": "ip_camera"}),
-    (re.compile(r"Server:\s*Dahua", re.I),
-     {"os_vendor": "Dahua", "device_type": "ip_camera"}),
-    (re.compile(r"Server:\s*GoAhead", re.I),
-     {"device_type": "ip_camera"}),
-
+    (
+        re.compile(r"Server:\s*Microsoft-IIS", re.I),
+        {"os_family": "Windows", "os_vendor": "Microsoft"},
+    ),
+    (re.compile(r"Server:\s*nginx.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
+    (re.compile(r"Server:\s*nginx.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
+    (re.compile(r"Server:\s*Apache.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
+    (re.compile(r"Server:\s*Apache.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
+    (re.compile(r"Server:\s*ArubaOS", re.I), {"os_vendor": "Aruba", "device_type": "access_point"}),
+    (re.compile(r"Server:\s*HP.?ProCurve", re.I), {"os_vendor": "HP", "device_type": "switch"}),
+    (re.compile(r"Server:\s*Axis", re.I), {"os_vendor": "Axis", "device_type": "ip_camera"}),
+    (
+        re.compile(r"Server:\s*Hikvision|Server:\s*DNVRS-Webs", re.I),
+        {"os_vendor": "Hikvision", "device_type": "ip_camera"},
+    ),
+    (re.compile(r"Server:\s*Dahua", re.I), {"os_vendor": "Dahua", "device_type": "ip_camera"}),
+    (re.compile(r"Server:\s*GoAhead", re.I), {"device_type": "ip_camera"}),
     # Telnet / device prompts ──────────────────────────────────────────────────
-    (re.compile(r"ASUSWRT", re.I),
-     {"os_vendor": "Asus", "device_type": "router"}),
-    (re.compile(r"DD-WRT", re.I),
-     {"device_type": "router", "os_vendor": "DD-WRT"}),
-    (re.compile(r"OpenWrt", re.I),
-     {"os_family": "Linux", "device_type": "router", "os_vendor": "OpenWrt"}),
-    (re.compile(r"pfSense", re.I),
-     {"os_vendor": "Netgate", "device_type": "firewall"}),
-    (re.compile(r"OPNsense", re.I),
-     {"os_vendor": "OPNsense", "device_type": "firewall"}),
-    (re.compile(r"VyOS", re.I),
-     {"os_vendor": "VyOS", "device_type": "router"}),
-    (re.compile(r"MikroTik", re.I),
-     {"os_vendor": "MikroTik", "device_type": "router"}),
-    (re.compile(r"UniFi", re.I),
-     {"os_vendor": "Ubiquiti", "device_type": "access_point"}),
-    (re.compile(r"Ubiquiti", re.I),
-     {"os_vendor": "Ubiquiti"}),
+    (re.compile(r"ASUSWRT", re.I), {"os_vendor": "Asus", "device_type": "router"}),
+    (re.compile(r"DD-WRT", re.I), {"device_type": "router", "os_vendor": "DD-WRT"}),
+    (
+        re.compile(r"OpenWrt", re.I),
+        {"os_family": "Linux", "device_type": "router", "os_vendor": "OpenWrt"},
+    ),
+    (re.compile(r"pfSense", re.I), {"os_vendor": "Netgate", "device_type": "firewall"}),
+    (re.compile(r"OPNsense", re.I), {"os_vendor": "OPNsense", "device_type": "firewall"}),
+    (re.compile(r"VyOS", re.I), {"os_vendor": "VyOS", "device_type": "router"}),
+    (re.compile(r"MikroTik", re.I), {"os_vendor": "MikroTik", "device_type": "router"}),
+    (re.compile(r"UniFi", re.I), {"os_vendor": "Ubiquiti", "device_type": "access_point"}),
+    (re.compile(r"Ubiquiti", re.I), {"os_vendor": "Ubiquiti"}),
 ]
 
 
@@ -468,77 +936,75 @@ def _parse_banner_for_hints(banner: str | None) -> dict[str, str | None]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _HTTP_TITLE_RULES: list[tuple[re.Pattern[str], dict[str, str | None]]] = [
-    (re.compile(r"FRITZ!Box", re.I),
-     {"os_vendor": "AVM", "device_type": "router"}),
-    (re.compile(r"Netgear|NETGEAR", re.I),
-     {"os_vendor": "Netgear", "device_type": "router"}),
-    (re.compile(r"TP.?Link", re.I),
-     {"os_vendor": "TP-Link", "device_type": "router"}),
-    (re.compile(r"D-Link|D-link", re.I),
-     {"os_vendor": "D-Link", "device_type": "router"}),
-    (re.compile(r"Asus.*Router|AiMesh", re.I),
-     {"os_vendor": "Asus", "device_type": "router"}),
-    (re.compile(r"Linksys", re.I),
-     {"os_vendor": "Linksys", "device_type": "router"}),
-    (re.compile(r"pfSense", re.I),
-     {"os_vendor": "Netgate", "device_type": "firewall"}),
-    (re.compile(r"OPNsense", re.I),
-     {"os_vendor": "OPNsense", "device_type": "firewall"}),
-    (re.compile(r"Synology DiskStation|Synology NAS", re.I),
-     {"os_vendor": "Synology", "device_type": "nas"}),
-    (re.compile(r"QNAP", re.I),
-     {"os_vendor": "QNAP", "device_type": "nas"}),
-    (re.compile(r"TrueNAS|FreeNAS", re.I),
-     {"os_vendor": "iXsystems", "device_type": "nas"}),
-    (re.compile(r"Proxmox Virtual Environment|Proxmox VE", re.I),
-     {"os_vendor": "Proxmox", "device_type": "hypervisor"}),
-    (re.compile(r"VMware ESXi|vSphere", re.I),
-     {"os_vendor": "VMware", "device_type": "hypervisor"}),
-    (re.compile(r"Hikvision|iVMS", re.I),
-     {"os_vendor": "Hikvision", "device_type": "ip_camera"}),
-    (re.compile(r"Axis.*Camera|AXIS.*Communications", re.I),
-     {"os_vendor": "Axis", "device_type": "ip_camera"}),
-    (re.compile(r"Samsung.*TV|SmartTV.*Samsung", re.I),
-     {"os_vendor": "Samsung", "device_type": "smart_tv"}),
-    (re.compile(r"LG.*TV|webOS TV", re.I),
-     {"os_vendor": "LG", "device_type": "smart_tv"}),
-    (re.compile(r"Sony.*Bravia", re.I),
-     {"os_vendor": "Sony", "device_type": "smart_tv"}),
-    (re.compile(r"UniFi", re.I),
-     {"os_vendor": "Ubiquiti", "device_type": "access_point"}),
-    (re.compile(r"Mikrotik|RouterOS", re.I),
-     {"os_vendor": "MikroTik", "device_type": "router"}),
-    (re.compile(r"Pi-hole", re.I),
-     {"os_family": "Linux", "device_type": "linux_server"}),
-    (re.compile(r"Home Assistant", re.I),
-     {"device_type": "iot_device"}),
-    (re.compile(r"Hue Philips|Hue Bridge", re.I),
-     {"os_vendor": "Philips", "device_type": "iot_device"}),
+    (re.compile(r"FRITZ!Box", re.I), {"os_vendor": "AVM", "device_type": "router"}),
+    (re.compile(r"Netgear|NETGEAR", re.I), {"os_vendor": "Netgear", "device_type": "router"}),
+    (re.compile(r"TP.?Link", re.I), {"os_vendor": "TP-Link", "device_type": "router"}),
+    (re.compile(r"D-Link|D-link", re.I), {"os_vendor": "D-Link", "device_type": "router"}),
+    (re.compile(r"Asus.*Router|AiMesh", re.I), {"os_vendor": "Asus", "device_type": "router"}),
+    (re.compile(r"Linksys", re.I), {"os_vendor": "Linksys", "device_type": "router"}),
+    (re.compile(r"pfSense", re.I), {"os_vendor": "Netgate", "device_type": "firewall"}),
+    (re.compile(r"OPNsense", re.I), {"os_vendor": "OPNsense", "device_type": "firewall"}),
+    (
+        re.compile(r"Synology DiskStation|Synology NAS", re.I),
+        {"os_vendor": "Synology", "device_type": "nas"},
+    ),
+    (re.compile(r"QNAP", re.I), {"os_vendor": "QNAP", "device_type": "nas"}),
+    (re.compile(r"TrueNAS|FreeNAS", re.I), {"os_vendor": "iXsystems", "device_type": "nas"}),
+    (
+        re.compile(r"Proxmox Virtual Environment|Proxmox VE", re.I),
+        {"os_vendor": "Proxmox", "device_type": "hypervisor"},
+    ),
+    (
+        re.compile(r"VMware ESXi|vSphere", re.I),
+        {"os_vendor": "VMware", "device_type": "hypervisor"},
+    ),
+    (re.compile(r"Hikvision|iVMS", re.I), {"os_vendor": "Hikvision", "device_type": "ip_camera"}),
+    (
+        re.compile(r"Axis.*Camera|AXIS.*Communications", re.I),
+        {"os_vendor": "Axis", "device_type": "ip_camera"},
+    ),
+    (
+        re.compile(r"Samsung.*TV|SmartTV.*Samsung", re.I),
+        {"os_vendor": "Samsung", "device_type": "smart_tv"},
+    ),
+    (re.compile(r"LG.*TV|webOS TV", re.I), {"os_vendor": "LG", "device_type": "smart_tv"}),
+    (re.compile(r"Sony.*Bravia", re.I), {"os_vendor": "Sony", "device_type": "smart_tv"}),
+    (re.compile(r"UniFi", re.I), {"os_vendor": "Ubiquiti", "device_type": "access_point"}),
+    (re.compile(r"Mikrotik|RouterOS", re.I), {"os_vendor": "MikroTik", "device_type": "router"}),
+    (re.compile(r"Pi-hole", re.I), {"os_family": "Linux", "device_type": "linux_server"}),
+    (re.compile(r"Home Assistant", re.I), {"device_type": "iot_device"}),
+    (
+        re.compile(r"Hue Philips|Hue Bridge", re.I),
+        {"os_vendor": "Philips", "device_type": "iot_device"},
+    ),
 ]
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 _SERVER_HEADER_RULES: list[tuple[re.Pattern[str], dict[str, str | None]]] = [
-    (re.compile(r"Microsoft-IIS/(\d+)", re.I),
-     {"os_family": "Windows", "os_vendor": "Microsoft"}),
+    (re.compile(r"Microsoft-IIS/(\d+)", re.I), {"os_family": "Windows", "os_vendor": "Microsoft"}),
     (re.compile(r"nginx.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
     (re.compile(r"nginx.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
     (re.compile(r"Apache.*Ubuntu", re.I), {"os_family": "Linux", "os_vendor": "Ubuntu"}),
     (re.compile(r"Apache.*Debian", re.I), {"os_family": "Linux", "os_vendor": "Debian"}),
     (re.compile(r"ArubaOS", re.I), {"os_vendor": "Aruba", "device_type": "access_point"}),
     (re.compile(r"Dahua", re.I), {"os_vendor": "Dahua", "device_type": "ip_camera"}),
-    (re.compile(r"Hikvision|DNVRS-Webs", re.I),
-     {"os_vendor": "Hikvision", "device_type": "ip_camera"}),
+    (
+        re.compile(r"Hikvision|DNVRS-Webs", re.I),
+        {"os_vendor": "Hikvision", "device_type": "ip_camera"},
+    ),
     (re.compile(r"GoAhead", re.I), {"device_type": "ip_camera"}),
-    (re.compile(r"Jetty.*Synology|Synology", re.I),
-     {"os_vendor": "Synology", "device_type": "nas"}),
-    (re.compile(r"pve-api-daemon|Proxmox", re.I),
-     {"os_vendor": "Proxmox", "device_type": "hypervisor"}),
+    (
+        re.compile(r"Jetty.*Synology|Synology", re.I),
+        {"os_vendor": "Synology", "device_type": "nas"},
+    ),
+    (
+        re.compile(r"pve-api-daemon|Proxmox", re.I),
+        {"os_vendor": "Proxmox", "device_type": "hypervisor"},
+    ),
 ]
 
 
-async def _run_http_fingerprint_probe(
-    ip: str, open_ports: list[dict]
-) -> dict[str, str | None]:
+async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[str, str | None]:
     """HEAD + GET probe against HTTP/HTTPS ports.  Reads Server header and page title.
 
     Returns ``{os_family, os_vendor, device_type}`` if anything was inferred.
@@ -596,31 +1062,50 @@ async def _run_http_fingerprint_probe(
 # 7. Offline OUI / MAC vendor lookup
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _run_vendor_lookup_local(mac: str | None) -> str | None:
-    """Look up MAC vendor using local OUI database (manuf library).
 
-    Falls back to the external macvendors.com API only if the local DB misses.
+async def _run_vendor_lookup_local(
+    mac: str | None,
+    scan_oui_cache: dict[str, dict] | None = None,
+) -> tuple[str | None, dict | None]:
+    """Look up MAC vendor, returning (vendor_string, kb_entry_or_None).
+
+    Priority: scan_oui_cache (merged DB+JSON) → curated KB JSON → manuf library → API.
+    Pass scan_oui_cache when calling from a scan job to avoid per-device DB queries.
     """
     if not mac:
-        return None
+        return None, None
 
-    # Try local DB first (no network I/O)
+    prefix = mac.upper().replace(":", "").replace("-", "")[:6]
+
+    # 1. Scan-level merged cache (DB rows take priority over JSON for same prefix)
+    if scan_oui_cache is not None:
+        entry = scan_oui_cache.get(prefix)
+        if entry and entry.get("vendor"):
+            return entry["vendor"], entry
+
+    # 2. Curated KB JSON (always available, no DB needed)
+    kb_entry = _kb_oui_lookup(mac)
+    if kb_entry and kb_entry.get("vendor"):
+        return kb_entry["vendor"], kb_entry
+
+    # 3. manuf library (offline, broad coverage — may be outdated for newer OUIs)
     if _MANUF_AVAILABLE and _MANUF_PARSER is not None:
         try:
             loop = asyncio.get_running_loop()
             vendor = await loop.run_in_executor(None, _MANUF_PARSER.get_manuf_long, mac)
             if vendor:
-                return vendor[:100]
+                return vendor[:100], None
         except Exception as e:
             logger.debug("manuf local lookup failed for %s: %s", mac, e)
 
-    # Fallback: external API (may be rate-limited)
+    # 4. Fallback: external API (may be rate-limited during bulk scans)
     try:
         from app.services.discovery_probes import _run_vendor_lookup
 
-        return await _run_vendor_lookup(mac)
+        api_result = await _run_vendor_lookup(mac)
+        return api_result, None
     except Exception:
-        return None
+        return None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -629,8 +1114,8 @@ async def _run_vendor_lookup_local(mac: str | None) -> str | None:
 
 # OUI vendor string → device type candidates (partial match, case-insensitive)
 _OUI_DEVICE_HINTS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"Apple", re.I), "ios_device"),        # refined further below
-    (re.compile(r"Google", re.I), "chromecast"),       # refined further below
+    (re.compile(r"Apple", re.I), "ios_device"),  # refined further below
+    (re.compile(r"Google", re.I), "chromecast"),  # refined further below
     (re.compile(r"Amazon", re.I), "fire_tv"),
     (re.compile(r"Samsung", re.I), "smart_tv"),
     (re.compile(r"LG Electronics", re.I), "smart_tv"),
@@ -656,21 +1141,21 @@ _OUI_DEVICE_HINTS: list[tuple[re.Pattern[str], str]] = [
 
 # Port presence → device type confidence boosts
 _PORT_DEVICE_HINTS: dict[int, tuple[str, int]] = {
-    554: ("ip_camera", 30),    # RTSP
+    554: ("ip_camera", 30),  # RTSP
     5060: ("voip_phone", 30),  # SIP
     5061: ("voip_phone", 20),  # SIP/TLS
-    9100: ("printer", 35),     # JetDirect / raw printing
-    515: ("printer", 35),      # LPD
-    631: ("printer", 30),      # IPP
-    445: ("nas", 15),          # SMB
-    2049: ("nas", 20),         # NFS
-    548: ("nas", 20),          # AFP
+    9100: ("printer", 35),  # JetDirect / raw printing
+    515: ("printer", 35),  # LPD
+    631: ("printer", 30),  # IPP
+    445: ("nas", 15),  # SMB
+    2049: ("nas", 20),  # NFS
+    548: ("nas", 20),  # AFP
     3389: ("windows_pc", 40),  # RDP
-    5900: ("linux_server", 10),# VNC (weak, could be anything)
+    5900: ("linux_server", 10),  # VNC (weak, could be anything)
     8006: ("hypervisor", 50),  # Proxmox
-    8443: ("access_point", 15),# UniFi / common AP management
-    623: ("server", 30),       # IPMI / BMC
-    22: ("linux_server", 5),   # SSH (very weak alone)
+    8443: ("access_point", 15),  # UniFi / common AP management
+    623: ("server", 30),  # IPMI / BMC
+    22: ("linux_server", 5),  # SSH (very weak alone)
 }
 
 
@@ -742,6 +1227,16 @@ def _classify_device(evidence: dict[str, Any]) -> tuple[str | None, int]:
     if http_dt:
         _add(http_dt, 30)
 
+    # KB OUI device type (curated, high reliability)
+    kb_dt = evidence.get("kb_device_type")
+    if kb_dt:
+        _add(kb_dt, 35)
+
+    # Hostname pattern device type (lower confidence — hostnames are user-assigned)
+    hn_dt = evidence.get("hostname_device_type")
+    if hn_dt:
+        _add(hn_dt, 20)
+
     # OUI vendor hints
     oui_vendor = evidence.get("oui_vendor") or evidence.get("os_vendor", "")
     if oui_vendor:
@@ -776,6 +1271,21 @@ def _classify_device(evidence: dict[str, Any]) -> tuple[str | None, int]:
     if evidence.get("netbios_hostname"):
         _add("windows_pc", 15)
 
+    # Randomized MAC heuristics (locally-administered bit set)
+    mac = evidence.get("mac") or ""
+    if _is_randomized_mac(mac):
+        mdns_svcs = evidence.get("mdns_services", [])
+        if mdns_svcs:
+            # Randomized MAC + any mDNS service → strong mobile indicator
+            _add("mobile_device", 45)
+        ttl = evidence.get("ttl")
+        if ttl is not None and 55 <= ttl <= 70:
+            # TTL ≈64 (Linux/Android/iOS) → likely phone or Linux box
+            _add("mobile_device", 30)
+        if evidence.get("is_mobile_mdns"):
+            # Saw an Apple/Android-specific service type → high confidence
+            _add("mobile_device", 55)
+
     if not scores:
         return None, 0
 
@@ -800,17 +1310,24 @@ def _coalesce_host_info(
     rdns_hostname: str | None,
     oui_vendor: str | None,
     open_ports: list[dict],
+    kb_entry: dict | None = None,
+    hostname_hints: dict | None = None,
+    mac: str | None = None,
+    ttl_hint: int | None = None,
 ) -> dict[str, Any]:
     """Priority-ordered merge of all probe results.
 
     Priority per field (highest → lowest):
       hostname:    nmap → SNMP sysName → mDNS → NetBIOS → rDNS PTR → SSDP friendlyName
-      os_family:   nmap osmatch → banner → mDNS hint → None
-      os_vendor:   nmap osmatch → SSDP manufacturer → HTTP fingerprint → banner → OUI
+      os_family:   nmap → banner → HTTP → SNMP sysDescr → KB/hostname hint → mDNS
+      os_vendor:   nmap → SSDP → HTTP fingerprint → SNMP sysDescr → KB OUI →
+                   banner → manuf/API OUI → hostname pattern
       device_type: _classify_device() scores all evidence together
 
     Returns a dict used to assemble the raw_results entry.
     """
+    _hn = hostname_hints or {}
+    snmp_hints = _parse_snmp_sysdescr(snmp_data.get("sys_descr", ""))
 
     def _first(*values: str | None) -> str | None:
         for v in values:
@@ -831,31 +1348,42 @@ def _coalesce_host_info(
         nmap_data.get("os_family"),
         banner_hints.get("os_family"),
         http_hints.get("os_family"),
+        snmp_hints.get("os_family"),
+        kb_entry.get("os_family") if kb_entry else None,
+        _hn.get("os_family"),
         mdns_data.get("os_hint"),
     )
 
     os_vendor = _first(
-        nmap_data.get("os_vendor"),
-        ssdp_data.get("manufacturer"),
-        http_hints.get("os_vendor"),    # HTTP fingerprint (Proxmox, Synology, VMware) is more specific
-        banner_hints.get("os_vendor"),  # SSH banner (Debian, Ubuntu) as fallback
-        oui_vendor,
+        nmap_data.get("os_vendor"),  # 1. nmap (authoritative when privileged)
+        ssdp_data.get("manufacturer"),  # 2. UPnP/SSDP
+        http_hints.get("os_vendor"),  # 3. HTTP fingerprint (Proxmox/Synology/VMware)
+        snmp_hints.get("vendor"),  # 4. SNMP sysDescr (authoritative OS descriptor)
+        kb_entry.get("vendor") if kb_entry else None,  # 5. KB OUI — curated, reliable
+        banner_hints.get("os_vendor"),  # 6. SSH/service banner
+        oui_vendor,  # 7. manuf/API OUI (generic, may be outdated)
+        _hn.get("vendor"),  # 8. Hostname pattern (last resort)
     )
 
     # Aggregate evidence for device classification
     all_evidence: dict[str, Any] = {
+        "mac": mac or "",
         "hostname": hostname,
         "os_family": os_family,
         "os_vendor": os_vendor,
         "open_ports": open_ports,
         "mdns_services": mdns_data.get("services", []),
         "mdns_device_type_hint": mdns_data.get("device_type_hint"),
+        "is_mobile_mdns": mdns_data.get("is_mobile_mdns", False),
         "ssdp_device_type": ssdp_data.get("device_type"),
         "ssdp_friendly_name": ssdp_data.get("friendly_name"),
         "banner_device_type": banner_hints.get("device_type"),
         "http_device_type": http_hints.get("device_type"),
         "oui_vendor": oui_vendor,
         "netbios_hostname": netbios.get("hostname"),
+        "kb_device_type": kb_entry.get("device_type") if kb_entry else None,
+        "hostname_device_type": _hn.get("device_type"),
+        "ttl": ttl_hint,
     }
 
     device_type, device_confidence = _classify_device(all_evidence)

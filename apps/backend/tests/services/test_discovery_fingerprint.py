@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,7 +19,6 @@ from app.services.discovery_fingerprint import (
     _run_netbios_probe,
     _run_rdns_probe,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _parse_banner_for_hints
@@ -308,11 +307,338 @@ async def test_rdns_probe_returns_none_when_ptr_equals_ip() -> None:
 @pytest.mark.asyncio
 async def test_netbios_probe_returns_empty_on_connection_refusal() -> None:
     """When the UDP response times out, probe should return empty dict (not raise)."""
-    import socket
 
     with patch("socket.socket") as mock_sock_cls:
         mock_sock = MagicMock()
-        mock_sock.recvfrom.side_effect = socket.timeout("timed out")
+        mock_sock.recvfrom.side_effect = TimeoutError("timed out")
         mock_sock_cls.return_value.__enter__.return_value = mock_sock
         result = await _run_netbios_probe("192.168.1.1")
     assert result == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KB lookup helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_kb_oui_lookup_known_prefix():
+    from app.services.discovery_fingerprint import _kb_oui_lookup
+
+    result = _kb_oui_lookup("bc:24:11:20:2b:65")
+    assert result is not None
+    assert result["vendor"] == "Proxmox Server Solutions GmbH"
+    assert result["device_type"] == "hypervisor"
+
+
+def test_kb_oui_lookup_unknown_prefix():
+    from app.services.discovery_fingerprint import _kb_oui_lookup
+
+    result = _kb_oui_lookup("aa:bb:cc:11:22:33")
+    assert result is None
+
+
+def test_kb_oui_lookup_empty_mac():
+    from app.services.discovery_fingerprint import _kb_oui_lookup
+
+    assert _kb_oui_lookup("") is None
+    assert _kb_oui_lookup(None) is None
+
+
+def test_kb_oui_lookup_normalizes_format():
+    from app.services.discovery_fingerprint import _kb_oui_lookup
+
+    assert _kb_oui_lookup("BC-24-11-AA-BB-CC") is not None
+    assert _kb_oui_lookup("bc2411aabbcc") is not None
+
+
+def test_kb_hostname_hints_prefix_match():
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    result = _kb_hostname_hints("pve3")
+    assert result["vendor"] == "Proxmox Server Solutions GmbH"
+    assert result["device_type"] == "hypervisor"
+    assert result["os_family"] == "Linux"
+
+
+def test_kb_hostname_hints_exact_match():
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    result = _kb_hostname_hints("_gateway")
+    assert result["device_type"] == "router"
+    assert "vendor" not in result
+
+
+def test_kb_hostname_hints_no_match():
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    result = _kb_hostname_hints("mydesktop")
+    assert result == {}
+
+
+def test_kb_hostname_hints_case_insensitive():
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    assert _kb_hostname_hints("PVE-MASTER")["vendor"] == "Proxmox Server Solutions GmbH"
+
+
+def test_kb_hostname_hints_uses_injected_cache():
+    """Injected scan_hostname_cache overrides device_kb.json lookup."""
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    custom_cache = [
+        {
+            "pattern": "myrouter",
+            "match_type": "exact",
+            "vendor": "CustomVendor",
+            "device_type": "router",
+        },
+    ]
+    result = _kb_hostname_hints("myrouter", scan_hostname_cache=custom_cache)
+    assert result["vendor"] == "CustomVendor"
+    assert result["device_type"] == "router"
+
+
+def test_kb_hostname_hints_cache_none_falls_back_to_json():
+    """None cache falls back to device_kb.json — existing JSON rules still work."""
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    # "pve" prefix is defined in device_kb.json
+    result = _kb_hostname_hints("pve-master", scan_hostname_cache=None)
+    assert result.get("vendor") == "Proxmox Server Solutions GmbH"
+
+
+def test_kb_hostname_hints_match_type_key():
+    """match_type (DB column) and match (JSON legacy key) both resolve correctly."""
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    # Using DB-style "match_type" key
+    cache_db_style = [
+        {
+            "pattern": "synology",
+            "match_type": "prefix",
+            "vendor": "Synology",
+            "device_type": "storage",
+        }
+    ]
+    assert (
+        _kb_hostname_hints("synology-nas", scan_hostname_cache=cache_db_style)["vendor"]
+        == "Synology"
+    )
+    # Using JSON-style "match" key
+    cache_json_style = [
+        {"pattern": "synology", "match": "prefix", "vendor": "Synology", "device_type": "storage"}
+    ]
+    assert (
+        _kb_hostname_hints("synology-nas", scan_hostname_cache=cache_json_style)["vendor"]
+        == "Synology"
+    )
+
+
+def test_kb_hostname_hints_injected_cache_no_match_returns_empty():
+    """Injected cache with no matching rule returns empty dict."""
+    from app.services.discovery_fingerprint import _kb_hostname_hints
+
+    result = _kb_hostname_hints(
+        "unknownhost",
+        scan_hostname_cache=[
+            {"pattern": "known", "match_type": "exact", "vendor": "SomeVendor"},
+        ],
+    )
+    assert result == {}
+
+
+def test_parse_snmp_sysdescr_proxmox():
+    from app.services.discovery_fingerprint import _parse_snmp_sysdescr
+
+    result = _parse_snmp_sysdescr("Proxmox Virtual Environment 8.1.3")
+    assert result["vendor"] == "Proxmox Server Solutions GmbH"
+    assert result["os_family"] == "Linux"
+
+
+def test_parse_snmp_sysdescr_ubuntu():
+    from app.services.discovery_fingerprint import _parse_snmp_sysdescr
+
+    result = _parse_snmp_sysdescr("Linux myhost 5.15.0-91-generic Ubuntu")
+    assert result["vendor"] == "Ubuntu"
+    assert result["os_family"] == "Linux"
+
+
+def test_parse_snmp_sysdescr_empty():
+    from app.services.discovery_fingerprint import _parse_snmp_sysdescr
+
+    assert _parse_snmp_sysdescr("") == {}
+    assert _parse_snmp_sysdescr(None) == {}
+
+
+def test_parse_snmp_sysdescr_no_match_returns_empty_dict():
+    from app.services.discovery_fingerprint import _parse_snmp_sysdescr
+
+    assert _parse_snmp_sysdescr("RouterOS unknown device") == {}
+
+
+# ── _coalesce_host_info ───────────────────────────────────────────────────────
+
+_EMPTY_COALESCE = dict(
+    nmap_data={},
+    snmp_data={},
+    mdns_data={},
+    netbios={},
+    ssdp_data={},
+    banner_hints={},
+    http_hints={},
+    rdns_hostname=None,
+    oui_vendor=None,
+    open_ports=[],
+)
+
+
+def test_coalesce_kb_entry_vendor_beats_banner():
+    """KB OUI vendor (rank 5) should win over SSH banner vendor (rank 6)."""
+    from app.services.discovery_fingerprint import _coalesce_host_info
+
+    result = _coalesce_host_info(
+        **{**_EMPTY_COALESCE, "banner_hints": {"os_vendor": "Ubuntu"}},
+        kb_entry={"vendor": "Proxmox Server Solutions GmbH", "device_type": "hypervisor"},
+    )
+    assert result["os_vendor"] == "Proxmox Server Solutions GmbH"
+
+
+def test_coalesce_http_vendor_beats_kb_entry():
+    """HTTP fingerprint (rank 3) should still beat KB OUI (rank 5)."""
+    from app.services.discovery_fingerprint import _coalesce_host_info
+
+    result = _coalesce_host_info(
+        **{**_EMPTY_COALESCE, "http_hints": {"os_vendor": "Synology DiskStation"}},
+        kb_entry={"vendor": "Some OUI Vendor"},
+    )
+    assert result["os_vendor"] == "Synology DiskStation"
+
+
+def test_coalesce_hostname_hints_vendor_as_last_resort():
+    """hostname_hints vendor only used when all other sources are empty."""
+    from app.services.discovery_fingerprint import _coalesce_host_info
+
+    result = _coalesce_host_info(
+        **_EMPTY_COALESCE,
+        hostname_hints={"vendor": "OPNsense", "device_type": "firewall"},
+    )
+    assert result["os_vendor"] == "OPNsense"
+
+
+def test_coalesce_kb_device_type_improves_classification():
+    """kb_entry device_type signal raises confidence for hypervisor classification."""
+    from app.services.discovery_fingerprint import _coalesce_host_info
+
+    result = _coalesce_host_info(
+        **_EMPTY_COALESCE,
+        kb_entry={"vendor": "Proxmox Server Solutions GmbH", "device_type": "hypervisor"},
+    )
+    assert result["device_type"] == "hypervisor"
+
+
+def test_coalesce_snmp_vendor_beats_kb_when_snmp_present():
+    """SNMP sysDescr (rank 4) beats KB OUI (rank 5) for os_vendor."""
+    from app.services.discovery_fingerprint import _coalesce_host_info
+
+    result = _coalesce_host_info(
+        **{**_EMPTY_COALESCE, "snmp_data": {"sys_descr": "Proxmox Virtual Environment 8.1"}},
+        kb_entry={"vendor": "Some Other Vendor"},
+    )
+    assert result["os_vendor"] == "Proxmox Server Solutions GmbH"
+
+
+# ── _run_vendor_lookup_local ──────────────────────────────────────────────────
+
+
+def test_run_vendor_lookup_local_none_mac():
+    from app.services.discovery_fingerprint import _run_vendor_lookup_local
+
+    vendor, entry = asyncio.run(_run_vendor_lookup_local(None))
+    assert vendor is None
+    assert entry is None
+
+
+def test_run_vendor_lookup_local_scan_cache_hit():
+    """scan_oui_cache hit returns (vendor, full_entry) without touching KB or manuf."""
+    from app.services.discovery_fingerprint import _run_vendor_lookup_local
+
+    cache = {"BC2411": {"vendor": "Proxmox Server Solutions GmbH", "device_type": "hypervisor"}}
+    vendor, entry = asyncio.run(_run_vendor_lookup_local("BC:24:11:AA:BB:CC", scan_oui_cache=cache))
+    assert vendor == "Proxmox Server Solutions GmbH"
+    assert entry == {"vendor": "Proxmox Server Solutions GmbH", "device_type": "hypervisor"}
+
+
+def test_run_vendor_lookup_local_scan_cache_miss_falls_to_kb():
+    """A prefix absent from scan_oui_cache falls through to the curated KB JSON."""
+    from app.services.discovery_fingerprint import _run_vendor_lookup_local
+
+    # Empty cache — should fall through to KB (BC2411 is in device_kb.json)
+    vendor, entry = asyncio.run(_run_vendor_lookup_local("BC:24:11:AA:BB:CC", scan_oui_cache={}))
+    assert vendor == "Proxmox Server Solutions GmbH"
+    assert entry is not None
+    assert entry.get("device_type") == "hypervisor"
+
+
+def test_run_vendor_lookup_local_returns_tuple_no_cache():
+    """Without scan_oui_cache, KB hit still returns a (vendor, entry) tuple."""
+    from app.services.discovery_fingerprint import _run_vendor_lookup_local
+
+    vendor, entry = asyncio.run(_run_vendor_lookup_local("BC:24:11:00:00:01"))
+    assert vendor == "Proxmox Server Solutions GmbH"
+    assert isinstance(entry, dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mDNS probe parallelization
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mdns_probe_queries_all_services(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """All 17 service types must be queried — not just the first match."""
+    from app.services.discovery_fingerprint import _MDNS_SERVICE_TYPES, _run_mdns_probe
+
+    call_log: list[str] = []
+
+    class FakeAiozc:
+        async def async_get_service_info(
+            self, stype: str, name: str, _timeout: float | None = None
+        ) -> None:
+            call_log.append(stype)
+            return None
+
+        async def async_close(self) -> None:
+            pass
+
+    monkeypatch.setattr("app.services.discovery_fingerprint._ZEROCONF_AVAILABLE", True)
+    with patch("zeroconf.asyncio.AsyncZeroconf", return_value=FakeAiozc()):
+        await _run_mdns_probe("192.168.1.55")
+
+    assert len(call_log) == len(_MDNS_SERVICE_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_mdns_probe_survives_partial_exception(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """An exception on one service type must not abort the whole probe."""
+    from app.services.discovery_fingerprint import _run_mdns_probe
+
+    call_count = 0
+
+    class FakeAiozc:
+        async def async_get_service_info(
+            self, stype: str, name: str, _timeout: float | None = None
+        ) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise RuntimeError("zeroconf internal error")
+            return None
+
+        async def async_close(self) -> None:
+            pass
+
+    monkeypatch.setattr("app.services.discovery_fingerprint._ZEROCONF_AVAILABLE", True)
+    with patch("zeroconf.asyncio.AsyncZeroconf", return_value=FakeAiozc()):
+        result = await _run_mdns_probe("192.168.1.55")
+
+    assert isinstance(result, dict)

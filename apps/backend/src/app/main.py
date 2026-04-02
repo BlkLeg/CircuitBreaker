@@ -61,6 +61,7 @@ from app.api.events import router as events_router
 from app.api.integration_provider import router as integration_provider_router
 from app.api.ip_check import router as ip_check_router
 from app.api.ipam import ipam_router, node_relations_router, site_router, vlan_router
+from app.api.kb import router as kb_router
 from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
 from app.api.notifications import router as notifications_router
@@ -1436,6 +1437,12 @@ app.include_router(
     assets_router,
     prefix=f"{_V1}/assets",
     tags=["assets"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    kb_router,
+    prefix=f"{_V1}/kb",
+    tags=["kb"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(

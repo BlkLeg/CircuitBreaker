@@ -123,12 +123,20 @@ function parsePorts(json) {
   }
 }
 
-function formatEtaSeconds(secs) {
-  if (typeof secs !== 'number' || secs < 0) return null;
-  if (secs < 1) return '< 1s';
-  const h = String(Math.floor(secs / 3600)).padStart(2, '0');
-  const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
-  const s = String(Math.floor(secs % 60)).padStart(2, '0');
+function computeElapsedMs(item, now) {
+  const start = item.started_at ? new Date(item.started_at).getTime() : null;
+  if (!start) return null;
+  if (item.status === 'running') return now - start;
+  const end = item.completed_at ? new Date(item.completed_at).getTime() : null;
+  return end ? end - start : null;
+}
+
+function formatDuration(ms) {
+  if (ms === null || ms < 0) return '--:--:--';
+  const totalSecs = Math.floor(ms / 1000);
+  const h = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
+  const m = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
+  const s = String(totalSecs % 60).padStart(2, '0');
   return `${h}:${m}:${s}`;
 }
 
@@ -151,48 +159,58 @@ function getLiveMessage(job) {
 const SOURCE_NETWORK = 'network';
 const SOURCE_PROXMOX = 'proxmox';
 const EMPTY_VALUE = '\u2014';
-const LIVE_ETA_PLACEHOLDER = 'ETA --:--:--';
 
 function ExpandedResults({ jobResults }) {
   if (!jobResults) {
     return (
-      <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>Loading results…</p>
+      <div className="history-details-empty" style={{ margin: 0, padding: 16 }}>
+        Loading results…
+      </div>
     );
   }
 
   if (jobResults.length === 0) {
     return (
-      <p style={{ color: 'var(--color-text-muted)', fontSize: 13, margin: 0 }}>No devices found</p>
+      <div className="history-details-empty" style={{ margin: 0, padding: 16 }}>
+        No devices found
+      </div>
     );
   }
 
   return (
-    <div className="history-expanded-results">
-      {jobResults.slice(0, 10).map((result) => {
-        const ports = parsePorts(result.open_ports_json);
-        return (
-          <div
-            key={result.id ?? `${result.ip_address}-${result.mac_address ?? 'na'}`}
-            className="history-result-row"
-          >
-            <div className="history-result-ip">{result.ip_address}</div>
-            <div className="history-result-mac">{result.mac_address || EMPTY_VALUE}</div>
-            <div className="history-result-os">
-              {[result.os_family, result.os_vendor].filter(Boolean).join(' ') || 'Unknown'}
-            </div>
-            {ports.length > 0 && (
-              <div className="history-result-ports">
-                <PortPills ports={ports} />
-              </div>
-            )}
-          </div>
-        );
-      })}
-      {jobResults.length > 10 && (
-        <p style={{ fontSize: 11, color: 'var(--color-text-muted)', margin: '8px 0 0' }}>
-          …and {jobResults.length - 10} more results
-        </p>
-      )}
+    <div className="history-expanded-results" style={{ maxHeight: 300, overflowY: 'auto' }}>
+      <table className="history-details-table">
+        <thead>
+          <tr>
+            <th style={{ position: 'sticky', top: 0, zIndex: 1 }}>IP Address</th>
+            <th style={{ position: 'sticky', top: 0, zIndex: 1 }}>MAC Address</th>
+            <th style={{ position: 'sticky', top: 0, zIndex: 1 }}>OS / Vendor</th>
+            <th style={{ position: 'sticky', top: 0, zIndex: 1 }}>Ports</th>
+          </tr>
+        </thead>
+        <tbody>
+          {jobResults.map((result) => {
+            const ports = parsePorts(result.open_ports_json);
+            return (
+              <tr key={result.id ?? `${result.ip_address}-${result.mac_address ?? 'na'}`}>
+                <td style={{ fontFamily: 'ui-monospace, monospace' }}>{result.ip_address}</td>
+                <td
+                  style={{
+                    fontFamily: 'ui-monospace, monospace',
+                    color: 'var(--color-text-muted)',
+                  }}
+                >
+                  {result.mac_address || EMPTY_VALUE}
+                </td>
+                <td>
+                  {[result.os_family, result.os_vendor].filter(Boolean).join(' ') || 'Unknown'}
+                </td>
+                <td>{ports.length > 0 ? <PortPills ports={ports} /> : EMPTY_VALUE}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -202,11 +220,17 @@ ExpandedResults.propTypes = {
 };
 
 const ScanHistoryRow = React.memo(
-  function ScanHistoryRow({ item, isExpanded, jobResults, onToggleExpand, onCancelJob }) {
+  function ScanHistoryRow({
+    item,
+    isExpanded,
+    jobResults,
+    onToggleExpand,
+    onCancelJob,
+    onRefreshJobs,
+  }) {
     const types = parseJsonArray(item.scan_types_json);
     const targetLabel = item.label || item.target_cidr || 'Ad-hoc scan';
     const progressPercent = getProgressPercent(item);
-    const liveEta = formatEtaSeconds(item.eta_seconds);
     const liveMessage = getLiveMessage(item);
     const showLiveMeta =
       item.status === 'running' ||
@@ -214,6 +238,23 @@ const ScanHistoryRow = React.memo(
       typeof item.progress_percent === 'number' ||
       typeof item.eta_seconds === 'number';
     const canCancel = item.status === 'running' || item.status === 'queued';
+
+    const [now, setNow] = useState(Date.now);
+    useEffect(() => {
+      if (item.status !== 'running') return;
+      const id = setInterval(() => setNow(Date.now()), 1000);
+      return () => clearInterval(id);
+    }, [item.status]);
+
+    useEffect(() => {
+      if (item.status !== 'running' || (item.progress_percent ?? 0) < 100) return;
+      const id = setInterval(() => {
+        if (onRefreshJobs) onRefreshJobs();
+      }, 3000);
+      return () => clearInterval(id);
+    }, [item.status, item.progress_percent, onRefreshJobs]);
+
+    const timerStr = formatDuration(computeElapsedMs(item, now));
 
     return (
       <>
@@ -254,10 +295,16 @@ const ScanHistoryRow = React.memo(
               <span className="history-live-meta-item">
                 {showLiveMeta ? `${progressPercent}%` : EMPTY_VALUE}
               </span>
-              <span className="history-live-meta-item">
-                {showLiveMeta && liveEta ? `ETA ${liveEta}` : LIVE_ETA_PLACEHOLDER}
-              </span>
+              <span className="history-live-meta-item">{timerStr}</span>
             </div>
+            {item.started_at && (
+              <div className="history-progress-track">
+                <div
+                  className={`history-progress-fill status-${item.status === 'completed' ? 'done' : item.status}`}
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            )}
             <div className={`history-live-message${liveMessage ? ' is-visible' : ''}`}>
               {liveMessage || EMPTY_VALUE}
             </div>
@@ -287,7 +334,8 @@ const ScanHistoryRow = React.memo(
   (previousProps, nextProps) =>
     previousProps.item === nextProps.item &&
     previousProps.isExpanded === nextProps.isExpanded &&
-    previousProps.jobResults === nextProps.jobResults
+    previousProps.jobResults === nextProps.jobResults &&
+    previousProps.onRefreshJobs === nextProps.onRefreshJobs
 );
 
 ScanHistoryRow.propTypes = {
@@ -296,6 +344,7 @@ ScanHistoryRow.propTypes = {
   jobResults: PropTypes.array,
   onToggleExpand: PropTypes.func.isRequired,
   onCancelJob: PropTypes.func.isRequired,
+  onRefreshJobs: PropTypes.func,
 };
 
 export default function DiscoveryHistoryPage({ embedded = false, jobsData = null, onRefreshJobs }) {
@@ -500,6 +549,7 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
                   jobResults={results.get(item.id)}
                   onToggleExpand={toggleExpand}
                   onCancelJob={handleCancelJob}
+                  onRefreshJobs={onRefreshJobs}
                 />
               ))}
             </tbody>
