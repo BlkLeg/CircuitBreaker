@@ -585,9 +585,9 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
             _res_list.append(res)
 
         db.flush()
-        for _r in _res_list:
+        for _scan_res in _res_list:
             try:
-                results_out.append(ScanResultOut.model_validate(_r).model_dump())
+                results_out.append(ScanResultOut.model_validate(_scan_res).model_dump())
             except Exception:
                 pass
         db.commit()
@@ -1630,7 +1630,7 @@ async def run_scan_job(job_id: int) -> None:
 
 
 def enqueue_lldp_job(
-    db,
+    db: Session,
     ips: list[str],
     community: str = "public",
     port: int = 161,

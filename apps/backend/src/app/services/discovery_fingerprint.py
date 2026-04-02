@@ -22,7 +22,7 @@ import re
 import socket
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -359,7 +359,7 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
         logger.debug("_run_mdns_browse: zeroconf not available")
         return []
 
-    from zeroconf import ServiceBrowser  # type: ignore[import]
+    from zeroconf import ServiceBrowser, ServiceListener  # type: ignore[import]
     from zeroconf.asyncio import AsyncZeroconf  # type: ignore[import]
 
     discovered: dict[str, dict] = {}  # ip → info
@@ -385,7 +385,7 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
         aiozc = AsyncZeroconf()
         await aiozc.zeroconf.async_wait_for_start()
 
-        class _BrowseListener:
+        class _BrowseListener(ServiceListener):
             def add_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
                 all_service_types.append(type_)
 
@@ -412,7 +412,7 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
                 # ServiceInfo.request is synchronous in older zeroconf; wrap it
                 await asyncio.get_running_loop().run_in_executor(
                     None,
-                    lambda i=info: i.request(aiozc.zeroconf, 2000),
+                    functools.partial(info.request, aiozc.zeroconf, 2000),
                 )
                 if info.addresses:
                     import ipaddress
@@ -463,7 +463,7 @@ def _load_device_kb() -> dict:
     kb_path = Path(__file__).parent.parent / "data" / "device_kb.json"
     try:
         with open(kb_path) as f:
-            return json.load(f)
+            return cast(dict, json.load(f))
     except Exception:
         logger.warning("Discovery: device_kb.json missing or invalid — KB lookups disabled")
         return {"mac_oui_prefixes": {}, "hostname_patterns": []}
@@ -474,7 +474,7 @@ def _kb_oui_lookup(mac: str) -> dict | None:
     if not mac:
         return None
     normalized = mac.upper().replace(":", "").replace("-", "")[:6]
-    return _load_device_kb()["mac_oui_prefixes"].get(normalized)
+    return cast(dict | None, _load_device_kb()["mac_oui_prefixes"].get(normalized))
 
 
 def _kb_hostname_hints(hostname: str, scan_hostname_cache: list[dict] | None = None) -> dict:

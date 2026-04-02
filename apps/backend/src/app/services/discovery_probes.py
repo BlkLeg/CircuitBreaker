@@ -533,7 +533,7 @@ def _detect_default_gateway(target_cidr: str = "") -> str | None:  # noqa: ARG00
         gws = netifaces.gateways()
         default_gw = gws.get("default", {}).get(netifaces.AF_INET)
         if default_gw:
-            return default_gw[0]
+            return str(default_gw[0])
     except Exception:
         pass
 
