@@ -512,9 +512,9 @@ def lldp_enrich(
     from app.db.models import Hardware
     from app.services.discovery_service import enqueue_lldp_job
 
-    hw_rows = db.execute(
-        select(Hardware).where(Hardware.id.in_(payload.hardware_ids))
-    ).scalars().all()
+    hw_rows = (
+        db.execute(select(Hardware).where(Hardware.id.in_(payload.hardware_ids))).scalars().all()
+    )
     ips = [hw.ip_address for hw in hw_rows if hw.ip_address]
     if not ips:
         raise HTTPException(status_code=400, detail="No valid IP addresses for selected nodes")
@@ -539,9 +539,7 @@ def lldp_job_results(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    results = db.execute(
-        select(ScanResult).where(ScanResult.scan_job_id == job_id)
-    ).scalars().all()
+    results = db.execute(select(ScanResult).where(ScanResult.scan_job_id == job_id)).scalars().all()
 
     neighbors_out = []
     for result in results:
@@ -562,22 +560,24 @@ def lldp_job_results(
                     select(Hardware).where(Hardware.ip_address == neighbor["remote_mgmt_ip"])
                 ).scalar_one_or_none()
 
-            neighbors_out.append(LLDPNeighborOut(
-                source_scan_result_id=result.id,
-                neighbor_index=idx,
-                source_hardware_id=src_hw.id if src_hw else None,
-                source_hardware_name=src_hw.name if src_hw else result.ip_address,
-                local_port_desc=neighbor.get("local_port_desc"),
-                remote_chassis_id=neighbor.get("remote_chassis_id"),
-                remote_port_desc=neighbor.get("remote_port_desc"),
-                remote_sys_name=neighbor.get("remote_sys_name"),
-                remote_mgmt_ip=neighbor.get("remote_mgmt_ip"),
-                remote_hardware_id=remote_hw.id if remote_hw else None,
-                remote_hardware_name=(
-                    remote_hw.name if remote_hw else neighbor.get("remote_sys_name")
-                ),
-                is_new_stub=remote_hw is None,
-            ))
+            neighbors_out.append(
+                LLDPNeighborOut(
+                    source_scan_result_id=result.id,
+                    neighbor_index=idx,
+                    source_hardware_id=src_hw.id if src_hw else None,
+                    source_hardware_name=src_hw.name if src_hw else result.ip_address,
+                    local_port_desc=neighbor.get("local_port_desc"),
+                    remote_chassis_id=neighbor.get("remote_chassis_id"),
+                    remote_port_desc=neighbor.get("remote_port_desc"),
+                    remote_sys_name=neighbor.get("remote_sys_name"),
+                    remote_mgmt_ip=neighbor.get("remote_mgmt_ip"),
+                    remote_hardware_id=remote_hw.id if remote_hw else None,
+                    remote_hardware_name=(
+                        remote_hw.name if remote_hw else neighbor.get("remote_sys_name")
+                    ),
+                    is_new_stub=remote_hw is None,
+                )
+            )
 
     return LLDPJobResultsOut(job_id=job_id, neighbors=neighbors_out)
 
@@ -589,7 +589,7 @@ def lldp_apply(
     _user=require_write_auth,
     db: Session = Depends(get_db),
 ):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.db.models import Hardware, HardwareConnection, ScanResult, TopologyNode
 
@@ -631,7 +631,7 @@ def lldp_apply(
         if not remote_hw:
             caps = neighbor.get("capabilities") or []
             role = next((CAPS_TO_ROLE[c] for c in caps if c in CAPS_TO_ROLE), "misc")
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(datetime.UTC).isoformat()
             remote_hw = Hardware(
                 name=(
                     neighbor.get("remote_sys_name")
@@ -650,18 +650,24 @@ def lldp_apply(
             db.flush()
 
             # Assign stub to same topologies as source device
-            src_topology_nodes = db.execute(
-                select(TopologyNode).where(
-                    TopologyNode.entity_type == "hardware",
-                    TopologyNode.entity_id == src_hw.id,
+            src_topology_nodes = (
+                db.execute(
+                    select(TopologyNode).where(
+                        TopologyNode.entity_type == "hardware",
+                        TopologyNode.entity_id == src_hw.id,
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for tn in src_topology_nodes:
-                db.add(TopologyNode(
-                    topology_id=tn.topology_id,
-                    entity_type="hardware",
-                    entity_id=remote_hw.id,
-                ))
+                db.add(
+                    TopologyNode(
+                        topology_id=tn.topology_id,
+                        entity_type="hardware",
+                        entity_id=remote_hw.id,
+                    )
+                )
             db.flush()
             stubs_created += 1
 
@@ -677,13 +683,15 @@ def lldp_apply(
             )
         ).scalar_one_or_none()
         if not exists:
-            db.add(HardwareConnection(
-                source_hardware_id=src_hw.id,
-                target_hardware_id=remote_hw.id,
-                connection_type="ethernet",
-                source_port=neighbor.get("local_port_desc"),
-                target_port=neighbor.get("remote_port_desc"),
-            ))
+            db.add(
+                HardwareConnection(
+                    source_hardware_id=src_hw.id,
+                    target_hardware_id=remote_hw.id,
+                    connection_type="ethernet",
+                    source_port=neighbor.get("local_port_desc"),
+                    target_port=neighbor.get("remote_port_desc"),
+                )
+            )
             edges_created += 1
 
     db.commit()
