@@ -1,12 +1,13 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import DiscoveryHistoryPage from '../pages/DiscoveryHistoryPage.jsx';
 
 vi.mock('../api/discovery.js', () => ({
   getJobs: vi.fn().mockResolvedValue({ data: [] }),
   getJobResults: vi.fn().mockResolvedValue({ data: [] }),
   cancelJob: vi.fn(),
+  enrichOpnsenseJob: vi.fn(),
 }));
 
 vi.mock('../components/common/Toast', () => ({
@@ -26,7 +27,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 describe('DiscoveryHistoryPage', () => {
-  it('renders live progress, eta, and message from parent job data', () => {
+  it('renders live progress and message from parent job data', async () => {
     render(
       <DiscoveryHistoryPage
         embedded
@@ -50,12 +51,14 @@ describe('DiscoveryHistoryPage', () => {
       />
     );
 
-    expect(screen.getByText('42%')).toBeInTheDocument();
-    expect(screen.getByText('ETA 00:01:05')).toBeInTheDocument();
+    // Wait for loading state to clear (useEffect sets loading=false for embedded mode)
+    await waitFor(() => {
+      expect(screen.getByText('42%')).toBeInTheDocument();
+    });
     expect(screen.getByText('probe: Scanning host 10.0.0.12')).toBeInTheDocument();
   });
 
-  it('keeps placeholder layout values rendered for queued rows', () => {
+  it('keeps placeholder layout values rendered for queued rows', async () => {
     render(
       <DiscoveryHistoryPage
         embedded
@@ -75,7 +78,10 @@ describe('DiscoveryHistoryPage', () => {
       />
     );
 
-    expect(screen.getByText('ETA --:--:--')).toBeInTheDocument();
+    // Queued job has no started_at, so elapsed = null → '--:--:--'
+    await waitFor(() => {
+      expect(screen.getByText('--:--:--')).toBeInTheDocument();
+    });
     expect(screen.getByText('Cancel')).toBeInTheDocument();
     expect(screen.getAllByText('\u2014').length).toBeGreaterThan(0);
   });

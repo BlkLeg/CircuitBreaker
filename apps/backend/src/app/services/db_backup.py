@@ -170,7 +170,9 @@ async def run_full_snapshot(db: Session) -> Path:
 
                 secret_key = get_vault().decrypt(settings.backup_s3_secret_key_enc)
             except Exception as exc:
-                _logger.warning("Could not decrypt S3 secret key: %s", exc)
+                _logger.warning(
+                    "Could not decrypt S3 secret key: %s", exc
+                )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
 
         s3_settings = BackupS3Settings(
             bucket=settings.backup_s3_bucket,

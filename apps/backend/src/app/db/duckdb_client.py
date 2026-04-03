@@ -80,7 +80,7 @@ def ingest_csv(path: str, table: str) -> int:
                 # Safe: table_identifier is regex-validated & double-quoted by
                 # _quoted_table_identifier().
                 # The :path parameter is properly parameterized. Not user-controlled.
-                f"CREATE TABLE IF NOT EXISTS {table_identifier} AS "
+                f"CREATE TABLE IF NOT EXISTS {table_identifier} AS "  # nosec B608
                 "SELECT * FROM read_csv_auto(:path) LIMIT 0"
             ),
             {"path": path},
@@ -88,14 +88,14 @@ def ingest_csv(path: str, table: str) -> int:
         conn.execute(
             text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
                 # Safe: table_identifier validated above; :path is parameterized.
-                f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"
+                f"INSERT INTO {table_identifier} SELECT * FROM read_csv_auto(:path)"  # nosec B608
             ),
             {"path": path},
         )
         row_count = (
             conn.execute(
                 text(  # nosemgrep: python.sqlalchemy.security.audit.avoid-sqlalchemy-text.avoid-sqlalchemy-text  # nosec B608  # noqa: E501
-                    f"SELECT count(*) FROM {table_identifier}"
+                    f"SELECT count(*) FROM {table_identifier}"  # nosec B608
                 )
                 # Safe: table_identifier validated above.
             ).scalar()

@@ -3,8 +3,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import HardwarePage from '../pages/HardwarePage.jsx';
 
-// Mock api client with named exports
-vi.mock('../api/client', () => {
+// Partial mock: spread real exports so any extra named exports used deep in
+// the render tree (e.g. deviceRolesApi from useHardwareRoles) are available.
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal();
   const mockClient = {
     get: vi.fn(),
     post: vi.fn(),
@@ -13,6 +15,7 @@ vi.mock('../api/client', () => {
     delete: vi.fn(),
   };
   return {
+    ...actual,
     default: mockClient,
     hardwareApi: {
       list: vi.fn(),
@@ -30,10 +33,14 @@ vi.mock('../api/client', () => {
     computeUnitsApi: {
       list: vi.fn().mockResolvedValue({ data: [] }),
       uploadIcon: vi.fn(),
+      update: vi.fn(),
     },
     tagsApi: {
       list: vi.fn().mockResolvedValue({ data: [] }),
       update: vi.fn(),
+    },
+    deviceRolesApi: {
+      list: vi.fn().mockResolvedValue([]),
     },
   };
 });
@@ -170,6 +177,7 @@ vi.mock('../config/hardwareRoles', () => ({
     switch: 'Switch',
     router: 'Router',
   },
+  ROLE_ICONS: {},
 }));
 
 vi.mock('../config/cpuBrands', () => ({

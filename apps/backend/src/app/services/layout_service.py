@@ -62,7 +62,8 @@ def compute_subnet_layout(hardware: list[dict]) -> dict[int, dict]:
         others = [n for n in nodes if not _is_gateway(n)]
         if not gateways and others:
             others_sorted = sorted(
-                others, key=lambda n: int((n.get("ip_address") or "0.0.0.0").split(".")[-1])
+                others,
+                key=lambda n: int((n.get("ip_address") or "0.0.0.0").split(".")[-1]),  # nosec B104 — numeric sort fallback, not a bind address
             )
             gateways = [others_sorted[0]]
             others = others_sorted[1:]

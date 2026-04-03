@@ -36,6 +36,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.0"
 
 # Dependency layer from pinned requirements.txt + PostgreSQL drivers (mono image uses Postgres)
 COPY apps/backend/requirements.txt apps/backend/requirements-pg.txt ./
+# hadolint ignore=DL3042
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 5 -r requirements.txt -r requirements-pg.txt \
     && find /usr/local/lib/python3.12 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true \
@@ -102,7 +103,7 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get inst
 # PGDG repo is added here so postgresql-15 >= 15.17 is available; Debian bookworm default
 # ships 15.16 which is too old to satisfy timescaledb's dependency. apt will upgrade
 # postgresql-15 automatically when resolving the timescaledb install.
-# hadolint ignore=DL3008,DL3005
+# hadolint ignore=DL3008,DL3005,DL4006
 RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
          | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \

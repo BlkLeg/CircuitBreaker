@@ -85,6 +85,9 @@ vi.mock('../api/client', () => {
       update: vi.fn(),
       delete: vi.fn(),
     },
+    deviceRolesApi: {
+      list: vi.fn().mockResolvedValue([]),
+    },
   };
 });
 
@@ -211,6 +214,7 @@ vi.mock('../config/mapTheme', () => ({
 
 vi.mock('../config/hardwareRoles', () => ({
   HARDWARE_ROLES: [],
+  ROLE_ICONS: {},
 }));
 
 vi.mock('../utils/bandwidthCalculator', () => ({
@@ -262,9 +266,13 @@ vi.mock('../utils/viewportFit', () => ({
   viewportFit: vi.fn(),
 }));
 
-vi.mock('lucide-react', () => ({
-  X: () => React.createElement('span', null, 'X'),
-}));
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    X: () => React.createElement('span', null, 'X'),
+  };
+});
 
 // Need to mock the hooks that MapPage uses
 vi.mock('../hooks/useMapDataLoad', () => ({

@@ -281,7 +281,7 @@ async def _run_mdns_multicast_listener(duration_s: float = 8.0) -> list[dict]:
             sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEPORT, 1)
         except AttributeError:
             pass  # Not available on all platforms
-        sock.bind(("", _MDNS_PORT))
+        sock.bind(("", _MDNS_PORT))  # nosec B104 — mDNS multicast requires binding to all interfaces
         mreq = _struct.pack("4sL", _socket.inet_aton(_MDNS_MULTICAST_GROUP), _socket.INADDR_ANY)
         sock.setsockopt(_socket.IPPROTO_IP, _socket.IP_ADD_MEMBERSHIP, mreq)
         sock.settimeout(0.1)  # Non-blocking reads
@@ -673,7 +673,9 @@ async def _run_ssdp_unicast_probe(ip: str, open_ports: list[dict]) -> dict[str, 
     }
 
     async with httpx.AsyncClient(
-        timeout=_SSDP_TIMEOUT, verify=False, follow_redirects=True
+        timeout=_SSDP_TIMEOUT,
+        verify=False,
+        follow_redirects=True,  # nosec B501 — LAN scanner; IoT devices use self-signed certs
     ) as client:
         for port in targets:
             scheme = "https" if port == 443 else "http"
@@ -1036,7 +1038,9 @@ async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[s
     result: dict[str, str | None] = {}
 
     async with httpx.AsyncClient(
-        timeout=_HTTP_TIMEOUT, verify=False, follow_redirects=True
+        timeout=_HTTP_TIMEOUT,
+        verify=False,
+        follow_redirects=True,  # nosec B501 — LAN scanner; IoT devices use self-signed certs
     ) as client:
         for scheme, port in candidates[:3]:  # cap at 3 attempts
             url = f"{scheme}://{ip}:{port}/"

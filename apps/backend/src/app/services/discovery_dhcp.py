@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _DNSMASQ_AUTO_PATHS = [
     "/var/lib/misc/dnsmasq.leases",
     "/var/lib/dnsmasq/dnsmasq.leases",
-    "/tmp/dnsmasq.leases",
+    "/tmp/dnsmasq.leases",  # nosec B108 — read-only path probe, not creating temp files
     "/etc/pihole/dhcp.leases",
 ]
 
@@ -152,7 +152,9 @@ async def _run_router_ssh_dhcp(
         username = vault.decrypt(username_enc)
         password = vault.decrypt(password_enc)
     except Exception as exc:
-        logger.warning("DHCP SSH: credential decryption failed: %s", exc)
+        logger.warning(
+            "DHCP SSH: credential decryption failed: %s", exc
+        )  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
         return []
 
     output: str | None = None

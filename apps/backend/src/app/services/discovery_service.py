@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 _AUTO_DHCP_PATHS: list[str] = [
     "/var/lib/misc/dnsmasq.leases",
-    "/tmp/dhcp.leases",
+    "/tmp/dhcp.leases",  # nosec B108 — read-only path probe, not creating temp files
     "/var/lib/dhcp/dhcpd.leases",
     "/etc/pihole/dhcp.leases",
     "/var/lib/dhcpcd/dnsmasq.leases",

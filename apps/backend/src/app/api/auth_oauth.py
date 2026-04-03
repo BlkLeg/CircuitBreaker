@@ -668,7 +668,13 @@ async def oidc_callback(
         id_token = token_data.get("id_token")
         if id_token and oauth_state.nonce:
             _claims = jwt.decode(
-                id_token, options={"verify_signature": False}, algorithms=["RS256", "HS256"]
+                id_token,
+                options={
+                    "verify_signature": False
+                },  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
+                algorithms=["RS256", "HS256"],
+                # Sig not verified — only the nonce claim is read to prevent token replay.
+                # Full user identity is fetched via the userinfo endpoint using the access_token.
             )
             if _claims.get("nonce") != oauth_state.nonce:
                 raise HTTPException(400, "OIDC nonce mismatch — possible token replay")
