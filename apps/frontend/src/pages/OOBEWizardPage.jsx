@@ -222,12 +222,14 @@ function OOBEWizardPage({ onCompleted }) {
     applyTheme(THEME_PRESETS[DEFAULT_PRESET], DEFAULT_PRESET);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Detect OAuth bootstrap return: /oobe?oauth_token=...&bootstrap=1&provider=...
+  // Detect OAuth bootstrap return: /oobe?cb_auth_code=...&bootstrap=1&provider=...
+  // (Legacy: ?oauth_token= kept for backward compat.)
   useEffect(() => {
     const params = new URLSearchParams(location.search);
+    const authCode = params.get('cb_auth_code');
     const oauthToken = params.get('oauth_token');
     const isBootstrap = params.get('bootstrap') === '1';
-    if (!oauthToken || !isBootstrap) return;
+    if ((!authCode && !oauthToken) || !isBootstrap) return;
 
     // Restore in-progress OOBE state saved before the OAuth redirect
     try {
@@ -245,8 +247,16 @@ function OOBEWizardPage({ onCompleted }) {
     }
     sessionStorage.removeItem('oobe_state');
 
-    setOauthBootstrapToken(oauthToken);
     setOauthBootstrapProvider(params.get('provider') || 'oauth');
+
+    if (authCode) {
+      authApi
+        .exchangeAuthCode(authCode)
+        .then((res) => setOauthBootstrapToken(res.data.token))
+        .catch((err) => console.error('Auth code exchange failed in OOBE:', err));
+    } else {
+      setOauthBootstrapToken(oauthToken);
+    }
 
     // Fetch the OAuth-returned profile so the wizard can show the real
     // account email, display name, and remote avatar instead of gravatar.

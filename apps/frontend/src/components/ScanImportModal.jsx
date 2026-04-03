@@ -48,7 +48,7 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
   const [selected, setSelected] = useState(initialSelected);
   const [roleOverrides, setRoleOverrides] = useState({});
   const [importing, setImporting] = useState(false);
-  const [importedIds, setImportedIds] = useState(null);   // set on success → shows LLDP button
+  const [importedIds, setImportedIds] = useState(null); // set on success → shows LLDP button
   const [lldpJobId, setLldpJobId] = useState(null);
   const [lldpEnriching, setLldpEnriching] = useState(false);
 
@@ -79,14 +79,13 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
           overrides: roleOverrides[r.id] ? { role: roleOverrides[r.id] } : {},
         }));
       const resp = await discoveryApi.importAsNetwork(scanId, { items });
-      const allIds = [
-        ...(resp.data.created || []),
-        ...(resp.data.updated || []),
-      ].map((n) => n.id).filter(Boolean);
+      const allIds = [...(resp.data.created || []), ...(resp.data.updated || [])]
+        .map((n) => n.id)
+        .filter(Boolean);
       setImportedIds(allIds);
       onImported?.();
     } catch (err) {
-      toast.error('Import failed: ' + err.message);
+      toast.error('Import failed: ' + (err.response?.data?.detail || err.message));
     } finally {
       setImporting(false);
     }
@@ -107,7 +106,10 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
             if (jobRes.data.status === 'completed') setLldpJobId(jobId);
             else toast.error('LLDP scan failed');
           }
-        } catch { clearInterval(poll); setLldpEnriching(false); }
+        } catch {
+          clearInterval(poll);
+          setLldpEnriching(false);
+        }
       }, 2000);
     } catch (err) {
       toast.error('LLDP enrichment failed: ' + err.message);
@@ -199,11 +201,7 @@ export default function ScanImportModal({ scanId, results = [], onClose, onImpor
               <span style={{ marginRight: 'auto', fontSize: 13, color: 'var(--text-muted, #aaa)' }}>
                 Import complete — {importedIds.length} device{importedIds.length !== 1 ? 's' : ''}
               </span>
-              <button
-                onClick={handleLLDPEnrich}
-                disabled={lldpEnriching}
-                className="btn-secondary"
-              >
+              <button onClick={handleLLDPEnrich} disabled={lldpEnriching} className="btn-secondary">
                 {lldpEnriching ? 'Running LLDP…' : 'Enrich with LLDP'}
               </button>
               <button onClick={onClose} className="btn-primary">

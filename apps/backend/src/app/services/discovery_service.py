@@ -137,7 +137,10 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
         "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
     }
     subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
-    await nats_client.publish(subject, {"event_type": event_type, **payload})
+    try:
+        await nats_client.publish(subject, {"event_type": event_type, **payload})
+    except Exception as exc:
+        logger.debug("NATS publish failed (non-fatal): %s", exc)
 
 
 async def _update_job_progress(
@@ -843,10 +846,13 @@ async def run_scan_job(job_id: int) -> None:
     from app.core.nats_client import nats_client
     from app.core.subjects import DISCOVERY_SCAN_STARTED, discovery_scan_started_payload
 
-    await nats_client.publish(
-        DISCOVERY_SCAN_STARTED,
-        discovery_scan_started_payload(job_id, target_cidr, triggered_by),
-    )
+    try:
+        await nats_client.publish(
+            DISCOVERY_SCAN_STARTED,
+            discovery_scan_started_payload(job_id, target_cidr, triggered_by),
+        )
+    except Exception as _nats_exc:
+        logger.debug("NATS scan-started publish failed (non-fatal): %s", _nats_exc)
     await _emit_ws_event(
         "job_update",
         {

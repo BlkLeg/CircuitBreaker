@@ -55,15 +55,21 @@ async def _run_monitor_loop(settings_dict: dict) -> None:
     lease_tick: float = 0
 
     while True:
-        now = asyncio.get_event_loop().time()
+        try:
+            now = asyncio.get_event_loop().time()
 
-        if now - arp_tick >= _ARP_POLL_INTERVAL:
-            arp_tick = now
-            await _poll_arp(settings_dict)
+            if now - arp_tick >= _ARP_POLL_INTERVAL:
+                arp_tick = now
+                await _poll_arp(settings_dict)
 
-        if now - lease_tick >= _LEASE_POLL_INTERVAL:
-            lease_tick = now
-            await _poll_leases(settings_dict)
+            if now - lease_tick >= _LEASE_POLL_INTERVAL:
+                lease_tick = now
+                await _poll_leases(settings_dict)
+
+        except asyncio.CancelledError:
+            raise  # let lifespan cancellation propagate
+        except Exception:
+            logger.exception("OPNsense monitor: unexpected error in poll loop — will retry")
 
         await asyncio.sleep(10)  # check every 10s; real work only when interval elapsed
 

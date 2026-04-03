@@ -7,12 +7,37 @@ Authentication: HTTP Basic — API key as username, API secret as password.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_opnsense_host(host: str) -> None:
+    """Block loopback and link-local hosts to prevent SSRF.
+
+    OPNsense must be a reachable network appliance.  Loopback and link-local
+    addresses (including 169.254.169.254 — cloud metadata endpoints) are never
+    valid OPNsense hosts and are rejected unconditionally.
+
+    FQDNs are allowed — DNS resolution happens inside httpx, not here.
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return  # FQDN — cannot validate at this layer, allow it
+
+    if addr.is_loopback:
+        raise ValueError(f"OPNsense: host {host!r} is a loopback address and is not allowed")
+    if addr.is_link_local:
+        raise ValueError(
+            f"OPNsense: host {host!r} is a link-local address and is not allowed "
+            "(link-local ranges include cloud metadata endpoints)"
+        )
+
 
 # ── Endpoint constants ────────────────────────────────────────────────────────
 
@@ -39,6 +64,8 @@ def _build_client_kwargs(settings: dict[str, Any]) -> tuple[str, str, str, bool]
 
     if not host:
         raise ValueError("OPNsense: host not configured")
+
+    _validate_opnsense_host(host)
 
     key_enc = settings.get("opnsense_api_key_enc") or ""
     secret_enc = settings.get("opnsense_api_secret_enc") or ""

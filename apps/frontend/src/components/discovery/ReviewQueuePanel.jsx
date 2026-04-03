@@ -251,6 +251,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
       })
       .catch((err) => {
         console.error('Failed to fetch pending discovery results:', err);
+        setResults([]); // clear stale results so badge counts stay consistent
       })
       .finally(() => setLoading(false));
   }, []);

@@ -88,10 +88,14 @@ def batch_import(
     _hostname_pairs = device_role_service.hostname_map(db)
     _valid_slugs = device_role_service.valid_slugs(db)
 
-    with db.begin_nested():
-        for item in request.items:
+    for item in request.items:
+        # Each item gets its own SAVEPOINT so a per-item DB error is isolated —
+        # it does not roll back successfully processed items.
+        sp = db.begin_nested()
+        try:
             scan_result = db.get(ScanResult, item.scan_result_id)
             if not scan_result or scan_result.scan_job_id != job_id:
+                sp.rollback()
                 response.skipped.append(item.scan_result_id)
                 continue
 
@@ -113,6 +117,7 @@ def batch_import(
 
             # Detect cross-match conflict: MAC resolves to different row than IP
             if hw_by_mac and hw_by_ip and hw_by_mac.id != hw_by_ip.id:
+                sp.rollback()
                 response.conflicts.append(
                     BatchImportConflict(
                         scan_result_id=item.scan_result_id,
@@ -155,6 +160,7 @@ def batch_import(
                     scan_result.matched_entity_type = "hardware"
                     scan_result.matched_entity_id = existing.id
                 db.flush()
+                sp.commit()
                 response.updated.append(
                     BatchImportCreated(id=existing.id, ip=ip, scan_result_id=scan_result.id)
                 )
@@ -194,9 +200,18 @@ def batch_import(
                     scan_result.matched_entity_type = "hardware"
                     scan_result.matched_entity_id = hw.id
                 db.flush()
+                sp.commit()
                 response.created.append(
                     BatchImportCreated(id=hw.id, ip=ip, scan_result_id=scan_result.id)
                 )
+        except Exception as exc:
+            sp.rollback()
+            _logger.warning(
+                "batch_import: item scan_result_id=%s failed, skipping — %s",
+                item.scan_result_id,
+                exc,
+            )
+            response.skipped.append(item.scan_result_id)
 
     # Compute layout for newly created nodes only (updated nodes keep their positions)
     if response.created:

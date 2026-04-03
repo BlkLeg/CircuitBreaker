@@ -28,6 +28,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SSH command safety
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FORBIDDEN_CMD_CHARS = frozenset(";|`$(){}[]<>&\\!#'\"")
+
+
+def _validate_router_command(cmd: str) -> None:
+    """Reject commands containing shell metacharacters to prevent injection.
+
+    Raises ValueError if forbidden characters are found.  Called before
+    passing the command to asyncssh or sshpass so neither the remote shell
+    nor the local subprocess shell can interpret injected payloads.
+    """
+    bad = {c for c in cmd if c in _FORBIDDEN_CMD_CHARS}
+    if bad:
+        raise ValueError(
+            "router_ssh_command contains forbidden shell metacharacters: " + "".join(sorted(bad))
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lease file paths tried automatically (in order) when no path is configured
@@ -146,6 +166,12 @@ async def _run_router_ssh_dhcp(
     Returns [{mac, ip, hostname}].
     """
     try:
+        _validate_router_command(command)
+    except ValueError as exc:
+        logger.warning("DHCP SSH: rejected unsafe command — %s", exc)
+        return []
+
+    try:
         from app.services.credential_vault import get_vault
 
         vault = get_vault()
@@ -203,17 +229,19 @@ async def _run_router_ssh_dhcp(
             command,
         ]
         try:
-            proc = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(
-                    *env_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env={**os.environ, "SSHPASS": password},
-                ),
-                timeout=timeout + 2,
+            proc = await asyncio.create_subprocess_exec(
+                *env_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                env={**os.environ, "SSHPASS": password},
             )
-            stdout, _ = await proc.communicate()
+            # wait_for must wrap communicate(), not create_subprocess_exec —
+            # the latter returns instantly; all blocking time is in communicate().
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout + 2)
             output = stdout.decode(errors="replace")
+        except TimeoutError:
+            logger.debug("subprocess ssh to %s timed out after %ss", host, timeout + 2)
+            return []
         except Exception as exc:
             logger.debug("subprocess ssh to %s failed: %s", host, exc)
             return []

@@ -79,6 +79,8 @@ export const authApi = {
     });
   },
   getOAuthProviders: () => client.get('/auth/oauth/providers'),
+  /** Redeem a one-time cb_auth_code (from OAuth redirect) for a session JWT. */
+  exchangeAuthCode: (code) => client.get(`/auth/exchange?code=${encodeURIComponent(code)}`),
 
   // ── MFA / TOTP ──────────────────────────────────────────────────────────
   /** Generate a TOTP secret and provisioning URI. Returns {totp_uri, secret}. */

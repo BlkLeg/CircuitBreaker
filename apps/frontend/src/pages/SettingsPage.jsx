@@ -31,6 +31,7 @@ import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
 import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
+import OpnsenseIntegrationSection from '../components/opnsense/OpnsenseIntegrationSection.jsx';
 import DeviceRolesSection from './settings/DeviceRolesSection.jsx';
 import { useTranslation } from 'react-i18next';
 
@@ -1252,6 +1253,10 @@ export default function SettingsPage() {
                     to <strong>Discovery → Proxmox VE</strong> to add clusters, run scans, and
                     manage integrations.
                   </p>
+                </SettingSection>
+
+                <SettingSection title="OPNsense">
+                  <OpnsenseIntegrationSection />
                 </SettingSection>
 
                 <SettingSection title="Service Integrations">

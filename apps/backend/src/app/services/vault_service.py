@@ -155,7 +155,7 @@ def load_vault_key(db: Session) -> str | None:
                 type(exc).__name__,
             )
 
-    # 3. AppSettings.vault_key in DB (fallback when env/file absent or unwritable)
+    # 3. AppSettings.vault_key in DB (legacy fallback — plaintext, migrate on load)
     try:
         from app.db.models import AppSettings
 
@@ -163,7 +163,31 @@ def load_vault_key(db: Session) -> str | None:
         if cfg and getattr(cfg, "vault_key", None):
             db_key = (cfg.vault_key or "").strip()
             if db_key and _is_valid_fernet_key(db_key):
-                _key_source = "database"
+                _logger.warning(
+                    "Vault key loaded from plaintext database column (CWE-312). "
+                    "Attempting automatic migration to %s ...",
+                    _DATA_ENV_PATH,
+                )
+                try:
+                    write_vault_key_to_env(db_key)
+                    # Migration succeeded — clear from DB so it is no longer exposed
+                    cfg.vault_key = None
+                    db.flush()
+                    db.commit()
+                    _key_source = str(_DATA_ENV_PATH)
+                    _logger.info(
+                        "Vault key migrated from database to %s. "
+                        "DB column cleared — key is no longer stored in plaintext.",
+                        _DATA_ENV_PATH,
+                    )
+                except Exception as migrate_exc:  # noqa: BLE001
+                    _logger.warning(
+                        "Could not migrate vault key from database to file (reason: %s). "
+                        "Set the CB_VAULT_KEY environment variable to remove the key "
+                        "from the database.",
+                        type(migrate_exc).__name__,
+                    )
+                    _key_source = "database"
                 _active_key = db_key
                 return db_key
     except Exception as exc:  # noqa: BLE001

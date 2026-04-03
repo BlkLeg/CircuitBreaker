@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import logging
 import re
 
@@ -16,64 +15,69 @@ _logger = logging.getLogger(__name__)
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
 
+# Module-level cache keyed on roles_version (an int).  Using Session objects as
+# cache keys with @lru_cache never hits in production because each request gets
+# a new Session instance with a distinct identity hash.
+_roles_cache: dict[int, list] = {}
+
 
 def _get_roles_version(db: Session) -> int:
     s = db.query(AppSettings).first()
     return s.roles_version if s else 0
 
 
+def _get_roles_cached(db: Session, version: int) -> list[DeviceRole]:
+    """Return all DeviceRole rows for *version*, fetching from DB on a cache miss."""
+    if version not in _roles_cache:
+        _roles_cache.clear()  # evict stale version(s) — we only ever need the latest
+        _roles_cache[version] = (
+            db.query(DeviceRole).order_by(DeviceRole.rank, DeviceRole.slug).all()
+        )
+    return _roles_cache[version]
+
+
 def _bust_roles_cache(db: Session) -> None:
-    """Increment roles_version to invalidate all cached lookups."""
+    """Increment roles_version so the next lookup fetches fresh data."""
     s = db.query(AppSettings).first()
     if s:
         s.roles_version = (s.roles_version or 0) + 1
         db.flush()
-    get_valid_slugs.cache_clear()
-    get_rank_map.cache_clear()
-    get_hint_map.cache_clear()
-    get_hostname_map.cache_clear()
+    _roles_cache.clear()
 
 
 def _all_roles(db: Session) -> list[DeviceRole]:
-    return db.query(DeviceRole).order_by(DeviceRole.rank, DeviceRole.slug).all()
+    return _get_roles_cached(db, _get_roles_version(db))
 
 
-# ── Cached lookups (keyed on roles_version) ───────────────────────────────────
+# ── Public helpers ─────────────────────────────────────────────────────────────
 
 
-@functools.lru_cache(maxsize=8)
-def get_valid_slugs(db: Session, _version: int) -> set[str]:  # noqa: ARG001
-    return {r.slug for r in _all_roles(db)}
+def get_valid_slugs(db: Session, _version: int) -> set[str]:
+    return {r.slug for r in _get_roles_cached(db, _version)}
 
 
-@functools.lru_cache(maxsize=8)
-def get_rank_map(db: Session, _version: int) -> dict[str, int]:  # noqa: ARG001
-    return {r.slug: r.rank for r in _all_roles(db)}
+def get_rank_map(db: Session, _version: int) -> dict[str, int]:
+    return {r.slug: r.rank for r in _get_roles_cached(db, _version)}
 
 
-@functools.lru_cache(maxsize=8)
 def get_hint_map(db: Session, _version: int) -> dict[str, str]:
     """Map device_type hint string → role slug. Lower-rank roles win on conflict."""
     result: dict[str, str] = {}
-    for role in _all_roles(db):
+    for role in _get_roles_cached(db, _version):
         for hint in role.device_type_hints or []:
             if hint not in result:
                 result[hint] = role.slug
     return result
 
 
-@functools.lru_cache(maxsize=8)
 def get_hostname_map(db: Session, _version: int) -> list[tuple[str, str]]:
     """Return [(pattern, slug)] sorted longest-pattern-first for greedy matching."""
     pairs: list[tuple[str, str]] = []
-    for role in _all_roles(db):
+    for role in _get_roles_cached(db, _version):
         for pattern in role.hostname_patterns or []:
             pairs.append((pattern, role.slug))
     pairs.sort(key=lambda p: len(p[0]), reverse=True)
     return pairs
-
-
-# ── Public helpers (pass _version from AppSettings) ───────────────────────────
 
 
 def valid_slugs(db: Session) -> set[str]:

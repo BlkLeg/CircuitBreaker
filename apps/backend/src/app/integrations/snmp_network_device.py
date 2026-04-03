@@ -48,6 +48,25 @@ def _snmp_walk_column(host: str, community: str, oid: str) -> list[str]:
         return []
 
 
+def _snmp_to_int(value: str) -> int | None:
+    """Parse a raw snmpwalk value to int, handling typed prefixes.
+
+    snmpwalk -Oqv output can include type prefixes such as:
+        "INTEGER: 5", "Gauge32: 1024", "Counter64: 99", "Timeticks: (123) ..."
+    A bare digit string ("5") is also accepted.
+    Returns None if the value cannot be parsed as an integer.
+    """
+    v = value.strip()
+    if ":" in v:
+        v = v.rsplit(":", 1)[-1].strip()
+    # Strip any trailing unit annotation, e.g. "1024 KBytes"
+    v = v.split()[0] if v else v
+    try:
+        return int(v)
+    except (ValueError, IndexError):
+        return None
+
+
 class SNMPNetworkDeviceClient:
     """
     Polls network devices (switches, routers, firewalls, APs) via SNMP.
@@ -96,15 +115,15 @@ class SNMPNetworkDeviceClient:
         # CPU — walk hrProcessorLoad, average all entries
         cpu_vals = _snmp_walk(self.host, self.community, self.OID_CPU_LOAD)
         if cpu_vals:
-            nums = [int(v) for v in cpu_vals if v.isdigit()]
+            nums = [n for v in cpu_vals if (n := _snmp_to_int(v)) is not None]
             result["cpu_percent"] = sum(nums) // len(nums) if nums else None
 
         # Memory — walk both tables together (paired by index)
         mem_used_lines = _snmp_walk(self.host, self.community, self.OID_MEM_USED)
         mem_size_lines = _snmp_walk(self.host, self.community, self.OID_MEM_SIZE)
         if mem_used_lines and mem_size_lines:
-            total_used = sum(int(v) for v in mem_used_lines if v.isdigit())
-            total_size = sum(int(v) for v in mem_size_lines if v.isdigit())
+            total_used = sum(n for v in mem_used_lines if (n := _snmp_to_int(v)) is not None)
+            total_size = sum(n for v in mem_size_lines if (n := _snmp_to_int(v)) is not None)
             result["memory_percent"] = round(total_used / total_size * 100) if total_size else None
 
         # Interfaces

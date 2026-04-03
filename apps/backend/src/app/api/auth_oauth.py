@@ -2,12 +2,14 @@
 
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 import jwt
@@ -23,6 +25,136 @@ from app.services.credential_vault import get_vault
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
 _logger = logging.getLogger(__name__)
+
+# ── One-time auth-code exchange (S4) ─────────────────────────────────────────
+# Short-lived codes replace embedding the full JWT in the OAuth redirect URL.
+# Codes are single-use, expire in 60 s, and are stored in process memory only.
+
+_pending_auth_codes: dict[str, tuple[str, float]] = {}  # {code: (jwt, monotonic_expires)}
+_AUTH_CODE_TTL = 60.0
+
+
+def _issue_auth_code(token: str) -> str:
+    """Store *token* under a one-time random code valid for _AUTH_CODE_TTL seconds."""
+    now = time.monotonic()
+    # Prune expired codes; prevents unbounded growth without a background task
+    stale = [k for k, (_, exp) in _pending_auth_codes.items() if now > exp]
+    for k in stale:
+        del _pending_auth_codes[k]
+    code = secrets.token_urlsafe(32)
+    _pending_auth_codes[code] = (token, now + _AUTH_CODE_TTL)
+    return code
+
+
+@router.get("/exchange")
+def exchange_auth_code(code: str = Query(...)) -> dict:
+    """Redeem a one-time cb_auth_code for a session JWT.
+
+    Codes are deleted on first use and expire after 60 s so they are
+    useless even if captured in a log line.
+    """
+    entry = _pending_auth_codes.pop(code, None)
+    if entry is None or time.monotonic() > entry[1]:
+        raise HTTPException(400, "Invalid or expired auth code")
+    return {"token": entry[0]}
+
+
+# ── OIDC safety helpers (S1/S2) ───────────────────────────────────────────────
+
+
+def _validate_oidc_url(url: str, label: str = "OIDC URL") -> None:
+    """Reject discovery_url / token_endpoint values that target loopback or
+    link-local addresses (prevents SSRF via attacker-controlled provider config).
+
+    FQDNs pass through — DNS resolution happens inside httpx, not here.
+    Only bare IP addresses are inspected.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("https", "http"):
+        raise HTTPException(400, f"{label} must be an HTTP/HTTPS URL")
+    host = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback or addr.is_link_local:
+            raise HTTPException(
+                400,
+                f"{label} targets a loopback or link-local address and is not allowed",
+            )
+    except ValueError:
+        pass  # FQDN — allowed
+
+
+def _validate_token_endpoint_host(token_endpoint: str, discovery_url: str) -> None:
+    """Ensure the token_endpoint returned by the discovery document is on the
+    same host as the discovery_url itself.
+
+    An attacker-controlled OIDC provider could return a token_endpoint pointing
+    at an internal address, achieving a second-hop SSRF even if discovery_url
+    was validated.  Pinning the host closes that gap.
+    """
+    disc_host = urlparse(discovery_url).hostname
+    tok_host = urlparse(token_endpoint).hostname
+    if not tok_host or tok_host != disc_host:
+        raise HTTPException(
+            502,
+            f"OIDC token_endpoint host ({tok_host!r}) does not match "
+            f"discovery_url host ({disc_host!r})",
+        )
+
+
+def _verify_id_token_nonce(id_token: str, jwks: dict, expected_nonce: str) -> None:
+    """Verify id_token signature using JWKS public keys and check the nonce claim.
+
+    Supports RSA (RS256/RS384/RS512) and EC (ES256/ES384/ES512) key types.
+    Raises HTTPException(400) on signature failure, expiry, or nonce mismatch.
+
+    Using the provider's real public key (from jwks_uri) is the only meaningful
+    nonce check — an unsigned decode with verify_signature=False lets any
+    attacker-controlled IdP forge arbitrary claims including exp and nonce.
+    """
+    from jwt.algorithms import ECAlgorithm, RSAAlgorithm
+
+    try:
+        token_header = jwt.get_unverified_header(id_token)
+    except jwt.DecodeError as exc:
+        raise HTTPException(400, f"OIDC: malformed id_token header: {exc}") from exc
+
+    kid = token_header.get("kid")
+    alg = token_header.get("alg", "RS256")
+    keys = jwks.get("keys", [])
+
+    # Match by kid; fall back to first key when provider omits kid in header
+    jwk = next((k for k in keys if k.get("kid") == kid), keys[0] if keys else None)
+    if not jwk:
+        raise HTTPException(400, "OIDC: JWKS contains no usable signing keys")
+
+    try:
+        if alg.startswith("RS"):
+            public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
+        elif alg.startswith("ES"):
+            public_key = ECAlgorithm.from_jwk(json.dumps(jwk))
+        else:
+            raise HTTPException(400, f"OIDC: unsupported id_token algorithm {alg!r}")
+
+        claims = jwt.decode(
+            id_token,
+            public_key,
+            algorithms=[alg],
+            options={"verify_exp": True},
+            leeway=30,
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(400, "OIDC id_token has expired")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            400, f"OIDC id_token signature verification failed: {type(exc).__name__}"
+        ) from exc
+
+    if claims.get("nonce") != expected_nonce:
+        raise HTTPException(400, "OIDC nonce mismatch — possible token replay")
+
 
 _INVALID_STATE = "Invalid OAuth state"
 _STATE_EXPIRED = "OAuth state expired. Please try signing in again."
@@ -285,7 +417,9 @@ def _issue_jwt_and_redirect(
     cfg = get_or_create_settings(db)
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
-    response = RedirectResponse(url=f"{base_url}/?oauth_token={token}", status_code=302)
+    code = _issue_auth_code(token)
+    response = RedirectResponse(url=f"{base_url}/?cb_auth_code={code}", status_code=302)
+    response.headers["Cache-Control"] = "no-store"
     set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
     return response
 
@@ -319,10 +453,12 @@ def _bootstrap_redirect_or_none(
         db.commit()
     token = _make_token(user, cfg)
     record_session(db, user, request, token, cfg)
+    code = _issue_auth_code(token)
     response = RedirectResponse(
-        url=f"{base_url}/oobe?oauth_token={token}&bootstrap=1&provider={provider_name}",
+        url=f"{base_url}/oobe?cb_auth_code={code}&bootstrap=1&provider={provider_name}",
         status_code=302,
     )
+    response.headers["Cache-Control"] = "no-store"
     set_auth_cookie_on_response(request, response, token, cfg.session_timeout_hours)
     return response
 
@@ -604,6 +740,7 @@ async def oidc_authorize(
     )
     db.commit()
 
+    _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
     async with httpx.AsyncClient() as client:
         disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
@@ -644,9 +781,11 @@ async def oidc_callback(
     base_url = _get_app_base_url(db, request)
     redirect_uri = f"{base_url}/api/v1/auth/oauth/oidc/{provider_slug}/callback"
 
+    _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
     async with httpx.AsyncClient() as client:
         disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
+        _validate_token_endpoint_host(disc["token_endpoint"], cfg["discovery_url"])
         token_resp = await client.post(
             disc["token_endpoint"],
             data={
@@ -664,20 +803,25 @@ async def oidc_callback(
         if not access_token:
             raise HTTPException(400, "Failed to obtain access token from OIDC provider")
 
-        # Verify nonce in id_token to prevent token replay attacks
+        # Verify nonce via JWKS signature check (S5 fix: unsigned decode is not enough)
         id_token = token_data.get("id_token")
         if id_token and oauth_state.nonce:
-            _claims = jwt.decode(
-                id_token,
-                options={
-                    "verify_signature": False
-                },  # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode  # noqa: E501
-                algorithms=["RS256", "HS256"],
-                # Sig not verified — only the nonce claim is read to prevent token replay.
-                # Full user identity is fetched via the userinfo endpoint using the access_token.
-            )
-            if _claims.get("nonce") != oauth_state.nonce:
-                raise HTTPException(400, "OIDC nonce mismatch — possible token replay")
+            jwks_uri = disc.get("jwks_uri", "")
+            if jwks_uri:
+                # Validate jwks_uri is on the same host as discovery_url (SSRF guard)
+                _validate_token_endpoint_host(jwks_uri, cfg["discovery_url"])
+                jwks_resp = await client.get(jwks_uri, timeout=10.0)
+                if jwks_resp.status_code == 200:
+                    _verify_id_token_nonce(id_token, jwks_resp.json(), oauth_state.nonce)
+                else:
+                    _logger.warning(
+                        "OIDC: could not fetch JWKS (HTTP %d) — skipping id_token verification",
+                        jwks_resp.status_code,
+                    )
+            else:
+                _logger.warning(
+                    "OIDC discovery document has no jwks_uri — skipping id_token verification"
+                )
 
         userinfo_resp = await client.get(
             disc["userinfo_endpoint"],

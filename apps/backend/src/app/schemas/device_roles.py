@@ -23,12 +23,12 @@ class DeviceRoleOut(BaseModel):
 
 
 class DeviceRoleCreate(BaseModel):
-    slug: str
+    slug: str = Field(max_length=64)
     label: str
     rank: int = Field(default=5, ge=1, le=5)
     icon_slug: str | None = None
-    device_type_hints: list[str] = []
-    hostname_patterns: list[str] = []
+    device_type_hints: list[str] = Field(default=[], max_length=50)
+    hostname_patterns: list[str] = Field(default=[], max_length=50)
 
     @field_validator("slug")
     @classmethod
@@ -38,6 +38,16 @@ class DeviceRoleCreate(BaseModel):
                 "slug must start with a lowercase letter and contain only"
                 " lowercase letters, digits, and underscores"
             )
+        return v
+
+    @field_validator("device_type_hints", "hostname_patterns", mode="before")
+    @classmethod
+    def validate_list_items(cls, v: list) -> list:
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("list items must be strings")
+            if len(item) > 128:
+                raise ValueError("each item must be 128 characters or fewer")
         return v
 
     @field_validator("label")
@@ -55,8 +65,20 @@ class DeviceRoleUpdate(BaseModel):
     label: str | None = None
     rank: int | None = Field(default=None, ge=1, le=5)
     icon_slug: str | None = None
-    device_type_hints: list[str] | None = None
-    hostname_patterns: list[str] | None = None
+    device_type_hints: list[str] | None = Field(default=None, max_length=50)
+    hostname_patterns: list[str] | None = Field(default=None, max_length=50)
+
+    @field_validator("device_type_hints", "hostname_patterns", mode="before")
+    @classmethod
+    def validate_list_items(cls, v: list | None) -> list | None:
+        if v is None:
+            return v
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("list items must be strings")
+            if len(item) > 128:
+                raise ValueError("each item must be 128 characters or fewer")
+        return v
 
     @field_validator("label")
     @classmethod

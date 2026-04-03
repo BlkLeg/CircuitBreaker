@@ -86,27 +86,10 @@ async def _probe_ip_ttl(ip: str) -> int | None:
       120–130 → Windows (default TTL 128)
       250–260 → Network device (router/switch, default 255)
 
-    Uses the ``ping3`` library if available, otherwise falls back to
-    subprocess ``ping -c1 -W1``.
-
+    Parses TTL from subprocess ``ping -c1 -W1`` output.
     Returns None on failure (host unreachable, no response, etc.).
     """
-    # Try ping3 first (no subprocess overhead)
-    try:
-        import ping3  # type: ignore[import]
-
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None, lambda: ping3.ping(ip, timeout=1, unit="ms", ttl=False)
-        )
-        if result is not None and result is not False:
-            # ping3 returns round-trip time in ms; TTL is in result but
-            # the library doesn't expose it in all versions. Fall through.
-            pass
-    except Exception:
-        pass
-
-    # Subprocess fallback — parse TTL from ping output
+    # Parse TTL from ping output
     try:
         proc = await asyncio.create_subprocess_exec(
             "ping",
