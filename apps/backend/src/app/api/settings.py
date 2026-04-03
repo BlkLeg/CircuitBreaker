@@ -260,7 +260,7 @@ def update_oauth_settings(
 
 
 @router.get("/roles", response_model=list[DeviceRoleOut])
-def list_roles(db: Session = Depends(get_db)):
+def list_roles(db: Session = Depends(get_db)) -> Any:
     return device_role_service.list_roles(db)
 
 
@@ -269,7 +269,7 @@ def create_role(
     body: DeviceRoleCreate,
     db: Session = Depends(get_db),
     user: Any = require_role("admin"),
-):
+) -> Any:
     role = device_role_service.create_role(
         db,
         slug=body.slug,
@@ -290,7 +290,7 @@ def update_role(
     body: DeviceRoleUpdate,
     db: Session = Depends(get_db),
     user: Any = require_role("admin"),
-):
+) -> Any:
     role = device_role_service.update_role(
         db,
         role_id,
@@ -306,6 +306,10 @@ def update_role(
 
 
 @router.delete("/roles/{role_id}", status_code=204)
-def delete_role(role_id: int, db: Session = Depends(get_db), user: Any = require_role("admin")):
+def delete_role(
+    role_id: int,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+) -> None:
     device_role_service.delete_role(db, role_id)
     db.commit()

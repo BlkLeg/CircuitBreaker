@@ -51,8 +51,8 @@ async def start_monitor(settings_dict: dict) -> None:
 
 async def _run_monitor_loop(settings_dict: dict) -> None:
     """Main polling loop. Runs until cancelled."""
-    arp_tick = 0
-    lease_tick = 0
+    arp_tick: float = 0
+    lease_tick: float = 0
 
     while True:
         now = asyncio.get_event_loop().time()

@@ -1856,7 +1856,7 @@ async def run_opnsense_enrich(original_job_id: int, private_ips: list[str]) -> N
 
             open_ports = host_data.get("open_ports") or []
             if open_ports:
-                row.open_ports_json = json.dumps(open_ports)
+                row.open_ports_json = open_ports
 
             os_family = host_data.get("os_family")
             if os_family:
