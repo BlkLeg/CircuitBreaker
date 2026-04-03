@@ -53,6 +53,14 @@ const SCAN_MODES = [
     bg: 'rgba(59,130,246,0.08)',
     desc: 'Enumerate containers from Docker socket.',
   },
+  {
+    key: 'opnsense',
+    label: 'OPNsense',
+    Icon: null,
+    color: '#d97706',
+    bg: 'rgba(217,119,6,0.08)',
+    desc: 'Pulls DHCP leases and ARP table directly from OPNsense — instant, no subnet sweep.',
+  },
 ];
 
 export default function NewScanPage({ discoveryCapabilities, profiles, onStarted, onCancel }) {
@@ -184,6 +192,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
     if (key === 'full') setScanTypes(['nmap', 'arp', 'snmp', 'http']);
     if (key === 'deep_dive') setScanTypes(['nmap', 'arp', 'snmp', 'http', 'deep_dive']);
     if (key === 'docker') setScanTypes(['docker']);
+    if (key === 'opnsense') setScanTypes(['opnsense']);
   };
 
   const handleToggleScanType = (type, checked) => {
@@ -206,6 +215,12 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
             label: `docker:${socketPath}`,
           });
           toast.success('Docker scan started');
+        } else if (scanMode === 'opnsense') {
+          jobRes = await startAdHocScan({
+            scan_types: ['opnsense'],
+            label: 'opnsense',
+          });
+          toast.success('OPNsense scan started');
         } else {
           const types =
             scanMode === 'safe' ? scanTypes.filter((t) => ['snmp', 'http'].includes(t)) : scanTypes;
@@ -244,8 +259,10 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
       ? true
       : scanMode === 'docker'
         ? Boolean(socketPath.trim())
-        : (targetMode === 'cidr' ? cidrs.some((c) => c.trim()) : selectedVlans.length > 0) &&
-          scanTypes.length > 0;
+        : scanMode === 'opnsense'
+          ? Boolean(settings?.opnsense_credentials_set)
+          : (targetMode === 'cidr' ? cidrs.some((c) => c.trim()) : selectedVlans.length > 0) &&
+            scanTypes.length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -310,7 +327,18 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
               >
                 {key === 'deep_dive' && <span className="scan-mode-time-badge">~1-3 min</span>}
                 <div className="scan-mode-card-icon">
-                  <Icon size={22} style={{ color: disabled ? 'var(--color-text-muted)' : color }} />
+                  {Icon ? (
+                    <Icon
+                      size={22}
+                      style={{ color: disabled ? 'var(--color-text-muted)' : color }}
+                    />
+                  ) : (
+                    <img
+                      src="/icons/vendors/opnsense.png"
+                      alt=""
+                      style={{ width: 22, height: 22 }}
+                    />
+                  )}
                 </div>
                 <div
                   className="scan-mode-card-title"

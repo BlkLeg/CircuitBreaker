@@ -302,6 +302,12 @@ export function useDiscoveryStream() {
             error: msg.error,
           });
           break;
+        case 'warning':
+          discoveryEmitter.emit('scan:warning', {
+            job_id: msg.job_id,
+            message: msg.message,
+          });
+          break;
         default:
           break;
       }

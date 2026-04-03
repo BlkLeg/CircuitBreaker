@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,37 +25,56 @@ from app.schemas.discovery import (
     ImportAsNetworkRequest,
     ImportAsNetworkResponse,
 )
+from app.services import device_role_service
 from app.services.inference_service import annotate_result
 from app.services.layout_service import compute_subnet_layout
 
 _logger = logging.getLogger(__name__)
-
-_VALID_ROLES = {
-    "server",
-    "router",
-    "switch",
-    "firewall",
-    "hypervisor",
-    "storage",
-    "compute",
-    "access_point",
-    "sbc",
-    "ups",
-    "pdu",
-    "misc",
-}
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _sanitise_overrides(overrides: dict) -> dict:
+def _sanitise_overrides(overrides: dict, valid_slugs: set[str] | None = None) -> dict:
     allowed = {"name", "role", "vendor", "vendor_icon_slug", "notes"}
     clean = {k: v for k, v in overrides.items() if k in allowed}
-    if "role" in clean and clean["role"] not in _VALID_ROLES:
+    if "role" in clean and valid_slugs is not None and clean["role"] not in valid_slugs:
         del clean["role"]
     return clean
+
+
+def _resolve_role_for_result(
+    result: Any,  # ScanResult or duck-typed object
+    hint_map: dict[str, str],
+    hostname_pairs: list[tuple[str, str]],
+) -> tuple[str | None, str | None]:
+    """Return (auto_role, suggestion) for a scan result.
+
+    auto_role: slug to assign immediately (confidence threshold met)
+    suggestion: slug to store as role_suggestion (threshold not met but matched)
+    """
+    device_type = getattr(result, "device_type", None)
+    confidence = getattr(result, "device_confidence", None) or 0
+    hostname = (getattr(result, "hostname", None) or "").lower()
+
+    # 1. device_type hint match — threshold 70
+    if device_type and device_type in hint_map:
+        slug = hint_map[device_type]
+        if confidence >= 70:
+            return slug, None
+        else:
+            return None, slug
+
+    # 2. hostname pattern match — threshold 65
+    for pattern, slug in hostname_pairs:
+        if pattern in hostname:
+            if confidence >= 65:
+                return slug, None
+            else:
+                return None, slug
+
+    return None, None
 
 
 def batch_import(
@@ -64,6 +84,9 @@ def batch_import(
     actor: str = "api",
 ) -> BatchImportResponse:
     response = BatchImportResponse()
+    _hint_map = device_role_service.hint_map(db)
+    _hostname_pairs = device_role_service.hostname_map(db)
+    _valid_slugs = device_role_service.valid_slugs(db)
 
     with db.begin_nested():
         for item in request.items:
@@ -100,8 +123,14 @@ def batch_import(
                 )
                 continue
 
+            auto_role, suggestion = _resolve_role_for_result(
+                scan_result, _hint_map, _hostname_pairs
+            )
+            if suggestion:
+                scan_result.role_suggestion = suggestion
+
             existing = hw_by_mac or hw_by_ip
-            overrides = _sanitise_overrides(item.overrides)
+            overrides = _sanitise_overrides(item.overrides, _valid_slugs)
 
             if existing:
                 existing.last_seen = _now_iso()
@@ -137,12 +166,15 @@ def batch_import(
                     or ip
                     or f"device-{scan_result.id}"
                 )
+                final_role = overrides.pop("role", None) or auto_role or ann.role or "misc"
+                if final_role not in _valid_slugs:
+                    final_role = "misc"
                 hw = Hardware(
                     name=name,
                     ip_address=ip,
                     mac_address=mac,
                     hostname=scan_result.hostname,
-                    role=overrides.pop("role", None) or ann.role or "misc",
+                    role=final_role,
                     vendor=overrides.pop("vendor", None) or ann.vendor,
                     vendor_icon_slug=overrides.pop("vendor_icon_slug", None)
                     or ann.vendor_icon_slug,
@@ -373,6 +405,7 @@ def import_as_network(
         map_id,
         actor=actor,
         role_overrides=hw_role_overrides or None,
+        rank_map=device_role_service.rank_map(db),
     )
 
     # Step 7: Compute layout and save

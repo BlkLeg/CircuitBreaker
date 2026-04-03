@@ -1089,6 +1089,20 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(listener_service.start(listener_settings))
             _logger.info("Always-on listener started.")
 
+    # ── OPNsense background monitor ───────────────────────────────────────────
+    with get_session_context() as _opn_db:
+        _opn_settings = _opn_db.query(models.AppSettings).first()
+        if _opn_settings and getattr(_opn_settings, "opnsense_enabled", False):
+            from app.services.opnsense_monitor import start_monitor as _start_opnsense_monitor
+
+            _opn_cfg = {
+                "opnsense_host": getattr(_opn_settings, "opnsense_host", ""),
+                "opnsense_api_key_enc": getattr(_opn_settings, "opnsense_api_key_enc", None),
+                "opnsense_api_secret_enc": getattr(_opn_settings, "opnsense_api_secret_enc", None),
+                "opnsense_verify_ssl": getattr(_opn_settings, "opnsense_verify_ssl", False),
+            }
+            await _start_opnsense_monitor(_opn_cfg)
+
     # ── Webhook and notification workers (skip when running with dedicated worker
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
     _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
@@ -1155,6 +1169,11 @@ async def lifespan(app: FastAPI):
     if _worker_tasks:
         await asyncio.gather(*_worker_tasks, return_exceptions=True)
         _logger.info("In-process workers stopped.")
+
+    # ── Stop OPNsense monitor ─────────────────────────────────────────────
+    from app.services.opnsense_monitor import cancel_monitor as _cancel_opnsense_monitor
+
+    _cancel_opnsense_monitor()
 
     # ── Unsubscribe NATS lifespan subscriptions ────────────────────────────
     for _ls in _lifespan_subs:

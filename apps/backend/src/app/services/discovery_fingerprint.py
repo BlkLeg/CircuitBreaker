@@ -359,12 +359,18 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
         logger.debug("_run_mdns_browse: zeroconf not available")
         return []
 
+    import ipaddress as _ipaddress
+
     from zeroconf import ServiceBrowser, ServiceListener  # type: ignore[import]
     from zeroconf.asyncio import AsyncZeroconf  # type: ignore[import]
 
     discovered: dict[str, dict] = {}  # ip → info
+    # Records (service_type, instance_name) pairs from the browser callbacks.
+    # add_service(zc, type_, name) — name IS the fully-qualified instance name,
+    # e.g. "John's iPhone._apple-mobdev2._tcp.local."  We need the instance name
+    # to construct ServiceInfo correctly.
+    found_instances: list[tuple[str, str]] = []
 
-    all_service_types: list[str] = []
     _COMMON_MOBILE_SERVICES = [
         "_apple-mobdev2._tcp.local.",
         "_apple-mobdev._tcp.local.",
@@ -385,9 +391,10 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
         aiozc = AsyncZeroconf()
         await aiozc.zeroconf.async_wait_for_start()
 
-        class _BrowseListener(ServiceListener):
+        class _InstanceListener(ServiceListener):
             def add_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
-                all_service_types.append(type_)
+                # name is the fully-qualified instance name (not the type)
+                found_instances.append((type_, name))
 
             def remove_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
                 pass
@@ -395,50 +402,53 @@ async def _run_mdns_browse(timeout: float = 8.0) -> list[dict]:  # noqa: ASYNC10
             def update_service(self, zc: Any, type_: str, name: str) -> None:  # noqa: A002
                 pass
 
-        # Browse the meta-query type
-        ServiceBrowser(aiozc.zeroconf, "_services._dns-sd._udp.local.", listener=_BrowseListener())
-        # Also browse common mobile types directly for faster results
+        listener = _InstanceListener()
         for svc in _COMMON_MOBILE_SERVICES:
-            ServiceBrowser(aiozc.zeroconf, svc, listener=_BrowseListener())
+            ServiceBrowser(aiozc.zeroconf, svc, listener=listener)
 
-        await asyncio.sleep(min(timeout, 6.0))
+        # Half the budget for passive listening, half for concurrent resolution
+        await asyncio.sleep(min(timeout * 0.4, 3.0))
 
-        # Gather service info for any types found
         from zeroconf import ServiceInfo  # type: ignore[import]
 
-        for svc_type in set(all_service_types) | set(_COMMON_MOBILE_SERVICES):
+        async def _resolve_instance(type_: str, name: str) -> None:
+            """Resolve one service instance to an IP and merge into discovered."""
             try:
-                info = ServiceInfo(svc_type, svc_type)
-                # ServiceInfo.request is synchronous in older zeroconf; wrap it
+                info = ServiceInfo(type_, name)
+                # request() is synchronous — run in thread to stay non-blocking
                 await asyncio.get_running_loop().run_in_executor(
                     None,
-                    functools.partial(info.request, aiozc.zeroconf, 2000),
+                    functools.partial(info.request, aiozc.zeroconf, 1500),
                 )
-                if info.addresses:
-                    import ipaddress
-
-                    for raw_addr in info.addresses:
-                        try:
-                            ip = str(ipaddress.IPv4Address(raw_addr))
-                        except Exception:
-                            continue
-                        svc_key = svc_type.rstrip(".").replace(".local", "")
-                        entry = discovered.setdefault(
-                            ip,
-                            {
-                                "ip": ip,
-                                "hostname": info.server,
-                                "services": [],
-                                "device_type_hint": None,
-                            },
-                        )
-                        if svc_key not in entry["services"]:
-                            entry["services"].append(svc_key)
-                        clean = svc_key.split(".")[0]
-                        if clean in _MOBILE_MDNS_SERVICES:
-                            entry["device_type_hint"] = "mobile_device"
+                if not info.addresses:
+                    return
+                for raw_addr in info.addresses:
+                    try:
+                        ip = str(_ipaddress.IPv4Address(raw_addr))
+                    except Exception:
+                        continue
+                    svc_key = type_.rstrip(".").replace(".local", "")
+                    entry = discovered.setdefault(
+                        ip,
+                        {
+                            "ip": ip,
+                            "hostname": info.server.rstrip(".") if info.server else None,
+                            "services": [],
+                            "device_type_hint": None,
+                        },
+                    )
+                    if svc_key not in entry["services"]:
+                        entry["services"].append(svc_key)
+                    clean = svc_key.split(".")[0]
+                    if clean in _MOBILE_MDNS_SERVICES:
+                        entry["device_type_hint"] = "mobile_device"
             except Exception:
-                continue
+                pass
+
+        # Resolve all found instances concurrently — avoids 2s-per-instance
+        # sequential timeouts that previously blew the 10s outer budget.
+        if found_instances:
+            await asyncio.gather(*[_resolve_instance(t, n) for t, n in set(found_instances)])
 
     except Exception as exc:
         logger.debug("_run_mdns_browse: error: %s", exc)

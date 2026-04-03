@@ -503,6 +503,63 @@ def import_as_network_endpoint(
     return import_as_network(db, job_id, payload, actor="api")
 
 
+@router.post("/jobs/{job_id}/enrich", response_model=ScanJobOut)
+async def enrich_opnsense_job(
+    job_id: int,
+    request: Request,
+    bg_tasks: BackgroundTasks,
+    user: User = require_role("admin"),
+    db: Session = Depends(get_db),
+) -> ScanJob:
+    """Enrich an OPNsense scan job: run nmap against discovered IPs and update existing records."""
+    import ipaddress as _ipaddress
+    import json
+
+    job = db.get(ScanJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    scan_types = json.loads(job.scan_types_json)
+    if "opnsense" not in scan_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Enrich is only available for OPNsense scan jobs",
+        )
+
+    results = db.scalars(select(ScanResult).where(ScanResult.scan_job_id == job_id)).all()
+    ips = [r.ip_address for r in results if r.ip_address]
+
+    if not ips:
+        raise HTTPException(status_code=400, detail="No discovered IPs to enrich")
+
+    private_ips: list[str] = []
+    seen: set[str] = set()
+    for ip_str in ips:
+        if ip_str in seen:
+            continue
+        try:
+            if _ipaddress.ip_address(ip_str).is_private:
+                private_ips.append(ip_str)
+                seen.add(ip_str)
+        except ValueError:
+            continue
+
+    if not private_ips:
+        raise HTTPException(status_code=400, detail="No private IPs found — nothing to enrich")
+
+    bg_tasks.add_task(discovery_service.run_opnsense_enrich, job_id, private_ips)
+
+    log_audit(
+        db,
+        request,
+        user_id=user.id,
+        action="opnsense_enrich",
+        resource=f"scan_job:{job_id}",
+        status="ok",
+    )
+    return job  # return the original job — enrich updates it in place
+
+
 @router.post("/lldp-enrich")
 def lldp_enrich(
     payload: LLDPEnrichRequest,

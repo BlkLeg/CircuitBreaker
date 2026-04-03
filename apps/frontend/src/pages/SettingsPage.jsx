@@ -31,6 +31,7 @@ import DbStatusPanel from '../components/settings/DbStatusPanel.jsx';
 import HostStatsPanel from '../components/settings/HostStatsPanel.jsx';
 import BackupSettings from '../components/settings/BackupSettings.jsx';
 import IntegrationsManager from '../components/settings/IntegrationsManager';
+import DeviceRolesSection from './settings/DeviceRolesSection.jsx';
 import { useTranslation } from 'react-i18next';
 
 const ENTITY_TYPES = ['hardware', 'compute', 'services', 'storage', 'networks', 'misc', 'external'];
@@ -485,6 +486,7 @@ export default function SettingsPage() {
         general: ['timezone', 'defaults', 'hints', 'external'],
         appearance: ['theme', 'branding', 'logo', 'favicon', 'colors', 'dock', 'font'],
         resources: ['environments', 'categories', 'locations', 'icons'],
+        'device-roles': ['roles', 'device', 'hardware', 'topology', 'rank', 'icon'],
         connectivity: ['discovery', 'nmap', 'snmp', 'api', 'layout', 'map'],
         integrations: [
           'nats',
@@ -735,6 +737,15 @@ export default function SettingsPage() {
                     </select>
                   </SettingField>
                 </SettingSection>
+              </div>
+            )}
+
+            {/* ── Device Roles Tab ─────────────────────── */}
+            {activeTab === 'device-roles' && (
+              <div className="settings-sections-grid">
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <DeviceRolesSection />
+                </div>
               </div>
             )}
 

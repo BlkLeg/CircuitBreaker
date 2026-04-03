@@ -59,6 +59,7 @@ def _gateway_score(ip: str | None) -> int:
 def infer_connections(
     nodes: list[dict],
     role_overrides: dict[int, str] | None = None,
+    rank_map: dict[str, int] | None = None,
 ) -> list[tuple[int, int]]:
     """
     Given nodes as list[{id, ip_address, role}], return (source_id, target_id) pairs.
@@ -67,11 +68,16 @@ def infer_connections(
     role_overrides: {node_id: role} — takes absolute precedence over node["role"].
     When IPAM signals exist (score > 0) and no chain roles are present, scored nodes
     form an inferred chain (highest score first); score-0 nodes are endpoints.
+    rank_map: optional override for role→rank mapping; falls back to ROLE_RANK constant.
     """
     overrides = role_overrides or {}
+    _rank_map = rank_map if rank_map is not None else ROLE_RANK
 
     def _effective_role(node: dict) -> str:
         return overrides.get(node["id"]) or node.get("role") or "misc"
+
+    def _r(role: str | None) -> int:
+        return _rank_map.get(role or "misc", 5)
 
     subnets: dict[str, list[dict]] = {}
     for node in nodes:
@@ -87,10 +93,10 @@ def infer_connections(
     for subnet_nodes in subnets.values():
         sorted_nodes = sorted(
             subnet_nodes,
-            key=lambda n: (_rank(_effective_role(n)), -_gateway_score(n.get("ip_address"))),
+            key=lambda n: (_r(_effective_role(n)), -_gateway_score(n.get("ip_address"))),
         )
-        chain = [n for n in sorted_nodes if _rank(_effective_role(n)) <= 3]
-        endpoints = [n for n in sorted_nodes if _rank(_effective_role(n)) > 3]
+        chain = [n for n in sorted_nodes if _r(_effective_role(n)) <= 3]
+        endpoints = [n for n in sorted_nodes if _r(_effective_role(n)) > 3]
 
         if not chain and subnet_nodes:
             # No explicit chain roles — use IPAM scoring to build a hierarchy.
@@ -117,12 +123,12 @@ def infer_connections(
         # Same-rank fallback: connect to the preceding chain node (sorted highest-score-first
         # by gateway score, so this preserves the .1 → .2 upstream ordering).
         for i in range(1, len(chain)):
-            cur_rank = _rank(_effective_role(chain[i]))
+            cur_rank = _r(_effective_role(chain[i]))
             parent = next(
                 (
                     chain[j]
                     for j in range(i - 1, -1, -1)
-                    if _rank(_effective_role(chain[j])) < cur_rank
+                    if _r(_effective_role(chain[j])) < cur_rank
                 ),
                 chain[i - 1],
             )
@@ -147,6 +153,7 @@ def apply_inferred_topology(
     replace_existing_inferred: bool = True,
     role_overrides: dict[int, str] | None = None,
     connection_type: str = "ethernet",
+    rank_map: dict[str, int] | None = None,
 ) -> int:
     """
     Run topology inference over hw_ids (expanding to subnet peers on the same map),
@@ -214,7 +221,7 @@ def apply_inferred_topology(
         db.flush()
 
     # Infer and persist new edges
-    edge_pairs = infer_connections(nodes, role_overrides=role_overrides)
+    edge_pairs = infer_connections(nodes, role_overrides=role_overrides, rank_map=rank_map)
     created = 0
     for src_id, tgt_id in edge_pairs:
         exists = (

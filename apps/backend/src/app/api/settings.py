@@ -9,8 +9,9 @@ from app.core.audit import log_audit
 from app.core.rbac import require_role
 from app.core.security import get_optional_user
 from app.db.session import get_db
+from app.schemas.device_roles import DeviceRoleCreate, DeviceRoleOut, DeviceRoleUpdate
 from app.schemas.settings import AppSettingsRead, AppSettingsUpdate, SmtpUpdate
-from app.services import settings_service
+from app.services import device_role_service, settings_service
 from app.services.settings_service import get_or_create_settings
 
 router = APIRouter(tags=["settings"])
@@ -133,6 +134,34 @@ async def test_smtp(
     return result
 
 
+@router.get("/opnsense/test")
+async def test_opnsense_connection(
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+) -> dict:
+    """Test OPNsense API connectivity.
+
+    Returns structured {ok, version, arp_count, lease_count, kea, error}.
+    """
+    from app.services.discovery_opnsense import test_opnsense_connection as _test
+
+    cfg = settings_service.get_or_create_settings(db)
+
+    if not cfg.opnsense_host:
+        return {"ok": False, "error": "OPNsense host is not configured"}
+    if not cfg.opnsense_api_key_enc or not cfg.opnsense_api_secret_enc:
+        return {"ok": False, "error": "OPNsense API credentials are not configured"}
+
+    return await _test(
+        {
+            "opnsense_host": cfg.opnsense_host,
+            "opnsense_api_key_enc": cfg.opnsense_api_key_enc,
+            "opnsense_api_secret_enc": cfg.opnsense_api_secret_enc,
+            "opnsense_verify_ssl": cfg.opnsense_verify_ssl,
+        }
+    )
+
+
 @router.get("/oauth", response_model=dict)
 def get_oauth_settings(
     db: Session = Depends(get_db), _: Any = require_role("admin")
@@ -225,3 +254,58 @@ def update_oauth_settings(
         status="ok",
     )
     return {"status": "ok"}
+
+
+# ── Device Roles ──────────────────────────────────────────────────────────────
+
+
+@router.get("/roles", response_model=list[DeviceRoleOut])
+def list_roles(db: Session = Depends(get_db)):
+    return device_role_service.list_roles(db)
+
+
+@router.post("/roles", response_model=DeviceRoleOut, status_code=201)
+def create_role(
+    body: DeviceRoleCreate,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+):
+    role = device_role_service.create_role(
+        db,
+        slug=body.slug,
+        label=body.label,
+        rank=body.rank,
+        icon_slug=body.icon_slug,
+        device_type_hints=body.device_type_hints,
+        hostname_patterns=body.hostname_patterns,
+    )
+    db.commit()
+    db.refresh(role)
+    return role
+
+
+@router.put("/roles/{role_id}", response_model=DeviceRoleOut)
+def update_role(
+    role_id: int,
+    body: DeviceRoleUpdate,
+    db: Session = Depends(get_db),
+    user: Any = require_role("admin"),
+):
+    role = device_role_service.update_role(
+        db,
+        role_id,
+        label=body.label,
+        rank=body.rank,
+        icon_slug=body.icon_slug,
+        device_type_hints=body.device_type_hints,
+        hostname_patterns=body.hostname_patterns,
+    )
+    db.commit()
+    db.refresh(role)
+    return role
+
+
+@router.delete("/roles/{role_id}", status_code=204)
+def delete_role(role_id: int, db: Session = Depends(get_db), user: Any = require_role("admin")):
+    device_role_service.delete_role(db, role_id)
+    db.commit()

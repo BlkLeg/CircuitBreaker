@@ -193,6 +193,40 @@ def update_settings(
                         ) from e
                     raise
             continue
+        elif field == "opnsense_api_key":
+            from app.services.credential_vault import get_vault
+
+            if value:
+                try:
+                    row.opnsense_api_key_enc = get_vault().encrypt(value)
+                except RuntimeError as e:
+                    if "not initialized" in str(e).lower():
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Vault is not initialized — cannot store"
+                                " OPNsense credentials securely."
+                            ),
+                        ) from e
+                    raise
+            continue
+        elif field == "opnsense_api_secret":
+            from app.services.credential_vault import get_vault
+
+            if value:
+                try:
+                    row.opnsense_api_secret_enc = get_vault().encrypt(value)
+                except RuntimeError as e:
+                    if "not initialized" in str(e).lower():
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Vault is not initialized — cannot store"
+                                " OPNsense credentials securely."
+                            ),
+                        ) from e
+                    raise
+            continue
         setattr(row, field, value)
     row.updated_at = utcnow()
     db.commit()

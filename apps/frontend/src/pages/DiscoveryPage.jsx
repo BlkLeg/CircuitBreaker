@@ -22,6 +22,7 @@ import ScanProfilesPanel from '../components/discovery/ScanProfilesPanel.jsx';
 import NewScanPage from '../components/discovery/NewScanPage.jsx';
 import ReviewQueuePanel from '../components/discovery/ReviewQueuePanel.jsx';
 import ProxmoxIntegrationSection from '../components/proxmox/ProxmoxIntegrationSection.jsx';
+import OpnsenseIntegrationSection from '../components/opnsense/OpnsenseIntegrationSection.jsx';
 import ScanSettingsPanel from '../components/discovery/ScanSettingsPanel.jsx';
 
 function logApiWarning(scope, error) {
@@ -45,6 +46,7 @@ export default function DiscoveryPage() {
   const [hostStats, setHostStats] = useState(null);
   const [dockerScanning, setDockerScanning] = useState(false);
   const [dockerScanError, setDockerScanError] = useState(null);
+  const [scanWarnings, setScanWarnings] = useState({});
 
   const locationFilterAppliedRef = useRef(false);
 
@@ -218,11 +220,16 @@ export default function DiscoveryPage() {
 
     const onWsReconnected = () => loadJobs();
 
+    const onScanWarning = (data) => {
+      setScanWarnings((prev) => ({ ...prev, [data.job_id]: data.message }));
+    };
+
     discoveryEmitter.on('job:update', onJobUpdate);
     discoveryEmitter.on('job:progress', onJobProgress);
     discoveryEmitter.on('scan:log_entry', onScanLogEntry);
     discoveryEmitter.on('badge:update', onBadgeUpdate);
     discoveryEmitter.on('ws:reconnected', onWsReconnected);
+    discoveryEmitter.on('scan:warning', onScanWarning);
 
     return () => {
       discoveryEmitter.off('job:update', onJobUpdate);
@@ -230,6 +237,7 @@ export default function DiscoveryPage() {
       discoveryEmitter.off('scan:log_entry', onScanLogEntry);
       discoveryEmitter.off('badge:update', onBadgeUpdate);
       discoveryEmitter.off('ws:reconnected', onWsReconnected);
+      discoveryEmitter.off('scan:warning', onScanWarning);
     };
   }, [loadJobs]);
 
@@ -274,6 +282,12 @@ export default function DiscoveryPage() {
     mainContent = (
       <div className="discovery-proxmox-section" style={{ padding: 24, maxWidth: 720 }}>
         <ProxmoxIntegrationSection />
+      </div>
+    );
+  } else if (filter === 'opnsense') {
+    mainContent = (
+      <div className="discovery-proxmox-section" style={{ padding: 24, maxWidth: 720 }}>
+        <OpnsenseIntegrationSection />
       </div>
     );
   } else if (filter === 'profiles') {
@@ -321,7 +335,51 @@ export default function DiscoveryPage() {
         onDockerScan={handleDockerScan}
       />
 
-      <div className="discovery-main">{mainContent}</div>
+      <div className="discovery-main">
+        {Object.keys(scanWarnings).length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '12px 16px 0' }}>
+            {Object.entries(scanWarnings).map(([jobId, msg]) => (
+              <div
+                key={jobId}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: 'rgba(234,179,8,0.1)',
+                  border: '1px solid rgba(234,179,8,0.35)',
+                  fontSize: 13,
+                  color: 'var(--color-text)',
+                }}
+              >
+                <span style={{ flex: 1 }}>{msg}</span>
+                <button
+                  type="button"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: 2,
+                    lineHeight: 1,
+                  }}
+                  onClick={() =>
+                    setScanWarnings((prev) => {
+                      const next = { ...prev };
+                      delete next[jobId];
+                      return next;
+                    })
+                  }
+                  aria-label="Dismiss warning"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {mainContent}
+      </div>
 
       {dockerScanError && (
         <div

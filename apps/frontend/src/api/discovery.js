@@ -32,3 +32,4 @@ export const syncDocker = () => client.post('/discovery/docker/sync');
 export const getDockerNetworks = () => client.get('/discovery/docker/networks');
 export const getListenerStatus = () => client.get('/discovery/listener/status');
 export const getListenerEvents = (params) => client.get('/discovery/listener/events', { params });
+export const enrichOpnsenseJob = (jobId) => client.post(`/discovery/jobs/${jobId}/enrich`);

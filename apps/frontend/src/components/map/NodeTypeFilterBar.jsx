@@ -1,12 +1,6 @@
 import React from 'react';
 import { FILTER_NODE_TYPES, NODE_STYLES, NODE_TYPE_LABELS } from './mapConstants';
-
-const HW_ROLE_CHIPS = [
-  { value: 'ups', label: 'UPS' },
-  { value: 'pdu', label: 'PDU' },
-  { value: 'access_point', label: 'AP' },
-  { value: 'sbc', label: 'SBC' },
-];
+import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 
 /**
  * Toolbar row: node-type toggle buttons + Docker toggle + hardware sub-role chips.
@@ -18,6 +12,11 @@ export default function NodeTypeFilterBar({
   hwRoleFilter,
   setHwRoleFilter,
 }) {
+  const { roles } = useHardwareRoles();
+  const HW_ROLE_CHIPS = roles
+    .filter((r) => (r.rank ?? 5) <= 4)
+    .map((r) => ({ value: r.slug, label: r.label }));
+
   return (
     <>
       {/* Node type toggles */}

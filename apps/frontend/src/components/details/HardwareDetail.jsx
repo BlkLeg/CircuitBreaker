@@ -26,12 +26,13 @@ import { getVendorIcon } from '../../icons/vendorIcons';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import { IconImg } from '../common/IconPickerModal';
 import { useSettings } from '../../context/SettingsContext';
-import { HARDWARE_ROLES } from '../../config/hardwareRoles';
+import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import PortEditor from './PortEditor';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
+  const { options: HARDWARE_ROLES } = useHardwareRoles();
   const { settings } = useSettings();
   const vendorIconMode = settings?.vendor_icon_mode ?? 'custom_files';
   const [activeTab, setActiveTab] = useState('overview');

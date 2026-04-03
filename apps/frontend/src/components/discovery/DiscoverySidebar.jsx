@@ -81,6 +81,16 @@ export default function DiscoverySidebar({
           </button>
           <button
             type="button"
+            className={`sidebar-nav-item ${filter === 'opnsense' ? 'active' : ''}`}
+            onClick={() => onFilterChange('opnsense')}
+          >
+            <span className="sidebar-nav-icon">
+              <img src="/icons/vendors/opnsense.png" width={16} height={16} alt="" />
+            </span>
+            <span className="sidebar-nav-label">OPNsense</span>
+          </button>
+          <button
+            type="button"
             className={`sidebar-nav-item ${filter === 'profiles' ? 'active' : ''}`}
             onClick={() => onFilterChange('profiles')}
           >

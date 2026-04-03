@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import '../styles/discovery.css';
-import { getJobs, getJobResults, cancelJob } from '../api/discovery.js';
+import { getJobs, getJobResults, cancelJob, enrichOpnsenseJob } from '../api/discovery.js';
 import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
@@ -226,6 +226,7 @@ const ScanHistoryRow = React.memo(
     jobResults,
     onToggleExpand,
     onCancelJob,
+    onEnrichJob,
     onRefreshJobs,
   }) {
     const types = parseJsonArray(item.scan_types_json);
@@ -238,6 +239,8 @@ const ScanHistoryRow = React.memo(
       typeof item.progress_percent === 'number' ||
       typeof item.eta_seconds === 'number';
     const canCancel = item.status === 'running' || item.status === 'queued';
+    const canEnrich =
+      types.includes('opnsense') && (item.status === 'done' || item.status === 'completed');
 
     const [now, setNow] = useState(Date.now);
     useEffect(() => {
@@ -290,6 +293,18 @@ const ScanHistoryRow = React.memo(
               >
                 Cancel
               </button>
+              {canEnrich && (
+                <button
+                  type="button"
+                  className="btn btn-secondary history-cancel-btn"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEnrichJob(item.id);
+                  }}
+                >
+                  Enrich
+                </button>
+              )}
             </div>
             <div className="history-live-meta">
               <span className="history-live-meta-item">
@@ -335,6 +350,8 @@ const ScanHistoryRow = React.memo(
     previousProps.item === nextProps.item &&
     previousProps.isExpanded === nextProps.isExpanded &&
     previousProps.jobResults === nextProps.jobResults &&
+    previousProps.onCancelJob === nextProps.onCancelJob &&
+    previousProps.onEnrichJob === nextProps.onEnrichJob &&
     previousProps.onRefreshJobs === nextProps.onRefreshJobs
 );
 
@@ -344,6 +361,7 @@ ScanHistoryRow.propTypes = {
   jobResults: PropTypes.array,
   onToggleExpand: PropTypes.func.isRequired,
   onCancelJob: PropTypes.func.isRequired,
+  onEnrichJob: PropTypes.func.isRequired,
   onRefreshJobs: PropTypes.func,
 };
 
@@ -396,6 +414,23 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
         }
       } catch (err) {
         toast.error(err?.message || 'Failed to cancel scan');
+      }
+    },
+    [load, onRefreshJobs, toast]
+  );
+
+  const handleEnrichJob = useCallback(
+    async (jobId) => {
+      try {
+        await enrichOpnsenseJob(jobId);
+        toast.success('Enrichment scan queued');
+        if (onRefreshJobs) {
+          onRefreshJobs();
+        } else {
+          load();
+        }
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || err?.message || 'Failed to start enrichment');
       }
     },
     [load, onRefreshJobs, toast]
@@ -549,6 +584,7 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
                   jobResults={results.get(item.id)}
                   onToggleExpand={toggleExpand}
                   onCancelJob={handleCancelJob}
+                  onEnrichJob={handleEnrichJob}
                   onRefreshJobs={onRefreshJobs}
                 />
               ))}

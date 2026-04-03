@@ -963,6 +963,16 @@ class AppSettings(Base):
     dhcp_router_command: Mapped[str] = mapped_column(
         String, nullable=False, default="cat /var/lib/misc/dnsmasq.leases"
     )
+    # OPNsense integration
+    opnsense_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    opnsense_host: Mapped[str] = mapped_column(String, nullable=False, default="")
+    opnsense_verify_ssl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    opnsense_api_key_enc: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Fernet-encrypted
+    opnsense_api_secret_enc: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Fernet-encrypted
     # v0.2.0: Self-aware cluster
     self_cluster_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Phase 6.5: User management
@@ -1016,6 +1026,25 @@ class AppSettings(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
+    )
+    roles_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class DeviceRole(Base):
+    """User-configurable device role catalog. Replaces hardcoded _VALID_ROLES / ROLE_RANK."""
+
+    __tablename__ = "device_roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    icon_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    device_type_hints: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    hostname_patterns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
     )
 
 
@@ -1229,6 +1258,9 @@ class ScanResult(Base):
     device_confidence: Mapped[int | None] = mapped_column(
         SmallInteger, nullable=True
     )  # 0–100 classification confidence
+    role_suggestion: Mapped[str | None] = mapped_column(
+        String, nullable=True
+    )  # suggested role slug when confidence < auto-assign threshold
     source_type: Mapped[str] = mapped_column(
         String, default="nmap"
     )  # nmap|arp|listener|prober|deep_dive|docker

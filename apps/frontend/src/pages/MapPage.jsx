@@ -55,7 +55,7 @@ import {
   normalizeConnectionType,
 } from '../components/map/connectionTypes';
 import { CONNECTION_STYLES } from '../config/mapTheme';
-import { HARDWARE_ROLES } from '../config/hardwareRoles';
+import { useHardwareRoles } from '../hooks/useHardwareRoles';
 import { recalculateAllEdges } from '../utils/bandwidthCalculator';
 import {
   createLinkByNodeIds,
@@ -140,6 +140,7 @@ import { isLightTheme, omitKey, isHiddenByTag, getQuickCreateTitle } from '../ut
 // ── Main Component ──────────────────────────────────────────────────────────
 
 function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMapDelete }) {
+  const { options: HARDWARE_ROLES } = useHardwareRoles();
   const { onConnectStart, onConnectEnd } = useConnectionStateContext();
   const isMobile = useIsMobile();
   const { timezone } = useTimezone();
@@ -1286,7 +1287,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           fetchData();
         } else if (action === 'lldp_enrich') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?._refId) { toast.error('No hardware ID for this node'); return; }
+          if (!nd?._refId) {
+            toast.error('No hardware ID for this node');
+            return;
+          }
           lldpEnrichingRef.current = true;
           const res = await discoveryApi.lldpEnrich({ hardware_ids: [nd._refId] });
           const jobId = res.data.job_id;
@@ -1299,7 +1303,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
                 if (jobRes.data.status === 'completed') setLldpJobId(jobId);
                 else toast.error('LLDP scan failed');
               }
-            } catch { clearInterval(poll); lldpEnrichingRef.current = false; }
+            } catch {
+              clearInterval(poll);
+              lldpEnrichingRef.current = false;
+            }
           }, 2000);
         } else {
           toast.info(`Action ${action} triggered but specific handler not implemented yet`);
@@ -2418,7 +2425,10 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
             {lldpJobId && (
               <LLDPReviewModal
                 jobId={lldpJobId}
-                onApply={() => { setLldpJobId(null); fetchData(); }}
+                onApply={() => {
+                  setLldpJobId(null);
+                  fetchData();
+                }}
                 onClose={() => setLldpJobId(null)}
               />
             )}

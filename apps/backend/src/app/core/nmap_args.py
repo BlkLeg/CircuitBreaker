@@ -26,6 +26,7 @@ _NMAP_ALLOWED_FLAGS = frozenset(
         "--osscan-limit",
         "--osscan-guess",
         "-A",
+        "-Pn",  # skip host discovery — treat all hosts as up (used for IP-list enrich scans)
     }
 )
 

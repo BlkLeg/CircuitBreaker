@@ -172,6 +172,14 @@ class ScanResultOut(BaseModel):
     created_at: str
     model_config = ConfigDict(from_attributes=True)
 
+    @field_validator("open_ports_json", mode="before")
+    @classmethod
+    def _coerce_open_ports_json(cls, v: Any) -> Any:
+        """JSONB column returns a Python list; serialize it so the schema str | None holds."""
+        if isinstance(v, (list, dict)):
+            return json.dumps(v)
+        return v
+
 
 def _datetime_to_str(v: Any) -> str:
     """Coerce datetime to ISO string for API output."""

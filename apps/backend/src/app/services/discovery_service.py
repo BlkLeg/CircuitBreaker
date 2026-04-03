@@ -129,6 +129,7 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
 
     _SUBJECT_MAP = {
         "job_progress": subjects.DISCOVERY_SCAN_PROGRESS,
+        "warning": subjects.DISCOVERY_SCAN_PROGRESS,
         "job_update": subjects.DISCOVERY_SCAN_COMPLETED,
         "scan_log_entry": subjects.DISCOVERY_SCAN_PROGRESS,
         "result_added": subjects.DISCOVERY_DEVICE_FOUND,
@@ -277,7 +278,7 @@ def create_scan_job(
             ),
         )
 
-    if not cidrs and effective_scan_types != ["docker"]:
+    if not cidrs and effective_scan_types not in (["docker"], ["opnsense"]):
         raise ValueError("At least one CIDR range or VLAN must be targeted for scan.")
 
     # De-duplicate and sort CIDRs
@@ -383,6 +384,12 @@ def _scan_setup(job_id: int) -> dict | None:
                 if hasattr(profile, "docker_socket_path") and profile.docker_socket_path:
                     docker_socket_path = profile.docker_socket_path
 
+        # IP-list targets (space-separated) mean hosts are already known — skip host
+        # discovery to avoid wasting time and prevent nmap from skipping reachable hosts
+        # that don't respond to ICMP (e.g., Windows with firewall blocking ping).
+        if job.target_cidr and " " in job.target_cidr and "-Pn" not in nmap_args:
+            nmap_args = f"-Pn {nmap_args}".strip()
+
         return {
             "job_id": job_id,
             "target_cidr": job.target_cidr,
@@ -414,6 +421,12 @@ def _scan_setup(job_id: int) -> dict | None:
             "dhcp_router_command": getattr(
                 settings, "dhcp_router_command", "cat /var/lib/misc/dnsmasq.leases"
             ),
+            # OPNsense integration
+            "opnsense_enabled": getattr(settings, "opnsense_enabled", False),
+            "opnsense_host": getattr(settings, "opnsense_host", ""),
+            "opnsense_api_key_enc": getattr(settings, "opnsense_api_key_enc", None),
+            "opnsense_api_secret_enc": getattr(settings, "opnsense_api_secret_enc", None),
+            "opnsense_verify_ssl": getattr(settings, "opnsense_verify_ssl", False),
         }
     finally:
         db.close()
@@ -802,6 +815,14 @@ async def run_scan_job(job_id: int) -> None:
     if not setup:
         return
 
+    # Broadcast started_at immediately so the frontend timer starts ticking.
+    # This matters most for fast scans (OPNsense) that complete before
+    # any progress event would fire.
+    await _emit_ws_event(
+        "job_update",
+        {"job": {"id": job_id, "status": "running", "started_at": setup.get("started_at")}},
+    )
+
     target_cidr = setup["target_cidr"]
     triggered_by = setup.get("triggered_by") or "api"
     scan_types: list = setup["scan_types"]
@@ -1100,19 +1121,21 @@ async def run_scan_job(job_id: int) -> None:
                 await _log_scan_event(job_id, "INFO", "Nmap scan skipped (not requested)", "nmap")
                 return {}
 
-            # Phone detection: pre-sweep runs concurrently with ARP and nmap
-            _presweep_ips, arp_results, nmap_scan = await asyncio.gather(
-                _run_host_discovery_sweep(target_cidr),
-                _arp_phase(),
-                _nmap_phase(),
-            )
-            active_ips.update(_presweep_ips)
-            nmap_results = nmap_scan
-            arp_mac_by_ip = {r["ip"]: r["mac"] for r in arp_results if r.get("mac")}
-            for ip in arp_mac_by_ip:
-                active_ips.add(ip)
-            for ip in nmap_results.keys():
-                active_ips.add(ip)
+            # Phone detection: pre-sweep runs concurrently with ARP and nmap.
+            # Skip entirely for OPNsense scans — no CIDR target, devices come from API.
+            if target_cidr:
+                _presweep_ips, arp_results, nmap_scan = await asyncio.gather(
+                    _run_host_discovery_sweep(target_cidr),
+                    _arp_phase(),
+                    _nmap_phase(),
+                )
+                active_ips.update(_presweep_ips)
+                nmap_results = nmap_scan
+                arp_mac_by_ip = {r["ip"]: r["mac"] for r in arp_results if r.get("mac")}
+                for ip in arp_mac_by_ip:
+                    active_ips.add(ip)
+                for ip in nmap_results.keys():
+                    active_ips.add(ip)
 
         # Inject stubs for ARP-found hosts that nmap --open filtered out (phones with no open ports)
         for _arp_ip, _arp_mac in arp_mac_by_ip.items():
@@ -1231,65 +1254,113 @@ async def run_scan_job(job_id: int) -> None:
                         if ip and mac and not arp_mac_by_ip.get(ip):
                             arp_mac_by_ip[ip] = mac  # real MAC from gateway ARP cache
 
-            # Layer 4: DHCP lease snooping (opt-in — runs if file path or router SSH set)
-            dhcp_file = setup.get("dhcp_lease_file_path", "").strip()
-            dhcp_router_host = setup.get("dhcp_router_host", "").strip()
-            dhcp_router_user_enc = setup.get("dhcp_router_user_enc") or ""
-            dhcp_router_pass_enc = setup.get("dhcp_router_pass_enc") or ""
-            # Auto-detect DHCP lease file for standard homelab setups
-            if not dhcp_file:
-                for _p in _AUTO_DHCP_PATHS:
-                    if os.path.isfile(_p) and os.access(_p, os.R_OK):  # noqa: ASYNC240
-                        dhcp_file = _p
-                        logger.debug("Mobile Layer 4: auto-detected DHCP lease file at %s", _p)
-                        break
-            if not dhcp_file and not (
-                dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc
-            ):
-                logger.debug(
-                    "Mobile Layer 4 (DHCP snooping) skipped"
-                    " — no lease file or SSH credentials configured"
+            # OPNsense layer (takes priority over all DHCP snooping when configured)
+            _opnsense_populated = False
+            if "opnsense" in scan_types:
+                from app.services.discovery_opnsense import fetch_opnsense_devices
+
+                _opnsense_devices, _opnsense_err = await fetch_opnsense_devices(
+                    {
+                        "opnsense_host": setup.get("opnsense_host", ""),
+                        "opnsense_api_key_enc": setup.get("opnsense_api_key_enc"),
+                        "opnsense_api_secret_enc": setup.get("opnsense_api_secret_enc"),
+                        "opnsense_verify_ssl": setup.get("opnsense_verify_ssl", False),
+                    }
                 )
-            if dhcp_file or (dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc):
-                try:
-                    dhcp_entries = await asyncio.wait_for(
-                        run_dhcp_lease_discovery(
-                            {
-                                "lease_file_path": dhcp_file,
-                                "router_ssh_host": dhcp_router_host,
-                                "router_ssh_user_enc": dhcp_router_user_enc,
-                                "router_ssh_pass_enc": dhcp_router_pass_enc,
-                                "router_ssh_command": setup.get(
-                                    "dhcp_router_command", "cat /var/lib/misc/dnsmasq.leases"
-                                ),
-                            }
-                        ),
-                        timeout=15.0,
-                    )
-                except Exception as exc:
-                    logger.warning("Mobile Layer 4 (DHCP snooping) failed: %s", exc)
-                    dhcp_entries = []
-                for entry in dhcp_entries:
-                    ip = entry.get("ip", "")
-                    mac = entry.get("mac", "")
-                    hostname = entry.get("hostname")
-                    if ip and ip not in active_ips:
-                        active_ips.add(ip)
+                if _opnsense_err:
+                    logger.warning("OPNsense fetch failed: %s", _opnsense_err)
+                    await _emit_ws_event("warning", {"job_id": job_id, "message": _opnsense_err})
+                else:
+                    for _od in _opnsense_devices:
+                        _ip = _od.get("ip", "")
+                        if not _ip:
+                            continue
+                        active_ips.add(_ip)
                         nmap_results.setdefault(
-                            ip,
+                            _ip,
                             {
-                                "mac": mac or None,
-                                "hostname": hostname,
-                                "os_family": None,
+                                "ip": _ip,
+                                "mac": _od.get("mac"),
+                                "hostname": _od.get("hostname"),
+                                "is_active": _od.get("is_active", True),
+                                "source": _od.get("source", "opnsense_lease"),
                                 "open_ports": [],
                                 "raw": "",
                             },
                         )
-                    if ip and mac and not arp_mac_by_ip.get(ip):
-                        arp_mac_by_ip[ip] = mac
-                    # Hostname from DHCP is high-priority (it's the registered device name)
-                    if ip and hostname and ip in nmap_results:
-                        nmap_results[ip].setdefault("hostname", hostname)
+                        if _od.get("mac"):
+                            arp_mac_by_ip[_ip] = _od["mac"]
+                    _opnsense_populated = True
+                    logger.info(
+                        "OPNsense: populated %d devices for job %d",
+                        len(_opnsense_devices),
+                        job_id,
+                    )
+
+            # Layer 4: DHCP lease snooping — skipped when OPNsense already populated devices
+            if _opnsense_populated:
+                logger.debug("Layer 4 (DHCP) skipped — OPNsense data used instead")
+            else:
+                dhcp_file = setup.get("dhcp_lease_file_path", "").strip()
+                dhcp_router_host = setup.get("dhcp_router_host", "").strip()
+                dhcp_router_user_enc = setup.get("dhcp_router_user_enc") or ""
+                dhcp_router_pass_enc = setup.get("dhcp_router_pass_enc") or ""
+                # Auto-detect DHCP lease file for standard homelab setups
+                if not dhcp_file:
+                    for _p in _AUTO_DHCP_PATHS:
+                        if os.path.isfile(_p) and os.access(_p, os.R_OK):  # noqa: ASYNC240
+                            dhcp_file = _p
+                            logger.debug("Mobile Layer 4: auto-detected DHCP lease file at %s", _p)
+                            break
+                if not dhcp_file and not (
+                    dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc
+                ):
+                    logger.debug(
+                        "Mobile Layer 4 (DHCP snooping) skipped"
+                        " — no lease file or SSH credentials configured"
+                    )
+                if dhcp_file or (
+                    dhcp_router_host and dhcp_router_user_enc and dhcp_router_pass_enc
+                ):
+                    try:
+                        dhcp_entries = await asyncio.wait_for(
+                            run_dhcp_lease_discovery(
+                                {
+                                    "lease_file_path": dhcp_file,
+                                    "router_ssh_host": dhcp_router_host,
+                                    "router_ssh_user_enc": dhcp_router_user_enc,
+                                    "router_ssh_pass_enc": dhcp_router_pass_enc,
+                                    "router_ssh_command": setup.get(
+                                        "dhcp_router_command", "cat /var/lib/misc/dnsmasq.leases"
+                                    ),
+                                }
+                            ),
+                            timeout=15.0,
+                        )
+                    except Exception as exc:
+                        logger.warning("Mobile Layer 4 (DHCP snooping) failed: %s", exc)
+                        dhcp_entries = []
+                    for entry in dhcp_entries:
+                        ip = entry.get("ip", "")
+                        mac = entry.get("mac", "")
+                        hostname = entry.get("hostname")
+                        if ip and ip not in active_ips:
+                            active_ips.add(ip)
+                            nmap_results.setdefault(
+                                ip,
+                                {
+                                    "mac": mac or None,
+                                    "hostname": hostname,
+                                    "os_family": None,
+                                    "open_ports": [],
+                                    "raw": "",
+                                },
+                            )
+                        if ip and mac and not arp_mac_by_ip.get(ip):
+                            arp_mac_by_ip[ip] = mac
+                        # Hostname from DHCP is high-priority (it's the registered device name)
+                        if ip and hostname and ip in nmap_results:
+                            nmap_results[ip].setdefault("hostname", hostname)
 
             logger.info(
                 "Mobile discovery layers complete — DNS-SD: %d entries,"
@@ -1596,7 +1667,10 @@ async def run_scan_job(job_id: int) -> None:
         )
         await _emit_ws_event(
             "job_update",
-            {"job": {"id": job_id, "status": "completed"}, "pending_count": _pending_count},
+            {
+                "job": {"id": job_id, "status": "completed", "progress_percent": 100},
+                "pending_count": _pending_count,
+            },
         )
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
@@ -1671,3 +1745,176 @@ def enqueue_lldp_job(
     db.flush()
     db.commit()
     return job.id
+
+
+async def run_opnsense_enrich(original_job_id: int, private_ips: list[str]) -> None:
+    """Run nmap against OPNsense-discovered IPs and UPDATE existing ScanResult rows.
+
+    Does NOT create new ScanResult rows or a new ScanJob.
+    Sets the original job to "running" for the duration so the frontend timer ticks,
+    then restores "completed" when done.
+    """
+    from app.services.discovery_probes import _run_nmap_scan
+
+    ip_list = " ".join(private_ips)
+    logger.info("OPNsense enrich job %d: nmap against %d IPs", original_job_id, len(private_ips))
+
+    # ── Mark job as running so the frontend timer activates ──────────────────
+    enrich_started = utcnow_iso()
+    db = SessionLocal()
+    try:
+        job = db.get(ScanJob, original_job_id)
+        if job:
+            job.status = "running"
+            job.progress_phase = "enrich"
+            job.progress_message = f"Enriching {len(private_ips)} hosts with nmap\u2026"
+            db.commit()
+    except Exception as exc:
+        logger.warning("OPNsense enrich job %d: could not mark running — %s", original_job_id, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    await _emit_ws_event(
+        "job_update",
+        {
+            "job": {
+                "id": original_job_id,
+                "status": "running",
+                "started_at": enrich_started,
+                "progress_percent": 5,
+            }
+        },
+    )
+    await _emit_ws_event(
+        "job_progress",
+        {
+            "job_id": original_job_id,
+            "phase": "enrich",
+            "message": f"Enriching {len(private_ips)} hosts with nmap\u2026",
+            "percent": 10,
+        },
+    )
+
+    # ── Run nmap ──────────────────────────────────────────────────────────────
+    try:
+        nmap_results = await _run_nmap_scan(ip_list, "-Pn -T4 -F -sV")
+    except Exception as exc:
+        logger.warning("OPNsense enrich job %d: nmap failed \u2014 %s", original_job_id, exc)
+        completed = utcnow_iso()
+        db = SessionLocal()
+        try:
+            job = db.get(ScanJob, original_job_id)
+            if job:
+                job.status = "completed"
+                job.completed_at = completed
+                job.progress_phase = "enrich_failed"
+                job.progress_message = str(exc)
+                db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        await _emit_ws_event(
+            "job_update",
+            {
+                "job": {
+                    "id": original_job_id,
+                    "status": "completed",
+                    "completed_at": completed,
+                    "progress_percent": 100,
+                }
+            },
+        )
+        return
+
+    await _emit_ws_event(
+        "job_progress",
+        {
+            "job_id": original_job_id,
+            "phase": "enrich",
+            "message": "Saving nmap results\u2026",
+            "percent": 80,
+        },
+    )
+
+    # ── Update existing ScanResult rows ───────────────────────────────────────
+    updated = 0
+    db = SessionLocal()
+    try:
+        for ip, host_data in nmap_results.items():
+            row = (
+                db.query(ScanResult)
+                .filter(
+                    ScanResult.scan_job_id == original_job_id,
+                    ScanResult.ip_address == ip,
+                )
+                .first()
+            )
+            if not row:
+                continue
+
+            open_ports = host_data.get("open_ports") or []
+            if open_ports:
+                row.open_ports_json = json.dumps(open_ports)
+
+            os_family = host_data.get("os_family")
+            if os_family:
+                row.os_family = os_family
+                row.os_vendor = host_data.get("os_vendor")
+                row.os_accuracy = host_data.get("os_accuracy")
+
+            # Only overwrite hostname if nmap resolved one and OPNsense didn't provide one
+            nmap_hostname = host_data.get("hostname")
+            if nmap_hostname and not row.hostname:
+                row.hostname = nmap_hostname
+
+            raw_xml = host_data.get("raw")
+            if raw_xml:
+                row.raw_nmap_xml = raw_xml
+
+            updated += 1
+
+        db.commit()
+        logger.info(
+            "OPNsense enrich job %d: updated %d/%d records",
+            original_job_id,
+            updated,
+            len(private_ips),
+        )
+    except Exception as exc:
+        logger.warning("OPNsense enrich job %d: DB update failed \u2014 %s", original_job_id, exc)
+        db.rollback()
+    finally:
+        db.close()
+
+    # ── Restore job to completed ──────────────────────────────────────────────
+    completed = utcnow_iso()
+    db = SessionLocal()
+    try:
+        job = db.get(ScanJob, original_job_id)
+        if job:
+            job.status = "completed"
+            job.completed_at = completed
+            job.progress_phase = "enrich_done"
+            job.progress_message = f"Enriched {updated} hosts"
+            db.commit()
+    except Exception as exc:
+        logger.warning(
+            "OPNsense enrich job %d: could not restore completed — %s", original_job_id, exc
+        )
+        db.rollback()
+    finally:
+        db.close()
+
+    await _emit_ws_event(
+        "job_update",
+        {
+            "job": {
+                "id": original_job_id,
+                "status": "completed",
+                "completed_at": completed,
+                "progress_percent": 100,
+            }
+        },
+    )

@@ -175,6 +175,13 @@ class AppSettingsRead(BaseModel):
     dhcp_router_pass_enc: str | None = Field(default=None, exclude=True)  # never returned
     dhcp_router_command: str = "cat /var/lib/misc/dnsmasq.leases"
     dhcp_router_credentials_set: bool = False  # computed in model_validator
+    # OPNsense integration
+    opnsense_enabled: bool = False
+    opnsense_host: str = ""
+    opnsense_verify_ssl: bool = False
+    opnsense_api_key_enc: str | None = Field(default=None, exclude=True)  # never returned
+    opnsense_api_secret_enc: str | None = Field(default=None, exclude=True)  # never returned
+    opnsense_credentials_set: bool = False  # computed in model_validator
     # v0.2.0: Self-aware cluster topology
     self_cluster_enabled: bool = False
     # SMTP / Email delivery
@@ -212,6 +219,9 @@ class AppSettingsRead(BaseModel):
         self.smtp_password_set = bool(self.smtp_password_enc)
         self.dhcp_router_credentials_set = bool(
             self.dhcp_router_user_enc or self.dhcp_router_pass_enc
+        )
+        self.opnsense_credentials_set = bool(
+            self.opnsense_api_key_enc or self.opnsense_api_secret_enc
         )
         return self
 
@@ -436,6 +446,12 @@ class AppSettingsUpdate(BaseModel):
     dhcp_router_username: str | None = None  # plaintext → encrypted on write
     dhcp_router_password: str | None = None  # plaintext → encrypted on write
     dhcp_router_command: str | None = None
+    # OPNsense integration
+    opnsense_enabled: bool | None = None
+    opnsense_host: str | None = None
+    opnsense_verify_ssl: bool | None = None
+    opnsense_api_key: str | None = None  # plaintext → encrypted on write
+    opnsense_api_secret: str | None = None  # plaintext → encrypted on write
 
     @field_validator("theme_preset")
     @classmethod

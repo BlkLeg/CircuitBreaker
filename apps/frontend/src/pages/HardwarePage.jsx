@@ -14,7 +14,7 @@ import HardwareDetail from '../components/details/HardwareDetail';
 const cachedClusterList = createApiCache(() => clustersApi.list(), 15_000);
 import ClusterDetail from '../components/details/ClusterDetail';
 import { VENDORS } from '../config/vendors';
-import { HARDWARE_ROLES, HARDWARE_ROLE_LABELS } from '../config/hardwareRoles';
+import { useHardwareRoles } from '../hooks/useHardwareRoles';
 import { CPU_BRANDS, CPU_BRAND_MAP } from '../config/cpuBrands';
 import { getVendorIcon } from '../icons/vendorIcons';
 import FormModal from '../components/common/FormModal';
@@ -23,12 +23,6 @@ import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
-
-const BASE_COLUMNS = [
-  { key: 'id', label: 'ID' },
-  { key: 'name', label: 'Name' },
-  { key: 'role', label: 'Role', render: (v) => HARDWARE_ROLE_LABELS[v] ?? v ?? '—' },
-];
 
 const TAIL_COLUMNS = [
   {
@@ -130,6 +124,7 @@ const CLUSTER_FIELDS = (environments) => [
 ];
 
 function HardwarePage() {
+  const { options: HARDWARE_ROLES, labels: HARDWARE_ROLE_LABELS } = useHardwareRoles();
   const { settings } = useSettings();
   const toast = useToast();
   const vendorIconMode = settings?.vendor_icon_mode ?? 'custom_files';
@@ -325,7 +320,9 @@ function HardwarePage() {
 
   const COLUMNS = useMemo(
     () => [
-      ...BASE_COLUMNS,
+      { key: 'id', label: 'ID' },
+      { key: 'name', label: 'Name' },
+      { key: 'role', label: 'Role', render: (v) => HARDWARE_ROLE_LABELS[v] ?? v ?? '—' },
       {
         key: 'vendor',
         label: 'Vendor',
@@ -369,7 +366,7 @@ function HardwarePage() {
         ),
       },
     ],
-    [vendorIconMode, allTags, fetchData, fetchTags]
+    [vendorIconMode, allTags, fetchData, fetchTags, HARDWARE_ROLE_LABELS]
   );
 
   const HARDWARE_EDITABLE = [

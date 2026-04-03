@@ -8,7 +8,7 @@ import { createMonitor } from '../../api/monitor.js';
 import { clustersApi } from '../../api/client.jsx';
 import { useToast } from '../common/Toast';
 import ReviewDrawer from './ReviewDrawer.jsx';
-import { HARDWARE_ROLES } from '../../config/hardwareRoles.js';
+import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 import IconPickerModal, { IconImg } from '../common/IconPickerModal.jsx';
 import NetworkSelectorDropdown from './NetworkSelectorDropdown.jsx';
 import { discoveryEmitter } from '../../hooks/useDiscoveryStream.js';
@@ -205,6 +205,7 @@ GroupNameModal.propTypes = {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function ReviewQueuePanel({ onCountChange }) {
+  const { options: HARDWARE_ROLES } = useHardwareRoles();
   const toast = useToast();
   const navigate = useNavigate();
   const [results, setResults] = useState([]);
@@ -273,7 +274,12 @@ export default function ReviewQueuePanel({ onCountChange }) {
         if (prev.find((r) => r.id === ephId || r.ip_address === ev.ip_address)) return prev;
         return [
           ...prev,
-          { id: ephId, ip_address: ev.ip_address, mac_address: ev.mac_address || null, _discovering: true },
+          {
+            id: ephId,
+            ip_address: ev.ip_address,
+            mac_address: ev.mac_address || null,
+            _discovering: true,
+          },
         ];
       });
     };
@@ -282,7 +288,13 @@ export default function ReviewQueuePanel({ onCountChange }) {
       setResults((prev) =>
         prev.map((r) =>
           r._discovering && r.ip_address === ev.ip_address
-            ? { ...r, hostname: ev.hostname, os_vendor: ev.vendor, device_type: ev.device_type, _discovering: false }
+            ? {
+                ...r,
+                hostname: ev.hostname,
+                os_vendor: ev.vendor,
+                device_type: ev.device_type,
+                _discovering: false,
+              }
             : r
         )
       );
@@ -913,14 +925,32 @@ export default function ReviewQueuePanel({ onCountChange }) {
                     return (
                       <tr key={r.id} style={{ opacity: 0.7 }}>
                         <td className="col-checkbox" />
-                        <td className="col-target" style={{ fontFamily: 'monospace' }}>{r.ip_address}</td>
-                        <td><span className="skeleton-pulse" style={{ display: 'block', height: 14, width: 110, borderRadius: 4 }} /></td>
-                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.mac_address || '—'}</td>
+                        <td className="col-target" style={{ fontFamily: 'monospace' }}>
+                          {r.ip_address}
+                        </td>
+                        <td>
+                          <span
+                            className="skeleton-pulse"
+                            style={{ display: 'block', height: 14, width: 110, borderRadius: 4 }}
+                          />
+                        </td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                          {r.mac_address || '—'}
+                        </td>
                         <td />
-                        <td><span className="skeleton-pulse" style={{ display: 'block', height: 14, width: 80, borderRadius: 4 }} /></td>
+                        <td>
+                          <span
+                            className="skeleton-pulse"
+                            style={{ display: 'block', height: 14, width: 80, borderRadius: 4 }}
+                          />
+                        </td>
                         <td />
                         <td />
-                        <td><span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>scanning…</span></td>
+                        <td>
+                          <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+                            scanning…
+                          </span>
+                        </td>
                         <td />
                         <td />
                       </tr>
@@ -1008,6 +1038,37 @@ export default function ReviewQueuePanel({ onCountChange }) {
                       <td style={{ fontSize: 12 }}>{osVendor}</td>
 
                       <td onClick={(e) => e.stopPropagation()}>
+                        {r?.role_suggestion && !edits.role && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: 'var(--color-primary)',
+                              marginBottom: 4,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4,
+                            }}
+                          >
+                            <span>Suggested:</span>
+                            <button
+                              type="button"
+                              onClick={() => setEdit(r.id, 'role', r.role_suggestion)}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: 0,
+                                color: 'var(--color-primary)',
+                                fontWeight: 600,
+                                fontSize: 11,
+                                textDecoration: 'underline',
+                              }}
+                            >
+                              {HARDWARE_ROLES.find((hr) => hr.value === r.role_suggestion)?.label ??
+                                r.role_suggestion}
+                            </button>
+                          </div>
+                        )}
                         <select
                           className="cb-input"
                           style={{ fontSize: 12, padding: '3px 7px' }}

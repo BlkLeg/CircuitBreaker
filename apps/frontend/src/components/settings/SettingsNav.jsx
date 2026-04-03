@@ -12,6 +12,7 @@ import {
   Plug,
   Users,
   Webhook,
+  Server,
 } from 'lucide-react';
 
 export const SETTINGS_TABS = [
@@ -32,6 +33,12 @@ export const SETTINGS_TABS = [
     label: 'Resources',
     icon: Layers,
     description: 'Manage environments, categories, and locations.',
+  },
+  {
+    id: 'device-roles',
+    label: 'Device Roles',
+    icon: Server,
+    description: 'Hardware classification and topology ranking.',
   },
   {
     id: 'connectivity',

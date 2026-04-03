@@ -326,6 +326,7 @@ export const settingsApi = {
   smtpUpdate: (data) => client.patch('/settings/smtp', data),
   smtpTest: (send_to) =>
     client.post('/settings/smtp/test', null, { params: send_to ? { send_to } : {} }),
+  opnsenseTest: () => client.get('/settings/opnsense/test'),
 };
 
 export const securityApi = {
@@ -615,6 +616,13 @@ export const notificationsApi = {
   listRoutes: () => client.get('/notifications/routes'),
   createRoute: (data) => client.post('/notifications/routes', data),
   deleteRoute: (id) => client.delete(`/notifications/routes/${id}`),
+};
+
+export const deviceRolesApi = {
+  list: () => client.get('/settings/roles').then((r) => r.data),
+  create: (data) => client.post('/settings/roles', data).then((r) => r.data),
+  update: (id, data) => client.put(`/settings/roles/${id}`, data).then((r) => r.data),
+  delete: (id) => client.delete(`/settings/roles/${id}`).then((r) => r.data),
 };
 
 export default client;

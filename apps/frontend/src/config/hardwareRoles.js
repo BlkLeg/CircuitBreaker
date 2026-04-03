@@ -1,24 +1,35 @@
-export const HARDWARE_ROLES = [
-  { value: 'router', label: 'Router' },
-  { value: 'firewall', label: 'Firewall' },
-  { value: 'hypervisor', label: 'Hypervisor' },
-  { value: 'server', label: 'Server' },
-  { value: 'nas', label: 'NAS' },
-  { value: 'desktop', label: 'Desktop' },
-  { value: 'workstation', label: 'Workstation' },
-  { value: 'mini_pc', label: 'Mini PC' },
-  { value: 'raspberry_pi', label: 'Raspberry Pi' },
-  { value: 'switch', label: 'Network Switch' },
-  { value: 'ap', label: 'Access Point' },
-  { value: 'ups', label: 'UPS' },
-  { value: 'pdu', label: 'PDU' },
-  { value: 'access_point', label: 'WiFi AP' },
-  { value: 'sbc', label: 'Single Board Computer' },
-  { value: 'vm', label: 'VM' },
-  { value: 'lxc', label: 'LXC' },
-  { value: 'other', label: 'Other' },
-];
+export const HARDWARE_ROLES = []; // See useHardwareRoles for the dynamic catalog
+export const HARDWARE_ROLE_LABELS = {};
 
-export const HARDWARE_ROLE_LABELS = Object.fromEntries(
-  HARDWARE_ROLES.map((r) => [r.value, r.label])
-);
+// Fallback visual icons for standard roles until we support custom DB icons
+export const ROLE_ICONS = {
+  router: 'fa-network-wired',
+  firewall: 'fa-shield-halved',
+  switch: 'fa-server',
+  access_point: 'fa-wifi',
+  server: 'fa-server',
+  hypervisor: 'fa-layer-group',
+  nas: 'fa-hard-drive',
+  storage: 'fa-hard-drive',
+  compute: 'fa-microchip',
+  desktop: 'fa-desktop',
+  workstation: 'fa-desktop',
+  mini_pc: 'fa-box',
+  raspberry_pi: 'fa-raspberry-pi',
+  sbc: 'fa-microchip',
+  laptop: 'fa-laptop',
+  ups: 'fa-battery-full',
+  pdu: 'fa-plug',
+  ip_camera: 'fa-video',
+  phone: 'fa-mobile-screen',
+  tablet: 'fa-tablet-screen-button',
+  smart_tv: 'fa-tv',
+  thermostat: 'fa-temperature-half',
+  printer: 'fa-print',
+  gaming_console: 'fa-gamepad',
+  voip_phone: 'fa-phone',
+  iot_device: 'fa-microchip',
+  vm: 'fa-desktop',
+  lxc: 'fa-box-open',
+  misc: 'fa-microchip',
+};
