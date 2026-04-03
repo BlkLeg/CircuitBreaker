@@ -129,6 +129,7 @@ def _verify_id_token_nonce(id_token: str, jwks: dict, expected_nonce: str) -> No
         raise HTTPException(400, "OIDC: JWKS contains no usable signing keys")
 
     try:
+        public_key: Any  # RSA and EC algorithms return different key types
         if alg.startswith("RS"):
             public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
         elif alg.startswith("ES"):

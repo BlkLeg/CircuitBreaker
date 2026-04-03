@@ -127,6 +127,11 @@ python_version = "3.12"
 # Start permissive: ignore missing stubs for third-party libraries so mypy
 # can be adopted gradually without requiring every dependency to ship py.typed.
 ignore_missing_imports = true
+# mypy 1.x separates [import] (not found) from [import-untyped] (found, no stubs).
+# Stubs for our third-party deps are listed in pyproject dev extras but are not
+# always installed in the venv; suppress the error code instead of requiring a
+# specific venv setup to pass CI.
+disable_error_code = ["import-untyped"]
 # Restore pre-mypy-0.980 behaviour: allow `def f(x: int = None)` patterns.
 # Existing API routers use this style; a dedicated cleanup pass can remove
 # this flag once signatures are updated to use Optional[int] explicitly.

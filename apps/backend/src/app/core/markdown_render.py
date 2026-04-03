@@ -49,4 +49,4 @@ def render_markdown(md_text: str) -> str:
     if not md_text:
         return ""
     raw_html = _md.render(md_text)
-    return bleach.clean(raw_html, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS)
+    return str(bleach.clean(raw_html, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRS))
