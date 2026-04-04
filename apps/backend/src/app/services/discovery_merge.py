@@ -704,9 +704,9 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
         try:
             merge_result = merge_scan_result(db, rid, "accept", overrides=overrides, actor=actor)
         except HTTPException as e:
-            detail = e.detail
-            if not isinstance(detail, str):
-                detail = json.dumps(detail)
+            # detail is str | list | dict at runtime (validation errors); stubs often use only str.
+            raw_detail: object = e.detail
+            detail = raw_detail if isinstance(raw_detail, str) else json.dumps(raw_detail)
             logger.warning("Enhanced bulk merge rejected for result %s: %s", rid, detail)
             errors.append({"result_id": rid, "error": detail})
             skipped += 1
