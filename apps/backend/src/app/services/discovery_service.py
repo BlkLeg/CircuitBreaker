@@ -110,6 +110,10 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
     Primary delivery: Redis pub/sub (crosses Uvicorn worker boundaries).
     Fallback: in-process ``ws_manager.broadcast`` when Redis is unavailable.
     NATS publish is always attempted for SSE and external consumers.
+
+    Never raises: transport/serialization failures are logged so a bad payload or
+    dead Redis cannot abort an in-flight scan (which would strand the UI and
+    look like a server crash).
     """
     from app.core import subjects
     from app.core.nats_client import nats_client
@@ -117,30 +121,40 @@ async def _emit_ws_event(event_type: str, payload: dict) -> None:
 
     message = {"type": event_type, **payload}
 
-    r = await get_redis()
-    if r is not None:
-        try:
-            await r.publish(_REDIS_DISCOVERY_CHANNEL, json.dumps(message, default=str))
-        except Exception as exc:
-            logger.debug("Discovery Redis publish failed, falling back to local broadcast: %s", exc)
-            await ws_manager.broadcast(message)
-    else:
-        await ws_manager.broadcast(message)
-
-    _SUBJECT_MAP = {
-        "job_progress": subjects.DISCOVERY_SCAN_PROGRESS,
-        "warning": subjects.DISCOVERY_SCAN_PROGRESS,
-        "job_update": subjects.DISCOVERY_SCAN_COMPLETED,
-        "scan_log_entry": subjects.DISCOVERY_SCAN_PROGRESS,
-        "result_added": subjects.DISCOVERY_DEVICE_FOUND,
-        "result_enriched": subjects.DISCOVERY_DEVICE_FOUND,
-        "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
-    }
-    subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
     try:
-        await nats_client.publish(subject, {"event_type": event_type, **payload})
+        r = await get_redis()
+        if r is not None:
+            try:
+                await r.publish(_REDIS_DISCOVERY_CHANNEL, json.dumps(message, default=str))
+            except Exception as exc:
+                logger.debug(
+                    "Discovery Redis publish failed, falling back to local broadcast: %s", exc
+                )
+                await ws_manager.broadcast(message)
+        else:
+            await ws_manager.broadcast(message)
+
+        _SUBJECT_MAP = {
+            "job_progress": subjects.DISCOVERY_SCAN_PROGRESS,
+            "warning": subjects.DISCOVERY_SCAN_PROGRESS,
+            "job_update": subjects.DISCOVERY_SCAN_COMPLETED,
+            "scan_log_entry": subjects.DISCOVERY_SCAN_PROGRESS,
+            "result_added": subjects.DISCOVERY_DEVICE_FOUND,
+            "result_enriched": subjects.DISCOVERY_DEVICE_FOUND,
+            "result_processed": subjects.DISCOVERY_DEVICE_FOUND,
+        }
+        subject = _SUBJECT_MAP.get(event_type, subjects.NOTIFICATION_EVENT)
+        try:
+            await nats_client.publish(subject, {"event_type": event_type, **payload})
+        except Exception as exc:
+            logger.debug("NATS publish failed (non-fatal): %s", exc)
     except Exception as exc:
-        logger.debug("NATS publish failed (non-fatal): %s", exc)
+        logger.warning(
+            "Discovery event emit failed (%s) — scan continues: %s",
+            event_type,
+            exc,
+            exc_info=True,
+        )
 
 
 async def _update_job_progress(
@@ -1124,6 +1138,10 @@ async def run_scan_job(job_id: int) -> None:
                         raise
                     finally:
                         prog_task.cancel()
+                        try:
+                            await prog_task
+                        except asyncio.CancelledError:
+                            pass
                 await _log_scan_event(job_id, "INFO", "Nmap scan skipped (not requested)", "nmap")
                 return {}
 
@@ -1707,6 +1725,30 @@ async def run_scan_job(job_id: int) -> None:
         )
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
+
+
+def schedule_discovery_scan_job(job_id: int) -> None:
+    """Start :func:`run_scan_job` as a task and log any uncaught outcome.
+
+    asyncio tasks that raise without a done-callback only emit a generic
+    "exception was never retrieved" message, which is easy to miss when
+    diagnosing mid-scan UI drop-offs.
+    """
+    task = asyncio.create_task(run_scan_job(job_id))
+
+    def _log_outcome(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception(
+                "Discovery job %s background task failed — UI may show offline if the "
+                "worker process exited; check stderr and /data logs",
+                job_id,
+                exc_info=exc,
+            )
+
+    task.add_done_callback(_log_outcome)
 
 
 def enqueue_lldp_job(

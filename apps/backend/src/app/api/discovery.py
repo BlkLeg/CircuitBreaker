@@ -231,7 +231,7 @@ async def run_profile_scan(
 
     # B2: async def endpoint runs on the event loop — asyncio.create_task works here
     try:
-        asyncio.create_task(discovery_service.run_scan_job(job.id))
+        discovery_service.schedule_discovery_scan_job(job.id)
     except Exception as exc:
         _logger.exception("Failed to schedule scan job %s", job.id)
         raise HTTPException(status_code=500, detail="Failed to start scan.") from exc
@@ -316,7 +316,7 @@ async def run_adhoc_scan(
 
     try:
         for job_id in job_ids:
-            asyncio.create_task(discovery_service.run_scan_job(job_id))
+            discovery_service.schedule_discovery_scan_job(job_id)
     except Exception as task_exc:
         _logger.exception("Failed to schedule scan job(s) %s: %s", job_ids, task_exc)
         raise HTTPException(

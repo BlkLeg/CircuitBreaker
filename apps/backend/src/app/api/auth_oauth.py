@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import secrets
+import socket
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -47,7 +48,12 @@ def _issue_auth_code(token: str) -> str:
 
 
 @router.get("/exchange")
-def exchange_auth_code(code: str = Query(...)) -> dict:
+@limiter.limit(lambda: get_limit("auth"))
+def exchange_auth_code(
+    request: Request,
+    response: Response,
+    code: str = Query(...),
+) -> dict:
     """Redeem a one-time cb_auth_code for a session JWT.
 
     Codes are deleted on first use and expire after 60 s so they are
@@ -62,12 +68,52 @@ def exchange_auth_code(code: str = Query(...)) -> dict:
 # ── OIDC safety helpers (S1/S2) ───────────────────────────────────────────────
 
 
+def _validate_hostname_resolves_safe(hostname: str, label: str) -> None:
+    """Reject hostnames whose DNS A/AAAA include loopback or link-local targets.
+
+    Private (RFC1918 / ULA) addresses are allowed so on-prem IdPs and firewalls
+    keep working.  This closes obvious SSRF where a hostname only resolves to
+    127.0.0.1 or 169.254.x.x (metadata-style ranges are link-local in IPv4).
+    """
+    if not hostname:
+        raise HTTPException(400, f"{label} has an empty hostname")
+    try:
+        infos = socket.getaddrinfo(
+            hostname,
+            443,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror as exc:
+        raise HTTPException(
+            400,
+            f"{label}: cannot resolve hostname {hostname!r} — {exc}",
+        ) from exc
+    if not infos:
+        raise HTTPException(400, f"{label}: hostname {hostname!r} did not resolve")
+    seen: set[str] = set()
+    for info in infos:
+        ip_str = info[4][0]
+        if ip_str in seen:
+            continue
+        seen.add(ip_str)
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if addr.is_loopback or addr.is_link_local:
+            raise HTTPException(
+                400,
+                f"{label} resolves to {ip_str} (loopback or link-local), which is not allowed",
+            )
+
+
 def _validate_oidc_url(url: str, label: str = "OIDC URL") -> None:
     """Reject discovery_url / token_endpoint values that target loopback or
     link-local addresses (prevents SSRF via attacker-controlled provider config).
 
-    FQDNs pass through — DNS resolution happens inside httpx, not here.
-    Only bare IP addresses are inspected.
+    Literal IPs are checked directly; hostnames are checked via DNS so obvious
+    metadata/loopback targets are rejected before httpx connects.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("https", "http"):
@@ -81,7 +127,7 @@ def _validate_oidc_url(url: str, label: str = "OIDC URL") -> None:
                 f"{label} targets a loopback or link-local address and is not allowed",
             )
     except ValueError:
-        pass  # FQDN — allowed
+        _validate_hostname_resolves_safe(host, label)
 
 
 def _validate_token_endpoint_host(token_endpoint: str, discovery_url: str) -> None:
@@ -102,15 +148,17 @@ def _validate_token_endpoint_host(token_endpoint: str, discovery_url: str) -> No
         )
 
 
-def _verify_id_token_nonce(id_token: str, jwks: dict, expected_nonce: str) -> None:
-    """Verify id_token signature using JWKS public keys and check the nonce claim.
+def _verify_id_token_nonce(
+    id_token: str,
+    jwks: dict,
+    expected_nonce: str,
+    *,
+    client_secret: str | None = None,
+) -> None:
+    """Verify id_token signature and check the nonce claim.
 
-    Supports RSA (RS256/RS384/RS512) and EC (ES256/ES384/ES512) key types.
-    Raises HTTPException(400) on signature failure, expiry, or nonce mismatch.
-
-    Using the provider's real public key (from jwks_uri) is the only meaningful
-    nonce check — an unsigned decode with verify_signature=False lets any
-    attacker-controlled IdP forge arbitrary claims including exp and nonce.
+    Supports RSA, EC, and HS* (client_secret) per common OIDC deployments.
+    Raises HTTPException on signature failure, expiry, or nonce mismatch.
     """
     from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
@@ -123,27 +171,40 @@ def _verify_id_token_nonce(id_token: str, jwks: dict, expected_nonce: str) -> No
     alg = token_header.get("alg", "RS256")
     keys = jwks.get("keys", [])
 
-    # Match by kid; fall back to first key when provider omits kid in header
-    jwk = next((k for k in keys if k.get("kid") == kid), keys[0] if keys else None)
-    if not jwk:
-        raise HTTPException(400, "OIDC: JWKS contains no usable signing keys")
-
     try:
-        public_key: Any  # RSA and EC algorithms return different key types
-        if alg.startswith("RS"):
-            public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
-        elif alg.startswith("ES"):
-            public_key = ECAlgorithm.from_jwk(json.dumps(jwk))
+        if alg.startswith("HS"):
+            if not client_secret:
+                raise HTTPException(
+                    400,
+                    "OIDC id_token uses HMAC but client_secret is not configured",
+                )
+            claims = jwt.decode(
+                id_token,
+                client_secret,
+                algorithms=[alg],
+                options={"verify_exp": True},
+                leeway=30,
+            )
         else:
-            raise HTTPException(400, f"OIDC: unsupported id_token algorithm {alg!r}")
+            jwk = next((k for k in keys if k.get("kid") == kid), keys[0] if keys else None)
+            if not jwk:
+                raise HTTPException(400, "OIDC: JWKS contains no usable signing keys")
 
-        claims = jwt.decode(
-            id_token,
-            public_key,
-            algorithms=[alg],
-            options={"verify_exp": True},
-            leeway=30,
-        )
+            public_key: Any
+            if alg.startswith("RS"):
+                public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))
+            elif alg.startswith("ES"):
+                public_key = ECAlgorithm.from_jwk(json.dumps(jwk))
+            else:
+                raise HTTPException(400, f"OIDC: unsupported id_token algorithm {alg!r}")
+
+            claims = jwt.decode(
+                id_token,
+                public_key,
+                algorithms=[alg],
+                options={"verify_exp": True},
+                leeway=30,
+            )
     except jwt.ExpiredSignatureError:
         raise HTTPException(400, "OIDC id_token has expired")
     except HTTPException:
@@ -489,6 +550,75 @@ def _json_or_502(resp: httpx.Response, provider: str, stage: str) -> dict:
         ) from exc
 
 
+async def _oidc_verify_id_token_and_fetch_userinfo(
+    client: httpx.AsyncClient,
+    disc: dict[str, Any],
+    cfg: dict,
+    token_data: dict[str, Any],
+    oauth_state: OAuthState,
+) -> dict[str, Any]:
+    """Require valid id_token when nonce was issued; fetch userinfo from pinned host."""
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(400, "Failed to obtain access token from OIDC provider")
+
+    id_token = token_data.get("id_token")
+    if oauth_state.nonce:
+        if not id_token:
+            raise HTTPException(
+                400,
+                "OIDC provider did not return id_token — required for nonce validation",
+            )
+        try:
+            id_hdr = jwt.get_unverified_header(id_token)
+        except jwt.DecodeError as exc:
+            raise HTTPException(400, f"OIDC: malformed id_token: {exc}") from exc
+        id_alg = str(id_hdr.get("alg") or "")
+        oidc_secret = _client_secret(cfg) or None
+        if id_alg.startswith("HS"):
+            _verify_id_token_nonce(
+                id_token,
+                {},
+                oauth_state.nonce,
+                client_secret=oidc_secret,
+            )
+        else:
+            jwks_uri = disc.get("jwks_uri") or ""
+            if not jwks_uri:
+                raise HTTPException(
+                    502,
+                    "OIDC discovery document missing jwks_uri — cannot verify id_token",
+                )
+            _validate_oidc_url(jwks_uri, "OIDC jwks_uri")
+            _validate_token_endpoint_host(jwks_uri, cfg["discovery_url"])
+            jwks_resp = await client.get(jwks_uri, timeout=10.0, follow_redirects=False)
+            if jwks_resp.status_code != 200:
+                raise HTTPException(
+                    502,
+                    f"OIDC JWKS fetch failed (HTTP {jwks_resp.status_code})",
+                )
+            _verify_id_token_nonce(
+                id_token,
+                jwks_resp.json(),
+                oauth_state.nonce,
+                client_secret=oidc_secret,
+            )
+
+    userinfo_ep = disc.get("userinfo_endpoint")
+    if not userinfo_ep:
+        raise HTTPException(502, "OIDC discovery document missing userinfo_endpoint")
+    _validate_oidc_url(userinfo_ep, "OIDC userinfo_endpoint")
+    _validate_token_endpoint_host(userinfo_ep, cfg["discovery_url"])
+
+    userinfo_resp = await client.get(
+        userinfo_ep,
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=10.0,
+        follow_redirects=False,
+    )
+    return _json_or_502(userinfo_resp, "OIDC", _STAGE_USER_LOOKUP)
+
+
 # ---------------------------------------------------------------------------
 # GitHub
 # ---------------------------------------------------------------------------
@@ -743,7 +873,7 @@ async def oidc_authorize(
 
     _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
     async with httpx.AsyncClient() as client:
-        disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
+        disc_resp = await client.get(cfg["discovery_url"], timeout=10.0, follow_redirects=False)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
 
     base_url = _get_app_base_url(db, request)
@@ -784,11 +914,15 @@ async def oidc_callback(
 
     _validate_oidc_url(cfg["discovery_url"], "OIDC discovery_url")
     async with httpx.AsyncClient() as client:
-        disc_resp = await client.get(cfg["discovery_url"], timeout=10.0)
+        disc_resp = await client.get(cfg["discovery_url"], timeout=10.0, follow_redirects=False)
         disc = _json_or_502(disc_resp, "OIDC", _STAGE_DISCOVERY)
-        _validate_token_endpoint_host(disc["token_endpoint"], cfg["discovery_url"])
+        token_ep = disc.get("token_endpoint")
+        if not token_ep:
+            raise HTTPException(502, "OIDC discovery document missing token_endpoint")
+        _validate_oidc_url(token_ep, "OIDC token_endpoint")
+        _validate_token_endpoint_host(token_ep, cfg["discovery_url"])
         token_resp = await client.post(
-            disc["token_endpoint"],
+            token_ep,
             data={
                 "client_id": cfg["client_id"],
                 "client_secret": _client_secret(cfg),
@@ -798,39 +932,14 @@ async def oidc_callback(
                 "code_verifier": verifier,
             },
             timeout=10.0,
+            follow_redirects=False,
         )
         token_data = _json_or_502(token_resp, "OIDC", _STAGE_TOKEN_EXCHANGE)
-        access_token = token_data.get("access_token")
-        if not access_token:
-            raise HTTPException(400, "Failed to obtain access token from OIDC provider")
-
-        # Verify nonce via JWKS signature check (S5 fix: unsigned decode is not enough)
-        id_token = token_data.get("id_token")
-        if id_token and oauth_state.nonce:
-            jwks_uri = disc.get("jwks_uri", "")
-            if jwks_uri:
-                # Validate jwks_uri is on the same host as discovery_url (SSRF guard)
-                _validate_token_endpoint_host(jwks_uri, cfg["discovery_url"])
-                jwks_resp = await client.get(jwks_uri, timeout=10.0)
-                if jwks_resp.status_code == 200:
-                    _verify_id_token_nonce(id_token, jwks_resp.json(), oauth_state.nonce)
-                else:
-                    _logger.warning(
-                        "OIDC: could not fetch JWKS (HTTP %d) — skipping id_token verification",
-                        jwks_resp.status_code,
-                    )
-            else:
-                _logger.warning(
-                    "OIDC discovery document has no jwks_uri — skipping id_token verification"
-                )
-
-        userinfo_resp = await client.get(
-            disc["userinfo_endpoint"],
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10.0,
+        userinfo = await _oidc_verify_id_token_and_fetch_userinfo(
+            client, disc, cfg, token_data, oauth_state
         )
-        userinfo = _json_or_502(userinfo_resp, "OIDC", _STAGE_USER_LOOKUP)
 
+    access_token = cast(str, token_data["access_token"])
     email = userinfo.get("email")
     if not email:
         raise HTTPException(400, "OIDC provider did not return email")

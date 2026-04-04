@@ -233,7 +233,7 @@ RequireAdmin.propTypes = {
   children: PropTypes.node.isRequired,
 };
 
-// Preserves query-string (e.g. ?oauth_token=...) when redirecting to /login
+// Preserves query-string (e.g. ?cb_auth_code= for OAuth exchange) when redirecting to /login
 function NavigateToLogin() {
   const location = useLocation();
   return <Navigate to={`/login${location.search}`} replace />;

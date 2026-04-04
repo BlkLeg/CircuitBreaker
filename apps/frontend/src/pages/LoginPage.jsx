@@ -104,13 +104,11 @@ function LoginPage() {
       });
   }, []);
 
-  // Handle OAuth redirect callbacks — new ?cb_auth_code= (one-time exchange code)
-  // or legacy ?oauth_token= (kept for backward compatibility).
+  // OAuth redirect: one-time ?cb_auth_code= only (exchanged for JWT via API — never in URL).
   useEffect(() => {
     const params = new URLSearchParams(globalThis.location.search);
     const authCode = params.get('cb_auth_code');
-    const oauthToken = params.get('oauth_token');
-    if (!authCode && !oauthToken) return;
+    if (!authCode) return;
     globalThis.history.replaceState({}, '', globalThis.location.pathname);
 
     const doLogin = (token) =>
@@ -125,17 +123,13 @@ function LoginPage() {
           setError('OAuth login failed. Please try again.');
         });
 
-    if (authCode) {
-      authApi
-        .exchangeAuthCode(authCode)
-        .then((res) => doLogin(res.data.token))
-        .catch((err) => {
-          console.error('Auth code exchange failed:', err);
-          setError('OAuth login failed. Please try again.');
-        });
-    } else {
-      doLogin(oauthToken);
-    }
+    authApi
+      .exchangeAuthCode(authCode)
+      .then((res) => doLogin(res.data.token))
+      .catch((err) => {
+        console.error('Auth code exchange failed:', err);
+        setError('OAuth login failed. Please try again.');
+      });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async (e) => {

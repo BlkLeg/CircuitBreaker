@@ -222,14 +222,12 @@ function OOBEWizardPage({ onCompleted }) {
     applyTheme(THEME_PRESETS[DEFAULT_PRESET], DEFAULT_PRESET);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Detect OAuth bootstrap return: /oobe?cb_auth_code=...&bootstrap=1&provider=...
-  // (Legacy: ?oauth_token= kept for backward compat.)
+  // OAuth bootstrap return: /oobe?cb_auth_code=...&bootstrap=1&provider=...
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const authCode = params.get('cb_auth_code');
-    const oauthToken = params.get('oauth_token');
     const isBootstrap = params.get('bootstrap') === '1';
-    if ((!authCode && !oauthToken) || !isBootstrap) return;
+    if (!authCode || !isBootstrap) return;
 
     // Restore in-progress OOBE state saved before the OAuth redirect
     try {
@@ -249,19 +247,13 @@ function OOBEWizardPage({ onCompleted }) {
 
     setOauthBootstrapProvider(params.get('provider') || 'oauth');
 
-    if (authCode) {
-      authApi
-        .exchangeAuthCode(authCode)
-        .then((res) => setOauthBootstrapToken(res.data.token))
-        .catch((err) => console.error('Auth code exchange failed in OOBE:', err));
-    } else {
-      setOauthBootstrapToken(oauthToken);
-    }
-
-    // Fetch the OAuth-returned profile so the wizard can show the real
-    // account email, display name, and remote avatar instead of gravatar.
     authApi
-      .meWithToken(oauthToken)
+      .exchangeAuthCode(authCode)
+      .then((res) => {
+        const token = res.data.token;
+        setOauthBootstrapToken(token);
+        return authApi.meWithToken(token);
+      })
       .then((res) => {
         const user = res.data || {};
         setOauthBootstrapEmail(user.email || null);
@@ -274,10 +266,10 @@ function OOBEWizardPage({ onCompleted }) {
         }
       })
       .catch((err) => {
-        console.warn('Failed to fetch OAuth profile during OOBE:', err);
+        console.error('OAuth bootstrap exchange or profile fetch failed in OOBE:', err);
       });
 
-    // Clean token from URL without triggering a re-render loop
+    // Clean code from URL without triggering a re-render loop
     globalThis.history.replaceState({}, '', '/oobe');
     // Skip account creation step — go straight to theme
     setStep(3);

@@ -420,7 +420,7 @@ def _generate_and_persist_vault_key(db: Session) -> str | None:
         import os
 
         if cfg_fresh:
-            cfg_fresh.vault_key = new_key
+            cfg_fresh.vault_key = None
             cfg_fresh.vault_key_hash = hashlib.sha256(new_key.encode()).hexdigest()
             cfg_fresh.vault_key_rotated_at = utcnow()
             db.commit()

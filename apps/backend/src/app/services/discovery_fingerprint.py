@@ -657,8 +657,7 @@ async def _run_ssdp_unicast_probe(ip: str, open_ports: list[dict]) -> dict[str, 
 
     async with httpx.AsyncClient(
         timeout=_SSDP_TIMEOUT,
-        verify=False,
-        follow_redirects=True,  # nosec B501 — LAN scanner; IoT devices use self-signed certs
+        follow_redirects=True,
     ) as client:
         for port in targets:
             scheme = "https" if port == 443 else "http"
@@ -1022,8 +1021,7 @@ async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[s
 
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT,
-        verify=False,
-        follow_redirects=True,  # nosec B501 — LAN scanner; IoT devices use self-signed certs
+        follow_redirects=True,
     ) as client:
         for scheme, port in candidates[:3]:  # cap at 3 attempts
             url = f"{scheme}://{ip}:{port}/"

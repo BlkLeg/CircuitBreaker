@@ -36,7 +36,7 @@ def _max_concurrent_scans(settings: object) -> int:
 
 
 def _schedule_queued_scan_jobs(db: Session) -> None:
-    from app.services.discovery_service import run_scan_job  # lazy import
+    from app.services.discovery_service import schedule_discovery_scan_job
 
     settings = get_or_create_settings(db)
     available_slots = _max_concurrent_scans(settings) - _running_scan_count(db)
@@ -50,8 +50,9 @@ def _schedule_queued_scan_jobs(db: Session) -> None:
         .limit(available_slots)
         .all()
     )
+
     for queued in queued_jobs:
-        asyncio.create_task(run_scan_job(queued.id))
+        schedule_discovery_scan_job(queued.id)
 
 
 async def _run_profile_job_async(profile_id: int) -> None:

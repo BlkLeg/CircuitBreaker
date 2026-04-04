@@ -91,7 +91,11 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict) -> None:
         """Send message to all connected clients. Remove dead connections silently."""
-        payload = json.dumps(message)
+        try:
+            payload = json.dumps(message, default=str)
+        except (TypeError, ValueError) as exc:
+            logger.warning("WS broadcast skipped — payload not JSON-serializable: %s", exc)
+            return
         async with self._lock:
             snapshot = list(self._connections)
 

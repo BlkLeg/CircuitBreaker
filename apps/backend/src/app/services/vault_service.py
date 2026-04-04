@@ -2,13 +2,13 @@
 
 Key loading fallback chain (load_vault_key):
   1. Process environment variable CB_VAULT_KEY
-    2. CB_DATA_DIR/.env file (CB_VAULT_KEY=...)
-  3. AppSettings.vault_key in the database
+  2. CB_DATA_DIR/.env file (CB_VAULT_KEY=...)
+  3. Legacy AppSettings.vault_key plaintext column (read-once migrate to .env, then cleared)
   4. Returns None — caller decides whether to warn or fail
 
-This order ensures that after any container restart, as long as
-CB_DATA_DIR/.env or the DB row is intact, the same Fernet key is loaded
-and all previously encrypted ciphertext remains valid.
+New keys are never written to the database as plaintext — only vault_key_hash
+is stored.  This order ensures that after any container restart, as long as
+CB_DATA_DIR/.env or the env var is intact, the same Fernet key is loaded.
 """
 
 from __future__ import annotations
@@ -390,7 +390,7 @@ def rotate_vault_key(db: Session) -> None:
     # Persist new key to file and DB
     write_vault_key_to_env(new_key_str)
     if cfg:
-        cfg.vault_key = new_key_str
+        cfg.vault_key = None
         cfg.vault_key_hash = _sha256(new_key_str)
         cfg.vault_key_rotated_at = utcnow()
 
@@ -444,7 +444,7 @@ def initialize_vault_key(db: Session) -> None:
     new_key_str = generate_vault_key()
 
     write_vault_key_to_env(new_key_str)
-    cfg.vault_key = new_key_str
+    cfg.vault_key = None
     cfg.vault_key_hash = _sha256(new_key_str)
     cfg.vault_key_rotated_at = utcnow()
     db.commit()

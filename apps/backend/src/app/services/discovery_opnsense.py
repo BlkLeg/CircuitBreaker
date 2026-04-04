@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import socket
 from typing import Any
 
 import httpx
@@ -16,27 +17,56 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _reject_ssrf_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> None:
+    if addr.is_loopback:
+        raise ValueError("loopback address is not allowed")
+    if addr.is_link_local:
+        raise ValueError("link-local address is not allowed (includes cloud metadata endpoints)")
+
+
 def _validate_opnsense_host(host: str) -> None:
-    """Block loopback and link-local hosts to prevent SSRF.
+    """Block loopback/link-local targets for literal IPs and for resolved DNS.
 
-    OPNsense must be a reachable network appliance.  Loopback and link-local
-    addresses (including 169.254.169.254 — cloud metadata endpoints) are never
-    valid OPNsense hosts and are rejected unconditionally.
-
-    FQDNs are allowed — DNS resolution happens inside httpx, not here.
+    Private LAN ranges remain allowed.  httpx requests use follow_redirects=False
+    so a 302 to an internal URL cannot bypass this check.
     """
+    host = host.strip()
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
-        return  # FQDN — cannot validate at this layer, allow it
+        try:
+            infos = socket.getaddrinfo(
+                host,
+                443,
+                type=socket.SOCK_STREAM,
+                proto=socket.IPPROTO_TCP,
+            )
+        except socket.gaierror as exc:
+            raise ValueError(f"OPNsense: cannot resolve host {host!r} — {exc}") from exc
+        if not infos:
+            raise ValueError(f"OPNsense: host {host!r} did not resolve to any address")
+        seen: set[str] = set()
+        for info in infos:
+            ip_str = info[4][0]
+            if ip_str in seen:
+                continue
+            seen.add(ip_str)
+            try:
+                resolved = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            try:
+                _reject_ssrf_ip(resolved)
+            except ValueError as exc:
+                raise ValueError(
+                    f"OPNsense: host {host!r} resolves to {ip_str}, which is not allowed ({exc})"
+                ) from exc
+        return
 
-    if addr.is_loopback:
-        raise ValueError(f"OPNsense: host {host!r} is a loopback address and is not allowed")
-    if addr.is_link_local:
-        raise ValueError(
-            f"OPNsense: host {host!r} is a link-local address and is not allowed "
-            "(link-local ranges include cloud metadata endpoints)"
-        )
+    try:
+        _reject_ssrf_ip(addr)
+    except ValueError as exc:
+        raise ValueError(f"OPNsense: host {host!r} is a {exc}") from exc
 
 
 # ── Endpoint constants ────────────────────────────────────────────────────────
@@ -104,6 +134,7 @@ async def fetch_opnsense_devices(
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,
+            follow_redirects=False,
         ) as client:
             # ── DHCP leases ────────────────────────────────────────────────
             # Try Kea (24.1+) first, then ISC DHCP (< 24.1).
@@ -182,6 +213,7 @@ async def fetch_opnsense_stats(
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,
+            follow_redirects=False,
         ) as client:
             sysinfo_resp = await client.get(f"{base_url}{_SYSINFO_PATH}")
             if sysinfo_resp.status_code == 401:
@@ -258,6 +290,7 @@ async def ping_via_opnsense(
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=15.0,
+            follow_redirects=False,
         ) as client:
             resp = await client.post(
                 f"{base_url}{_PING_PATH}",
@@ -310,6 +343,7 @@ async def test_opnsense_connection(
             auth=(api_key, api_secret),
             verify=verify_ssl,
             timeout=10.0,
+            follow_redirects=False,
         ) as client:
             # System info for version
             version: str | None = None

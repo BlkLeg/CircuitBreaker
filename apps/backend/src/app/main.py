@@ -110,7 +110,7 @@ from app.middleware.tenant_middleware import TenantMiddleware
 # from log files.  This filter replaces their values with [redacted] in
 # uvicorn's access log before anything is written to disk.
 _OAUTH_SCRUB_RE = re.compile(
-    r"(?<=[?&])(?:code|state|oauth_token|access_token)=[^& \"]+",
+    r"(?<=[?&])(?:code|state|cb_auth_code|oauth_token|access_token)=[^& \"]+",
     re.IGNORECASE,
 )
 
