@@ -2,13 +2,63 @@
 
 import datetime
 
-from app.db.models import HardwareConnection, KbOui, ScanJob, ScanResult, Topology
+import pytest
+from fastapi import HTTPException
+
+from app.db.models import Hardware, HardwareConnection, KbOui, ScanJob, ScanResult, Topology
 from app.schemas.discovery import BulkAssignment, EnhancedBulkMergeRequest
-from app.services.discovery_merge import enhanced_bulk_merge, maybe_learn_oui
+from app.services.discovery_merge import enhanced_bulk_merge, maybe_learn_oui, merge_scan_result
 
 
 def _iso_now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat()
+
+
+def test_merge_scan_result_409_when_matched_hardware_deleted(db_session):
+    """Accept must not succeed if the scan row still points at deleted Hardware."""
+    hw = Hardware(
+        name="gone",
+        ip_address="10.10.10.5",
+        mac_address="aa:bb:cc:dd:ee:01",
+        role="server",
+        source="manual",
+        discovered_at=_iso_now(),
+        last_seen=_iso_now(),
+    )
+    db_session.add(hw)
+    db_session.flush()
+
+    job = ScanJob(
+        target_cidr="10.10.10.0/24",
+        scan_types_json='["nmap"]',
+        status="completed",
+        created_at=_iso_now(),
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    sr = ScanResult(
+        scan_job_id=job.id,
+        ip_address="10.10.10.5",
+        mac_address="aa:bb:cc:dd:ee:01",
+        state="matched",
+        matched_entity_type="hardware",
+        matched_entity_id=hw.id,
+        merge_status="pending",
+        created_at=_iso_now(),
+    )
+    db_session.add(sr)
+    db_session.flush()
+
+    db_session.delete(hw)
+    db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        merge_scan_result(db_session, sr.id, "accept", actor="test")
+    assert exc.value.status_code == 409
+
+    db_session.refresh(sr)
+    assert sr.merge_status == "pending"
 
 
 def test_enhanced_bulk_merge_creates_hardware_connections(db_session):

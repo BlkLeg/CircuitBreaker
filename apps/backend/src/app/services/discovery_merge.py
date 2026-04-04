@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow_iso
@@ -345,10 +346,8 @@ def merge_scan_result(
       accept + matched    → {'updated': True}
       accept + new        → {'entity_type': ..., 'entity_id': ..., 'ports': [...]}
     Raises HTTP 404 if not found.
-    Raises HTTP 409 if already accepted/rejected.
+    Raises HTTP 409 if already accepted/rejected or matched hardware row is gone.
     """
-    from fastapi import HTTPException
-
     if overrides is None:
         overrides = {}
     result = db.query(ScanResult).filter(ScanResult.id == result_id).first()
@@ -406,19 +405,28 @@ def merge_scan_result(
             # conflict / matched: update existing entity with overrides
             if result.state in ("matched", "conflict") and result.matched_entity_type == "hardware":
                 hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
-                if hw:
-                    hw.last_seen = now
-                    hw.status = "online"
-                    # CB-REL-001: link scan result to hardware
-                    hw.source_scan_result_id = result.id
-                    if not hw.mac_address and norm_mac:
-                        hw.mac_address = norm_mac
-                    if not hw.os_version and result.os_family:
-                        hw.os_version = result.os_family
-                    for k, v in overrides.items():
-                        if hasattr(hw, k):
-                            setattr(hw, k, v)
-                    db.flush()
+                if not hw:
+                    sp.rollback()
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Scan result {result.id} points to hardware id "
+                            f"{result.matched_entity_id}, which no longer exists. "
+                            "The device may have been deleted; re-run discovery or clear the match."
+                        ),
+                    )
+                hw.last_seen = now
+                hw.status = "online"
+                # CB-REL-001: link scan result to hardware
+                hw.source_scan_result_id = result.id
+                if not hw.mac_address and norm_mac:
+                    hw.mac_address = norm_mac
+                if not hw.os_version and result.os_family:
+                    hw.os_version = result.os_family
+                for k, v in overrides.items():
+                    if hasattr(hw, k):
+                        setattr(hw, k, v)
+                db.flush()
 
                 result.merge_status = "accepted"
                 result.reviewed_by = actor
@@ -695,6 +703,14 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
 
         try:
             merge_result = merge_scan_result(db, rid, "accept", overrides=overrides, actor=actor)
+        except HTTPException as e:
+            detail = e.detail
+            if not isinstance(detail, str):
+                detail = json.dumps(detail)
+            logger.warning("Enhanced bulk merge rejected for result %s: %s", rid, detail)
+            errors.append({"result_id": rid, "error": detail})
+            skipped += 1
+            continue
         except Exception as e:
             logger.error(f"Enhanced bulk merge failed for result {rid}: {e}")
             errors.append({"result_id": rid, "error": str(e)})
@@ -708,6 +724,24 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
             entity_id = result.matched_entity_id
 
         if entity_id:
+            # Defense in depth: bulk-merge links require a real hardware row (race / stale UI).
+            if db.query(Hardware.id).filter(Hardware.id == entity_id).first() is None:
+                logger.error(
+                    "enhanced_bulk_merge: result %s entity_id=%s — no hardware row; skip links",
+                    rid,
+                    entity_id,
+                )
+                errors.append(
+                    {
+                        "result_id": rid,
+                        "error": (
+                            f"Hardware id {entity_id} missing after merge; "
+                            "cluster/network/service links were skipped."
+                        ),
+                    }
+                )
+                continue
+
             hardware_ids.append(entity_id)
             if assignment and assignment.role:
                 hw_role_overrides[entity_id] = assignment.role
