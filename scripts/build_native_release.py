@@ -462,13 +462,14 @@ def create_appimage(
 
     (appdir / "circuit-breaker.desktop").write_text(
         "[Desktop Entry]\n"
-        "Name=Circuit Breaker\n"
-        f"Version={version}\n"
+        "Version=1.0\n"
         "Type=Application\n"
+        "Name=Circuit Breaker\n"
+        "Comment=Homelab topology, documented.\n"
         "Exec=circuit-breaker\n"
         "Icon=circuit-breaker\n"
-        "Categories=Network;\n"
-        "Terminal=true\n"
+        "Categories=Network;System;\n"
+        "Terminal=false\n"
     )
 
     icon_src = bundle_dir / "circuit-breaker.png"
