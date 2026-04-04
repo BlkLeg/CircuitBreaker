@@ -47,7 +47,7 @@ def _validate_opnsense_host(host: str) -> None:
             raise ValueError(f"OPNsense: host {host!r} did not resolve to any address")
         seen: set[str] = set()
         for info in infos:
-            ip_str = info[4][0]
+            ip_str = str(info[4][0])
             if ip_str in seen:
                 continue
             seen.add(ip_str)

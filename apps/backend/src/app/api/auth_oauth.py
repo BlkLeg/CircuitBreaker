@@ -93,7 +93,7 @@ def _validate_hostname_resolves_safe(hostname: str, label: str) -> None:
         raise HTTPException(400, f"{label}: hostname {hostname!r} did not resolve")
     seen: set[str] = set()
     for info in infos:
-        ip_str = info[4][0]
+        ip_str = str(info[4][0])
         if ip_str in seen:
             continue
         seen.add(ip_str)
