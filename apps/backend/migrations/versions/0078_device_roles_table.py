@@ -78,73 +78,84 @@ _BUILTIN_ROLES = [
 
 
 def upgrade() -> None:
-    op.create_table(
-        "device_roles",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("slug", sa.String(), nullable=False),
-        sa.Column("label", sa.String(), nullable=False),
-        sa.Column("rank", sa.Integer(), nullable=False, server_default="5"),
-        sa.Column("icon_slug", sa.String(), nullable=True),
-        sa.Column("is_builtin", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column(
-            "device_type_hints",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default="[]",
-        ),
-        sa.Column(
-            "hostname_patterns",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default="[]",
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.func.now(),
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("slug"),
-    )
+    conn = op.get_bind()
+    from sqlalchemy import inspect as sa_inspect
 
-    op.add_column(
-        "app_settings",
-        sa.Column("roles_version", sa.Integer(), nullable=False, server_default="0"),
-    )
+    insp = sa_inspect(conn)
+    existing_tables = insp.get_table_names()
 
-    op.add_column(
-        "scan_results",
-        sa.Column("role_suggestion", sa.String(), nullable=True),
-    )
+    if "device_roles" not in existing_tables:
+        op.create_table(
+            "device_roles",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("slug", sa.String(), nullable=False),
+            sa.Column("label", sa.String(), nullable=False),
+            sa.Column("rank", sa.Integer(), nullable=False, server_default="5"),
+            sa.Column("icon_slug", sa.String(), nullable=True),
+            sa.Column("is_builtin", sa.Boolean(), nullable=False, server_default="false"),
+            sa.Column(
+                "device_type_hints",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+                server_default="[]",
+            ),
+            sa.Column(
+                "hostname_patterns",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+                server_default="[]",
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("slug"),
+        )
 
-    # Seed built-in roles
-    now = datetime.now(UTC)
-    device_roles_table = sa.table(
-        "device_roles",
-        sa.column("slug", sa.String),
-        sa.column("label", sa.String),
-        sa.column("rank", sa.Integer),
-        sa.column("is_builtin", sa.Boolean),
-        sa.column("device_type_hints", postgresql.JSONB),
-        sa.column("hostname_patterns", postgresql.JSONB),
-        sa.column("created_at", sa.DateTime(timezone=True)),
-    )
-    op.bulk_insert(
-        device_roles_table,
-        [
-            {
-                "slug": slug,
-                "label": label,
-                "rank": rank,
-                "is_builtin": True,
-                "device_type_hints": hints,
-                "hostname_patterns": patterns,
-                "created_at": now,
-            }
-            for slug, label, rank, hints, patterns in _BUILTIN_ROLES
-        ],
-    )
+    app_settings_cols = {c["name"] for c in insp.get_columns("app_settings")}
+    if "roles_version" not in app_settings_cols:
+        op.add_column(
+            "app_settings",
+            sa.Column("roles_version", sa.Integer(), nullable=False, server_default="0"),
+        )
+
+    scan_results_cols = {c["name"] for c in insp.get_columns("scan_results")}
+    if "role_suggestion" not in scan_results_cols:
+        op.add_column(
+            "scan_results",
+            sa.Column("role_suggestion", sa.String(), nullable=True),
+        )
+
+    # Seed built-in roles (skip slugs that already exist)
+    existing_slugs = {row[0] for row in conn.execute(sa.text("SELECT slug FROM device_roles"))}
+    rows_to_insert = [
+        {
+            "slug": slug,
+            "label": label,
+            "rank": rank,
+            "is_builtin": True,
+            "device_type_hints": hints,
+            "hostname_patterns": patterns,
+            "created_at": datetime.now(UTC),
+        }
+        for slug, label, rank, hints, patterns in _BUILTIN_ROLES
+        if slug not in existing_slugs
+    ]
+    if rows_to_insert:
+        device_roles_table = sa.table(
+            "device_roles",
+            sa.column("slug", sa.String),
+            sa.column("label", sa.String),
+            sa.column("rank", sa.Integer),
+            sa.column("is_builtin", sa.Boolean),
+            sa.column("device_type_hints", postgresql.JSONB),
+            sa.column("hostname_patterns", postgresql.JSONB),
+            sa.column("created_at", sa.DateTime(timezone=True)),
+        )
+        op.bulk_insert(device_roles_table, rows_to_insert)
 
 
 def downgrade() -> None:

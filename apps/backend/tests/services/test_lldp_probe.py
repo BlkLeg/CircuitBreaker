@@ -1,5 +1,7 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from app.services.discovery_probes import _run_lldp_probe
 
 
@@ -15,6 +17,7 @@ async def test_lldp_probe_returns_empty_on_snmp_failure():
 async def test_lldp_probe_parses_neighbor_row():
     """Verify the function parses a well-formed lldpRemTable row into the expected dict shape."""
     from app.services.discovery_probes import _parse_lldp_neighbor_row
+
     row = {
         "lldpRemChassisId": "aa:bb:cc:dd:ee:ff",
         "lldpRemPortId": "Gi0/0",

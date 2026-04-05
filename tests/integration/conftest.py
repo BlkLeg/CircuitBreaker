@@ -22,16 +22,16 @@ os.environ["CB_DB_URL"] = (
 _TEST_DB_URL_DEFAULT = "postgresql://breaker:breaker@localhost:5432/circuitbreaker_test"
 TEST_DB_URL = os.environ.get("CB_TEST_DB_URL") or os.environ.get("CB_DB_URL") or _TEST_DB_URL_DEFAULT
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-from app.core import (
+from app.core import (  # noqa: E402
     compat as _compat,  # noqa: F401 — must be first; patches asyncio.iscoroutinefunction before slowapi import
 )
-from app.core.rate_limit import limiter
-from app.db.session import Base, get_db
+from app.core.rate_limit import limiter  # noqa: E402
+from app.db.session import Base, get_db  # noqa: E402
 
 limiter.enabled = False  # Disable rate-limiting during tests
 from app.db import models  # noqa: F401 E402 — register models with metadata

@@ -15,9 +15,21 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    existing = {
+        row[0]
+        for row in conn.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='network_peers'"
+            )
+        )
+    }
     with op.batch_alter_table("network_peers") as batch_op:
-        batch_op.add_column(sa.Column("connection_type", sa.String(), nullable=True))
-        batch_op.add_column(sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
+        if "connection_type" not in existing:
+            batch_op.add_column(sa.Column("connection_type", sa.String(), nullable=True))
+        if "bandwidth_mbps" not in existing:
+            batch_op.add_column(sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:

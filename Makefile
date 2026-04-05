@@ -41,6 +41,7 @@ install: ## Bootstrap dev environment (run once)
 	python3.12 -m venv .venv
 	$(CURDIR)/.venv/bin/pip install --upgrade pip
 	$(CURDIR)/.venv/bin/pip install -e "apps/backend/[dev]"
+	npm install --prefix $(FRONTEND_DIR)
 
 dev: deps-up stop ## Native backend + frontend + deps
 	trap 'kill 0' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend

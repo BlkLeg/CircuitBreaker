@@ -4,7 +4,6 @@ These tests run against a PostgreSQL database via the ``client`` / ``db``
 fixtures from conftest.py.  JSONB columns require a real PostgreSQL instance.
 """
 
-import pytest
 
 
 def test_create_topology(client):

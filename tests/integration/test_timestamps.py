@@ -4,7 +4,6 @@ Tests cover the app.core.time module (unit) and timestamp behaviour in log respo
 """
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import text
 
 from app.core.time import elapsed_seconds, utcnow, utcnow_iso
 

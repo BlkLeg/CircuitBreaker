@@ -5,7 +5,6 @@ converted from decimal fractions (0.0-1.0) to percentages (0-100),
 and that values are clamped to ensure they never exceed 100%.
 """
 
-import pytest
 
 
 def test_cpu_decimal_to_percentage_conversion():

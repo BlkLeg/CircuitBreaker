@@ -19,6 +19,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    exists = conn.execute(
+        sa.text("SELECT 1 FROM information_schema.tables WHERE table_name='kb_oui'")
+    ).fetchone()
+    if exists:
+        return
     op.create_table(
         "kb_oui",
         sa.Column("prefix", sa.String(6), primary_key=True),

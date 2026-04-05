@@ -1,8 +1,7 @@
 """Unit tests for build_native_release.py packaging functions."""
-import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 # Add scripts/ to path so we can import the build module
