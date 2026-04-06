@@ -38,10 +38,37 @@ def init_otel(app: Any) -> None:
         _logger.warning("CB_OTEL_ENDPOINT set but opentelemetry packages not installed")
 
 
+class _NoOpSpan:
+    """Minimal no-op span context manager used when OTEL is disabled/unavailable."""
+
+    def __enter__(self) -> _NoOpSpan:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+    def set_attribute(self, *_: Any) -> None:
+        pass
+
+    def record_exception(self, *_: Any) -> None:
+        pass
+
+    def set_status(self, *_: Any) -> None:
+        pass
+
+
+class _NoOpTracer:
+    def start_as_current_span(self, *_: Any, **__: Any) -> _NoOpSpan:
+        return _NoOpSpan()
+
+
 def get_tracer() -> Any:
     """Return the active tracer, or a no-op tracer if OTEL is not configured."""
     if _tracer:
         return _tracer
-    from opentelemetry import trace
+    try:
+        from opentelemetry import trace
 
-    return trace.get_tracer("circuitbreaker")
+        return trace.get_tracer("circuitbreaker")
+    except ImportError:
+        return _NoOpTracer()

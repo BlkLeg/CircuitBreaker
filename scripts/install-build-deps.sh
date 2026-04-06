@@ -14,7 +14,24 @@ ok()  { echo "[build-deps] OK: $*"; }
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        echo "${ID:-unknown}"
+        # Prefer ID, but fall back to ID_LIKE for derivatives (e.g. cachyos → arch)
+        local id="${ID:-unknown}"
+        case "$id" in
+            ubuntu|debian|fedora|rhel|centos|rocky|almalinux|arch|manjaro|alpine)
+                echo "$id" ;;
+            *)
+                # Check ID_LIKE for recognised base distros
+                for like in ${ID_LIKE:-}; do
+                    case "$like" in
+                        arch)    echo "arch";   return ;;
+                        debian)  echo "debian"; return ;;
+                        ubuntu)  echo "ubuntu"; return ;;
+                        fedora)  echo "fedora"; return ;;
+                        rhel)    echo "rhel";   return ;;
+                    esac
+                done
+                echo "$id" ;;
+        esac
     else
         echo "unknown"
     fi
@@ -22,11 +39,17 @@ detect_distro() {
 
 # ── Python 3.12 ────────────────────────────────────────────────────────────────
 check_python() {
-    if python3.12 --version &>/dev/null; then
-        ok "python3.12 $(python3.12 --version 2>&1)"
+    # Accept any Python >= 3.12 (project requires >=3.12,<4)
+    local ver
+    ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 12 ]; }; then
+        ok "python3 ${ver} (satisfies >=3.12)"
         return
     fi
-    log "python3.12 not found — attempting install"
+    log "python3 ${ver} found — need 3.12+, attempting install"
     local distro
     distro=$(detect_distro)
     case "$distro" in
@@ -39,7 +62,7 @@ check_python() {
         alpine)
             sudo apk add --no-cache python3 py3-pip ;;
         *)
-            echo "ERROR: Cannot install python3.12 on distro '${distro}'. Install manually." >&2
+            echo "ERROR: Cannot install python3.12+ on distro '${distro}'. Install manually." >&2
             exit 1 ;;
     esac
 }

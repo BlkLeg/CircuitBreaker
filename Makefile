@@ -29,6 +29,8 @@ CB_NATS_URL_DEV     ?= nats://localhost:$(NATS_DEV_PORT)
 
 DOCKER_REGISTRY   ?= ghcr.io/blkleg/circuitbreaker
 
+PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >= (3,12) else 'python3.12')" 2>/dev/null || echo python3.12)
+
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
@@ -38,9 +40,9 @@ help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Bootstrap dev environment (run once)
-	python3.12 -m venv .venv
+	$(PYTHON) -m venv .venv
 	$(CURDIR)/.venv/bin/pip install --upgrade pip
-	$(CURDIR)/.venv/bin/pip install -e "apps/backend/[dev]"
+	$(CURDIR)/.venv/bin/pip install -e "apps/backend/[dev,otel]"
 	npm install --prefix $(FRONTEND_DIR)
 
 dev: deps-up stop ## Native backend + frontend + deps

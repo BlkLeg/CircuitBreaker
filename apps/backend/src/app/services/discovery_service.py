@@ -57,6 +57,7 @@ from app.services.discovery_probes import (
     _arp_available,
     _detect_default_gateway,
     _has_raw_socket_privilege,
+    _read_proc_arp_cache,
     _run_arp_scan,
     _run_banner_grab,
     _run_host_discovery_sweep,
@@ -1042,6 +1043,21 @@ async def run_scan_job(job_id: int) -> None:
                 len(active_ips),
                 target_cidr,
             )
+            # TCP connect scans trigger kernel ARP resolution for local-subnet hosts.
+            # /proc/net/arp is readable without privileges and gives us MACs that
+            # the safe-mode ping/TCP path cannot collect any other way.
+            if active_ips:
+                proc_macs = _read_proc_arp_cache(active_ips)
+                if proc_macs:
+                    logger.info(
+                        "[safe-mode] job %s: supplemented %d MAC(s) from /proc/net/arp",
+                        job_id,
+                        len(proc_macs),
+                    )
+                for ip, mac in proc_macs.items():
+                    if ip in nmap_results:
+                        nmap_results[ip]["mac"] = mac
+                arp_mac_by_ip.update(proc_macs)
         else:
 
             async def _arp_phase() -> list[dict]:

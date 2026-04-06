@@ -67,8 +67,8 @@
       "npx prettier --write"
     ],
     "../backend/**/*.py": [
-      "ruff check --fix",
-      "ruff format"
+      "../../.venv/bin/ruff check --fix",
+      "../../.venv/bin/ruff format"
     ]
   },
   "devDependencies": {
