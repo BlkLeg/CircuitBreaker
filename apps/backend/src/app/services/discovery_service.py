@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.log_sanitize import safe_log_fragment
 from app.core.nmap_args import validate_nmap_arguments
 from app.core.time import utcnow_iso
 from app.core.ws_manager import ws_manager
@@ -620,7 +621,12 @@ def _scan_import(job_id: int, setup: dict, raw_results: list[dict]) -> dict:
             try:
                 results_out.append(ScanResultOut.model_validate(_scan_res).model_dump())
             except Exception:
-                pass
+                _rid = getattr(_scan_res, "id", None)
+                logger.warning(
+                    "Skipping scan result id=%s: response validation failed",
+                    _rid,
+                    exc_info=True,
+                )
         db.commit()
 
         # Auto-merge
@@ -1274,8 +1280,11 @@ async def run_scan_job(job_id: int) -> None:
                             ),
                             timeout=10.0,
                         )
-                    except Exception as exc:
-                        logger.warning("Mobile Layer 3 (SNMP ARP walk) failed: %s", exc)
+                    except Exception:
+                        logger.warning(
+                            "Mobile Layer 3 (SNMP ARP walk) failed",
+                            exc_info=True,
+                        )
                         gw_arp_entries = []
                     for entry in gw_arp_entries:
                         ip, mac = entry.get("ip", ""), entry.get("mac", "")
@@ -1308,7 +1317,10 @@ async def run_scan_job(job_id: int) -> None:
                     }
                 )
                 if _opnsense_err:
-                    logger.warning("OPNsense fetch failed: %s", _opnsense_err)
+                    logger.warning(
+                        "OPNsense fetch failed: %s",
+                        safe_log_fragment(_opnsense_err, 200),
+                    )
                     await _emit_ws_event("warning", {"job_id": job_id, "message": _opnsense_err})
                 else:
                     for _od in _opnsense_devices:

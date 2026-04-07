@@ -191,7 +191,11 @@ def _get_jwt_secret() -> str:
         finally:
             db.close()
     except Exception:
-        pass
+        _logger.warning(
+            "Could not read jwt_secret from database; falling back to %s env",
+            CB_JWT_SECRET_ENV,
+            exc_info=True,
+        )
 
     # Dedicated JWT secret only; no vault/API-token or auto-generation.
     env_secret = os.environ.get(CB_JWT_SECRET_ENV)
@@ -213,6 +217,10 @@ def get_jwt_strategy() -> JWTStrategy:
         finally:
             db.close()
     except Exception:
+        _logger.warning(
+            "Could not read session settings from database for JWTStrategy; using defaults",
+            exc_info=True,
+        )
         lifetime = 86400
         secret = os.environ.get(CB_JWT_SECRET_ENV) or ""
 

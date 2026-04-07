@@ -8,7 +8,6 @@ Audit logs are append-only.  No update or delete path exists through this servic
 
 import json
 import logging
-import sys
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -110,7 +109,7 @@ def write_log(
     """Write a structured audit log entry.
 
     - Never raises: log failures must not abort the parent transaction.
-    - Runs inside a nested try/except; on failure, prints to stderr only.
+    - Runs inside a nested try/except; on failure, logs at ERROR.
     - ``created_at_utc`` is always set by this function using :func:`utcnow_iso`.
     - ``diff`` values are sanitised before write: any key containing a sensitive
       substring is replaced with ``"***REDACTED***"`` regardless of nesting depth.
@@ -148,8 +147,7 @@ def write_log(
             if getattr(cfg, "audit_log_hide_ip", False):
                 effective_ip = None
         except Exception:  # noqa: BLE001
-            # If settings cannot be loaded, default to the provided IP
-            pass
+            _logger.debug("write_log: could not load settings for IP redaction", exc_info=True)
 
         _now_iso = utcnow_iso()
 
@@ -224,8 +222,8 @@ def write_log(
                 _do_write(_db)
 
         _publish_audit_to_redis(action, entity_type, entity_id, actor_id, severity, _now_iso)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[audit] write_log failed (action={action!r}): {exc}", file=sys.stderr)
+    except Exception:  # noqa: BLE001
+        _logger.exception("write_log failed (action=%r)", action)
 
 
 def _publish_audit_to_redis(
@@ -262,6 +260,6 @@ def _publish_audit_to_redis(
             loop = asyncio.get_running_loop()
             loop.create_task(_pub())
         except RuntimeError:
-            pass
+            _logger.debug("audit Redis publish skipped (no running event loop)")
     except Exception:
-        pass
+        _logger.debug("audit Redis publish setup failed", exc_info=True)

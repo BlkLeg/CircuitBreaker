@@ -115,3 +115,25 @@ async def test_assign_nodes_to_missing_topology(client, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_save_layout_rejects_invalid_json(client, auth_headers):
+    """POST /graph/layout returns 422 when layout_data is not valid JSON."""
+    resp = await client.post(
+        "/api/v1/graph/layout",
+        json={"name": "default", "layout_data": "not-json{{{", "map_id": None},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_save_layout_rejects_non_object_json(client, auth_headers):
+    """POST /graph/layout returns 422 when layout_data is not a JSON object."""
+    resp = await client.post(
+        "/api/v1/graph/layout",
+        json={"name": "default", "layout_data": "[1,2,3]", "map_id": None},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422

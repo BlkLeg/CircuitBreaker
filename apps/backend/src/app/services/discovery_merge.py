@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.log_sanitize import safe_log_fragment
 from app.core.time import utcnow_iso
 from app.db.models import (
     AppSettings,
@@ -707,13 +708,26 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
             # detail is str | list | dict at runtime (validation errors); stubs often use only str.
             raw_detail: object = e.detail
             detail = raw_detail if isinstance(raw_detail, str) else json.dumps(raw_detail)
-            logger.warning("Enhanced bulk merge rejected for result %s: %s", rid, detail)
+            logger.warning(
+                "Enhanced bulk merge rejected for result %s: %s",
+                rid,
+                safe_log_fragment(detail, 400),
+            )
             errors.append({"result_id": rid, "error": detail})
             skipped += 1
             continue
-        except Exception as e:
-            logger.error(f"Enhanced bulk merge failed for result {rid}: {e}")
-            errors.append({"result_id": rid, "error": str(e)})
+        except Exception as merge_exc:
+            logger.error(
+                "Enhanced bulk merge failed for result %s",
+                rid,
+                exc_info=True,
+            )
+            errors.append(
+                {
+                    "result_id": rid,
+                    "error": safe_log_fragment(merge_exc, 500),
+                }
+            )
             skipped += 1
             continue
 

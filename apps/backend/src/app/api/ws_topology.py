@@ -35,6 +35,7 @@ from starlette.websockets import WebSocketState
 
 import app.db.session as _db_session
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
+from app.core.log_sanitize import safe_log_fragment
 from app.core.rbac import require_role
 from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
@@ -300,8 +301,11 @@ async def topology_stream(websocket: WebSocket) -> None:
             ping_task.cancel()
             await topology_ws_manager.disconnect(websocket)
 
-    except Exception as exc:
-        logger.error("Topology WS unhandled error (ip=%s): %s", client_ip, exc)
+    except Exception:
+        logger.exception(
+            "Topology WS unhandled error (ip=%s)",
+            safe_log_fragment(client_ip, 64),
+        )
         try:
             await topology_ws_manager.disconnect(websocket)
             await websocket.close(code=1011)

@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import { X, Search, Upload, Check } from 'lucide-react';
 import { useToast } from './Toast';
 import { computeUnitsApi } from '../../api/client';
+import logger from '../../utils/logger';
 
 // All icons available in the library
 export const LIBRARY_ICONS = [
@@ -1040,7 +1041,7 @@ function IconPickerModal({ currentSlug, onSelect, onClose }) {
       .then((r) => {
         setUploadedIcons(r.data.map((i) => ({ ...i, group: 'Uploaded' })));
       })
-      .catch(() => {});
+      .catch((err) => logger.error('IconPickerModal: failed to load uploaded icons', err));
   }, []);
 
   const allIcons = [...LIBRARY_ICONS, ...uploadedIcons];

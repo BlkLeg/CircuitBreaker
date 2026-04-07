@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { authApi } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
+import logger from '../utils/logger';
 
 export default function InviteAcceptPage() {
   const [searchParams] = useSearchParams();
@@ -32,7 +33,7 @@ export default function InviteAcceptPage() {
     authApi
       .getOAuthProviders()
       .then((res) => setOauthProviders(res.data?.providers ?? []))
-      .catch(() => {});
+      .catch((err) => logger.error('InviteAcceptPage: failed to load OAuth providers', err));
   }, [token, oauthError]);
 
   const handleSubmit = async (e) => {

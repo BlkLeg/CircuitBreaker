@@ -119,11 +119,18 @@ def _make_token(user: User, cfg: AppSettings) -> str:
     )
 
 
+_CLIENT_HASH_V2_RE = re.compile(r"^v2\.[0-9a-f]{64}$", re.IGNORECASE)
+
+
 def _is_client_hash(value: str) -> bool:
-    """True if value looks like a client-side SHA256 hex (64 hex chars)."""
-    if len(value) != 64:
+    """True if value is a client wire hash (PBKDF2 v2 prefix or legacy 64-char SHA256 hex)."""
+    if not isinstance(value, str) or not value:
         return False
-    return all(c in "0123456789abcdef" for c in value.lower())
+    if _CLIENT_HASH_V2_RE.match(value):
+        return True
+    if len(value) == 64:
+        return all(c in "0123456789abcdef" for c in value.lower())
+    return False
 
 
 def _validate_password(password: str) -> None:
@@ -201,7 +208,7 @@ def reset_local_user_password(
     if len(new_password_or_hash) > _MAX_PASSWORD_LEN:
         raise HTTPException(status_code=400, detail="Password is too long")
     if _is_client_hash(new_password_or_hash):
-        # Client sent SHA256(password+salt) hex; store bcrypt of that hash.
+        # Client sent wire hash (PBKDF2 v2 or legacy SHA256 hex); store bcrypt of that value.
         pass
     else:
         _validate_password(new_password_or_hash)
@@ -839,12 +846,17 @@ def login(
 
     # Task 3: Migrate existing legacy tokens (on first valid login with plaintext)
     if not _password_valid and user and not _is_client_hash(password_or_hash):
-        from app.core.security import _DEFAULT_SALT, client_hash_password, get_client_salt
+        from app.core.security import (
+            _DEFAULT_SALT,
+            client_hash_password,
+            get_client_salt,
+            legacy_client_wire_hash_v1,
+        )
 
         current_salt = get_client_salt(db)
         if current_salt != _DEFAULT_SALT:
-            # Check if login succeeds with the legacy hardcoded salt
-            legacy_client_hash = client_hash_password(password_or_hash, _DEFAULT_SALT)
+            # Check if login succeeds with the legacy hardcoded salt (v1 SHA256 wire hash)
+            legacy_client_hash = legacy_client_wire_hash_v1(password_or_hash, _DEFAULT_SALT)
             if verify_password(legacy_client_hash, _hash_to_check):
                 # SUCCESS with legacy salt! Migrate this user to the current dynamic salt.
                 _logger.info("Migrating user %s to new CLIENT_HASH_SALT", user.email)

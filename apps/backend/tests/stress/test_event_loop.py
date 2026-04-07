@@ -1,19 +1,23 @@
 import asyncio
 
 import pytest
-from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_concurrent_db_load(live_server):
-    async with AsyncClient(base_url=live_server.url) as client:
-        tasks = [client.get("/api/v1/health") for _ in range(100)]
-        results = await asyncio.gather(*tasks, return_when=asyncio.ALL_COMPLETED)
-        assert all(r.status_code == 200 for r in results if not getattr(r, "is_error", False))
+async def test_concurrent_db_load(client):
+    tasks = [client.get("/api/v1/health") for _ in range(100)]
+    results = await asyncio.gather(*tasks)
+    assert all(r.status_code == 200 for r in results)
 
 
-@pytest.mark.parametrize("tabs", [10])
+@pytest.mark.parametrize("parallelism", [25])
 @pytest.mark.asyncio
-async def test_ws_concurrency(live_server, tabs):
-    # Open N WS connections, assert responsive after 60s load
-    pass
+async def test_event_loop_burst_health(client, parallelism):
+    """ASGI app stays responsive under a burst of concurrent HTTP requests."""
+
+    async def one() -> int:
+        r = await client.get("/api/v1/health")
+        return r.status_code
+
+    codes = await asyncio.gather(*[one() for _ in range(parallelism)])
+    assert all(c == 200 for c in codes)

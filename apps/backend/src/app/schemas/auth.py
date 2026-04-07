@@ -27,7 +27,8 @@ class UserUpdate(schemas.BaseUserUpdate):
 # Legacy schemas (kept for backward compat with bootstrap & frontend)
 # ---------------------------------------------------------------------------
 # Password pre-hash (zero browser leakage): client sends password_hash
-# (SHA256(password + salt) hex); server accepts password_hash or legacy password.
+# (PBKDF2 v2." + 64 hex, or legacy 64-char SHA256 hex); server accepts password_hash or
+# plaintext password.
 # Exactly-one validators ensure one credential form per request.
 # ---------------------------------------------------------------------------
 

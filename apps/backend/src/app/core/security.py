@@ -21,6 +21,7 @@ from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 from starlette.requests import HTTPConnection
 
+from app.core.constants import CLIENT_HASH_PBKDF2_ITERATIONS, CLIENT_HASH_V2_PREFIX
 from app.core.time import utcnow
 from app.db.models import User
 from app.db.session import get_db
@@ -155,12 +156,31 @@ def get_client_salt(db: Session | None = None) -> str:
     return _DEFAULT_SALT
 
 
+def legacy_client_wire_hash_v1(plain: str, salt: str) -> str:
+    """Deprecated v1 wire hash: SHA256(plain + salt) hex.
+
+    Retained for login verification when stored bcrypt was derived from the old
+    browser format. New credentials use :func:`client_hash_password` (PBKDF2).
+    """
+    # codeql[py/weak-sensitive-data-hashing]: v1 wire compatibility only; v2 is PBKDF2.
+    return hashlib.sha256((plain + salt).encode()).hexdigest()
+
+
 def client_hash_password(plain: str, salt: str | None = None) -> str:
-    """SHA256(plain + salt) hex. Use when storing a password that will be
-    sent by the client as password_hash on login (e.g. local user temp password).
+    """PBKDF2-HMAC-SHA256 hex, prefixed for version detection.
+
+    Matches the browser :func:`hashPasswordForAuth` output. The result is bcrypt'd
+    again server-side for storage.
     """
     active_salt = salt or get_client_salt()
-    return hashlib.sha256((plain + active_salt).encode()).hexdigest()
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain.encode("utf-8"),
+        active_salt.encode("utf-8"),
+        CLIENT_HASH_PBKDF2_ITERATIONS,
+        dklen=32,
+    )
+    return f"{CLIENT_HASH_V2_PREFIX}{dk.hex()}"
 
 
 def hash_password(password: str) -> str:
@@ -304,11 +324,11 @@ def _is_user_accessible(db: Session, user_id: int) -> bool:
     return True
 
 
-async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
-    """Return the authenticated user_id, or None if absent/invalid.
+def resolve_optional_user_id_sync(db: Session, request: HTTPConnection) -> int | None:
+    """Return the authenticated user_id, or None if absent/invalid (synchronous).
 
-    Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
-    has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
+    Same logic as :func:`get_optional_user` for use from sync middleware.
+    Returns 0 when LegacyTokenMiddleware granted legacy admin or auth is disabled.
     """
     if _is_legacy_admin(request):
         return 0
@@ -361,7 +381,6 @@ async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_d
         pass
 
     # Static API token (machine–machine): scan with per-token salted HMAC verification.
-    # Linear scan is acceptable since admin-created API tokens are few (<100 typical).
     from app.db.models import APIToken
 
     api_token_row = None
@@ -380,6 +399,15 @@ async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_d
         return None
 
     return None
+
+
+async def get_optional_user(request: HTTPConnection, db: Session = Depends(get_db)) -> int | None:
+    """Return the authenticated user_id, or None if absent/invalid.
+
+    Returns 0 (service-account sentinel) when the LegacyTokenMiddleware
+    has flagged the request (CB_LEGACY_AUTH rollback).  Never raises.
+    """
+    return resolve_optional_user_id_sync(db, request)
 
 
 async def require_write_auth(

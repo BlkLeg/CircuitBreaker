@@ -26,6 +26,8 @@ from typing import Any, cast
 
 import httpx
 
+from app.core.log_sanitize import safe_log_fragment
+
 logger = logging.getLogger(__name__)
 
 # ── Timeouts ──────────────────────────────────────────────────────────────────
@@ -791,8 +793,8 @@ async def _run_mdns_probe(ip: str) -> dict[str, Any]:
                     device_hint = _MDNS_SERVICE_TO_DEVICE.get(_stype)
         finally:
             await aiozc.async_close()
-    except Exception as e:
-        logger.debug("mDNS probe setup failed for %s: %s", ip, e)
+    except Exception:
+        logger.debug("mDNS probe setup failed for %s", ip, exc_info=True)
         return {}
 
     return {
@@ -1047,8 +1049,12 @@ async def _run_http_fingerprint_probe(ip: str, open_ports: list[dict]) -> dict[s
 
                 if result:
                     return result
-            except Exception as e:
-                logger.debug("HTTP fingerprint probe %s: %s", url, e)
+            except Exception:
+                logger.debug(
+                    "HTTP fingerprint probe failed (%s)",
+                    safe_log_fragment(url, 120),
+                    exc_info=True,
+                )
 
     return result
 
@@ -1090,8 +1096,8 @@ async def _run_vendor_lookup_local(
             vendor = await loop.run_in_executor(None, _MANUF_PARSER.get_manuf_long, mac)
             if vendor:
                 return vendor[:100], None
-        except Exception as e:
-            logger.debug("manuf local lookup failed for %s: %s", mac, e)
+        except Exception:
+            logger.debug("manuf local lookup failed for %s", mac, exc_info=True)
 
     # 4. Fallback: external API (may be rate-limited during bulk scans)
     try:

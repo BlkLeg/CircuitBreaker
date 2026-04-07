@@ -256,8 +256,8 @@ class AppSettingsRead(BaseModel):
             try:
                 # Return raw dict as-is — may be flat {primary,…} or structured {dark:{…},light:{…}}
                 self.theme_colors = json.loads(raw)
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("Failed to parse custom_colors JSON for theme_colors: %s", exc)
         return self
 
     @field_validator("graph_uplink_overrides", mode="before")
@@ -275,8 +275,12 @@ class AppSettingsRead(BaseModel):
         if isinstance(v, str):
             try:
                 return json.loads(v)
-            except Exception:
-                return None
+            except Exception as exc:
+                _logger.warning(
+                    "Failed to parse map_default_filters JSON; using {}. Error: %s",
+                    exc,
+                )
+                return {}
         return v
 
     @field_validator("environments", mode="before")

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { securityApi } from '../../api/client.jsx';
+import logger from '../../utils/logger';
 
 const ACK_KEY = 'cb:security-banner-ack';
 
@@ -31,7 +32,7 @@ export default function SecurityBanner() {
           setShow(true);
         }
       })
-      .catch(() => {});
+      .catch((err) => logger.error('SecurityBanner: failed to load security status', err));
   }, []);
 
   const handleAcknowledge = () => {

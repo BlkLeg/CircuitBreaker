@@ -1161,6 +1161,18 @@ async def save_layout(
     _: Any = Depends(require_write_auth),
 ) -> dict[str, Any]:
     try:
+        try:
+            parsed_layout = json.loads(data.layout_data)
+        except (json.JSONDecodeError, TypeError) as err:
+            raise HTTPException(
+                status_code=422,
+                detail="layout_data must be valid JSON",
+            ) from err
+        if not isinstance(parsed_layout, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="layout_data must be a JSON object",
+            )
         if data.map_id is not None:
             layout = db.execute(
                 select(GraphLayout).where(GraphLayout.topology_id == data.map_id)
@@ -1169,10 +1181,6 @@ async def save_layout(
             layout = db.execute(
                 select(GraphLayout).where(GraphLayout.name == data.name)
             ).scalar_one_or_none()
-        try:
-            parsed_layout: dict = json.loads(data.layout_data)
-        except (json.JSONDecodeError, TypeError):
-            parsed_layout = {}
         if layout:
             layout.layout_data = parsed_layout
         else:
@@ -1183,6 +1191,9 @@ async def save_layout(
             )
             db.add(layout)
         db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         _logger.exception("Failed to save graph layout: %s", e)

@@ -26,6 +26,7 @@ Auth: optional — authenticated via get_optional_user.
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
+# Log SSE NATS queue drops at most once per interval to avoid log spam under load
+_QUEUE_FULL_LOG_INTERVAL_S = 30.0
 
 
 # ── NATS-backed SSE ──────────────────────────────────────────────────────────
@@ -80,7 +83,7 @@ def _db_poll_generator() -> AsyncIterator[str]:
 
     async def _gen() -> AsyncGenerator[str, None]:
         yield ": keepalive\n\n"
-        last_log_id: int = 0
+        last_log_id: int | None = 0
         loop = asyncio.get_running_loop()
 
         # Seed last_log_id to avoid replaying old history on connect
@@ -92,19 +95,36 @@ def _db_poll_generator() -> AsyncIterator[str]:
 
         try:
             max_id = await loop.run_in_executor(None, _seed)
-            if max_id:
-                last_log_id = max_id
+            last_log_id = max_id if max_id is not None else 0
         except Exception:
-            pass
+            logger.warning("SSE DB poll: initial seed failed; retrying once", exc_info=True)
+            try:
+                max_id = await loop.run_in_executor(None, _seed)
+                last_log_id = max_id if max_id is not None else 0
+            except Exception:
+                logger.exception(
+                    "SSE DB poll: seed failed after retry; polling disabled until DB recovers"
+                )
+                last_log_id = None
 
         while True:
             await asyncio.sleep(2)
+            if last_log_id is None:
+                try:
+                    max_id = await loop.run_in_executor(None, _seed)
+                    last_log_id = max_id if max_id is not None else 0
+                    logger.info("SSE DB poll: re-seeded after earlier connection failure")
+                except Exception:
+                    yield ": error\n\n"
+                    continue
             try:
 
-                def _poll(_last: int = last_log_id) -> Any:
+                def _poll(_last: int | None = last_log_id) -> Any:
                     from sqlalchemy import select
 
                     with SessionLocal() as db:
+                        if _last is None:
+                            return []
                         return (
                             db.execute(
                                 select(Log).where(Log.id > _last).order_by(Log.id.asc()).limit(20)
@@ -153,11 +173,18 @@ async def events_stream(_user: Any = Depends(get_optional_user)) -> StreamingRes
     """
     if nats_client.is_connected:
         queue: asyncio.Queue = asyncio.Queue(maxsize=512)
+        _last_queue_full_log = 0.0
 
         async def _nats_cb(msg: Any) -> None:
+            nonlocal _last_queue_full_log
             try:
                 data = json.loads(msg.data.decode())
             except Exception:
+                logger.debug(
+                    "SSE NATS: malformed message on %s",
+                    getattr(msg, "subject", "?"),
+                    exc_info=True,
+                )
                 data = {}
             subj = msg.subject
             if subj in (subjects.ALERT_EVENT,):
@@ -176,7 +203,15 @@ async def events_stream(_user: Any = Depends(get_optional_user)) -> StreamingRes
             try:
                 queue.put_nowait(item)
             except asyncio.QueueFull:
-                pass  # Drop if backpressure — client too slow
+                # Drop under backpressure (slow consumer). Throttle warnings.
+                now = time.monotonic()
+                if now - _last_queue_full_log >= _QUEUE_FULL_LOG_INTERVAL_S:
+                    _last_queue_full_log = now
+                    logger.warning(
+                        "SSE NATS: event queue full (maxsize=%s); "
+                        "dropping events until consumer catches up",
+                        queue.maxsize,
+                    )
 
         subscriptions = []
         for subj in (

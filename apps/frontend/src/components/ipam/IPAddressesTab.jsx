@@ -11,6 +11,7 @@ import SearchBox from '../SearchBox';
 import { SkeletonTable } from '../common/SkeletonTable';
 import HardwareDetail from '../details/HardwareDetail';
 import { hardwareApi } from '../../api/client';
+import logger from '../../utils/logger';
 
 function StatusBadge({ status }) {
   const style =
@@ -49,7 +50,7 @@ export default function IPAddressesTab({
     hardwareApi
       .list()
       .then((r) => setHardware(r.data ?? []))
-      .catch(() => {});
+      .catch((err) => logger.error('IPAddressesTab: failed to load hardware list', err));
   }, []);
 
   const COLUMNS = useMemo(

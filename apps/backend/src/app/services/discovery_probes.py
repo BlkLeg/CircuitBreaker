@@ -297,8 +297,8 @@ async def _run_nmap_scan(cidr: str, args: str) -> dict:
                 results[ip]["mac"] = mac
 
         return results
-    except Exception as e:
-        logger.error(f"Nmap scan failed: {e}")
+    except Exception:
+        logger.error("Nmap scan failed", exc_info=True)
         return {}
 
 
@@ -332,8 +332,8 @@ async def _run_snmp_probe(ip: str, community: str, version: str = "2c", port: in
                     result["sys_name"] = val.prettyPrint()
                 elif "sysDescr" in oid_str:
                     result["sys_descr"] = val.prettyPrint()
-    except Exception as e:
-        logger.debug(f"SNMP probe failed for {ip}: {e}")
+    except Exception:
+        logger.debug("SNMP probe failed for %s", ip, exc_info=True)
 
     return result
 
@@ -358,8 +358,13 @@ async def _run_banner_grab(ip: str, ports: list[int]) -> dict[int, str]:
                 text = data.decode(errors="replace").strip()[:256]
                 if text:
                     banners[port] = text
-            except Exception as e:
-                logger.debug("Discovery: banner probe %s:%s failed: %s", ip, port, e, exc_info=True)
+            except Exception:
+                logger.debug(
+                    "Discovery: banner probe %s:%s failed",
+                    ip,
+                    port,
+                    exc_info=True,
+                )
 
     await asyncio.gather(*[_probe(p) for p in ports[:20]])
     return banners

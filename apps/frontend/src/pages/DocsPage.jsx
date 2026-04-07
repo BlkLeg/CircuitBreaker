@@ -960,7 +960,7 @@ function DocsPage() {
             docsApi
               .getDocEntities(linkTarget.id)
               .then((res) => setLinkTargetEntities(res.data))
-              .catch(() => {});
+              .catch((err) => logger.error('DocsPage: failed to refresh doc entity links', err));
           }}
         />
       )}

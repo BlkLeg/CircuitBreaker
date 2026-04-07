@@ -15,6 +15,8 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from app.core.log_sanitize import safe_log_fragment
+
 logger = logging.getLogger(__name__)
 
 _ARP_POLL_INTERVAL = 60  # seconds
@@ -168,7 +170,10 @@ async def _poll_leases(settings_dict: dict) -> None:
 
     devices, err = await fetch_opnsense_devices(settings_dict)
     if err:
-        logger.warning("OPNsense monitor: lease poll failed — %s", err)
+        logger.warning(
+            "OPNsense monitor: lease poll failed (%s)",
+            safe_log_fragment(err, 160),
+        )
         return
 
     if devices:

@@ -101,15 +101,16 @@ describe('closeSocketSafely', () => {
 const HARD_STOP_ERRORS = new Set(['unauthorized', 'auth_timeout']);
 
 function simulateOnMessage(ws, msg, refs) {
-  // Replicates the buggy onmessage close calls (pre-fix)
+  // Intentionally simulates legacy raw close() — documents zombie-socket behaviour
+  // (production uses closeSocketSafely in useDiscoveryStream.js).
   if (msg.error && HARD_STOP_ERRORS.has(msg.error)) {
     refs.intentional = true;
-    ws.close(); // BUG: should be closeSocketSafely(ws)
+    ws.close();
     return 'hard_stop';
   }
   if (msg.error === 'connection_limit_exceeded') {
     refs.intentional = false;
-    ws.close(); // BUG: should be closeSocketSafely(ws)
+    ws.close();
     return 'cap';
   }
 }
@@ -129,7 +130,7 @@ function simulateOnMessageFixed(ws, msg, refs) {
 }
 
 describe('hard-stop errors during CONNECTING state', () => {
-  it('BUG: ws.close() during CONNECTING leaves socket as zombie', () => {
+  it('legacy ws.close() during CONNECTING leaves socket as zombie (regression baseline)', () => {
     const ws = makeMockWS(CONNECTING);
     const refs = { intentional: false };
     simulateOnMessage(ws, { error: 'unauthorized' }, refs);

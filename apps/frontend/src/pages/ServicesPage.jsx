@@ -19,6 +19,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
+import logger from '../utils/logger';
 
 // Encode the selection so a single dropdown can carry both hardware and compute options.
 // Prefix: "hw_<id>" for hardware, "cu_<id>" for compute units.
@@ -199,11 +200,11 @@ function ServicesPage() {
     categoriesApi
       .list()
       .then((r) => setCategoriesList(r.data))
-      .catch(() => {});
+      .catch((err) => logger.error('ServicesPage: failed to load categories', err));
     environmentsApi
       .list()
       .then((r) => setEnvironmentsList(r.data))
-      .catch(() => {});
+      .catch((err) => logger.error('ServicesPage: failed to load environments', err));
   }, []);
 
   const fetchTags = useCallback(async () => {
