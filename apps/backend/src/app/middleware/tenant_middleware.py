@@ -21,6 +21,7 @@ import logging
 from contextvars import ContextVar
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -40,7 +41,7 @@ def _coerce_positive_tenant_id(raw: str | None) -> int | None:
     return tid if tid > 0 else None
 
 
-def _user_may_use_tenant(db, user_id: int | None, tenant_id: int) -> bool:
+def _user_may_use_tenant(db: Session, user_id: int | None, tenant_id: int) -> bool:
     if user_id is None:
         return False
     if user_id == 0:
