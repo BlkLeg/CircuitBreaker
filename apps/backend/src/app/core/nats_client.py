@@ -5,6 +5,7 @@ gracefully to a no-op when NATS is unavailable so the rest of the app
 never crashes due to a missing message bus.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -114,7 +115,9 @@ class NATSClient:
     async def disconnect(self) -> None:
         if self._nc and self._connected:
             try:
-                await self._nc.drain()
+                await asyncio.wait_for(self._nc.drain(), timeout=3.0)
+            except TimeoutError:
+                _logger.warning("NATS drain timed out after 3 s — closing immediately")
             except Exception as exc:
                 _logger.warning("Error draining NATS connection: %s", exc)
             finally:

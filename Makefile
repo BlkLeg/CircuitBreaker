@@ -46,7 +46,7 @@ install: ## Bootstrap dev environment (run once)
 	npm install --prefix $(FRONTEND_DIR)
 
 dev: deps-up stop ## Native backend + frontend + deps
-	trap 'kill 0' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
+	trap 'kill 0; wait' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
 
 stop: ## Kill any process holding the dev ports
 	lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 || true
@@ -66,7 +66,7 @@ backend:  ## Native backend (ZERO DOCKER DRIFT)
 		NATS_URL="nats://localhost:4222" \
 		NATS_AUTH_TOKEN="dev-token-local-only" \
 		CB_AUTO_MIGRATE=false \
-		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 $(CB_UVICORN_ARGS)
+		PYTHONPATH=src $(CURDIR)/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 8 $(CB_UVICORN_ARGS)
 
 backend-watch:  ## Native backend WITH reload (post-fix only)
 	$(MAKE) backend --no-print-directory CB_UVICORN_ARGS="--reload"
