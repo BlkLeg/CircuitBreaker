@@ -10,7 +10,7 @@
     "@emoji-mart/react": "^1.1.1",
     "@tanstack/react-virtual": "^3.13.21",
     "@uiw/react-md-editor": "^4.0.11",
-    "axios": "^1.7.0",
+    "axios": "^1.15.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "^3.0.0",
