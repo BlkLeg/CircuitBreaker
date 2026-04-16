@@ -515,6 +515,16 @@ async def enrich_opnsense_job(
     import ipaddress as _ipaddress
     import json
 
+    settings = get_or_create_settings(db)
+    if not getattr(settings, "nmap_enabled", False):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Nmap-based scans are disabled. "
+                "Enable 'Nmap Active Scanning' in Discovery Settings."
+            ),
+        )
+
     job = db.get(ScanJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

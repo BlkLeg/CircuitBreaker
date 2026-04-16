@@ -33,6 +33,7 @@ FORCE_DEPS=false
 DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
 SKIP_CHECKSUM=false
+DOCKER_MODE=false
 
 # UI Functions
 cb_version() {
@@ -92,6 +93,181 @@ cb_render_template() {
   eval "cat <<__CB_TEMPLATE_EOF__
 $(cat "$src")
 __CB_TEMPLATE_EOF__" > "$dest"
+}
+
+cb_require_native_root() {
+  if [[ $EUID -eq 0 ]]; then
+    return 0
+  fi
+
+  if command -v sudo >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
+    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for native installation..."
+    exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
+  fi
+
+  cb_fail "Root privileges required for native installation" \
+    "Run: curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash"
+}
+
+docker_target_user() {
+  if [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]]; then
+    echo "${SUDO_USER}"
+    return 0
+  fi
+  id -un
+}
+
+docker_target_home() {
+  local target_user
+  target_user="$(docker_target_user)"
+  if [[ "${target_user}" == "root" ]]; then
+    echo "/root"
+    return 0
+  fi
+  local user_home
+  user_home="$(getent passwd "${target_user}" | cut -d: -f6)"
+  if [[ -z "${user_home}" ]]; then
+    cb_fail "Failed to resolve user home" "Could not determine home directory for ${target_user}"
+  fi
+  echo "${user_home}"
+}
+
+cb_detect_pkg_mgr() {
+  if [[ ! -f /etc/os-release ]]; then
+    cb_fail "Cannot detect OS" "/etc/os-release not found"
+  fi
+  source /etc/os-release
+  case "${ID}" in
+    ubuntu|debian) echo "apt-get" ;;
+    fedora|rhel|rocky|almalinux) echo "dnf" ;;
+    arch) echo "pacman" ;;
+    *) cb_fail "Unsupported OS: ${ID}" "Supported: Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux, Arch" ;;
+  esac
+}
+
+cb_install_docker_if_missing() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    cb_ok "Docker engine and compose plugin detected"
+    return 0
+  fi
+
+  cb_step "Installing Docker (engine + compose plugin)"
+  local pkg_mgr
+  pkg_mgr="$(cb_detect_pkg_mgr)"
+
+  if [[ $EUID -ne 0 ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      cb_fail "Docker not found and sudo is unavailable" \
+        "Install Docker manually, then rerun: bash install.sh --docker"
+    fi
+  fi
+
+  local root_prefix=()
+  if [[ $EUID -ne 0 ]]; then
+    root_prefix=(sudo)
+  fi
+
+  if [[ "${pkg_mgr}" == "apt-get" ]]; then
+    "${root_prefix[@]}" apt-get update -y -q >/dev/null 2>&1
+    "${root_prefix[@]}" apt-get install -y -q ca-certificates curl gnupg >/dev/null 2>&1
+    "${root_prefix[@]}" install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | "${root_prefix[@]}" gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    "${root_prefix[@]}" chmod a+r /etc/apt/keyrings/docker.gpg
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+      | "${root_prefix[@]}" tee /etc/apt/sources.list.d/docker.list >/dev/null
+    "${root_prefix[@]}" apt-get update -y -q >/dev/null 2>&1
+    "${root_prefix[@]}" apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+  elif [[ "${pkg_mgr}" == "dnf" ]]; then
+    "${root_prefix[@]}" dnf -y -q install dnf-plugins-core >/dev/null 2>&1
+    "${root_prefix[@]}" dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo >/dev/null 2>&1
+    "${root_prefix[@]}" dnf -y -q install docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+  else
+    "${root_prefix[@]}" pacman -Sy --noconfirm --needed docker docker-compose >/dev/null 2>&1
+  fi
+
+  "${root_prefix[@]}" systemctl enable --now docker >/dev/null 2>&1 || cb_fail "Failed to start Docker daemon" "Check: sudo systemctl status docker"
+
+  if [[ $EUID -eq 0 ]]; then
+    cb_warn "Docker installed as root; compose commands will run as root in this session"
+  else
+    local current_user
+    current_user="$(id -un)"
+    "${root_prefix[@]}" usermod -aG docker "${current_user}" >/dev/null 2>&1 || true
+    cb_warn "Added ${current_user} to docker group. Run 'newgrp docker' or re-login if compose fails with permission errors."
+  fi
+  cb_ok "Docker installed"
+}
+
+cb_generate_secret_base64() {
+  openssl rand -base64 "$1" | tr -d '\n'
+}
+
+cb_generate_secret_hex() {
+  openssl rand -hex "$1" | tr -d '\n'
+}
+
+stage_docker_deploy() {
+  cb_header
+  cb_section "Docker Compose Deployment"
+
+  cb_install_docker_if_missing
+
+  local target_user
+  local target_home
+  target_user="$(docker_target_user)"
+  target_home="$(docker_target_home)"
+  local install_dir="${target_home}/.circuitbreaker"
+  local base_url="https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main"
+
+  cb_step "Preparing install directory"
+  mkdir -p "${install_dir}/docker"
+  cb_ok "Install directory: ${install_dir}"
+
+  cb_step "Downloading official compose assets"
+  curl -fsSL "${base_url}/docker-compose.yml" -o "${install_dir}/docker-compose.yml"
+  curl -fsSL "${base_url}/docker/docker-compose.socket.yml" -o "${install_dir}/docker/docker-compose.socket.yml"
+  curl -fsSL "${base_url}/.env.example" -o "${install_dir}/.env.example"
+  cb_ok "Compose assets downloaded"
+
+  cb_step "Creating .env with sensible defaults"
+  if [[ ! -f "${install_dir}/.env" ]]; then
+    cp "${install_dir}/.env.example" "${install_dir}/.env"
+    {
+      echo ""
+      echo "# Generated by install.sh --docker"
+      echo "CB_DB_PASSWORD=$(cb_generate_secret_base64 24)"
+      echo "CB_VAULT_KEY=$(cb_generate_secret_base64 32)"
+      echo "CB_JWT_SECRET=$(cb_generate_secret_hex 32)"
+      echo "NATS_AUTH_TOKEN=$(cb_generate_secret_base64 24)"
+    } >> "${install_dir}/.env"
+    cb_ok "Generated ${install_dir}/.env"
+  else
+    cb_ok "Preserving existing ${install_dir}/.env"
+  fi
+
+  if [[ "${target_user}" != "$(id -un)" ]]; then
+    chown -R "${target_user}:${target_user}" "${install_dir}" 2>/dev/null || true
+  fi
+
+  cb_step "Starting stack with docker compose"
+  (
+    cd "${install_dir}" && docker compose up -d
+  ) || cb_fail "Docker Compose deployment failed" "Run: cd ${install_dir} && docker compose logs --tail=80"
+  cb_ok "Docker stack is running"
+
+  local host_ip
+  host_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')"
+  [[ -z "${host_ip}" ]] && host_ip="localhost"
+
+  echo ""
+  cb_ok "Docker deployment complete"
+  echo -e "  ${BOLD}Install directory:${RESET} ${install_dir}"
+  echo -e "  ${BOLD}Access URLs:${RESET} https://${host_ip}/ or http://${host_ip}/"
+  echo -e "  ${BOLD}Useful commands:${RESET}"
+  echo -e "    cd ${install_dir} && docker compose ps"
+  echo -e "    cd ${install_dir} && docker compose logs -f"
+  echo -e "    cd ${install_dir} && docker compose -f docker-compose.yml -f docker/docker-compose.socket.yml up -d"
 }
 
 
@@ -288,7 +464,7 @@ show_help() {
   echo "  --unattended           Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --upgrade              Force upgrade mode even if install not detected"
   echo "  --force-deps           Force reinstall dependencies in upgrade mode"
-  echo "  --docker               Install Docker CE and enable container telemetry proxy"
+  echo "  --docker               Compose-only deployment (installs Docker if missing)"
   echo "  --skip-checksum        Skip SHA256 bundle verification (for air-gapped or local bundle use)"
   echo "  --help                 Show this help message"
   echo ""
@@ -342,7 +518,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --docker)
-      INSTALL_DOCKER=true
+      DOCKER_MODE=true
       shift
       ;;
     --skip-checksum)
@@ -376,6 +552,12 @@ CB_BUNDLE_DIR=""
 # ============================================================================
 
 main() {
+  if [[ "${DOCKER_MODE}" == "true" ]]; then
+    stage_docker_deploy
+    exit 0
+  fi
+
+  cb_require_native_root "$@"
   stage0_bootstrap_preflight
 
   LOG_FILE="/tmp/cb-bootstrap.log"

@@ -1,8 +1,8 @@
 """
 Tests for topology management endpoints:
-  GET  /api/v1/graph/topologies
-  POST /api/v1/graph/topologies
-  POST /api/v1/graph/topologies/{id}/assign-nodes
+  GET  /api/v1/topologies
+  POST /api/v1/topologies
+  PUT  /api/v1/topologies/{id}/nodes
 """
 
 import pytest
@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from app.db.models import TopologyNode
 
-TOPOLOGIES_URL = "/api/v1/graph/topologies"
+TOPOLOGIES_URL = "/api/v1/topologies"
 
 
 @pytest.mark.asyncio
@@ -42,7 +42,7 @@ async def test_list_topologies_returns_created(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_assign_nodes_creates_topology_node_rows(client, auth_headers, db_session, factories):
-    """POST assign-nodes upserts TopologyNode rows for each valid entity."""
+    """PUT nodes writes TopologyNode rows for each provided entity."""
     hw = factories.hardware(name="topo-hw", ip_address="10.9.9.1")
 
     create_resp = await client.post(
@@ -50,13 +50,11 @@ async def test_assign_nodes_creates_topology_node_rows(client, auth_headers, db_
     )
     topo_id = create_resp.json()["id"]
 
-    payload = {"entities": [{"entity_type": "hardware", "entity_id": hw.id}]}
-    resp = await client.post(
-        f"{TOPOLOGIES_URL}/{topo_id}/assign-nodes", json=payload, headers=auth_headers
-    )
+    payload = {"nodes": [{"entity_type": "hardware", "entity_id": hw.id, "x": 100, "y": 200}]}
+    resp = await client.put(f"{TOPOLOGIES_URL}/{topo_id}/nodes", json=payload, headers=auth_headers)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["assigned"] == 1
+    assert body["node_count"] == 1
 
     nodes = db_session.scalars(
         select(TopologyNode).where(TopologyNode.topology_id == topo_id)
@@ -68,21 +66,17 @@ async def test_assign_nodes_creates_topology_node_rows(client, auth_headers, db_
 
 @pytest.mark.asyncio
 async def test_assign_nodes_idempotent(client, auth_headers, db_session, factories):
-    """Assigning the same entity twice does not create duplicate TopologyNode rows."""
+    """Replacing nodes with same entity twice keeps a single TopologyNode row."""
     hw = factories.hardware(name="idem-hw", ip_address="10.9.9.2")
 
     create_resp = await client.post(
         TOPOLOGIES_URL, json={"name": "idem-topo"}, headers=auth_headers
     )
     topo_id = create_resp.json()["id"]
-    payload = {"entities": [{"entity_type": "hardware", "entity_id": hw.id}]}
+    payload = {"nodes": [{"entity_type": "hardware", "entity_id": hw.id, "x": 1, "y": 2}]}
 
-    await client.post(
-        f"{TOPOLOGIES_URL}/{topo_id}/assign-nodes", json=payload, headers=auth_headers
-    )
-    await client.post(
-        f"{TOPOLOGIES_URL}/{topo_id}/assign-nodes", json=payload, headers=auth_headers
-    )
+    await client.put(f"{TOPOLOGIES_URL}/{topo_id}/nodes", json=payload, headers=auth_headers)
+    await client.put(f"{TOPOLOGIES_URL}/{topo_id}/nodes", json=payload, headers=auth_headers)
 
     nodes = db_session.scalars(
         select(TopologyNode).where(TopologyNode.topology_id == topo_id)
@@ -92,26 +86,24 @@ async def test_assign_nodes_idempotent(client, auth_headers, db_session, factori
 
 @pytest.mark.asyncio
 async def test_assign_nodes_invalid_entity_type_skipped(client, auth_headers):
-    """Entities with unknown entity_type are silently skipped."""
+    """Unknown entity types are accepted as opaque topology node references."""
     create_resp = await client.post(
         TOPOLOGIES_URL, json={"name": "skip-topo"}, headers=auth_headers
     )
     topo_id = create_resp.json()["id"]
-    payload = {"entities": [{"entity_type": "unicorn", "entity_id": 1}]}
+    payload = {"nodes": [{"entity_type": "unicorn", "entity_id": 1, "x": 0, "y": 0}]}
 
-    resp = await client.post(
-        f"{TOPOLOGIES_URL}/{topo_id}/assign-nodes", json=payload, headers=auth_headers
-    )
+    resp = await client.put(f"{TOPOLOGIES_URL}/{topo_id}/nodes", json=payload, headers=auth_headers)
     assert resp.status_code == 200
-    assert resp.json()["assigned"] == 0
+    assert resp.json()["node_count"] == 1
 
 
 @pytest.mark.asyncio
 async def test_assign_nodes_to_missing_topology(client, auth_headers):
-    """Assigning to a non-existent topology returns 404."""
-    resp = await client.post(
-        f"{TOPOLOGIES_URL}/99999/assign-nodes",
-        json={"entities": []},
+    """Updating nodes on a non-existent topology returns 404."""
+    resp = await client.put(
+        f"{TOPOLOGIES_URL}/99999/nodes",
+        json={"nodes": []},
         headers=auth_headers,
     )
     assert resp.status_code == 404

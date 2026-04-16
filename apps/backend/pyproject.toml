@@ -45,6 +45,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "cachetools>=5.3.0",
     "docker>=7.0.0",
+    "boto3>=1.35.0",
     "redis[hiredis]>=5.0.0",
 ]
 
@@ -64,7 +65,10 @@ otel = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
 ]
 dev = [
-    "pyinstaller>=6.0.0",
+    # PyInstaller does not yet support every CPython in our declared `<4` range; keep
+    # the marker so `poetry lock` can resolve without pretending pyinstaller installs on 3.15+.
+    "pyinstaller>=6.0.0; python_version < \"3.15\"",
+    "moto[s3]>=5.0",
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "pytest-asyncio>=0.23.0",

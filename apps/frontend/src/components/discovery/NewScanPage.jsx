@@ -75,8 +75,15 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
 
   const defaultCidr = settings?.discovery_default_cidr || '';
   const defaultNmapArgs = settings?.discovery_nmap_args || '-sV -O --open -T4';
+  const nmapEnabled = Boolean(settings?.nmap_enabled);
 
-  const [scanMode, setScanMode] = useState(() => settings?.discovery_mode || 'safe');
+  const [scanMode, setScanMode] = useState(() => {
+    const mode = settings?.discovery_mode || 'safe';
+    if (!settings?.nmap_enabled && (mode === 'full' || mode === 'deep_dive')) {
+      return 'safe';
+    }
+    return mode;
+  });
   const [cidrs, setCidrs] = useState([defaultCidr || '']);
   const [scanTypes, setScanTypes] = useState(() => {
     const mode = settings?.discovery_mode;
@@ -311,7 +318,8 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
         <div className="scan-mode-cards">
           {SCAN_MODES.map(({ key, label, Icon, color, bg, desc }) => {
             const isDocker = key === 'docker';
-            const disabled = isDocker && !dockerAvailable;
+            const requiresNmap = key === 'full' || key === 'deep_dive';
+            const disabled = (isDocker && !dockerAvailable) || (requiresNmap && !nmapEnabled);
             const selected = scanMode === key && !disabled;
             return (
               <button
@@ -360,7 +368,7 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                       {dockerContainerCount}
                     </span>
                   )}
-                  {key === 'full' && !netRawCapable && (
+                  {key === 'full' && !netRawCapable && nmapEnabled && (
                     <span
                       style={{
                         marginLeft: 6,
@@ -375,9 +383,28 @@ export default function NewScanPage({ discoveryCapabilities, profiles, onStarted
                       ⚠ Downgrades to Safe
                     </span>
                   )}
+                  {requiresNmap && !nmapEnabled && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        padding: '1px 6px',
+                        borderRadius: 10,
+                        background: 'rgba(245,158,11,0.15)',
+                        color: '#d97706',
+                      }}
+                    >
+                      Disabled by policy
+                    </span>
+                  )}
                 </div>
                 <div className="scan-mode-card-desc">
-                  {isDocker && !dockerAvailable ? 'Socket unavailable' : desc}
+                  {isDocker && !dockerAvailable
+                    ? 'Socket unavailable'
+                    : requiresNmap && !nmapEnabled
+                      ? 'Enable Nmap Active Scanning in Discovery Settings to use this mode.'
+                      : desc}
                 </div>
               </button>
             );

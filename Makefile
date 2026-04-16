@@ -49,8 +49,8 @@ dev: deps-up stop ## Native backend + frontend + deps
 	trap 'kill 0; wait' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
 
 stop: ## Kill any process holding the dev ports
-	lsof -ti tcp:$(BACKEND_PORT) | xargs kill -9 || true
-	lsof -ti tcp:$(FRONTEND_PORT) | xargs kill -9 || true
+	lsof -ti tcp:$(BACKEND_PORT) | xargs -r kill -9 || true
+	lsof -ti tcp:$(FRONTEND_PORT) | xargs -r kill -9 || true
 	echo "Ports $(BACKEND_PORT) and $(FRONTEND_PORT) cleared."
 
 backend:  ## Native backend (ZERO DOCKER DRIFT)

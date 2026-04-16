@@ -65,6 +65,7 @@ export default function DiscoverySettingsPage() {
           discovery_http_probe: s.discovery_http_probe !== false,
           discovery_retention_days: s.discovery_retention_days ?? 30,
           scan_ack_accepted: Boolean(s.scan_ack_accepted),
+          nmap_enabled: Boolean(s.nmap_enabled),
           discovery_mode: s.discovery_mode || 'safe',
           docker_discovery_enabled: Boolean(s.docker_discovery_enabled),
           docker_socket_path: s.docker_socket_path || '/var/run/docker.sock',
@@ -151,6 +152,33 @@ export default function DiscoverySettingsPage() {
 
       {/* Scan mode */}
       <Section title="Scan Mode">
+        <SettingRow
+          label="Nmap Active Scanning"
+          desc="Persistent safety gate for nmap-based scans (Full and Deep Dive). Keep disabled until you have explicit authorization."
+        >
+          <Toggle checked={form.nmap_enabled} onChange={(v) => set('nmap_enabled', v)} />
+        </SettingRow>
+
+        {!form.nmap_enabled && (
+          <div
+            style={{
+              padding: '10px 14px',
+              background: 'rgba(245,158,11,0.1)',
+              border: '1px solid rgba(245,158,11,0.3)',
+              borderRadius: 6,
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ display: 'flex', gap: 8, fontSize: 12, color: '#fbbf24' }}>
+              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                Nmap-based scan modes are currently blocked. Enable this toggle only when your
+                organization has approved active network scanning.
+              </span>
+            </div>
+          </div>
+        )}
+
         <SettingRow
           label="Discovery Mode"
           desc={

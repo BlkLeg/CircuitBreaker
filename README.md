@@ -73,7 +73,7 @@ Runs on your PVE host: creates a Debian 12 LXC container, installs Circuit Break
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
-Full stack with Caddy, NATS, and discovery workers. See [docs/installation/docker-compose.md](docs/installation/docker-compose.md) for env vars, persistence, ARP scan, and socket config.
+Docker mode now performs a compose-only deployment: installs Docker only if missing, downloads official compose templates into `~/.circuitbreaker`, generates `.env` defaults, and runs `docker compose up -d`. See [docs/installation/docker-compose.md](docs/installation/docker-compose.md) for env vars, persistence, ARP scan, and socket config.
 
 ---
 

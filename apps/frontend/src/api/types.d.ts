@@ -61,6 +61,7 @@ export interface AppSettings {
   discovery_auto_merge: boolean;
   max_concurrent_scans: number;
   scan_ack_accepted: boolean;
+  nmap_enabled: boolean;
   audit_log_retention_days: number;
   audit_log_hide_ip: boolean;
   analytics_db_path?: string;

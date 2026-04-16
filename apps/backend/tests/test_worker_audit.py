@@ -179,7 +179,7 @@ class TestGraphCTEExpressionAPI:
         assert found, f"Expected edge {hw1.id}->{hw2.id} in hh edges"
 
     def test_preload_edge_maps_null_columns(self, db_session):
-        """NetworkPeer edges use has_conn=False/has_bw=False — verify nulls are handled."""
+        """NetworkPeer edges include default connection_type and nullable bandwidth."""
         from app.db.models import Network, NetworkPeer
 
         net1 = Network(name="cte-net-1", cidr="10.0.1.0/24")
@@ -203,5 +203,5 @@ class TestGraphCTEExpressionAPI:
         ]
         assert len(found) == 1, f"Expected peer edge {net1.id}->{net2.id}"
         _, _, conn_type, bw, _ = found[0]
-        assert conn_type is None, f"Expected null connection_type, got {conn_type}"
+        assert conn_type == "ethernet", f"Expected default connection_type, got {conn_type}"
         assert bw is None, f"Expected null bandwidth_mbps, got {bw}"

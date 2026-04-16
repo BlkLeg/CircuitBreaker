@@ -54,6 +54,7 @@ _DEFAULTS = dict(
     discovery_http_probe=True,
     discovery_retention_days=30,
     scan_ack_accepted=False,
+    nmap_enabled=False,
     discovery_mode="full",
     docker_discovery_enabled=False,
     docker_socket_path="/var/run/docker.sock",

@@ -16,7 +16,7 @@ Non-interactive:
 CB_YES=1 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
-This downloads `docker-compose.yml` and `.env` to `~/.circuitbreaker/`, then starts the stack.
+This mode is compose-only: it never runs the native/systemd installer path. It auto-detects Docker, installs Docker (engine + compose plugin) only when missing, downloads `docker-compose.yml`, `docker/docker-compose.socket.yml`, and `.env.example` to `~/.circuitbreaker/`, creates `.env` with generated secrets (if absent), then starts the stack.
 
 **Access at:** `http://<host>:8088` (HTTP) or `https://<domain>` (with Caddy HTTPS configured)
 

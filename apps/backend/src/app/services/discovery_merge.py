@@ -407,7 +407,6 @@ def merge_scan_result(
             if result.state in ("matched", "conflict") and result.matched_entity_type == "hardware":
                 hw = db.query(Hardware).filter(Hardware.id == result.matched_entity_id).first()
                 if not hw:
-                    sp.rollback()
                     raise HTTPException(
                         status_code=409,
                         detail=(
@@ -552,7 +551,8 @@ def merge_scan_result(
             # If we reach here inside the savepoint without matching a branch, commit savepoint
             sp.commit()
         except Exception:
-            sp.rollback()
+            if sp.is_active:
+                sp.rollback()
             raise
 
     return {"skipped": True}

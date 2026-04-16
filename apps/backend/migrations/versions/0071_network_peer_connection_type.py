@@ -16,23 +16,37 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-    existing = {
-        row[0]
-        for row in conn.execute(
-            sa.text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name='network_peers'"
-            )
+    current_schema = conn.execute(sa.text("SELECT current_schema()")).scalar()
+    if current_schema is None:
+        raise RuntimeError("Unable to determine current schema for migration 0071")
+
+    conn.execute(
+        sa.text(
+            f'ALTER TABLE "{current_schema}".network_peers '
+            "ADD COLUMN IF NOT EXISTS connection_type VARCHAR"
         )
-    }
-    with op.batch_alter_table("network_peers") as batch_op:
-        if "connection_type" not in existing:
-            batch_op.add_column(sa.Column("connection_type", sa.String(), nullable=True))
-        if "bandwidth_mbps" not in existing:
-            batch_op.add_column(sa.Column("bandwidth_mbps", sa.Integer(), nullable=True))
+    )
+    conn.execute(
+        sa.text(
+            f'ALTER TABLE "{current_schema}".network_peers '
+            "ADD COLUMN IF NOT EXISTS bandwidth_mbps INTEGER"
+        )
+    )
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("network_peers") as batch_op:
-        batch_op.drop_column("bandwidth_mbps")
-        batch_op.drop_column("connection_type")
+    conn = op.get_bind()
+    current_schema = conn.execute(sa.text("SELECT current_schema()")).scalar()
+    if current_schema is None:
+        raise RuntimeError("Unable to determine current schema for migration 0071")
+
+    conn.execute(
+        sa.text(
+            f'ALTER TABLE "{current_schema}".network_peers DROP COLUMN IF EXISTS bandwidth_mbps'
+        )
+    )
+    conn.execute(
+        sa.text(
+            f'ALTER TABLE "{current_schema}".network_peers DROP COLUMN IF EXISTS connection_type'
+        )
+    )

@@ -10,6 +10,7 @@ Architecture notes:
 """
 
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -237,3 +238,35 @@ def reset_rate_limiter():
             limiter.reset()
     except Exception:
         pass  # Non-fatal — tests may still hit limits but won't fail from prior tests
+
+
+@pytest.fixture
+def redis_mock():
+    """
+    In-memory async Redis stub used by auth token lifecycle tests.
+
+    Returns:
+        tuple(get_redis_fn, redis_client_mock, backing_store)
+    """
+
+    store: dict[str, str] = {}
+    redis_client = AsyncMock()
+
+    async def _setex(key: str, _ttl: int, value: str) -> bool:
+        store[key] = value
+        return True
+
+    async def _get(key: str):
+        return store.get(key)
+
+    async def _delete(key: str) -> int:
+        return 1 if store.pop(key, None) is not None else 0
+
+    async def _get_redis():
+        return redis_client
+
+    redis_client.setex.side_effect = _setex
+    redis_client.get.side_effect = _get
+    redis_client.delete.side_effect = _delete
+
+    return _get_redis, redis_client, store

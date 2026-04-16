@@ -7,7 +7,7 @@ database layer.
 Resolution order (authenticated requests):
 
 1. ``X-Tenant-ID`` header when the user is a member of that tenant
-   (``tenant_members`` or ``users.tenant_id``).
+   (``tenant_members`` or ``users.tenant_id``), or the user is an admin.
 2. JWT ``tenant_id`` claim when the user may access that tenant.
 3. ``request.state.user.tenant_id`` when the auth stack has populated it.
 4. ``users.tenant_id`` from the database for the session user.
@@ -57,7 +57,11 @@ def _user_may_use_tenant(db: Session, user_id: int | None, tenant_id: int) -> bo
     if hit:
         return True
     u = db.get(User, user_id)
-    return bool(u and u.tenant_id == tenant_id)
+    if not u:
+        return False
+    if u.role == "admin":
+        return True
+    return bool(u.tenant_id == tenant_id)
 
 
 class TenantMiddleware(BaseHTTPMiddleware):

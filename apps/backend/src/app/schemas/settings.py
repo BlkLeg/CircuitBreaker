@@ -137,6 +137,7 @@ class AppSettingsRead(BaseModel):
     discovery_http_probe: bool = True
     discovery_retention_days: int = 30
     scan_ack_accepted: bool = False
+    nmap_enabled: bool = False
     max_concurrent_scans: int = 2
     # Safe discovery mode
     discovery_mode: str = "safe"
@@ -401,6 +402,7 @@ class AppSettingsUpdate(BaseModel):
     discovery_http_probe: bool | None = None
     discovery_retention_days: int | None = None
     scan_ack_accepted: bool | None = None
+    nmap_enabled: bool | None = None
     max_concurrent_scans: int | None = None
     # Safe discovery mode
     discovery_mode: Literal["safe", "full"] | None = None

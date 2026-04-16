@@ -907,6 +907,7 @@ class AppSettings(Base):
     discovery_http_probe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     discovery_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     scan_ack_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    nmap_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Safe discovery mode
     discovery_mode: Mapped[str] = mapped_column(String, nullable=False, default="safe")
     docker_discovery_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

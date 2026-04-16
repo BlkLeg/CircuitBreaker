@@ -106,6 +106,12 @@ _last_progress_snap: dict[int, tuple[float, float]] = {}
 _REDIS_DISCOVERY_CHANNEL = "cb:discovery:events"
 
 
+def _requires_nmap(scan_types: list[str] | None) -> bool:
+    if not scan_types:
+        return False
+    return "nmap" in scan_types or "deep_dive" in scan_types
+
+
 async def _emit_ws_event(event_type: str, payload: dict) -> None:
     """Broadcast a discovery event via Redis pub/sub, WebSocket, and NATS.
 
@@ -274,6 +280,10 @@ def create_scan_job(
     cidrs: list[str] = []
     network_ids: list[int] = []
     effective_scan_types = scan_types or []
+    if _requires_nmap(effective_scan_types) and not getattr(app_cfg, "nmap_enabled", False):
+        raise ValueError(
+            "Nmap-based scans are disabled. Enable 'Nmap Active Scanning' in Discovery Settings."
+        )
 
     if vlan_ids:
         vlan_cidrs, n_ids = resolve_vlans_to_cidrs(db, vlan_ids)
@@ -369,6 +379,7 @@ def _scan_setup(job_id: int) -> dict | None:
         docker_socket_path = "/var/run/docker.sock"
         effective_mode = getattr(settings, "discovery_mode", "safe")
         docker_discovery_enabled = getattr(settings, "docker_discovery_enabled", False)
+        nmap_enabled = bool(getattr(settings, "nmap_enabled", False))
         error_reason: str | None = None
 
         if job.label and job.label.startswith(_NMAP_OVERRIDE_PREFIX):
@@ -426,6 +437,7 @@ def _scan_setup(job_id: int) -> dict | None:
             "docker_port_scan": docker_port_scan,
             "effective_mode": effective_mode,
             "error_reason": error_reason,
+            "nmap_enabled": nmap_enabled,
             "started_at": job.started_at,
             "label": job.label,
             # Mobile discovery settings
@@ -862,6 +874,12 @@ async def run_scan_job(job_id: int) -> None:
     effective_mode: str = setup.get("effective_mode", "safe")
     label: str | None = setup.get("label")
     auto_merge: bool = setup.get("auto_merge", False)
+    nmap_enabled: bool = setup.get("nmap_enabled", False)
+
+    if _requires_nmap(scan_types) and not nmap_enabled:
+        raise RuntimeError(
+            "Nmap-based scans are disabled by settings. Enable 'Nmap Active Scanning' to continue."
+        )
 
     # Publish NATS scan started event
     from app.core.nats_client import nats_client
@@ -1831,6 +1849,17 @@ async def run_opnsense_enrich(original_job_id: int, private_ips: list[str]) -> N
     then restores "completed" when done.
     """
     from app.services.discovery_probes import _run_nmap_scan
+
+    db = SessionLocal()
+    try:
+        app_cfg = get_or_create_settings(db)
+        if not getattr(app_cfg, "nmap_enabled", False):
+            logger.info(
+                "OPNsense enrich job %d skipped: nmap-based scanning is disabled", original_job_id
+            )
+            return
+    finally:
+        db.close()
 
     ip_list = " ".join(private_ips)
     logger.info("OPNsense enrich job %d: nmap against %d IPs", original_job_id, len(private_ips))

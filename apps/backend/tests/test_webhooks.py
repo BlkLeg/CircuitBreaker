@@ -23,7 +23,7 @@ async def test_create_webhook_valid_url(client, auth_headers):
     """Create webhook with a public external URL → 200, id present."""
     payload = {
         "label": "test-hook",
-        "url": "https://hooks.example.com/circuit-breaker",
+        "url": "https://example.com/circuit-breaker",
         "events_enabled": ["topology.hardware.created"],
     }
     resp = await client.post(BASE, json=payload, headers=auth_headers)
@@ -34,15 +34,14 @@ async def test_create_webhook_valid_url(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_create_webhook_ssrf_loopback_rejected(client, auth_headers):
-    """Loopback target URL should be rejected — SSRF guard returns 400."""
+    """Loopback target URL should be rejected by request validation."""
     payload = {
         "label": "ssrf-hook",
         "url": "http://127.0.0.1:1234/",
         "events_enabled": [],
     }
     resp = await client.post(BASE, json=payload, headers=auth_headers)
-    # SSRF guard in reject_ssrf_url raises ValueError → HTTPException(400)
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -52,14 +51,13 @@ async def test_create_webhook_ssrf_loopback_rejected(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_list_webhooks(client, auth_headers):
-    """GET /webhooks → 200 and returns an object with a rules list."""
+    """GET /webhooks → 200 and returns a paginated object with items list."""
     resp = await client.get(BASE, headers=auth_headers)
     assert resp.status_code == 200
-    # The list endpoint returns WebhookListResponse which contains a 'rules' key
     body = resp.json()
     assert isinstance(body, dict)
-    assert "rules" in body
-    assert isinstance(body["rules"], list)
+    assert "items" in body
+    assert isinstance(body["items"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +72,7 @@ async def test_delete_webhook(client, auth_headers):
         BASE,
         json={
             "label": "delete-me-hook",
-            "url": "https://hooks.example.com/delete-target",
+            "url": "https://example.com/delete-target",
             "events_enabled": [],
         },
         headers=auth_headers,

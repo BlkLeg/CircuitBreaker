@@ -45,6 +45,7 @@ def reject_ssrf_url(url: str) -> None:
         url,
         _is_forbidden_ip_for_webhook,
         "Webhook URL must not target loopback, link-local, or private IPs",
+        allow_unresolved_hostname=False,
     )
 
 
@@ -54,11 +55,20 @@ def reject_ssrf_url_proxmox(url: str) -> None:
     Allows private (RFC1918) for LAN Proxmox.
     """
     _reject_ssrf_impl(
-        url, _is_forbidden_ip_proxmox, "Proxmox URL must not target loopback or link-local IPs"
+        url,
+        _is_forbidden_ip_proxmox,
+        "Proxmox URL must not target loopback or link-local IPs",
+        allow_unresolved_hostname=True,
     )
 
 
-def _reject_ssrf_impl(url: str, is_forbidden: Callable[[str], bool], msg: str) -> None:
+def _reject_ssrf_impl(
+    url: str,
+    is_forbidden: Callable[[str], bool],
+    msg: str,
+    *,
+    allow_unresolved_hostname: bool = False,
+) -> None:
     parsed = urlparse(url)
 
     scheme = (parsed.scheme or "").lower()
@@ -83,6 +93,8 @@ def _reject_ssrf_impl(url: str, is_forbidden: Callable[[str], bool], msg: str) -
     try:
         infos = socket.getaddrinfo(host, None, family=0, type=socket.SOCK_STREAM)
     except (socket.gaierror, OSError) as e:
+        if allow_unresolved_hostname:
+            return
         raise ValueError(f"Cannot resolve URL host: {e}") from e
     for _family, _type, _proto, _canonname, sockaddr in infos:
         ip_str = str(sockaddr[0]) if sockaddr else None
