@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from functools import wraps
+from typing import ParamSpec
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -19,7 +21,8 @@ _logger = logging.getLogger(__name__)
 # Module-level cache keyed on roles_version (an int).  Using Session objects as
 # cache keys with @lru_cache never hits in production because each request gets
 # a new Session instance with a distinct identity hash.
-_roles_cache: dict[int, list] = {}
+_roles_cache: dict[int, list[DeviceRole]] = {}
+P = ParamSpec("P")
 
 
 def _get_roles_version(db: Session) -> int:
@@ -58,7 +61,7 @@ def _all_roles(db: Session) -> list[DeviceRole]:
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 
-def _compat_wrapped(func):
+def _compat_wrapped[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     """
     Preserve a __wrapped__ attribute for unit tests that call helpers directly.
 
@@ -68,7 +71,7 @@ def _compat_wrapped(func):
     """
 
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         return func(*args, **kwargs)
 
     return wrapper

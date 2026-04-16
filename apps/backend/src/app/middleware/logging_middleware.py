@@ -379,25 +379,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         except Exception:
             _logger.debug("Failed to build audit diff from old/new values", exc_info=True)
 
-        log_kwargs = {
-            "action": action,
-            "category": category or "",
-            "level": level,
-            "status_code": status_code,
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "entity_name": entity_name,
-            "diff": diff,
-            "old_value": old_value_str,
-            "new_value": new_value_str,
-            "user_agent": user_agent,
-            "ip_address": ip_address,
-            "details": req_body_str if category != "crud" else None,
-            "actor": actor,
-            "actor_id": actor_id,
-            "actor_gravatar_hash": actor_gravatar_hash,
-            "role_at_time": role_at_time,
-        }
+        details = req_body_str if category != "crud" else None
         current_test = os.environ.get("PYTEST_CURRENT_TEST", "")
         if current_test:
             # In most tests, skip middleware audit persistence to avoid
@@ -405,10 +387,49 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # fixtures. Keep it enabled for explicit audit middleware tests.
             if "test_worker_audit" not in current_test:
                 return response
-            _write_log(**log_kwargs)
+            _write_log(
+                action=action,
+                category=category or "",
+                level=level,
+                status_code=status_code,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                entity_name=entity_name,
+                diff=diff,
+                old_value=old_value_str,
+                new_value=new_value_str,
+                user_agent=user_agent,
+                ip_address=ip_address,
+                details=details,
+                actor=actor,
+                actor_id=actor_id,
+                actor_gravatar_hash=actor_gravatar_hash,
+                role_at_time=role_at_time,
+            )
         else:
             # Write log entry — fire-and-forget in executor so the response is not delayed
-            loop.run_in_executor(None, lambda: _write_log(**log_kwargs))
+            loop.run_in_executor(
+                None,
+                lambda: _write_log(
+                    action=action,
+                    category=category or "",
+                    level=level,
+                    status_code=status_code,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    entity_name=entity_name,
+                    diff=diff,
+                    old_value=old_value_str,
+                    new_value=new_value_str,
+                    user_agent=user_agent,
+                    ip_address=ip_address,
+                    details=details,
+                    actor=actor,
+                    actor_id=actor_id,
+                    actor_gravatar_hash=actor_gravatar_hash,
+                    role_at_time=role_at_time,
+                ),
+            )
 
         return response
 
