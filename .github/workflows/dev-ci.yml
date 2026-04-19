@@ -26,6 +26,20 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e "apps/backend/[dev]"
 
+      - name: Alembic revision graph (single head)
+        env:
+          CB_DB_URL: postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci
+        run: |
+          cd apps/backend
+          PYTHONPATH=src ../../.venv/bin/python -c "
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
+          cfg = Config('alembic.ini')
+          heads = ScriptDirectory.from_config(cfg).get_heads()
+          assert len(heads) == 1, f'expected 1 Alembic head, got: {heads!r}'
+          print('Alembic head:', heads[0])
+          "
+
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 

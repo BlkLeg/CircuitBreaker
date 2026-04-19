@@ -127,6 +127,12 @@ export default function DbStatusPanel() {
             value={health.dialect === 'postgresql' ? 'PostgreSQL' : 'SQLite'}
           />
           <StatRow label="Schema version" value={health.alembic_version ?? 'unknown'} />
+          {isPostgres && health.timescaledb_available != null && (
+            <StatRow
+              label="TimescaleDB"
+              value={health.timescaledb_available ? 'available' : 'not installed'}
+            />
+          )}
           <StatRow
             label="Database size"
             value={health.db_size_mb != null ? `${health.db_size_mb} MB` : null}

@@ -19,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Upgrade schema — fully idempotent for DBs already set up by _run_migrations()."""
+    """Upgrade schema — fully idempotent for DBs partially created before Alembic."""
     bind = op.get_bind()
     insp = sa.inspect(bind)
     tables = set(insp.get_table_names())

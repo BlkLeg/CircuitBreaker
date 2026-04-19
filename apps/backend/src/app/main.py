@@ -242,10 +242,27 @@ def run_alembic_upgrade():
         table_names = set(insp.get_table_names())
 
         if "users" in table_names and "alembic_version" not in table_names:
+            if os.environ.get("CB_DISABLE_LEGACY_ALEMBIC_STAMP", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                raise RuntimeError(
+                    "Legacy database detected (table users exists, alembic_version missing) "
+                    "and CB_DISABLE_LEGACY_ALEMBIC_STAMP is set. "
+                    "Stamp the correct base revision manually (often: alembic stamp "
+                    "a3b4c5d6e7fc), then retry."
+                )
             # Old DB with no alembic tracking: stamp to the revision just before
             # 0017 (webhooks/oauth) so upgrade() will run 0017+ and add any
             # missing columns (e.g. registration_open). Stamping to "head" would
             # make upgrade a no-op and leave the schema outdated.
+            _logger.warning(
+                "Legacy PostgreSQL schema: Alembic will stamp a3b4c5d6e7fc (0015_proxmox_storage) "
+                "because users exists but alembic_version is missing. "
+                "For imported or hand-built databases set CB_DISABLE_LEGACY_ALEMBIC_STAMP=true "
+                "and stamp manually."
+            )
             alembic_cfg = Config(_alembic_ini)
             command.stamp(alembic_cfg, "a3b4c5d6e7fc")  # 0015_proxmox_storage
     except Exception as e:
@@ -254,6 +271,75 @@ def run_alembic_upgrade():
 
     alembic_cfg = Config(_alembic_ini)
     command.upgrade(alembic_cfg, "head")
+
+
+def _require_timescale_if_configured() -> None:
+    """Exit when CB_REQUIRE_TIMESCALE is set but the extension is not available."""
+    if os.environ.get("CB_REQUIRE_TIMESCALE", "").lower() not in ("1", "true", "yes"):
+        return
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
+            ).scalar()
+        if not row:
+            _logger.critical(
+                "CB_REQUIRE_TIMESCALE is set but TimescaleDB is not available on this "
+                "PostgreSQL instance. Install the extension or unset CB_REQUIRE_TIMESCALE."
+            )
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        _logger.critical("TimescaleDB requirement check failed: %s", exc, exc_info=True)
+        raise SystemExit(1) from exc
+
+
+def _warn_if_rls_without_bypass() -> None:
+    """Warn once when RLS is enabled on tenant tables but the DB role lacks BYPASSRLS."""
+    rls_tables = (
+        "hardware",
+        "services",
+        "networks",
+        "compute_units",
+        "storage",
+        "hardware_clusters",
+        "external_nodes",
+        "ip_addresses",
+        "vlans",
+        "sites",
+        "node_relations",
+        "scan_jobs",
+        "integration_configs",
+        "topologies",
+    )
+    try:
+        with engine.connect() as conn:
+            bypass = conn.execute(
+                sa.text("SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            ).scalar()
+            if bypass is True:
+                return
+            for tbl in rls_tables:
+                row = conn.execute(
+                    sa.text(
+                        "SELECT c.relrowsecurity FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'public' AND c.relname = :t AND c.relkind = 'r'"
+                    ),
+                    {"t": tbl},
+                ).fetchone()
+                if row and row[0]:
+                    _logger.warning(
+                        "Row-level security is enabled on public.%s but the database role "
+                        "%r does not have BYPASSRLS. Tenant-scoped queries may return no rows "
+                        "unless session variables (e.g. app.current_tenant) match policies.",
+                        tbl,
+                        conn.execute(sa.text("SELECT current_user")).scalar(),
+                    )
+                    return
+    except Exception:
+        _logger.debug("RLS/BYPASSRLS diagnostic skipped", exc_info=True)
 
 
 def _assert_required_schema() -> None:
@@ -383,13 +469,17 @@ async def lifespan(app: FastAPI):
             run_alembic_upgrade()
             _logger.info("Alembic migrations applied (or already at head).")
         except Exception as _me:  # noqa: BLE001
-            _logger.warning(
-                "Auto-migrate failed (schema may be stale): %s — "
-                "run 'make migrate' or 'alembic upgrade head' manually.",
+            _logger.critical(
+                "Auto-migrate failed: %s — fix the database or run "
+                "'make migrate' / 'alembic upgrade head', then restart.",
                 _me,
+                exc_info=True,
             )
+            raise SystemExit(1) from _me
 
     _assert_required_schema()
+    _require_timescale_if_configured()
+    _warn_if_rls_without_bypass()
 
     # ── Phase 1b: Warn if default client hash salt is in use ──────────────
     from app.core.security import _DEFAULT_SALT, get_client_salt
@@ -1666,12 +1756,18 @@ async def health():
 
     state = get_state()
 
+    timescaledb_available: bool | None = None
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             # Readiness contract check: discovery endpoints serialize ScanJob.error_reason.
             # If this column is missing (migration drift), report db as error.
             conn.execute(text("SELECT error_reason FROM scan_jobs LIMIT 1"))
+            timescaledb_available = bool(
+                conn.execute(
+                    text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
+                ).scalar()
+            )
         db_status = "ok"
     except Exception:
         db_status = "error"
@@ -1684,6 +1780,7 @@ async def health():
         "ready": state == ServerState.READY,
         "version": settings.app_version,
         "uptime_s": round(time.time() - SERVER_START_TIME),
+        "timescaledb_available": timescaledb_available,
         "checks": {
             "db": db_status,
             "redis": redis_status,

@@ -66,6 +66,9 @@ def run_migrations_online() -> None:
 
     migration_engine = _create_engine(db_url)
     with migration_engine.connect() as connection:
+        # Session-scoped advisory lock: serializes concurrent Alembic runs (e.g. misconfigured
+        # multi-worker startup) without affecting normal app queries on other connections.
+        connection.execute(sa.text("SELECT pg_advisory_lock(872014001, 330619501)"))
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             _widen_alembic_version_column(connection)

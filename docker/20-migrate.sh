@@ -32,13 +32,17 @@ if [ "$USE_EXTERNAL_DB" -eq 1 ]; then
   python3 - <<'PY'
 import os
 import sys
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
+
+from psycopg2.extensions import quote_ident
 
 url = os.environ.get("CB_DB_URL", "")
 if not url:
     print("[migrate] ERROR: CB_DB_URL is not set.", file=sys.stderr)
     sys.exit(1)
 u = urlparse(url)
+path = (u.path or "").strip("/")
+dbname = unquote(path) if path else "circuitbreaker"
 postgres_url = urlunparse(u._replace(path="/postgres"))
 try:
     import psycopg2
@@ -46,14 +50,15 @@ try:
     conn = psycopg2.connect(postgres_url)
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute("SELECT 1 FROM pg_database WHERE datname = 'circuitbreaker'")
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
     if not cur.fetchone():
-        cur.execute('CREATE DATABASE "circuitbreaker"')
-        print("[migrate] Created database circuitbreaker.")
+        q = "CREATE DATABASE {}".format(quote_ident(dbname, conn))
+        cur.execute(q)
+        print(f"[migrate] Created database {dbname!r}.")
     cur.close()
     conn.close()
 except Exception as exc:  # noqa: BLE001
-    print(f"[migrate] ERROR: Failed to ensure circuitbreaker database: {exc}", file=sys.stderr)
+    print(f"[migrate] ERROR: Failed to ensure database {dbname!r}: {exc}", file=sys.stderr)
     sys.exit(1)
 PY
 else

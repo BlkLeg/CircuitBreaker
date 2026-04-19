@@ -64,6 +64,7 @@ class DbHealthResponse(BaseModel):
     status: str
     dialect: str
     alembic_version: str | None = None
+    timescaledb_available: bool | None = None
     db_size_mb: float | None = None
     # PostgreSQL-only
     connections_active: int | None = None
@@ -78,13 +79,19 @@ def db_health(_: Any = require_role("admin")) -> DbHealthResponse:
     """Return database health metrics. Admin-only."""
     dialect = "postgresql"
 
-    # Alembic version
+    # Alembic version + Timescale extension availability
     alembic_version: str | None = None
+    timescaledb_available: bool | None = None
     try:
         with engine.connect() as conn:
             row = conn.execute(text("SELECT version_num FROM alembic_version LIMIT 1")).fetchone()
             if row:
                 alembic_version = row[0]
+            timescaledb_available = bool(
+                conn.execute(
+                    text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
+                ).scalar()
+            )
     except Exception:
         pass
 
@@ -124,6 +131,7 @@ def db_health(_: Any = require_role("admin")) -> DbHealthResponse:
         status="healthy",
         dialect=dialect,
         alembic_version=alembic_version,
+        timescaledb_available=timescaledb_available,
         db_size_mb=db_size_mb,
         connections_active=connections_active,
         connections_max=connections_max,

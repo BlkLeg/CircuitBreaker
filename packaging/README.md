@@ -42,6 +42,13 @@ Examples:
 
 Each archive is published with a sidecar checksum file and a JSON manifest.
 
+## PostgreSQL major version and TimescaleDB (mono / container)
+
+The mono image (`Dockerfile.mono`) targets **PostgreSQL 15** with the Debian package
+`timescaledb-2-postgresql-15`. Bumping the embedded Postgres major version requires a
+matching TimescaleDB build string and an image rebuild; do not change only the server
+version without updating the Timescale package line in the Dockerfile.
+
 ## Building native packages
 
 | Target | Use case |

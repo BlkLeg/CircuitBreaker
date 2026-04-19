@@ -4,6 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "circuit-breaker-backend"
+# Runtime pins for Docker / `pip install -r requirements.txt` live in
+# apps/backend/requirements.txt, generated from apps/backend/poetry.lock via:
+#   python3 scripts/gen_requirements.py
+# After changing dependencies here, refresh the lockfile and regenerate that file.
 dynamic = ["version"]
 requires-python = ">=3.12,<4"
 dependencies = [

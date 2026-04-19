@@ -146,6 +146,8 @@ RUN mkdir -p /app /data /data/uploads /data/tls /data/certs /data/redis /data/ru
     && chown -R breaker:breaker /app /data /var/log/circuitbreaker
 
 # Environment defaults for mono image (CB_DB_URL set at runtime in entrypoint from CB_DB_PASSWORD)
+# Migrations run once in /docker/entrypoint-mono.sh via 20-migrate.sh; disable per-worker auto-migrate
+# so uvicorn --workers N does not redundantly invoke Alembic from each process.
 ENV PYTHONPATH=/app/backend/src \
     CB_ALEMBIC_INI=/app/backend/alembic.ini \
     ALEMBIC_CONFIG=/app/backend/alembic.ini \
@@ -153,7 +155,8 @@ ENV PYTHONPATH=/app/backend/src \
     CB_DATA_DIR=/data \
     UPLOADS_DIR=/data/uploads \
     NATS_URL=nats://127.0.0.1:4222 \
-    CB_REDIS_URL=redis://127.0.0.1:6379/0
+    CB_REDIS_URL=redis://127.0.0.1:6379/0 \
+    CB_AUTO_MIGRATE=false
 
 VOLUME ["/data"]
 
