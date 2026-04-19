@@ -68,7 +68,7 @@ pysnmp==7.1.22
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-engineio==4.13.1
-python-multipart==0.0.22
+python-multipart==0.0.26
 python-nmap==0.7.1
 python-socketio==5.16.1
 pywin32==311; platform_system == "Windows"
