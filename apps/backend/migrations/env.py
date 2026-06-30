@@ -65,7 +65,7 @@ def run_migrations_online() -> None:
     from sqlalchemy import create_engine as _create_engine
 
     migration_engine = _create_engine(db_url)
-    with migration_engine.connect() as connection:
+    with migration_engine.begin() as connection:
         # Session-scoped advisory lock: serializes concurrent Alembic runs (e.g. misconfigured
         # multi-worker startup) without affecting normal app queries on other connections.
         connection.execute(sa.text("SELECT pg_advisory_lock(872014001, 330619501)"))

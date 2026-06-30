@@ -18,8 +18,10 @@ def upgrade() -> None:
     conn = op.get_bind()
     current_schema = conn.execute(sa.text("SELECT current_schema()")).scalar()
     if current_schema is None:
-        raise RuntimeError("Unable to determine current schema for migration 0071")
+        current_schema = "public"
 
+    # Idempotent: skip if columns already exist (e.g. created by metadata.create_all
+    # on a fresh install before Alembic stamps this revision).
     conn.execute(
         sa.text(
             f'ALTER TABLE "{current_schema}".network_peers '
@@ -38,7 +40,7 @@ def downgrade() -> None:
     conn = op.get_bind()
     current_schema = conn.execute(sa.text("SELECT current_schema()")).scalar()
     if current_schema is None:
-        raise RuntimeError("Unable to determine current schema for migration 0071")
+        current_schema = "public"
 
     conn.execute(
         sa.text(

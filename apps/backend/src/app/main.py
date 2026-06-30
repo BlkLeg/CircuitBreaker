@@ -133,6 +133,7 @@ install_global_log_redaction()
 _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
 _FAVICON_FILENAME = "favicon.ico"
+_REQUIRED_SCHEMA_TABLES = frozenset({"app_settings", "status_pages", "webhook_rules"})
 _logger = logging.getLogger(__name__)
 SERVER_START_TIME = time.time()
 
@@ -295,6 +296,27 @@ def _require_timescale_if_configured() -> None:
         raise SystemExit(1) from exc
 
 
+def _get_existing_schema_tables() -> set[str]:
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.db.session import engine
+
+    query = text(
+        "SELECT c.relname "
+        "FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+    )
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(query).fetchall()
+            return {row[0] for row in rows}
+    except SQLAlchemyError as exc:
+        _logger.critical("Database schema inspection failed before startup: %s", exc, exc_info=True)
+        raise
+
+
 def _warn_if_rls_without_bypass() -> None:
     """Warn once when RLS is enabled on tenant tables but the DB role lacks BYPASSRLS."""
     rls_tables = (
@@ -343,25 +365,39 @@ def _warn_if_rls_without_bypass() -> None:
 
 
 def _assert_required_schema() -> None:
-    from sqlalchemy import inspect
-
-    from app.db.session import engine
-
     try:
-        existing_tables = set(inspect(engine).get_table_names())
+        existing_tables = _get_existing_schema_tables()
     except Exception as exc:  # noqa: BLE001
         _logger.critical("Database schema check failed before startup: %s", exc, exc_info=True)
         raise SystemExit(1) from exc
 
-    required_tables = {"app_settings", "status_pages", "webhook_rules"}
-    missing_tables = sorted(required_tables - existing_tables)
+    missing_tables = sorted(_REQUIRED_SCHEMA_TABLES - existing_tables)
     if missing_tables:
-        _logger.critical(
-            "Database schema is missing required tables (%s). "
-            "Alembic migrations did not run successfully.",
+        _logger.warning(
+            "Database schema is missing required tables (%s) after the initial migration pass; "
+            "retrying Alembic once.",
             ", ".join(missing_tables),
         )
-        raise SystemExit(1)
+        try:
+            run_alembic_upgrade()
+            existing_tables = _get_existing_schema_tables()
+        except Exception as exc:  # noqa: BLE001
+            _logger.critical(
+                "Database schema repair failed before startup: %s",
+                exc,
+                exc_info=True,
+            )
+            raise SystemExit(1) from exc
+
+        missing_tables = sorted(_REQUIRED_SCHEMA_TABLES - existing_tables)
+        if missing_tables:
+            _logger.critical(
+                "Database schema is still missing required tables (%s). "
+                "Run Alembic against the correct PostgreSQL database with "
+                "'make migrate' or 'alembic upgrade head', then restart.",
+                ", ".join(missing_tables),
+            )
+            raise SystemExit(1)
 
 
 def _record_sync_health(
@@ -464,7 +500,8 @@ async def lifespan(app: FastAPI):
     # single-worker dev (make dev) and multi-worker prod: if another worker
     # already applied the migrations the upgrade call is an instant no-op.
     # Set CB_AUTO_MIGRATE=false to disable (e.g. when entrypoint pre-migrates).
-    if os.environ.get("CB_AUTO_MIGRATE", "true").lower() != "false":
+    auto_migrate_enabled = os.environ.get("CB_AUTO_MIGRATE", "true").lower() != "false"
+    if auto_migrate_enabled:
         try:
             run_alembic_upgrade()
             _logger.info("Alembic migrations applied (or already at head).")
@@ -477,7 +514,10 @@ async def lifespan(app: FastAPI):
             )
             raise SystemExit(1) from _me
 
-    _assert_required_schema()
+    if auto_migrate_enabled:
+        _assert_required_schema()
+    else:
+        _logger.info("Schema validation skipped because migrations were pre-applied.")
     _require_timescale_if_configured()
     _warn_if_rls_without_bypass()
 
