@@ -8,6 +8,7 @@ import logging
 import os
 import re
 from collections.abc import AsyncGenerator
+from typing import Any, cast
 
 from fastapi import Depends, Request, Response
 from fastapi_users import BaseUserManager, FastAPIUsers, IntegerIDMixin
@@ -66,7 +67,9 @@ _password_helper = _BcryptPasswordHelper()
 async def get_user_db(
     session: AsyncSession = Depends(get_async_db),
 ) -> AsyncGenerator[SQLAlchemyUserDatabase, None]:
-    yield SQLAlchemyUserDatabase(session, User)
+    # Cast User to Any to satisfy typing differences between SQLAlchemy Mapped
+    # attributes and fastapi_users' UserProtocol expected types.
+    yield SQLAlchemyUserDatabase(session, cast(Any, User))
 
 
 # ---------------------------------------------------------------------------
