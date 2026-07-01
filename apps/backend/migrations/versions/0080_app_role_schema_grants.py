@@ -46,6 +46,17 @@ def upgrade() -> None:
     )
     op.execute(sa.text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {qi}"))
 
+    # Explicitly grant on alembic_version by name — this table is created by Alembic
+    # itself (not by a user migration) and may be owned by the superuser on some installs,
+    # meaning the GRANT ON ALL TABLES above may not cover it if ownership differs.
+    # Without this, the app role loses SELECT/INSERT on alembic_version after the REVOKE,
+    # causing the next migration run to crash trying to read the current revision. (#68)
+    op.execute(
+        sa.text(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE alembic_version TO {qi}"
+        )
+    )
+
     op.execute(
         sa.text(
             f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "

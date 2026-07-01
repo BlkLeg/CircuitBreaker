@@ -20,8 +20,14 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     conn = op.get_bind()
+    # Use pg_catalog (always readable, regardless of public-schema GRANT state)
+    # rather than information_schema.tables which may require SELECT privilege on
+    # the target table itself after migration 0042 applies REVOKE. (#68)
     exists = conn.execute(
-        sa.text("SELECT 1 FROM information_schema.tables WHERE table_name='kb_oui'")
+        sa.text(
+            "SELECT 1 FROM pg_catalog.pg_tables"
+            " WHERE schemaname = 'public' AND tablename = 'kb_oui'"
+        )
     ).fetchone()
     if exists:
         return

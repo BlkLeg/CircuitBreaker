@@ -8,6 +8,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Enforce UTF-8 for stdout/stderr regardless of the system locale.  On systems
+# running under a C/POSIX locale (common in systemd services and minimal Docker
+# images), Python defaults to ASCII, which causes UnicodeEncodeError whenever a
+# log message contains non-ASCII text — e.g. device hostnames discovered during
+# network fingerprinting. (#75)
+if sys.stdout.encoding and sys.stdout.encoding.lower() in ("ascii", "ansi"):
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
 # Ensure backend/src is on sys.path so 'import app' resolves correctly
 # regardless of WORKDIR or whether the package is installed in site-packages.
 # __file__ is backend/src/app/start.py → backend/src is 2 levels up.
@@ -261,6 +271,12 @@ def main(argv: list[str] | None = None) -> int:
     from app.main import run_alembic_upgrade
 
     run_alembic_upgrade()
+    # Migrations have been applied above — signal the lifespan handler in every
+    # spawned worker to skip the auto-migrate step.  Without this, each worker
+    # re-runs run_alembic_upgrade() (including migration 0080's GRANT/REVOKE
+    # hardening) while the application is partially initialised, causing a silent
+    # exit with code 3 / NOTIMPLEMENTED on all platforms. (#87 / #81)
+    os.environ["CB_AUTO_MIGRATE"] = "false"
 
     uvicorn.run(
         "app.main:app",

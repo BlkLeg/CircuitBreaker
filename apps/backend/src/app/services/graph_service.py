@@ -3,11 +3,51 @@ import logging
 import math
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import GraphLayout
+from app.db.models import GraphLayout, HardwareConnection
 
 logger = logging.getLogger(__name__)
+
+
+def create_edge(
+    db: Session,
+    source_type: str,
+    source_id: int,
+    target_type: str,
+    target_id: int,
+    edge_kind: str = "connects_to",
+) -> None:
+    """Create a graph edge between two entities.
+
+    Currently supports hardware→hardware edges via the ``hardware_connections``
+    table.  Other source/target type combinations are logged as a warning and
+    skipped rather than raising, so callers (e.g. ``_sync_port_edges``) remain
+    crash-free when topology features are partially implemented. (#74)
+    """
+    if source_type == "hardware" and target_type == "hardware":
+        try:
+            conn = HardwareConnection(
+                source_hardware_id=source_id,
+                target_hardware_id=target_id,
+                connection_type="ethernet",
+                source="port_map",
+            )
+            db.add(conn)
+            db.flush()
+        except IntegrityError:
+            # UniqueConstraint violation — edge already exists, that's fine.
+            db.rollback()
+    else:
+        logger.debug(
+            "create_edge: unsupported edge type %s→%s (kind=%s) — skipping",
+            source_type,
+            target_type,
+            edge_kind,
+        )
+
+
 
 
 def save_layout(db: Session, name: str, layout_data: str | dict) -> None:

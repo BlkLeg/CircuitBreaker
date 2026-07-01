@@ -65,13 +65,27 @@ def run_migrations_online() -> None:
     from sqlalchemy import create_engine as _create_engine
 
     migration_engine = _create_engine(db_url)
+
+    # Step 1: Widen alembic_version.version_num in its own committed transaction
+    # BEFORE Alembic acquires the advisory lock and begins the migration transaction.
+    # This is required because Alembic writes the revision ID (which can be >32 chars)
+    # into alembic_version at the very start of the migration transaction — if the column
+    # is still VARCHAR(32), that INSERT truncates and the entire migration run crashes.
+    # Running the ALTER TABLE in a separate prior transaction ensures the schema change is
+    # committed and visible before any migration logic executes. (#68)
+    with migration_engine.connect() as pre_conn:
+        _widen_alembic_version_column(pre_conn)
+        pre_conn.commit()
+
     with migration_engine.begin() as connection:
-        # Session-scoped advisory lock: serializes concurrent Alembic runs (e.g. misconfigured
-        # multi-worker startup) without affecting normal app queries on other connections.
-        connection.execute(sa.text("SELECT pg_advisory_lock(872014001, 330619501)"))
+        # Use pg_advisory_xact_lock (transaction-scoped) instead of pg_advisory_lock
+        # (session-scoped). This is safe with pgbouncer transaction-pooling mode, which
+        # returns the server connection to the pool at transaction commit — releasing a
+        # session-level lock prematurely. Transaction-scoped locks are held until the
+        # enclosing transaction commits or rolls back. (#66)
+        connection.execute(sa.text("SELECT pg_advisory_xact_lock(872014001, 330619501)"))
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
-            _widen_alembic_version_column(connection)
             context.run_migrations()
     migration_engine.dispose()
 
