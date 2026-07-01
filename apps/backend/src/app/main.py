@@ -1332,7 +1332,13 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def _rate_limit_exceeded_handler_typed(request: Request, exc: Exception) -> Response:
+    return _rate_limit_exceeded_handler(request, exc)
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler_typed)
 
 from app.core.otel import init_otel  # noqa: E402
 
