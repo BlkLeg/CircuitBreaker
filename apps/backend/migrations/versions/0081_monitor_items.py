@@ -33,8 +33,18 @@ def upgrade() -> None:
         sa.Column("last_polled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_status", sa.String(), nullable=True),
         sa.Column("consecutive_failures", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
     op.create_index("ix_monitor_items_due", "monitor_items", ["enabled", "next_due_at"])
 
