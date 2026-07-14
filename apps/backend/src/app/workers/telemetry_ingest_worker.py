@@ -23,7 +23,6 @@ from app.core.nats_client import nats_client
 from app.core.time import utcnow
 from app.db.models import Hardware, HardwareLiveMetric
 from app.db.session import get_session_context
-from app.services.status_service import recalculate_hardware_status
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
 from app.services.telemetry_service import (
     _NON_LIVE_STATUSES,
@@ -147,7 +146,6 @@ async def _process_batch(msgs: list[Any]) -> None:
             hw.telemetry_last_polled = rec["ts"]
             if rec["status"] not in _NON_LIVE_STATUSES:
                 hw.last_seen = rec["ts"].isoformat()
-            recalculate_hardware_status(db, hw_id)
 
         db.commit()
 

@@ -30,6 +30,8 @@ import { useHardwareRoles } from '../../hooks/useHardwareRoles';
 import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import PortEditor from './PortEditor';
+import { windscribeApi } from '../../api/client';
+import { Shield, ShieldAlert, Ban } from 'lucide-react';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
   const { options: HARDWARE_ROLES } = useHardwareRoles();
@@ -44,6 +46,8 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
   const [hwClusters, setHwClusters] = useState([]);
   const [ports, setPorts] = useState([]);
   const [editPortsMode, setEditPortsMode] = useState(false);
+  const [threatData, setThreatData] = useState(null);
+  const [isolating, setIsolating] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!hardware) return;
@@ -59,17 +63,24 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
         storageApi.list({ hardware_id: hardware.id }),
         hardwareApi.getClusters(hardware.id),
       ];
+      if (settings?.windscribe_enabled !== false) {
+        fetches.push(windscribeApi.getDeviceThreatProfile(hardware.id).catch(() => null));
+      } else {
+        fetches.push(Promise.resolve(null));
+      }
+
       if (isNetworkingDevice) fetches.push(hardwareApi.getPorts(hardware.id));
       if (hardware.role === 'router')
         fetches.push(networksApi.list({ gateway_hardware_id: hardware.id }));
 
-      const [cuRes, memRes, svcRes, stRes, clusterRes, portsRes, routedRes] =
+      const [cuRes, memRes, svcRes, stRes, clusterRes, threatRes, portsRes, routedRes] =
         await Promise.all(fetches);
       setComputeUnits(cuRes.data);
       setDirectMemberships(memRes.data);
       setHwServices(svcRes.data);
       setHwStorage(stRes.data);
       setHwClusters(clusterRes.data);
+      if (threatRes?.data) setThreatData(threatRes.data);
       if (portsRes) setPorts(portsRes.data);
       if (routedRes) setRoutedNetworks(routedRes.data);
     } catch (err) {
@@ -196,6 +207,52 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
       <div className="tab-content" style={{ marginTop: 20 }}>
         {activeTab === 'overview' && (
           <div className="detail-section">
+            {threatData && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: '12px 16px',
+                  background: 'var(--color-surface)',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                <div
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {threatData.score > 80 ? (
+                      <Shield size={24} color="#22c55e" />
+                    ) : (
+                      <ShieldAlert size={24} color="#ef4444" />
+                    )}
+                    <div>
+                      <div style={{ fontWeight: 600 }}>Privacy Score: {threatData.score}/100</div>
+                      <div style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
+                        {threatData.profile?.length
+                          ? threatData.profile.map((p, i) => (
+                              <span key={i} className="badge bg-danger text-white me-1">
+                                {p}
+                              </span>
+                            ))
+                          : 'Clean profile'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-sm btn-danger"
+                    onClick={() => {
+                      setIsolating(true);
+                      setTimeout(() => setIsolating(false), 1000);
+                    }}
+                    disabled={isolating}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <Ban size={14} /> {isolating ? 'Isolating...' : 'Isolate Device'}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="field-group">
               <span className="field-label">Name</span>
               <div>{hardware.name}</div>

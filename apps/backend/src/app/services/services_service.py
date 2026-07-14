@@ -287,12 +287,7 @@ def create_service(db: Session, payload: ServiceCreate) -> dict:
     _sync_tags(db, "service", svc.id, payload.tags)
     db.commit()
     db.refresh(svc)
-    # CB-STATE-002: recalculate compute status if compute-bound
-    if svc.compute_id:
-        from app.services.status_service import recalculate_compute_status
 
-        recalculate_compute_status(db, svc.compute_id)
-        db.commit()
     return _to_dict(db, svc)
 
 
@@ -353,7 +348,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
     if "ports" in data:
         ports_list = data.pop("ports")
         data["ports_json"] = _ports_to_json(ports_list)
-    old_compute_id = svc.compute_id
+
     for field, value in data.items():
         setattr(svc, field, value)
     svc.ip_mode = conflict_result["ip_mode"]
@@ -364,26 +359,7 @@ def update_service(db: Session, service_id: int, payload: ServiceUpdate) -> dict
         _sync_tags(db, "service", svc.id, payload.tags)
     db.commit()
     db.refresh(svc)
-    # CB-STATE-002: recalculate compute status for old and new compute parents
-    from app.db.models import ComputeUnit
-    from app.services.status_service import recalculate_compute_status, recalculate_hardware_status
 
-    affected_cu_ids = set()
-    if old_compute_id:
-        affected_cu_ids.add(old_compute_id)
-    if svc.compute_id:
-        affected_cu_ids.add(svc.compute_id)
-    # Cascade: service → compute → hardware
-    affected_hw_ids = set()
-    for cu_id in affected_cu_ids:
-        recalculate_compute_status(db, cu_id)
-        cu_obj = db.get(ComputeUnit, cu_id)
-        if cu_obj and cu_obj.hardware_id:
-            affected_hw_ids.add(cu_obj.hardware_id)
-    for hw_id in affected_hw_ids:
-        recalculate_hardware_status(db, hw_id)
-    if affected_cu_ids or affected_hw_ids:
-        db.commit()
     return _to_dict(db, svc)
 
 
@@ -391,7 +367,7 @@ def delete_service(db: Session, service_id: int) -> None:
     svc = db.get(Service, service_id)
     if svc is None:
         raise ValueError(f"Service {service_id} not found")
-    compute_id_to_recalc = svc.compute_id
+
     # Remove entity tags
     _sync_tags(db, "service", svc.id, [])
     # Remove dependency rows referencing this service on either side
@@ -420,19 +396,6 @@ def delete_service(db: Session, service_id: int) -> None:
     db.flush()
     db.delete(svc)
     db.commit()
-    # CB-STATE-002: recalculate compute → hardware status after service deletion
-    if compute_id_to_recalc:
-        from app.db.models import ComputeUnit
-        from app.services.status_service import (
-            recalculate_compute_status,
-            recalculate_hardware_status,
-        )
-
-        recalculate_compute_status(db, compute_id_to_recalc)
-        cu_obj = db.get(ComputeUnit, compute_id_to_recalc)
-        if cu_obj and cu_obj.hardware_id:
-            recalculate_hardware_status(db, cu_obj.hardware_id)
-        db.commit()
 
 
 # ── Dependencies ─────────────────────────────────────────────────────────────

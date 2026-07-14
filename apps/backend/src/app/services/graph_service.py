@@ -48,8 +48,6 @@ def create_edge(
         )
 
 
-
-
 def save_layout(db: Session, name: str, layout_data: str | dict) -> None:
     """Save positions to the graph layout table (server-side)."""
     parsed: dict

@@ -195,7 +195,6 @@ CveSecuritySection.propTypes = {
   set: PropTypes.func.isRequired,
 };
 
-import WebhooksManager from '../components/settings/WebhooksManager';
 import NotificationsManager from '../components/settings/NotificationsManager';
 import OAuthProvidersManager from '../components/settings/OAuthProvidersManager';
 
@@ -205,10 +204,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const isAdmin = !!(user?.role === 'admin' || user?.is_admin || user?.is_superuser);
   const allowedTabs = useMemo(
-    () =>
-      isAdmin
-        ? SETTINGS_TABS
-        : SETTINGS_TABS.filter((t) => ['integrations', 'webhooks'].includes(t.id)),
+    () => (isAdmin ? SETTINGS_TABS : SETTINGS_TABS.filter((t) => ['integrations'].includes(t.id))),
     [isAdmin]
   );
   const { timezone: ctxTimezone, setTimezone } = useTimezone();
@@ -500,7 +496,7 @@ export default function SettingsPage() {
           'hypervisor',
           'vm',
         ],
-        webhooks: ['webhook', 'endpoint', 'delivery', 'event', 'notification', 'sink', 'route'],
+
         security: ['auth', 'login', 'password', 'timeout', 'audit'],
         users: ['users', 'invite', 'role', 'admin', 'masquerade', 'sessions', 'accounts', 'local'],
         system: ['backup', 'restore', 'reset', 'experimental', 'clear'],
@@ -1133,6 +1129,51 @@ export default function SettingsPage() {
                 </SettingSection>
 
                 <SettingSection
+                  title="Windscribe Threat Intelligence"
+                  action={
+                    <StatusBadge
+                      ok={form.windscribe_enabled}
+                      labelOk="Enabled"
+                      labelNo="Disabled"
+                    />
+                  }
+                >
+                  <SettingField
+                    label="Windscribe Integration"
+                    hint="Enable Windscribe/ControlD network threat intelligence to assess device privacy scores."
+                  >
+                    <label className="toggle-switch">
+                      <span className="sr-only">Enable Windscribe Integration</span>
+                      <input
+                        type="checkbox"
+                        checked={form.windscribe_enabled}
+                        onChange={(e) => set('windscribe_enabled', e.target.checked)}
+                      />
+                      <span className="toggle-switch-track" />
+                    </label>
+                  </SettingField>
+
+                  {form.windscribe_enabled && (
+                    <SettingField
+                      label="Threat Feed Refresh Frequency (Hours)"
+                      hint="How often to refresh the threat feed from Windscribe/ControlD API."
+                    >
+                      <input
+                        type="number"
+                        className="form-control"
+                        style={{ width: 150 }}
+                        value={form.windscribe_feed_refresh_hours}
+                        onChange={(e) =>
+                          set('windscribe_feed_refresh_hours', parseInt(e.target.value) || 1)
+                        }
+                        min={1}
+                        max={72}
+                      />
+                    </SettingField>
+                  )}
+                </SettingSection>
+
+                <SettingSection
                   title="Docker Integration"
                   action={
                     caps ? (
@@ -1261,19 +1302,6 @@ export default function SettingsPage() {
 
                 <SettingSection title="Service Integrations">
                   <IntegrationsManager />
-                </SettingSection>
-              </div>
-            )}
-
-            {/* ── Webhooks Tab ───────────────────────── */}
-            {activeTab === 'webhooks' && (
-              <div className="settings-sections-grid">
-                <SettingSection title="Webhook Endpoints" className="settings-section--full">
-                  <p style={{ fontSize: 13, color: 'var(--color-text-muted)', margin: 0 }}>
-                    Configure outbound webhook endpoints and choose event groups per endpoint.
-                    Deliveries are logged per webhook.
-                  </p>
-                  <WebhooksManager />
                 </SettingSection>
               </div>
             )}

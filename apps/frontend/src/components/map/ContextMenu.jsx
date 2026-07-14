@@ -27,26 +27,26 @@ import { DEVICE_ICON_MAP } from './mapConstants';
 
 // Curated list of icons available in the icon picker (role-based keys from DEVICE_ICON_MAP)
 const ICON_PICKER_OPTIONS = [
-  { key: 'router',        label: 'Router' },
-  { key: 'switch',        label: 'Switch' },
-  { key: 'firewall',      label: 'Firewall' },
-  { key: 'access_point',  label: 'WiFi AP' },
-  { key: 'server',        label: 'Server' },
-  { key: 'hypervisor',    label: 'Hypervisor' },
-  { key: 'nas',           label: 'NAS' },
-  { key: 'ups',           label: 'UPS' },
-  { key: 'pdu',           label: 'PDU' },
-  { key: 'sbc',           label: 'SBC' },
-  { key: 'compute',       label: 'Monitor' },
-  { key: 'ip_camera',     label: 'Camera' },
-  { key: 'smart_tv',      label: 'TV' },
-  { key: 'desktop',       label: 'Desktop' },
-  { key: 'laptop',        label: 'Laptop' },
-  { key: 'phone',         label: 'Phone' },
-  { key: 'printer',       label: 'Printer' },
-  { key: 'cloud',         label: 'Cloud' },
-  { key: 'database',      label: 'Database' },
-  { key: 'default',       label: 'Generic' },
+  { key: 'router', label: 'Router' },
+  { key: 'switch', label: 'Switch' },
+  { key: 'firewall', label: 'Firewall' },
+  { key: 'access_point', label: 'WiFi AP' },
+  { key: 'server', label: 'Server' },
+  { key: 'hypervisor', label: 'Hypervisor' },
+  { key: 'nas', label: 'NAS' },
+  { key: 'ups', label: 'UPS' },
+  { key: 'pdu', label: 'PDU' },
+  { key: 'sbc', label: 'SBC' },
+  { key: 'compute', label: 'Monitor' },
+  { key: 'ip_camera', label: 'Camera' },
+  { key: 'smart_tv', label: 'TV' },
+  { key: 'desktop', label: 'Desktop' },
+  { key: 'laptop', label: 'Laptop' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'printer', label: 'Printer' },
+  { key: 'cloud', label: 'Cloud' },
+  { key: 'database', label: 'Database' },
+  { key: 'default', label: 'Generic' },
 ];
 
 function IconPickerPanel({ currentShape, nodeId, onAction, onClose }) {
@@ -211,7 +211,6 @@ function shiftAwayFrom(pos, menuW, menuH, avoidRect, MENU_PADDING, viewportW, vi
   }
   return pos; // no clean fit — keep original
 }
-
 
 function ContextMenu({
   position,

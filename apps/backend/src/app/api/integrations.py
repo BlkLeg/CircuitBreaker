@@ -15,8 +15,6 @@ from app.db.models import (
     Integration,
     IntegrationMonitor,
     IntegrationMonitorEvent,
-    StatusGroup,
-    StatusPage,
 )
 from app.db.session import get_db
 from app.integrations.registry import get_plugin, list_registry
@@ -381,39 +379,7 @@ def create_native_monitor(
     db.commit()
     db.refresh(monitor)
 
-    # Auto-add to a default status group so it's immediately visible
-    try:
-        _auto_add_to_status_group(db, monitor)
-    except Exception:
-        _logger.debug("Auto-add monitor %d to status group failed (non-critical)", monitor.id)
-
     return _to_monitor_read(monitor, native.name, is_native=True)
-
-
-def _auto_add_to_status_group(db: Session, monitor: IntegrationMonitor) -> None:
-    """Add a newly-created monitor to a default 'Monitors' status group."""
-    page = db.query(StatusPage).first()
-    if not page:
-        page = StatusPage(name="Infrastructure", slug="infrastructure", is_public=False)
-        db.add(page)
-        db.flush()
-
-    group = (
-        db.query(StatusGroup)
-        .filter(StatusGroup.status_page_id == page.id, StatusGroup.name == "Monitors")
-        .first()
-    )
-    if not group:
-        group = StatusGroup(status_page_id=page.id, name="Monitors", nodes=[], services=[])
-        db.add(group)
-        db.flush()
-
-    nodes = list(group.nodes or [])
-    entry = {"type": "integration_monitor", "id": monitor.id}
-    if not any(n.get("type") == "integration_monitor" and n.get("id") == monitor.id for n in nodes):
-        nodes.append(entry)
-        group.nodes = nodes
-        db.commit()
 
 
 @router.delete("/native/monitors/{monitor_id}", status_code=204)

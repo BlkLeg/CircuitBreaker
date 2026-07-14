@@ -259,9 +259,6 @@ async def write_telemetry(
     if status not in _NON_LIVE_STATUSES:
         hw.last_seen = now.isoformat()
 
-    from app.services.status_service import recalculate_hardware_status
-
-    recalculate_hardware_status(db, hardware_id)
     db.commit()
     db.refresh(row)
 

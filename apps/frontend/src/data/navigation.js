@@ -12,12 +12,9 @@ import {
   Map,
   ScanSearch,
   Globe,
-  MonitorCheck,
-  RectangleHorizontal,
   Shield,
   Bell,
   Users,
-  Webhook,
 } from 'lucide-react';
 
 /**
@@ -36,20 +33,6 @@ export const NAV_ITEMS = [
       { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
       { path: '/external-nodes', icon: Cloud, label: 'External', labelKey: 'header.external' },
       { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', requireEditor: true },
-      {
-        path: '/racks',
-        icon: RectangleHorizontal,
-        label: 'Racks',
-        labelKey: 'header.racks',
-        requireEditor: true,
-      },
-      {
-        path: '/status-pages',
-        icon: MonitorCheck,
-        label: 'Status Pages',
-        labelKey: 'header.status',
-        requireEditor: true,
-      },
     ],
   },
   {
@@ -68,7 +51,6 @@ export const NAV_ITEMS = [
         label: 'Notifications',
         labelKey: 'header.notifications',
       },
-      { path: '/webhooks', icon: Webhook, label: 'Webhooks' },
     ],
   },
   {
@@ -122,13 +104,11 @@ export const NAV_MAP = {
   '/logs': { icon: ScrollText, label: 'Logs', labelKey: 'header.logs' },
   '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
   '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
-  '/status-pages': { icon: MonitorCheck, label: 'Status', labelKey: 'header.status' },
-  '/racks': { icon: RectangleHorizontal, label: 'Racks', labelKey: 'header.racks' },
+
   '/certificates': { icon: Shield, label: 'Certificates', labelKey: 'header.certificates' },
   '/notifications': { icon: Bell, label: 'Notifications', labelKey: 'header.notifications' },
   '/admin/users': { icon: Users, label: 'Users', labelKey: 'header.users' },
   '/tenants': { icon: LayoutGrid, label: 'Tenants', labelKey: 'header.tenants' },
-  '/webhooks': { icon: Webhook, label: 'Webhooks' },
 };
 
 /**
@@ -143,12 +123,11 @@ export const DEFAULT_ORDER = [
   '/storage',
   '/external-nodes',
   '/ipam',
-  '/racks',
-  '/status-pages',
+
   '/certificates',
   '/notifications',
   '/tenants',
-  '/webhooks',
+
   '/docs',
   '/logs',
   '/settings',

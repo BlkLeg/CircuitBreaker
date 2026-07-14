@@ -252,8 +252,6 @@ class BulkAssignment(BaseModel):
     vendor_icon_slug: str | None = None
     role: str | None = None
     name: str | None = None
-    rack_unit: int | None = None
-    u_height: int | None = None
 
 
 class EnhancedBulkMergeCluster(BaseModel):
@@ -278,7 +276,7 @@ class EnhancedBulkMergeRequest(BaseModel):
     result_ids: list[int]
     cluster: EnhancedBulkMergeCluster | None = None
     network: EnhancedBulkMergeNetwork | None = None
-    rack_id: int | None = None
+
     assignments: list[BulkAssignment] = []
     create_services: bool = False
 

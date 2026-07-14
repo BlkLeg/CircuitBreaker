@@ -130,15 +130,14 @@ class HardwareBase(BaseModel):
     vendor_catalog_key: str | None = None
     model_catalog_key: str | None = None
     # v0.1.2: rack positioning
-    u_height: int | None = None
-    rack_unit: int | None = None
+
     # v0.1.2: telemetry configuration
     telemetry_config: TelemetryConfig | None = None
     # v0.1.4: environment registry
     environment_id: int | None = None
     environment: str | None = None
     # v0.1.4-cortex: rack assignment + discovery lineage
-    rack_id: int | None = None
+
     source_scan_result_id: int | None = None
     # Phase 2: mounting orientation
     mounting_orientation: str | None = None
@@ -180,14 +179,13 @@ class HardwareUpdate(BaseModel):
     tags: list[str] | None = None
     vendor_catalog_key: str | None = None
     model_catalog_key: str | None = None
-    u_height: int | None = None
-    rack_unit: int | None = None
+
     telemetry_config: TelemetryConfig | None = None
     # v0.1.4: environment registry
     environment_id: int | None = None
     environment: str | None = None
     # v0.1.4-cortex: rack assignment
-    rack_id: int | None = None
+
     # Phase 2: mounting orientation
     mounting_orientation: str | None = None
     side_rail: str | None = None
@@ -249,8 +247,6 @@ class Hardware(HardwareBase):
     telemetry_last_polled: datetime | None = None
     # v0.1.4: environment registry
     environment_name: str | None = None
-    # v0.1.4-cortex: rack info + discovery fields
-    rack_name: str | None = None
     last_seen: str | None = None
     status: str | None = None
     source: str | None = None

@@ -3953,9 +3953,17 @@ body {
   border: 1.5px solid var(--color-bg, #0d0d1a);
   pointer-events: none;
 }
-.node-status-dot.online  { background: #00ff9d; box-shadow: 0 0 5px #00ff9d; }
-.node-status-dot.offline { background: #ff3366; box-shadow: 0 0 5px #ff3366; }
-.node-status-dot.unknown { background: #6b7280; }
+.node-status-dot.online {
+  background: #00ff9d;
+  box-shadow: 0 0 5px #00ff9d;
+}
+.node-status-dot.offline {
+  background: #ff3366;
+  box-shadow: 0 0 5px #ff3366;
+}
+.node-status-dot.unknown {
+  background: #6b7280;
+}
 
 .node-vendor-badge {
   position: absolute;

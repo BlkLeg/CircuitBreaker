@@ -15,7 +15,6 @@ from app.db.models import (
     Hardware,
     IntegrationConfig,
     ProxmoxDiscoverRun,
-    StatusGroup,
     Storage,
     TelemetryTimeseries,
 )
@@ -106,7 +105,6 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
     Covers: cluster info, problems, time-series, storage.
     Uses live PVE API for cluster status and DB for telemetry/storage/events.
     """
-    from app.services import status_page_service as svc_status
 
     config = db.get(IntegrationConfig, integration_id)
     if not config or config.type != "proxmox":
@@ -289,35 +287,6 @@ async def get_cluster_overview(db: Session, integration_id: int) -> dict[str, An
 
     # Problems: events from status groups that contain any of our nodes
     problems_list: list[dict[str, str]] = []
-    seen_problems: set[tuple[str, str]] = set()
-    try:
-        all_groups = list(db.execute(select(StatusGroup)).scalars().all())
-        for g in all_groups:
-            hw_ids, _, _, _ = svc_status.resolve_group_entity_ids(g)
-            if not any(hid in node_ids for hid in hw_ids):
-                continue
-            events = svc_status.list_events_for_group(db, g.id, since_param="7d", limit=50)
-            for ev in events:
-                ts = ev.get("ts") or ev.get("timestamp", "")
-                msg = ev.get("message", "")
-                key = (str(ts), msg)
-                if key in seen_problems:
-                    continue
-                seen_problems.add(key)
-                severity = ev.get("severity", "info")
-                problems_list.append(
-                    {
-                        "time": ts[:19] if isinstance(ts, str) and len(ts) > 19 else str(ts),
-                        "severity": severity.title(),
-                        "host": "",  # could resolve from event if we store host
-                        "problem": msg,
-                        "status": "RESOLVED" if severity == "info" else "PROBLEM",
-                    }
-                )
-        problems_list.sort(key=lambda x: x.get("time", ""), reverse=True)
-        problems_list = problems_list[:100]
-    except Exception as e:
-        _logger.debug("Problems aggregation failed: %s", e)
 
     return {
         "cluster": {

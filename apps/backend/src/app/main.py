@@ -38,10 +38,10 @@ from app.api import (
     search,
     services,
     storage,
+    windscribe,
 )
 from app.api import integrations as integrations_api
 from app.api import maps as maps_api
-from app.api import rack as rack_api
 from app.api import (
     tags as tags_api,
 )
@@ -66,19 +66,14 @@ from app.api.metrics import router as metrics_router
 from app.api.monitor import router as monitor_router
 from app.api.notifications import router as notifications_router
 from app.api.proxmox import router as proxmox_router
-from app.api.public_status import router as public_status_router
 from app.api.security_status import router as security_router
 from app.api.settings import router as settings_router
-from app.api.status import router as status_router
 from app.api.system import router as system_router
 from app.api.tenants import router as tenants_router
 from app.api.timezones import router as timezones_router
 from app.api.topologies import router as topologies_router
 from app.api.vault import router as vault_router
-from app.api.webhooks import router as webhooks_router
 from app.api.ws_discovery import router as ws_discovery_router
-from app.api.ws_status import router as ws_status_router
-from app.api.ws_status import set_status_main_loop
 from app.api.ws_telemetry import router as ws_telemetry_router
 from app.api.ws_topology import router as ws_topology_router
 from app.core import (
@@ -133,7 +128,7 @@ install_global_log_redaction()
 _DOCS_SEED_FILENAME = "DocsPage.md"
 _ALEMBIC_INI_FILENAME = "alembic.ini"
 _FAVICON_FILENAME = "favicon.ico"
-_REQUIRED_SCHEMA_TABLES = frozenset({"app_settings", "status_pages", "webhook_rules"})
+_REQUIRED_SCHEMA_TABLES = frozenset({"app_settings"})
 _logger = logging.getLogger(__name__)
 SERVER_START_TIME = time.time()
 
@@ -590,15 +585,6 @@ async def lifespan(app: FastAPI):
         _logger.critical("Vault init failed during startup: %s", _ve, exc_info=True)
         raise SystemExit(1) from _ve
 
-    # ── Status page default seed ───────────────────────────────────────────
-    with get_session_context() as _status_db:
-        try:
-            from app.services.status_page_service import get_or_create_default_page
-
-            get_or_create_default_page(_status_db)
-        except Exception as _se:  # noqa: BLE001
-            _logger.debug("Status page seed skipped or failed: %s", _se)
-
     # ── Native integration bootstrap ───────────────────────────────────────
     with get_session_context() as _native_db:
         try:
@@ -752,7 +738,6 @@ async def lifespan(app: FastAPI):
     # ── Register main event loop for APScheduler WS broadcasts ───────────
     loop = asyncio.get_running_loop()
     discovery_service.set_main_loop(loop)
-    set_status_main_loop(loop)
 
     # ── APScheduler — scheduled discovery jobs ────────────────────────────
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -941,19 +926,6 @@ async def lifespan(app: FastAPI):
     # (workers: monitor_scheduler + monitor_poll). The legacy run_all_monitors_job
     # APScheduler loop was retired in the polling-engine migration.
     from apscheduler.triggers.interval import IntervalTrigger as _IT
-
-    # Status page polling — every 60s
-    from app.workers.status_worker import run_status_poll_job
-
-    scheduler.add_job(
-        run_status_poll_job,
-        trigger=_IT(minutes=1),
-        id="status_page_poll",
-        replace_existing=True,
-        max_instances=1,
-        misfire_grace_time=120,
-    )
-    _logger.info("Status page poll scheduled (60s interval).")
 
     # Docker topology sync — only when docker_discovery_enabled
     with get_session_context() as docker_db:
@@ -1231,10 +1203,9 @@ async def lifespan(app: FastAPI):
     _integration_stop_event = asyncio.Event()
     if _run_inprocess_workers:
         from app.workers import discovery as discovery_worker
-        from app.workers import notification_worker, webhook_worker
+        from app.workers import notification_worker
         from app.workers.telemetry_ingest_worker import run_ingest_loop as _run_ingest_loop
 
-        _worker_tasks.append(asyncio.create_task(webhook_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(notification_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(discovery_worker.run_worker()))
         _worker_tasks.append(asyncio.create_task(_run_ingest_loop(_ingest_stop_event)))
@@ -1242,12 +1213,11 @@ async def lifespan(app: FastAPI):
 
         _worker_tasks.append(asyncio.create_task(_run_integration_worker(_integration_stop_event)))
         _logger.info(
-            "Webhook, notification, discovery, telemetry ingest, "
-            "and integration workers started (in-process)."
+            "Notification, discovery, telemetry ingest, and integration workers started in-process."
         )
     else:
         _logger.info(
-            "CB_RUN_INPROCESS_WORKERS=false — webhook/notification/discovery workers "
+            "CB_RUN_INPROCESS_WORKERS=false — notification/discovery workers "
             "must run as separate containers."
         )
 
@@ -1455,6 +1425,12 @@ app.include_router(
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
+    windscribe.router,
+    prefix=f"{_V1}",
+    tags=["windscribe"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
     docs.router,
     prefix=f"{_V1}/docs",
     tags=["docs"],
@@ -1648,12 +1624,7 @@ app.include_router(
     tags=["timezones"],
     dependencies=[Depends(require_auth)],
 )
-app.include_router(
-    rack_api.router,
-    prefix=f"{_V1}/racks",
-    tags=["racks"],
-    dependencies=[Depends(require_auth)],
-)
+
 app.include_router(
     tags_api.router,
     prefix=f"{_V1}/tags",
@@ -1691,24 +1662,7 @@ app.include_router(
     tags=["events"],
     dependencies=[Depends(require_auth)],
 )
-app.include_router(
-    webhooks_router,
-    prefix=f"{_V1}/webhooks",
-    tags=["webhooks"],
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
-    status_router,
-    prefix=f"{_V1}/status",
-    tags=["status"],
-    dependencies=[Depends(require_auth)],
-)
-app.include_router(
-    ws_status_router,
-    prefix=f"{_V1}/status",
-    tags=["status-ws"],
-    dependencies=[Depends(require_auth)],
-)
+
 app.include_router(
     notifications_router,
     prefix=f"{_V1}/notifications",
@@ -1779,11 +1733,7 @@ app.include_router(
     tags=["intelligence"],
     dependencies=[Depends(require_auth)],
 )
-app.include_router(
-    public_status_router,
-    prefix=f"{_V1}/public",
-    tags=["public"],
-)
+
 app.include_router(
     maps_api.router,
     prefix=f"{_V1}/maps",

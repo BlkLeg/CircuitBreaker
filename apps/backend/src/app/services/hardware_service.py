@@ -119,7 +119,6 @@ def _to_dict(db: Session, hw: Hardware) -> dict:
     else:
         d["storage_summary"] = None
     d["environment_name"] = hw.environment_rel.name if hw.environment_rel else None
-    d["rack_name"] = hw.rack.name if hw.rack else None
     d["documents"] = _get_documents_for(db, "hardware", hw.id)
     return d
 
@@ -227,31 +226,16 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
                 },
             )
 
-    # CB-LEARN-002: auto-fill u_height/role from catalog when null but catalog keys present
-    u_height = payload.u_height
+    # CB-LEARN-002: auto-fill role from catalog when null but catalog keys present
     role = payload.role
-    rack_id = payload.rack_id
+
     if payload.vendor_catalog_key and payload.model_catalog_key:
         from app.services.catalog_service import get_device_spec
 
         spec = get_device_spec(payload.vendor_catalog_key, payload.model_catalog_key)
         if spec:
-            if u_height is None and spec.get("u_height"):
-                u_height = spec["u_height"]
             if role is None and spec.get("role"):
                 role = spec["role"]
-
-    # CB-RACK-002: rack overlap check
-    rack_unit = payload.rack_unit
-    if rack_id is not None and rack_unit is not None and u_height is not None:
-        from app.services.rack_service import check_rack_overlap
-
-        overlaps = check_rack_overlap(db, rack_id, rack_unit, u_height)
-        if overlaps:
-            raise HTTPException(
-                status_code=422,
-                detail={"detail": "Rack slot overlap", "conflicts": overlaps},
-            )
 
     # CB-PATTERN-001: MAC normalization + soft-alert on duplicate
     mac = _norm_mac(getattr(payload, "mac_address", None))
@@ -285,13 +269,10 @@ def create_hardware(db: Session, payload: HardwareCreate) -> dict:
         custom_icon=payload.custom_icon,
         vendor_catalog_key=payload.vendor_catalog_key,
         model_catalog_key=payload.model_catalog_key,
-        u_height=u_height,
-        rack_unit=rack_unit,
         telemetry_config=(
             payload.telemetry_config.model_dump() if payload.telemetry_config else None
         ),
         environment_id=resolved_env_id,
-        rack_id=rack_id,
         # v0.1.7: Networking extensions
         wifi_standards=payload.wifi_standards,
         wifi_bands=payload.wifi_bands,
@@ -369,30 +350,6 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
     if env_str is not None or env_id is not None:
         update_data["environment_id"] = resolve_environment_id(db, env_id, env_str)
 
-    # CB-RACK-002: rack overlap check on update
-    effective_rack_id = update_data.get("rack_id", hw.rack_id)
-    effective_rack_unit = update_data.get("rack_unit", hw.rack_unit)
-    effective_u_height = update_data.get("u_height", hw.u_height)
-    if (
-        effective_rack_id is not None
-        and effective_rack_unit is not None
-        and effective_u_height is not None
-    ):
-        from app.services.rack_service import check_rack_overlap
-
-        overlaps = check_rack_overlap(
-            db,
-            effective_rack_id,
-            effective_rack_unit,
-            effective_u_height,
-            exclude_hardware_id=hardware_id,
-        )
-        if overlaps:
-            raise HTTPException(
-                status_code=422,
-                detail={"detail": "Rack slot overlap", "conflicts": overlaps},
-            )
-
     for field, value in update_data.items():
         setattr(hw, field, value)
     # CB-STATE-005: touch last_seen on any update
@@ -423,10 +380,6 @@ def update_hardware(db: Session, hardware_id: int, payload: HardwareUpdate) -> d
         svc.ip_conflict_json = result["conflict_with"]
     if affected:
         db.commit()
-    # CB-STATE-001: recalculate hardware status (respects status_override)
-    from app.services.status_service import recalculate_hardware_status
-
-    recalculate_hardware_status(db, hardware_id)
     db.commit()
     return _to_dict(db, hw)
 

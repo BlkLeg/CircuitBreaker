@@ -88,6 +88,11 @@ vi.mock('../api/client', () => {
     deviceRolesApi: {
       list: vi.fn().mockResolvedValue([]),
     },
+    windscribeApi: {
+      getNetworkPrivacyScore: vi.fn().mockResolvedValue({ data: { score: 100 } }),
+      getNetworkThreatAlerts: vi.fn().mockResolvedValue({ data: {} }),
+      getDeviceThreatProfile: vi.fn().mockResolvedValue({ data: { score: 100 } }),
+    },
   };
 });
 

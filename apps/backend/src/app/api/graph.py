@@ -30,7 +30,6 @@ from app.db.models import (
     MiscItem,
     Network,
     NetworkPeer,
-    Rack,
     ScanResult,
     Service,
     ServiceDependency,
@@ -305,7 +304,6 @@ def build_topology_graph(
     db: Session,
     environment: str | None = None,
     environment_id: int | None = None,
-    rack_id: int | None = None,
     include: str = "hardware,compute,services,storage,networks,misc,external",
 ) -> dict:
     """Pure callable graph builder — shared by /graph/topology and /topologies/{id}."""
@@ -491,33 +489,11 @@ def build_topology_graph(
                 }
             )
 
-    # 2b. Racks (group nodes)
-    if "hardware" in include_set:
-        racks = db.execute(select(Rack)).scalars().all()
-        for rack in racks:
-            member_count = len(rack.hardware)
-            if member_count == 0:
-                continue
-            nodes.append(
-                {
-                    "id": f"rack-{rack.id}",
-                    "type": "rack",
-                    "ref_id": rack.id,
-                    "label": rack.name,
-                    "height_u": rack.height_u,
-                    "location": rack.location,
-                    "member_count": member_count,
-                }
-            )
-
     # 3. Hardware
     if "hardware" in include_set:
         hw_query = select(Hardware).options(
             selectinload(Hardware.storage_items),
-            joinedload(Hardware.rack),
         )
-        if rack_id is not None:
-            hw_query = hw_query.where(Hardware.rack_id == rack_id)
 
         # Execute once; reuse list for monitor batch-load and node iteration.
         _all_hw = db.execute(hw_query).unique().scalars().all()
@@ -579,10 +555,6 @@ def build_topology_graph(
                     )
                     if hw.source_scan_result_id
                     else None,
-                    "u_height": hw.u_height,
-                    "rack_unit": hw.rack_unit,
-                    "rack_id": hw.rack_id,
-                    "rack_name": hw.rack.name if hw.rack else None,
                     "download_speed_mbps": hw.download_speed_mbps,
                     "upload_speed_mbps": hw.upload_speed_mbps,
                     "ip_conflict": conflict_map.get(("hardware", hw.id), False),
@@ -602,16 +574,6 @@ def build_topology_graph(
                     "integration_config_id": hw.integration_config_id,
                 }
             )
-            # Rack → Hardware member edges
-            if hw.rack_id:
-                edges.append(
-                    build_edge_dict(
-                        id=f"e-rack-{hw.rack_id}-hw-{hw.id}",
-                        source=f"rack-{hw.rack_id}",
-                        target=f"hw-{hw.id}",
-                        relation="rack_member",
-                    )
-                )
 
         # Cluster → Hardware/Service member edges
         # Build hw set from already-loaded data; fetch only Service PKs (no full rows).
@@ -1056,11 +1018,10 @@ def _topology_etag(
     db: Session,
     environment: str | None,
     environment_id: int | None,
-    rack_id: int | None,
     include: str,
 ) -> str:
     """Lightweight version string for topology (for ETag / If-None-Match)."""
-    parts = [f"env={environment}", f"eid={environment_id}", f"rack={rack_id}", f"inc={include}"]
+    parts = [f"env={environment}", f"eid={environment_id}", f"inc={include}"]
     for model in (Hardware, ComputeUnit, Service, Network, Storage):
         try:
             row = db.execute(select(func.max(model.updated_at))).scalar_one_or_none()
@@ -1083,12 +1044,11 @@ def get_topology(
     request: Request,
     environment: str | None = Query(None),
     environment_id: int | None = Query(None),
-    rack_id: int | None = Query(None),
     include: str = Query("hardware,compute,services,storage,networks,misc,external"),
     map_id: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Response:
-    etag = _topology_etag(db, environment, environment_id, rack_id, include)
+    etag = _topology_etag(db, environment, environment_id, include)
     if_none_match = (request.headers.get("if-none-match") or "").strip().strip('"')
     if if_none_match and if_none_match == etag:
         return Response(status_code=304)
@@ -1096,7 +1056,6 @@ def get_topology(
         db=db,
         environment=environment,
         environment_id=environment_id,
-        rack_id=rack_id,
         include=include,
     )
     # Filter nodes/edges by map membership when map_id is specified

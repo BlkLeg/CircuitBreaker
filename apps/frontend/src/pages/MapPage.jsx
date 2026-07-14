@@ -42,6 +42,8 @@ import CustomNode from '../components/map/CustomNode';
 import CustomEdge from '../components/map/CustomEdge';
 import ConnectionTypePicker from '../components/map/ConnectionTypePicker';
 import DeleteConflictModal from '../components/map/DeleteConflictModal';
+import PrivacyScoreWidget from '../components/security/PrivacyScoreWidget';
+import HostileNetworkBanner from '../components/security/HostileNetworkBanner';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useCapabilities } from '../hooks/useCapabilities.js';
 import WifiOverlay from '../components/map/WifiOverlay';
@@ -2316,6 +2318,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
                   setLegendOpen={setLegendOpen}
                   includeTypes={includeTypes}
                 />
+                <PrivacyScoreWidget />
+                <HostileNetworkBanner />
                 <Controls style={{ zIndex: 35 }} />
                 <Background color={bgGridColor} gap={24} size={1} />
               </ReactFlow>

@@ -21,8 +21,6 @@ from app.db.models import (
     Integration,
     IntegrationMonitor,
     IntegrationMonitorEvent,
-    StatusGroup,
-    StatusPage,
 )
 from app.db.session import get_session_context
 from app.integrations.registry import get_plugin
@@ -91,37 +89,6 @@ def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "page"
 
 
-def _ensure_status_page(db: Any, integ: Integration) -> None:
-    """Auto-provision a status page for this integration if one doesn't exist.
-
-    On every sync the group nodes are kept in sync with current monitors so
-    newly-added or removed monitors appear automatically.
-    """
-    monitor_ids = [
-        row.id
-        for row in db.query(IntegrationMonitor)
-        .filter(IntegrationMonitor.integration_id == integ.id)
-        .all()
-    ]
-
-    page = db.query(StatusPage).filter(StatusPage.integration_id == integ.id).first()
-    if page is None:
-        slug = _slugify(integ.name)
-        if db.query(StatusPage).filter(StatusPage.slug == slug).first():
-            slug = f"{slug}-{integ.id}"
-        page = StatusPage(name=integ.name, slug=slug, is_public=False, integration_id=integ.id)
-        db.add(page)
-        db.flush()
-
-    group = db.query(StatusGroup).filter(StatusGroup.status_page_id == page.id).first()
-    if group is None:
-        group = StatusGroup(name="Monitors", status_page_id=page.id, nodes=[])
-        db.add(group)
-        db.flush()
-
-    group.nodes = [{"type": "integration_monitor", "id": mid} for mid in monitor_ids]
-
-
 def _sync_one(integration_id: int) -> bool:
     """Sync a single integration. Runs in a thread pool.
 
@@ -167,7 +134,6 @@ def _sync_one(integration_id: int) -> bool:
         monitors = plugin.sync(config)  # never raises — returns [] on error
 
         _upsert_monitors(db, integ, monitors)
-        _ensure_status_page(db, integ)
 
         if monitors:
             integ.sync_status = "ok"

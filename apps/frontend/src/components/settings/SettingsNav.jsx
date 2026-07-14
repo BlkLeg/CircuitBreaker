@@ -11,7 +11,6 @@ import {
   X,
   Plug,
   Users,
-  Webhook,
   Server,
 } from 'lucide-react';
 
@@ -52,12 +51,7 @@ export const SETTINGS_TABS = [
     icon: Plug,
     description: 'NATS, Docker, and external service controls.',
   },
-  {
-    id: 'webhooks',
-    label: 'Webhooks',
-    icon: Webhook,
-    description: 'Webhook endpoints, event routing, and delivery logs.',
-  },
+
   {
     id: 'security',
     label: 'Security',

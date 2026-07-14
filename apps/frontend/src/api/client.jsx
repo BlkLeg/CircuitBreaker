@@ -625,4 +625,6 @@ export const deviceRolesApi = {
   delete: (id) => client.delete(`/settings/roles/${id}`).then((r) => r.data),
 };
 
+export { windscribeApi } from './windscribe';
+
 export default client;

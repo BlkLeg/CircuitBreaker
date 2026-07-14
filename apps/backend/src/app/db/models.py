@@ -29,7 +29,6 @@ def _now() -> datetime:
 
 _FK_HARDWARE_ID = "hardware.id"
 _FK_SERVICES_ID = "services.id"
-_FK_RACKS_ID = "racks.id"
 
 
 # ── Common ─────────────────────────────────────────────────────────────────
@@ -84,25 +83,6 @@ class EntityDoc(Base):
     doc: Mapped["Doc"] = relationship("Doc")
 
 
-# ── Racks ──────────────────────────────────────────────────────────────────
-
-
-class Rack(Base):
-    __tablename__ = "racks"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    height_u: Mapped[int] = mapped_column(Integer, nullable=False, default=42)
-    location: Mapped[str | None] = mapped_column(String, nullable=True)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, onupdate=_now
-    )
-
-    hardware: Mapped[list["Hardware"]] = relationship("Hardware", back_populates="rack")
-
-
 # ── Hardware ────────────────────────────────────────────────────────────────
 
 
@@ -127,9 +107,6 @@ class Hardware(Base):
     # v0.1.2: catalog linkage
     vendor_catalog_key: Mapped[str | None] = mapped_column(String)
     model_catalog_key: Mapped[str | None] = mapped_column(String)
-    # v0.1.2: rack positioning
-    u_height: Mapped[int | None] = mapped_column(Integer)
-    rack_unit: Mapped[int | None] = mapped_column(Integer)
     # v0.1.2: telemetry (JSONB as of v0.2.0)
     telemetry_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     telemetry_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -139,13 +116,7 @@ class Hardware(Base):
     environment_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("environments.id"), nullable=True
     )
-    # v0.1.4-cortex: rack assignment + discovery lineage
-    rack_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_RACKS_ID), nullable=True)
-    # v2.0: rack mounting orientation (horizontal = standard U-slot, vertical = side rail)
-    mounting_orientation: Mapped[str | None] = mapped_column(
-        String, nullable=True, default="horizontal"
-    )
-    side_rail: Mapped[str | None] = mapped_column(String, nullable=True)
+    # v0.1.4-cortex: discovery lineage
     source_scan_result_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("scan_results.id"), nullable=True
     )
@@ -176,13 +147,12 @@ class Hardware(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # v0.4.0: Windscribe privacy metrics
+    privacy_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    threat_profile: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
-    )
-
-    rack: Mapped["Rack | None"] = relationship(
-        "Rack", back_populates="hardware", foreign_keys=[rack_id]
     )
     compute_units: Mapped[list["ComputeUnit"]] = relationship(
         "ComputeUnit", back_populates="hardware"
@@ -217,6 +187,9 @@ class Hardware(Base):
         "IntegrationMonitor",
         foreign_keys="IntegrationMonitor.linked_hardware_id",
         back_populates="linked_hardware",
+    )
+    privacy_history: Mapped[list["PrivacyScoreHistory"]] = relationship(
+        "PrivacyScoreHistory", back_populates="hardware", cascade="all, delete-orphan"
     )
 
 
@@ -313,6 +286,22 @@ class DailyUptimeStats(Base):
     )
 
     hardware: Mapped["Hardware"] = relationship("Hardware")
+
+
+class PrivacyScoreHistory(Base):
+    """Historical record of privacy scores and threat profiles."""
+
+    __tablename__ = "privacy_score_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hardware_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID, ondelete="CASCADE"), nullable=False, index=True
+    )
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    threat_profile: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="privacy_history")
 
 
 # ── Compute Units ───────────────────────────────────────────────────────────
@@ -955,6 +944,9 @@ class AppSettings(Base):
     cve_sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cve_sync_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     cve_last_sync_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Windscribe Integration
+    windscribe_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    windscribe_feed_refresh_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # Phase 3: Realtime / NATS settings
     realtime_notifications_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
@@ -1618,29 +1610,7 @@ class CVEEntry(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-# ── Webhooks & Notifications ──────────────────────────────────────────────────
-
-
-class WebhookRule(Base):
-    __tablename__ = "webhook_rules"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)  # display label
-    target_url: Mapped[str] = mapped_column(String, nullable=False)
-    secret: Mapped[str | None] = mapped_column(String, nullable=True)  # Used for HMAC signing
-    # Backward-compat field; superseded by events_enabled for v1 webhook UI.
-    topics: Mapped[str] = mapped_column(String, nullable=False, default="*")
-    events_enabled: Mapped[list] = mapped_column(
-        JSONB, nullable=False, default=list
-    )  # JSONB as of v0.2.0
-    headers_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-    retries: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    body_template: Mapped[str | None] = mapped_column(Text, nullable=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, onupdate=_now
-    )
+# ── Notifications ──────────────────────────────────────────────────
 
 
 class NotificationSink(Base):
@@ -1671,24 +1641,6 @@ class NotificationRoute(Base):
     sink: Mapped["NotificationSink"] = relationship("NotificationSink")
 
 
-class WebhookDelivery(Base):
-    __tablename__ = "webhook_deliveries"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    rule_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("webhook_rules.id", ondelete="CASCADE"), nullable=False
-    )
-    subject: Mapped[str] = mapped_column(String, nullable=False)
-    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    delivered_at: Mapped[str] = mapped_column(String, nullable=False)
-    is_dlq: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    dlq_at: Mapped[str | None] = mapped_column(String, nullable=True)
-    replayed_at: Mapped[str | None] = mapped_column(String, nullable=True)
-
-
 class OAuthState(Base):
     __tablename__ = "oauth_states"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1697,68 +1649,6 @@ class OAuthState(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     invite_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     nonce: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-# ── Status Page ──────────────────────────────────────────────────────────────
-
-
-class StatusPage(Base):
-    __tablename__ = "status_pages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    config: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_public: Mapped[bool] = mapped_column(Boolean, default=False)
-    integration_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("integrations.id", ondelete="SET NULL"), nullable=True, unique=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, onupdate=_now
-    )
-
-    groups: Mapped[list["StatusGroup"]] = relationship(
-        "StatusGroup", back_populates="status_page", cascade="all, delete-orphan"
-    )
-
-
-class StatusGroup(Base):
-    __tablename__ = "status_groups"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    status_page_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("status_pages.id", ondelete="CASCADE"), nullable=False
-    )
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    nodes: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-    services: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_now, onupdate=_now
-    )
-
-    status_page: Mapped["StatusPage"] = relationship("StatusPage", back_populates="groups")
-    history: Mapped[list["StatusHistory"]] = relationship(
-        "StatusHistory", back_populates="group", cascade="all, delete-orphan"
-    )
-
-
-class StatusHistory(Base):
-    __tablename__ = "status_history"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("status_groups.id", ondelete="CASCADE"), nullable=False
-    )
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    overall_status: Mapped[str] = mapped_column(String, nullable=False)  # up/down/degraded/unknown
-    uptime_pct: Mapped[float] = mapped_column(Float, nullable=False)
-    avg_ping: Mapped[float | None] = mapped_column(Float, nullable=True)
-    metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-    raw_telemetry: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # JSONB as of v0.2.0
-
-    group: Mapped["StatusGroup"] = relationship("StatusGroup", back_populates="history")
 
 
 # ── Tenants (Multi-Tenancy) ───────────────────────────────────────────────────

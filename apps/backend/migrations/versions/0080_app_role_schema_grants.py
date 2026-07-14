@@ -51,11 +51,7 @@ def upgrade() -> None:
     # meaning the GRANT ON ALL TABLES above may not cover it if ownership differs.
     # Without this, the app role loses SELECT/INSERT on alembic_version after the REVOKE,
     # causing the next migration run to crash trying to read the current revision. (#68)
-    op.execute(
-        sa.text(
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE alembic_version TO {qi}"
-        )
-    )
+    op.execute(sa.text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE alembic_version TO {qi}"))
 
     op.execute(
         sa.text(

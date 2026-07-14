@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     Hardware,
     Network,
-    Rack,
     ScanResult,
 )
 
@@ -235,7 +234,6 @@ def suggest_bulk_actions(db: Session, result_ids: list[int]) -> dict:
     catalog_matches = _suggest_catalog_matches(results)
     clusters = _suggest_clusters(results, catalog_matches)
     networks = _suggest_networks(db, results)
-    rack_suggestions = _suggest_racks(db, results, catalog_matches)
     duplicates = _detect_duplicates(db, results)
     services = _suggest_services(results)
     role_summary = _summarize_roles(results, catalog_matches)
@@ -244,7 +242,7 @@ def suggest_bulk_actions(db: Session, result_ids: list[int]) -> dict:
         "clusters": clusters,
         "networks": networks,
         "catalog_matches": catalog_matches,
-        "rack_suggestions": rack_suggestions,
+        "rack_suggestions": [],
         "duplicates": duplicates,
         "services": services,
         "role_summary": role_summary,
@@ -357,81 +355,6 @@ def _suggest_catalog_matches(results: Sequence[ScanResult]) -> dict[int, dict]:
             if device:
                 matches[r.id] = device
     return matches
-
-
-# ── Rack suggestions ───────────────────────────────────────────────────────
-
-
-def _suggest_racks(
-    db: Session,
-    results: Sequence[ScanResult],
-    catalog_matches: dict[int, dict],
-) -> list[dict]:
-    """Find racks with enough free U-slots for the incoming hardware."""
-    count = len(results)
-    if count == 0:
-        return []
-
-    # Determine average u_height from catalog matches (default 1)
-    heights = [m.get("u_height", 1) for m in catalog_matches.values() if m.get("u_height")]
-    avg_height = max(1, round(sum(heights) / len(heights))) if heights else 1
-
-    racks = db.execute(select(Rack)).scalars().all()
-    suggestions = []
-
-    for rack in racks:
-        occupied = set()
-        hw_in_rack = (
-            db.execute(
-                select(Hardware).where(
-                    Hardware.rack_id == rack.id,
-                    Hardware.rack_unit.isnot(None),
-                    Hardware.u_height.isnot(None),
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        for hw in hw_in_rack:
-            if hw.rack_unit is None:
-                continue
-            for u in range(hw.rack_unit, hw.rack_unit + (hw.u_height or 1)):
-                occupied.add(u)
-
-        # Find contiguous free ranges
-        free_slots = []
-        consecutive = 0
-        start_u = None
-        for u in range(1, rack.height_u + 1):
-            if u not in occupied:
-                if consecutive == 0:
-                    start_u = u
-                consecutive += 1
-            else:
-                if consecutive >= avg_height:
-                    free_slots.append(start_u)
-                consecutive = 0
-                start_u = None
-        if consecutive >= avg_height and start_u is not None:
-            free_slots.append(start_u)
-
-        total_free = rack.height_u - len(occupied)
-        needed = count * avg_height
-
-        if total_free >= needed:
-            suggestions.append(
-                {
-                    "rack_id": rack.id,
-                    "rack_name": rack.name,
-                    "height_u": rack.height_u,
-                    "free_u": total_free,
-                    "free_start_slots": free_slots[:count],
-                    "avg_device_height": avg_height,
-                }
-            )
-
-    return suggestions
 
 
 # ── Duplicate detection ────────────────────────────────────────────────────

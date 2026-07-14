@@ -24,7 +24,6 @@ import { resolveDeviceIcon } from './mapConstants';
  * Extracted from MapPage.jsx IconNode and extended with Phase 2 v2 features.
  */
 
-
 const TELEMETRY_RING = {
   healthy: {
     shadow: '0 0 0 2.5px #22c55e, 0 0 8px 2px #22c55e66',
@@ -40,7 +39,6 @@ const USER_ICON_SIZED_ICON_SOURCES = [
   '/icons/vendors/CB_NIGHT_FULL.png',
   '/icons/vendors/CB_NIGHT_HALF.png',
 ];
-
 
 function getStorageBarColor(pct) {
   if (pct >= 85) return 'var(--color-danger)';
@@ -284,7 +282,9 @@ function CustomNode({ id, data, selected }) {
             width={14}
             height={14}
             style={{ objectFit: 'contain', display: 'block' }}
-            onError={(e) => { e.target.parentElement.style.display = 'none'; }}
+            onError={(e) => {
+              e.target.parentElement.style.display = 'none';
+            }}
           />
         </div>
       )}

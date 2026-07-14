@@ -45,9 +45,7 @@ const ForceChangePasswordPage = React.lazy(() => import('./pages/ForceChangePass
 const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
 const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
-const StatusPagesPage = React.lazy(() => import('./pages/StatusPagesPage'));
-const RackPage = React.lazy(() => import('./pages/RackPage'));
-const PublicStatusPage = React.lazy(() => import('./pages/PublicStatusPage'));
+
 const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
 const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
@@ -149,22 +147,6 @@ function AppInner() {
                   />
                   <Route path="/ip-addresses" element={<Navigate to="/ipam" replace />} />
                   <Route
-                    path="/status-pages"
-                    element={
-                      <RequireEditor>
-                        <StatusPagesPage />
-                      </RequireEditor>
-                    }
-                  />
-                  <Route
-                    path="/racks"
-                    element={
-                      <RequireEditor>
-                        <RackPage />
-                      </RequireEditor>
-                    }
-                  />
-                  <Route
                     path="/logs"
                     element={
                       <RequireAdmin>
@@ -201,7 +183,6 @@ function AppInner() {
                   <Route path="/invite/accept" element={<InviteAcceptPage />} />
                   <Route path="/auth/change-password" element={<ForceChangePasswordPage />} />
                   <Route path="/reset-password" element={<ResetPasswordPage />} />
-                  <Route path="/status/:slug" element={<PublicStatusPage />} />
                 </Routes>
               </motion.div>
             </AnimatePresence>
@@ -370,7 +351,7 @@ function AppRoutes() {
             <Route path="/invite/accept" element={<InviteAcceptPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/reset-password/vault" element={<VaultResetPage />} />
-            <Route path="/status/:slug" element={<PublicStatusPage />} />
+
             <Route path="*" element={<NavigateToLogin />} />
           </Routes>
         </React.Suspense>

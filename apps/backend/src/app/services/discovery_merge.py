@@ -691,16 +691,10 @@ def enhanced_bulk_merge(db: Session, payload: Any, actor: str = "api") -> dict:
                 "vendor_icon_slug",
                 "role",
                 "name",
-                "rack_unit",
-                "u_height",
             ):
                 val = getattr(assignment, field, None)
                 if val is not None:
                     overrides[field] = val
-
-        # Apply rack_id from payload-level
-        if payload.rack_id:
-            overrides["rack_id"] = payload.rack_id
 
         try:
             merge_result = merge_scan_result(db, rid, "accept", overrides=overrides, actor=actor)
