@@ -45,10 +45,16 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.func.now(),
         ),
+        if_not_exists=True,
     )
-    op.create_index("ix_monitor_items_due", "monitor_items", ["enabled", "next_due_at"])
+    op.create_index(
+        "ix_monitor_items_due",
+        "monitor_items",
+        ["enabled", "next_due_at"],
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_monitor_items_due", table_name="monitor_items")
-    op.drop_table("monitor_items")
+    op.drop_index("ix_monitor_items_due", table_name="monitor_items", if_exists=True)
+    op.drop_table("monitor_items", if_exists=True)

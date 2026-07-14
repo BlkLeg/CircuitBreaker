@@ -4,23 +4,37 @@ import { useToast } from '../common/Toast';
 import { settingsApi } from '../../api/client.jsx';
 import { MAX_CONCURRENT_SCANS_MIN, MAX_CONCURRENT_SCANS_MAX } from '../../lib/constants.js';
 
-// Simple toggle button (mirrors existing style in this file)
 function Toggle({ value, onChange }) {
   return (
     <button
       type="button"
       onClick={() => onChange(!value)}
       style={{
+        position: 'relative',
         flexShrink: 0,
-        width: 40,
-        height: 22,
+        width: 44,
+        height: 24,
         borderRadius: 999,
         border: 'none',
         cursor: 'pointer',
         background: value ? 'var(--color-primary)' : 'var(--color-border)',
-        transition: 'background 0.2s',
+        transition: 'background 0.2s ease-in-out',
       }}
-    />
+    >
+      <div
+        style={{
+          position: 'absolute',
+          top: 2,
+          left: value ? 22 : 2,
+          width: 20,
+          height: 20,
+          backgroundColor: '#fff',
+          borderRadius: '50%',
+          transition: 'left 0.2s ease-in-out',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+        }}
+      />
+    </button>
   );
 }
 
