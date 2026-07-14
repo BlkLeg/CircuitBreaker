@@ -66,6 +66,7 @@ from app.services.discovery_probes import (
     _run_router_arp_table,
     _run_snmp_probe,
 )
+from app.services.discovery_readiness import CapState, get_discovery_readiness
 from app.services.discovery_safe import (
     docker_discover,
     is_docker_socket_available,
@@ -110,6 +111,18 @@ def _requires_nmap(scan_types: list[str] | None) -> bool:
     if not scan_types:
         return False
     return "nmap" in scan_types or "deep_dive" in scan_types
+
+
+def _scan_capability_gate(scan_types: list[str] | None) -> tuple[bool, str]:
+    """Return (blocked, reason). Blocks an nmap-requiring scan when the nmap
+    binary isn't ready, so discovery fails loudly instead of returning empty."""
+    if not _requires_nmap(scan_types):
+        return False, ""
+    caps = {c.key: c for c in get_discovery_readiness()}
+    nmap_cap = caps.get("nmap_present")
+    if nmap_cap is not None and nmap_cap.state != CapState.READY:
+        return True, ("nmap unavailable — discovery cannot run. Enable it in Discovery Settings.")
+    return False, ""
 
 
 async def _emit_ws_event(event_type: str, payload: dict) -> None:
@@ -911,6 +924,18 @@ async def run_scan_job(job_id: int) -> None:
     raw_results: list[dict] = []
 
     try:
+        blocked, block_reason = _scan_capability_gate(scan_types)
+        if blocked:
+            await _log_scan_event(job_id, "ERROR", block_reason, "nmap")
+            await loop.run_in_executor(None, _scan_finalize, job_id, {}, "failed", False)
+            await _emit_ws_event("job_update", {"job": {"id": job_id, "status": "failed"}})
+            return
+        _degraded = [
+            c for c in get_discovery_readiness() if c.key == "arp_l2" and c.state != CapState.READY
+        ]
+        if _degraded and _requires_nmap(scan_types):
+            await _log_scan_event(job_id, "WARNING", _degraded[0].explanation, "arp")
+
         # ── Docker-only scan (early return path) ─────────────────────────────
         if scan_types == ["docker"]:
             socket_path = "/var/run/docker.sock"
