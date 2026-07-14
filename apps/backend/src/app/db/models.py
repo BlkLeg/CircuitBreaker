@@ -1583,6 +1583,7 @@ class TelemetryTimeseries(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     entity_type: Mapped[str] = mapped_column(String, nullable=False)  # 'hardware' | 'compute_unit'
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     metric: Mapped[str] = mapped_column(String, nullable=False)  # 'cpu_pct', 'mem_used_gb', etc.
     value: Mapped[float] = mapped_column(Float, nullable=False)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="proxmox")
