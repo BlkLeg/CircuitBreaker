@@ -103,11 +103,7 @@ def get_discovery_readiness() -> list[Capability]:
     arp_l2 = Capability(
         key="arp_l2",
         title="ARP / MAC address resolution",
-        state=CapState.READY
-        if has_arp
-        else (
-            CapState.NEEDS_HELPER_ACTION if not has_lan or has_raw else CapState.NEEDS_HELPER_ACTION
-        ),
+        state=CapState.READY if has_arp else CapState.NEEDS_HELPER_ACTION,
         explanation=(
             "ARP scanning is available; MAC addresses are resolved for LAN hosts."
             if has_arp

@@ -49,12 +49,7 @@ def test_readiness_all_ready_when_capable():
     ):
         caps = {c.key: c for c in r.get_discovery_readiness()}
 
-        assert [c.key for c in r.get_discovery_readiness()] == [
-            "nmap_present",
-            "nmap_raw",
-            "arp_l2",
-            "lan_adjacency",
-        ]
+    assert list(caps) == ["nmap_present", "nmap_raw", "arp_l2", "lan_adjacency"]
     assert caps["nmap_present"].state == r.CapState.READY
     assert caps["nmap_raw"].state == r.CapState.READY
     assert caps["arp_l2"].state == r.CapState.READY
