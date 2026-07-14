@@ -1,6 +1,22 @@
 from unittest.mock import patch
 
 
+async def test_readiness_endpoint_returns_capabilities(client, auth_headers):
+    resp = await client.get("/api/v1/discovery/readiness", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    keys = [c["key"] for c in body["capabilities"]]
+    assert keys == ["nmap_present", "nmap_raw", "arp_l2", "lan_adjacency"]
+    for c in body["capabilities"]:
+        assert c["state"] in {
+            "ready",
+            "auto-fixable",
+            "needs-helper-action",
+            "unavailable-on-platform",
+        }
+        assert c["explanation"]
+
+
 def test_nmap_binary_present_true_when_on_path():
     from app.services.discovery_probes import nmap_binary_present
 

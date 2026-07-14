@@ -143,6 +143,24 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
     )
 
 
+@router.get("/readiness")
+def get_readiness(user: User = require_role("admin")) -> dict:
+    from app.services.discovery_readiness import get_discovery_readiness
+
+    return {
+        "capabilities": [
+            {
+                "key": c.key,
+                "title": c.title,
+                "state": c.state.value,
+                "explanation": c.explanation,
+                "reason_code": c.reason_code,
+            }
+            for c in get_discovery_readiness()
+        ]
+    }
+
+
 @router.get("/status", response_model=DiscoveryStatusOut)
 async def get_discovery_status(db: Session = Depends(get_db)):
     # Always compute fresh so docker_available reflects current socket (e.g. after compose up).
