@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     SmallInteger,
@@ -246,6 +247,34 @@ class HardwareMonitor(Base):
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
     hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="monitor")
+
+
+class MonitorItem(Base):
+    """One polled metric-source (Zabbix-style item): a check on a target at an interval."""
+
+    __tablename__ = "monitor_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # hardware|compute_unit|external_node|ip
+    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)  # resolved ip/hostname to probe
+    check_type: Mapped[str] = mapped_column(String, nullable=False)  # icmp|tcp|http
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    interval_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    next_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String, nullable=True)  # up|down|error
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    __table_args__ = (Index("ix_monitor_items_due", "enabled", "next_due_at"),)
 
 
 class UptimeEvent(Base):
