@@ -937,20 +937,10 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 _logger.warning("Could not schedule profile %d: %s", profile.id, exc)
 
-    # Uptime monitor — poll all enabled monitors every 30 seconds
+    # Uptime monitoring is handled by the item-based polling engine
+    # (workers: monitor_scheduler + monitor_poll). The legacy run_all_monitors_job
+    # APScheduler loop was retired in the polling-engine migration.
     from apscheduler.triggers.interval import IntervalTrigger as _IT
-
-    from app.services.monitor_service import run_all_monitors_job
-
-    _monitor_interval = int(os.environ.get("UPTIME_MONITOR_INTERVAL_S", "30"))
-    scheduler.add_job(
-        run_all_monitors_job,
-        trigger=_IT(seconds=_monitor_interval),
-        id="uptime_monitor",
-        replace_existing=True,
-        max_instances=1,
-    )
-    _logger.info("Uptime monitor scheduled (%ds interval).", _monitor_interval)
 
     # Status page polling — every 60s
     from app.workers.status_worker import run_status_poll_job

@@ -53,6 +53,10 @@ TOPOLOGY_CABLE_ADDED = "topology.cable.added"
 TOPOLOGY_CABLE_REMOVED = "topology.cable.removed"
 TOPOLOGY_NODE_STATUS_CHANGED = "topology.node.status_changed"
 
+# ── Monitoring poll queue (dedicated work-queue stream; NOT under monitor.>) ──
+# The "mon." root avoids colliding with the shared CB_EVENTS stream's monitor.> subjects.
+MONITOR_POLL_ITEM = "mon.poll.item"
+
 
 # ── Payload helpers ──────────────────────────────────────────────────────────
 

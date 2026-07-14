@@ -81,11 +81,28 @@ else
   fi
 
   echo "[migrate] Ensuring circuitbreaker database exists..."
-  if ! psql "postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/postgres" -tAc "SELECT 1 FROM pg_database WHERE datname = 'circuitbreaker'" | grep -q 1; then
-    psql "postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/postgres" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "circuitbreaker" OWNER breaker'
+  _pg_url_base="$(
+    python3 <<'PY'
+import os
+from urllib.parse import quote
+
+p = quote(os.environ["CB_DB_PASSWORD"], safe="")
+print(f"postgresql://breaker:{p}@127.0.0.1:5432/postgres")
+PY
+  )"
+  if ! psql "${_pg_url_base}" -tAc "SELECT 1 FROM pg_database WHERE datname = 'circuitbreaker'" | grep -q 1; then
+    psql "${_pg_url_base}" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE "circuitbreaker" OWNER breaker'
   fi
 
-  export CB_DB_URL="postgresql://breaker:${CB_DB_PASSWORD}@${PGHOST}:${PGPORT}/circuitbreaker"
+  export CB_DB_URL="$(
+    python3 <<'PY'
+import os
+from urllib.parse import quote
+
+p = quote(os.environ["CB_DB_PASSWORD"], safe="")
+print(f"postgresql://breaker:{p}@127.0.0.1:5432/circuitbreaker")
+PY
+  )"
 fi
 
 echo "[migrate] Running Alembic migrations from ${APP_DIR}..."

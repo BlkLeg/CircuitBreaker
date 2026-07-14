@@ -21,8 +21,14 @@ if [ -n "${CB_DB_URL:-}" ]; then
     *) USE_EXTERNAL_DB=1 ;;
   esac
 fi
+# Password must be URL-encoded (install.sh uses base64 secrets; '/' and '+' break urlparse/psql).
 if [ "$USE_EXTERNAL_DB" -eq 0 ] && [ -n "${CB_DB_PASSWORD:-}" ]; then
-  export CB_DB_URL="postgresql://breaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker"
+  export CB_DB_URL="$(
+    python3 -c 'import os; from urllib.parse import quote
+p = quote(os.environ["CB_DB_PASSWORD"], safe="")
+print(f"postgresql://breaker:{p}@127.0.0.1:5432/circuitbreaker")
+'
+  )"
 fi
 
 # ── Required secret validation ────────────────────────────────────────────────

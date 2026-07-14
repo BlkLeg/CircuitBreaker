@@ -25,7 +25,6 @@ from app.db.models import (
     HardwareCluster,
     HardwareClusterMember,
     HardwareConnection,
-    HardwareMonitor,
     HardwareNetwork,
     MapPinnedEntity,
     MiscItem,
@@ -523,12 +522,13 @@ def build_topology_graph(
         # Execute once; reuse list for monitor batch-load and node iteration.
         _all_hw = db.execute(hw_query).unique().scalars().all()
         _all_hw_ids = [hw.id for hw in _all_hw]
+
+        from app.services import monitor_service
+
         _monitors = (
-            (db.query(HardwareMonitor).filter(HardwareMonitor.hardware_id.in_(_all_hw_ids)).all())
-            if _all_hw_ids
-            else []
+            monitor_service.list_monitors(db, hardware_ids=_all_hw_ids) if _all_hw_ids else []
         )
-        _monitor_map = {m.hardware_id: m for m in _monitors}
+        _monitor_map = {m["hardware_id"]: m for m in _monitors}
 
         for hw in _all_hw:
             # Build storage_summary by aggregating attached storage items
@@ -586,16 +586,16 @@ def build_topology_graph(
                     "download_speed_mbps": hw.download_speed_mbps,
                     "upload_speed_mbps": hw.upload_speed_mbps,
                     "ip_conflict": conflict_map.get(("hardware", hw.id), False),
-                    "monitor_status": _monitor_map[hw.id].last_status
+                    "monitor_status": _monitor_map[hw.id]["last_status"]
                     if hw.id in _monitor_map
                     else None,
-                    "monitor_latency_ms": _monitor_map[hw.id].latency_ms
+                    "monitor_latency_ms": _monitor_map[hw.id]["latency_ms"]
                     if hw.id in _monitor_map
                     else None,
-                    "monitor_last_checked_at": _monitor_map[hw.id].last_checked_at
+                    "monitor_last_checked_at": _monitor_map[hw.id]["last_checked_at"]
                     if hw.id in _monitor_map
                     else None,
-                    "monitor_uptime_pct_24h": _monitor_map[hw.id].uptime_pct_24h
+                    "monitor_uptime_pct_24h": _monitor_map[hw.id]["uptime_pct_24h"]
                     if hw.id in _monitor_map
                     else None,
                     "proxmox_node_name": hw.proxmox_node_name,

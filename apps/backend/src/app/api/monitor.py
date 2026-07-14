@@ -18,11 +18,7 @@ router = APIRouter(tags=["monitors"])
 @router.get("", response_model=list[MonitorRead])
 def list_monitors(db: Session = Depends(get_db)) -> Any:
     """List all hardware monitors with their latest status."""
-    from sqlalchemy import select
-
-    from app.db.models import HardwareMonitor
-
-    return list(db.scalars(select(HardwareMonitor).order_by(HardwareMonitor.hardware_id)).all())
+    return monitor_service.list_monitors(db)
 
 
 @router.get("/{hardware_id}", response_model=MonitorRead)
@@ -104,6 +100,5 @@ def run_immediate_check(
     monitor = monitor_service.get_monitor(db, hardware_id)
     if not monitor:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    monitor_service.run_monitor(db, monitor)
-    db.refresh(monitor)
+    monitor_service.run_immediate_check(db, hardware_id)
     return monitor

@@ -13,6 +13,9 @@ _TYPE_MAP = {
     "1": "webhook",
     "2": "notification",
     "3": "telemetry",
+    "4": "monitor_scheduler",
+    "5": "monitor_poll",
+    "6": "monitor_poll",
 }
 
 
@@ -40,6 +43,18 @@ async def _run_telemetry() -> None:
     await run_with_graceful_shutdown(telemetry_collector.run_worker)
 
 
+async def _run_monitor_scheduler() -> None:
+    from app.workers import monitor_scheduler
+
+    await run_with_graceful_shutdown(monitor_scheduler.run_worker)
+
+
+async def _run_monitor_poll() -> None:
+    from app.workers import monitor_poll_worker
+
+    await run_with_graceful_shutdown(monitor_poll_worker.run_worker)
+
+
 async def _dispatch(kind: str) -> None:
     if kind == "discovery":
         await _run_discovery()
@@ -49,6 +64,10 @@ async def _dispatch(kind: str) -> None:
         await _run_notification()
     elif kind == "telemetry":
         await _run_telemetry()
+    elif kind == "monitor_scheduler":
+        await _run_monitor_scheduler()
+    elif kind == "monitor_poll":
+        await _run_monitor_poll()
     else:
         raise SystemExit(f"Unknown worker type: {kind!r}")
 
@@ -59,8 +78,10 @@ def main() -> None:
         "--type",
         required=True,
         help=(
-            "Worker type: discovery, webhook, notification, telemetry, or numeric"
-            " (0=discovery,1=webhook,2=notification,3=telemetry)"
+            "Worker type: discovery, webhook, notification, telemetry,"
+            " monitor_scheduler, monitor_poll, or numeric"
+            " (0=discovery,1=webhook,2=notification,3=telemetry,"
+            "4=monitor_scheduler,5=monitor_poll,6=monitor_poll)"
         ),
     )
     args = parser.parse_args()
