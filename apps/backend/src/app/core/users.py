@@ -127,7 +127,7 @@ class UserManager(IntegerIDMixin, BaseUserManager[User, int]):  # type: ignore[t
         raw_token: str | None = None
         try:
             if response is not None and hasattr(response, "body"):
-                raw_token = json.loads(response.body).get("access_token")
+                raw_token = json.loads(bytes(response.body)).get("access_token")
         except Exception:
             pass
 

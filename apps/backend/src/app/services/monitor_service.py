@@ -58,7 +58,9 @@ def _synthesize_monitor(db: Session, hardware_id: int, items: list[MonitorItem])
 
     last_checked_at = None
     if avail_map:
-        last_checked_at = max(t.ts for t in avail_map.values()).isoformat()
+        valid_ts = [t.ts for t in avail_map.values() if t.ts is not None]
+        if valid_ts:
+            last_checked_at = max(valid_ts).isoformat()
 
     uptime_pct_24h = None
     today_str = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -103,7 +105,7 @@ def list_monitors(db: Session, hardware_ids: list[int] | None = None) -> list[di
             MonitorItem.target_id.in_(hardware_ids),
         )
     items = db.scalars(query).all()
-    grouped = {}
+    grouped: dict[int, list[MonitorItem]] = {}
     for item in items:
         if item.target_type == "hardware" and item.target_id is not None:
             grouped.setdefault(item.target_id, []).append(item)
@@ -275,7 +277,7 @@ def get_history(db: Session, hardware_id: int, limit: int = 100) -> list[dict]:
                 "status": "up" if t.value > 0 else "down",
                 "latency_ms": None,
                 "probe_method": method,
-                "checked_at": t.ts.isoformat(),
+                "checked_at": t.ts.isoformat() if t.ts else "",
             }
         )
     return res
