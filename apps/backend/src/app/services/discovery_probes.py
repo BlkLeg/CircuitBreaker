@@ -160,6 +160,17 @@ def _nmap_os_capable() -> bool:
         return False
 
 
+def nmap_binary_present() -> bool:
+    """True iff the nmap executable is available on PATH.
+
+    python-nmap imports successfully even when the nmap binary is absent, so
+    this is the authoritative presence check for discovery.
+    """
+    import shutil
+
+    return shutil.which("nmap") is not None
+
+
 def _read_proc_arp_cache(target_ips: set[str]) -> dict[str, str]:
     """Read kernel ARP cache from /proc/net/arp (no root required).
 
