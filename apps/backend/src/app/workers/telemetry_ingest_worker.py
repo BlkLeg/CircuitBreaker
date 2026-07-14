@@ -136,7 +136,7 @@ async def _process_batch(msgs: list[Any]) -> None:
 
     # ── Bulk DB write ─────────────────────────────────────────────────────────
     with get_session_context() as db:
-        db.bulk_insert_mappings(HardwareLiveMetric, rows)  # type: ignore[arg-type]
+        db.bulk_insert_mappings(HardwareLiveMetric, rows)
 
         for hw_id, rec in latest.items():
             hw = db.get(Hardware, hw_id)

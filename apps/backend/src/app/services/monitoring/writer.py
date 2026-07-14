@@ -32,5 +32,5 @@ def write_samples(db: Session, rows: list[SampleRow]) -> int:
                 }
             )
     if mappings:
-        db.bulk_insert_mappings(TelemetryTimeseries, mappings)  # type: ignore[arg-type]
+        db.bulk_insert_mappings(TelemetryTimeseries, mappings)
     return len(mappings)
