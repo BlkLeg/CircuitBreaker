@@ -178,7 +178,7 @@ def get_hardware(db: Session, hardware_id: int) -> dict:
 
 def _sync_port_edges(db: Session, hardware_id: int, port_map: list) -> None:
     """Sync 'connects_to' graph edges based on port map connectivity."""
-    from app.services.graph_service import create_edge  # type: ignore[attr-defined]
+    from app.services.graph_service import create_edge
 
     for p in port_map:
         data = p.model_dump() if hasattr(p, "model_dump") else p
