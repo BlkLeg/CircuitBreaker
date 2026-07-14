@@ -137,18 +137,41 @@ def _sanitise_nmap_args_for_unpriv(args: str) -> str:
     return " ".join(filtered)
 
 
+_CAP_NET_RAW_BIT = 1 << 13  # CAP_NET_RAW is capability number 13
+
+
+def _has_ambient_net_raw() -> bool:
+    """True iff CAP_NET_RAW is in this process's ambient capability set.
+
+    Ambient caps are inherited across execve, so an nmap child launched by an
+    ambient-capable parent can perform raw scans without a file capability.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("CapAmb:"):
+                    return bool(int(line.split()[1], 16) & _CAP_NET_RAW_BIT)
+    except Exception:
+        return False
+    return False
+
+
 def _nmap_os_capable() -> bool:
     """Return True if nmap can perform OS detection.
 
-    Requires either root (uid 0) or cap_net_raw on the nmap binary itself.
-    CAP_NET_RAW on the Python process does NOT propagate to nmap subprocesses.
-    Grant with: sudo setcap cap_net_raw+eip $(which nmap)
+    Requires either root (uid 0), ambient CAP_NET_RAW, or cap_net_raw on
+    the nmap binary itself. Ambient caps propagate to nmap subprocesses,
+    but file caps on the Python binary do not.
+    Grant ambient with: sudo setcap cap_net_raw+iap /path/to/python
+    Grant file caps with: sudo setcap cap_net_raw+eip $(which nmap)
     """
     import os
     import shutil
     import subprocess
 
     if os.geteuid() == 0:
+        return True
+    if _has_ambient_net_raw():  # ambient caps propagate to the nmap child
         return True
     nmap_path = shutil.which("nmap")
     if not nmap_path:
