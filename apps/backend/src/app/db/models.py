@@ -1583,11 +1583,13 @@ class TelemetryTimeseries(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     entity_type: Mapped[str] = mapped_column(String, nullable=False)  # 'hardware' | 'compute_unit'
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    item_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metric: Mapped[str] = mapped_column(String, nullable=False)  # 'cpu_pct', 'mem_used_gb', etc.
     value: Mapped[float] = mapped_column(Float, nullable=False)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="proxmox")
     ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (Index("ix_telemetry_timeseries_item_id", "item_id", "metric", "ts"),)
 
 
 # ── CVE Entries (stored in separate cve.db) ──────────────────────────────────
