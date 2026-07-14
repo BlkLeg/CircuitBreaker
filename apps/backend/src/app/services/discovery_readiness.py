@@ -126,3 +126,20 @@ def get_discovery_readiness() -> list[Capability]:
         reason_code="lan_ok" if has_lan else "bridged_no_l2",
     )
     return [nmap_present, nmap_raw, arp_l2, lan_adjacency]
+
+
+def log_discovery_readiness_at_startup() -> None:
+    """Emit a loud log line per non-ready capability so degraded discovery is
+    visible at boot, never discovered only at scan time."""
+    caps = get_discovery_readiness()
+    degraded = [c for c in caps if c.state != CapState.READY]
+    if not degraded:
+        logger.info("Discovery readiness: all capabilities ready.")
+        return
+    for c in degraded:
+        logger.warning(
+            "Discovery readiness: %s is %s — %s",
+            c.key,
+            c.state.value,
+            c.explanation,
+        )

@@ -100,3 +100,20 @@ def test_readiness_arp_needs_helper_when_no_adjacency():
 
     assert caps["arp_l2"].state == r.CapState.NEEDS_HELPER_ACTION
     assert caps["lan_adjacency"].state == r.CapState.NEEDS_HELPER_ACTION
+
+
+def test_startup_logging_warns_on_degraded(caplog):
+    import logging
+
+    import app.services.discovery_readiness as r
+
+    with (
+        patch.object(r, "nmap_binary_present", return_value=False),
+        patch.object(r, "_nmap_os_capable", return_value=False),
+        patch.object(r, "_arp_available", return_value=False),
+        patch.object(r, "detect_lan_adjacency", return_value=True),
+        caplog.at_level(logging.WARNING),
+    ):
+        r.log_discovery_readiness_at_startup()
+
+    assert any("nmap" in rec.message.lower() for rec in caplog.records)

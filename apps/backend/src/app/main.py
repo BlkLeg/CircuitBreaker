@@ -1259,6 +1259,16 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Never let update check affect startup
 
+    # ── Phase 10: Discovery readiness logging ──────────────────────────
+    # Make degraded discovery (missing nmap, no raw sockets, no ARP, etc.)
+    # visible at boot instead of only being discovered at scan time.
+    try:
+        from app.services.discovery_readiness import log_discovery_readiness_at_startup
+
+        log_discovery_readiness_at_startup()
+    except Exception:
+        _logger.warning("Discovery readiness logging failed at startup", exc_info=True)
+
     set_state(ServerState.READY)
     _logger.info("[lifecycle] server state → READY")
 
