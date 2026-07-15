@@ -1,0 +1,9 @@
+################################################################
+# abuse.ch URLhaus Host file                                   #
+# Last updated: 2026-07-15 07:29:34 (UTC)                      #
+################################################################
+127.0.0.1	evil-malware.example
+127.0.0.1	dropper.bad.example
+0.0.0.0 zero-routed.example
+::1 localhost
+127.0.0.1 localhost
