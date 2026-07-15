@@ -16,6 +16,8 @@ import shutil
 import socket
 import struct
 import subprocess
+import time
+import urllib.request
 
 SOCKET_PATH = "/run/circuitbreaker/helper.sock"
 CONF_PATH = "/etc/circuitbreaker/helper.conf"
@@ -133,6 +135,98 @@ def serve_forever(sock_path: str = SOCKET_PATH, conf_path: str = CONF_PATH) -> N
             os.remove(sock_path)
 
 
+OVERRIDE_FILENAME = "docker-compose.lan-discovery.yml"
+
+_LAN_DISCOVERY_OVERRIDE_TEMPLATE = """# Circuit Breaker — LAN discovery override (managed by cb-helperd)
+# Generated automatically. Do not edit by hand — changes are overwritten.
+services:
+  circuitbreaker:
+    network_mode: host
+    cap_add:
+      - NET_RAW
+"""
+
+
+def _compose_snapshot(compose_dir: str) -> str:
+    result = subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "config"],
+        cwd=compose_dir, capture_output=True, text=True, timeout=30,
+    )
+    return result.stdout
+
+
+def _compose_up(compose_dir: str, override_filename: str):
+    return subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "-f", override_filename, "up", "-d"],
+        cwd=compose_dir, capture_output=True, text=True, timeout=120,
+    )
+
+
+def _compose_up_base_only(compose_dir: str):
+    return subprocess.run(
+        ["docker", "compose", "-f", "docker-compose.yml", "up", "-d"],
+        cwd=compose_dir, capture_output=True, text=True, timeout=120,
+    )
+
+
+def _health_check(retries: int = 10, delay: float = 2.0) -> bool:
+    for _ in range(retries):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8080/api/v1/health", timeout=3) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(delay)
+    return False
+
+
+def action_enable_lan_discovery(_params: dict) -> dict:
+    conf = read_conf(CONF_PATH)
+    compose_dir = conf.get("COMPOSE_DIR", "")
+    if not compose_dir:
+        return {"applied": False, "reason": "bare-metal install — already on the LAN, no action needed"}
+
+    base_compose = os.path.join(compose_dir, "docker-compose.yml")
+    if not os.path.isfile(base_compose):
+        raise RuntimeError(f"base compose file not found at {base_compose}")
+
+    _compose_snapshot(compose_dir)  # validated the base config is readable before mutating
+    override_path = os.path.join(compose_dir, OVERRIDE_FILENAME)
+    with open(override_path, "w") as fh:
+        fh.write(_LAN_DISCOVERY_OVERRIDE_TEMPLATE)
+
+    result = _compose_up(compose_dir, OVERRIDE_FILENAME)
+    if result.returncode != 0:
+        os.remove(override_path)
+        _compose_up_base_only(compose_dir)
+        raise RuntimeError(f"docker compose up failed: {result.stderr.strip()[:1000]}")
+
+    if not _health_check():
+        os.remove(override_path)
+        _compose_up_base_only(compose_dir)
+        raise RuntimeError("container failed health check after recreation — rolled back")
+
+    return {"applied": True, "override_path": override_path}
+
+
+def action_disable_lan_discovery(_params: dict) -> dict:
+    conf = read_conf(CONF_PATH)
+    compose_dir = conf.get("COMPOSE_DIR", "")
+    if not compose_dir:
+        return {"applied": False, "reason": "bare-metal install — nothing to disable"}
+
+    override_path = os.path.join(compose_dir, OVERRIDE_FILENAME)
+    if not os.path.isfile(override_path):
+        return {"applied": True, "reason": "override already absent"}
+
+    os.remove(override_path)
+    result = _compose_up_base_only(compose_dir)
+    if result.returncode != 0:
+        raise RuntimeError(f"docker compose recreation (disable) failed: {result.stderr.strip()[:1000]}")
+    return {"applied": True}
+
+
 def detect_pkg_manager() -> str | None:
     for mgr in ("apt-get", "dnf", "pacman"):
         if shutil.which(mgr):
@@ -194,6 +288,8 @@ def action_get_host_readiness(_params: dict) -> dict:
 _ACTIONS["ensure_nmap"] = action_ensure_nmap
 _ACTIONS["grant_nmap_caps"] = action_grant_nmap_caps
 _ACTIONS["get_host_readiness"] = action_get_host_readiness
+_ACTIONS["enable_lan_discovery"] = action_enable_lan_discovery
+_ACTIONS["disable_lan_discovery"] = action_disable_lan_discovery
 
 
 if __name__ == "__main__":

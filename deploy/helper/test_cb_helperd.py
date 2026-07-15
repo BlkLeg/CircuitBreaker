@@ -219,3 +219,142 @@ def test_action_get_host_readiness_nothing_present():
     with patch("shutil.which", return_value=None):
         result = cb_helperd.action_get_host_readiness({})
         assert result == {"nmap_present": False, "nmap_capped": False, "docker_available": False}
+
+
+import os as _os
+
+
+def test_enable_lan_discovery_noop_on_bare_metal(tmp_path):
+    conf = tmp_path / "helper.conf"
+    conf.write_text("AUTHORIZED_UID=1000\n")
+    with patch("cb_helperd.CONF_PATH", str(conf)):
+        result = cb_helperd.action_enable_lan_discovery({})
+        assert result["applied"] is False
+        assert "bare-metal" in result["reason"]
+
+
+def test_enable_lan_discovery_writes_override_and_recreates(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    (compose_dir / "docker-compose.yml").write_text("services:\n  circuitbreaker: {}\n")
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("cwd")))
+        return MagicMock(returncode=0, stdout="config-ok", stderr="")
+
+    with (
+        patch("cb_helperd.CONF_PATH", str(conf)),
+        patch("subprocess.run", side_effect=_run),
+        patch("cb_helperd._health_check", return_value=True),
+    ):
+        result = cb_helperd.action_enable_lan_discovery({})
+    assert result["applied"] is True
+    override_path = compose_dir / cb_helperd.OVERRIDE_FILENAME
+    assert override_path.exists()
+    assert "network_mode: host" in override_path.read_text()
+    up_calls = [c for c in calls if "up" in c[0]]
+    assert len(up_calls) == 1
+    assert str(compose_dir) == up_calls[0][1]
+
+
+def test_enable_lan_discovery_rolls_back_on_compose_failure(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    (compose_dir / "docker-compose.yml").write_text("services:\n  circuitbreaker: {}\n")
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+
+    def _run(cmd, **kwargs):
+        if "config" in cmd:
+            return MagicMock(returncode=0, stdout="snapshot", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="daemon busy")
+
+    with (
+        patch("cb_helperd.CONF_PATH", str(conf)),
+        patch("subprocess.run", side_effect=_run),
+    ):
+        try:
+            cb_helperd.action_enable_lan_discovery({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "daemon busy" in str(exc)
+    override_path = compose_dir / cb_helperd.OVERRIDE_FILENAME
+    assert not override_path.exists()  # rollback removed it
+
+
+def test_enable_lan_discovery_rolls_back_on_failed_health_check(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    (compose_dir / "docker-compose.yml").write_text("services:\n  circuitbreaker: {}\n")
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+
+    with (
+        patch("cb_helperd.CONF_PATH", str(conf)),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+        patch("cb_helperd._health_check", return_value=False),
+    ):
+        try:
+            cb_helperd.action_enable_lan_discovery({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "health check" in str(exc)
+    override_path = compose_dir / cb_helperd.OVERRIDE_FILENAME
+    assert not override_path.exists()
+
+
+def test_enable_lan_discovery_raises_when_base_compose_missing(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+    with patch("cb_helperd.CONF_PATH", str(conf)):
+        try:
+            cb_helperd.action_enable_lan_discovery({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "base compose file not found" in str(exc)
+
+
+def test_disable_lan_discovery_noop_on_bare_metal(tmp_path):
+    conf = tmp_path / "helper.conf"
+    conf.write_text("AUTHORIZED_UID=1000\n")
+    with patch("cb_helperd.CONF_PATH", str(conf)):
+        result = cb_helperd.action_disable_lan_discovery({})
+        assert result["applied"] is False
+
+
+def test_disable_lan_discovery_noop_when_override_absent(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+    with patch("cb_helperd.CONF_PATH", str(conf)):
+        result = cb_helperd.action_disable_lan_discovery({})
+        assert result == {"applied": True, "reason": "override already absent"}
+
+
+def test_disable_lan_discovery_removes_override_and_recreates(tmp_path):
+    compose_dir = tmp_path / "install"
+    compose_dir.mkdir()
+    (compose_dir / "docker-compose.yml").write_text("services:\n  circuitbreaker: {}\n")
+    override = compose_dir / "docker-compose.lan-discovery.yml"
+    override.write_text("services:\n  circuitbreaker:\n    network_mode: host\n")
+    conf = tmp_path / "helper.conf"
+    conf.write_text(f"AUTHORIZED_UID=1000\nCOMPOSE_DIR={compose_dir}\n")
+
+    with (
+        patch("cb_helperd.CONF_PATH", str(conf)),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as run,
+    ):
+        result = cb_helperd.action_disable_lan_discovery({})
+    assert result == {"applied": True}
+    assert not override.exists()
+    run.assert_called_once_with(
+        ["docker", "compose", "-f", "docker-compose.yml", "up", "-d"],
+        cwd=str(compose_dir), capture_output=True, text=True, timeout=120,
+    )
