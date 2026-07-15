@@ -219,5 +219,7 @@ if [ -f "$_DATA_ENV" ]; then
 fi
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Run supervisord as non-root; nginx listens on unprivileged container ports.
+# supervisord runs as root so the workers program can be launched through
+# setpriv with ambient CAP_NET_RAW (discovery raw sockets); every supervised
+# program drops to breaker itself. nginx listens on unprivileged ports.
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
