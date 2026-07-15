@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 _TYPE_MAP = {
     "0": "discovery",
-    "1": "webhook",
     "2": "notification",
     "3": "telemetry",
     "4": "monitor_scheduler",
@@ -23,12 +22,6 @@ async def _run_discovery() -> None:
     from app.workers import discovery as discovery_worker
 
     await run_with_graceful_shutdown(discovery_worker.run_worker)
-
-
-async def _run_webhook() -> None:
-    from app.workers import webhook_worker
-
-    await run_with_graceful_shutdown(webhook_worker.run_worker)
 
 
 async def _run_notification() -> None:
@@ -58,8 +51,7 @@ async def _run_monitor_poll() -> None:
 async def _dispatch(kind: str) -> None:
     if kind == "discovery":
         await _run_discovery()
-    elif kind == "webhook":
-        await _run_webhook()
+
     elif kind == "notification":
         await _run_notification()
     elif kind == "telemetry":
@@ -78,9 +70,9 @@ def main() -> None:
         "--type",
         required=True,
         help=(
-            "Worker type: discovery, webhook, notification, telemetry,"
+            "Worker type: discovery, notification, telemetry,"
             " monitor_scheduler, monitor_poll, or numeric"
-            " (0=discovery,1=webhook,2=notification,3=telemetry,"
+            " (0=discovery,2=notification,3=telemetry,"
             "4=monitor_scheduler,5=monitor_poll,6=monitor_poll)"
         ),
     )

@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class WindscribeIntelClient:
-    def __init__(self):
+    def __init__(self) -> None:
         self.base_url = "https://api.windscribe.com"
         self.threat_url = "https://api.controld.com/threats"
 

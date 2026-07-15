@@ -26,7 +26,7 @@ def calculate_privacy_score(hardware: Hardware, threat_feed: dict) -> tuple[int,
     return max(0, score), profile
 
 
-async def evaluate_hardware_privacy(db: Session, hardware_id: int):
+async def evaluate_hardware_privacy(db: Session, hardware_id: int) -> dict | None:
     hardware = db.query(Hardware).filter(Hardware.id == hardware_id).first()
     if not hardware:
         return None
@@ -42,5 +42,4 @@ async def evaluate_hardware_privacy(db: Session, hardware_id: int):
     )
     db.add(history_entry)
     db.commit()
-
-    return score, profile
+    return {"score": score, "threat_profile": profile}

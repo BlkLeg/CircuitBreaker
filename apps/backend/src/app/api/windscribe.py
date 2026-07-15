@@ -1,3 +1,5 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -13,8 +15,8 @@ router = APIRouter()
 @router.get("/network/privacy-score")
 async def get_network_privacy_score(
     db: Session = Depends(get_db),
-    user=Depends(require_auth),
-):
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
     scores = (
         db.query(PrivacyScoreHistory.score)
         .order_by(PrivacyScoreHistory.evaluated_at.desc())
@@ -32,8 +34,8 @@ async def get_network_privacy_score(
 @router.get("/network/threat-alerts")
 async def get_network_threat_alerts(
     db: Session = Depends(get_db),
-    user=Depends(require_auth),
-):
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
     threat_feed = await intel_client.fetch_threat_feed()
     return threat_feed
 
@@ -42,8 +44,8 @@ async def get_network_threat_alerts(
 async def get_device_threat_profile(
     hardware_id: int,
     db: Session = Depends(get_db),
-    user=Depends(require_auth),
-):
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
     res = await evaluate_hardware_privacy(db, hardware_id)
     if not res:
         raise HTTPException(status_code=404, detail="Hardware not found")
