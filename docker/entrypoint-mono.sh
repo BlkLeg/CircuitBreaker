@@ -125,7 +125,9 @@ else
   # Embedded Postgres: init cluster, start temp postgres, migrate, then stop and remove pid so supervisord can start it.
   run_as_breaker 'mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/run/postgresql"; chmod 1777 "${CB_DATA_DIR:-/data}/run/postgresql" 2>/dev/null || true; [ -x /docker/10-init-postgres.sh ] && /docker/10-init-postgres.sh'
 
-  run_as_breaker "${PG_BIN}/postgres -D ${DATA}/pgdata -c config_file=${DATA}/postgresql.conf" &
+  # shared_preload_libraries must match run-postgres-if-embedded.sh — migrations
+  # run CREATE EXTENSION timescaledb, which fails unless it is preloaded.
+  run_as_breaker "${PG_BIN}/postgres -D ${DATA}/pgdata -c config_file=${DATA}/postgresql.conf -c shared_preload_libraries=timescaledb" &
   POSTGRES_PID=$!
 
   echo "[entrypoint] Waiting for Postgres to accept connections..."
