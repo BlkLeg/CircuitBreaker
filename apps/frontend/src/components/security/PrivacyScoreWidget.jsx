@@ -1,77 +1,74 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { windscribeApi } from '../../api/client';
+import { discoveryEmitter } from '../../hooks/useDiscoveryStream';
 
+const GOOD_SCORE_MIN = 80;
+const FAIR_SCORE_MIN = 60;
+
+/**
+ * Compact Map overlay pill: score + grade, click-through to /privacy.
+ * Refetches on scan completion (job:update) — scores recompute post-scan.
+ */
 export default function PrivacyScoreWidget() {
   const [data, setData] = useState(null);
+  const navigate = useNavigate();
 
-  useEffect(() => {
+  const fetchScore = useCallback(() => {
     windscribeApi
       .getNetworkPrivacyScore()
       .then((res) => setData(res.data))
-      .catch(console.error);
+      .catch((err) => console.error('Privacy score fetch failed:', err));
   }, []);
 
-  if (!data) return null;
+  useEffect(() => {
+    fetchScore();
+    const onJobUpdate = (job) => {
+      if (job?.status === 'completed') fetchScore();
+    };
+    discoveryEmitter.on('job:update', onJobUpdate);
+    return () => discoveryEmitter.off('job:update', onJobUpdate);
+  }, [fetchScore]);
 
-  const score = data.score;
+  if (!data || data.enabled === false || data.score === null) return null;
+
+  const { score, grade } = data;
   const color =
-    score > 80
+    score >= GOOD_SCORE_MIN
       ? 'var(--color-success, #22c55e)'
-      : score > 50
+      : score >= FAIR_SCORE_MIN
         ? 'var(--color-warning, #eab308)'
         : 'var(--color-danger, #ef4444)';
-  const Icon = score > 80 ? ShieldCheck : score > 50 ? Shield : ShieldAlert;
+  const Icon =
+    score >= GOOD_SCORE_MIN ? ShieldCheck : score >= FAIR_SCORE_MIN ? Shield : ShieldAlert;
 
   return (
-    <div
+    <button
+      onClick={() => navigate('/privacy')}
+      title="Network privacy score — open Privacy page"
       style={{
         position: 'absolute',
         top: 16,
         right: 16,
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-border)',
-        borderRadius: 12,
-        padding: '12px 16px',
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
+        gap: 8,
+        padding: '6px 12px',
+        borderRadius: 999,
+        border: '1px solid var(--color-border)',
+        background: 'var(--color-surface)',
+        color: 'var(--color-text)',
+        cursor: 'pointer',
         zIndex: 100,
-        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+        fontSize: 14,
+        fontWeight: 600,
+        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.15)',
       }}
     >
-      <div
-        style={{
-          background: `${color}20`,
-          color: color,
-          padding: 8,
-          borderRadius: '50%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Icon size={24} />
-      </div>
-      <div>
-        <div
-          style={{
-            fontSize: 12,
-            color: 'var(--color-text-muted)',
-            fontWeight: 500,
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-          }}
-        >
-          Network Privacy
-        </div>
-        <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--color-text)', lineHeight: 1 }}>
-          {score}
-          <span style={{ fontSize: 14, color: 'var(--color-text-muted)', fontWeight: 500 }}>
-            /100
-          </span>
-        </div>
-      </div>
-    </div>
+      <Icon size={16} color={color} />
+      {score}
+      <span style={{ color, fontWeight: 700 }}>{grade}</span>
+    </button>
   );
 }
