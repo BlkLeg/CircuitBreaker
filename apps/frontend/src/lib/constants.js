@@ -40,3 +40,6 @@ export const SCAN_COUNTER_ANIMATION_DURATION_MS = 400;
 export const SCAN_ROW_ENTRY_ANIMATION_MS = 200;
 export const STATUS_BADGE_TRANSITION_MS = 300;
 export const SCAN_STATUS_RUNNING_PULSE_DURATION_MS = 1500;
+
+// ── Privacy page ──────────────────────────────────────────────────────────────
+export const PRIVACY_REFRESH_INTERVAL_MS = 60_000;

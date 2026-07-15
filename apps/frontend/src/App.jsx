@@ -47,6 +47,7 @@ const VaultResetPage = React.lazy(() => import('./pages/VaultResetPage.jsx'));
 const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
 
 const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
+const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
 const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
 
@@ -131,6 +132,7 @@ function AppInner() {
                   <Route path="/storage" element={<StoragePage />} />
                   <Route path="/networks" element={<Navigate to="/ipam" replace />} />
                   <Route path="/certificates" element={<CertificatesPage />} />
+                  <Route path="/privacy" element={<PrivacyPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="/tenants" element={<TenantsPage />} />
                   <Route path="/external-nodes" element={<ExternalNodesPage />} />

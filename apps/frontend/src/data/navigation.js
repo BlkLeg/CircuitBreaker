@@ -13,6 +13,7 @@ import {
   ScanSearch,
   Globe,
   Shield,
+  ShieldCheck,
   Bell,
   Users,
 } from 'lucide-react';
@@ -39,6 +40,12 @@ export const NAV_ITEMS = [
     group: 'Security',
     requireAdmin: true,
     items: [
+      {
+        path: '/privacy',
+        icon: ShieldCheck,
+        label: 'Privacy',
+        labelKey: 'header.privacy',
+      },
       {
         path: '/certificates',
         icon: Shield,
@@ -105,6 +112,7 @@ export const NAV_MAP = {
   '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
   '/ipam': { icon: Globe, label: 'IPAM', labelKey: 'header.ipam' },
 
+  '/privacy': { icon: ShieldCheck, label: 'Privacy', labelKey: 'header.privacy' },
   '/certificates': { icon: Shield, label: 'Certificates', labelKey: 'header.certificates' },
   '/notifications': { icon: Bell, label: 'Notifications', labelKey: 'header.notifications' },
   '/admin/users': { icon: Users, label: 'Users', labelKey: 'header.users' },
@@ -124,6 +132,7 @@ export const DEFAULT_ORDER = [
   '/external-nodes',
   '/ipam',
 
+  '/privacy',
   '/certificates',
   '/notifications',
   '/tenants',

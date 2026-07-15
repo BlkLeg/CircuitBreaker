@@ -725,6 +725,31 @@ def _auto_merge_known_devices(db: Session, job_id: int) -> None:
     db.commit()
 
 
+async def _run_privacy_recompute() -> None:
+    """Post-scan privacy recompute — isolated so a scoring bug never fails a scan."""
+    try:
+        from app.services.privacy_score import recompute_all
+
+        db = SessionLocal()
+        try:
+            await recompute_all(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(f"Privacy recompute after scan failed (scan unaffected): {exc}")
+
+
+def _consume_task_result(task: asyncio.Task) -> None:
+    if not task.cancelled():
+        task.exception()  # retrieve to avoid unraised-exception warnings
+
+
+def _schedule_privacy_recompute() -> None:
+    """Fire-and-forget the privacy recompute after a successful scan."""
+    task = asyncio.ensure_future(_run_privacy_recompute())
+    task.add_done_callback(_consume_task_result)
+
+
 def _scan_finalize(job_id: int, stats: dict, final_status: str, auto_merge: bool = False) -> int:
     """Phase 4 (sync, runs in executor): finalize job status, write audit log,
     schedule queued scans.
@@ -1004,6 +1029,7 @@ async def run_scan_job(job_id: int) -> None:
                 "job_update",
                 {"job": {"id": job_id, "status": "completed"}, "pending_count": _pending_count},
             )
+            _schedule_privacy_recompute()
             _ema_eta.pop(job_id, None)
             _last_progress_snap.pop(job_id, None)
             return
@@ -1767,6 +1793,7 @@ async def run_scan_job(job_id: int) -> None:
                 "pending_count": _pending_count,
             },
         )
+        _schedule_privacy_recompute()
         _ema_eta.pop(job_id, None)
         _last_progress_snap.pop(job_id, None)
 

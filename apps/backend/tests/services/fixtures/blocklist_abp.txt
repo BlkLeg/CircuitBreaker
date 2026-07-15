@@ -1,0 +1,6 @@
+[Adblock Plus]
+! Version: 202607150707
+! Title: oisd small
+||tracker.example^
+||ads.metrics.example^
+not-a-rule-line

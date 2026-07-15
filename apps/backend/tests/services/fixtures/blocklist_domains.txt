@@ -1,0 +1,5 @@
+# Title: plain domain list
+# Homepage: https://example.org
+botnet-c2.example
+Command-And-Control.Example
+# trailing comment
