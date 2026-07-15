@@ -154,6 +154,9 @@ class AppSettingsRead(BaseModel):
     cve_sync_enabled: bool = False
     cve_sync_interval_hours: int = 24
     cve_last_sync_at: str | None = None
+    # Privacy / Windscribe integration
+    windscribe_enabled: bool = True
+    windscribe_feed_refresh_hours: int = 1
     # Phase 3: Realtime / NATS
     realtime_notifications_enabled: bool = True
     realtime_transport: str = "auto"  # "auto" | "sse" | "websocket"
@@ -418,6 +421,9 @@ class AppSettingsUpdate(BaseModel):
     # CVE sync
     cve_sync_enabled: bool | None = None
     cve_sync_interval_hours: int | None = None
+    # Privacy / Windscribe integration
+    windscribe_enabled: bool | None = None
+    windscribe_feed_refresh_hours: int | None = Field(default=None, ge=1, le=168)
     # Phase 3: Realtime / NATS
     realtime_notifications_enabled: bool | None = None
     realtime_transport: str | None = None
