@@ -172,8 +172,28 @@ def action_grant_nmap_caps(_params: dict) -> dict:
     return {"nmap_path": nmap_path}
 
 
+def _nmap_has_raw_cap() -> bool:
+    nmap_path = shutil.which("nmap")
+    if not nmap_path:
+        return False
+    try:
+        result = subprocess.run(["getcap", nmap_path], capture_output=True, text=True, timeout=5)
+        return "cap_net_raw" in result.stdout
+    except Exception:
+        return False
+
+
+def action_get_host_readiness(_params: dict) -> dict:
+    return {
+        "nmap_present": shutil.which("nmap") is not None,
+        "nmap_capped": _nmap_has_raw_cap(),
+        "docker_available": shutil.which("docker") is not None,
+    }
+
+
 _ACTIONS["ensure_nmap"] = action_ensure_nmap
 _ACTIONS["grant_nmap_caps"] = action_grant_nmap_caps
+_ACTIONS["get_host_readiness"] = action_get_host_readiness
 
 
 if __name__ == "__main__":

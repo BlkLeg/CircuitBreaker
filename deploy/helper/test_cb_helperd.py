@@ -201,3 +201,21 @@ def test_action_grant_nmap_caps_raises_when_nmap_missing():
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
             assert "run ensure_nmap first" in str(exc)
+
+
+def test_action_get_host_readiness_all_present():
+    def _which(name):
+        return {"nmap": "/usr/bin/nmap", "docker": "/usr/bin/docker"}.get(name)
+
+    with (
+        patch("shutil.which", side_effect=_which),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stdout="cap_net_raw+eip")),
+    ):
+        result = cb_helperd.action_get_host_readiness({})
+        assert result == {"nmap_present": True, "nmap_capped": True, "docker_available": True}
+
+
+def test_action_get_host_readiness_nothing_present():
+    with patch("shutil.which", return_value=None):
+        result = cb_helperd.action_get_host_readiness({})
+        assert result == {"nmap_present": False, "nmap_capped": False, "docker_available": False}
