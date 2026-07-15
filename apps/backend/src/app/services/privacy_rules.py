@@ -110,7 +110,7 @@ def evaluate_device(hardware_id: int | None, role: str | None, open_ports: set[i
 
 def score_device(deductions: list[dict]) -> int:
     """Device score: 100 minus its deduction points, clamped to 0–100."""
-    raw_score = PRIVACY_MAX_SCORE - sum(d["points"] for d in deductions)
+    raw_score = PRIVACY_MAX_SCORE - sum(int(d["points"]) for d in deductions)
     return max(PRIVACY_MIN_SCORE, min(PRIVACY_MAX_SCORE, raw_score))
 
 
@@ -118,7 +118,8 @@ def badge_severity(deductions: list[dict]) -> str | None:
     """A device's badge severity = max severity among its deductions."""
     if not deductions:
         return None
-    return max((d["severity"] for d in deductions), key=lambda s: _SEVERITY_RANK.get(s, -1))
+    severities: list[str] = [str(d["severity"]) for d in deductions]
+    return max(severities, key=lambda s: _SEVERITY_RANK.get(s, -1))
 
 
 def grade_for(score: int) -> str:
@@ -129,7 +130,7 @@ def grade_for(score: int) -> str:
 
 
 def _device_aggregate_points(device_deductions: list[dict]) -> int:
-    largest = sorted((d["points"] for d in device_deductions), reverse=True)
+    largest = sorted((int(d["points"]) for d in device_deductions), reverse=True)
     top_sum = sum(largest[:PRIVACY_DEVICE_AGGREGATE_TOP_N])
     return min(PRIVACY_DEVICE_AGGREGATE_CAP, top_sum)
 

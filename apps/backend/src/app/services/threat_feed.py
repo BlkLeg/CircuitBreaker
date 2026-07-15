@@ -80,7 +80,7 @@ class ThreatFeed:
         )
 
     @classmethod
-    def from_json(cls, raw: str) -> ThreatFeed:
+    def from_json(cls, raw: str | bytes) -> ThreatFeed:
         payload = json.loads(raw)
         return cls(
             malware=set(payload.get("malware", [])),
