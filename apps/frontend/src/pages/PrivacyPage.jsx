@@ -11,23 +11,30 @@ import FindingsByCategoryChart from '../components/privacy/FindingsByCategoryCha
 import KeyFindingsList from '../components/privacy/KeyFindingsList';
 import FlaggedDevicesTable from '../components/privacy/FlaggedDevicesTable';
 import RemediationDrawer from '../components/privacy/RemediationDrawer';
+import AttackSurfaceTable from '../components/privacy/AttackSurfaceTable';
+
 /* ── Main Page ──────────────────────────────────────────────────────────── */
 
 export default function PrivacyPage() {
   const navigate = useNavigate();
   const [scoreData, setScoreData] = useState(null);
   const [hardwareMap, setHardwareMap] = useState(new Map());
+  const [attackSurfaceData, setAttackSurfaceData] = useState(null);
   const [selectedDeduction, setSelectedDeduction] = useState(null);
   const [loadError, setLoadError] = useState(false);
   const [scanLaunching, setScanLaunching] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [scoreRes, hardwareRes] = await Promise.all([
+      const [scoreRes, hardwareRes, attackSurfaceRes] = await Promise.all([
         windscribeApi.getNetworkPrivacyScore(),
         hardwareApi.list().catch(() => null),
+        windscribeApi.getAttackSurface().catch(() => null),
       ]);
       setScoreData(scoreRes.data);
+      if (attackSurfaceRes?.data) {
+        setAttackSurfaceData(attackSurfaceRes.data.attack_surface);
+      }
       if (hardwareRes?.data) {
         setHardwareMap(
           new Map(
@@ -202,6 +209,11 @@ export default function PrivacyPage() {
             <RefreshCw size={18} className={scanLaunching ? 'spin' : ''} />
             {scanLaunching ? 'Launching…' : 'Re-run Discovery Scan'}
           </button>
+        </div>
+
+        {/* Row 4 */}
+        <div style={{ gridColumn: '1 / -1' }}>
+          <AttackSurfaceTable attackSurface={attackSurfaceData} />
         </div>
       </div>
 

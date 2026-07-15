@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.security import require_auth
-from app.db.models import AppSettings, Hardware, NetworkPrivacySnapshot
+from app.db.models import AppSettings, Hardware, NetworkPrivacySnapshot, ScanResult
 from app.db.session import get_db
 
 router = APIRouter()
@@ -113,3 +113,44 @@ async def get_device_threat_profile(
         "score": hardware.privacy_score,
         "deductions": hardware.threat_profile or [],
     }
+
+
+@router.get("/network/attack-surface")
+async def get_attack_surface(
+    db: Session = Depends(get_db),
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
+    devices = db.query(Hardware).filter(Hardware.is_placeholder.is_(False)).all()
+    results = []
+
+    for hw in devices:
+        scan_result = (
+            db.query(ScanResult)
+            .filter(
+                ScanResult.matched_entity_type == "hardware",
+                ScanResult.matched_entity_id == hw.id,
+            )
+            .order_by(ScanResult.id.desc())
+            .first()
+        )
+        if scan_result is None and hw.source_scan_result_id:
+            scan_result = db.get(ScanResult, hw.source_scan_result_id)
+
+        if scan_result and scan_result.open_ports_json:
+            try:
+                ports_data = scan_result.open_ports_json
+                if ports_data:
+                    results.append(
+                        {
+                            "hardware_id": hw.id,
+                            "name": hw.name,
+                            "ip_address": hw.ip_address,
+                            "vendor_icon_slug": hw.vendor_icon_slug,
+                            "custom_icon": hw.custom_icon,
+                            "ports": ports_data,
+                        }
+                    )
+            except Exception:
+                pass
+
+    return {"attack_surface": results}
