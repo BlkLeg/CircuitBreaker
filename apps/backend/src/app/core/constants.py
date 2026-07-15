@@ -37,3 +37,6 @@ DNS_CANARIES: dict[str, frozenset[str]] = {
 }
 # How many feed malware domains to sample for the dns_filtering_absent check
 DNS_FILTERING_SAMPLE_SIZE = 3
+# Cadence of the APScheduler privacy job (checks + snapshot; feed honors its own
+# windscribe_feed_refresh_hours age gate, so this can tick faster than the feed)
+PRIVACY_PERIODIC_INTERVAL_MINUTES = 15

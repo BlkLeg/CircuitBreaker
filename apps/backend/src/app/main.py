@@ -884,6 +884,22 @@ async def lifespan(app: FastAPI):
             )
             _logger.info("CVE sync scheduled every %d hours", interval_hours)
 
+    # Privacy periodic pass — feed refresh + hostile-network checks + snapshot.
+    # Always scheduled; the job itself honors windscribe_enabled and the
+    # windscribe_feed_refresh_hours feed-age gate at runtime, so the in-app
+    # toggle applies without a restart.
+    from app.core.constants import PRIVACY_PERIODIC_INTERVAL_MINUTES
+    from app.services.privacy_score import run_privacy_periodic_job
+
+    scheduler.add_job(
+        run_privacy_periodic_job,
+        trigger=IntervalTrigger(minutes=PRIVACY_PERIODIC_INTERVAL_MINUTES),
+        id="privacy_periodic",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
     # IP Pool refresh every hour
     scheduler.add_job(
         discovery_service.refresh_ip_pool,
