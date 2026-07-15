@@ -104,6 +104,7 @@ async def test_privacy_score_serves_latest_snapshot_with_history(client, auth_he
     assert body["score"] == 72
     assert body["grade"] == "C"
     assert body["deductions"] == [deduction]
+    assert body["checks"] == []
     assert body["checked_at"]
     assert len(body["history"]) == 2
     assert {"score", "at"} == set(body["history"][0])

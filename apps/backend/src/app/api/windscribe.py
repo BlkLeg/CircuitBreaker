@@ -50,6 +50,7 @@ async def get_network_privacy_score(
             "score": None,
             "grade": None,
             "deductions": [],
+            "checks": [],
             "checked_at": None,
             "history": [],
         }
@@ -58,6 +59,7 @@ async def get_network_privacy_score(
         "score": snapshot.score,
         "grade": snapshot.grade,
         "deductions": snapshot.deductions or [],
+        "checks": snapshot.checks or [],
         "checked_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
         "history": _score_history(db),
     }
