@@ -12,9 +12,25 @@ export default function AttackSurfaceTable({ attackSurface }) {
     const rows = [...attackSurface];
     rows.sort((a, b) => {
       let cmp = 0;
+      let aPorts = a.ports || [];
+      if (typeof aPorts === 'string') {
+        try {
+          aPorts = JSON.parse(aPorts);
+        } catch {
+          aPorts = [];
+        }
+      }
+      let bPorts = b.ports || [];
+      if (typeof bPorts === 'string') {
+        try {
+          bPorts = JSON.parse(bPorts);
+        } catch {
+          bPorts = [];
+        }
+      }
       if (sortKey === 'name') cmp = (a.name || '').localeCompare(b.name || '');
       else if (sortKey === 'ip') cmp = (a.ip_address || '').localeCompare(b.ip_address || '');
-      else if (sortKey === 'ports') cmp = (a.ports?.length || 0) - (b.ports?.length || 0);
+      else if (sortKey === 'ports') cmp = (aPorts?.length || 0) - (bPorts?.length || 0);
       return sortAsc ? cmp : -cmp;
     });
     return rows;
@@ -118,42 +134,55 @@ export default function AttackSurfaceTable({ attackSurface }) {
                 </td>
                 <td style={tdStyle}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {row.ports && row.ports.length > 0 ? (
-                      row.ports.map((p, idx) => {
-                        const portNum = p.port || p;
-                        const proto = p.proto || p.protocol || 'tcp';
-                        const service = p.service || p.name || '';
-                        return (
-                          <div
-                            key={idx}
-                            style={{
-                              padding: '4px 8px',
-                              borderRadius: 6,
-                              fontSize: 11,
-                              background: 'var(--color-surface-hover, rgba(255,255,255,0.05))',
-                              border: '1px solid var(--color-border, #333)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              whiteSpace: 'nowrap',
-                            }}
-                          >
-                            <span
+                    {(() => {
+                      let parsedPorts = row.ports || [];
+                      if (typeof parsedPorts === 'string') {
+                        try {
+                          parsedPorts = JSON.parse(parsedPorts);
+                        } catch {
+                          parsedPorts = [];
+                        }
+                      }
+                      if (!Array.isArray(parsedPorts)) {
+                        parsedPorts = [];
+                      }
+                      return parsedPorts.length > 0 ? (
+                        parsedPorts.map((p, idx) => {
+                          const portNum = p.port || p;
+                          const proto = p.proto || p.protocol || 'tcp';
+                          const service = p.service || p.name || '';
+                          return (
+                            <div
+                              key={idx}
                               style={{
-                                fontFamily: 'monospace',
-                                fontWeight: 600,
-                                color: 'var(--color-primary, #60a5fa)',
+                                padding: '4px 8px',
+                                borderRadius: 6,
+                                fontSize: 11,
+                                background: 'var(--color-surface-hover, rgba(255,255,255,0.05))',
+                                border: '1px solid var(--color-border, #333)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                whiteSpace: 'nowrap',
                               }}
                             >
-                              {portNum}/{proto}
-                            </span>
-                            {service && <span style={{ opacity: 0.8 }}>{service}</span>}
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                    )}
+                              <span
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontWeight: 600,
+                                  color: 'var(--color-primary, #60a5fa)',
+                                }}
+                              >
+                                {portNum}/{proto}
+                              </span>
+                              {service && <span style={{ opacity: 0.8 }}>{service}</span>}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                      );
+                    })()}
                   </div>
                 </td>
               </tr>
