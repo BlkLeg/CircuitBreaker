@@ -4,10 +4,15 @@ Revision ID: f61dd2dc9ade
 Revises: 0083_migrate_hardware_monitors
 Create Date: 2026-07-14 13:56:20.772822
 
+Every drop is existence-guarded: 0001_init bootstraps fresh databases from
+the *current* Base.metadata, which no longer contains the racks table or the
+hardware rack columns, so on fresh installs there is nothing to drop here.
+Only databases that predate the removal still carry these objects.
 """
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -19,25 +24,31 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # Drop foreign key and columns from hardware
-    op.drop_constraint("fk_hardware_rack_id_racks", "hardware", type_="foreignkey")
-    op.drop_column("hardware", "rack_id")
-    op.drop_column("hardware", "u_height")
-    op.drop_column("hardware", "rack_unit")
-    op.drop_column("hardware", "mounting_orientation")
-    op.drop_column("hardware", "side_rail")
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
 
-    # Drop status tables
-    op.drop_table("status_history")
-    op.drop_table("status_groups")
-    op.drop_table("status_pages")
+    # Drop foreign key and columns from hardware. The FK name differs between
+    # metadata-created and historical databases — look it up dynamically.
+    hw_cols = {c["name"] for c in insp.get_columns("hardware")}
+    if "rack_id" in hw_cols:
+        for fk in insp.get_foreign_keys("hardware"):
+            if fk.get("constrained_columns") == ["rack_id"]:
+                op.drop_constraint(fk["name"], "hardware", type_="foreignkey")
+    for col in ("rack_id", "u_height", "rack_unit", "mounting_orientation", "side_rail"):
+        if col in hw_cols:
+            op.drop_column("hardware", col)
 
-    # Drop webhook tables
-    op.drop_table("webhook_deliveries")
-    op.drop_table("webhook_rules")
-
-    # Drop racks
-    op.drop_table("racks")
+    # Drop status, webhook, and racks tables (order respects FK dependencies).
+    for table in (
+        "status_history",
+        "status_groups",
+        "status_pages",
+        "webhook_deliveries",
+        "webhook_rules",
+        "racks",
+    ):
+        if insp.has_table(table):
+            op.drop_table(table)
 
 
 def downgrade() -> None:
