@@ -115,3 +115,89 @@ def test_handle_connection_dispatches_for_authorized_uid(monkeypatch):
         assert response == {"ok": True, "data": {"ok_probe": True}}
     finally:
         a.close()
+
+
+from unittest.mock import patch, MagicMock
+
+
+def test_detect_pkg_manager_prefers_first_found():
+    with patch("shutil.which", side_effect=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None):
+        assert cb_helperd.detect_pkg_manager() == "apt-get"
+
+
+def test_detect_pkg_manager_returns_none_when_none_found():
+    with patch("shutil.which", return_value=None):
+        assert cb_helperd.detect_pkg_manager() is None
+
+
+def test_action_ensure_nmap_already_present():
+    with patch("shutil.which", return_value="/usr/bin/nmap"):
+        result = cb_helperd.action_ensure_nmap({})
+        assert result == {"already_present": True}
+
+
+def test_action_ensure_nmap_installs_when_missing():
+    which_calls = {"n": 0}
+
+    def _which(name):
+        if name == "nmap":
+            which_calls["n"] += 1
+            return None if which_calls["n"] == 1 else "/usr/bin/nmap"
+        if name == "apt-get":
+            return "/usr/bin/apt-get"
+        return None
+
+    with (
+        patch("shutil.which", side_effect=_which),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")) as run,
+    ):
+        result = cb_helperd.action_ensure_nmap({})
+        assert result == {"already_present": False, "package_manager": "apt-get"}
+        run.assert_called_once_with(
+            ["apt-get", "install", "-y", "-q", "nmap"], capture_output=True, text=True, timeout=120
+        )
+
+
+def test_action_ensure_nmap_raises_when_no_pkg_manager():
+    with patch("shutil.which", return_value=None):
+        try:
+            cb_helperd.action_ensure_nmap({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "package manager" in str(exc)
+
+
+def test_action_ensure_nmap_raises_on_install_failure():
+    def _which(name):
+        return "/usr/bin/apt-get" if name == "apt-get" else None
+
+    with (
+        patch("shutil.which", side_effect=_which),
+        patch("subprocess.run", return_value=MagicMock(returncode=1, stderr="no network")),
+    ):
+        try:
+            cb_helperd.action_ensure_nmap({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "no network" in str(exc)
+
+
+def test_action_grant_nmap_caps_success():
+    with (
+        patch("shutil.which", return_value="/usr/bin/nmap"),
+        patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")) as run,
+    ):
+        result = cb_helperd.action_grant_nmap_caps({})
+        assert result == {"nmap_path": "/usr/bin/nmap"}
+        run.assert_called_once_with(
+            ["setcap", "cap_net_raw+eip", "/usr/bin/nmap"], capture_output=True, text=True, timeout=10
+        )
+
+
+def test_action_grant_nmap_caps_raises_when_nmap_missing():
+    with patch("shutil.which", return_value=None):
+        try:
+            cb_helperd.action_grant_nmap_caps({})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "run ensure_nmap first" in str(exc)

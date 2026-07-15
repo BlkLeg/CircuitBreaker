@@ -12,8 +12,10 @@ system; every line here should be reviewable in one sitting.
 import json
 import logging
 import os
+import shutil
 import socket
 import struct
+import subprocess
 
 SOCKET_PATH = "/run/circuitbreaker/helper.sock"
 CONF_PATH = "/etc/circuitbreaker/helper.conf"
@@ -129,6 +131,49 @@ def serve_forever(sock_path: str = SOCKET_PATH, conf_path: str = CONF_PATH) -> N
         server.close()
         if os.path.exists(sock_path):
             os.remove(sock_path)
+
+
+def detect_pkg_manager() -> str | None:
+    for mgr in ("apt-get", "dnf", "pacman"):
+        if shutil.which(mgr):
+            return mgr
+    return None
+
+
+def action_ensure_nmap(_params: dict) -> dict:
+    if shutil.which("nmap"):
+        return {"already_present": True}
+    mgr = detect_pkg_manager()
+    if mgr is None:
+        raise RuntimeError("No supported package manager found (apt-get, dnf, pacman)")
+    if mgr == "apt-get":
+        cmd = ["apt-get", "install", "-y", "-q", "nmap"]
+    elif mgr == "dnf":
+        cmd = ["dnf", "install", "-y", "-q", "nmap"]
+    else:
+        cmd = ["pacman", "-S", "--noconfirm", "--needed", "nmap"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(f"nmap install failed ({mgr}): {result.stderr.strip()[:500]}")
+    if not shutil.which("nmap"):
+        raise RuntimeError("nmap install reported success but binary still not on PATH")
+    return {"already_present": False, "package_manager": mgr}
+
+
+def action_grant_nmap_caps(_params: dict) -> dict:
+    nmap_path = shutil.which("nmap")
+    if not nmap_path:
+        raise RuntimeError("nmap binary not found — run ensure_nmap first")
+    result = subprocess.run(
+        ["setcap", "cap_net_raw+eip", nmap_path], capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"setcap failed: {result.stderr.strip()[:500]}")
+    return {"nmap_path": nmap_path}
+
+
+_ACTIONS["ensure_nmap"] = action_ensure_nmap
+_ACTIONS["grant_nmap_caps"] = action_grant_nmap_caps
 
 
 if __name__ == "__main__":
