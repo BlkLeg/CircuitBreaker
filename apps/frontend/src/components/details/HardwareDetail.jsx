@@ -31,14 +31,7 @@ import TelemetryPanel from '../TelemetryPanel';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import PortEditor from './PortEditor';
 import { windscribeApi } from '../../api/client';
-import { Shield, ShieldAlert } from 'lucide-react';
-
-const DEDUCTION_SEVERITY_COLORS = {
-  critical: 'var(--color-danger, #ef4444)',
-  warning: 'var(--color-warning, #eab308)',
-  info: 'var(--color-info, #3b82f6)',
-};
-const PRIVACY_GOOD_SCORE_MIN = 80;
+import HardwareThreatProfile from './HardwareThreatProfile';
 
 function HardwareDetail({ hardware, isOpen, onClose }) {
   const { options: HARDWARE_ROLES } = useHardwareRoles();
@@ -92,7 +85,7 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
     } catch (err) {
       logger.error(err);
     }
-  }, [hardware]);
+  }, [hardware, settings?.windscribe_enabled]);
 
   useEffect(() => {
     if (isOpen) fetchData();
@@ -213,58 +206,10 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
       <div className="tab-content" style={{ marginTop: 20 }}>
         {activeTab === 'overview' && (
           <div className="detail-section">
-            {threatData && threatData.score != null && (
-              <div
-                style={{
-                  marginBottom: 16,
-                  padding: '12px 16px',
-                  background: 'var(--color-surface)',
-                  borderRadius: 8,
-                  border: '1px solid var(--color-border)',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  {threatData.score >= PRIVACY_GOOD_SCORE_MIN ? (
-                    <Shield size={24} color="var(--color-success, #22c55e)" />
-                  ) : (
-                    <ShieldAlert size={24} color="var(--color-danger, #ef4444)" />
-                  )}
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600 }}>Privacy Score: {threatData.score}/100</div>
-                    <div
-                      style={{
-                        fontSize: 13,
-                        color: 'var(--color-text-muted)',
-                        display: 'flex',
-                        flexWrap: 'wrap',
-                        gap: 6,
-                        marginTop: 4,
-                      }}
-                    >
-                      {threatData.deductions?.length
-                        ? threatData.deductions.map((deduction, i) => (
-                            <span
-                              key={`${deduction.rule_id}-${i}`}
-                              title={`−${deduction.points} points — see the Privacy page for the remediation guide`}
-                              style={{
-                                padding: '2px 8px',
-                                borderRadius: 999,
-                                fontSize: 12,
-                                border: `1px solid ${DEDUCTION_SEVERITY_COLORS[deduction.severity] || 'var(--color-border)'}`,
-                                color:
-                                  DEDUCTION_SEVERITY_COLORS[deduction.severity] ||
-                                  'var(--color-text)',
-                              }}
-                            >
-                              {deduction.title}
-                            </span>
-                          ))
-                        : 'Clean profile'}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+            <HardwareThreatProfile
+              threatData={threatData}
+              windscribeEnabled={settings?.windscribe_enabled}
+            />
             <div className="field-group">
               <span className="field-label">Name</span>
               <div>{hardware.name}</div>
