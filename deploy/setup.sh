@@ -904,6 +904,16 @@ stage6_apply_binary() {
     cb_warn "setcap not found — install libcap2-bin and re-run"
   fi
 
+  # Grant NET_RAW to nmap so active host discovery (ICMP/SYN sweeps, OS
+  # detection) works without running the scanner as root
+  if command -v nmap &>/dev/null && command -v setcap &>/dev/null; then
+    if setcap cap_net_raw+eip "$(command -v nmap)" >> "$LOG_FILE" 2>&1; then
+      cb_ok "NET_RAW capability granted to nmap"
+    else
+      cb_warn "setcap on nmap failed — active host discovery may be degraded"
+    fi
+  fi
+
   # Verify frontend assets exist
   if [[ ! -f /opt/circuitbreaker/share/frontend/index.html ]]; then
     cb_fail "Frontend assets missing" "Check bundle integrity at /opt/circuitbreaker/share/frontend/"

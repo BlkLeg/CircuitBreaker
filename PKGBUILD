@@ -6,7 +6,7 @@ pkgdesc="Circuit Breaker — Homelab topology mapper and network documentation t
 arch=('x86_64' 'aarch64')
 url="https://github.com/BlkLeg/circuitbreaker"
 license=('MIT')
-depends=('postgresql' 'redis' 'nginx')
+depends=('postgresql' 'redis' 'nginx' 'nmap')
 optdepends=('nats-server: message bus for internal pub/sub')
 install=circuit-breaker.install
 

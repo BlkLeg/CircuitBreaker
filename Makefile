@@ -34,7 +34,7 @@ PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >=
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help install dev backend backend-watch frontend migrate stop
+.PHONY: help install dev backend backend-watch frontend migrate stop ensure-nmap
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -45,7 +45,12 @@ install: ## Bootstrap dev environment (run once)
 	$(CURDIR)/.venv/bin/pip install -e "apps/backend/[dev,otel]"
 	npm install --prefix $(FRONTEND_DIR)
 
-dev: deps-up stop ## Native backend + frontend + deps
+ensure-nmap: ## Fail early if the nmap binary is missing (discovery needs it)
+	@command -v nmap >/dev/null 2>&1 || { \
+	  echo "ERROR: nmap not found. Install it (Fedora: sudo dnf install nmap; Debian: sudo apt install nmap) then re-run."; \
+	  exit 1; }
+
+dev: ensure-nmap deps-up stop ## Native backend + frontend + deps
 	trap 'kill 0; wait' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
 
 stop: ## Kill any process holding the dev ports
