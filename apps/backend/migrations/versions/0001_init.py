@@ -30,6 +30,7 @@ _EXCLUDED_TABLES = {
     "notification_routes",
     "notification_sinks",
     "ip_addresses",
+    "network_privacy_snapshots",
     "node_relations",
     "oauth_states",
     "onboarding",

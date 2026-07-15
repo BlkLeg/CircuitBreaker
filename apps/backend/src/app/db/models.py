@@ -304,6 +304,19 @@ class PrivacyScoreHistory(Base):
     hardware: Mapped["Hardware"] = relationship("Hardware", back_populates="privacy_history")
 
 
+class NetworkPrivacySnapshot(Base):
+    """Point-in-time network privacy score with its deductions and check results."""
+
+    __tablename__ = "network_privacy_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    grade: Mapped[str] = mapped_column(String(1), nullable=False)
+    deductions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    checks: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
 # ── Compute Units ───────────────────────────────────────────────────────────
 
 
