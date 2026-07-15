@@ -20,6 +20,7 @@ from app.db.models import (
     TelemetryTimeseries,
 )
 from app.services.proxmox_client import (
+    PERMISSION_FIX_HINT,
     _get_client_async,
     _publish,
 )
@@ -257,10 +258,8 @@ async def poll_node_telemetry(db: AsyncSession) -> dict[int, Exception | None]:
                 if is_auth:
                     hint = (
                         f"All {len(nodes)} node(s) returned permission errors "
-                        f"({first_err.strip()[:120]}). "
-                        "The API token likely lacks Sys.Audit. Fix: Proxmox → Datacenter → "
-                        "Permissions → Add → API Token Permission, "
-                        "Role=PVEAuditor, Path=/, Propagate=yes."
+                        f"({first_err.strip()[:120]}). The API token likely lacks Sys.Audit. "
+                        + PERMISSION_FIX_HINT
                     )
                     _logger.warning("Proxmox integration %d: %s", config_id, hint)
                     config.last_poll_error = hint

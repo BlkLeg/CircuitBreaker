@@ -1132,6 +1132,11 @@ select.cb-input {
   background: rgba(30, 36, 51, 0.45);
 }
 
+.history-row.selected {
+  background: rgba(245, 166, 35, 0.08);
+  box-shadow: inset 2px 0 0 var(--color-primary, #f5a623);
+}
+
 .history-row-enter {
   animation: historyRowIn var(--history-row-entry-ms, 200ms) ease-out;
 }
@@ -1870,21 +1875,15 @@ select.cb-input {
   background: #6b7280;
 }
 
-/* ── Scan progress bar ─────────────────────────────────────────────────────── */
+/* ── Scan progress animation ──────────────────────────────────────────────── */
 
-.scan-progress-bar-wrap {
-  height: 4px;
+.scan-progress-animation {
   width: 100%;
-  border-radius: 2px;
-  background: var(--color-border);
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
-}
-
-.scan-progress-bar-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--color-primary);
-  transition: width 0.4s ease;
 }
 
 .scan-stage-label {

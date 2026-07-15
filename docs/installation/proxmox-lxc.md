@@ -110,7 +110,7 @@ For full Proxmox discovery (VMs, nodes, storage), the token's user needs:
 | `Sys.Audit` | `/nodes` |
 | `Datastore.Audit` | `/storage` |
 
-You can assign these via **Datacenter → Permissions → Add → API Token Permission**.
+Since Privilege Separation is unchecked (step 3 above), the token inherits the **user's** permissions — grants made to the token itself are ignored. Assign these via **Datacenter → Permissions → Add → User Permission** (User = the user you created the token under, e.g. `root@pam`), not "API Token Permission" (that only applies when Privilege Separation is checked).
 
 ---
 

@@ -16,6 +16,21 @@ from app.services.credential_vault import get_vault
 
 _logger = logging.getLogger(__name__)
 
+# Proxmox API tokens can be created with "Privilege Separation" checked (default) or
+# unchecked. Which one determines WHERE a permission grant must be added:
+#   - Privilege Separation checked:   grant to the token itself (API Token Permission).
+#   - Privilege Separation unchecked: grant to the underlying user (User Permission) —
+#     the token inherits the user's ACL, and token-specific grants are ignored.
+# We can't reliably auto-detect this (querying the token's own metadata requires
+# permissions the token may not have), so the hint covers both paths explicitly.
+PERMISSION_FIX_HINT = (
+    "Fix: in Proxmox go to Datacenter → Permissions → Add. If the token has "
+    "'Privilege Separation' UNCHECKED, add a User Permission for the underlying "
+    "user (not the token) — User = your user@realm, Path = /, Role = PVEAuditor, "
+    "Propagate = yes. If 'Privilege Separation' is CHECKED, add an API Token "
+    "Permission for the token instead, with the same Path/Role/Propagate."
+)
+
 # Reuse one Proxmox client per integration to avoid urllib3 connection pool exhaustion
 # (many clients to the same host each create a pool; one client per host reuses connections).
 _proxmox_client_cache: dict[int, ProxmoxIntegration] = {}
@@ -201,12 +216,23 @@ async def _check_token_privsep(client: ProxmoxIntegration) -> str | None:
     """
     try:
         perms = await client.get_permissions()
-        priv_sets = list(perms.values()) if isinstance(perms, dict) else []
-        has_sys_audit = any("Sys.Audit" in privs for privs in priv_sets)
-        has_vm_audit = any("VM.Audit" in privs for privs in priv_sets)
-    except Exception:
-        has_sys_audit = False
-        has_vm_audit = False
+        priv_names = {
+            privilege
+            for path_perms in perms.values()
+            if isinstance(path_perms, dict)
+            for privilege in path_perms.keys()
+        }
+        has_sys_audit = "Sys.Audit" in priv_names
+        has_vm_audit = "VM.Audit" in priv_names
+        _logger.warning(
+            "Proxmox permission probe: raw_type=%s paths=%s privileges=%s",
+            type(perms).__name__,
+            list(perms.keys()) if isinstance(perms, dict) else perms,
+            sorted(priv_names),
+        )
+    except Exception as exc:
+        _logger.warning("Proxmox permission probe failed; skipping privilege hint: %s", exc)
+        return None
 
     missing: list[str] = []
     if not has_sys_audit:
@@ -216,11 +242,7 @@ async def _check_token_privsep(client: ProxmoxIntegration) -> str | None:
 
     if missing:
         return (
-            "API token is missing permissions: "
-            + "; ".join(missing)
-            + ". Fix: Proxmox → Datacenter → Permissions → Add → API Token Permission, "
-            "select your token, set Role = PVEAuditor, Path = /, Propagate = yes. "
-            "Or, recreate the token with Privilege Separation unchecked."
+            "API token is missing permissions: " + "; ".join(missing) + ". " + PERMISSION_FIX_HINT
         )
     return None
 

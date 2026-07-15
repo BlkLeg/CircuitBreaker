@@ -287,10 +287,13 @@ export default function ProxmoxIntegrationSection() {
                     Assign the <code style={{ fontSize: 12 }}>PVEAuditor</code> role
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
-                    Go to <strong>Datacenter → Permissions → Add → API Token Permission</strong>.
-                    Set <strong>Path</strong> to <code style={{ fontSize: 12 }}>/</code>, select
-                    your token, and assign the <strong>PVEAuditor</strong> role. This grants
-                    read-only access to nodes, VMs, and containers — no write access needed.
+                    Since Privilege Separation is unchecked, the token inherits the{' '}
+                    <strong>user&rsquo;s</strong> permissions — go to{' '}
+                    <strong>Datacenter → Permissions → Add → User Permission</strong> (grants made
+                    to the token itself are ignored when Privilege Separation is off). Set{' '}
+                    <strong>Path</strong> to <code style={{ fontSize: 12 }}>/</code>, select the
+                    user the token belongs to, and assign the <strong>PVEAuditor</strong> role. This
+                    grants read-only access to nodes, VMs, and containers — no write access needed.
                   </div>
                 </div>
               </div>

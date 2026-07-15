@@ -2,11 +2,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import PropTypes from 'prop-types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import '../styles/discovery.css';
-import { getJobs, getJobResults, cancelJob, enrichOpnsenseJob } from '../api/discovery.js';
+import {
+  getJobs,
+  getJobResults,
+  getJobLogs,
+  cancelJob,
+  enrichOpnsenseJob,
+} from '../api/discovery.js';
 import { useToast } from '../components/common/Toast';
 import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
 import AnimatedCounter from '../components/discovery/AnimatedCounter.jsx';
+import ScanDetailPanel from '../components/discovery/ScanDetailPanel.jsx';
 import {
   SCAN_ROW_ENTRY_ANIMATION_MS,
   SCAN_STATUS_RUNNING_PULSE_DURATION_MS,
@@ -223,8 +230,10 @@ const ScanHistoryRow = React.memo(
   function ScanHistoryRow({
     item,
     isExpanded,
+    isSelected,
     jobResults,
     onToggleExpand,
+    onSelectJob,
     onCancelJob,
     onEnrichJob,
     onRefreshJobs,
@@ -262,9 +271,12 @@ const ScanHistoryRow = React.memo(
     return (
       <>
         <tr
-          className="history-row history-row-enter"
+          className={`history-row history-row-enter${isSelected ? ' selected' : ''}`}
           style={{ '--history-row-entry-ms': `${SCAN_ROW_ENTRY_ANIMATION_MS}ms` }}
-          onClick={() => onToggleExpand(item)}
+          onClick={() => {
+            onToggleExpand(item);
+            onSelectJob(item.id);
+          }}
         >
           <td className="history-expand-cell">
             {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -349,6 +361,7 @@ const ScanHistoryRow = React.memo(
   (previousProps, nextProps) =>
     previousProps.item === nextProps.item &&
     previousProps.isExpanded === nextProps.isExpanded &&
+    previousProps.isSelected === nextProps.isSelected &&
     previousProps.jobResults === nextProps.jobResults &&
     previousProps.onCancelJob === nextProps.onCancelJob &&
     previousProps.onEnrichJob === nextProps.onEnrichJob &&
@@ -358,14 +371,21 @@ const ScanHistoryRow = React.memo(
 ScanHistoryRow.propTypes = {
   item: PropTypes.object.isRequired,
   isExpanded: PropTypes.bool.isRequired,
+  isSelected: PropTypes.bool,
   jobResults: PropTypes.array,
   onToggleExpand: PropTypes.func.isRequired,
+  onSelectJob: PropTypes.func.isRequired,
   onCancelJob: PropTypes.func.isRequired,
   onEnrichJob: PropTypes.func.isRequired,
   onRefreshJobs: PropTypes.func,
 };
 
-export default function DiscoveryHistoryPage({ embedded = false, jobsData = null, onRefreshJobs }) {
+export default function DiscoveryHistoryPage({
+  embedded = false,
+  jobsData = null,
+  onRefreshJobs,
+  profiles = [],
+}) {
   const toast = useToast();
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -374,6 +394,23 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [sourceFilter, setSourceFilter] = useState('all');
+  const [selectedJobId, setSelectedJobId] = useState(null);
+  const [detailedLogs, setDetailedLogs] = useState([]);
+
+  const profileMap = useMemo(() => new Map(profiles.map((p) => [p.id, p.name])), [profiles]);
+
+  useEffect(() => {
+    if (selectedJobId == null) {
+      setDetailedLogs([]);
+      return;
+    }
+    getJobLogs(selectedJobId)
+      .then((r) => setDetailedLogs(Array.isArray(r.data) ? r.data : []))
+      .catch((error) => {
+        logApiWarning('Failed to load scan logs', error);
+        setDetailedLogs([]);
+      });
+  }, [selectedJobId]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -483,6 +520,11 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
     [activeJobs]
   );
 
+  const selectedJob = useMemo(
+    () => merged.find((job) => job.id === selectedJobId) ?? null,
+    [merged, selectedJobId]
+  );
+
   const filtered = useMemo(
     () =>
       merged.filter((item) => {
@@ -581,8 +623,10 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
                   key={item.id}
                   item={item}
                   isExpanded={expanded.has(item.id)}
+                  isSelected={item.id === selectedJobId}
                   jobResults={results.get(item.id)}
                   onToggleExpand={toggleExpand}
+                  onSelectJob={setSelectedJobId}
                   onCancelJob={handleCancelJob}
                   onEnrichJob={handleEnrichJob}
                   onRefreshJobs={onRefreshJobs}
@@ -592,6 +636,14 @@ export default function DiscoveryHistoryPage({ embedded = false, jobsData = null
           </table>
         </div>
       )}
+
+      <ScanDetailPanel
+        job={selectedJob}
+        progressPct={selectedJob?.progress_percent}
+        etaSeconds={selectedJob?.eta_seconds}
+        detailedLogs={detailedLogs}
+        profileMap={profileMap}
+      />
     </div>
   );
 }
@@ -600,4 +652,5 @@ DiscoveryHistoryPage.propTypes = {
   embedded: PropTypes.bool,
   jobsData: PropTypes.array,
   onRefreshJobs: PropTypes.func,
+  profiles: PropTypes.array,
 };

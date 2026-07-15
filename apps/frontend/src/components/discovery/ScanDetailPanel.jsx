@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Download, RefreshCw } from 'lucide-react';
 import { getJobResults } from '../../api/discovery.js';
 import JobStatusBadge from './JobStatusBadge.jsx';
+import ScanProgressAnimation from './ScanProgressAnimation.jsx';
 
 const PROBE_COLORS = {
   nmap: '#3b82f6',
@@ -388,9 +389,7 @@ export default function ScanDetailPanel({
                         gap: 6,
                       }}
                     >
-                      <div className="scan-progress-bar-wrap">
-                        <div className="scan-progress-bar-fill" style={{ width: `${pct}%` }} />
-                      </div>
+                      <ScanProgressAnimation />
                       {job.current_message && (
                         <div className="scan-stage-label">{job.current_message}</div>
                       )}

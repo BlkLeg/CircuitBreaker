@@ -317,7 +317,9 @@ export default function DiscoveryPage() {
   } else if (filter === 'settings') {
     mainContent = <ScanSettingsPanel />;
   } else {
-    mainContent = <DiscoveryHistoryPage embedded jobsData={jobs} onRefreshJobs={loadJobs} />;
+    mainContent = (
+      <DiscoveryHistoryPage embedded jobsData={jobs} onRefreshJobs={loadJobs} profiles={profiles} />
+    );
   }
 
   return (

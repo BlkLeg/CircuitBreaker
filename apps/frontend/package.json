@@ -1,6 +1,6 @@
 {
   "name": "circuit-breaker-ui",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "private": true,
   "dependencies": {
     "@dagrejs/dagre": "^1.1.8",
@@ -8,6 +8,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@emoji-mart/data": "^1.2.1",
     "@emoji-mart/react": "^1.1.1",
+    "@lottiefiles/dotlottie-react": "^0.19.9",
     "@tanstack/react-virtual": "^3.13.21",
     "@uiw/react-md-editor": "^4.0.11",
     "axios": "^1.7.0",
