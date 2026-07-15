@@ -1571,17 +1571,20 @@ class HardwareLiveMetric(Base):
 
 class TelemetryTimeseries(Base):
     __tablename__ = "telemetry_timeseries"
+    # TimescaleDB requires the partitioning (time) column to be part of the PK.
+    __table_args__ = (
+        PrimaryKeyConstraint("id", "ts"),
+        Index("ix_telemetry_timeseries_item_id", "item_id", "metric", "ts"),
+    )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, autoincrement=True, nullable=False)
     entity_type: Mapped[str] = mapped_column(String, nullable=False)  # 'hardware' | 'compute_unit'
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
     item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metric: Mapped[str] = mapped_column(String, nullable=False)  # 'cpu_pct', 'mem_used_gb', etc.
     value: Mapped[float] = mapped_column(Float, nullable=False)
     source: Mapped[str | None] = mapped_column(String, nullable=True, default="proxmox")
-    ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_now)
-
-    __table_args__ = (Index("ix_telemetry_timeseries_item_id", "item_id", "metric", "ts"),)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 # ── CVE Entries (stored in separate cve.db) ──────────────────────────────────

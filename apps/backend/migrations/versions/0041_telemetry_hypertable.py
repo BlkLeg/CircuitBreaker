@@ -39,6 +39,27 @@ def _is_hypertable(bind, table: str) -> bool:
     return result.scalar() is not None
 
 
+def _ensure_ts_in_pk(bind) -> None:
+    """Replace the single-column PK with (id, ts).
+
+    TimescaleDB requires the partitioning column in every unique index, so
+    create_hypertable fails against the original id-only primary key. The
+    original PK was created inline (0014) so its name is the Postgres default,
+    not the app naming convention — look it up dynamically.
+    """
+    insp = sa.inspect(bind)
+    pk = insp.get_pk_constraint("telemetry_timeseries")
+    if "ts" in (pk.get("constrained_columns") or []):
+        return  # Already composite — nothing to do.
+
+    # PK columns must be NOT NULL; ts was historically nullable.
+    op.execute(sa.text("UPDATE telemetry_timeseries SET ts = now() WHERE ts IS NULL"))
+    pk_name = pk.get("name")
+    if pk_name:
+        op.execute(sa.text(f'ALTER TABLE telemetry_timeseries DROP CONSTRAINT "{pk_name}"'))
+    op.execute(sa.text("ALTER TABLE telemetry_timeseries ADD PRIMARY KEY (id, ts)"))
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
@@ -62,6 +83,7 @@ def upgrade() -> None:
 
     # Convert to hypertable (migrate_data moves existing rows into chunks)
     if not _is_hypertable(bind, "telemetry_timeseries"):
+        _ensure_ts_in_pk(bind)
         op.execute(
             sa.text(
                 "SELECT create_hypertable("

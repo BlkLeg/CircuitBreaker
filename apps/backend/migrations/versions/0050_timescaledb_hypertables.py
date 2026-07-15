@@ -102,6 +102,25 @@ def _apply_hypertable(
     )
 
 
+def _fix_telemetry_timeseries_pk(bind: sa.engine.Connection) -> None:
+    """Ensure the PK on telemetry_timeseries is (id, ts) composite.
+
+    Needed when 0041 took its no-TimescaleDB fallback and the conversion
+    happens here instead. The original PK was created inline (0014) so its
+    name is the Postgres default — look it up dynamically.
+    """
+    pk = sa.inspect(bind).get_pk_constraint("telemetry_timeseries")
+    if "ts" in (pk.get("constrained_columns") or []):
+        return  # Already composite — nothing to do.
+
+    # PK columns must be NOT NULL; ts was historically nullable.
+    op.execute(sa.text("UPDATE telemetry_timeseries SET ts = now() WHERE ts IS NULL"))
+    pk_name = pk.get("name")
+    if pk_name:
+        op.execute(sa.text(f'ALTER TABLE telemetry_timeseries DROP CONSTRAINT "{pk_name}"'))
+    op.execute(sa.text("ALTER TABLE telemetry_timeseries ADD PRIMARY KEY (id, ts)"))
+
+
 def _fix_hardware_live_metrics_pk(bind: sa.engine.Connection) -> None:
     """Ensure the PK on hardware_live_metrics is (id, collected_at) composite.
 
@@ -138,6 +157,10 @@ def upgrade() -> None:
     # ── telemetry_timeseries ────────────────────────────────────────────────
     # Migration 0041 ran but skipped hypertable conversion because TimescaleDB
     # was not available at the time. Apply it now.
+    if sa.inspect(bind).has_table("telemetry_timeseries") and not _is_hypertable(
+        bind, "telemetry_timeseries"
+    ):
+        _fix_telemetry_timeseries_pk(bind)
     _apply_hypertable(
         bind,
         table="telemetry_timeseries",
