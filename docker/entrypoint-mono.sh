@@ -67,6 +67,9 @@ ensure_data_dirs() {
   mkdir -p "${CB_DATA_DIR:-/data}/pgdata" "${CB_DATA_DIR:-/data}/uploads" "${CB_DATA_DIR:-/data}/nats" "${CB_DATA_DIR:-/data}/tls" "${CB_DATA_DIR:-/data}/certs" "${CB_DATA_DIR:-/data}/redis"
   if [ "$(id -u)" -eq 0 ]; then
     mkdir -p /var/log/nginx /var/log/circuitbreaker
+    # /var/log is tmpfs (fresh every boot); nginx runs as breaker and writes
+    # its access log here.
+    chown breaker:breaker /var/log/nginx /var/log/circuitbreaker
   fi
 }
 
