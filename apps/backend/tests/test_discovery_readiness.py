@@ -270,3 +270,68 @@ def test_heal_metadata_unknown_capability_key_returns_none(db_session):
     result = get_capability_heal_metadata(db_session, "not_a_real_capability")
 
     assert result == {"last_healed_at": None, "last_error": None}
+
+
+# ── GET /api/v1/discovery/readiness extended with helper_installed + per-capability metadata ──
+
+
+async def test_readiness_endpoint_includes_helper_installed_boolean(client, auth_headers):
+    resp = await client.get("/api/v1/discovery/readiness", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "helper_installed" in body
+    assert isinstance(body["helper_installed"], bool)
+
+
+async def test_readiness_endpoint_includes_heal_metadata_per_capability(client, auth_headers):
+    resp = await client.get("/api/v1/discovery/readiness", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    for c in body["capabilities"]:
+        assert "last_healed_at" in c
+        assert "last_error" in c
+
+
+async def test_readiness_endpoint_heal_metadata_scoped_to_capability(
+    client, auth_headers, db_session
+):
+    """A heal logged for nmap_present should appear only on nmap_present,
+    not on nmap_raw or other capabilities."""
+    from datetime import UTC, datetime
+
+    # Seed a heal log for nmap_present only
+    ts = datetime.now(UTC)
+    from app.db.models import Log
+
+    log = Log(
+        timestamp=ts,
+        level="info",
+        category="worker",
+        action="discovery_auto_heal_ensure_nmap",
+        actor="system",
+        actor_name="discovery_reconciler",
+        entity_type="discovery_capability",
+        entity_name="nmap_present",
+        details="capability=nmap_present",
+    )
+    db_session.add(log)
+    db_session.commit()
+
+    resp = await client.get("/api/v1/discovery/readiness", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Find nmap_present and nmap_raw capabilities
+    nmap_present_cap = next((c for c in body["capabilities"] if c["key"] == "nmap_present"), None)
+    nmap_raw_cap = next((c for c in body["capabilities"] if c["key"] == "nmap_raw"), None)
+
+    assert nmap_present_cap is not None
+    assert nmap_raw_cap is not None
+
+    # nmap_present should have the heal logged
+    assert nmap_present_cap["last_healed_at"] == ts.isoformat()
+    assert nmap_present_cap["last_error"] is None
+
+    # nmap_raw should have no heal (None)
+    assert nmap_raw_cap["last_healed_at"] is None
+    assert nmap_raw_cap["last_error"] is None

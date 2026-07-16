@@ -144,21 +144,28 @@ def _compute_discovery_status(db: Session) -> DiscoveryStatusOut:
 
 
 @router.get("/readiness")
-def get_readiness(user: User = require_role("admin")) -> dict:
-    from app.services.discovery_readiness import get_discovery_readiness
+def get_readiness(db: Session = Depends(get_db), user: User = require_role("admin")) -> dict:
+    from app.services import helper_client
+    from app.services.discovery_readiness import (
+        get_capability_heal_metadata,
+        get_discovery_readiness,
+    )
 
-    return {
-        "capabilities": [
+    capabilities = []
+    for c in get_discovery_readiness():
+        heal = get_capability_heal_metadata(db, c.key)
+        capabilities.append(
             {
                 "key": c.key,
                 "title": c.title,
                 "state": c.state.value,
                 "explanation": c.explanation,
                 "reason_code": c.reason_code,
+                "last_healed_at": heal["last_healed_at"],
+                "last_error": heal["last_error"],
             }
-            for c in get_discovery_readiness()
-        ]
-    }
+        )
+    return {"helper_installed": helper_client.helper_installed(), "capabilities": capabilities}
 
 
 @router.get("/status", response_model=DiscoveryStatusOut)
