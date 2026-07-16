@@ -900,6 +900,21 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=300,
     )
 
+    # Discovery-readiness Phase 2 — self-healing reconciliation. Always
+    # scheduled; the job itself no-ops when cb-helperd isn't installed, so
+    # the in-app LAN-discovery toggle applies without a restart once it is.
+    from app.core.constants import DISCOVERY_RECONCILE_INTERVAL_MINUTES
+    from app.services.discovery_reconciler import run_discovery_reconciliation
+
+    scheduler.add_job(
+        run_discovery_reconciliation,
+        trigger=IntervalTrigger(minutes=DISCOVERY_RECONCILE_INTERVAL_MINUTES),
+        id="discovery_reconciler",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
     # IP Pool refresh every hour
     scheduler.add_job(
         discovery_service.refresh_ip_pool,
