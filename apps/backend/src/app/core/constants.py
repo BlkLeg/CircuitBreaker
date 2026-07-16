@@ -40,3 +40,12 @@ DNS_FILTERING_SAMPLE_SIZE = 3
 # Cadence of the APScheduler privacy job (checks + snapshot; feed honors its own
 # windscribe_feed_refresh_hours age gate, so this can tick faster than the feed)
 PRIVACY_PERIODIC_INTERVAL_MINUTES = 15
+
+# Discovery-readiness Phase 2: self-healing reconciliation cadence.
+# Normal cadence matches the existing privacy-periodic job for consistency.
+# After DISCOVERY_RECONCILE_FAILURE_THRESHOLD consecutive failures for a
+# given capability, its retry cadence drops to the backoff interval rather
+# than being abandoned outright.
+DISCOVERY_RECONCILE_INTERVAL_MINUTES = 15
+DISCOVERY_RECONCILE_BACKOFF_MINUTES = 60
+DISCOVERY_RECONCILE_FAILURE_THRESHOLD = 3
