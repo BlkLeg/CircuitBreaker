@@ -24,6 +24,10 @@ services:
       - "${CB_PORT_HTTPS:-443}:8443"
     volumes:
       - "${CB_DATA_DIR:-./circuitbreaker-data}:/data:z"
+      # cb-helperd's socket (host-side root daemon, Phase 2 discovery-readiness
+      # broker). Harmless if cb-helperd isn't installed — the path just won't
+      # exist inside the container and helper_client degrades gracefully.
+      - /run/circuitbreaker:/run/circuitbreaker
     read_only: true
     tmpfs:
       - /tmp:size=100M
