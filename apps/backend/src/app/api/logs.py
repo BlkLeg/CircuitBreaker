@@ -121,6 +121,7 @@ def list_logs(
     actor: str | None = None,
     entity_type: str | None = None,
     entity_id: int | None = None,
+    entity_name: str | None = None,
     level: str | None = None,
     severity: str | None = None,
     search: str | None = None,
@@ -168,6 +169,10 @@ def list_logs(
     if entity_id is not None:
         q = q.where(Log.entity_id == entity_id)
         count_q = count_q.where(Log.entity_id == entity_id)
+
+    if entity_name:
+        q = q.where(Log.entity_name == entity_name)
+        count_q = count_q.where(Log.entity_name == entity_name)
 
     # Support both `level` (legacy) and `severity` (new) filter params
     sev_filter = severity or level

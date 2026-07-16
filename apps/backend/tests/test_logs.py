@@ -119,3 +119,37 @@ async def test_logs_response_structure(client, auth_headers):
         # Verify expected fields exist
         for field in ("id", "action", "log_hash"):
             assert field in entry, f"Expected field '{field}' missing from log entry"
+
+
+@pytest.mark.asyncio
+async def test_list_logs_filters_by_entity_name(client, auth_headers):
+    """Test that entity_name query parameter filters logs correctly."""
+    from app.core.worker_audit import log_worker_audit
+
+    log_worker_audit(
+        action="discovery_auto_heal_ensure_nmap",
+        entity_type="discovery_capability",
+        entity_name="nmap_present",
+        details="capability=nmap_present",
+        worker_name="discovery_reconciler",
+    )
+    log_worker_audit(
+        action="discovery_auto_heal_enable_lan_discovery",
+        entity_type="discovery_capability",
+        entity_name="lan_discovery",
+        details="capability=lan_discovery",
+        worker_name="discovery_reconciler",
+    )
+    resp = await client.get(
+        "/api/v1/logs",
+        params={
+            "category": "worker",
+            "entity_type": "discovery_capability",
+            "entity_name": "nmap_present",
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_count"] >= 1
+    assert all(e["entity_name"] == "nmap_present" for e in body["logs"])
