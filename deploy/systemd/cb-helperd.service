@@ -1,0 +1,19 @@
+[Unit]
+Description=Circuit Breaker Privileged Helper (cb-helperd)
+Documentation=https://github.com/BlkLeg/CircuitBreaker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/circuitbreaker/deploy/helper/cb_helperd.py
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=circuitbreaker
+RuntimeDirectoryMode=0755
+NoNewPrivileges=false
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cb-helperd
+
+[Install]
+WantedBy=multi-user.target
