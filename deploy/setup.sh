@@ -794,6 +794,27 @@ stage3_configure_docker_proxy() {
   cb_ok "Docker socket proxy configured"
 }
 
+stage_configure_helper() {
+  cb_section "Configuring cb-helperd (privileged host helper)"
+
+  mkdir -p /run/circuitbreaker
+  local breaker_uid
+  breaker_uid="$(id -u breaker)"
+
+  cb_step "Writing /etc/circuitbreaker/helper.conf"
+  cat > /etc/circuitbreaker/helper.conf <<EOF
+AUTHORIZED_UID=${breaker_uid}
+EOF
+  chmod 640 /etc/circuitbreaker/helper.conf
+  cb_ok "helper.conf written (AUTHORIZED_UID=${breaker_uid})"
+
+  cp "/opt/circuitbreaker/deploy/systemd/cb-helperd.service" "/etc/systemd/system/cb-helperd.service"
+  systemctl daemon-reload >> "$LOG_FILE" 2>&1
+  systemctl enable --now cb-helperd >> "$LOG_FILE" 2>&1 \
+    || cb_warn "cb-helperd failed to start — check: systemctl status cb-helperd"
+  cb_ok "cb-helperd enabled"
+}
+
 write_wait_for_services_script() {
   cb_section "Creating Service Health Check Script"
   cb_step "Writing wait-for-services.sh"
@@ -882,6 +903,8 @@ stage4_write_systemd_units() {
     systemctl enable circuitbreaker-docker-proxy >> "$LOG_FILE" 2>&1 || true
 
   cb_ok "Systemd units created and enabled"
+
+  stage_configure_helper
 }
 
 stage6_apply_binary() {

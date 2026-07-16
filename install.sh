@@ -199,6 +199,38 @@ cb_install_docker_if_missing() {
   cb_ok "Docker installed"
 }
 
+cb_install_helper_daemon() {
+  local install_dir="$1"
+
+  cb_step "Installing cb-helperd (privileged host helper)"
+  local root_prefix=()
+  if [[ $EUID -ne 0 ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      cb_warn "sudo unavailable — skipping cb-helperd install (LAN discovery and auto-repair need it)"
+      return 0
+    fi
+    root_prefix=(sudo)
+  fi
+
+  "${root_prefix[@]}" mkdir -p /opt/circuitbreaker/deploy/helper /etc/circuitbreaker /run/circuitbreaker
+  "${root_prefix[@]}" cp "${install_dir}/deploy/helper/cb_helperd.py" /opt/circuitbreaker/deploy/helper/cb_helperd.py
+  "${root_prefix[@]}" cp "${install_dir}/deploy/systemd/cb-helperd.service" /etc/systemd/system/cb-helperd.service
+
+  # The mono image's breaker user is a fixed uid=1000 (Dockerfile.mono) —
+  # always correct for the Docker deploy path regardless of the host user
+  # running this installer.
+  "${root_prefix[@]}" bash -c "cat > /etc/circuitbreaker/helper.conf" <<EOF
+AUTHORIZED_UID=1000
+COMPOSE_DIR=${install_dir}
+EOF
+  "${root_prefix[@]}" chmod 640 /etc/circuitbreaker/helper.conf
+
+  "${root_prefix[@]}" systemctl daemon-reload
+  "${root_prefix[@]}" systemctl enable --now cb-helperd >/dev/null 2>&1 \
+    || cb_warn "cb-helperd failed to start — check: systemctl status cb-helperd"
+  cb_ok "cb-helperd installed and running"
+}
+
 cb_generate_secret_base64() {
   openssl rand -base64 "$1" | tr -d '\n'
 }
@@ -228,6 +260,9 @@ stage_docker_deploy() {
   curl -fsSL "${base_url}/docker-compose.yml" -o "${install_dir}/docker-compose.yml"
   curl -fsSL "${base_url}/docker/docker-compose.socket.yml" -o "${install_dir}/docker/docker-compose.socket.yml"
   curl -fsSL "${base_url}/.env.example" -o "${install_dir}/.env.example"
+  mkdir -p "${install_dir}/deploy/helper" "${install_dir}/deploy/systemd"
+  curl -fsSL "${base_url}/deploy/helper/cb_helperd.py" -o "${install_dir}/deploy/helper/cb_helperd.py"
+  curl -fsSL "${base_url}/deploy/systemd/cb-helperd.service" -o "${install_dir}/deploy/systemd/cb-helperd.service"
   cb_ok "Compose assets downloaded"
 
   cb_step "Creating .env with sensible defaults"
@@ -255,6 +290,8 @@ stage_docker_deploy() {
     cd "${install_dir}" && docker compose up -d
   ) || cb_fail "Docker Compose deployment failed" "Run: cd ${install_dir} && docker compose logs --tail=80"
   cb_ok "Docker stack is running"
+
+  cb_install_helper_daemon "${install_dir}"
 
   local host_ip
   host_ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {print $7; exit}')"
