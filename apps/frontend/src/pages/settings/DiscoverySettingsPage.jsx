@@ -3,13 +3,15 @@ import { AlertTriangle, Eye, EyeOff } from 'lucide-react';
 import { settingsApi } from '../../api/client.jsx';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../../components/common/Toast';
+import DiscoveryReadinessPanel from '../../components/settings/DiscoveryReadinessPanel.jsx';
 
-function Toggle({ checked, onChange, disabled }) {
+export function Toggle({ checked, onChange, disabled, ariaLabel }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       style={{
@@ -50,6 +52,7 @@ export default function DiscoverySettingsPage() {
   const [orig, setOrig] = useState(null);
   const [saving, setSaving] = useState(false);
   const [showSnmp, setShowSnmp] = useState(false);
+  const [lanToggleSaving, setLanToggleSaving] = useState(false);
 
   useEffect(() => {
     settingsApi
@@ -71,6 +74,7 @@ export default function DiscoverySettingsPage() {
           docker_socket_path: s.docker_socket_path || '/var/run/docker.sock',
           docker_sync_interval_minutes: s.docker_sync_interval_minutes ?? 5,
           self_cluster_enabled: Boolean(s.self_cluster_enabled),
+          lan_discovery_desired: Boolean(s.lan_discovery_desired),
         };
         setForm(vals);
         setOrig(vals);
@@ -117,6 +121,21 @@ export default function DiscoverySettingsPage() {
     }
   };
 
+  const handleToggleLanDiscovery = async (next) => {
+    setLanToggleSaving(true);
+    try {
+      await settingsApi.update({ lan_discovery_desired: next });
+      set('lan_discovery_desired', next);
+      setOrig((o) => ({ ...o, lan_discovery_desired: next }));
+      await reloadSettings();
+      toast.success('LAN discovery setting saved');
+    } catch (err) {
+      toast.error(err?.message || 'Failed to save LAN discovery setting');
+    } finally {
+      setLanToggleSaving(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 640 }}>
       <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 24 }}>Discovery Settings</h2>
@@ -146,6 +165,17 @@ export default function DiscoverySettingsPage() {
         >
           <Toggle checked={form.discovery_enabled} onChange={(v) => set('discovery_enabled', v)} />
         </SettingRow>
+      </Section>
+
+      <Divider />
+
+      {/* Readiness */}
+      <Section title="Readiness">
+        <DiscoveryReadinessPanel
+          lanDiscoveryDesired={form.lan_discovery_desired}
+          onToggleLanDiscovery={handleToggleLanDiscovery}
+          toggleSaving={lanToggleSaving}
+        />
       </Section>
 
       <Divider />
