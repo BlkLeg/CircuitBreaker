@@ -946,6 +946,10 @@ class AppSettings(Base):
         String, nullable=False, default="/var/run/docker.sock"
     )
     docker_sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    # Phase 2 discovery-readiness: persisted user consent for LAN discovery.
+    # Set only by the explicit toggle; the reconciler converges actual state
+    # to this value, never the other way around.
+    lan_discovery_desired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
     map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
     graph_uplink_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
