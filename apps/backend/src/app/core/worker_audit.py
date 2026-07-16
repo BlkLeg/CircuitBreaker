@@ -21,6 +21,7 @@ def log_worker_audit(
     action: str,
     entity_type: str = "",
     entity_id: int | None = None,
+    entity_name: str | None = None,
     details: str | None = None,
     severity: str = "info",
     worker_name: str = "system",
@@ -31,6 +32,7 @@ def log_worker_audit(
         action:      Short snake_case verb, e.g. ``"prune_status_history"``.
         entity_type: The entity or subsystem, e.g. ``"status_history"``.
         entity_id:   Optional ID of the affected entity.
+        entity_name: Optional name of the affected entity.
         details:     Optional free-text or JSON detail string.
         severity:    ``"info"`` | ``"warn"`` | ``"error"``.
         worker_name: Identifies which worker produced this entry.
@@ -48,6 +50,7 @@ def log_worker_audit(
             action=action,
             entity_type=entity_type or None,
             entity_id=entity_id,
+            entity_name=entity_name or "",
             actor_name=worker_name,
             actor="system",
             actor_id=None,

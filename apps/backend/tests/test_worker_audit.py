@@ -134,6 +134,30 @@ class TestWorkerAuditHelper:
         # Must not raise
         log_worker_audit(action="should_not_crash", worker_name="test")
 
+    def test_worker_audit_writes_entity_name(self, setup_db):
+        """log_worker_audit() forwards entity_name to write_log."""
+        from app.core.worker_audit import log_worker_audit
+
+        log_worker_audit(
+            action="discovery_auto_heal_ensure_nmap",
+            entity_type="discovery_capability",
+            entity_name="nmap_present",
+            details="capability=nmap_present",
+            worker_name="discovery_reconciler",
+        )
+
+        from app.db.models import Log
+        from app.db.session import SessionLocal
+
+        with SessionLocal() as db:
+            log = db.execute(
+                select(Log).where(Log.action == "discovery_auto_heal_ensure_nmap")
+            ).scalar_one_or_none()
+
+        assert log is not None
+        assert log.entity_name == "nmap_present"
+        assert log.entity_id is None
+
 
 class TestGraphCTEExpressionAPI:
     """Verify graph.py CTE conversion produces valid results."""

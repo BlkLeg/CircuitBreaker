@@ -76,6 +76,7 @@ def _attempt_heal(key: str, action_name: str, action_fn: Callable[[], object]) -
         log_worker_audit(
             action=f"discovery_auto_heal_{action_name}",
             entity_type="discovery_capability",
+            entity_name=key,
             details=f"capability={key}",
             severity="info",
             worker_name="discovery_reconciler",
@@ -85,6 +86,7 @@ def _attempt_heal(key: str, action_name: str, action_fn: Callable[[], object]) -
         log_worker_audit(
             action=f"discovery_auto_heal_{action_name}_failed",
             entity_type="discovery_capability",
+            entity_name=key,
             details=f"capability={key} error={exc}",
             severity="warn",
             worker_name="discovery_reconciler",

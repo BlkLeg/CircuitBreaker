@@ -153,3 +153,17 @@ def test_run_discovery_reconciliation_uses_advisory_lock():
         lock.assert_called_once()
         assert lock.call_args.args[0] == "discovery_reconciler"
         assert "job_fn" in lock.call_args.kwargs
+
+
+def test_attempt_heal_logs_entity_name_matching_capability_key_on_success():
+    with patch("app.services.discovery_reconciler.log_worker_audit") as audit:
+        reconciler._attempt_heal("nmap_present", "ensure_nmap", MagicMock(return_value={}))
+        assert audit.call_args.kwargs["entity_name"] == "nmap_present"
+
+
+def test_attempt_heal_logs_entity_name_matching_capability_key_on_failure():
+    with patch("app.services.discovery_reconciler.log_worker_audit") as audit:
+        reconciler._attempt_heal(
+            "lan_discovery", "enable_lan_discovery", MagicMock(side_effect=RuntimeError("x"))
+        )
+        assert audit.call_args.kwargs["entity_name"] == "lan_discovery"
