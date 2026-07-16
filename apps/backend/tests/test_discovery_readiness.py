@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 
@@ -117,3 +118,155 @@ def test_startup_logging_warns_on_degraded(caplog):
         r.log_discovery_readiness_at_startup()
 
     assert any("nmap" in rec.message.lower() for rec in caplog.records)
+
+
+# ── get_capability_heal_metadata (read-time join against the worker audit log) ──
+
+
+def _seed_heal_log(db_session, *, action, entity_name, details, timestamp):
+    """Insert a worker-audit Log row shaped like discovery_reconciler's
+    _attempt_heal writes, with an explicit timestamp so ordering between
+    rows is deterministic (no wall-clock sleeps needed)."""
+    from app.db.models import Log
+
+    log = Log(
+        timestamp=timestamp,
+        level="info",
+        category="worker",
+        action=action,
+        actor="system",
+        actor_name="discovery_reconciler",
+        entity_type="discovery_capability",
+        entity_name=entity_name,
+        details=details,
+    )
+    db_session.add(log)
+    db_session.flush()
+    return log
+
+
+def test_heal_metadata_no_history_returns_none(db_session):
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    result = get_capability_heal_metadata(db_session, "nmap_present")
+
+    assert result == {"last_healed_at": None, "last_error": None}
+
+
+def test_heal_metadata_success_only(db_session):
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    ts = datetime.now(UTC)
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap",
+        entity_name="nmap_present",
+        details="capability=nmap_present",
+        timestamp=ts,
+    )
+
+    result = get_capability_heal_metadata(db_session, "nmap_present")
+
+    assert result["last_healed_at"] == ts.isoformat()
+    assert result["last_error"] is None
+
+
+def test_heal_metadata_failure_only(db_session):
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    ts = datetime.now(UTC)
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap_failed",
+        entity_name="nmap_present",
+        details="capability=nmap_present error=binary not found",
+        timestamp=ts,
+    )
+
+    result = get_capability_heal_metadata(db_session, "nmap_present")
+
+    assert result["last_healed_at"] is None
+    assert result["last_error"] == "binary not found"
+
+
+def test_heal_metadata_success_after_failure_clears_last_error(db_session):
+    """A failure followed by a later success should report the success and
+    clear last_error — ordering is driven by an explicit later timestamp,
+    not a real-time sleep, so it can't flake under load."""
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    base = datetime.now(UTC)
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap_failed",
+        entity_name="nmap_present",
+        details="capability=nmap_present error=binary not found",
+        timestamp=base,
+    )
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap",
+        entity_name="nmap_present",
+        details="capability=nmap_present",
+        timestamp=base + timedelta(seconds=1),
+    )
+
+    result = get_capability_heal_metadata(db_session, "nmap_present")
+
+    assert result["last_healed_at"] == (base + timedelta(seconds=1)).isoformat()
+    assert result["last_error"] is None
+
+
+def test_heal_metadata_failure_after_success_sets_last_error(db_session):
+    """The mirror case: a failure newer than the last success should still
+    surface last_error even though a prior success exists."""
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    base = datetime.now(UTC)
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap",
+        entity_name="nmap_present",
+        details="capability=nmap_present",
+        timestamp=base,
+    )
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_ensure_nmap_failed",
+        entity_name="nmap_present",
+        details="capability=nmap_present error=binary not found",
+        timestamp=base + timedelta(seconds=1),
+    )
+
+    result = get_capability_heal_metadata(db_session, "nmap_present")
+
+    assert result["last_healed_at"] == base.isoformat()
+    assert result["last_error"] == "binary not found"
+
+
+def test_heal_metadata_arp_l2_and_lan_adjacency_share_lan_discovery_entity(db_session):
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    ts = datetime.now(UTC)
+    _seed_heal_log(
+        db_session,
+        action="discovery_auto_heal_enable_lan_discovery",
+        entity_name="lan_discovery",
+        details="capability=lan_discovery",
+        timestamp=ts,
+    )
+
+    arp_result = get_capability_heal_metadata(db_session, "arp_l2")
+    lan_result = get_capability_heal_metadata(db_session, "lan_adjacency")
+
+    assert arp_result == lan_result
+    assert arp_result["last_healed_at"] == ts.isoformat()
+    assert arp_result["last_error"] is None
+
+
+def test_heal_metadata_unknown_capability_key_returns_none(db_session):
+    from app.services.discovery_readiness import get_capability_heal_metadata
+
+    result = get_capability_heal_metadata(db_session, "not_a_real_capability")
+
+    assert result == {"last_healed_at": None, "last_error": None}

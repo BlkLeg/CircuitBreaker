@@ -7,6 +7,7 @@ the readiness API, and (Phase 3) the in-app Readiness panel.
 
 import ipaddress
 import logging
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -143,3 +144,67 @@ def log_discovery_readiness_at_startup() -> None:
             c.state.value,
             c.explanation,
         )
+
+
+# ── Per-capability auto-heal metadata (read-time join against the worker audit log) ──
+
+# discovery_reconciler.py writes one worker-audit entry per heal attempt, keyed by
+# entity_name. arp_l2/lan_adjacency share a single Class-2 action pair
+# (enable_lan_discovery / disable_lan_discovery), so both map to the one
+# "lan_discovery" entity_name the reconciler actually logs under — matches
+# discovery_reconciler.py's _CLASS1_ACTIONS keys and its Class-2 literal verbatim.
+_HEAL_ENTITY_NAME_BY_CAPABILITY = {
+    "nmap_present": "nmap_present",
+    "nmap_raw": "nmap_raw",
+    "arp_l2": "lan_discovery",
+    "lan_adjacency": "lan_discovery",
+}
+
+_HEAL_ERROR_DETAIL_RE = re.compile(r"error=(.*)$")
+
+
+def _extract_heal_error_message(details: str | None) -> str | None:
+    """Pull the `<msg>` out of a `"capability=<key> error=<msg>"` audit-log
+    details string. Falls back to the raw string when the pattern isn't found,
+    so an unexpected details format never silently loses the error."""
+    if details is None:
+        return None
+    match = _HEAL_ERROR_DETAIL_RE.search(details)
+    if match:
+        return match.group(1).strip()
+    return details
+
+
+def get_capability_heal_metadata(db, capability_key: str) -> dict:
+    """Read-time join: look up the most recent auto-heal success/failure for
+    *capability_key* in the worker audit log. Pure read — writes nothing."""
+    from sqlalchemy import select
+
+    from app.db.models import Log
+
+    entity_name = _HEAL_ENTITY_NAME_BY_CAPABILITY.get(capability_key)
+    if entity_name is None:
+        return {"last_healed_at": None, "last_error": None}
+
+    base = select(Log).where(
+        Log.category == "worker",
+        Log.entity_type == "discovery_capability",
+        Log.entity_name == entity_name,
+    )
+    last_success = db.execute(
+        base.where(Log.action.like("discovery_auto_heal_%"))
+        .where(~Log.action.like("%_failed"))
+        .order_by(Log.timestamp.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    last_failure = db.execute(
+        base.where(Log.action.like("%_failed")).order_by(Log.timestamp.desc()).limit(1)
+    ).scalar_one_or_none()
+
+    last_healed_at = last_success.timestamp.isoformat() if last_success else None
+    last_error = None
+    if last_failure is not None and (
+        last_success is None or last_failure.timestamp > last_success.timestamp
+    ):
+        last_error = _extract_heal_error_message(last_failure.details)
+    return {"last_healed_at": last_healed_at, "last_error": last_error}
