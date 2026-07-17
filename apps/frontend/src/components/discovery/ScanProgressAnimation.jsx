@@ -60,13 +60,15 @@ const STYLE_COMPONENTS = {
 
 const DEFAULT_STYLE = 'circuit';
 
-export default function ScanProgressAnimation({ className = '', pct = 0 }) {
+export default function ScanProgressAnimation({ className = '', pct = 0, compact = false }) {
   const { settings } = useSettings();
   const styleKey = STYLE_COMPONENTS[settings?.scan_progress_style]
     ? settings.scan_progress_style
     : DEFAULT_STYLE;
   const StyleComponent = STYLE_COMPONENTS[styleKey];
-  const containerClassName = [CONTAINER_CLASS_NAME, className].filter(Boolean).join(' ');
+  const containerClassName = [CONTAINER_CLASS_NAME, compact && 'compact', className]
+    .filter(Boolean)
+    .join(' ');
 
   return (
     <div className={containerClassName} data-testid="scan-progress-animation" aria-hidden="true">
@@ -78,4 +80,5 @@ export default function ScanProgressAnimation({ className = '', pct = 0 }) {
 ScanProgressAnimation.propTypes = {
   className: PropTypes.string,
   pct: PropTypes.number,
+  compact: PropTypes.bool,
 };

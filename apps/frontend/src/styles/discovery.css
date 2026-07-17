@@ -1857,11 +1857,6 @@ select.cb-input {
   background: var(--color-primary, #f5a623);
 }
 
-.history-progress-fill.status-running {
-  background: #22c55e;
-  box-shadow: 0 0 4px rgba(34, 197, 94, 0.4);
-}
-
 .history-progress-fill.status-done,
 .history-progress-fill.status-completed {
   background: #22c55e;
@@ -2037,6 +2032,29 @@ select.cb-input {
   50% {
     box-shadow: 0 0 14px color-mix(in srgb, var(--color-primary, #fe8019) 90%, transparent);
   }
+}
+
+/* Compact variant — for the scan-history table row (fixed small height, no room
+   for the full-size glow/segment/node proportions used in the detail panel). */
+.scan-progress-animation.compact {
+  height: 6px;
+}
+.scan-progress-animation.compact .spb-scanline-track {
+  height: 4px;
+}
+.scan-progress-animation.compact .spb-segmented {
+  height: 4px;
+  gap: 2px;
+}
+.scan-progress-animation.compact .spb-circuit {
+  height: 6px;
+}
+.scan-progress-animation.compact .spb-circuit-node {
+  width: 6px;
+  height: 6px;
+}
+.scan-progress-animation.compact .spb-minimal-track {
+  height: 4px;
 }
 
 .scan-stage-label {

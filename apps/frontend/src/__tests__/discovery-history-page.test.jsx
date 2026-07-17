@@ -85,4 +85,60 @@ describe('DiscoveryHistoryPage', () => {
     expect(screen.getByText('Cancel')).toBeInTheDocument();
     expect(screen.getAllByText('\u2014').length).toBeGreaterThan(0);
   });
+
+  it('shows the animated progress bar (not the static status-colored one) for a running job', async () => {
+    const { container } = render(
+      <DiscoveryHistoryPage
+        embedded
+        jobsData={[
+          {
+            id: 303,
+            status: 'running',
+            source_type: 'network',
+            started_at: '2026-03-12T12:00:00Z',
+            target_cidr: '10.0.3.0/24',
+            scan_types_json: '["nmap"]',
+            hosts_found: 0,
+            hosts_new: 0,
+            hosts_conflict: 0,
+            progress_percent: 55,
+          },
+        ]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('scan-progress-animation')).toBeInTheDocument();
+    });
+    expect(container.querySelector('.scan-progress-animation.compact')).toBeInTheDocument();
+    expect(container.querySelector('.history-progress-fill')).not.toBeInTheDocument();
+  });
+
+  it('shows the static status-colored bar (not the animation) for a completed job', async () => {
+    const { container } = render(
+      <DiscoveryHistoryPage
+        embedded
+        jobsData={[
+          {
+            id: 404,
+            status: 'completed',
+            source_type: 'network',
+            started_at: '2026-03-12T12:00:00Z',
+            target_cidr: '10.0.4.0/24',
+            scan_types_json: '["nmap"]',
+            hosts_found: 5,
+            hosts_new: 2,
+            hosts_conflict: 0,
+          },
+        ]}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.history-progress-fill.status-done')).toBeInTheDocument();
+    });
+    expect(
+      container.querySelector('[data-testid="scan-progress-animation"]')
+    ).not.toBeInTheDocument();
+  });
 });

@@ -14,6 +14,7 @@ import TimestampCell from '../components/TimestampCell.jsx';
 import logger from '../utils/logger.js';
 import AnimatedCounter from '../components/discovery/AnimatedCounter.jsx';
 import ScanDetailPanel from '../components/discovery/ScanDetailPanel.jsx';
+import ScanProgressAnimation from '../components/discovery/ScanProgressAnimation.jsx';
 import {
   SCAN_ROW_ENTRY_ANIMATION_MS,
   SCAN_STATUS_RUNNING_PULSE_DURATION_MS,
@@ -324,7 +325,10 @@ const ScanHistoryRow = React.memo(
               </span>
               <span className="history-live-meta-item">{timerStr}</span>
             </div>
-            {item.started_at && (
+            {item.started_at && item.status === 'running' && (
+              <ScanProgressAnimation pct={progressPercent} compact />
+            )}
+            {item.started_at && item.status !== 'running' && (
               <div className="history-progress-track">
                 <div
                   className={`history-progress-fill status-${item.status === 'completed' ? 'done' : item.status}`}
