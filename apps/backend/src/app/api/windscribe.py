@@ -89,8 +89,6 @@ async def get_network_privacy_score_history(
 
     by_date: dict[str, NetworkPrivacySnapshot] = {}
     for row in rows:
-        if row.created_at is None:
-            continue
         by_date[row.created_at.date().isoformat()] = row
 
     result_days = []
