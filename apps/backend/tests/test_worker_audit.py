@@ -135,14 +135,22 @@ class TestWorkerAuditHelper:
         log_worker_audit(action="should_not_crash", worker_name="test")
 
     def test_worker_audit_writes_entity_name(self, setup_db):
-        """log_worker_audit() forwards entity_name to write_log."""
+        """log_worker_audit() forwards entity_name to write_log.
+
+        Uses a synthetic action/entity_name (not a real capability key like
+        "nmap_present") because log_worker_audit's write_log(db=None) opens
+        its own SessionLocal and commits outside any test's SAVEPOINT
+        isolation — a real capability key here would permanently pollute the
+        shared test DB for other tests (e.g. discovery_readiness's
+        "no history" assumptions) for the rest of the suite run.
+        """
         from app.core.worker_audit import log_worker_audit
 
         log_worker_audit(
-            action="discovery_auto_heal_ensure_nmap",
+            action="test_worker_audit_entity_name_roundtrip",
             entity_type="discovery_capability",
-            entity_name="nmap_present",
-            details="capability=nmap_present",
+            entity_name="test_entity_name_worker_audit_roundtrip",
+            details="capability=test_entity_name_worker_audit_roundtrip",
             worker_name="discovery_reconciler",
         )
 
@@ -151,11 +159,11 @@ class TestWorkerAuditHelper:
 
         with SessionLocal() as db:
             log = db.execute(
-                select(Log).where(Log.action == "discovery_auto_heal_ensure_nmap")
+                select(Log).where(Log.action == "test_worker_audit_entity_name_roundtrip")
             ).scalar_one_or_none()
 
         assert log is not None
-        assert log.entity_name == "nmap_present"
+        assert log.entity_name == "test_entity_name_worker_audit_roundtrip"
         assert log.entity_id is None
 
 

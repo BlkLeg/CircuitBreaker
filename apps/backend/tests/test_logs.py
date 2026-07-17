@@ -123,21 +123,29 @@ async def test_logs_response_structure(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_list_logs_filters_by_entity_name(client, auth_headers):
-    """Test that entity_name query parameter filters logs correctly."""
+    """Test that entity_name query parameter filters logs correctly.
+
+    Uses synthetic action/entity_name values (not real capability keys like
+    "nmap_present") because log_worker_audit's write_log(db=None) opens its
+    own SessionLocal and commits outside any test's SAVEPOINT isolation — a
+    real capability key here would permanently pollute the shared test DB
+    for other tests (e.g. discovery_readiness's "no history" assumptions)
+    for the rest of the suite run.
+    """
     from app.core.worker_audit import log_worker_audit
 
     log_worker_audit(
-        action="discovery_auto_heal_ensure_nmap",
+        action="test_logs_entity_name_filter_target",
         entity_type="discovery_capability",
-        entity_name="nmap_present",
-        details="capability=nmap_present",
+        entity_name="test_entity_name_filter_target",
+        details="capability=test_entity_name_filter_target",
         worker_name="discovery_reconciler",
     )
     log_worker_audit(
-        action="discovery_auto_heal_enable_lan_discovery",
+        action="test_logs_entity_name_filter_other",
         entity_type="discovery_capability",
-        entity_name="lan_discovery",
-        details="capability=lan_discovery",
+        entity_name="test_entity_name_filter_other",
+        details="capability=test_entity_name_filter_other",
         worker_name="discovery_reconciler",
     )
     resp = await client.get(
@@ -145,11 +153,11 @@ async def test_list_logs_filters_by_entity_name(client, auth_headers):
         params={
             "category": "worker",
             "entity_type": "discovery_capability",
-            "entity_name": "nmap_present",
+            "entity_name": "test_entity_name_filter_target",
         },
         headers=auth_headers,
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["total_count"] >= 1
-    assert all(e["entity_name"] == "nmap_present" for e in body["logs"])
+    assert all(e["entity_name"] == "test_entity_name_filter_target" for e in body["logs"])
