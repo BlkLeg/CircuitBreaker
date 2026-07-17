@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from app.db.models import AppSettings, NetworkPrivacySnapshot
@@ -16,16 +18,32 @@ def _set_windscribe(db_session, enabled: bool) -> None:
     db_session.flush()
 
 
-def _seed_snapshot(db_session, *, score=72, grade="C", checks=None, deductions=None):
+def _seed_snapshot(
+    db_session, *, score=72, grade="C", checks=None, deductions=None, created_at=None
+):
     snapshot = NetworkPrivacySnapshot(
         score=score,
         grade=grade,
         deductions=deductions if deductions is not None else [],
         checks=checks if checks is not None else [],
     )
+    if created_at is not None:
+        snapshot.created_at = created_at
     db_session.add(snapshot)
     db_session.flush()
     return snapshot
+
+
+def _deduction(severity: str) -> dict:
+    return {
+        "rule_id": "captive_portal",
+        "title": "t",
+        "points": 10,
+        "severity": severity,
+        "remediation_id": "captive_portal_info",
+        "hardware_id": None,
+        "category": "network",
+    }
 
 
 _WARNING_CHECK = {
@@ -191,3 +209,83 @@ async def test_device_threat_profile_unscored_device_is_empty_not_error(
 async def test_device_threat_profile_missing_hardware_404(client, auth_headers):
     resp = await client.get("/api/v1/devices/999999/threat-profile", headers=auth_headers)
     assert resp.status_code == 404
+
+
+# ── /network/privacy-score/history ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_privacy_score_history_requires_auth(client):
+    resp = await client.get("/api/v1/network/privacy-score/history")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_privacy_score_history_empty_db_is_empty_not_error(client, auth_headers, db_session):
+    _set_windscribe(db_session, True)
+    resp = await client.get("/api/v1/network/privacy-score/history", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"days": []}
+
+
+@pytest.mark.asyncio
+async def test_privacy_score_history_disabled_is_empty(client, auth_headers, db_session):
+    _set_windscribe(db_session, False)
+    _seed_snapshot(db_session, score=90, grade="A")
+    resp = await client.get("/api/v1/network/privacy-score/history", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"days": []}
+
+
+@pytest.mark.asyncio
+async def test_privacy_score_history_buckets_by_day_and_picks_latest(
+    client, auth_headers, db_session
+):
+    _set_windscribe(db_session, True)
+    day1 = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+    day1_later = datetime(2026, 7, 13, 21, 0, tzinfo=UTC)
+    day2 = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+
+    _seed_snapshot(db_session, score=80, grade="B", created_at=day1)
+    _seed_snapshot(
+        db_session,
+        score=72,
+        grade="C",
+        created_at=day1_later,
+        deductions=[_deduction("warning"), _deduction("info")],
+    )
+    _seed_snapshot(
+        db_session, score=95, grade="A", created_at=day2, deductions=[_deduction("critical")]
+    )
+
+    resp = await client.get("/api/v1/network/privacy-score/history", headers=auth_headers)
+    assert resp.status_code == 200
+    days = resp.json()["days"]
+    assert len(days) == 2
+
+    by_date = {d["date"]: d for d in days}
+    # day1's later (higher id) snapshot wins over the earlier one
+    assert by_date["2026-07-13"]["score"] == 72
+    assert by_date["2026-07-13"]["warning_count"] == 1
+    assert by_date["2026-07-13"]["info_count"] == 1
+    assert by_date["2026-07-13"]["critical_count"] == 0
+    assert by_date["2026-07-14"]["score"] == 95
+    assert by_date["2026-07-14"]["critical_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_privacy_score_history_days_param_clamped_to_90(client, auth_headers, db_session):
+    _set_windscribe(db_session, True)
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    recent = datetime(2026, 7, 14, tzinfo=UTC)
+    _seed_snapshot(db_session, score=50, grade="F", created_at=old)
+    _seed_snapshot(db_session, score=90, grade="A", created_at=recent)
+
+    resp = await client.get(
+        "/api/v1/network/privacy-score/history?days=99999", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    days = resp.json()["days"]
+    # clamped window (90 days back from the latest snapshot) excludes the 2020 row
+    assert len(days) == 1
+    assert days[0]["date"] == "2026-07-14"

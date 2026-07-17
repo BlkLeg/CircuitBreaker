@@ -34,6 +34,7 @@ _EXCLUDED_TABLES = {
     "node_relations",
     "oauth_states",
     "onboarding",
+    "privacy_finding_ignores",
     "privacy_score_history",
     "proxmox_discover_runs",
     "sites",

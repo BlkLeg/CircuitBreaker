@@ -29,6 +29,7 @@ def test_evaluate_device_telnet_open_is_critical():
     assert deduction["hardware_id"] == 7
     assert deduction["remediation_id"]
     assert deduction["title"]
+    assert deduction["category"] == "services"
 
 
 def test_evaluate_device_ftp_and_smb_and_upnp():
@@ -54,6 +55,14 @@ def test_evaluate_device_gateway_escalates_severity_and_points():
 
 def test_evaluate_device_unmatched_ports_ignored():
     assert privacy_rules.evaluate_device(1, "server", {80, 443, 22}) == []
+
+
+def test_evaluate_device_categories_by_rule():
+    deductions = privacy_rules.evaluate_device(1, None, {21, 137, 1900})
+    by_rule = {d["rule_id"]: d for d in deductions}
+    assert by_rule["ftp_open"]["category"] == "services"
+    assert by_rule["legacy_smb_netbios"]["category"] == "protocols"
+    assert by_rule["upnp_exposed"]["category"] == "protocols"
 
 
 # ── device scoring & badges ──────────────────────────────────────────────────
@@ -120,6 +129,15 @@ def test_evaluate_network_check_deductions_apply():
     assert rule_ids == {"captive_portal", "dns_filtering_absent"}
     severities = {d["rule_id"]: d["severity"] for d in result["deductions"]}
     assert severities["dns_filtering_absent"] == "info"
+    categories = {d["rule_id"]: d["category"] for d in result["deductions"]}
+    assert categories["captive_portal"] == "network"
+    assert categories["dns_filtering_absent"] == "dns"
+
+
+def test_network_check_rule_categories():
+    assert privacy_rules.NETWORK_CHECK_RULES["dns_tamper"]["category"] == "dns"
+    assert privacy_rules.NETWORK_CHECK_RULES["dns_filtering_absent"]["category"] == "dns"
+    assert privacy_rules.NETWORK_CHECK_RULES["captive_portal"]["category"] == "network"
 
 
 def test_evaluate_network_critical_check_clamps_to_55():
@@ -167,3 +185,49 @@ def test_evaluate_network_combined_checks_and_devices():
     assert result["score"] == 75
     assert result["grade"] == "C"
     assert result["checks"] == checks
+
+
+# ── evaluate_network with ignores ────────────────────────────────────────────
+
+
+def test_evaluate_network_no_ignores_matches_default_behavior():
+    checks = [_check("captive_portal", "warning")]
+    result = privacy_rules.evaluate_network([], checks, ignored=frozenset())
+    assert result["score"] == 90
+    assert result["ignored_deductions"] == []
+    assert len(result["deductions"]) == 1
+
+
+def test_evaluate_network_ignored_check_excluded_from_score_and_deductions():
+    checks = [_check("captive_portal", "warning"), _check("dns_filtering_absent", "info")]
+    result = privacy_rules.evaluate_network(
+        [], checks, ignored=frozenset({("captive_portal", None)})
+    )
+    # only dns_filtering_absent (−5) counts now
+    assert result["score"] == 95
+    active_rule_ids = {d["rule_id"] for d in result["deductions"]}
+    assert active_rule_ids == {"dns_filtering_absent"}
+    ignored_rule_ids = {d["rule_id"] for d in result["ignored_deductions"]}
+    assert ignored_rule_ids == {"captive_portal"}
+
+
+def test_evaluate_network_ignored_device_finding_excluded():
+    device_deductions = privacy_rules.evaluate_device(5, None, {23})  # telnet_open, −15
+    result = privacy_rules.evaluate_network(
+        device_deductions, [], ignored=frozenset({("telnet_open", 5)})
+    )
+    assert result["score"] == 100
+    assert result["deductions"] == []
+    assert len(result["ignored_deductions"]) == 1
+    assert result["ignored_deductions"][0]["hardware_id"] == 5
+
+
+def test_evaluate_network_ignore_key_is_specific_to_hardware_id():
+    # ignoring telnet_open for device 99 should not suppress device 5's telnet_open
+    device_deductions = privacy_rules.evaluate_device(5, None, {23})
+    result = privacy_rules.evaluate_network(
+        device_deductions, [], ignored=frozenset({("telnet_open", 99)})
+    )
+    assert result["score"] == 85
+    assert len(result["deductions"]) == 1
+    assert result["ignored_deductions"] == []

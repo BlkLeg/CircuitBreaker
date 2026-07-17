@@ -93,6 +93,7 @@ async def test_recompute_all_persists_device_scores_history_and_snapshot(db_sess
         "severity",
         "remediation_id",
         "hardware_id",
+        "category",
     }
     history = (
         db_session.query(PrivacyScoreHistory)

@@ -1,7 +1,7 @@
 """Pure privacy-scoring ruleset — no I/O, no DB, no network.
 
 Deduction shape (used verbatim in DB, API, and frontend):
-    {"rule_id", "title", "points", "severity", "remediation_id", "hardware_id"}
+    {"rule_id", "title", "points", "severity", "remediation_id", "hardware_id", "category"}
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ DEVICE_RULES: dict[str, dict] = {
         "severity": "critical",
         "remediation_id": "disable_telnet",
         "ports": frozenset({23}),
+        "category": "services",
     },
     "ftp_open": {
         "title": "FTP service exposed",
@@ -41,6 +42,7 @@ DEVICE_RULES: dict[str, dict] = {
         "severity": "warning",
         "remediation_id": "disable_ftp",
         "ports": frozenset({21}),
+        "category": "services",
     },
     "legacy_smb_netbios": {
         "title": "Legacy SMB/NetBIOS services exposed",
@@ -48,6 +50,7 @@ DEVICE_RULES: dict[str, dict] = {
         "severity": "warning",
         "remediation_id": "disable_legacy_smb",
         "ports": frozenset({137, 138, 139}),
+        "category": "protocols",
     },
     "upnp_exposed": {
         "title": "UPnP service exposed",
@@ -55,6 +58,7 @@ DEVICE_RULES: dict[str, dict] = {
         "severity": "warning",
         "remediation_id": "disable_upnp",
         "ports": frozenset({1900, 5000}),
+        "category": "protocols",
     },
 }
 
@@ -64,18 +68,21 @@ NETWORK_CHECK_RULES: dict[str, dict] = {
         "points": 10,
         "severity": "warning",
         "remediation_id": "captive_portal_info",
+        "category": "network",
     },
     "dns_tamper": {
         "title": "DNS responses appear tampered with",
         "points": 30,
         "severity": "critical",
         "remediation_id": "dns_tamper_response",
+        "category": "dns",
     },
     "dns_filtering_absent": {
         "title": "No DNS-level malware filtering on this network",
         "points": 5,
         "severity": "info",
         "remediation_id": "setup_dns_filtering",
+        "category": "dns",
     },
 }
 
@@ -90,6 +97,7 @@ def _build_deduction(
         "severity": severity,
         "remediation_id": rule["remediation_id"],
         "hardware_id": hardware_id,
+        "category": rule["category"],
     }
 
 
@@ -135,18 +143,24 @@ def _device_aggregate_points(device_deductions: list[dict]) -> int:
     return min(PRIVACY_DEVICE_AGGREGATE_CAP, top_sum)
 
 
-def evaluate_network(device_deductions: list[dict], check_results: list[dict]) -> dict:
+def evaluate_network(
+    device_deductions: list[dict],
+    check_results: list[dict],
+    ignored: frozenset[tuple[str, int | None]] = frozenset(),
+) -> dict:
     """Combine device deductions and network-check results into one network score.
 
-    Returns {"score", "grade", "deductions", "checks"} — deductions carry every
-    device finding (for the flagged-devices UI) plus one entry per fired check;
-    the score math caps device volume so it alone cannot zero the score.
+    ``ignored`` is a set of ``(rule_id, hardware_id)`` keys (hardware_id is
+    None for network-level checks) that are suppressed from score math and
+    reported separately.
+
+    Returns {"score", "grade", "deductions", "ignored_deductions", "checks"} —
+    deductions carry every non-ignored device finding (for the flagged-devices
+    UI) plus one entry per fired check; the score math caps device volume so
+    it alone cannot zero the score.
     """
     check_deductions = []
-    has_critical_check = False
     for check in check_results:
-        if check["status"] == "critical":
-            has_critical_check = True
         rule = NETWORK_CHECK_RULES.get(check["check_id"])
         if rule is None or check["status"] not in _FIRING_STATUSES:
             continue
@@ -154,8 +168,19 @@ def evaluate_network(device_deductions: list[dict], check_results: list[dict]) -
             _build_deduction(check["check_id"], rule, rule["points"], rule["severity"], None)
         )
 
-    check_points = sum(d["points"] for d in check_deductions)
-    score = PRIVACY_MAX_SCORE - check_points - _device_aggregate_points(device_deductions)
+    all_deductions = check_deductions + list(device_deductions)
+    active_deductions = [
+        d for d in all_deductions if (d["rule_id"], d["hardware_id"]) not in ignored
+    ]
+    ignored_deductions = [d for d in all_deductions if (d["rule_id"], d["hardware_id"]) in ignored]
+    active_checks = [d for d in check_deductions if (d["rule_id"], None) not in ignored]
+    active_devices = [
+        d for d in device_deductions if (d["rule_id"], d["hardware_id"]) not in ignored
+    ]
+    has_critical_check = any(d["severity"] == "critical" for d in active_checks)
+
+    check_points = sum(d["points"] for d in active_checks)
+    score = PRIVACY_MAX_SCORE - check_points - _device_aggregate_points(active_devices)
     if has_critical_check:
         score = min(score, PRIVACY_CRITICAL_CHECK_CEILING)
     score = max(PRIVACY_MIN_SCORE, min(PRIVACY_MAX_SCORE, score))
@@ -163,6 +188,7 @@ def evaluate_network(device_deductions: list[dict], check_results: list[dict]) -
     return {
         "score": score,
         "grade": grade_for(score),
-        "deductions": check_deductions + list(device_deductions),
+        "deductions": active_deductions,
+        "ignored_deductions": ignored_deductions,
         "checks": list(check_results),
     }

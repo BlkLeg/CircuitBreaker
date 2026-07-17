@@ -1,18 +1,22 @@
 """Privacy & threat endpoints — served from the latest snapshot, never computed
 on request. Disabled/no-data states return 200 empty shapes, not errors."""
 
+from collections import Counter
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.security import require_auth
+from app.core.time import utcnow
 from app.db.models import AppSettings, Hardware, NetworkPrivacySnapshot, ScanResult
 from app.db.session import get_db
 
 router = APIRouter()
 
 _HISTORY_LIMIT = 30
+_SCORE_HISTORY_DAYS_MAX = 90
 
 
 def _is_windscribe_enabled(db: Session) -> bool:
@@ -63,6 +67,45 @@ async def get_network_privacy_score(
         "checked_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
         "history": _score_history(db),
     }
+
+
+@router.get("/network/privacy-score/history")
+async def get_network_privacy_score_history(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
+    if not _is_windscribe_enabled(db):
+        return {"days": []}
+
+    clamped_days = min(days, _SCORE_HISTORY_DAYS_MAX)
+    cutoff = utcnow() - timedelta(days=clamped_days)
+    rows = (
+        db.query(NetworkPrivacySnapshot)
+        .filter(NetworkPrivacySnapshot.created_at >= cutoff)
+        .order_by(NetworkPrivacySnapshot.id.asc())
+        .all()
+    )
+
+    by_date: dict[str, NetworkPrivacySnapshot] = {}
+    for row in rows:
+        if row.created_at is None:
+            continue
+        by_date[row.created_at.date().isoformat()] = row
+
+    result_days = []
+    for date, row in sorted(by_date.items()):
+        severities = Counter(d.get("severity") for d in (row.deductions or []))
+        result_days.append(
+            {
+                "date": date,
+                "score": row.score,
+                "critical_count": severities.get("critical", 0),
+                "warning_count": severities.get("warning", 0),
+                "info_count": severities.get("info", 0),
+            }
+        )
+    return {"days": result_days}
 
 
 def _derive_alert_status(checks: list[dict]) -> str:
