@@ -20,6 +20,7 @@ from app.db.models import (
     AppSettings,
     Hardware,
     NetworkPrivacySnapshot,
+    PrivacyFindingIgnore,
     PrivacyScoreHistory,
     ScanResult,
 )
@@ -98,8 +99,14 @@ def _stored_device_deductions(db: Session) -> list[dict]:
     return [deduction for (profile,) in profiles for deduction in (profile or [])]
 
 
+def _active_ignores(db: Session) -> frozenset[tuple[str, int | None]]:
+    rows = db.query(PrivacyFindingIgnore.rule_id, PrivacyFindingIgnore.hardware_id).all()
+    return frozenset((rule_id, hardware_id) for rule_id, hardware_id in rows)
+
+
 def _write_snapshot(db: Session, device_deductions: list[dict], checks: list[dict]) -> dict:
-    snapshot = privacy_rules.evaluate_network(device_deductions, checks)
+    ignored = _active_ignores(db)
+    snapshot = privacy_rules.evaluate_network(device_deductions, checks, ignored=ignored)
     db.add(
         NetworkPrivacySnapshot(
             score=snapshot["score"],

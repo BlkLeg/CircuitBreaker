@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.db.models import AppSettings, NetworkPrivacySnapshot
+from app.db.models import AppSettings, NetworkPrivacySnapshot, PrivacyFindingIgnore
 
 
 def _set_windscribe(db_session, enabled: bool) -> None:
@@ -289,3 +289,84 @@ async def test_privacy_score_history_days_param_clamped_to_90(client, auth_heade
     # clamped window (90 days back from the latest snapshot) excludes the 2020 row
     assert len(days) == 1
     assert days[0]["date"] == "2026-07-14"
+
+
+# ── /privacy-findings/ignore(s) ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_privacy_finding_ignore_endpoints_require_auth(client):
+    resp = await client.get("/api/v1/privacy-findings/ignores")
+    assert resp.status_code == 401
+    resp = await client.post(
+        "/api/v1/privacy-findings/ignore", json={"rule_id": "telnet_open", "hardware_id": 1}
+    )
+    assert resp.status_code == 401
+    resp = await client.delete("/api/v1/privacy-findings/ignore?rule_id=telnet_open")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_ignore_finding_creates_row_and_lists_it(client, auth_headers, factories):
+    hardware = factories.hardware()
+    resp = await client.post(
+        "/api/v1/privacy-findings/ignore",
+        headers=auth_headers,
+        json={"rule_id": "telnet_open", "hardware_id": hardware.id},
+    )
+    assert resp.status_code == 201
+    assert resp.json() == {"ok": True}
+
+    resp = await client.get("/api/v1/privacy-findings/ignores", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"ignores": [{"rule_id": "telnet_open", "hardware_id": hardware.id}]}
+
+
+@pytest.mark.asyncio
+async def test_ignore_finding_duplicate_create_is_noop(client, auth_headers, factories, db_session):
+    hardware = factories.hardware()
+    payload = {"rule_id": "telnet_open", "hardware_id": hardware.id}
+    for _ in range(2):
+        resp = await client.post(
+            "/api/v1/privacy-findings/ignore", headers=auth_headers, json=payload
+        )
+        assert resp.status_code == 201
+    assert db_session.query(PrivacyFindingIgnore).count() == 1
+
+
+@pytest.mark.asyncio
+async def test_ignore_finding_supports_null_hardware_id_for_network_findings(client, auth_headers):
+    resp = await client.post(
+        "/api/v1/privacy-findings/ignore",
+        headers=auth_headers,
+        json={"rule_id": "captive_portal", "hardware_id": None},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get("/api/v1/privacy-findings/ignores", headers=auth_headers)
+    assert resp.json() == {"ignores": [{"rule_id": "captive_portal", "hardware_id": None}]}
+
+
+@pytest.mark.asyncio
+async def test_unignore_finding_deletes_row(client, auth_headers, factories, db_session):
+    hardware = factories.hardware()
+    await client.post(
+        "/api/v1/privacy-findings/ignore",
+        headers=auth_headers,
+        json={"rule_id": "telnet_open", "hardware_id": hardware.id},
+    )
+    resp = await client.delete(
+        f"/api/v1/privacy-findings/ignore?rule_id=telnet_open&hardware_id={hardware.id}",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 204
+    assert db_session.query(PrivacyFindingIgnore).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unignore_finding_absent_row_is_noop(client, auth_headers):
+    resp = await client.delete(
+        "/api/v1/privacy-findings/ignore?rule_id=telnet_open&hardware_id=999999",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 204

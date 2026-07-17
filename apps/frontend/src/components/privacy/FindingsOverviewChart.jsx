@@ -10,37 +10,20 @@ import {
 } from 'recharts';
 
 /**
- * Findings Overview — stacked area chart showing Warning vs Info findings over time.
- *
- * Data is derived client-side from the snapshot history. Each snapshot only has
- * {score, at} today, so we use the current snapshot's deduction breakdown as the
- * latest data point and show what we have. As more snapshots accumulate with
- * deduction data, the chart gets richer.
+ * Findings Overview — stacked area chart showing Warning vs Info findings over time,
+ * from the backend's day-bucketed /network/privacy-score/history endpoint.
  */
-export default function FindingsOverviewChart({ deductions, history }) {
+export default function FindingsOverviewChart({ days }) {
   const chartData = useMemo(() => {
-    if (!history?.length) return [];
-
-    // Build a single-point from current deductions for the latest snapshot
-    const currentWarnings = (deductions || []).filter((d) => d.severity === 'warning').length;
-    const currentInfos = (deductions || []).filter((d) => d.severity === 'info').length;
-    const currentCritical = (deductions || []).filter((d) => d.severity === 'critical').length;
-
-    // Use history to build time axis; only the latest point has severity data
-    const points = [...history].reverse();
-    return points.map((p, i) => {
-      const isLatest = i === points.length - 1;
-      return {
-        date: p.at
-          ? new Date(p.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-          : '',
-        warning: isLatest ? currentWarnings + currentCritical : null,
-        info: isLatest ? currentInfos : null,
-        // Interpolate zeros for earlier points so the chart has shape
-        ...(isLatest ? {} : { warning: 0, info: 0 }),
-      };
-    });
-  }, [deductions, history]);
+    if (!days?.length) return [];
+    return days.map((d) => ({
+      date: d.date
+        ? new Date(d.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+        : '',
+      warning: (d.warning_count || 0) + (d.critical_count || 0),
+      info: d.info_count || 0,
+    }));
+  }, [days]);
 
   if (chartData.length < 1) return null;
 

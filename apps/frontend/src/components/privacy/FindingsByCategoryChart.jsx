@@ -12,29 +12,27 @@ import {
 } from 'recharts';
 
 /**
- * Static mapping from rule_id to a display category.
- * Network-check rules map to DNS; device rules map to Protocols.
+ * Category display labels/colors, keyed by the backend's rule `category` field
+ * (see DEVICE_RULES / NETWORK_CHECK_RULES in privacy_rules.py). 'other' is a
+ * fallback bucket for any deduction that somehow lacks a recognized category.
  */
-const RULE_CATEGORY = {
-  dns_tamper: 'DNS',
-  dns_filtering_absent: 'DNS',
-  captive_portal: 'DNS',
-  telnet_open: 'Protocols',
-  ftp_open: 'Protocols',
-  legacy_smb_netbios: 'Protocols',
-  upnp_exposed: 'Protocols',
+const CATEGORY_LABELS = {
+  dns: 'DNS',
+  protocols: 'Protocols',
+  services: 'Services',
+  network: 'Network',
+  other: 'Other',
 };
 
-const ALL_CATEGORIES = ['DNS', 'Protocols', 'Devices', 'Scans', 'Companies', 'Others'];
+const CATEGORY_COLORS = {
+  dns: '#22c55e',
+  protocols: '#3b82f6',
+  services: '#a855f7',
+  network: '#eab308',
+  other: '#64748b',
+};
 
-const CATEGORY_COLORS = [
-  '#22c55e', // DNS — green
-  '#3b82f6', // Protocols — blue
-  '#a855f7', // Devices — purple
-  '#eab308', // Scans — amber
-  '#f97316', // Companies — orange
-  '#64748b', // Others — slate
-];
+const ALL_CATEGORIES = ['dns', 'protocols', 'services', 'network', 'other'];
 
 export default function FindingsByCategoryChart({ deductions }) {
   const chartData = useMemo(() => {
@@ -42,20 +40,14 @@ export default function FindingsByCategoryChart({ deductions }) {
     ALL_CATEGORIES.forEach((c) => (counts[c] = 0));
 
     (deductions || []).forEach((d) => {
-      const cat = RULE_CATEGORY[d.rule_id];
-      if (cat) {
-        counts[cat]++;
-      } else if (d.hardware_id != null) {
-        counts['Devices']++;
-      } else {
-        counts['Others']++;
-      }
+      const cat = CATEGORY_LABELS[d.category] ? d.category : 'other';
+      counts[cat]++;
     });
 
-    return ALL_CATEGORIES.map((name, idx) => ({
-      name,
-      count: counts[name],
-      color: CATEGORY_COLORS[idx],
+    return ALL_CATEGORIES.map((key) => ({
+      name: CATEGORY_LABELS[key],
+      count: counts[key],
+      color: CATEGORY_COLORS[key],
     }));
   }, [deductions]);
 

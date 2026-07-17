@@ -6,17 +6,29 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.security import require_auth
 from app.core.time import utcnow
-from app.db.models import AppSettings, Hardware, NetworkPrivacySnapshot, ScanResult
+from app.db.models import (
+    AppSettings,
+    Hardware,
+    NetworkPrivacySnapshot,
+    PrivacyFindingIgnore,
+    ScanResult,
+)
 from app.db.session import get_db
 
 router = APIRouter()
 
 _HISTORY_LIMIT = 30
 _SCORE_HISTORY_DAYS_MAX = 90
+
+
+class PrivacyFindingIgnoreRequest(BaseModel):
+    rule_id: str
+    hardware_id: int | None = None
 
 
 def _is_windscribe_enabled(db: Session) -> bool:
@@ -195,3 +207,56 @@ async def get_attack_surface(
                 pass
 
     return {"attack_surface": results}
+
+
+@router.get("/privacy-findings/ignores")
+async def list_privacy_finding_ignores(
+    db: Session = Depends(get_db),
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
+    rows = db.query(PrivacyFindingIgnore).all()
+    return {"ignores": [{"rule_id": row.rule_id, "hardware_id": row.hardware_id} for row in rows]}
+
+
+@router.post("/privacy-findings/ignore", status_code=201)
+async def ignore_privacy_finding(
+    payload: PrivacyFindingIgnoreRequest,
+    db: Session = Depends(get_db),
+    user: Any = Depends(require_auth),
+) -> dict[str, Any]:
+    exists = (
+        db.query(PrivacyFindingIgnore)
+        .filter(
+            PrivacyFindingIgnore.rule_id == payload.rule_id,
+            PrivacyFindingIgnore.hardware_id == payload.hardware_id,
+        )
+        .first()
+    )
+    if not exists:
+        db.add(
+            PrivacyFindingIgnore(
+                rule_id=payload.rule_id, hardware_id=payload.hardware_id, created_by=user
+            )
+        )
+        db.commit()
+    return {"ok": True}
+
+
+@router.delete("/privacy-findings/ignore", status_code=204)
+async def unignore_privacy_finding(
+    rule_id: str,
+    hardware_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: Any = Depends(require_auth),
+) -> None:
+    ignore = (
+        db.query(PrivacyFindingIgnore)
+        .filter(
+            PrivacyFindingIgnore.rule_id == rule_id,
+            PrivacyFindingIgnore.hardware_id == hardware_id,
+        )
+        .first()
+    )
+    if ignore:
+        db.delete(ignore)
+        db.commit()

@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Monitor } from 'lucide-react';
+import { windscribeApi } from '../../api/client';
 
 const SEVERITY_COLORS = {
   critical: 'var(--color-danger, #ef4444)',
@@ -16,7 +17,45 @@ export default function FlaggedDevicesTable({ deductions, hardwareMap, onRemedia
   const navigate = useNavigate();
   const [sortKey, setSortKey] = useState('points');
   const [sortAsc, setSortAsc] = useState(false);
-  const [ignored, setIgnored] = useState(new Set());
+  const [ignored, setIgnored] = useState(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+    windscribeApi
+      .getIgnoredFindings()
+      .then((res) => {
+        if (cancelled) return;
+        const seeded = new Map();
+        for (const { rule_id, hardware_id } of res.data?.ignores || []) {
+          seeded.set(`${rule_id}-${hardware_id}`, { ruleId: rule_id, hardwareId: hardware_id });
+        }
+        setIgnored(seeded);
+      })
+      .catch((err) => console.error('Failed to load ignored findings:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleIgnore = (row) => {
+    const key = row.key;
+    setIgnored((prev) =>
+      new Map(prev).set(key, { ruleId: row.deduction.rule_id, hardwareId: row.hardwareId })
+    );
+    windscribeApi
+      .ignoreFinding(row.deduction.rule_id, row.hardwareId)
+      .catch((err) => console.error('Failed to ignore finding:', err));
+  };
+
+  const handleShowAll = () => {
+    const entries = [...ignored.values()];
+    setIgnored(new Map());
+    for (const { ruleId, hardwareId } of entries) {
+      windscribeApi
+        .unignoreFinding(ruleId, hardwareId)
+        .catch((err) => console.error('Failed to unignore finding:', err));
+    }
+  };
 
   const byDevice = useMemo(() => {
     const map = new Map();
@@ -170,7 +209,7 @@ export default function FlaggedDevicesTable({ deductions, hardwareMap, onRemedia
                     <button
                       className="btn"
                       style={actionBtnStyle('var(--color-text-muted, #6b7280)')}
-                      onClick={() => setIgnored((prev) => new Set([...prev, row.key]))}
+                      onClick={() => handleIgnore(row)}
                     >
                       Ignore
                     </button>
@@ -194,7 +233,7 @@ export default function FlaggedDevicesTable({ deductions, hardwareMap, onRemedia
               textDecoration: 'underline',
               padding: 0,
             }}
-            onClick={() => setIgnored(new Set())}
+            onClick={handleShowAll}
           >
             Show all
           </button>

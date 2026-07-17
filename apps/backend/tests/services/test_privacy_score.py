@@ -8,6 +8,7 @@ from app.core.time import utcnow_iso
 from app.db.models import (
     AppSettings,
     NetworkPrivacySnapshot,
+    PrivacyFindingIgnore,
     PrivacyScoreHistory,
     ScanJob,
     ScanResult,
@@ -111,6 +112,32 @@ async def test_recompute_all_persists_device_scores_history_and_snapshot(db_sess
     assert row.grade == "B"
     assert any(d["rule_id"] == "telnet_open" for d in row.deductions)
     assert len(row.checks) == 3
+
+
+@pytest.mark.asyncio
+async def test_recompute_all_excludes_ignored_finding(db_session, factories):
+    _set_windscribe(db_session, True)
+    user = factories.user(role="admin")
+    hardware = factories.hardware(role="server")
+    _seed_scan_result(db_session, hardware.id, [23, 80])
+    db_session.add(
+        PrivacyFindingIgnore(rule_id="telnet_open", hardware_id=hardware.id, created_by=user.id)
+    )
+    db_session.flush()
+
+    feed_patch, checks_patch = _patched_io()
+    with feed_patch, checks_patch:
+        snapshot = await privacy_score.recompute_all(db_session)
+
+    assert snapshot is not None
+    assert snapshot["score"] == 100
+    assert snapshot["deductions"] == []
+    assert snapshot["ignored_deductions"][0]["rule_id"] == "telnet_open"
+    row = (
+        db_session.query(NetworkPrivacySnapshot).order_by(NetworkPrivacySnapshot.id.desc()).first()
+    )
+    assert row.score == 100
+    assert row.deductions == []
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ import AttackSurfaceTable from '../components/privacy/AttackSurfaceTable';
 export default function PrivacyPage() {
   const navigate = useNavigate();
   const [scoreData, setScoreData] = useState(null);
+  const [historyDays, setHistoryDays] = useState([]);
   const [hardwareMap, setHardwareMap] = useState(new Map());
   const [attackSurfaceData, setAttackSurfaceData] = useState(null);
   const [selectedDeduction, setSelectedDeduction] = useState(null);
@@ -26,12 +27,14 @@ export default function PrivacyPage() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [scoreRes, hardwareRes, attackSurfaceRes] = await Promise.all([
+      const [scoreRes, hardwareRes, attackSurfaceRes, historyRes] = await Promise.all([
         windscribeApi.getNetworkPrivacyScore(),
         hardwareApi.list().catch(() => null),
         windscribeApi.getAttackSurface().catch(() => null),
+        windscribeApi.getNetworkPrivacyScoreHistory(30).catch(() => null),
       ]);
       setScoreData(scoreRes.data);
+      setHistoryDays(historyRes?.data?.days || []);
       if (attackSurfaceRes?.data) {
         setAttackSurfaceData(attackSurfaceRes.data.attack_surface);
       }
@@ -60,7 +63,6 @@ export default function PrivacyPage() {
 
   const checks = useMemo(() => scoreData?.checks || [], [scoreData]);
   const deductions = useMemo(() => scoreData?.deductions || [], [scoreData]);
-  const history = useMemo(() => scoreData?.history || [], [scoreData]);
 
   const handleRerunScan = async () => {
     setScanLaunching(true);
@@ -168,7 +170,7 @@ export default function PrivacyPage() {
         <NetworkStatusCheck checks={checks} />
 
         {/* Row 2 */}
-        <FindingsOverviewChart deductions={deductions} history={history} />
+        <FindingsOverviewChart days={historyDays} />
         <FindingsByCategoryChart deductions={deductions} />
 
         {/* Row 3 */}
