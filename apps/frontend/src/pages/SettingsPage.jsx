@@ -16,6 +16,7 @@ import ListEditor from '../components/settings/ListEditor';
 import BrandingSettings from '../components/settings/BrandingSettings';
 import ThemeSettings from '../components/settings/ThemeSettings';
 import DockSettings from '../components/settings/DockSettings';
+import ScanProgressStyleSettings from '../components/settings/ScanProgressStyleSettings';
 import SettingsNav, { SETTINGS_TABS } from '../components/settings/SettingsNav';
 import SettingsActionBar from '../components/settings/SettingsActionBar';
 import SettingField from '../components/settings/SettingField';
@@ -917,6 +918,13 @@ export default function SettingsPage() {
                       )}
                     </>
                   )}
+                </SettingSection>
+
+                <SettingSection
+                  title="Scan Progress Style"
+                  description="Visual style for the animated progress bar shown while a discovery scan is running."
+                >
+                  <ScanProgressStyleSettings />
                 </SettingSection>
               </div>
             )}
