@@ -35,6 +35,7 @@ const DEFAULTS = {
   weather_location: 'Phoenix, AZ',
   timezone: 'UTC',
   language: 'en',
+  scan_progress_style: 'circuit',
 };
 
 const SettingsContext = createContext({
