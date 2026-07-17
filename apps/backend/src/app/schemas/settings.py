@@ -151,6 +151,7 @@ class AppSettingsRead(BaseModel):
     # Font preferences
     ui_font: str = "inter"
     ui_font_size: str = "medium"
+    scan_progress_style: str = "circuit"
     # CVE sync
     cve_sync_enabled: bool = False
     cve_sync_interval_hours: int = 24
@@ -420,6 +421,7 @@ class AppSettingsUpdate(BaseModel):
     # Font preferences
     ui_font: str | None = None
     ui_font_size: str | None = None
+    scan_progress_style: Literal["scanline", "segmented", "circuit", "minimal"] | None = None
     # CVE sync
     cve_sync_enabled: bool | None = None
     cve_sync_interval_hours: int | None = None
