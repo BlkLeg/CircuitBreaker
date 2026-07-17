@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import struct
+from typing import Any
 
 HELPER_SOCKET_PATH = os.environ.get("CB_HELPER_SOCKET_PATH", "/run/circuitbreaker/helper.sock")
 _DEFAULT_TIMEOUT = 30.0
@@ -27,7 +28,7 @@ def helper_installed(socket_path: str = HELPER_SOCKET_PATH) -> bool:
     return os.path.exists(socket_path)
 
 
-def _send_message(conn: socket.socket, obj: dict) -> None:
+def _send_message(conn: socket.socket, obj: dict[str, Any]) -> None:
     body = json.dumps(obj).encode("utf-8")
     conn.sendall(struct.pack(">I", len(body)) + body)
 
@@ -42,18 +43,19 @@ def _recv_exact(conn: socket.socket, n: int) -> bytes:
     return buf
 
 
-def _recv_message(conn: socket.socket) -> dict:
+def _recv_message(conn: socket.socket) -> dict[str, Any]:
     (length,) = struct.unpack(">I", _recv_exact(conn, 4))
-    return json.loads(_recv_exact(conn, length).decode("utf-8"))
+    result: dict[str, Any] = json.loads(_recv_exact(conn, length).decode("utf-8"))
+    return result
 
 
 def call_helper(
     action: str,
-    params: dict | None = None,
+    params: dict[str, Any] | None = None,
     *,
     timeout: float = _DEFAULT_TIMEOUT,
     socket_path: str = HELPER_SOCKET_PATH,
-) -> dict:
+) -> dict[str, Any]:
     if not helper_installed(socket_path):
         raise HelperUnavailable(f"cb-helperd socket not found at {socket_path}")
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -68,24 +70,25 @@ def call_helper(
         conn.close()
     if not response.get("ok", False):
         raise HelperActionError(response.get("error", "unknown helper error"))
-    return response.get("data", {})
+    data: dict[str, Any] = response.get("data", {})
+    return data
 
 
-def get_host_readiness(**kw) -> dict:
+def get_host_readiness(**kw: Any) -> dict[str, Any]:
     return call_helper("get_host_readiness", **kw)
 
 
-def ensure_nmap(**kw) -> dict:
+def ensure_nmap(**kw: Any) -> dict[str, Any]:
     return call_helper("ensure_nmap", **kw)
 
 
-def grant_nmap_caps(**kw) -> dict:
+def grant_nmap_caps(**kw: Any) -> dict[str, Any]:
     return call_helper("grant_nmap_caps", **kw)
 
 
-def enable_lan_discovery(**kw) -> dict:
+def enable_lan_discovery(**kw: Any) -> dict[str, Any]:
     return call_helper("enable_lan_discovery", **kw)
 
 
-def disable_lan_discovery(**kw) -> dict:
+def disable_lan_discovery(**kw: Any) -> dict[str, Any]:
     return call_helper("disable_lan_discovery", **kw)

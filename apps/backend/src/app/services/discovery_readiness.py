@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sqlalchemy.orm import Session
+
 from app.services.discovery_probes import (
     _arp_available,
     _nmap_os_capable,
@@ -175,7 +177,7 @@ def _extract_heal_error_message(details: str | None) -> str | None:
     return details
 
 
-def get_capability_heal_metadata(db, capability_key: str) -> dict:
+def get_capability_heal_metadata(db: Session, capability_key: str) -> dict[str, str | None]:
     """Read-time join: look up the most recent auto-heal success/failure for
     *capability_key* in the worker audit log. Pure read — writes nothing."""
     from sqlalchemy import select
