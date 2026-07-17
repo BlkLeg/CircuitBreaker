@@ -389,7 +389,7 @@ export default function ScanDetailPanel({
                         gap: 6,
                       }}
                     >
-                      <ScanProgressAnimation />
+                      <ScanProgressAnimation pct={pct} />
                       {job.current_message && (
                         <div className="scan-stage-label">{job.current_message}</div>
                       )}
