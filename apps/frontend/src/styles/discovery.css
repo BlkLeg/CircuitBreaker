@@ -1879,11 +1879,164 @@ select.cb-input {
 
 .scan-progress-animation {
   width: 100%;
-  min-height: 56px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+}
+
+/* Scanline sweep */
+.spb-scanline-track {
+  position: relative;
+  width: 100%;
+  height: 10px;
+  border-radius: 6px;
+  background: var(--color-border, #2a2a2a);
+  overflow: hidden;
+}
+.spb-scanline-fill {
+  position: relative;
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-primary, #fe8019) 65%, black),
+    var(--color-primary, #fe8019)
+  );
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-primary, #fe8019) 60%, transparent);
+  overflow: hidden;
+  transition: width 0.4s ease-out;
+}
+.spb-scanline-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.55) 48%,
+    transparent 66%
+  );
+  background-size: 200% 100%;
+  animation: spbSweep 1.4s linear infinite;
+}
+@keyframes spbSweep {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
+/* Segmented pulse */
+.spb-segmented {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  height: 12px;
+}
+.spb-segment {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--color-border, #2a2a2a);
+  transition: background 0.2s ease;
+}
+.spb-segment-lit {
+  background: var(--color-primary, #fe8019);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary, #fe8019) 70%, transparent);
+  animation: spbSegmentPulse 1.4s ease-in-out infinite;
+}
+@keyframes spbSegmentPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Circuit trace */
+.spb-circuit {
+  position: relative;
+  width: 100%;
+  height: 14px;
+}
+.spb-circuit-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-border, #2a2a2a);
+  transform: translateY(-50%);
+}
+.spb-circuit-fill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 2px;
+  background: var(--color-primary, #fe8019);
+  transform: translateY(-50%);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-primary, #fe8019) 70%, transparent);
+  transition: width 0.4s ease-out;
+}
+.spb-circuit-node {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff8f0;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--color-primary, #fe8019) 35%, transparent),
+    0 0 12px color-mix(in srgb, var(--color-primary, #fe8019) 90%, transparent);
+  transform: translate(-50%, -50%);
+  animation: spbNodePulse 1.6s ease-in-out infinite;
+  transition: left 0.4s ease-out;
+}
+@keyframes spbNodePulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--color-primary, #fe8019) 35%, transparent),
+      0 0 10px color-mix(in srgb, var(--color-primary, #fe8019) 70%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--color-primary, #fe8019) 45%, transparent),
+      0 0 18px color-mix(in srgb, var(--color-primary, #fe8019) 100%, transparent);
+  }
+}
+
+/* Minimal gradient glow */
+.spb-minimal-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--color-border, #2a2a2a);
+}
+.spb-minimal-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--color-primary, #fe8019),
+    color-mix(in srgb, var(--color-primary, #fe8019) 60%, white)
+  );
+  animation: spbGlow 1.6s ease-in-out infinite;
+  transition: width 0.4s ease-out;
+}
+@keyframes spbGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 4px color-mix(in srgb, var(--color-primary, #fe8019) 40%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 14px color-mix(in srgb, var(--color-primary, #fe8019) 90%, transparent);
+  }
 }
 
 .scan-stage-label {
