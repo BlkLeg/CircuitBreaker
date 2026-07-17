@@ -991,6 +991,7 @@ class AppSettings(Base):
     # Font preferences
     ui_font: Mapped[str] = mapped_column(String, nullable=False, default="inter")
     ui_font_size: Mapped[str] = mapped_column(String, nullable=False, default="medium")
+    scan_progress_style: Mapped[str] = mapped_column(String, nullable=False, default="circuit")
     # CVE sync
     cve_sync_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cve_sync_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
