@@ -20,6 +20,12 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    cols = {c["name"] for c in insp.get_columns("app_settings")}
+    if "scan_progress_style" in cols:
+        return
+
     op.add_column(
         "app_settings",
         sa.Column("scan_progress_style", sa.String(), server_default="circuit", nullable=False),

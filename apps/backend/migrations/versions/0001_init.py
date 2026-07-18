@@ -65,6 +65,7 @@ _EXCLUDED_COLUMNS: dict[str, set[str]] = {
         "prober_interval_minutes",
         "scan_aggressiveness",
         "scan_allowed_networks",
+        "scan_progress_style",
         "self_cluster_enabled",
         "ssdp_enabled",
         "tcp_probe_enabled",
