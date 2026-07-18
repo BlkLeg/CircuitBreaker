@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -111,6 +112,34 @@ def ensure_pyinstaller_available() -> None:
     )
 
 
+def _collect_migration_hidden_imports() -> list[str]:
+    """Alembic loads migrations/versions/*.py dynamically at runtime — they
+    are never reached by PyInstaller's static import-graph analysis from
+    start.py. Any `app.*` module a migration imports (e.g. a one-off
+    backfill helper used by exactly one migration and nowhere else in the
+    live app) is silently left out of the frozen binary unless declared as
+    a hidden import. Scan every migration file for `app.*` imports instead
+    of hand-maintaining that list, so this can't quietly regress again as
+    new migrations are added.
+    """
+    versions_dir = BACKEND_ROOT / "migrations" / "versions"
+    found: set[str] = set()
+    for path in sorted(versions_dir.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "app" or alias.name.startswith("app."):
+                        found.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and (node.module == "app" or node.module.startswith("app.")):
+                    found.add(node.module)
+    return sorted(found)
+
+
 def build_binary(target_os: str, work_dir: Path) -> Path:
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
@@ -128,7 +157,9 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
         "app.workers.notification_worker",
         "app.workers.telemetry_collector",
         "app.workers.status_worker",
+        *_collect_migration_hidden_imports(),
     ]
+    hidden_imports = sorted(set(hidden_imports))
     run(
         [
             sys.executable,

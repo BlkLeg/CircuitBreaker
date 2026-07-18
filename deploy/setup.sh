@@ -906,13 +906,25 @@ stage4_write_systemd_units() {
   echo "    All services will log to systemd journal"
   echo "    View with: journalctl -u circuitbreaker-<service>"
 
-  # Detect Redis user for templating (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis')
-  export CB_REDIS_USER="redis"
+  # Detect Redis user for templating (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis').
+  # Self-heal: the redis-server binary can be present while its postinst
+  # never ran (interrupted/partial package install) — don't silently
+  # assume the account exists just because the package usually creates it.
   if id redis &>/dev/null; then
     CB_REDIS_USER="redis"
   elif id _redis &>/dev/null; then
     CB_REDIS_USER="_redis"
+  else
+    cb_warn "Redis system user missing (redis-server may be only partially installed) — creating it"
+    useradd -r -s /usr/sbin/nologin -d /nonexistent -c "Redis" redis >> "$LOG_FILE" 2>&1 || true
+    if id redis &>/dev/null; then
+      CB_REDIS_USER="redis"
+    else
+      cb_fail "Could not create or find a Redis system user" \
+        "Check: tail -20 ${LOG_FILE} — try: sudo apt-get install --reinstall redis-server"
+    fi
   fi
+  export CB_REDIS_USER
 
   # circuitbreaker-postgres.service
   cb_render_template "/opt/circuitbreaker/deploy/systemd/circuitbreaker-postgres.service" "/etc/systemd/system/circuitbreaker-postgres.service"
