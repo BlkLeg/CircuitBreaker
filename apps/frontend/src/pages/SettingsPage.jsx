@@ -1182,7 +1182,7 @@ export default function SettingsPage() {
                 </SettingSection>
 
                 <SettingSection
-                  title="Windscribe Threat Intelligence"
+                  title="Network Threat Intelligence"
                   action={
                     <StatusBadge
                       ok={form.windscribe_enabled}
@@ -1192,11 +1192,11 @@ export default function SettingsPage() {
                   }
                 >
                   <SettingField
-                    label="Windscribe Integration"
-                    hint="Enable Windscribe/ControlD network threat intelligence to assess device privacy scores."
+                    label="Threat Intelligence Feed"
+                    hint="Enable network threat intelligence to assess device privacy scores."
                   >
                     <label className="toggle-switch">
-                      <span className="sr-only">Enable Windscribe Integration</span>
+                      <span className="sr-only">Enable Threat Intelligence Feed</span>
                       <input
                         type="checkbox"
                         checked={form.windscribe_enabled}
@@ -1209,7 +1209,7 @@ export default function SettingsPage() {
                   {form.windscribe_enabled && (
                     <SettingField
                       label="Threat Feed Refresh Frequency (Hours)"
-                      hint="How often to refresh the threat feed from Windscribe/ControlD API."
+                      hint="How often to refresh the threat feed."
                     >
                       <input
                         type="number"
