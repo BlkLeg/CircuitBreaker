@@ -105,7 +105,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-release build-from-source release-local docker-build docker-push sign sbom
+.PHONY: build build-deps build-release build-from-source release-local release-tag release-retag docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -127,6 +127,18 @@ release-local: ## build-release + tag current HEAD with VERSION
 	$(MAKE) --no-print-directory build-release
 	git tag -a "v$$(cat VERSION)" -m "Release v$$(cat VERSION)"
 	@echo "Tagged v$$(cat VERSION). Push with: git push origin v$$(cat VERSION)"
+
+release-tag: ## Tag current HEAD as vVERSION (first release of this version — fails if the tag already exists)
+	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
+	@echo "Tagged v$$(cat VERSION) -> $$(git rev-parse --short HEAD). Push with: git push origin v$$(cat VERSION)"
+
+release-retag: ## Move an existing vVERSION tag to current HEAD (re-trigger a failed or updated Release run)
+	git tag -d "v$$(cat VERSION)"
+	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
+	@echo "Retagged v$$(cat VERSION) -> $$(git rev-parse --short HEAD)."
+	@echo "Push with:"
+	@echo "  git push origin :refs/tags/v$$(cat VERSION)"
+	@echo "  git push origin v$$(cat VERSION)"
 
 docker-build: ## Build the mono Docker image locally
 	docker build -f Dockerfile.mono -t $(DOCKER_REGISTRY):$$(cat VERSION) .
