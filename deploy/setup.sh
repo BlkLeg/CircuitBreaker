@@ -354,12 +354,33 @@ stage0_preflight() {
     cb_ok "HTTP Port: $CB_PORT"
     cb_ok "Data Directory: $CB_DATA_DIR"
 
-    echo -e "  ${CYAN}Domain (FQDN)${RESET} (default: ${CB_FQDN}): "
-    read -t 15 -r fqdn_input < /dev/tty || fqdn_input=""
+    echo -e "  ${CYAN}Domain (FQDN)${RESET} — optional, press Enter to skip:"
+    local fqdn_input="" _fqdn_rc=0 _fqdn_rest=""
+    read -t 15 -r fqdn_input < /dev/tty 2>/dev/null || _fqdn_rc=$?
+    if (( _fqdn_rc > 128 )) && [[ -n "$fqdn_input" ]]; then
+      # read timed out mid-line. bash keeps the partial input in the
+      # variable; the user is clearly at the keyboard, so finish the line
+      # without a timeout instead of discarding what they already typed.
+      read -r _fqdn_rest < /dev/tty 2>/dev/null || _fqdn_rest=""
+      fqdn_input="${fqdn_input}${_fqdn_rest}"
+    elif (( _fqdn_rc != 0 )); then
+      fqdn_input=""  # walked-away timeout, EOF, or no usable TTY
+    fi
+    # Trim CR and surrounding whitespace only — interior garbage must fail
+    # validation below, not be silently squashed into a "valid" name
+    fqdn_input="${fqdn_input//$'\r'/}"
+    fqdn_input="${fqdn_input#"${fqdn_input%%[![:space:]]*}"}"
+    fqdn_input="${fqdn_input%"${fqdn_input##*[![:space:]]}"}"
+    if [[ -n "$fqdn_input" ]] && [[ ! "$fqdn_input" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+      cb_warn "Ignoring invalid domain name: ${fqdn_input}"
+      fqdn_input=""
+    fi
     if [[ -n "$fqdn_input" ]]; then
       CB_FQDN="$fqdn_input"
+      cb_ok "Domain: $CB_FQDN"
+    else
+      cb_ok "Domain: (none — using detected IP address)"
     fi
-    cb_ok "Domain: $CB_FQDN"
     cb_ok "Certificate: Self-signed"
   fi
 }
@@ -380,6 +401,7 @@ stage3_configure_postgres() {
 
   # Stop any existing postgres
   cb_step "Stopping existing PostgreSQL instances"
+  systemctl stop 'postgresql@*' 2>/dev/null || true
   systemctl stop postgresql 2>/dev/null || true
   systemctl stop circuitbreaker-postgres 2>/dev/null || true
   "$PG_BIN_DIR/pg_ctl" stop -D "${CB_DATA_DIR}/postgres" 2>/dev/null || true
@@ -704,7 +726,8 @@ stage3_configure_nginx() {
           -keyout "${CB_DATA_DIR}/tls/privkey.pem" \
           -out "${CB_DATA_DIR}/tls/fullchain.pem" \
           -subj "/CN=${cert_cn}/O=CircuitBreaker" \
-          -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1
+          -addext "subjectAltName=${san}" >> "$LOG_FILE" 2>&1 \
+          || cb_fail "TLS certificate generation failed" "Check: tail -20 ${LOG_FILE} — or re-run with --no-tls"
         cb_ok "Self-signed TLS certificate generated"
       else
         cb_ok "TLS certificate already exists — reusing"
@@ -796,6 +819,15 @@ stage3_configure_docker_proxy() {
 
 stage_configure_helper() {
   cb_section "Configuring cb-helperd (privileged host helper)"
+
+  # The helper is optional infrastructure (LAN-discovery auto-heal); a
+  # stale or incomplete bundle must not abort the install.
+  if [[ ! -f /opt/circuitbreaker/deploy/systemd/cb-helperd.service ]] \
+    || [[ ! -f /opt/circuitbreaker/deploy/helper/cb_helperd.py ]]; then
+    cb_warn "cb-helperd files missing from bundle — skipping helper install"
+    cb_warn "LAN discovery auto-heal will be unavailable until the next upgrade"
+    return 0
+  fi
 
   mkdir -p /run/circuitbreaker
   local breaker_uid
@@ -995,12 +1027,13 @@ stage8_start_services() {
   done
   cb_ok "Backend API started"
   
-  # Start workers
+  # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
-  systemctl start "circuitbreaker-worker@discovery" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@webhook" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@notification" >> "$LOG_FILE" 2>&1
-  systemctl start "circuitbreaker-worker@telemetry" >> "$LOG_FILE" 2>&1
+  local _worker
+  for _worker in discovery webhook notification telemetry; do
+    systemctl start "circuitbreaker-worker@${_worker}" >> "$LOG_FILE" 2>&1 \
+      || cb_warn "Worker '${_worker}' failed to start — check: journalctl -u circuitbreaker-worker@${_worker} -n 30"
+  done
   sleep 2
   cb_ok "Workers started"
   
@@ -1033,18 +1066,24 @@ stage9_install_cb_cli() {
   cb_step "Installing cb command-line tool"
   echo "    Location: /usr/local/bin/cb"
   echo "    Commands: status, doctor, logs, restart, backup, update, version, uninstall"
-  
-  cp "/opt/circuitbreaker/deploy/cli/cb" "/usr/local/bin/cb"  
-  chmod 755 /usr/local/bin/cb
-  chown root:root /usr/local/bin/cb
-  
+
+  if [[ ! -f "/opt/circuitbreaker/deploy/cli/cb" ]] \
+    || ! cp "/opt/circuitbreaker/deploy/cli/cb" "/usr/local/bin/cb" \
+    || ! chmod 755 /usr/local/bin/cb \
+    || ! chown root:root /usr/local/bin/cb; then
+    cb_warn "cb CLI could not be installed — falling back to systemctl"
+    cb_warn "Use: systemctl status circuitbreaker.target"
+    cb_warn "Use: journalctl -u 'circuitbreaker-*' --no-pager -n 50"
+    return 0
+  fi
+
   cb_ok "CB CLI installed"
 }
 
 stage10_final_output() {
   source /etc/circuitbreaker/.env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
-  local version=$(cat /opt/circuitbreaker/VERSION 2>/dev/null || echo "unknown")
+  local version=$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown")
   
   cb_section "Circuit Breaker is running!"
   echo ""
@@ -1096,7 +1135,14 @@ stage10_final_output() {
   echo -e "  │  Logs:     cb logs"
   echo -e "  └──────────────────────────────────────────────┘"
   echo ""
-  
+
+  if [[ ! -x /usr/local/bin/cb ]]; then
+    echo -e "  ${YELLOW}⚠  cb CLI is unavailable — fall back to systemctl:${RESET}"
+    echo -e "     systemctl status circuitbreaker.target"
+    echo -e "     journalctl -u 'circuitbreaker-*' --no-pager -n 50"
+    echo ""
+  fi
+
   if [[ "$NO_TLS" == "false" ]]; then
     echo -e "  ${YELLOW}${BOLD}⚠  CRITICAL: Account creation requires HTTPS${RESET}"
     echo -e "     Modern browsers block crypto APIs on insecure HTTP connections."
@@ -1124,6 +1170,42 @@ stage10_final_output() {
   echo ""
 }
 
+cb_try_install_docker_ce() {
+  # Best-effort Docker CE install. Docker only powers optional container
+  # telemetry — a failure here must never abort the installer. Returns
+  # nonzero on any failure; the caller decides how loudly to warn.
+  if [[ "$PKG_MGR" == "apt-get" ]]; then
+    local docker_distro="$OS_ID"
+    rm -f /usr/share/keyrings/docker-archive-keyring.gpg
+    curl -fsSL "https://download.docker.com/linux/${docker_distro}/gpg" 2>>"$LOG_FILE" \
+      | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1 \
+      || return 1
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      > /etc/apt/sources.list.d/docker.list
+    if ! apt-get update -q >> "$LOG_FILE" 2>&1 \
+      || ! apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1; then
+      # Remove the repo we just added so it can't poison every later apt run
+      rm -f /etc/apt/sources.list.d/docker.list
+      apt-get update -q >> "$LOG_FILE" 2>&1 || true
+      return 1
+    fi
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+    pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1 || return 1
+  else
+    local docker_repo_os="fedora"
+    case "$OS_ID" in
+      rhel|rocky|almalinux|centos) docker_repo_os="rhel" ;;
+    esac
+    dnf config-manager --add-repo \
+      "https://download.docker.com/linux/${docker_repo_os}/docker-ce.repo" >> "$LOG_FILE" 2>&1 || return 1
+    dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1 || return 1
+  fi
+  # enable --now fails in unprivileged LXC and other restricted environments
+  systemctl enable --now docker >> "$LOG_FILE" 2>&1 || return 1
+  return 0
+}
+
 stage2_dependencies() {
   if [[ "$UPGRADE_MODE" == "true" ]] && [[ "$FORCE_DEPS" == "false" ]]; then
     cb_section "Dependencies"
@@ -1149,12 +1231,12 @@ stage2_dependencies() {
   cb_step "Installing base tools"
   if [[ "$PKG_MGR" == "apt-get" ]]; then
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q curl jq openssl netcat-openbsd git wget gnupg2 ca-certificates lsb-release libcap2-bin >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q curl jq openssl netcat-openbsd git wget gnupg2 ca-certificates lsb-release libcap2-bin lsof >> "$LOG_FILE" 2>&1
   elif [[ "$PKG_MGR" == "pacman" ]]; then
     pacman -Sy --noconfirm --needed \
-      curl jq openssl openbsd-netcat git wget gnupg ca-certificates libcap >> "$LOG_FILE" 2>&1
+      curl jq openssl openbsd-netcat git wget gnupg ca-certificates libcap lsof >> "$LOG_FILE" 2>&1
   else
-    $PKG_MGR install -y -q curl jq openssl nmap-ncat git wget gnupg2 ca-certificates libcap >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q curl jq openssl nmap-ncat git wget gnupg2 ca-certificates libcap lsof >> "$LOG_FILE" 2>&1
   fi
   cb_ok "Base tools installed"
 
@@ -1192,6 +1274,23 @@ stage2_dependencies() {
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
     $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
     PG_BIN_DIR="/usr/lib/postgresql/15/bin"
+
+    # Debian/Ubuntu: postgresql-common auto-creates AND starts a default
+    # "main" cluster on port 5432 the moment the package installs, and
+    # start.conf=auto re-launches it on every boot — racing (and beating)
+    # circuitbreaker-postgres for the port after any reboot. `systemctl
+    # disable` can't prevent that: clusters are pulled in by the
+    # postgresql-common generator reading start.conf, not by enable
+    # symlinks. Stop everything now and mark every packaged cluster
+    # "manual" so only Circuit Breaker's own instance ever owns 5432.
+    systemctl stop 'postgresql@*' postgresql >> "$LOG_FILE" 2>&1 || true
+    systemctl disable postgresql >> "$LOG_FILE" 2>&1 || true
+    local _pg_startconf
+    for _pg_startconf in /etc/postgresql/*/*/start.conf; do
+      if [[ -f "$_pg_startconf" ]]; then
+        echo "manual" > "$_pg_startconf"
+      fi
+    done
   elif [[ "$PKG_MGR" == "pacman" ]]; then
     pacman -S --noconfirm --needed postgresql >> "$LOG_FILE" 2>&1
     # PG_BIN_DIR already set to /usr/bin in OS detection
@@ -1274,33 +1373,16 @@ stage2_dependencies() {
     DOCKER_AVAILABLE=true
     cb_ok "Docker detected — socket proxy will be configured"
   else
-    # Always install Docker when not present (enables container telemetry)
-    INSTALL_DOCKER=true
-
-    if [[ "$INSTALL_DOCKER" == "true" ]]; then
-      cb_step "Installing Docker CE"
-      if [[ "$PKG_MGR" == "apt-get" ]]; then
-        local docker_distro="$OS_ID"
-        curl -fsSL "https://download.docker.com/linux/${docker_distro}/gpg" \
-          | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-          > /etc/apt/sources.list.d/docker.list
-        apt-get update -q >> "$LOG_FILE" 2>&1
-        apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-      elif [[ "$PKG_MGR" == "pacman" ]]; then
-        pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
-      else
-        dnf config-manager --add-repo \
-          https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
-        dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-      fi
-      systemctl enable --now docker >> "$LOG_FILE" 2>&1
+    # Always attempt Docker install when not present (enables container
+    # telemetry) — but never let a failure abort the installer
+    cb_step "Installing Docker CE"
+    if cb_try_install_docker_ce; then
       cb_ok "Docker CE installed"
       DOCKER_AVAILABLE=true
     else
       DOCKER_AVAILABLE=false
       cb_warn "Docker installation failed — container telemetry will be unavailable"
+      cb_warn "Install Docker manually later and re-run: bash install.sh --upgrade"
     fi
   fi
 }
@@ -1354,24 +1436,11 @@ run_upgrade() {
   # (stage4 checks DOCKER_AVAILABLE to decide whether to write the docker-proxy unit)
   if [[ "$INSTALL_DOCKER" == "true" ]] && ! command -v docker &>/dev/null; then
     cb_step "Installing Docker CE"
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-      local docker_distro="$OS_ID"
-      curl -fsSL "https://download.docker.com/linux/${docker_distro}/gpg" \
-        | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg >> "$LOG_FILE" 2>&1
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-        > /etc/apt/sources.list.d/docker.list
-      apt-get update -q >> "$LOG_FILE" 2>&1
-      apt-get install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
-    elif [[ "$PKG_MGR" == "pacman" ]]; then
-      pacman -S --noconfirm --needed docker >> "$LOG_FILE" 2>&1
+    if cb_try_install_docker_ce; then
+      cb_ok "Docker CE installed"
     else
-      dnf config-manager --add-repo \
-        https://download.docker.com/linux/fedora/docker-ce.repo >> "$LOG_FILE" 2>&1
-      dnf install -y -q docker-ce docker-ce-cli containerd.io >> "$LOG_FILE" 2>&1
+      cb_warn "Docker installation failed — container telemetry will be unavailable"
     fi
-    systemctl enable --now docker >> "$LOG_FILE" 2>&1
-    cb_ok "Docker CE installed"
   fi
 
   if command -v docker &>/dev/null; then

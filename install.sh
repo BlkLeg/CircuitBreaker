@@ -21,7 +21,7 @@ CB_RELEASE_API="https://api.github.com/repos/${CB_GITHUB_REPO}/releases"
 # Default values
 CB_PORT=8088
 CB_DATA_DIR=/var/lib/circuitbreaker
-CB_FQDN="circuitbreaker.lab"
+CB_FQDN=""
 CB_CERT_TYPE="self-signed"
 CB_EMAIL=""
 CB_VERSION=""
@@ -344,10 +344,11 @@ stage0_bootstrap_preflight() {
   esac
   cb_ok "Architecture: $(uname -m) ($ARCH)"
 
-  # Ensure curl and jq are installed (needed for bundle download)
+  # Ensure curl, jq, and openssl are installed (bundle download + secret
+  # generation in stage1 both run before stage2 installs base tools)
   cb_step "Checking required tools"
   local need_install=false
-  for tool in curl jq; do
+  for tool in curl jq openssl; do
     if ! command -v "$tool" &>/dev/null; then
       need_install=true
       break
@@ -355,17 +356,25 @@ stage0_bootstrap_preflight() {
   done
 
   if [[ "$need_install" == "true" ]]; then
-    cb_step "Installing curl and jq"
+    cb_step "Installing curl, jq, and openssl"
     if [[ "$PKG_MGR" == "apt-get" ]]; then
-      $PKG_MGR update -y -q >/dev/null 2>&1
-      $PKG_MGR install -y -q curl jq >/dev/null 2>&1
+      $PKG_MGR update -y -q >/dev/null 2>&1 \
+        || cb_fail "apt-get update failed" "Check network/apt sources, then re-run"
+      $PKG_MGR install -y -q curl jq openssl >/dev/null 2>&1 \
+        || cb_fail "Failed to install curl/jq/openssl" "Run: apt-get install -y curl jq openssl"
     elif [[ "$PKG_MGR" == "pacman" ]]; then
-      pacman -Sy --noconfirm --needed curl jq >/dev/null 2>&1
+      pacman -Sy --noconfirm --needed curl jq openssl >/dev/null 2>&1 \
+        || cb_fail "Failed to install curl/jq/openssl" "Run: pacman -Sy curl jq openssl"
     else
-      $PKG_MGR install -y -q curl jq >/dev/null 2>&1
+      $PKG_MGR install -y -q curl jq openssl >/dev/null 2>&1 \
+        || cb_fail "Failed to install curl/jq/openssl" "Run: ${PKG_MGR} install -y curl jq openssl"
     fi
   fi
-  cb_ok "curl and jq available"
+  for tool in curl jq openssl; do
+    command -v "$tool" &>/dev/null \
+      || cb_fail "Required tool still missing: $tool" "Install it manually and re-run"
+  done
+  cb_ok "curl, jq, and openssl available"
 }
 
 
@@ -439,8 +448,12 @@ stage0_download_bundle() {
   cb_step "Extracting bundle"
   rm -rf /tmp/cb-bundle
   mkdir -p /tmp/cb-bundle
-  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle
+  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle \
+    || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
   CB_BUNDLE_DIR="/tmp/cb-bundle"
+  if [[ ! -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
+    cb_fail "Bundle is missing the circuit-breaker binary" "Bundle layout unexpected — check release assets for v${CB_VERSION:-unknown}"
+  fi
   cb_ok "Bundle extracted"
 }
 
@@ -456,14 +469,16 @@ stage0_install_bundle() {
 
   # Copy binary
   cb_step "Installing binary"
-  cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker
+  cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
+    || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
   chmod 755 /opt/circuitbreaker/bin/circuit-breaker
   chown root:root /opt/circuitbreaker/bin/circuit-breaker
   cb_ok "Binary installed to /opt/circuitbreaker/bin/"
 
   # Copy share assets (frontend, backend/migrations, VERSION, etc.)
   cb_step "Installing application assets"
-  cp -rf "${CB_BUNDLE_DIR}/share/." /opt/circuitbreaker/share/
+  cp -rf "${CB_BUNDLE_DIR}/share/." /opt/circuitbreaker/share/ \
+    || cb_fail "Failed to install application assets" "Check disk space: df -h /opt"
   chown -R root:root /opt/circuitbreaker/share/
   chmod -R 755 /opt/circuitbreaker/share/
   cb_ok "Assets installed to /opt/circuitbreaker/share/"
@@ -507,6 +522,10 @@ show_help() {
   echo ""
   exit 0
 }
+
+# Preserve original args: the parser below consumes $@, but
+# cb_require_native_root must re-exec with the full flag set under sudo.
+CB_ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -697,5 +716,5 @@ main() {
   fi
 }
 
-# Run main
-main
+# Run main with the original argument list (safe under set -u on old bash)
+main ${CB_ORIG_ARGS[@]+"${CB_ORIG_ARGS[@]}"}
