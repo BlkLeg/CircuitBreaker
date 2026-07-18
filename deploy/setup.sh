@@ -272,14 +272,17 @@ stage0_preflight() {
   case "$OS_ID" in
     ubuntu|debian)
       PKG_MGR="apt-get"
+      PG_BIN_DIR="/usr/lib/postgresql/15/bin"
       cb_ok "${NAME:-$OS_ID} ${OS_VERSION} detected"
       ;;
     fedora)
       PKG_MGR="dnf"
+      PG_BIN_DIR="/usr/pgsql-15/bin"
       cb_ok "Fedora ${OS_VERSION} detected"
       ;;
     rhel|rocky|almalinux|centos)
       PKG_MGR="dnf"
+      PG_BIN_DIR="/usr/pgsql-15/bin"
       cb_ok "${NAME:-$OS_ID} ${OS_VERSION} detected"
       ;;
     arch|manjaro)
@@ -438,10 +441,26 @@ stage3_configure_postgres() {
     cb_ok "Database already initialized"
   fi
   
-  # Write postgresql.conf
+  # Write postgresql.conf — idempotent: this now runs on every upgrade too,
+  # not just fresh installs, so re-running must not duplicate the block.
   cb_step "Writing PostgreSQL configuration"
+  local pgconf="${CB_DATA_DIR}/postgres/postgresql.conf"
+  # One-time migration: strip a legacy unmarked block from before markers
+  # existed (detected via the template's first content line), so old VMs
+  # don't end up with both a stale unmarked block and a fresh marked one.
+  if ! grep -qF "# BEGIN circuitbreaker-managed config" "$pgconf" 2>/dev/null \
+    && grep -qF "# Circuit Breaker custom settings" "$pgconf" 2>/dev/null; then
+    sed -i '/# Circuit Breaker custom settings/,$d' "$pgconf"
+  fi
+  # Strip any previously-appended marked block, then append a fresh one
+  sed -i '/# BEGIN circuitbreaker-managed config/,/# END circuitbreaker-managed config/d' "$pgconf" 2>/dev/null || true
   cb_render_template "/opt/circuitbreaker/deploy/config/postgresql.conf.template" "/tmp/snippet.temp"
-  cat "/tmp/snippet.temp" >> "${CB_DATA_DIR}/postgres/postgresql.conf"
+  [[ -s "$pgconf" ]] && [[ -z "$(tail -c1 "$pgconf")" ]] || printf '\n' >> "$pgconf"
+  {
+    echo "# BEGIN circuitbreaker-managed config"
+    cat "/tmp/snippet.temp"
+    echo "# END circuitbreaker-managed config"
+  } >> "$pgconf"
   rm -f "/tmp/snippet.temp"
   cb_render_template "/opt/circuitbreaker/deploy/config/pg_hba.conf" "${CB_DATA_DIR}/postgres/pg_hba.conf"
   chown postgres:postgres "${CB_DATA_DIR}/postgres/postgresql.conf"
@@ -1206,11 +1225,27 @@ https://download.docker.com/linux/${docker_distro} $(. /etc/os-release && echo "
   return 0
 }
 
+cb_deps_present() {
+  # Real presence check, not a flag — lets upgrade mode tell a genuinely
+  # complete prior install (safe to skip) apart from a partial/broken one
+  # (needs a real install pass) without the caller having to know which.
+  [[ -n "$PG_BIN_DIR" ]] && [[ -x "$PG_BIN_DIR/pg_ctl" ]] \
+    && command -v pgbouncer &>/dev/null \
+    && command -v redis-server &>/dev/null \
+    && command -v nats-server &>/dev/null \
+    && command -v nginx &>/dev/null \
+    && command -v nmap &>/dev/null \
+    && command -v setcap &>/dev/null
+}
+
 stage2_dependencies() {
   if [[ "$UPGRADE_MODE" == "true" ]] && [[ "$FORCE_DEPS" == "false" ]]; then
     cb_section "Dependencies"
-    cb_ok "Skipping dependency installation (upgrade mode)"
-    return
+    if cb_deps_present; then
+      cb_ok "Dependencies already present — skipping install (upgrade mode)"
+      return
+    fi
+    cb_warn "One or more dependencies missing despite an existing install — installing now"
   fi
 
   cb_section "Installing Dependencies"
@@ -1429,6 +1464,12 @@ run_upgrade() {
     cb_ok "Layout migrated to bundle structure"
   fi
 
+  # Self-heal: a prior install that died before stage2_dependencies ever
+  # completed (or before it existed as a real check) may be missing
+  # Postgres/pgbouncer/Redis/NATS/nginx/nmap entirely. cb_deps_present()
+  # makes this a no-op on a genuinely healthy upgrade.
+  stage2_dependencies
+
   write_wait_for_services_script
   write_service_scripts
 
@@ -1472,6 +1513,16 @@ run_upgrade() {
   fi
   rm -f /etc/caddy/Caddyfile 2>/dev/null || true
 
+  # Self-heal: (re)configure and verify each backing service rather than
+  # assuming a prior install that reached this point fully configured
+  # them. Each stage is internally idempotent (initdb/config-write skip
+  # or safely re-render if already done) — safe and fast when everything
+  # is already healthy, and fully recovers a partial/broken prior install.
+  stage3_configure_postgres
+  stage3_configure_pgbouncer
+  stage3_configure_redis
+  stage3_configure_nats
+
   # Always regenerate Nginx config on upgrade (picks up CSP/config changes; certs preserved if existing)
   stage3_configure_nginx
 
@@ -1483,21 +1534,11 @@ run_upgrade() {
   # Restart services
   stage9_install_cb_cli
 
-  cb_step "Restarting all services"
-  systemctl start circuitbreaker.target >> "$LOG_FILE" 2>&1
-  sleep 5
-
-  # Wait for backend
-  local max_wait=30
-  local elapsed=0
-  until curl -sf http://127.0.0.1:8000/api/v1/health 2>/dev/null | grep -q '"ready"'; do
-    sleep 2
-    elapsed=$((elapsed + 2))
-    if [[ $elapsed -ge $max_wait ]]; then
-      cb_fail "Backend did not start after upgrade" "Run: cb doctor"
-    fi
-  done
-  cb_ok "Services restarted"
+  # Reuse the fresh-install startup routine — required-file preflight,
+  # docker-proxy, backend + health wait, per-worker start, nginx
+  # restart+verify — instead of a blanket target-start that can silently
+  # leave backing services down (Wants= is a weak dependency).
+  stage8_start_services
 
   stage10_final_output
 }
