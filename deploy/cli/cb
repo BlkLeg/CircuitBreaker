@@ -62,10 +62,27 @@ cmd_doctor() {
       "journalctl -u circuitbreaker-docker-proxy -n 30"
   fi
   # Check nginx on 443 (TLS) or CB_PORT (no-TLS)
+  ext_port=443
   if nc -z 127.0.0.1 443 2>/dev/null; then
     check "nginx (443)"        "nc -z 127.0.0.1 443"             "nginx -t && journalctl -u nginx -n 30"
   else
-    check "nginx (${CB_PORT:-8088})"  "nc -z 127.0.0.1 ${CB_PORT:-8088}"  "nginx -t && journalctl -u nginx -n 30"
+    ext_port="${CB_PORT:-8088}"
+    check "nginx (${ext_port})"  "nc -z 127.0.0.1 ${ext_port}"  "nginx -t && journalctl -u nginx -n 30"
+  fi
+
+  # A local-only check above can be green while the host firewall or SELinux
+  # silently drops every external connection — neither shows up in
+  # `journalctl -u nginx`, so this looks like a working install until someone
+  # tries to reach it from off-box.
+  if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+    check "firewalld allows :${ext_port}" \
+      "( firewall-cmd --list-ports; firewall-cmd --list-services ) 2>/dev/null | grep -qE '(^|[ ,])(${ext_port}/tcp|https|http)([ ,]|\$)'" \
+      "firewall-cmd --permanent --add-port=${ext_port}/tcp && firewall-cmd --reload"
+  fi
+  if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]] && command -v semanage &>/dev/null; then
+    check "SELinux allows nginx:${ext_port}" \
+      "semanage port -l 2>/dev/null | grep -qE \"^[a-zA-Z0-9_]+[[:space:]]+tcp[[:space:]].*\\<${ext_port}\\>\"" \
+      "semanage port -a -t http_port_t -p tcp ${ext_port} || semanage port -m -t http_port_t -p tcp ${ext_port}"
   fi
   echo ""
   [[ $FAILED -eq 0 ]] && echo "  All systems operational." \

@@ -792,6 +792,50 @@ stage3_configure_nginx() {
   fi
   cb_ok "Nginx configuration validated"
 
+  # SELinux (Fedora/RHEL-family): nginx runs under the httpd_t domain, which
+  # may only bind ports labeled http_port_t. CB_PORT defaults to 8088, which
+  # is outside the distro's default http_port_t list, so bind() fails with a
+  # plain "Permission denied" even though nginx starts as root — nothing in
+  # the nginx config or DAC permissions indicates SELinux is the cause.
+  if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
+    cb_step "Configuring SELinux port context for Nginx"
+    if command -v semanage &>/dev/null; then
+      if ! semanage port -a -t http_port_t -p tcp "$CB_PORT" >> "$LOG_FILE" 2>&1; then
+        # Already has a port context (e.g. re-running install) — force it to http_port_t
+        semanage port -m -t http_port_t -p tcp "$CB_PORT" >> "$LOG_FILE" 2>&1 || true
+      fi
+      cb_ok "SELinux port context allows Nginx to bind tcp/${CB_PORT}"
+    else
+      cb_warn "SELinux is enabled but 'semanage' is missing — Nginx may fail to bind to port ${CB_PORT}"
+      cb_warn "Install policycoreutils-python-utils, then run: semanage port -a -t http_port_t -p tcp ${CB_PORT}"
+    fi
+  fi
+
+  # firewalld (Fedora/RHEL default): the default zone only allows a small
+  # service list (ssh, cockpit, dhcpv6-client) — nginx binds fine locally, so
+  # `cb doctor` (which checks localhost) passes, but every external request
+  # is silently dropped at the zone filter with no error anywhere.
+  if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+    cb_step "Opening Nginx ports in firewalld"
+    firewall-cmd --permanent --add-port="${CB_PORT}/tcp" >> "$LOG_FILE" 2>&1 || true
+    if [[ "$use_tls" == "true" ]]; then
+      firewall-cmd --permanent --add-port=443/tcp >> "$LOG_FILE" 2>&1 || true
+    fi
+    firewall-cmd --reload >> "$LOG_FILE" 2>&1 || true
+    cb_ok "firewalld allows external access to Nginx"
+  fi
+
+  # ufw (Ubuntu/Debian): only touch it if the admin already enabled it —
+  # same silent-drop failure mode as firewalld above.
+  if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "^Status: active"; then
+    cb_step "Opening Nginx ports in ufw"
+    ufw allow "${CB_PORT}/tcp" >> "$LOG_FILE" 2>&1 || true
+    if [[ "$use_tls" == "true" ]]; then
+      ufw allow 443/tcp >> "$LOG_FILE" 2>&1 || true
+    fi
+    cb_ok "ufw allows external access to Nginx"
+  fi
+
   ensure_hosts_entry
 
   cb_ok "Nginx configured (will start after frontend build)"
