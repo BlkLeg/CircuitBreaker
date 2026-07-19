@@ -131,7 +131,7 @@ def _sync_one(integration_id: int) -> bool:
                 return False
 
         plugin = plugin_cls()
-        monitors = plugin.sync(config)  # never raises — returns [] on error
+        monitors = plugin.sync(config, db=db)  # never raises — returns [] on error
 
         _upsert_monitors(db, integ, monitors)
 
@@ -159,7 +159,7 @@ def _sync_one(integration_id: int) -> bool:
 async def run_integration_worker(stop_event: asyncio.Event) -> None:
     """In-process async worker: syncs all enabled integrations on their configured intervals.
 
-    Registered in main.py lifespan alongside webhook_worker, discovery_worker, etc.
+    Registered in main.py lifespan alongside discovery_worker, etc.
     """
     _logger.info("Integration worker starting")
 

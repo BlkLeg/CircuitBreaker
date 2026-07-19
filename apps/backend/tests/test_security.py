@@ -169,53 +169,6 @@ class TestC03WrongAudience:
 
 
 # ---------------------------------------------------------------------------
-# C-07 — SSRF via webhook target_url
-# ---------------------------------------------------------------------------
-
-_SSRF_WEBHOOK_URLS = [
-    "http://127.0.0.1:5432/",
-    "http://0.0.0.0/",
-    "http://169.254.169.254/latest/meta-data/",
-    "http://[::1]/",
-    "http://10.0.0.1/",  # private — blocked for webhooks
-]
-
-
-class TestC07SSRFWebhook:
-    """C-07: Webhook URLs targeting loopback/private addresses must return 422."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("url", _SSRF_WEBHOOK_URLS)
-    async def test_ssrf_webhook_url_rejected(self, client, auth_headers, url):
-        resp = await client.post(
-            "/api/v1/webhooks",
-            headers=auth_headers,
-            json={
-                "label": "ssrf-test",
-                "url": url,
-                "events_enabled": ["topology.hardware.created"],
-            },
-        )
-        assert resp.status_code == 422, f"SSRF URL {url!r} was not blocked (got {resp.status_code})"
-
-    @pytest.mark.asyncio
-    async def test_legitimate_webhook_url_accepted(self, client, auth_headers):
-        """C-07b: A real public webhook URL must be accepted."""
-        resp = await client.post(
-            "/api/v1/webhooks",
-            headers=auth_headers,
-            json={
-                "label": "slack-hook",
-                "url": "https://hooks.slack.com/services/T000/B000/xxxx",
-                "events_enabled": ["topology.hardware.created"],
-            },
-        )
-        assert resp.status_code in (200, 201), (
-            f"Legitimate webhook URL rejected: {resp.status_code} {resp.text}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # C-08 — Proxmox loopback blocked; LAN allowed
 # ---------------------------------------------------------------------------
 

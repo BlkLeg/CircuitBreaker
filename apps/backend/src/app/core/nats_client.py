@@ -64,7 +64,6 @@ class NATSClient:
                     except Exception as exc:
                         _logger.error("Resubscribe failed for %s: %s", subject, exc)
                 await self._ensure_kv_bucket()
-                await self._ensure_dlq_stream()
                 await self._ensure_events_stream()
                 await self.ensure_monitor_poll_stream()
                 await self._flush_publish_buffer()
@@ -106,7 +105,6 @@ class NATSClient:
             self._js = self._nc.jetstream()
             self._connected = True
             await self._ensure_kv_bucket()
-            await self._ensure_dlq_stream()
             await self._ensure_events_stream()
             await self.ensure_monitor_poll_stream()
             _logger.info("NATS connected to %s", self._url)
@@ -202,25 +200,6 @@ class NATSClient:
                 _logger.debug("NATS KV bucket dashboard_cache already exists")
             else:
                 _logger.warning("NATS KV bucket dashboard_cache ensure failed: %s", exc)
-
-    async def _ensure_dlq_stream(self) -> None:
-        """Create the WEBHOOK_DLQ JetStream stream if it does not exist."""
-        if not self._connected or not self._js:
-            return
-        try:
-            retention_days = int(os.getenv("CB_WEBHOOK_DLQ_RETENTION_DAYS", "7"))
-            await self._js.add_stream(
-                name="WEBHOOK_DLQ",
-                subjects=["webhook.dlq.>"],
-                max_age=retention_days * 86400,
-            )
-            _logger.info("NATS WEBHOOK_DLQ stream created (retention %dd)", retention_days)
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
-                _logger.debug("NATS WEBHOOK_DLQ stream already exists")
-            else:
-                _logger.warning("NATS WEBHOOK_DLQ stream ensure failed: %s", exc)
 
     async def _ensure_events_stream(self) -> None:
         """Create the CB_EVENTS JetStream stream if it does not exist."""

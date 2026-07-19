@@ -54,7 +54,6 @@ The root `docker-compose.yml` builds the mono image from source:
 | `backend` | FastAPI application | 8000 |
 | `frontend` | React app served by nginx | 8080 |
 | `worker` | Discovery worker (2 replicas) | — |
-| `webhook-worker` | Webhook dispatch worker | — |
 | `notification-worker` | Alert/notification worker | — |
 | `nats` | NATS JetStream message bus | 4222 |
 

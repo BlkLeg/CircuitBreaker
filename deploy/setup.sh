@@ -565,6 +565,47 @@ stage3_configure_pgbouncer() {
 stage3_configure_redis() {
   cb_section "Configuring Redis"
 
+  # Reconcile data-dir ownership to whatever CB_REDIS_USER currently resolves
+  # to *before* the idempotency short-circuit below. If stage4's self-heal
+  # just recreated a missing "redis" system account, it gets a new UID with
+  # no relationship to whatever UID already owns this directory on disk —
+  # silently breaking BGSAVE (EACCES) until the next natural restart, and
+  # invisible to a PING-only health check.
+  if [[ -d "${CB_DATA_DIR}/redis" ]]; then
+    local target_uid current_uid
+    target_uid=$(id -u "$CB_REDIS_USER" 2>/dev/null || echo "")
+    current_uid=$(stat -c %u "${CB_DATA_DIR}/redis" 2>/dev/null || echo "")
+    if [[ -n "$target_uid" ]] && [[ "$target_uid" != "$current_uid" ]]; then
+      cb_warn "Redis data directory owned by UID ${current_uid}, expected ${target_uid} (${CB_REDIS_USER}) — reconciling"
+      chown -R "${CB_REDIS_USER}:${CB_REDIS_USER}" "${CB_DATA_DIR}/redis"
+      systemctl restart circuitbreaker-redis 2>/dev/null || true
+      cb_ok "Redis data directory ownership reconciled"
+    fi
+  fi
+
+  # SELinux (Fedora/RHEL-family): redis-server runs confined under the
+  # redis_t domain, which is only allowed full read/write on paths labeled
+  # redis_var_lib_t (the base policy binds that type to the stock
+  # /var/lib/redis path only). Since CB_DATA_DIR is a custom, non-standard
+  # path, it inherits the generic var_lib_t type from its parent directory —
+  # SELinux's generic policy allows *read* of var_lib_t broadly, but not
+  # write, so BGSAVE fails with a plain "Permission denied" that looks
+  # exactly like a DAC/ownership bug even though `ls -l` ownership is correct.
+  # Runs unconditionally (like the ownership check above) so it isn't skipped
+  # by the idempotency short-circuit below on re-installs/upgrades.
+  if [[ -d "${CB_DATA_DIR}/redis" ]] && command -v getenforce &>/dev/null \
+    && [[ "$(getenforce)" != "Disabled" ]]; then
+    if command -v semanage &>/dev/null; then
+      semanage fcontext -a -t redis_var_lib_t "${CB_DATA_DIR}/redis(/.*)?" >> "$LOG_FILE" 2>&1 \
+        || semanage fcontext -m -t redis_var_lib_t "${CB_DATA_DIR}/redis(/.*)?" >> "$LOG_FILE" 2>&1
+      restorecon -R "${CB_DATA_DIR}/redis" >> "$LOG_FILE" 2>&1 || true
+      cb_ok "SELinux file context set for Redis data directory"
+    else
+      cb_warn "SELinux is enabled but 'semanage' is missing — Redis BGSAVE may fail with Permission denied"
+      cb_warn "Install policycoreutils-python-utils, then run: semanage fcontext -a -t redis_var_lib_t '${CB_DATA_DIR}/redis(/.*)?' && restorecon -R ${CB_DATA_DIR}/redis"
+    fi
+  fi
+
   # Idempotency: skip if already configured and running
   if [[ -f "/etc/redis/redis.conf" ]] && systemctl is-active circuitbreaker-redis &>/dev/null; then
     cb_ok "Redis already configured and running — skipping"
@@ -605,7 +646,7 @@ stage3_configure_redis() {
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" "${CB_DATA_DIR}/redis"
   chmod 755 "${CB_DATA_DIR}/redis"
   echo "    Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
-  
+
   cb_render_template "/opt/circuitbreaker/deploy/config/redis.conf" "/etc/redis/redis.conf"
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" /etc/redis/redis.conf
   chmod 640 /etc/redis/redis.conf
@@ -809,6 +850,22 @@ stage3_configure_nginx() {
       cb_warn "SELinux is enabled but 'semanage' is missing — Nginx may fail to bind to port ${CB_PORT}"
       cb_warn "Install policycoreutils-python-utils, then run: semanage port -a -t http_port_t -p tcp ${CB_PORT}"
     fi
+
+    # SELinux also blocks the *client* side of the reverse proxy by default:
+    # httpd_can_network_connect is off out of the box, so nginx's
+    # `proxy_pass http://127.0.0.1:8000` gets a flat "Permission denied" on
+    # connect() — even to localhost, even though the backend answers fine
+    # directly. Every proxied request 502s while a doctor-style check that
+    # curls the backend directly stays green, so this is invisible unless you
+    # test an actual request routed through nginx.
+    if command -v setsebool &>/dev/null; then
+      setsebool -P httpd_can_network_connect on >> "$LOG_FILE" 2>&1 \
+        && cb_ok "SELinux allows Nginx to proxy to the backend" \
+        || cb_warn "Could not set httpd_can_network_connect — Nginx may 502 on all API requests"
+    else
+      cb_warn "SELinux is enabled but 'setsebool' is missing — Nginx may 502 on all API requests"
+      cb_warn "Run: setsebool -P httpd_can_network_connect on"
+    fi
   fi
 
   # firewalld (Fedora/RHEL default): the default zone only allows a small
@@ -1002,8 +1059,9 @@ stage4_write_systemd_units() {
   systemctl enable circuitbreaker.slice \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
-    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
-    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@notification" \
+    "circuitbreaker-worker@telemetry" "circuitbreaker-worker@monitor_scheduler" \
+    "circuitbreaker-worker@monitor_poll" \
     circuitbreaker-healthcheck.timer \
     nginx >> "$LOG_FILE" 2>&1
   [[ "$DOCKER_AVAILABLE" == "true" ]] && \
@@ -1105,7 +1163,7 @@ stage8_start_services() {
   # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
   local _worker
-  for _worker in discovery webhook notification telemetry; do
+  for _worker in discovery notification telemetry monitor_scheduler monitor_poll; do
     systemctl start "circuitbreaker-worker@${_worker}" >> "$LOG_FILE" 2>&1 \
       || cb_warn "Worker '${_worker}' failed to start — check: journalctl -u circuitbreaker-worker@${_worker} -n 30"
   done

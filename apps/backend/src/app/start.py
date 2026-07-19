@@ -145,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--worker-type",
         help=(
             "Run as a background worker instead of the API server. "
-            "Types: discovery, webhook, notification, telemetry"
+            "Types: discovery, notification, telemetry, monitor_scheduler, monitor_poll"
         ),
     )
     return parser

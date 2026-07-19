@@ -46,7 +46,6 @@ The full stack runs the following services:
 | `backend` | `ghcr.io/blkleg/circuitbreaker:backend-*` | FastAPI application |
 | `frontend` | `ghcr.io/blkleg/circuitbreaker:frontend-*` | React SPA (served via nginx) |
 | `worker` | same as backend | Discovery workers (2 replicas) |
-| `webhook-worker` | same as backend | Webhook dispatch |
 | `notification-worker` | same as backend | Alerts and notifications |
 | `caddy` | `caddy:2-alpine` | Reverse proxy, automatic HTTPS |
 | `nats` | `nats:2-alpine` | Internal message broker |

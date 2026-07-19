@@ -1,18 +1,6 @@
-# Webhooks & Notifications
+# Notifications
 
-Circuit Breaker can emit events to external systems and route in-app notification sinks.
-
-## Webhooks
-
-Use webhooks to push selected events to tools like Slack, Discord, or custom endpoints.
-
-Typical workflow:
-
-1. Open **Settings → Webhooks**.
-2. Create a webhook target (label + URL + optional headers).
-3. Enable event groups for that target.
-4. Run **Test webhook**.
-5. Check recent deliveries/status for failures or retries.
+Circuit Breaker can route in-app notification sinks for alerting on events.
 
 ## Notifications
 

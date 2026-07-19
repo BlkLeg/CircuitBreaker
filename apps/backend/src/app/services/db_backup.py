@@ -192,7 +192,7 @@ async def run_full_snapshot(db: Session) -> Path:
         )
         await prune_remote(client, keep=keep_remote)
 
-    # Publish completion event so webhook rules can trigger on backup success
+    # Publish completion event for other subscribers (e.g. notifications) to react to
     try:
         from app.core.subjects import BACKUP_SNAPSHOT_COMPLETED
         from app.services.proxmox_client import _publish

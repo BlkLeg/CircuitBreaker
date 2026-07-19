@@ -94,23 +94,6 @@ class Factories:
         self.session.flush()
         return svc
 
-    # ── Webhooks ──────────────────────────────────────────────────────────────
-
-    def webhook(self, target_url: str = "https://hooks.example.com/cb", **kwargs):
-        from app.db.models import WebhookRule
-
-        defaults = {
-            "name": fake.unique.slug(),
-            "target_url": target_url,
-            "events_json": '["hardware.created"]',
-            "enabled": True,
-        }
-        defaults.update(kwargs)
-        wh = WebhookRule(**defaults)
-        self.session.add(wh)
-        self.session.flush()
-        return wh
-
     # ── Integrations ──────────────────────────────────────────────────────────
 
     def integration(self, **kwargs):

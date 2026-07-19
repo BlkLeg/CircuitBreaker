@@ -47,7 +47,7 @@ Native HTTPS configuration is written to `/etc/circuit-breaker/config.yaml`, whi
 
 ### NATS authentication and TLS (optional)
 
-NATS is used for discovery, webhooks, and notifications. By default it runs without auth. To enable:
+NATS is used for discovery and notifications. By default it runs without auth. To enable:
 
 - **Token auth:** Set `NATS_AUTH_TOKEN` in the environment for the **nats** service and for **backend** and all **worker** services (same value). The Compose files pass this through; the NATS server will require the token and the Python client will send it.
 - **User/password:** Set `NATS_USER` and `NATS_PASSWORD` for backend and workers. The NATS server must be configured for user auth (e.g. via a custom config file or override command); the client will embed credentials in the connection URL.
@@ -147,7 +147,7 @@ The Compose files define segmented networks in addition to the default `cb_net`:
 |----------------|---------------------------------------------------------------------------|---------|
 | `cb_frontend`  | Caddy, frontend, cloudflared (tunnel)                                    | Edge and UI; Caddy proxies to frontend and backend. |
 | `cb_backend`   | Caddy, backend, postgres, nats                                            | API and data; backend talks only to postgres and nats. |
-| `cb_workers`   | discovery worker, webhook-worker, notification-worker, postgres, nats     | Background jobs; workers cannot reach backend or frontend directly. |
+| `cb_workers`   | discovery worker, notification worker, telemetry worker, postgres, nats     | Background jobs; workers cannot reach backend or frontend directly. |
 
 All services remain on `cb_net` as well so connectivity is unchanged. Segmentation limits lateral movement: a compromised worker can reach only postgres and NATS, not the backend API or frontend.
 

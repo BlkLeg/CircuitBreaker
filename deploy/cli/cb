@@ -10,9 +10,10 @@ SERVICES=(
   "circuitbreaker-nats"
   "circuitbreaker-backend"
   "circuitbreaker-worker@discovery"
-  "circuitbreaker-worker@webhook"
   "circuitbreaker-worker@notification"
   "circuitbreaker-worker@telemetry"
+  "circuitbreaker-worker@monitor_scheduler"
+  "circuitbreaker-worker@monitor_poll"
   "nginx"
 )
 [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]] && \
@@ -54,6 +55,27 @@ cmd_doctor() {
   check "pgbouncer (6432)"   "nc -z 127.0.0.1 6432"           "journalctl -u circuitbreaker-pgbouncer -n 30"
   check "DB connection"      "PGPASSWORD=\"$CB_DB_PASSWORD\" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q'" "Check pgbouncer userlist.txt hash"
   check "Redis (6379)"       "redis-cli -a \"$CB_REDIS_PASSWORD\" --no-auth-warning PING | grep -q PONG" "journalctl -u circuitbreaker-redis -n 30"
+  # A PING only proves the socket answers — it doesn't touch the data directory
+  # at all, so a UID mismatch there (e.g. after the redis system user gets
+  # self-healed with a new UID) stays invisible here while BGSAVE quietly
+  # fails with EACCES on every save interval.
+  if [[ -d "${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis" ]]; then
+    redis_svc_user=$(systemctl show circuitbreaker-redis -p User --value 2>/dev/null)
+    check "Redis data dir ownership" \
+      "[[ \"\$(stat -c %u \"${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis\")\" == \"\$(id -u \"${redis_svc_user:-redis}\" 2>/dev/null)\" ]]" \
+      "chown -R ${redis_svc_user:-redis}:${redis_svc_user:-redis} ${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis && systemctl restart circuitbreaker-redis"
+    # DAC ownership can be perfectly correct while SELinux still blocks writes:
+    # redis-server runs confined as redis_t, which only gets full read/write on
+    # paths labeled redis_var_lib_t. CB_DATA_DIR is a non-standard path, so it
+    # inherits generic var_lib_t (read-only-ish for confined domains) unless
+    # explicitly relabeled — this is what actually broke BGSAVE in practice,
+    # not a UID mismatch.
+    if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
+      check "SELinux context on Redis data dir" \
+        "[[ \"\$(stat -c %C \"${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis\" 2>/dev/null)\" == *redis_var_lib_t* ]]" \
+        "semanage fcontext -a -t redis_var_lib_t '${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis(/.*)?' || semanage fcontext -m -t redis_var_lib_t '${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis(/.*)?'; restorecon -R ${CB_DATA_DIR:-/var/lib/circuitbreaker}/redis && systemctl restart circuitbreaker-redis"
+    fi
+  fi
   check "NATS (4222)"        "nc -z 127.0.0.1 4222"           "journalctl -u circuitbreaker-nats -n 30"
   check "Backend API (8000)" "curl -sf http://127.0.0.1:8000/api/v1/health" "journalctl -u circuitbreaker-backend -n 30"
   if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
@@ -63,12 +85,27 @@ cmd_doctor() {
   fi
   # Check nginx on 443 (TLS) or CB_PORT (no-TLS)
   ext_port=443
+  nginx_scheme="https"
+  nginx_curl_opts="-sfk"
   if nc -z 127.0.0.1 443 2>/dev/null; then
     check "nginx (443)"        "nc -z 127.0.0.1 443"             "nginx -t && journalctl -u nginx -n 30"
   else
     ext_port="${CB_PORT:-8088}"
+    nginx_scheme="http"
+    nginx_curl_opts="-sf"
     check "nginx (${ext_port})"  "nc -z 127.0.0.1 ${ext_port}"  "nginx -t && journalctl -u nginx -n 30"
   fi
+
+  # A bare TCP connect (above) only proves nginx is listening — it says
+  # nothing about whether nginx can actually *proxy* a request to the
+  # backend. SELinux's httpd_can_network_connect boolean is off by default on
+  # Fedora/RHEL and blocks exactly that: nginx's connect() to 127.0.0.1:8000
+  # gets "Permission denied", so every API call 502s while the Backend API
+  # check above (which curls the backend directly, bypassing nginx) stays
+  # green — this is the only check that actually routes through nginx.
+  check "nginx → backend proxy" \
+    "curl ${nginx_curl_opts} ${nginx_scheme}://127.0.0.1:${ext_port}/api/v1/health" \
+    "getsebool httpd_can_network_connect; setsebool -P httpd_can_network_connect on; tail -20 /var/log/nginx/error.log"
 
   # A local-only check above can be green while the host firewall or SELinux
   # silently drops every external connection — neither shows up in
@@ -138,15 +175,17 @@ cmd_uninstall() {
   systemctl stop \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
-    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
-    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@notification" \
+    "circuitbreaker-worker@telemetry" "circuitbreaker-worker@monitor_scheduler" \
+    "circuitbreaker-worker@monitor_poll" \
     nginx 2>/dev/null || true
 
   systemctl disable \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
-    "circuitbreaker-worker@discovery" "circuitbreaker-worker@webhook" \
-    "circuitbreaker-worker@notification" "circuitbreaker-worker@telemetry" \
+    "circuitbreaker-worker@discovery" "circuitbreaker-worker@notification" \
+    "circuitbreaker-worker@telemetry" "circuitbreaker-worker@monitor_scheduler" \
+    "circuitbreaker-worker@monitor_poll" \
     circuitbreaker-docker-proxy \
     circuitbreaker.target nginx 2>/dev/null || true
 

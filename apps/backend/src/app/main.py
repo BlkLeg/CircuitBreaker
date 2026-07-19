@@ -1226,7 +1226,7 @@ async def lifespan(app: FastAPI):
             }
             await _start_opnsense_monitor(_opn_cfg)
 
-    # ── Webhook and notification workers (skip when running with dedicated worker
+    # ── Notification and discovery workers (skip when running with dedicated worker
     # containers, e.g. Docker Compose) ───────────────────────────────────────────
     _run_inprocess_workers = os.environ.get("CB_RUN_INPROCESS_WORKERS", "true").lower() == "true"
     _worker_tasks: list = []

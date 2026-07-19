@@ -153,10 +153,10 @@ def build_binary(target_os: str, work_dir: Path) -> Path:
         "app.workers",
         "app.workers.main",
         "app.workers.discovery",
-        "app.workers.webhook_worker",
         "app.workers.notification_worker",
         "app.workers.telemetry_collector",
-        "app.workers.status_worker",
+        "app.workers.monitor_scheduler",
+        "app.workers.monitor_poll_worker",
         *_collect_migration_hidden_imports(),
     ]
     hidden_imports = sorted(set(hidden_imports))
