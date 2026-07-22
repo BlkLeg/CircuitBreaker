@@ -984,6 +984,9 @@ class AppSettings(Base):
     # Set only by the explicit toggle; the reconciler converges actual state
     # to this value, never the other way around.
     lan_discovery_desired: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Domain (FQDN) configured via the OOBE Domain step or a later Settings edit.
+    # None = no domain configured, instance is IP-only with a self-signed cert.
+    fqdn: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     graph_default_layout: Mapped[str] = mapped_column(String, nullable=False, default="dagre")
     map_title: Mapped[str] = mapped_column(String, nullable=False, default="Topology")
     graph_uplink_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

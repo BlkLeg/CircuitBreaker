@@ -60,6 +60,7 @@ _DEFAULTS = dict(
     docker_socket_path="/var/run/docker.sock",
     docker_sync_interval_minutes=5,
     lan_discovery_desired=False,
+    fqdn=None,
     graph_default_layout="dagre",
     map_title="Topology",
     # Mobile / phone discovery

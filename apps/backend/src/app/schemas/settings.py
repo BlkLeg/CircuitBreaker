@@ -145,6 +145,7 @@ class AppSettingsRead(BaseModel):
     docker_socket_path: str = "/var/run/docker.sock"
     docker_sync_interval_minutes: int = 5
     lan_discovery_desired: bool = False
+    fqdn: str | None = None
     graph_default_layout: str = "dagre"
     map_title: str = "Topology"
     graph_uplink_overrides: dict = {}  # nodeId -> Mbps for non-hardware nodes
@@ -415,6 +416,7 @@ class AppSettingsUpdate(BaseModel):
     docker_socket_path: str | None = None
     docker_sync_interval_minutes: int | None = None
     lan_discovery_desired: bool | None = None
+    fqdn: str | None = None
     graph_default_layout: str | None = None
     map_title: str | None = None
     graph_uplink_overrides: dict | None = None
