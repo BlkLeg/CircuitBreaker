@@ -87,10 +87,26 @@ def test_convenience_wrappers_call_correct_action(tmp_path, monkeypatch):
     helper_client.grant_nmap_caps()
     helper_client.enable_lan_discovery()
     helper_client.disable_lan_discovery()
+    helper_client.configure_domain(fqdn="cb.example.com")
     assert calls == [
         "get_host_readiness",
         "ensure_nmap",
         "grant_nmap_caps",
         "enable_lan_discovery",
         "disable_lan_discovery",
+        "configure_domain",
     ]
+
+
+def test_configure_domain_passes_fqdn_param(monkeypatch):
+    captured = {}
+
+    def _fake_call_helper(action, params=None, **kw):
+        captured["action"] = action
+        captured["params"] = params
+        return {"applied": True, "fqdn": "cb.example.com", "app_url": "https://cb.example.com/"}
+
+    monkeypatch.setattr(helper_client, "call_helper", _fake_call_helper)
+    result = helper_client.configure_domain("cb.example.com")
+    assert captured == {"action": "configure_domain", "params": {"fqdn": "cb.example.com"}}
+    assert result["applied"] is True

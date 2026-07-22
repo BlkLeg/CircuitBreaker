@@ -92,3 +92,7 @@ def enable_lan_discovery(**kw: Any) -> dict[str, Any]:
 
 def disable_lan_discovery(**kw: Any) -> dict[str, Any]:
     return call_helper("disable_lan_discovery", **kw)
+
+
+def configure_domain(fqdn: str, **kw: Any) -> dict[str, Any]:
+    return call_helper("configure_domain", {"fqdn": fqdn}, **kw)
