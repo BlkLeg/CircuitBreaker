@@ -358,3 +358,205 @@ def test_disable_lan_discovery_removes_override_and_recreates(tmp_path):
         ["docker", "compose", "-f", "docker-compose.yml", "up", "-d"],
         cwd=str(compose_dir), capture_output=True, text=True, timeout=120,
     )
+
+
+def test_render_nginx_template_substitutes_variables():
+    template = "listen ${CB_PORT};\nserver_name ${server_name};\n"
+    result = cb_helperd.render_nginx_template(
+        template, {"CB_PORT": "8088", "server_name": "cb.example.com 10.0.0.5 _"}
+    )
+    assert result == "listen 8088;\nserver_name cb.example.com 10.0.0.5 _;\n"
+
+
+def test_render_nginx_template_unescapes_nginx_runtime_variables():
+    template = r"return 301 https://\$host\$request_uri;"
+    result = cb_helperd.render_nginx_template(template, {})
+    assert result == "return 301 https://$host$request_uri;"
+
+
+def test_render_nginx_template_raises_on_missing_variable():
+    template = "listen ${CB_PORT};"
+    try:
+        cb_helperd.render_nginx_template(template, {})
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "CB_PORT" in str(exc)
+
+
+def test_replace_env_keys_updates_existing_and_preserves_rest():
+    env_text = "CB_JWT_SECRET=abc123\nCB_FQDN=\nCB_PORT=8088\n# comment\n"
+    result = cb_helperd._replace_env_keys(
+        env_text, {"CB_FQDN": "cb.example.com", "CB_APP_URL": "https://cb.example.com/"}
+    )
+    lines = result.splitlines()
+    assert "CB_JWT_SECRET=abc123" in lines
+    assert "CB_FQDN=cb.example.com" in lines
+    assert "CB_PORT=8088" in lines
+    assert "# comment" in lines
+    assert "CB_APP_URL=https://cb.example.com/" in lines
+
+
+def test_replace_env_keys_appends_missing_key():
+    env_text = "CB_PORT=8088\n"
+    result = cb_helperd._replace_env_keys(env_text, {"CB_FQDN": "cb.example.com"})
+    assert "CB_FQDN=cb.example.com" in result.splitlines()
+
+
+def _make_domain_fixture(tmp_path):
+    """Sets up a fake native-install layout: .env, nginx conf, tls dir, hosts file."""
+    cb_data_dir = tmp_path / "data"
+    (cb_data_dir / "tls").mkdir(parents=True)
+    (cb_data_dir / "tls" / "fullchain.pem").write_text("ORIGINAL-CERT")
+    (cb_data_dir / "tls" / "privkey.pem").write_text("ORIGINAL-KEY")
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"CB_JWT_SECRET=abc123\nCB_DATA_DIR={cb_data_dir}\nCB_PORT=8088\n"
+        "CB_FQDN=\nCB_APP_URL=http://192.168.0.45/\n"
+    )
+
+    nginx_dest = tmp_path / "circuitbreaker.conf"
+    nginx_dest.write_text("ORIGINAL NGINX CONFIG\n")
+
+    hosts_path = tmp_path / "hosts"
+    hosts_path.write_text("127.0.0.1 localhost\n")
+
+    template_path = tmp_path / "circuitbreaker-tls.conf"
+    template_path.write_text(
+        "server {\n  listen ${CB_PORT};\n  server_name ${server_name};\n"
+        "  ssl_certificate ${CB_DATA_DIR}/tls/fullchain.pem;\n  return 301 https://\\$host;\n}\n"
+    )
+
+    return {
+        "cb_data_dir": cb_data_dir,
+        "env_path": env_path,
+        "nginx_dest": nginx_dest,
+        "hosts_path": hosts_path,
+        "template_path": template_path,
+    }
+
+
+def _patch_domain_paths(fixture, monkeypatch):
+    monkeypatch.setattr(cb_helperd, "ENV_PATH", str(fixture["env_path"]))
+    monkeypatch.setattr(cb_helperd, "NGINX_CONF_DEST", str(fixture["nginx_dest"]))
+    monkeypatch.setattr(cb_helperd, "NGINX_TLS_TEMPLATE", str(fixture["template_path"]))
+    monkeypatch.setattr(cb_helperd, "HOSTS_PATH", str(fixture["hosts_path"]))
+
+
+def test_configure_domain_happy_path(tmp_path, monkeypatch):
+    fixture = _make_domain_fixture(tmp_path)
+    _patch_domain_paths(fixture, monkeypatch)
+
+    def _run(cmd, **kwargs):
+        if cmd[0] == "openssl":
+            fixture_cert = fixture["cb_data_dir"] / "tls" / "fullchain.pem"
+            fixture_key = fixture["cb_data_dir"] / "tls" / "privkey.pem"
+            fixture_cert.write_text("NEW-CERT")
+            fixture_key.write_text("NEW-KEY")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["ip", "route"]:
+            return MagicMock(returncode=0, stdout="1.1.1.1 via 10.0.0.1 src 10.0.0.5\n", stderr="")
+        if cmd[:1] == ["nginx"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["systemctl", "reload"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    with (
+        patch("subprocess.run", side_effect=_run),
+        patch("cb_helperd._https_health_check", return_value=True),
+    ):
+        result = cb_helperd.action_configure_domain({"fqdn": "cb.example.com"})
+
+    assert result == {
+        "applied": True,
+        "fqdn": "cb.example.com",
+        "app_url": "https://cb.example.com/",
+    }
+    nginx_out = fixture["nginx_dest"].read_text()
+    assert "server_name cb.example.com 10.0.0.5 _;" in nginx_out
+    assert "https://$host" in nginx_out  # runtime var survived unescaped
+    assert (fixture["cb_data_dir"] / "tls" / "fullchain.pem").read_text() == "NEW-CERT"
+    env_out = fixture["env_path"].read_text()
+    assert "CB_FQDN=cb.example.com" in env_out
+    assert "CB_APP_URL=https://cb.example.com/" in env_out
+    assert "cb.example.com" in fixture["hosts_path"].read_text()
+
+
+def test_configure_domain_requires_fqdn():
+    try:
+        cb_helperd.action_configure_domain({"fqdn": ""})
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "fqdn" in str(exc)
+
+
+def test_configure_domain_raises_when_no_existing_cert(tmp_path, monkeypatch):
+    fixture = _make_domain_fixture(tmp_path)
+    (fixture["cb_data_dir"] / "tls" / "fullchain.pem").unlink()
+    _patch_domain_paths(fixture, monkeypatch)
+    try:
+        cb_helperd.action_configure_domain({"fqdn": "cb.example.com"})
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no existing TLS certificate" in str(exc)
+
+
+def test_configure_domain_rolls_back_on_nginx_test_failure(tmp_path, monkeypatch):
+    fixture = _make_domain_fixture(tmp_path)
+    _patch_domain_paths(fixture, monkeypatch)
+    original_env = fixture["env_path"].read_text()
+    original_nginx = fixture["nginx_dest"].read_text()
+
+    def _run(cmd, **kwargs):
+        if cmd[0] == "openssl":
+            (fixture["cb_data_dir"] / "tls" / "fullchain.pem").write_text("NEW-CERT")
+            (fixture["cb_data_dir"] / "tls" / "privkey.pem").write_text("NEW-KEY")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["ip", "route"]:
+            return MagicMock(returncode=0, stdout="src 10.0.0.5\n", stderr="")
+        if cmd[:1] == ["nginx"]:
+            return MagicMock(returncode=1, stdout="", stderr="syntax error on line 4")
+        if cmd[:2] == ["systemctl", "reload"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+    with patch("subprocess.run", side_effect=_run):
+        try:
+            cb_helperd.action_configure_domain({"fqdn": "cb.example.com"})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "syntax error" in str(exc)
+
+    assert fixture["nginx_dest"].read_text() == original_nginx
+    assert fixture["env_path"].read_text() == original_env
+    assert (fixture["cb_data_dir"] / "tls" / "fullchain.pem").read_text() == "ORIGINAL-CERT"
+    assert "cb.example.com" not in fixture["hosts_path"].read_text()
+
+
+def test_configure_domain_rolls_back_on_health_check_failure(tmp_path, monkeypatch):
+    fixture = _make_domain_fixture(tmp_path)
+    _patch_domain_paths(fixture, monkeypatch)
+    original_nginx = fixture["nginx_dest"].read_text()
+
+    def _run(cmd, **kwargs):
+        if cmd[0] == "openssl":
+            (fixture["cb_data_dir"] / "tls" / "fullchain.pem").write_text("NEW-CERT")
+            (fixture["cb_data_dir"] / "tls" / "privkey.pem").write_text("NEW-KEY")
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["ip", "route"]:
+            return MagicMock(returncode=0, stdout="src 10.0.0.5\n", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with (
+        patch("subprocess.run", side_effect=_run),
+        patch("cb_helperd._https_health_check", return_value=False),
+    ):
+        try:
+            cb_helperd.action_configure_domain({"fqdn": "cb.example.com"})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "health check" in str(exc)
+
+    assert fixture["nginx_dest"].read_text() == original_nginx
+    assert (fixture["cb_data_dir"] / "tls" / "fullchain.pem").read_text() == "ORIGINAL-CERT"

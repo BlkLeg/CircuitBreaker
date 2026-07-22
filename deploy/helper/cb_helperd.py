@@ -12,8 +12,10 @@ system; every line here should be reviewable in one sitting.
 import json
 import logging
 import os
+import re
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import time
@@ -21,6 +23,10 @@ import urllib.request
 
 SOCKET_PATH = "/run/circuitbreaker/helper.sock"
 CONF_PATH = "/etc/circuitbreaker/helper.conf"
+ENV_PATH = "/etc/circuitbreaker/.env"
+NGINX_TLS_TEMPLATE = "/opt/circuitbreaker/deploy/nginx/circuitbreaker-tls.conf"
+NGINX_CONF_DEST = "/etc/nginx/conf.d/circuitbreaker.conf"
+HOSTS_PATH = "/etc/hosts"
 
 ALLOWED_ACTIONS = {
     "get_host_readiness",
@@ -28,6 +34,7 @@ ALLOWED_ACTIONS = {
     "grant_nmap_caps",
     "enable_lan_discovery",
     "disable_lan_discovery",
+    "configure_domain",
 }
 
 logger = logging.getLogger("cb_helperd")
@@ -81,6 +88,45 @@ def read_authorized_uid(conf_path: str = CONF_PATH) -> int:
     if "AUTHORIZED_UID" not in conf:
         raise RuntimeError(f"AUTHORIZED_UID not found in {conf_path}")
     return int(conf["AUTHORIZED_UID"])
+
+
+def render_nginx_template(template_text: str, variables: dict[str, str]) -> str:
+    """Reproduce install.sh's cb_render_template() heredoc semantics in pure
+    Python (no eval, no shell): substitute our ${VAR} placeholders, then
+    unescape \\$ -> $ so nginx's own runtime variables (\\$host, \\$uri, ...)
+    come through literally in the rendered config."""
+
+    def _sub(match: "re.Match[str]") -> str:
+        name = match.group(1)
+        if name not in variables:
+            raise RuntimeError(f"template variable not provided: {name}")
+        return variables[name]
+
+    rendered = re.sub(r"\$\{(\w+)\}", _sub, template_text)
+    rendered = rendered.replace("\\$", "$")
+    return rendered
+
+
+def _replace_env_keys(env_text: str, updates: dict[str, str]) -> str:
+    """Rewrite only the given KEY=value lines in an .env file, preserving
+    every other line (secrets, comments, ordering) byte-for-byte."""
+    lines = env_text.splitlines(keepends=True)
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        key = None
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0]
+        if key in updates:
+            out.append(f"{key}={updates[key]}\n")
+            seen.add(key)
+        else:
+            out.append(line)
+    for key, val in updates.items():
+        if key not in seen:
+            out.append(f"{key}={val}\n")
+    return "".join(out)
 
 
 def dispatch(action: str, params: dict) -> dict:
@@ -227,6 +273,159 @@ def action_disable_lan_discovery(_params: dict) -> dict:
     return {"applied": True}
 
 
+def _detect_local_ip() -> str | None:
+    result = subprocess.run(
+        ["ip", "route", "get", "1.1.1.1"], capture_output=True, text=True, timeout=5
+    )
+    m = re.search(r"src (\S+)", result.stdout)
+    return m.group(1) if m else None
+
+
+def _generate_selfsigned_cert(cert_dir: str, fqdn: str, detected_ip: str | None) -> None:
+    san = f"DNS:{fqdn}"
+    if detected_ip:
+        san += f",IP:{detected_ip}"
+    key_path = os.path.join(cert_dir, "privkey.pem")
+    cert_path = os.path.join(cert_dir, "fullchain.pem")
+    result = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes", "-days", "3650",
+            "-keyout", key_path, "-out", cert_path,
+            "-subj", f"/CN={fqdn}/O=CircuitBreaker",
+            "-addext", f"subjectAltName={san}",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"cert generation failed: {result.stderr.strip()[:500]}")
+
+
+def _add_hosts_entry(fqdn: str) -> bool:
+    """Returns True if a line was appended (caller must remove it on rollback)."""
+    with open(HOSTS_PATH) as fh:
+        if fqdn in fh.read():
+            return False
+    with open(HOSTS_PATH, "a") as fh:
+        fh.write(f"127.0.0.1  {fqdn}\n")
+    return True
+
+
+def _remove_hosts_entry(fqdn: str) -> None:
+    with open(HOSTS_PATH) as fh:
+        lines = fh.readlines()
+    with open(HOSTS_PATH, "w") as fh:
+        fh.writelines(line for line in lines if fqdn not in line)
+
+
+def _https_health_check(cert_path: str, fqdn: str, retries: int = 10, delay: float = 2.0) -> bool:
+    """Verifies the nginx+cert stack this action just wrote. Trusts exactly
+    the self-signed certificate we generated (a self-signed cert is its own
+    CA) and checks the TLS handshake's hostname against fqdn via SNI — this
+    proves nginx is serving *our new* certificate for the new domain, not
+    merely that some TLS handshake on 443 succeeds. Certificate verification
+    is never disabled; there's no CERT_NONE here."""
+    ctx = ssl.create_default_context(cafile=cert_path)
+    request = f"GET /api/v1/health HTTP/1.1\r\nHost: {fqdn}\r\nConnection: close\r\n\r\n".encode()
+    for _ in range(retries):
+        try:
+            with socket.create_connection(("127.0.0.1", 443), timeout=3) as raw:
+                with ctx.wrap_socket(raw, server_hostname=fqdn) as tls:
+                    tls.sendall(request)
+                    response = b""
+                    while True:
+                        chunk = tls.recv(4096)
+                        if not chunk:
+                            break
+                        response += chunk
+                    status_line = response.split(b"\r\n", 1)[0]
+                    if b" 200 " in status_line:
+                        return True
+        except Exception:
+            pass
+        time.sleep(delay)
+    return False
+
+
+def action_configure_domain(params: dict) -> dict:
+    fqdn = (params.get("fqdn") or "").strip()
+    if not fqdn:
+        raise RuntimeError("fqdn parameter is required")
+
+    env_conf = read_conf(ENV_PATH)
+    cb_data_dir = env_conf.get("CB_DATA_DIR")
+    cb_port = env_conf.get("CB_PORT")
+    if not cb_data_dir or not cb_port:
+        raise RuntimeError("CB_DATA_DIR/CB_PORT not found in /etc/circuitbreaker/.env — not a native install?")
+
+    cert_dir = os.path.join(cb_data_dir, "tls")
+    cert_path = os.path.join(cert_dir, "fullchain.pem")
+    key_path = os.path.join(cert_dir, "privkey.pem")
+    if not os.path.isfile(cert_path):
+        raise RuntimeError("no existing TLS certificate found — this install was set up without TLS")
+
+    with open(NGINX_CONF_DEST) as fh:
+        nginx_snapshot = fh.read()
+    with open(cert_path, "rb") as fh:
+        cert_snapshot = fh.read()
+    with open(key_path, "rb") as fh:
+        key_snapshot = fh.read()
+    with open(ENV_PATH) as fh:
+        env_snapshot = fh.read()
+    hosts_entry_added = False
+
+    def _rollback() -> None:
+        with open(NGINX_CONF_DEST, "w") as fh:
+            fh.write(nginx_snapshot)
+        with open(cert_path, "wb") as fh:
+            fh.write(cert_snapshot)
+        with open(key_path, "wb") as fh:
+            fh.write(key_snapshot)
+        with open(ENV_PATH, "w") as fh:
+            fh.write(env_snapshot)
+        if hosts_entry_added:
+            _remove_hosts_entry(fqdn)
+        subprocess.run(["systemctl", "reload", "nginx"], capture_output=True, timeout=15)
+
+    try:
+        detected_ip = _detect_local_ip()
+        _generate_selfsigned_cert(cert_dir, fqdn, detected_ip)
+
+        server_name = " ".join([fqdn] + ([detected_ip] if detected_ip else []) + ["_"])
+        with open(NGINX_TLS_TEMPLATE) as fh:
+            template_text = fh.read()
+        rendered = render_nginx_template(
+            template_text,
+            {"CB_PORT": cb_port, "server_name": server_name, "CB_DATA_DIR": cb_data_dir},
+        )
+        with open(NGINX_CONF_DEST, "w") as fh:
+            fh.write(rendered)
+
+        hosts_entry_added = _add_hosts_entry(fqdn)
+
+        app_url = f"https://{fqdn}/"
+        new_env_text = _replace_env_keys(env_snapshot, {"CB_FQDN": fqdn, "CB_APP_URL": app_url})
+        with open(ENV_PATH, "w") as fh:
+            fh.write(new_env_text)
+
+        test_result = subprocess.run(["nginx", "-t"], capture_output=True, text=True, timeout=15)
+        if test_result.returncode != 0:
+            raise RuntimeError(f"nginx -t failed: {test_result.stderr.strip()[:500]}")
+
+        reload_result = subprocess.run(
+            ["systemctl", "reload", "nginx"], capture_output=True, text=True, timeout=15
+        )
+        if reload_result.returncode != 0:
+            raise RuntimeError(f"nginx reload failed: {reload_result.stderr.strip()[:500]}")
+
+        if not _https_health_check(cert_path, fqdn):
+            raise RuntimeError("HTTPS health check failed after domain reconfiguration — rolled back")
+
+        return {"applied": True, "fqdn": fqdn, "app_url": app_url}
+    except Exception:
+        _rollback()
+        raise
+
+
 def detect_pkg_manager() -> str | None:
     for mgr in ("apt-get", "dnf", "pacman"):
         if shutil.which(mgr):
@@ -290,6 +489,7 @@ _ACTIONS["grant_nmap_caps"] = action_grant_nmap_caps
 _ACTIONS["get_host_readiness"] = action_get_host_readiness
 _ACTIONS["enable_lan_discovery"] = action_enable_lan_discovery
 _ACTIONS["disable_lan_discovery"] = action_disable_lan_discovery
+_ACTIONS["configure_domain"] = action_configure_domain
 
 
 if __name__ == "__main__":
