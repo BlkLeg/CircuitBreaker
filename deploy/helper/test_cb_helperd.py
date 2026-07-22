@@ -491,6 +491,15 @@ def test_configure_domain_requires_fqdn():
         assert "fqdn" in str(exc)
 
 
+def test_configure_domain_rejects_invalid_fqdn_syntax():
+    for bad in ["cb.example.com;evil", "no-dot", "-leading.example.com", "a" * 300]:
+        try:
+            cb_helperd.action_configure_domain({"fqdn": bad})
+            assert False, f"expected RuntimeError for {bad!r}"
+        except RuntimeError as exc:
+            assert "invalid fqdn" in str(exc)
+
+
 def test_configure_domain_raises_when_no_existing_cert(tmp_path, monkeypatch):
     fixture = _make_domain_fixture(tmp_path)
     (fixture["cb_data_dir"] / "tls" / "fullchain.pem").unlink()

@@ -107,6 +107,22 @@ def render_nginx_template(template_text: str, variables: dict[str, str]) -> str:
     return rendered
 
 
+_FQDN_LABEL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+def _is_valid_fqdn(fqdn: str) -> bool:
+    """Defense-in-depth syntax check before fqdn is interpolated into a
+    cert -subj string and a live nginx config. Deliberately duplicated
+    from app.core.hostname_validation rather than imported — this file is
+    stdlib-only and isolated from the backend's dependency tree by design."""
+    if not fqdn or len(fqdn) > 253:
+        return False
+    labels = fqdn.split(".")
+    if len(labels) < 2 or any(label == "" for label in labels):
+        return False
+    return all(_FQDN_LABEL_RE.match(label) for label in labels)
+
+
 def _replace_env_keys(env_text: str, updates: dict[str, str]) -> str:
     """Rewrite only the given KEY=value lines in an .env file, preserving
     every other line (secrets, comments, ordering) byte-for-byte."""
@@ -350,6 +366,8 @@ def action_configure_domain(params: dict) -> dict:
     fqdn = (params.get("fqdn") or "").strip()
     if not fqdn:
         raise RuntimeError("fqdn parameter is required")
+    if not _is_valid_fqdn(fqdn):
+        raise RuntimeError(f"invalid fqdn: {fqdn!r}")
 
     env_conf = read_conf(ENV_PATH)
     cb_data_dir = env_conf.get("CB_DATA_DIR")
