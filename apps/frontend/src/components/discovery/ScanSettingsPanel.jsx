@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { useSettings } from '../../context/SettingsContext';
 import { useToast } from '../common/Toast';
 import { settingsApi } from '../../api/client.jsx';
@@ -44,6 +45,8 @@ export default function ScanSettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [savingCreds, setSavingCreds] = useState(false);
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   const [form, setForm] = useState(() => ({
     discovery_default_cidr: settings?.discovery_default_cidr ?? '',
     max_concurrent_scans: settings?.max_concurrent_scans ?? 2,
@@ -56,6 +59,8 @@ export default function ScanSettingsPanel() {
     dhcp_lease_file_path: settings?.dhcp_lease_file_path ?? '',
     dhcp_router_host: settings?.dhcp_router_host ?? '',
     dhcp_router_command: settings?.dhcp_router_command ?? 'cat /var/lib/misc/dnsmasq.leases',
+    // Advanced
+    nmap_enabled: settings?.nmap_enabled ?? false,
   }));
 
   // Separate state for sensitive credentials (never pre-populated from server)
@@ -74,6 +79,7 @@ export default function ScanSettingsPanel() {
       dhcp_lease_file_path: settings.dhcp_lease_file_path ?? '',
       dhcp_router_host: settings.dhcp_router_host ?? '',
       dhcp_router_command: settings.dhcp_router_command ?? 'cat /var/lib/misc/dnsmasq.leases',
+      nmap_enabled: settings.nmap_enabled ?? false,
     });
   }, [settings]);
 
@@ -94,6 +100,7 @@ export default function ScanSettingsPanel() {
         dhcp_lease_file_path: form.dhcp_lease_file_path,
         dhcp_router_host: form.dhcp_router_host,
         dhcp_router_command: form.dhcp_router_command,
+        nmap_enabled: form.nmap_enabled,
       });
       await reloadSettings();
       toast.success('Scan settings saved');
@@ -347,6 +354,72 @@ export default function ScanSettingsPanel() {
         </>
       )}
       {/* ─── End Mobile Device Discovery ─────────────────────────────────────── */}
+
+      {/* ─── Advanced ─────────────────────────────────────────────────────────── */}
+      <hr style={{ border: 'none', borderTop: '1px solid var(--color-border)', margin: '4px 0' }} />
+      <button
+        type="button"
+        onClick={() => setAdvancedOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: 0,
+          color: 'var(--color-text-muted)',
+          fontSize: 13,
+          fontWeight: 600,
+        }}
+      >
+        {advancedOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        Advanced
+      </button>
+
+      {advancedOpen && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Nmap Active Scanning */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <p style={{ margin: 0, fontSize: 13 }}>Nmap Active Scanning</p>
+              <p className="cb-hint">
+                Persistent safety gate for nmap-based scans (Full and Deep Dive). Keep disabled
+                until you have explicit authorization.
+              </p>
+            </div>
+            <Toggle value={form.nmap_enabled} onChange={(v) => set('nmap_enabled', v)} />
+          </div>
+
+          {!form.nmap_enabled && (
+            <div
+              style={{
+                padding: '8px 12px',
+                background: 'rgba(245,158,11,0.1)',
+                border: '1px solid rgba(245,158,11,0.3)',
+                borderRadius: 6,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  fontSize: 12,
+                  color: '#fbbf24',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  Nmap-based scan modes are currently blocked. Enable this toggle only when your
+                  organization has approved active network scanning.
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {/* ─── End Advanced ─────────────────────────────────────────────────────── */}
 
       <button
         type="button"

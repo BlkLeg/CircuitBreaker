@@ -106,29 +106,35 @@ def _sync_one(integration_id: int) -> bool:
             )
             return False
 
-        config: dict = {"base_url": integ.base_url}
-        if integ.slug:
-            config["slug"] = integ.slug
-        if integ.api_key:
-            try:
-                from app.services.credential_vault import get_vault
+        # NativeProbePlugin.sync() uses config.id to query its own monitors, so it
+        # needs the ORM row rather than the credential dict.  All other plugins
+        # (Uptime Kuma, etc.) expect a plain dict with base_url / api_key.
+        if integ.type == "native":
+            config: Any = integ
+        else:
+            config: Any = {"base_url": integ.base_url}
+            if integ.slug:
+                config["slug"] = integ.slug
+            if integ.api_key:
+                try:
+                    from app.services.credential_vault import get_vault
 
-                config["api_key"] = get_vault().decrypt(integ.api_key)
-            except Exception as exc:
-                _logger.error("Integration %d: vault decrypt failed: %s", integration_id, exc)
-                log_worker_audit(
-                    action="integration_vault_error",
-                    entity_type="integration",
-                    entity_id=integration_id,
-                    details=str(exc)[:200],
-                    severity="error",
-                    worker_name="integration_worker",
-                )
-                integ.sync_status = "error"
-                integ.sync_error = f"vault: {exc}"
-                integ.last_synced_at = utcnow()
-                db.commit()
-                return False
+                    config["api_key"] = get_vault().decrypt(integ.api_key)
+                except Exception as exc:
+                    _logger.error("Integration %d: vault decrypt failed: %s", integration_id, exc)
+                    log_worker_audit(
+                        action="integration_vault_error",
+                        entity_type="integration",
+                        entity_id=integration_id,
+                        details=str(exc)[:200],
+                        severity="error",
+                        worker_name="integration_worker",
+                    )
+                    integ.sync_status = "error"
+                    integ.sync_error = f"vault: {exc}"
+                    integ.last_synced_at = utcnow()
+                    db.commit()
+                    return False
 
         plugin = plugin_cls()
         monitors = plugin.sync(config, db=db)  # never raises — returns [] on error
