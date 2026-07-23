@@ -109,10 +109,11 @@ def _sync_one(integration_id: int) -> bool:
         # NativeProbePlugin.sync() uses config.id to query its own monitors, so it
         # needs the ORM row rather than the credential dict.  All other plugins
         # (Uptime Kuma, etc.) expect a plain dict with base_url / api_key.
+        config: Any
         if integ.type == "native":
-            config: Any = integ
+            config = integ
         else:
-            config: Any = {"base_url": integ.base_url}
+            config = {"base_url": integ.base_url}
             if integ.slug:
                 config["slug"] = integ.slug
             if integ.api_key:
