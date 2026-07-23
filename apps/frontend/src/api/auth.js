@@ -4,11 +4,12 @@ import { hashPasswordForAuth } from '../utils/passwordHash';
 /** OOBE step names used by backend onboarding API. */
 export const OOBE_STEP_NAMES = [
   'start', // 1
-  'account', // 2
-  'theme', // 3
-  'regional', // 4
-  'email', // 5
-  'summary', // 6
+  'domain', // 2
+  'account', // 3
+  'theme', // 4
+  'regional', // 5
+  'email', // 6
+  'summary', // 7
 ];
 
 export const authApi = {
@@ -24,6 +25,7 @@ export const authApi = {
     return client.post('/bootstrap/initialize', p);
   },
   bootstrapInitializeOAuth: (payload) => client.post('/bootstrap/initialize-oauth', payload),
+  bootstrapConfigureDomain: (fqdn) => client.post('/bootstrap/domain', { fqdn }),
   register: async (email, password, displayName) => {
     const password_hash = await hashPasswordForAuth(password);
     const body = { email, password_hash };

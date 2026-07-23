@@ -58,6 +58,10 @@ function OOBEWizardPage({ onCompleted }) {
   const branding = settings?.branding;
 
   const [step, setStep] = useState(1);
+  const [fqdn, setFqdn] = useState('');
+  const [domainApplying, setDomainApplying] = useState(false);
+  const [domainResult, setDomainResult] = useState(null); // { fqdn, app_url } on success
+  const [domainError, setDomainError] = useState('');
   const [, setOnboardingLoaded] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -171,7 +175,7 @@ function OOBEWizardPage({ onCompleted }) {
 
   // Auto-populate external app URL when running behind Caddy and field is empty.
   useEffect(() => {
-    if (step === 5 && !externalAppUrl && _caddyDetection.active) {
+    if (step === 6 && !externalAppUrl && _caddyDetection.active) {
       setExternalAppUrl(_caddyDetection.httpsOrigin);
     }
   }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -272,7 +276,7 @@ function OOBEWizardPage({ onCompleted }) {
     // Clean code from URL without triggering a re-render loop
     globalThis.history.replaceState({}, '', '/oobe');
     // Skip account creation step — go straight to theme
-    setStep(3);
+    setStep(4);
     authApi.setOnboardingStep('theme').catch((err) => {
       console.warn('Failed to persist onboarding step (theme):', err);
     });
@@ -398,11 +402,11 @@ function OOBEWizardPage({ onCompleted }) {
   };
 
   const goNext = () => {
-    if (step === 2 && !oauthBootstrapToken && !accountValid) {
+    if (step === 3 && !oauthBootstrapToken && !accountValid) {
       setError('Please fix account validation errors before continuing.');
       return;
     }
-    if (step === 5) {
+    if (step === 6) {
       const smtpError = validateSmtpStep();
       if (smtpError) {
         setError(smtpError);
@@ -410,7 +414,7 @@ function OOBEWizardPage({ onCompleted }) {
       }
     }
     setError('');
-    const next = Math.min(6, step + 1);
+    const next = Math.min(7, step + 1);
     setStep(next);
     persistStep(next);
   };
@@ -453,6 +457,27 @@ function OOBEWizardPage({ onCompleted }) {
     document.documentElement.style.setProperty('--font', font.stack);
     document.documentElement.style.setProperty('--font-size-base', `${size.rootPx}px`);
     document.documentElement.style.fontSize = `${size.rootPx}px`;
+  };
+
+  const submitDomain = async () => {
+    setDomainApplying(true);
+    setDomainError('');
+    try {
+      const resp = await authApi.bootstrapConfigureDomain(fqdn.trim());
+      setDomainResult(resp.data ?? resp);
+    } catch (err) {
+      setDomainError(
+        err?.response?.data?.detail ||
+          'Could not apply that domain — staying on the IP address is safe. You can retry or skip.'
+      );
+    } finally {
+      setDomainApplying(false);
+    }
+  };
+
+  const skipDomain = () => {
+    setDomainError('');
+    goNext();
   };
 
   const handleOauthSignup = async () => {
@@ -527,7 +552,7 @@ function OOBEWizardPage({ onCompleted }) {
   const submitBootstrap = async () => {
     const localAccountRequired = !oauthBootstrapToken;
     if (localAccountRequired && !accountValid) {
-      setStep(2);
+      setStep(3);
       setError('Account details are invalid.');
       return;
     }
@@ -783,7 +808,7 @@ function OOBEWizardPage({ onCompleted }) {
           </div>
           <div className="oobe-step3-row">
             <div className="login-card oobe-card" style={{ maxWidth: 560 }}>
-              <div className="oobe-progress">Step 7/7</div>
+              <div className="oobe-progress">Step 8/8</div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                 <ShieldAlert
@@ -923,7 +948,7 @@ function OOBEWizardPage({ onCompleted }) {
       <div className="login-bokeh-tl" aria-hidden="true" />
       <div className="login-bokeh-br" aria-hidden="true" />
       <div
-        className={`oobe-layout${step === 2 || step === 3 || step === 4 ? ' oobe-layout--theme-step' : ''}`}
+        className={`oobe-layout${step === 3 || step === 4 || step === 5 ? ' oobe-layout--theme-step' : ''}`}
       >
         <div className="oobe-header">
           <img
@@ -938,16 +963,16 @@ function OOBEWizardPage({ onCompleted }) {
         </div>
 
         {/* Mobile hint — shown above the card on relevant steps */}
-        {step === 2 && <div className="oobe-hint-mobile-wrap">{avatarHintCard}</div>}
-        {step === 3 && <div className="oobe-hint-mobile-wrap">{themeHintCard}</div>}
-        {step === 4 && <div className="oobe-hint-mobile-wrap">{regionalHintCard}</div>}
+        {step === 3 && <div className="oobe-hint-mobile-wrap">{avatarHintCard}</div>}
+        {step === 4 && <div className="oobe-hint-mobile-wrap">{themeHintCard}</div>}
+        {step === 5 && <div className="oobe-hint-mobile-wrap">{regionalHintCard}</div>}
 
         <div
-          className={`oobe-step3-row${step === 2 || step === 3 || step === 4 ? ' oobe-step3-row--active' : ''}`}
+          className={`oobe-step3-row${step === 3 || step === 4 || step === 5 ? ' oobe-step3-row--active' : ''}`}
         >
           <div className="login-card oobe-card">
             <div className="oobe-progress-row">
-              <div className="oobe-progress">Step {step}/6</div>
+              <div className="oobe-progress">Step {step}/7</div>
               {step > 1 && (
                 <button type="button" className="oobe-back-to-start" onClick={goBackToStart}>
                   Back to start
@@ -974,6 +999,96 @@ function OOBEWizardPage({ onCompleted }) {
             )}
 
             {step === 2 && (
+              <>
+                <h2 className="login-card-title">Domain</h2>
+                <p className="login-card-subtitle">
+                  Optional: set a domain name so Circuit Breaker gets a proper HTTPS certificate.
+                  You can always skip this and use the IP address.
+                </p>
+
+                {!domainResult && (
+                  <div style={{ marginBottom: 18 }}>
+                    <label className="login-label" htmlFor="oobe-fqdn">
+                      Domain (FQDN)
+                    </label>
+                    <input
+                      id="oobe-fqdn"
+                      type="text"
+                      className="login-input"
+                      placeholder="circuitbreaker.example.com"
+                      value={fqdn}
+                      onChange={(event) => {
+                        setFqdn(event.target.value);
+                        setDomainError('');
+                      }}
+                      disabled={domainApplying}
+                    />
+                    <p
+                      style={{
+                        fontSize: '0.75rem',
+                        color: 'var(--color-text-muted)',
+                        margin: '6px 0 0',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      We’ll generate a matching self-signed certificate and reconfigure nginx.
+                      IP-based access stays available as a fallback.
+                    </p>
+                  </div>
+                )}
+
+                {domainResult && (
+                  <div
+                    style={{
+                      background: 'color-mix(in srgb, var(--color-primary) 8%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--color-primary) 25%, transparent)',
+                      borderRadius: 6,
+                      padding: '10px 14px',
+                      marginBottom: 18,
+                      fontSize: '0.82rem',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Domain configured</div>
+                    <p style={{ margin: '0 0 8px' }}>
+                      Circuit Breaker is now reachable at <code>{domainResult.app_url}</code>.
+                    </p>
+                    <a href={domainResult.app_url} className="btn btn-primary">
+                      Continue at {domainResult.app_url}
+                    </a>
+                  </div>
+                )}
+
+                {!domainResult && (
+                  <div className="oobe-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={skipDomain}
+                      disabled={domainApplying}
+                    >
+                      Skip
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={submitDomain}
+                      disabled={domainApplying || !fqdn.trim()}
+                    >
+                      {domainApplying ? 'Applying…' : 'Apply'}
+                    </button>
+                  </div>
+                )}
+
+                {domainError && (
+                  <div className="login-error-banner" role="alert">
+                    {domainError}
+                  </div>
+                )}
+              </>
+            )}
+
+            {step === 3 && (
               <div>
                 <h2 className="login-card-title">Create Account</h2>
                 <p className="login-card-subtitle">
@@ -1387,7 +1502,7 @@ function OOBEWizardPage({ onCompleted }) {
               </div>
             )}
 
-            {step === 3 && (
+            {step === 4 && (
               <>
                 <h2 className="login-card-title">Choose your theme</h2>
                 <p className="login-card-subtitle">
@@ -1510,7 +1625,7 @@ function OOBEWizardPage({ onCompleted }) {
               </>
             )}
 
-            {step === 4 && (
+            {step === 5 && (
               <>
                 <h2 className="login-card-title">Regional Preferences</h2>
                 <p className="login-card-subtitle">
@@ -1635,7 +1750,7 @@ function OOBEWizardPage({ onCompleted }) {
               </>
             )}
 
-            {step === 5 && (
+            {step === 6 && (
               <>
                 <h2 className="login-card-title">Email Delivery Setup</h2>
                 <p className="login-card-subtitle">
@@ -1922,7 +2037,7 @@ function OOBEWizardPage({ onCompleted }) {
               </>
             )}
 
-            {step === 6 && (
+            {step === 7 && (
               <>
                 <h2 className="login-card-title">Confirmation</h2>
                 <p className="login-card-subtitle">Review and complete setup.</p>
@@ -2024,9 +2139,9 @@ function OOBEWizardPage({ onCompleted }) {
           </div>
 
           {/* Desktop / tablet hint — 3rd column, hidden on mobile */}
-          {step === 2 && <div className="oobe-hint-desktop-wrap">{avatarHintCard}</div>}
-          {step === 3 && <div className="oobe-hint-desktop-wrap">{themeHintCard}</div>}
-          {step === 4 && <div className="oobe-hint-desktop-wrap">{regionalHintCard}</div>}
+          {step === 3 && <div className="oobe-hint-desktop-wrap">{avatarHintCard}</div>}
+          {step === 4 && <div className="oobe-hint-desktop-wrap">{themeHintCard}</div>}
+          {step === 5 && <div className="oobe-hint-desktop-wrap">{regionalHintCard}</div>}
         </div>
         {/* end oobe-step3-row */}
       </div>

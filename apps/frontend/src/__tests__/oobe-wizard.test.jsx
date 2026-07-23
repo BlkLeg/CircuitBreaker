@@ -18,11 +18,14 @@ vi.mock('../api/client', () => {
 });
 
 vi.mock('../api/auth.js', () => ({
-  OOBE_STEP_NAMES: ['welcome', 'account', 'theme', 'regional', 'network', 'finish'],
+  OOBE_STEP_NAMES: ['welcome', 'domain', 'account', 'theme', 'regional', 'network', 'finish'],
   authApi: {
     getOnboardingStep: vi.fn().mockResolvedValue({ data: { current_step: null } }),
     setOnboardingStep: vi.fn().mockResolvedValue({}),
     bootstrapInitialize: vi.fn().mockResolvedValue({ data: {} }),
+    bootstrapConfigureDomain: vi.fn().mockResolvedValue({
+      data: { fqdn: 'cb.example.com', app_url: 'https://cb.example.com/' },
+    }),
     meWithToken: vi.fn().mockResolvedValue({ data: {} }),
   },
 }));
@@ -115,6 +118,21 @@ describe('OOBEWizardPage', () => {
     vi.clearAllMocks();
   });
 
+  const getStartedAndSkipDomain = async () => {
+    await waitFor(() => {
+      expect(screen.getByText('Get Started')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Get Started'));
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText('Domain (FQDN)')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Skip'));
+    });
+  };
+
   it('renders first step (welcome) with Get Started button', async () => {
     render(<OOBEWizardPage onCompleted={vi.fn()} />);
 
@@ -125,16 +143,23 @@ describe('OOBEWizardPage', () => {
     expect(screen.getByText('Get Started')).toBeInTheDocument();
   });
 
-  it('renders account creation step after clicking Get Started', async () => {
+  it('renders the Domain step after clicking Get Started', async () => {
     render(<OOBEWizardPage onCompleted={vi.fn()} />);
 
     await waitFor(() => {
       expect(screen.getByText('Get Started')).toBeInTheDocument();
     });
-
     await act(async () => {
       fireEvent.click(screen.getByText('Get Started'));
     });
+
+    expect(screen.getByLabelText('Domain (FQDN)')).toBeInTheDocument();
+    expect(screen.getByText('Skip')).toBeInTheDocument();
+  });
+
+  it('renders account creation step after skipping the Domain step', async () => {
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
 
     expect(screen.getByText('Create Account')).toBeInTheDocument();
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
@@ -142,18 +167,10 @@ describe('OOBEWizardPage', () => {
     expect(screen.getByLabelText('Confirm Password')).toBeInTheDocument();
   });
 
-  it('shows password validation rules on step 2', async () => {
+  it('shows password validation rules on the account step', async () => {
     render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
 
-    // Move to step 2
-    await waitFor(() => {
-      expect(screen.getByText('Get Started')).toBeInTheDocument();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByText('Get Started'));
-    });
-
-    // Check validation rules are visible
     expect(screen.getByText(/At least 8 characters/)).toBeInTheDocument();
     expect(screen.getByText(/One uppercase letter/)).toBeInTheDocument();
     expect(screen.getByText(/One lowercase letter/)).toBeInTheDocument();
@@ -163,38 +180,21 @@ describe('OOBEWizardPage', () => {
 
   it('prevents step progression when account fields are invalid', async () => {
     render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
 
-    // Move to step 2
-    await waitFor(() => {
-      expect(screen.getByText('Get Started')).toBeInTheDocument();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByText('Get Started'));
-    });
-
-    // Try to proceed with empty fields by clicking Next
     const nextBtn = screen.getByText('Next');
     await act(async () => {
       fireEvent.click(nextBtn);
     });
 
-    // Should show validation error and still be on step 2
     expect(screen.getByText(/Please fix account validation errors/)).toBeInTheDocument();
     expect(screen.getByText('Create Account')).toBeInTheDocument();
   });
 
   it('allows step progression when account fields are valid', async () => {
     render(<OOBEWizardPage onCompleted={vi.fn()} />);
+    await getStartedAndSkipDomain();
 
-    // Move to step 2
-    await waitFor(() => {
-      expect(screen.getByText('Get Started')).toBeInTheDocument();
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByText('Get Started'));
-    });
-
-    // Fill in valid account details
     await act(async () => {
       fireEvent.change(screen.getByLabelText('Email'), {
         target: { value: 'admin@example.com' },
@@ -207,15 +207,69 @@ describe('OOBEWizardPage', () => {
       });
     });
 
-    // Click Next - should advance to step 3 (theme)
     const nextBtn = screen.getByText('Next');
     await act(async () => {
       fireEvent.click(nextBtn);
     });
 
-    // Step 3 shows theme chooser
     await waitFor(() => {
       expect(screen.getByText(/Choose your theme/)).toBeInTheDocument();
     });
+  });
+
+  it('submits a valid FQDN and shows the continue link', async () => {
+    const { authApi } = await import('../api/auth.js');
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Get Started')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Get Started'));
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Domain (FQDN)'), {
+        target: { value: 'cb.example.com' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Apply'));
+    });
+
+    await waitFor(() => {
+      expect(authApi.bootstrapConfigureDomain).toHaveBeenCalledWith('cb.example.com');
+    });
+    const link = await screen.findByText('Continue at https://cb.example.com/');
+    expect(link.closest('a')).toHaveAttribute('href', 'https://cb.example.com/');
+  });
+
+  it('shows an error and stays on the Domain step when applying fails', async () => {
+    const { authApi } = await import('../api/auth.js');
+    authApi.bootstrapConfigureDomain.mockRejectedValueOnce({
+      response: { data: { detail: 'nginx -t failed: syntax error' } },
+    });
+    render(<OOBEWizardPage onCompleted={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Get Started')).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Get Started'));
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Domain (FQDN)'), {
+        target: { value: 'cb.example.com' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('Apply'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/nginx -t failed: syntax error/)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Domain (FQDN)')).toBeInTheDocument();
+    expect(screen.getByText('Skip')).toBeInTheDocument();
   });
 });
