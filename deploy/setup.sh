@@ -356,33 +356,10 @@ stage0_preflight() {
 
     cb_ok "HTTP Port: $CB_PORT"
     cb_ok "Data Directory: $CB_DATA_DIR"
-
-    echo -e "  ${CYAN}Domain (FQDN)${RESET} — optional, press Enter to skip:"
-    local fqdn_input="" _fqdn_rc=0 _fqdn_rest=""
-    read -t 15 -r fqdn_input < /dev/tty 2>/dev/null || _fqdn_rc=$?
-    if (( _fqdn_rc > 128 )) && [[ -n "$fqdn_input" ]]; then
-      # read timed out mid-line. bash keeps the partial input in the
-      # variable; the user is clearly at the keyboard, so finish the line
-      # without a timeout instead of discarding what they already typed.
-      read -r _fqdn_rest < /dev/tty 2>/dev/null || _fqdn_rest=""
-      fqdn_input="${fqdn_input}${_fqdn_rest}"
-    elif (( _fqdn_rc != 0 )); then
-      fqdn_input=""  # walked-away timeout, EOF, or no usable TTY
-    fi
-    # Trim CR and surrounding whitespace only — interior garbage must fail
-    # validation below, not be silently squashed into a "valid" name
-    fqdn_input="${fqdn_input//$'\r'/}"
-    fqdn_input="${fqdn_input#"${fqdn_input%%[![:space:]]*}"}"
-    fqdn_input="${fqdn_input%"${fqdn_input##*[![:space:]]}"}"
-    if [[ -n "$fqdn_input" ]] && [[ ! "$fqdn_input" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
-      cb_warn "Ignoring invalid domain name: ${fqdn_input}"
-      fqdn_input=""
-    fi
-    if [[ -n "$fqdn_input" ]]; then
-      CB_FQDN="$fqdn_input"
+    if [[ -n "$CB_FQDN" ]]; then
       cb_ok "Domain: $CB_FQDN"
     else
-      cb_ok "Domain: (none — using detected IP address)"
+      cb_ok "Domain: (none — using detected IP address; set one later in the setup wizard)"
     fi
     cb_ok "Certificate: Self-signed"
   fi
