@@ -7,6 +7,8 @@ from app.core.auth_cookie import auth_response_with_cookie
 from app.core.rate_limit import get_limit, limiter
 from app.db.session import get_db
 from app.schemas.auth import (
+    BootstrapDomainRequest,
+    BootstrapDomainResponse,
     BootstrapInitializeOAuthRequest,
     BootstrapInitializeRequest,
     BootstrapInitializeResponse,
@@ -89,3 +91,15 @@ def initialize_bootstrap_oauth(
 ) -> BootstrapInitializeResponse:
     cfg = get_or_create_settings(db)
     return auth_service.bootstrap_initialize_oauth(db=db, cfg=cfg, payload=payload)
+
+
+@router.post("/domain", response_model=BootstrapDomainResponse)
+@limiter.limit(lambda: get_limit("auth"))
+def configure_bootstrap_domain(
+    request: Request,
+    response: Response,
+    payload: BootstrapDomainRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> BootstrapDomainResponse:
+    cfg = get_or_create_settings(db)
+    return auth_service.bootstrap_configure_domain(db, cfg, payload.fqdn)

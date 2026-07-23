@@ -21,6 +21,7 @@ from app.core.time import utcnow, utcnow_iso
 from app.db.models import AppSettings, Log, Onboarding, User
 from app.schemas.auth import (
     AuthResponse,
+    BootstrapDomainResponse,
     BootstrapInitializeOAuthRequest,
     BootstrapInitializeResponse,
     BootstrapStatusResponse,
@@ -28,6 +29,7 @@ from app.schemas.auth import (
     OnboardingStepResponse,
     UserProfile,
 )
+from app.services import helper_client
 
 _logger = logging.getLogger(__name__)
 
@@ -776,6 +778,26 @@ def bootstrap_initialize_oauth(
         theme=BootstrapThemeResponse(preset=cfg.theme_preset or payload.theme_preset),
         vault_key=vault_key_plaintext,
         vault_key_warning=vault_key_plaintext is not None,
+    )
+
+
+def bootstrap_configure_domain(db: Session, cfg: AppSettings, fqdn: str) -> BootstrapDomainResponse:
+    if bool(cfg.auth_enabled):
+        raise HTTPException(status_code=409, detail=_MSG_BOOTSTRAP_DONE)
+
+    try:
+        result = helper_client.configure_domain(fqdn)
+    except helper_client.HelperUnavailable as exc:
+        raise HTTPException(
+            status_code=503, detail="Domain configuration is unavailable on this install"
+        ) from exc
+    except helper_client.HelperActionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    cfg.fqdn = result.get("fqdn", fqdn)
+    db.commit()
+    return BootstrapDomainResponse(
+        fqdn=cfg.fqdn, app_url=result.get("app_url", f"https://{cfg.fqdn}/")
     )
 
 

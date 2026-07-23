@@ -105,7 +105,7 @@ class BootstrapStatusResponse(BaseModel):
 
 # Onboarding (OOBE) step state — public API, no auth required
 ONBOARDING_STEPS = frozenset(
-    {"start", "account", "theme", "regional", "email", "summary", "finish"}
+    {"start", "domain", "account", "theme", "regional", "email", "summary", "finish"}
 )
 
 
@@ -153,6 +153,25 @@ class BootstrapInitializeRequest(BaseModel):
         if self.password and self.password_hash:
             raise ValueError("Provide only one of password or password_hash")
         return self
+
+
+class BootstrapDomainRequest(BaseModel):
+    fqdn: str
+
+    @model_validator(mode="after")
+    def validate_fqdn_format(self) -> "BootstrapDomainRequest":
+        from app.core.hostname_validation import validate_fqdn
+
+        try:
+            self.fqdn = validate_fqdn(self.fqdn)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+
+class BootstrapDomainResponse(BaseModel):
+    fqdn: str
+    app_url: str
 
 
 class BootstrapThemeResponse(BaseModel):
