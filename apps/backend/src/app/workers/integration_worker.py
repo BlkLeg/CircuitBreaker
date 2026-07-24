@@ -131,7 +131,7 @@ def _sync_one(integration_id: int) -> bool:
                 return False
 
         plugin = plugin_cls()
-        monitors = plugin.sync(config, db=db)  # never raises — returns [] on error
+        monitors = plugin.sync(config, db=db, integration_id=integration_id)  # never raises
 
         _upsert_monitors(db, integ, monitors)
 

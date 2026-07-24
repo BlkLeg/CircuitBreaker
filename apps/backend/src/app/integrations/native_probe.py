@@ -35,15 +35,23 @@ class NativeProbePlugin(IntegrationPlugin):
     def sync(self, config: Any, **kwargs: Any) -> list[MonitorStatus]:
         """Probe all monitors registered under this integration.
 
-        config is the Integration ORM row (same convention as UptimeKumaPlugin).
-        db is passed as a keyword argument.
+        Two call sites use this plugin with different `config` shapes:
+        integration_worker._sync_one passes a plain dict (base_url/slug/api_key,
+        no id) plus an `integration_id` keyword argument; integration_sync_worker
+        passes the Integration ORM row directly. Accept either.
         """
         db: Session | None = kwargs.get("db")
         if db is None:
             _logger.error("NativeProbePlugin.sync() called without db — skipping")
             return []
 
-        integration_id: int = config.id
+        integration_id: int | None = kwargs.get("integration_id")
+        if integration_id is None:
+            integration_id = getattr(config, "id", None)
+        if integration_id is None:
+            _logger.error("NativeProbePlugin.sync() could not determine integration_id — skipping")
+            return []
+
         monitors = (
             db.query(IntegrationMonitor)
             .filter(

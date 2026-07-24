@@ -34,7 +34,7 @@ PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >=
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help install dev backend backend-watch frontend migrate stop ensure-nmap
+.PHONY: help install dev backend backend-watch frontend migrate reset-oobe stop ensure-nmap
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -82,6 +82,9 @@ frontend:  ## Native frontend
 
 migrate: ## Run Alembic DB migrations
 	cd $(BACKEND_DIR) && CB_DB_URL="$(CB_DB_URL_DEV)" PYTHONPATH=src $(CURDIR)/.venv/bin/alembic upgrade head
+
+reset-oobe: ## Dev only: rewind to the OOBE first-run wizard (keeps existing users until you finish it again)
+	cd $(BACKEND_DIR) && CB_DB_URL="$(CB_DB_URL_DEV)" PYTHONPATH=src $(CURDIR)/.venv/bin/python -m app.scripts.reset_oobe
 
 # ==============================================================================
 # DEPENDENCIES (Local Services)
