@@ -74,6 +74,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_monitor_events_item_time", table_name="monitor_events", if_exists=True)
     op.drop_table("monitor_events", if_exists=True)
+    # Standalone monitors (target_type IS NULL) can't exist pre-0086; drop them
+    # before restoring the NOT NULL constraint.
+    op.execute("DELETE FROM monitor_items WHERE target_type IS NULL")
     op.alter_column("monitor_items", "target_type", nullable=False)
     op.drop_column("monitor_items", "last_status_change_at")
     op.drop_column("monitor_items", "retry_interval_secs")
