@@ -74,6 +74,7 @@ from app.api.timezones import router as timezones_router
 from app.api.topologies import router as topologies_router
 from app.api.vault import router as vault_router
 from app.api.ws_discovery import router as ws_discovery_router
+from app.api.ws_monitors import router as ws_monitors_router
 from app.api.ws_telemetry import router as ws_telemetry_router
 from app.api.ws_topology import router as ws_topology_router
 from app.core import (
@@ -1558,6 +1559,12 @@ app.include_router(
     ws_telemetry_router,
     prefix=f"{_V1}/telemetry",
     tags=["telemetry-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    ws_monitors_router,
+    prefix=f"{_V1}/monitors",
+    tags=["monitors-ws"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
