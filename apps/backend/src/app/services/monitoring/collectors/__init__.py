@@ -37,4 +37,4 @@ def register(check_type: str, fn: CollectorFn) -> None:
 
 
 # Import for side effect: each module registers its collectors.
-from app.services.monitoring.collectors import net, web  # noqa: E402,F401
+from app.services.monitoring.collectors import dns_check, net, web  # noqa: E402,F401
