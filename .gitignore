@@ -140,3 +140,6 @@ docker/caddy_data/
 docker/caddy_config/
 docker/circuitbreaker-data/
 FIXLIST/
+
+# Local reference repo for the monitoring port — never committed
+uptime-kuma/

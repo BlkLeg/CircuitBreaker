@@ -224,31 +224,60 @@ class HardwareMonitor(Base):
 
 
 class MonitorItem(Base):
-    """One polled metric-source (Zabbix-style item): a check on a target at an interval."""
+    """A monitor: one configured check on a target at an interval."""
 
     __tablename__ = "monitor_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # hardware|compute_unit|external_node|ip
-    target_type: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    # hardware|compute_unit|external_node|service|ip — None for standalone monitors
+    target_type: Mapped[str | None] = mapped_column(String, nullable=True)
     target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     host: Mapped[str] = mapped_column(String, nullable=False)  # resolved ip/hostname to probe
-    check_type: Mapped[str] = mapped_column(String, nullable=False)  # icmp|tcp|http
+    check_type: Mapped[str] = mapped_column(String, nullable=False)  # icmp|tcp|http|dns
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     interval_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # interval while in pending (retrying); None falls back to interval_secs
+    retry_interval_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     next_due_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_status: Mapped[str | None] = mapped_column(String, nullable=True)  # up|down|error
+    # up|down|pending|maintenance
+    last_status: Mapped[str | None] = mapped_column(String, nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_status_change_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
     __table_args__ = (Index("ix_monitor_items_due", "enabled", "next_due_at"),)
+
+
+class MonitorEvent(Base):
+    """State-transition history for a monitor (feeds event log and check bar)."""
+
+    __tablename__ = "monitor_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_items.id", ondelete="CASCADE"), nullable=False
+    )
+    # up|down|pending|maintenance|paused|resumed
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    status_from: Mapped[str | None] = mapped_column(String, nullable=True)
+    status_to: Mapped[str] = mapped_column(String, nullable=False)
+    msg: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # seconds spent in status_from before this transition
+    duration_secs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (Index("ix_monitor_events_item_time", "item_id", "created_at"),)
 
 
 class UptimeEvent(Base):
