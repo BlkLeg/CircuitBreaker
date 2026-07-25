@@ -1,16 +1,262 @@
-"""Uptime monitoring service (API handlers for continuous polling engine)."""
+"""Monitor service: monitor-id CRUD, events, history, and hardware summaries."""
 
-import json
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.nats_client import nats_client
-from app.db.models import DailyUptimeStats, Hardware, MonitorItem, TelemetryTimeseries
+from app.core.subjects import MONITOR_POLL_ITEM
+from app.db.models import (
+    DailyUptimeStats,
+    MonitorEvent,
+    MonitorItem,
+    TelemetryTimeseries,
+)
+from app.schemas.monitor import MonitorCreate, MonitorUpdate
+from app.services.monitoring.state import PENDING
 
 logger = logging.getLogger(__name__)
+
+
+def _to_dict(
+    item: MonitorItem, uptime_pct_24h: float | None = None, latency_ms: float | None = None
+) -> dict:
+    return {
+        "id": item.id,
+        "name": item.name,
+        "check_type": item.check_type,
+        "host": item.host,
+        "config": item.params or {},
+        "interval_secs": item.interval_secs,
+        "max_retries": item.max_retries,
+        "retry_interval_secs": item.retry_interval_secs,
+        "enabled": item.enabled,
+        "target_type": item.target_type,
+        "target_id": item.target_id,
+        "status": item.last_status or PENDING,
+        "retries": item.consecutive_failures,
+        "last_polled_at": item.last_polled_at,
+        "last_status_change_at": item.last_status_change_at,
+        "uptime_pct_24h": uptime_pct_24h,
+        "latency_ms": latency_ms,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+def _latest_metric_map(db: Session, item_ids: list[int], metric: str) -> dict[int, float]:
+    if not item_ids:
+        return {}
+    rows = (
+        db.query(TelemetryTimeseries)
+        .filter(TelemetryTimeseries.item_id.in_(item_ids), TelemetryTimeseries.metric == metric)
+        .distinct(TelemetryTimeseries.item_id)
+        .order_by(TelemetryTimeseries.item_id, TelemetryTimeseries.ts.desc())
+        .all()
+    )
+    return {r.item_id: r.value for r in rows}
+
+
+def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[int, float]:
+    if not item_ids:
+        return {}
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    rows = db.execute(
+        select(
+            TelemetryTimeseries.item_id,
+            func.avg(TelemetryTimeseries.value),
+        )
+        .where(
+            TelemetryTimeseries.item_id.in_(item_ids),
+            TelemetryTimeseries.metric == "avail",
+            TelemetryTimeseries.ts >= since,
+        )
+        .group_by(TelemetryTimeseries.item_id)
+    ).all()
+    return {item_id: round(avg * 100, 1) for item_id, avg in rows if avg is not None}
+
+
+def list_monitors(
+    db: Session,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    enabled: bool | None = None,
+) -> list[dict]:
+    query = select(MonitorItem).order_by(MonitorItem.name, MonitorItem.id)
+    if target_type is not None:
+        query = query.where(MonitorItem.target_type == target_type)
+    if target_id is not None:
+        query = query.where(MonitorItem.target_id == target_id)
+    if enabled is not None:
+        query = query.where(MonitorItem.enabled == enabled)
+    items = list(db.scalars(query).all())
+    ids = [i.id for i in items]
+    uptimes = _uptime_pct_map(db, ids)
+    latencies = _latest_metric_map(db, ids, "latency_ms")
+    return [_to_dict(i, uptimes.get(i.id), latencies.get(i.id)) for i in items]
+
+
+def get_monitor(db: Session, monitor_id: int) -> dict | None:
+    item = db.get(MonitorItem, monitor_id)
+    if item is None:
+        return None
+    uptimes = _uptime_pct_map(db, [item.id])
+    latencies = _latest_metric_map(db, [item.id], "latency_ms")
+    return _to_dict(item, uptimes.get(item.id), latencies.get(item.id))
+
+
+def create_monitor(db: Session, payload: MonitorCreate) -> dict:
+    item = MonitorItem(
+        name=payload.name,
+        check_type=payload.check_type,
+        host=payload.host,
+        params=payload.config,
+        interval_secs=payload.interval_secs,
+        max_retries=payload.max_retries,
+        retry_interval_secs=payload.retry_interval_secs,
+        enabled=payload.enabled,
+        target_type=payload.target_type,
+        target_id=payload.target_id,
+        last_status=PENDING,
+        next_due_at=datetime.now(UTC),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _to_dict(item)
+
+
+def update_monitor(db: Session, monitor_id: int, payload: MonitorUpdate) -> dict | None:
+    item = db.get(MonitorItem, monitor_id)
+    if item is None:
+        return None
+    data = payload.model_dump(exclude_unset=True)
+    if "config" in data and data["config"] is not None:
+        from app.schemas.monitor import CONFIG_MODELS
+
+        model = CONFIG_MODELS[item.check_type]
+        data["config"] = model(**data["config"]).model_dump(exclude_unset=True)
+        item.params = data.pop("config")
+    for field in (
+        "name",
+        "host",
+        "interval_secs",
+        "max_retries",
+        "retry_interval_secs",
+        "enabled",
+        "target_type",
+        "target_id",
+    ):
+        if field in data:
+            setattr(item, field, data[field])
+    db.commit()
+    db.refresh(item)
+    return _to_dict(item)
+
+
+def delete_monitor(db: Session, monitor_id: int) -> bool:
+    item = db.get(MonitorItem, monitor_id)
+    if item is None:
+        return False
+    db.delete(item)
+    db.commit()
+    return True
+
+
+def set_paused(db: Session, monitor_id: int, paused: bool) -> dict | None:
+    item = db.get(MonitorItem, monitor_id)
+    if item is None:
+        return None
+    item.enabled = not paused
+    if not paused:
+        item.next_due_at = datetime.now(UTC)
+    db.add(
+        MonitorEvent(
+            item_id=item.id,
+            event_type="paused" if paused else "resumed",
+            status_from=item.last_status,
+            status_to=item.last_status or PENDING,
+            msg="paused by user" if paused else "resumed by user",
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return _to_dict(item)
+
+
+def get_events(db: Session, monitor_id: int, limit: int = 50) -> list[dict]:
+    rows = db.scalars(
+        select(MonitorEvent)
+        .where(MonitorEvent.item_id == monitor_id)
+        .order_by(MonitorEvent.created_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "id": e.id,
+            "monitor_id": e.item_id,
+            "event_type": e.event_type,
+            "status_from": e.status_from,
+            "status_to": e.status_to,
+            "msg": e.msg,
+            "duration_secs": e.duration_secs,
+            "created_at": e.created_at,
+        }
+        for e in rows
+    ]
+
+
+def get_history(
+    db: Session, monitor_id: int, metric: str = "latency_ms", hours: int = 24
+) -> list[dict]:
+    since = datetime.now(UTC) - timedelta(hours=hours)
+    rows = (
+        db.query(TelemetryTimeseries)
+        .filter(
+            TelemetryTimeseries.item_id == monitor_id,
+            TelemetryTimeseries.metric == metric,
+            TelemetryTimeseries.ts >= since,
+        )
+        .order_by(TelemetryTimeseries.ts.asc())
+        .all()
+    )
+    return [{"ts": r.ts, "value": r.value} for r in rows]
+
+
+def get_uptime(db: Session, monitor_id: int) -> dict:
+    return {"pct_24h": _uptime_pct_map(db, [monitor_id]).get(monitor_id)}
+
+
+def run_immediate_check(db: Session, monitor_id: int) -> bool:
+    item = db.get(MonitorItem, monitor_id)
+    if item is None:
+        return False
+    payload = {
+        "item_id": item.id,
+        "target_type": item.target_type,
+        "target_id": item.target_id,
+        "host": item.host,
+        "check_type": item.check_type,
+        "params": item.params,
+        "interval_secs": item.interval_secs,
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(nats_client.js_publish(MONITOR_POLL_ITEM, payload))
+        return True
+    except RuntimeError:
+        logger.warning("No running async loop to publish immediate check.")
+        return False
+
+
+# ── Hardware summary view (map + integrations panels) ─────────────────────────
+# _synthesize_monitor is retained verbatim from the pre-slice-1 service (it reads
+# DailyUptimeStats + latest telemetry per item) and is now exposed only through
+# list_hardware_summaries.
 
 
 def _synthesize_monitor(db: Session, hardware_id: int, items: list[MonitorItem]) -> dict | None:
@@ -97,216 +343,18 @@ def _synthesize_monitor(db: Session, hardware_id: int, items: list[MonitorItem])
     }
 
 
-def list_monitors(db: Session, hardware_ids: list[int] | None = None) -> list[dict]:
-    query = select(MonitorItem).order_by(MonitorItem.target_id)
+def list_hardware_summaries(db: Session, hardware_ids: list[int] | None = None) -> list[dict]:
+    query = select(MonitorItem).where(MonitorItem.target_type == "hardware")
     if hardware_ids is not None:
-        query = query.where(
-            MonitorItem.target_type == "hardware",
-            MonitorItem.target_id.in_(hardware_ids),
-        )
+        query = query.where(MonitorItem.target_id.in_(hardware_ids))
     items = db.scalars(query).all()
     grouped: dict[int, list[MonitorItem]] = {}
     for item in items:
-        if item.target_type == "hardware" and item.target_id is not None:
+        if item.target_id is not None:
             grouped.setdefault(item.target_id, []).append(item)
-
     res = []
     for hw_id, hw_items in grouped.items():
         synthesized = _synthesize_monitor(db, hw_id, hw_items)
         if synthesized:
             res.append(synthesized)
     return res
-
-
-def get_monitor(db: Session, hardware_id: int) -> dict | None:
-    items = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-    return _synthesize_monitor(db, hardware_id, list(items))
-
-
-def create_monitor(
-    db: Session,
-    hardware_id: int,
-    probe_methods: list[str] | None = None,
-    interval_secs: int = 60,
-    enabled: bool = True,
-) -> dict | None:
-    hw = db.get(Hardware, hardware_id)
-    if not hw or not hw.ip_address:
-        return None
-
-    methods = probe_methods or ["icmp", "tcp", "http"]
-    now = datetime.now(UTC)
-
-    created_items = []
-    for method in methods:
-        item = MonitorItem(
-            target_type="hardware",
-            target_id=hardware_id,
-            host=hw.ip_address,
-            check_type=method,
-            params={"packet_count": 5} if method == "icmp" else {},
-            interval_secs=interval_secs,
-            enabled=enabled,
-            next_due_at=now,
-        )
-        db.add(item)
-        created_items.append(item)
-
-    db.commit()
-    for item in created_items:
-        db.refresh(item)
-
-    return _synthesize_monitor(db, hardware_id, created_items)
-
-
-def update_monitor(
-    db: Session,
-    hardware_id: int,
-    *,
-    enabled: bool | None = None,
-    interval_secs: int | None = None,
-    probe_methods: list[str] | None = None,
-) -> dict | None:
-    items = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-    if not items:
-        return None
-
-    hw = db.get(Hardware, hardware_id)
-    if not hw or not hw.ip_address:
-        return None
-
-    existing_methods = {item.check_type: item for item in items}
-    now = datetime.now(UTC)
-
-    if probe_methods is not None:
-        for method, item in existing_methods.items():
-            if method not in probe_methods:
-                db.delete(item)
-
-        for method in probe_methods:
-            if method not in existing_methods:
-                fallback_interval = 60
-                fallback_enabled = True
-                if existing_methods:
-                    first_item = next(iter(existing_methods.values()))
-                    fallback_interval = first_item.interval_secs
-                    fallback_enabled = first_item.enabled
-
-                new_item = MonitorItem(
-                    target_type="hardware",
-                    target_id=hardware_id,
-                    host=hw.ip_address,
-                    check_type=method,
-                    params={"packet_count": 5} if method == "icmp" else {},
-                    interval_secs=(
-                        interval_secs if interval_secs is not None else fallback_interval
-                    ),
-                    enabled=enabled if enabled is not None else fallback_enabled,
-                    next_due_at=now,
-                )
-                db.add(new_item)
-                existing_methods[method] = new_item
-
-    for item in existing_methods.values():
-        if enabled is not None:
-            item.enabled = enabled
-        if interval_secs is not None:
-            item.interval_secs = interval_secs
-
-    db.commit()
-
-    items_after = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-
-    return _synthesize_monitor(db, hardware_id, list(items_after))
-
-
-def delete_monitor(db: Session, hardware_id: int) -> bool:
-    items = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-    if not items:
-        return False
-
-    for item in items:
-        db.delete(item)
-    db.commit()
-    return True
-
-
-def get_history(db: Session, hardware_id: int, limit: int = 100) -> list[dict]:
-    items = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-    if not items:
-        return []
-
-    item_ids = [i.id for i in items]
-
-    telemetry = (
-        db.query(TelemetryTimeseries)
-        .filter(TelemetryTimeseries.item_id.in_(item_ids), TelemetryTimeseries.metric == "avail")
-        .order_by(TelemetryTimeseries.ts.desc())
-        .limit(limit)
-        .all()
-    )
-
-    res = []
-    for t in telemetry:
-        item = next((i for i in items if i.id == t.item_id), None)
-        method = item.check_type if item else "unknown"
-        res.append(
-            {
-                "id": t.id,
-                "hardware_id": hardware_id,
-                "status": "up" if t.value > 0 else "down",
-                "latency_ms": None,
-                "probe_method": method,
-                "checked_at": t.ts.isoformat() if t.ts else "",
-            }
-        )
-    return res
-
-
-def run_immediate_check(db: Session, hardware_id: int) -> None:
-    items = db.scalars(
-        select(MonitorItem).where(
-            MonitorItem.target_type == "hardware", MonitorItem.target_id == hardware_id
-        )
-    ).all()
-
-    if not items:
-        return
-
-    import asyncio
-
-    try:
-        loop = asyncio.get_running_loop()
-        for item in items:
-            payload = {
-                "item_id": item.id,
-                "target_type": item.target_type,
-                "target_id": item.target_id,
-                "host": item.host,
-                "check_type": item.check_type,
-                "params": item.params,
-                "interval_secs": item.interval_secs,
-            }
-            loop.create_task(nats_client.js_publish("mon.poll.item", json.dumps(payload).encode()))
-    except RuntimeError:
-        logger.warning("No running async loop to publish immediate check.")

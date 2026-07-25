@@ -502,7 +502,9 @@ def build_topology_graph(
         from app.services import monitor_service
 
         _monitors = (
-            monitor_service.list_monitors(db, hardware_ids=_all_hw_ids) if _all_hw_ids else []
+            monitor_service.list_hardware_summaries(db, hardware_ids=_all_hw_ids)
+            if _all_hw_ids
+            else []
         )
         _monitor_map = {m["hardware_id"]: m for m in _monitors}
 
