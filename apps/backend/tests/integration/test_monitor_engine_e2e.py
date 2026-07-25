@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from app.db.models import MonitorItem, TelemetryTimeseries
-from app.services.monitoring.collectors import Sample
+from app.services.monitoring.collectors import CheckResult, Sample
 from app.services.monitoring.scheduler import claim_due_items
 from app.workers.monitor_poll_worker import process_batch
 
@@ -47,10 +47,13 @@ def test_claim_then_poll_writes_samples(db_session):
     with patch(
         "app.workers.monitor_poll_worker.COLLECTORS",
         {
-            "icmp": lambda host, params: [
-                Sample("avail", 1.0),
-                Sample("packet_loss_pct", 0.0),
-            ]
+            "icmp": lambda host, params: CheckResult(
+                up=True,
+                samples=[
+                    Sample("avail", 1.0),
+                    Sample("packet_loss_pct", 0.0),
+                ],
+            )
         },
     ):
         written = asyncio.run(process_batch(claimed, factory))
@@ -80,7 +83,7 @@ def test_duplicate_delivery_is_tolerated(db_session):
     factory, orig_close = _noop_close_factory(db_session)
     with patch(
         "app.workers.monitor_poll_worker.COLLECTORS",
-        {"icmp": lambda host, params: [Sample("avail", 1.0)]},
+        {"icmp": lambda host, params: CheckResult(up=True, samples=[Sample("avail", 1.0)])},
     ):
         asyncio.run(process_batch(claimed, factory))
         asyncio.run(process_batch(claimed, factory))  # redelivery

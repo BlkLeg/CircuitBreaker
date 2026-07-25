@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.nats_client import nats_client
-from app.services.monitoring.collectors import COLLECTORS, Sample
+from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
 from app.services.monitoring.writer import SampleRow, write_samples
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,8 @@ async def poll_one(item: dict) -> SampleRow:
         )
     try:
         async with _sema:
-            samples = await asyncio.to_thread(collector, item["host"], item["params"])
+            result: CheckResult = await asyncio.to_thread(collector, item["host"], item["params"])
+        samples = result.samples
     except Exception as exc:  # noqa: BLE001 — a probe crash is a down datum
         logger.debug("Collector crashed for item %s: %s", item["item_id"], exc)
         samples = [Sample("avail", 0.0, error_reason="collector_error")]

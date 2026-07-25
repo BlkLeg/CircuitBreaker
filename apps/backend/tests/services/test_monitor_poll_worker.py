@@ -3,7 +3,7 @@ import asyncio
 from unittest.mock import patch
 
 from app.db.models import TelemetryTimeseries
-from app.services.monitoring.collectors import Sample
+from app.services.monitoring.collectors import CheckResult, Sample
 from app.workers.monitor_poll_worker import poll_one, process_batch
 
 
@@ -19,7 +19,7 @@ def test_poll_one_runs_collector():
     }
     with patch(
         "app.workers.monitor_poll_worker.COLLECTORS",
-        {"icmp": lambda host, params: [Sample("avail", 1.0)]},
+        {"icmp": lambda host, params: CheckResult(up=True, samples=[Sample("avail", 1.0)])},
     ):
         row = asyncio.run(poll_one(item))
     item_id, entity_type, entity_id, samples, ts = row
@@ -80,7 +80,7 @@ def test_process_batch_writes_all(db_session):
     ]
     with patch(
         "app.workers.monitor_poll_worker.COLLECTORS",
-        {"icmp": lambda host, params: [Sample("avail", 1.0)]},
+        {"icmp": lambda host, params: CheckResult(up=True, samples=[Sample("avail", 1.0)])},
     ):
         written = asyncio.run(process_batch(items, factory))
     db_session.close = orig_close  # restore
