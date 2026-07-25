@@ -40,6 +40,55 @@ def hardware_summary(db: Session = Depends(get_db)) -> Any:
     return monitor_service.list_hardware_summaries(db)
 
 
+# ── Hardware-scoped quick actions (map / discovery review UX) ─────────────────
+# Declared before "/{monitor_id}" so the "hardware" segment isn't parsed as an id.
+
+
+@router.post("/hardware/{hardware_id}", response_model=MonitorRead)
+def create_hardware_monitor(
+    hardware_id: int,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> Any:
+    monitor = monitor_service.create_hardware_monitor(db, hardware_id)
+    if not monitor:
+        raise HTTPException(status_code=404, detail="Hardware not found or has no IP")
+    return monitor
+
+
+@router.post("/hardware/{hardware_id}/pause")
+def pause_hardware_monitor(
+    hardware_id: int,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> Any:
+    if not monitor_service.set_hardware_paused(db, hardware_id, True):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return {"status": "ok"}
+
+
+@router.post("/hardware/{hardware_id}/resume")
+def resume_hardware_monitor(
+    hardware_id: int,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> Any:
+    if not monitor_service.set_hardware_paused(db, hardware_id, False):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return {"status": "ok"}
+
+
+@router.post("/hardware/{hardware_id}/check")
+def run_hardware_check(
+    hardware_id: int,
+    user_id: int = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> Any:
+    if not monitor_service.run_hardware_check(db, hardware_id):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    return {"status": "ok"}
+
+
 @router.post("", response_model=MonitorRead)
 def create_monitor(
     payload: MonitorCreate,

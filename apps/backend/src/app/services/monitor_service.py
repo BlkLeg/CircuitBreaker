@@ -11,6 +11,7 @@ from app.core.nats_client import nats_client
 from app.core.subjects import MONITOR_POLL_ITEM
 from app.db.models import (
     DailyUptimeStats,
+    Hardware,
     MonitorEvent,
     MonitorItem,
     TelemetryTimeseries,
@@ -341,6 +342,102 @@ def _synthesize_monitor(db: Session, hardware_id: int, items: list[MonitorItem])
         "created_at": created_at,
         "updated_at": updated_at,
     }
+
+
+def _hardware_monitors(db: Session, hardware_id: int) -> list[MonitorItem]:
+    return list(
+        db.scalars(
+            select(MonitorItem).where(
+                MonitorItem.target_type == "hardware",
+                MonitorItem.target_id == hardware_id,
+            )
+        ).all()
+    )
+
+
+def create_hardware_monitor(db: Session, hardware_id: int, check_type: str = "icmp") -> dict | None:
+    """Quick-create a default reachability monitor for a hardware node (map UX).
+
+    Returns the created (or pre-existing) monitor, or None if the hardware is
+    unknown or has no IP to probe. Idempotent per (hardware, check_type).
+    """
+    hw = db.get(Hardware, hardware_id)
+    if hw is None or not hw.ip_address:
+        return None
+    existing = db.scalars(
+        select(MonitorItem).where(
+            MonitorItem.target_type == "hardware",
+            MonitorItem.target_id == hardware_id,
+            MonitorItem.check_type == check_type,
+        )
+    ).first()
+    if existing is not None:
+        return _to_dict(existing)
+    label = hw.name or hw.hostname or hw.ip_address
+    item = MonitorItem(
+        name=f"{label} ({check_type})",
+        check_type=check_type,
+        host=hw.ip_address,
+        params={"packet_count": 5} if check_type == "icmp" else {},
+        interval_secs=60,
+        max_retries=0,
+        enabled=True,
+        target_type="hardware",
+        target_id=hardware_id,
+        last_status=PENDING,
+        next_due_at=datetime.now(UTC),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _to_dict(item)
+
+
+def set_hardware_paused(db: Session, hardware_id: int, paused: bool) -> bool:
+    """Pause/resume every monitor attached to a hardware node."""
+    items = _hardware_monitors(db, hardware_id)
+    if not items:
+        return False
+    now = datetime.now(UTC)
+    for item in items:
+        item.enabled = not paused
+        if not paused:
+            item.next_due_at = now
+        db.add(
+            MonitorEvent(
+                item_id=item.id,
+                event_type="paused" if paused else "resumed",
+                status_from=item.last_status,
+                status_to=item.last_status or PENDING,
+                msg="paused by user" if paused else "resumed by user",
+            )
+        )
+    db.commit()
+    return True
+
+
+def run_hardware_check(db: Session, hardware_id: int) -> bool:
+    """Publish an immediate check for every monitor attached to a hardware node."""
+    items = _hardware_monitors(db, hardware_id)
+    if not items:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("No running async loop to publish immediate check.")
+        return True
+    for item in items:
+        payload = {
+            "item_id": item.id,
+            "target_type": item.target_type,
+            "target_id": item.target_id,
+            "host": item.host,
+            "check_type": item.check_type,
+            "params": item.params,
+            "interval_secs": item.interval_secs,
+        }
+        loop.create_task(nats_client.js_publish(MONITOR_POLL_ITEM, payload))
+    return True
 
 
 def list_hardware_summaries(db: Session, hardware_ids: list[int] | None = None) -> list[dict]:

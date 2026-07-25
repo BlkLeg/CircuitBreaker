@@ -23,7 +23,12 @@ import {
 import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
 import LLDPReviewModal from '../components/LLDPReviewModal';
-import { createMonitor, updateMonitor, runImmediateCheck } from '../api/monitor.js';
+import {
+  createHardwareMonitor,
+  pauseHardwareMonitor,
+  resumeHardwareMonitor,
+  runHardwareCheck,
+} from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
 import IconPickerModal from '../components/common/IconPickerModal';
@@ -1262,19 +1267,14 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         } else if (action === 'monitor_create') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?._refId) return;
-          await createMonitor({
-            hardware_id: nd._refId,
-            probe_methods: ['icmp', 'tcp', 'http'],
-            interval_secs: 60,
-            enabled: true,
-          });
+          await createHardwareMonitor(nd._refId);
           toast.success('Monitoring enabled');
           fetchData();
         } else if (action === 'monitor_toggle') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?._refId) return;
           const next = !nd.data?.monitor_enabled;
-          await updateMonitor(nd._refId, { enabled: next });
+          await (next ? resumeHardwareMonitor(nd._refId) : pauseHardwareMonitor(nd._refId));
           setNodes((nds) =>
             nds.map((n) =>
               n.id === nodeId ? { ...n, data: { ...n.data, monitor_enabled: next } } : n
@@ -1284,7 +1284,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
         } else if (action === 'monitor_check_now') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?._refId) return;
-          await runImmediateCheck(nd._refId);
+          await runHardwareCheck(nd._refId);
           toast.success('Probe triggered');
           fetchData();
         } else if (action === 'lldp_enrich') {

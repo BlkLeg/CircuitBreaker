@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { discoveryApi, telemetryApi } from '../api/client';
-import { listMonitors } from '../api/monitor';
+import { getHardwareSummary } from '../api/monitor';
 import { discoveryEmitter } from './useDiscoveryStream';
 import { telemetryEmitter } from './useTelemetryStream';
 import { getPendingResults } from '../api/discovery';
@@ -180,7 +180,7 @@ export function useMapRealTimeUpdates({
     const interval = setInterval(async () => {
       try {
         if (unmountedRef?.current) return;
-        const res = await listMonitors();
+        const res = await getHardwareSummary();
         if (unmountedRef?.current) return;
         const monitors = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
         setNodes((prev) =>

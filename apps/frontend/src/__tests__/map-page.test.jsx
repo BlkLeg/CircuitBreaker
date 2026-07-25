@@ -97,9 +97,10 @@ vi.mock('../api/client', () => {
 });
 
 vi.mock('../api/monitor.js', () => ({
-  createMonitor: vi.fn(),
-  updateMonitor: vi.fn(),
-  runImmediateCheck: vi.fn(),
+  createHardwareMonitor: vi.fn(),
+  pauseHardwareMonitor: vi.fn(),
+  resumeHardwareMonitor: vi.fn(),
+  runHardwareCheck: vi.fn(),
 }));
 
 vi.mock('react-router-dom', () => ({

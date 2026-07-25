@@ -63,6 +63,35 @@ async def test_missing_monitor_404(client, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_hardware_quick_monitor(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.50")
+    resp = await client.post(f"/api/v1/monitors/hardware/{hw.id}", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["check_type"] == "icmp"
+    assert body["target_type"] == "hardware" and body["target_id"] == hw.id
+
+    # idempotent per (hardware, check_type)
+    again = await client.post(f"/api/v1/monitors/hardware/{hw.id}", headers=auth_headers)
+    assert again.json()["id"] == body["id"]
+
+    paused = await client.post(f"/api/v1/monitors/hardware/{hw.id}/pause", headers=auth_headers)
+    assert paused.status_code == 200
+    resumed = await client.post(f"/api/v1/monitors/hardware/{hw.id}/resume", headers=auth_headers)
+    assert resumed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_hardware_quick_monitor_missing_404(client, auth_headers):
+    assert (
+        await client.post("/api/v1/monitors/hardware/999999", headers=auth_headers)
+    ).status_code == 404
+    assert (
+        await client.post("/api/v1/monitors/hardware/999999/pause", headers=auth_headers)
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_uptime_and_history_empty_ok(client, auth_headers):
     mid = (await _create(client, auth_headers)).json()["id"]
     uptime = await client.get(f"/api/v1/monitors/{mid}/uptime", headers=auth_headers)

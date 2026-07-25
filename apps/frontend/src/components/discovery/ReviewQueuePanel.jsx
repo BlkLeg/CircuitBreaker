@@ -4,7 +4,7 @@ import PropTypes from 'prop-types';
 import { Check, Layers, Map as MapIcon, RefreshCw, Server, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { getPendingResults, mergeResult, enhancedBulkMerge } from '../../api/discovery.js';
-import { createMonitor } from '../../api/monitor.js';
+import { createHardwareMonitor } from '../../api/monitor.js';
 import { clustersApi } from '../../api/client.jsx';
 import { useToast } from '../common/Toast';
 import ReviewDrawer from './ReviewDrawer.jsx';
@@ -363,12 +363,7 @@ export default function ReviewQueuePanel({ onCountChange }) {
   const _maybeCreateMonitor = async (entityId, edits) => {
     if (!entityId || !edits.monitor) return;
     try {
-      await createMonitor({
-        hardware_id: entityId,
-        probe_methods: ['icmp', 'tcp', 'http'],
-        interval_secs: 60,
-        enabled: true,
-      });
+      await createHardwareMonitor(entityId);
     } catch {
       // Monitor creation is best-effort
     }

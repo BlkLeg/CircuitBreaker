@@ -6,7 +6,7 @@ vi.mock('../api/client', () => ({
 }));
 
 vi.mock('../api/monitor', () => ({
-  listMonitors: vi.fn().mockResolvedValue({ data: [] }),
+  getHardwareSummary: vi.fn().mockResolvedValue({ data: [] }),
 }));
 
 vi.mock('../api/discovery', () => ({
