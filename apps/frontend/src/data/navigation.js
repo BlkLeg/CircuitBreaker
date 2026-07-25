@@ -1,4 +1,5 @@
 import {
+  Activity,
   BookOpen,
   Cloud,
   Cpu,
@@ -31,6 +32,7 @@ export const NAV_ITEMS = [
       { path: '/hardware', icon: Cpu, label: 'Hardware', labelKey: 'header.hardware' },
       { path: '/compute-units', icon: Server, label: 'Compute', labelKey: 'header.compute' },
       { path: '/services', icon: Layers, label: 'Services', labelKey: 'header.services' },
+      { path: '/monitors', icon: Activity, label: 'Monitors', labelKey: 'header.monitors' },
       { path: '/storage', icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
       { path: '/external-nodes', icon: Cloud, label: 'External', labelKey: 'header.external' },
       { path: '/ipam', icon: Globe, label: 'IPAM', labelKey: 'header.ipam', requireEditor: true },
