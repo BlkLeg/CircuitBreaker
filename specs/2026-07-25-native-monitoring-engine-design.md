@@ -32,6 +32,23 @@ retry/state logic), `uptime-kuma/server/monitor-types/*.js` (pluggable checks),
 | Frontend scope | Monitoring dashboard only (no inventory embeds or public status pages this round) |
 | Stateful semantics | Retries + PENDING state; maintenance windows. No cert-expiry alerting, no resend-while-down (cert info is still *collected and displayed*) |
 | Data model | Evolve `monitor_items` into the first-class monitor entity |
+| Nomenclature | Ported code uses Circuit Breaker naming throughout; **zero uptime-kuma references in production code** |
+
+## Nomenclature & provenance
+
+The port is a re-implementation, not a translation: production code (identifiers, comments,
+docstrings, config keys, API fields, UI strings, migrations, tests) must carry Circuit
+Breaker nomenclature only — no "kuma", "uptime-kuma", or Kuma-specific terms ("beat"/
+"heartbeat" as Kuma jargon; CB uses *check*, *sample*, *event*). Concretely:
+
+- Kuma reference-file pointers live **only** in this spec and in plan docs, never in code.
+- The vendored `uptime-kuma/` directory stays untracked — add it to `.gitignore` in slice 1
+  so it can never be committed; it is deleted locally when the port is complete.
+- Existing Kuma-named surface (`IntegrationMonitor` "uptime-kuma" provider strings,
+  `uptime-kuma-api-v2` dependency, integration workers) is already scheduled for removal in
+  slice 4; after that, `grep -ri "kuma" apps/ docker/ migrations/` must return nothing.
+- Kuma semantics are adopted where useful (accepted status ranges, retry/PENDING behavior)
+  but described in CB terms in code and docs.
 
 ## 1. Data model
 
@@ -139,14 +156,16 @@ All configuration in-app; no terminal steps (per project principle).
 
 ## 7. Phasing
 
-1. **Slice 1 — core:** schema migration, state machine, full HTTP/DNS collectors (+ moved
-   icmp/tcp), events, alert publishing, REST API, WS bridge, dashboard (list/detail/forms).
+1. **Slice 1 — core:** `.gitignore` entry for `uptime-kuma/`; schema migration, state
+   machine, full HTTP/DNS collectors (+ moved icmp/tcp), events, alert publishing, REST API,
+   WS bridge, dashboard (list/detail/forms).
 2. **Slice 2 — passive & maintenance:** push monitors + endpoint, maintenance windows
    (model, scheduler integration, API, UI).
 3. **Slice 3 — infra probes & sinks:** db/msg collector families; Discord/Telegram/ntfy/
    webhook sinks.
 4. **Slice 4 — host probes & bridge removal:** docker/systemd collectors; IntegrationMonitor
-   import + bridge/dependency removal.
+   import + bridge/dependency removal; final nomenclature sweep — `grep -ri "kuma" apps/
+   docker/ migrations/` returns nothing.
 
 Each slice is independently shippable.
 
