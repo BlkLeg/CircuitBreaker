@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 from app.db.models import TelemetryTimeseries
 from app.services.monitoring.collectors import Sample
 
-SampleRow = tuple[int, str, int | None, list[Sample], datetime]
+SampleRow = tuple[int, str | None, int | None, list[Sample], datetime]
+
+# Standalone monitors have no linked CB entity (target_type is None); their
+# samples still need a non-null entity_type for the hypertable.
+_STANDALONE_ENTITY_TYPE = "monitor"
 
 
 def write_samples(db: Session, rows: list[SampleRow]) -> int:
@@ -22,7 +26,7 @@ def write_samples(db: Session, rows: list[SampleRow]) -> int:
         for s in samples:
             mappings.append(
                 {
-                    "entity_type": entity_type,
+                    "entity_type": entity_type or _STANDALONE_ENTITY_TYPE,
                     "entity_id": entity_id if entity_id is not None else 0,
                     "item_id": item_id,
                     "metric": s.metric,

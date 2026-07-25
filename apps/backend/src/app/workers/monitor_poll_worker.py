@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from app.core.nats_client import nats_client
+from app.core.redis import get_redis
+from app.core.subjects import (
+    MONITOR_ALERT_DOWN,
+    MONITOR_ALERT_RECOVERED,
+    monitor_alert_payload,
+)
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
+from app.services.monitoring.state import AppliedTransition, apply_result
 from app.services.monitoring.writer import SampleRow, write_samples
 
 logger = logging.getLogger(__name__)
@@ -38,40 +45,91 @@ def _touch_healthy() -> None:
         pass
 
 
-async def poll_one(item: dict) -> SampleRow:
-    """Run the collector for one item in a worker thread. Never raises."""
+async def poll_one(item: dict) -> tuple[SampleRow, bool, str]:
+    """Run the check for one monitor in a worker thread. Never raises."""
     ts = datetime.now(UTC)
     collector = COLLECTORS.get(item["check_type"])
     if collector is None:
-        return (
+        row = (
             item["item_id"],
             item["target_type"],
             item["target_id"],
             [Sample("avail", 0.0, error_reason="unknown_check_type")],
             ts,
         )
+        return row, False, f"unknown check type {item['check_type']!r}"
     try:
         async with _sema:
             result: CheckResult = await asyncio.to_thread(collector, item["host"], item["params"])
-        samples = result.samples
     except Exception as exc:  # noqa: BLE001 — a probe crash is a down datum
-        logger.debug("Collector crashed for item %s: %s", item["item_id"], exc)
-        samples = [Sample("avail", 0.0, error_reason="collector_error")]
-    return (item["item_id"], item["target_type"], item["target_id"], samples, ts)
+        logger.debug("Check crashed for monitor %s: %s", item["item_id"], exc)
+        result = CheckResult(
+            up=False,
+            samples=[Sample("avail", 0.0, error_reason="collector_error")],
+            msg=f"check crashed: {type(exc).__name__}",
+        )
+    row = (item["item_id"], item["target_type"], item["target_id"], result.samples, ts)
+    return row, result.up, result.msg
 
 
 async def process_batch(items: list[dict], db_factory: Callable[[], Any]) -> int:
-    rows: list[SampleRow] = await asyncio.gather(*(poll_one(i) for i in items))
+    outcomes = await asyncio.gather(*(poll_one(i) for i in items))
+    transitions: list[AppliedTransition] = []
     db = db_factory()
     try:
-        written = write_samples(db, list(rows))
+        written = write_samples(db, [row for row, _, _ in outcomes])
+        for row, up, msg in outcomes:
+            item_id, _, _, _, ts = row
+            transition = apply_result(db, item_id, up=up, msg=msg, checked_at=ts)
+            if transition:
+                transitions.append(transition)
         db.commit()
-        return written
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
+
+    await _publish_transitions(transitions)
+    await _publish_live_status(outcomes)
+    return written
+
+
+async def _publish_transitions(transitions: list[AppliedTransition]) -> None:
+    for t in transitions:
+        if t.notify == "down":
+            subject = MONITOR_ALERT_DOWN.format(item_id=t.item_id)
+        elif t.notify == "recovered":
+            subject = MONITOR_ALERT_RECOVERED.format(item_id=t.item_id)
+        else:
+            continue
+        payload = monitor_alert_payload(
+            t.item_id, t.name, t.status_to, t.msg, t.occurred_at.isoformat()
+        )
+        try:
+            await nats_client.js_publish(subject, payload)
+        except Exception as exc:  # noqa: BLE001 — alerting is best-effort here
+            logger.warning("Failed to publish monitor alert %s: %s", subject, exc)
+
+
+async def _publish_live_status(outcomes: list[tuple[SampleRow, bool, str]]) -> None:
+    redis = await get_redis()
+    if redis is None:
+        return
+    for row, up, msg in outcomes:
+        item_id, _, _, _, ts = row
+        payload = json.dumps(
+            {
+                "monitor_id": item_id,
+                "status": "up" if up else "down",
+                "msg": msg,
+                "ts": ts.isoformat(),
+            }
+        )
+        try:
+            await redis.publish(f"monitor:{item_id}", payload)
+        except Exception:  # noqa: BLE001 — live push degrades silently
+            return
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:

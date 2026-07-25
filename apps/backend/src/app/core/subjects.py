@@ -46,6 +46,9 @@ INTEL_ASSET_DOWN = "intel.asset.down"  # enriched DOWN event including blast rad
 NOTIFICATION_EVENT = "notifications.event"
 ALERT_EVENT = "notifications.alert"
 
+MONITOR_ALERT_DOWN = "alert.monitor.down.{item_id}"  # formatted at publish time
+MONITOR_ALERT_RECOVERED = "alert.monitor.recovered.{item_id}"
+
 # ── Topology (map / rack live updates) ───────────────────────────────────────
 
 TOPOLOGY_NODE_MOVED = "topology.node.moved"
@@ -126,3 +129,23 @@ def topology_status_changed_payload(
     status: str,
 ) -> dict:
     return {"node_id": node_id, "node_type": node_type, "status": status}
+
+
+def monitor_alert_payload(
+    item_id: int,
+    name: str,
+    status: str,
+    message: str,
+    occurred_at: str,
+) -> dict:
+    severity = "critical" if status == "down" else "info"
+    title = f"Monitor {name} is {status.upper()}"
+    return {
+        "title": title,
+        "message": message,
+        "severity": severity,
+        "monitor_id": item_id,
+        "monitor_name": name,
+        "status": status,
+        "occurred_at": occurred_at,
+    }
