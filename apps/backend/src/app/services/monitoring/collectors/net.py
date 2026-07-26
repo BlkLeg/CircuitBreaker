@@ -2,23 +2,77 @@
 
 from __future__ import annotations
 
+import re
 import socket
+import subprocess
 import time
+from typing import Any
 
 from app.services.monitoring.collectors import CheckResult, Sample, register
 
 # ── Probe primitives (mocked in tests) ─────────────────────────────────────────
 
+# Distinguishes "this probe cannot run here" from "the probe ran, the host was
+# silent" (None) — only the latter counts as packet loss.
+_PROBE_UNAVAILABLE: Any = object()
 
-def _ping_once(host: str, timeout: float) -> float | None:
-    """One ICMP echo. Returns latency in ms, or None on loss. Raises on missing tool."""
-    import ping3  # optional dep; ImportError surfaces as a hard failure
+# Hosts are passed to the ping binary as argv, so shell metacharacters can't do
+# anything; this keeps an option-looking host from being read as a flag.
+_PINGABLE_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:%-]*$")
+_PING_RTT = re.compile(r"time[=<]\s*([\d.]+)\s*ms")
 
+
+def _raw_socket_ping(host: str, timeout: float) -> float | None | Any:
+    """ICMP echo over a raw socket. Needs CAP_NET_RAW; ping3 is an optional dep."""
+    try:
+        import ping3
+    except ImportError:
+        return _PROBE_UNAVAILABLE
     ping3.EXCEPTIONS = False
-    result = ping3.ping(host, timeout=timeout, unit="ms")
+    try:
+        result = ping3.ping(host, timeout=timeout, unit="ms")
+    except OSError:
+        return _PROBE_UNAVAILABLE  # no raw-socket permission
     if result is None or result is False:
         return None
     return round(float(result), 3)
+
+
+def _system_ping(host: str, timeout: float) -> float | None | Any:
+    """ICMP echo via the system ping binary — setuid/cap_net_raw in most distros."""
+    if not _PINGABLE_HOST.match(host):
+        return _PROBE_UNAVAILABLE
+    wait = max(1, round(timeout))
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["ping", "-n", "-c", "1", "-W", str(wait), host],
+            capture_output=True,
+            text=True,
+            timeout=wait + 2,
+        )
+    except subprocess.TimeoutExpired:
+        return None  # host stayed silent past the deadline
+    except (OSError, subprocess.SubprocessError):
+        return _PROBE_UNAVAILABLE  # no ping binary on this host
+    if proc.returncode != 0:
+        return None
+    match = _PING_RTT.search(proc.stdout)
+    return round(float(match.group(1)), 3) if match else None
+
+
+def _ping_once(host: str, timeout: float) -> float | None:
+    """One ICMP echo. Returns latency in ms, or None on loss.
+
+    Raw-socket ICMP needs CAP_NET_RAW, which the container workers have but
+    native installs and dev shells often don't, so fall back to the system ping
+    binary (same layering as services/discovery_safe.py). Raises OSError only
+    when neither probe can run at all.
+    """
+    for probe in (_raw_socket_ping, _system_ping):
+        result = probe(host, timeout)
+        if result is not _PROBE_UNAVAILABLE:
+            return result
+    raise OSError(f"no ICMP probe available for {host}")
 
 
 def _tcp_connect(host: str, port: int, timeout: float) -> tuple[bool, float | None]:
@@ -56,7 +110,7 @@ def collect_icmp(host: str, params: dict) -> CheckResult:
         return CheckResult(
             up=False,
             samples=[Sample("avail", 0.0, error_reason="icmp_unavailable")],
-            msg="icmp probe unavailable on this host",
+            msg="ICMP unavailable: no raw-socket permission and no ping binary",
         )
 
     loss_pct = round(lost / count * 100, 2) if count else 100.0
