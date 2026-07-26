@@ -84,7 +84,7 @@ function EntityTable({
   data,
   onEdit = undefined,
   onDelete = undefined,
-  onMonitor = undefined,
+  renderMonitorAction = undefined,
   onRowClick = undefined,
   editableColumns = undefined,
   onCellSave = undefined,
@@ -316,15 +316,7 @@ function EntityTable({
                   data-label="Actions"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {onMonitor && (
-                    <button
-                      onClick={() => onMonitor(row)}
-                      className="btn btn-sm"
-                      title="Add Monitor"
-                    >
-                      Monitor
-                    </button>
-                  )}
+                  {renderMonitorAction && renderMonitorAction(row)}
                   <button onClick={() => onEdit(row)} className="btn btn-sm">
                     Edit
                   </button>
@@ -414,7 +406,7 @@ EntityTable.propTypes = {
   data: PropTypes.arrayOf(PropTypes.object).isRequired,
   onEdit: PropTypes.func,
   onDelete: PropTypes.func,
-  onMonitor: PropTypes.func,
+  renderMonitorAction: PropTypes.func,
   onRowClick: PropTypes.func,
   editableColumns: PropTypes.oneOfType([
     PropTypes.arrayOf(PropTypes.string),

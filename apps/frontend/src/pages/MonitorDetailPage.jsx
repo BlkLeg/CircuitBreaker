@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-object-injection */
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -22,35 +21,7 @@ import {
 import { useMonitorStream } from '../hooks/useMonitorStream';
 import { useToast } from '../components/common/Toast';
 import CheckHistoryBar from '../components/monitors/CheckHistoryBar';
-
-const STATUS_LABEL = { up: 'Up', down: 'Down', pending: 'Pending', maintenance: 'Maintenance' };
-const STATUS_COLORS = {
-  up: 'var(--color-success, #22c55e)',
-  down: 'var(--color-danger, #ef4444)',
-  pending: 'var(--color-warning, #eab308)',
-  maintenance: 'var(--color-info, #3b82f6)',
-  paused: 'var(--color-muted, #9ca3af)',
-};
-
-function StatusPill({ status, enabled }) {
-  const key = enabled ? status : 'paused';
-  const label = enabled ? STATUS_LABEL[status] || status : 'Paused';
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 10px',
-        borderRadius: 999,
-        fontSize: 13,
-        fontWeight: 600,
-        color: '#fff',
-        background: STATUS_COLORS[key] || STATUS_COLORS.paused,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
+import StatusPill from '../components/monitors/StatusPill';
 
 function LatencyChart({ points }) {
   if (points.length < 2) return <p className="text-muted">Not enough data yet.</p>;

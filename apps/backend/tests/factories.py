@@ -94,6 +94,18 @@ class Factories:
         self.session.flush()
         return svc
 
+    # ── External nodes ────────────────────────────────────────────────────────
+
+    def external_node(self, **kwargs):
+        from app.db.models import ExternalNode
+
+        defaults = {"name": fake.unique.slug(), "provider": "Hetzner", "kind": "vps"}
+        defaults.update(kwargs)
+        node = ExternalNode(**defaults)
+        self.session.add(node)
+        self.session.flush()
+        return node
+
     # ── Integrations ──────────────────────────────────────────────────────────
 
     def integration(self, **kwargs):

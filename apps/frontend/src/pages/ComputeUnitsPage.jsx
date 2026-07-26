@@ -15,6 +15,8 @@ import { useSettings } from '../context/SettingsContext';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
+import { useTargetMonitors } from '../hooks/useTargetMonitors';
+import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
 
 const COLUMNS = [
   { key: 'id', label: 'ID' },
@@ -189,9 +191,34 @@ function ComputeUnitsPage() {
     fetchTags();
   }, [fetchTags]);
 
+  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitors = useTargetMonitors('compute_unit', monitorTargetIds);
+
+  const monitorAction = useCallback(
+    async (fn, successMsg) => {
+      try {
+        await fn();
+        toast.success(successMsg);
+      } catch (err) {
+        const status = err?.response?.status;
+        toast.error(
+          status === 404
+            ? 'No address to probe — add an IP address first.'
+            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
+        );
+      }
+    },
+    [toast]
+  );
+
   const COLUMNS_WITH_TAGS = useMemo(
     () => [
       ...COLUMNS,
+      {
+        key: 'monitor',
+        label: 'Monitor',
+        render: (_, row) => <MonitorStatusCell state={monitors.byId[row.id]} />,
+      },
       {
         key: 'tags',
         label: 'Tags',
@@ -211,7 +238,7 @@ function ComputeUnitsPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags]
+    [allTags, fetchData, fetchTags, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -430,6 +457,15 @@ function ComputeUnitsPage() {
             setShowForm(true);
           }}
           onDelete={handleDelete}
+          renderMonitorAction={(row) => (
+            <MonitorCell
+              state={monitors.byId[row.id]}
+              onEnable={() => monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')}
+              onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
+              onResume={() => monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')}
+              onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
+            />
+          )}
           onRowClick={(row) => setDetailTarget(row)}
           editableColumns={['name']}
           onCellSave={handleCellSave}

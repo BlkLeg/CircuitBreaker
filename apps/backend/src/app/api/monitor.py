@@ -2,21 +2,25 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.security import require_write_auth
 from app.db.session import get_db
 from app.schemas.monitor import (
-    HardwareMonitorSummary,
     MonitorCreate,
     MonitorEventRead,
     MonitorHistoryPoint,
     MonitorRead,
     MonitorUpdate,
+    TargetMonitorCreate,
+    TargetMonitorSummary,
+    TargetType,
 )
 from app.services import monitor_service
 
 _NOT_FOUND = "Monitor not found"
+_NO_TARGET = "Target not found or has no address to probe"
 _logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["monitors"])
@@ -34,57 +38,77 @@ def list_monitors(
     )
 
 
-@router.get("/hardware-summary", response_model=list[HardwareMonitorSummary])
-def hardware_summary(db: Session = Depends(get_db)) -> Any:
-    """Per-hardware monitor rollup for the map and integrations panels."""
-    return monitor_service.list_hardware_summaries(db)
+# ── Target-scoped actions (inventory list pages, detail drawers, map) ─────────
+# Declared before "/{monitor_id}" so "target" isn't parsed as a monitor id.
 
 
-# ── Hardware-scoped quick actions (map / discovery review UX) ─────────────────
-# Declared before "/{monitor_id}" so the "hardware" segment isn't parsed as an id.
+@router.get("/target-summary", response_model=list[TargetMonitorSummary])
+def target_summary(
+    target_type: TargetType = Query(...),
+    target_ids: list[int] | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Per-target monitor rollup for an inventory page."""
+    return monitor_service.list_target_summaries(db, target_type, target_ids)
 
 
-@router.post("/hardware/{hardware_id}", response_model=MonitorRead)
-def create_hardware_monitor(
-    hardware_id: int,
+@router.post("/target/{target_type}/{target_id}", response_model=MonitorRead)
+def create_target_monitor(
+    target_type: TargetType,
+    target_id: int,
+    payload: TargetMonitorCreate | None = None,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    monitor = monitor_service.create_hardware_monitor(db, hardware_id)
+    try:
+        monitor = monitor_service.create_target_monitor(
+            db,
+            target_type,
+            target_id,
+            check_type=payload.check_type if payload else None,
+            config=payload.config if payload else None,
+        )
+    except ValidationError as exc:
+        # A config override is only validated once the check type is resolved,
+        # so it lands here rather than in request validation.
+        raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
     if not monitor:
-        raise HTTPException(status_code=404, detail="Hardware not found or has no IP")
+        raise HTTPException(status_code=404, detail=_NO_TARGET)
     return monitor
 
 
-@router.post("/hardware/{hardware_id}/pause")
-def pause_hardware_monitor(
-    hardware_id: int,
+@router.post("/target/{target_type}/{target_id}/pause")
+def pause_target_monitor(
+    target_type: TargetType,
+    target_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.set_hardware_paused(db, hardware_id, True):
+    if not monitor_service.set_target_paused(db, target_type, target_id, True):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return {"status": "ok"}
 
 
-@router.post("/hardware/{hardware_id}/resume")
-def resume_hardware_monitor(
-    hardware_id: int,
+@router.post("/target/{target_type}/{target_id}/resume")
+def resume_target_monitor(
+    target_type: TargetType,
+    target_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.set_hardware_paused(db, hardware_id, False):
+    if not monitor_service.set_target_paused(db, target_type, target_id, False):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return {"status": "ok"}
 
 
-@router.post("/hardware/{hardware_id}/check")
-def run_hardware_check(
-    hardware_id: int,
+@router.post("/target/{target_type}/{target_id}/check")
+def run_target_check(
+    target_type: TargetType,
+    target_id: int,
     user_id: int = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> Any:
-    if not monitor_service.run_hardware_check(db, hardware_id):
+    if not monitor_service.run_target_check(db, target_type, target_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return {"status": "ok"}
 

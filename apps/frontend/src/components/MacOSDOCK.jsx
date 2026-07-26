@@ -23,8 +23,7 @@ const ORIGINAL_DOCK_ORDER = [
   '/networks',
   '/external-nodes',
   '/ipam',
-  '/racks',
-  '/status-pages',
+  '/monitors',
   '/certificates',
   '/docs',
   '/logs',
@@ -111,13 +110,7 @@ export default function MacOSDOCK({ pendingCount = 0, wsStatus = 'connected' }) 
     const allowAdmin = isAdmin(user);
     return ORIGINAL_DOCK_ORDER.filter((path) => {
       if (!findNavItem(path)) return false;
-      if (
-        (path === '/settings' ||
-          path === '/ipam' ||
-          path === '/racks' ||
-          path === '/status-pages') &&
-        !allowEditor
-      ) {
+      if ((path === '/settings' || path === '/ipam') && !allowEditor) {
         return false;
       }
       if (path === '/logs' && !allowAdmin) return false;

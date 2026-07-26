@@ -11,7 +11,6 @@ import {
   environmentsApi,
   tagsApi,
 } from '../api/client';
-import { integrationsApi } from '../api/integrations.js';
 import ServiceDetail from '../components/details/ServiceDetail';
 import FormModal from '../components/common/FormModal';
 import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
@@ -20,6 +19,8 @@ import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
 import logger from '../utils/logger';
+import { useTargetMonitors } from '../hooks/useTargetMonitors';
+import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
 
 // Encode the selection so a single dropdown can carry both hardware and compute options.
 // Prefix: "hw_<id>" for hardware, "cu_<id>" for compute units.
@@ -220,9 +221,34 @@ function ServicesPage() {
     fetchTags();
   }, [fetchTags]);
 
+  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitors = useTargetMonitors('service', monitorTargetIds);
+
+  const monitorAction = useCallback(
+    async (fn, successMsg) => {
+      try {
+        await fn();
+        toast.success(successMsg);
+      } catch (err) {
+        const status = err?.response?.status;
+        toast.error(
+          status === 404
+            ? 'No address to probe — add a URL or IP address first.'
+            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
+        );
+      }
+    },
+    [toast]
+  );
+
   const COLUMNS_WITH_TAGS = useMemo(
     () => [
       ...COLUMNS,
+      {
+        key: 'monitor',
+        label: 'Monitor',
+        render: (_, row) => <MonitorStatusCell state={monitors.byId[row.id]} />,
+      },
       {
         key: 'tags',
         label: 'Tags',
@@ -242,7 +268,7 @@ function ServicesPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags]
+    [allTags, fetchData, fetchTags, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -391,20 +417,6 @@ function ServicesPage() {
     });
   };
 
-  const handleAddMonitor = async (row) => {
-    try {
-      await integrationsApi.createNativeMonitor({ entity_type: 'service', entity_id: row.id });
-      toast.success('Monitor created — add it to a status page group to make it visible.');
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 409) {
-        toast.error('Monitor already exists for this entity.');
-      } else {
-        toast.error(err?.response?.data?.detail || err.message || 'Failed to create monitor.');
-      }
-    }
-  };
-
   // When editing, pre-populate the runs_on synthetic field.
   const getInitialValues = (target) => {
     if (!target) return {};
@@ -478,7 +490,15 @@ function ServicesPage() {
           setShowForm(true);
         }}
         onDelete={handleDelete}
-        onMonitor={handleAddMonitor}
+        renderMonitorAction={(row) => (
+          <MonitorCell
+            state={monitors.byId[row.id]}
+            onEnable={() => monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')}
+            onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
+            onResume={() => monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')}
+            onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
+          />
+        )}
         onRowClick={(row) => setDetailTarget(row)}
         editableColumns={['name', 'slug', 'url']}
         onCellSave={handleCellSave}

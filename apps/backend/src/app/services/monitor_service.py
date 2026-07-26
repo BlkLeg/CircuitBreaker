@@ -1,8 +1,12 @@
-"""Monitor service: monitor-id CRUD, events, history, and hardware summaries."""
+"""Monitor service: monitor-id CRUD, events, history, and per-target rollups."""
 
 import asyncio
+import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -10,13 +14,15 @@ from sqlalchemy.orm import Session
 from app.core.nats_client import nats_client
 from app.core.subjects import MONITOR_POLL_ITEM
 from app.db.models import (
-    DailyUptimeStats,
+    ComputeUnit,
+    ExternalNode,
     Hardware,
     MonitorEvent,
     MonitorItem,
+    Service,
     TelemetryTimeseries,
 )
-from app.schemas.monitor import MonitorCreate, MonitorUpdate
+from app.schemas.monitor import CONFIG_MODELS, MonitorCreate, MonitorUpdate
 from app.services.monitoring.state import PENDING
 
 logger = logging.getLogger(__name__)
@@ -254,148 +260,187 @@ def run_immediate_check(db: Session, monitor_id: int) -> bool:
         return False
 
 
-# ── Hardware summary view (map + integrations panels) ─────────────────────────
-# _synthesize_monitor is retained verbatim from the pre-slice-1 service (it reads
-# DailyUptimeStats + latest telemetry per item) and is now exposed only through
-# list_hardware_summaries.
+# ── Target-scoped monitors (inventory pages, map, discovery) ──────────────────
+# One monitor "target" is an inventory entity: a hardware node, a compute unit,
+# a service, or an external node. Resolving one yields everything needed to spin
+# up a sensible default monitor for it. Drives the inventory list pages, the
+# detail drawers, the map, and discovery auto-monitoring.
+
+_DEFAULT_ICMP_CONFIG = {"packet_count": 5}
 
 
-def _synthesize_monitor(db: Session, hardware_id: int, items: list[MonitorItem]) -> dict | None:
-    if not items:
+class TargetInfo(NamedTuple):
+    """A probeable inventory entity, reduced to what a monitor needs."""
+
+    label: str
+    host: str
+    check_type: str
+    config: dict
+
+
+def _resolve_hardware(db: Session, target_id: int) -> TargetInfo | None:
+    hw = db.get(Hardware, target_id)
+    if hw is None:
         return None
+    host = hw.ip_address or hw.hostname
+    if not host:
+        return None
+    label = hw.name or hw.hostname or host
+    return TargetInfo(label, host, "icmp", dict(_DEFAULT_ICMP_CONFIG))
 
-    item_ids = [item.id for item in items]
 
-    # Use DISTINCT ON to get the latest value per item_id
-    latest_telemetry = (
-        db.query(TelemetryTimeseries)
-        .filter(TelemetryTimeseries.item_id.in_(item_ids), TelemetryTimeseries.metric == "avail")
-        .distinct(TelemetryTimeseries.item_id)
-        .order_by(TelemetryTimeseries.item_id, TelemetryTimeseries.ts.desc())
-        .all()
+def _resolve_compute_unit(db: Session, target_id: int) -> TargetInfo | None:
+    cu = db.get(ComputeUnit, target_id)
+    if cu is None or not cu.ip_address:
+        return None
+    return TargetInfo(cu.name or cu.ip_address, cu.ip_address, "icmp", dict(_DEFAULT_ICMP_CONFIG))
+
+
+def _resolve_external_node(db: Session, target_id: int) -> TargetInfo | None:
+    """External nodes keep an IP *or* a hostname in ip_address — both probe the same."""
+    node = db.get(ExternalNode, target_id)
+    if node is None or not node.ip_address:
+        return None
+    return TargetInfo(
+        node.name or node.ip_address, node.ip_address, "icmp", dict(_DEFAULT_ICMP_CONFIG)
     )
 
-    latency_telemetry = (
-        db.query(TelemetryTimeseries)
-        .filter(
-            TelemetryTimeseries.item_id.in_(item_ids),
-            TelemetryTimeseries.metric == "latency_ms",
-        )
-        .distinct(TelemetryTimeseries.item_id)
-        .order_by(TelemetryTimeseries.item_id, TelemetryTimeseries.ts.desc())
-        .all()
-    )
 
-    avail_map = {t.item_id: t for t in latest_telemetry}
-    latency_map = {t.item_id: t for t in latency_telemetry}
-
-    icmp_item = next((i for i in items if i.check_type == "icmp"), None)
-
-    last_status = "unknown"
-    if icmp_item and icmp_item.id in avail_map:
-        last_status = "up" if avail_map[icmp_item.id].value > 0 else "down"
-    elif avail_map:
-        last_status = "up" if any(t.value > 0 for t in avail_map.values()) else "down"
-
-    latency_ms = None
-    if icmp_item and icmp_item.id in latency_map:
-        latency_ms = latency_map[icmp_item.id].value
-    elif latency_map:
-        latency_ms = next(iter(latency_map.values())).value
-
-    last_checked_at = None
-    if avail_map:
-        valid_ts = [t.ts for t in avail_map.values() if t.ts is not None]
-        if valid_ts:
-            last_checked_at = max(valid_ts).isoformat()
-
-    uptime_pct_24h = None
-    today_str = datetime.now(UTC).strftime("%Y-%m-%d")
-    yesterday_str = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
-    stats = db.scalars(
-        select(DailyUptimeStats).where(
-            DailyUptimeStats.hardware_id == hardware_id,
-            DailyUptimeStats.date.in_([today_str, yesterday_str]),
-        )
-    ).all()
-
-    total_mins = sum(s.total_minutes for s in stats)
-    if total_mins > 0:
-        uptime_pct_24h = round((sum(s.uptime_minutes for s in stats) / total_mins) * 100, 1)
-
-    created_at = min(item.created_at for item in items).isoformat()
-    updated_at = max(item.updated_at for item in items).isoformat()
-    enabled = any(item.enabled for item in items)
-    interval_secs = min(item.interval_secs for item in items)
-
-    return {
-        "id": items[0].id,
-        "hardware_id": hardware_id,
-        "enabled": enabled,
-        "interval_secs": interval_secs,
-        "probe_methods": [item.check_type for item in items],
-        "last_status": last_status,
-        "last_checked_at": last_checked_at,
-        "latency_ms": latency_ms,
-        "consecutive_failures": 0,
-        "uptime_pct_24h": uptime_pct_24h,
-        "created_at": created_at,
-        "updated_at": updated_at,
-    }
+def _service_port(svc: Service) -> int | None:
+    """First port declared on a service — structured ports_json wins over free text."""
+    try:
+        entries = json.loads(svc.ports_json) if svc.ports_json else []
+    except (TypeError, ValueError):
+        entries = []
+    for entry in entries if isinstance(entries, list) else []:
+        port = entry.get("port") if isinstance(entry, dict) else entry
+        try:
+            if port is not None and 1 <= int(port) <= 65535:
+                return int(port)
+        except (TypeError, ValueError):
+            continue
+    # Free-text fallback: "8080", "8080/tcp", "80,443", "8080:80"
+    for chunk in re.split(r"[,\s]+", svc.ports or ""):
+        digits = chunk.split(":")[0].split("/")[0]
+        if digits.isdigit() and 1 <= int(digits) <= 65535:
+            return int(digits)
+    return None
 
 
-def _hardware_monitors(db: Session, hardware_id: int) -> list[MonitorItem]:
+def _resolve_service(db: Session, target_id: int) -> TargetInfo | None:
+    svc = db.get(Service, target_id)
+    if svc is None:
+        return None
+    label = svc.name or svc.slug
+    if svc.url:
+        host = urlparse(svc.url).hostname or svc.ip_address
+        if host:
+            return TargetInfo(label, host, "http", {"url": svc.url})
+    if svc.ip_address:
+        port = _service_port(svc)
+        if port is not None:
+            return TargetInfo(label, svc.ip_address, "tcp", {"port": port})
+        return TargetInfo(label, svc.ip_address, "icmp", dict(_DEFAULT_ICMP_CONFIG))
+    return None
+
+
+_TARGET_RESOLVERS = {
+    "hardware": _resolve_hardware,
+    "compute_unit": _resolve_compute_unit,
+    "service": _resolve_service,
+    "external_node": _resolve_external_node,
+}
+
+
+def resolve_target(db: Session, target_type: str, target_id: int) -> TargetInfo | None:
+    """Return probe details for an inventory entity, or None if it can't be probed."""
+    resolver = _TARGET_RESOLVERS.get(target_type)
+    return resolver(db, target_id) if resolver else None
+
+
+def _target_monitors(db: Session, target_type: str, target_id: int) -> list[MonitorItem]:
     return list(
         db.scalars(
-            select(MonitorItem).where(
-                MonitorItem.target_type == "hardware",
-                MonitorItem.target_id == hardware_id,
+            select(MonitorItem)
+            .where(
+                MonitorItem.target_type == target_type,
+                MonitorItem.target_id == target_id,
             )
+            .order_by(MonitorItem.id)
         ).all()
     )
 
 
-def create_hardware_monitor(db: Session, hardware_id: int, check_type: str = "icmp") -> dict | None:
-    """Quick-create a default reachability monitor for a hardware node (map UX).
+def _build_target_monitor(
+    db: Session,
+    target_type: str,
+    target_id: int,
+    check_type: str | None = None,
+    config: dict | None = None,
+) -> MonitorItem | None:
+    """Add a default monitor for an inventory entity — flushes, does NOT commit.
 
-    Returns the created (or pre-existing) monitor, or None if the hardware is
-    unknown or has no IP to probe. Idempotent per (hardware, check_type).
+    Idempotent per (target_type, target_id, check_type): an existing monitor is
+    returned untouched. Returns None when the target is unknown or has no address
+    to probe. Callers that own the surrounding transaction (discovery merge) use
+    this directly; everyone else goes through create_target_monitor().
     """
-    hw = db.get(Hardware, hardware_id)
-    if hw is None or not hw.ip_address:
+    info = resolve_target(db, target_type, target_id)
+    if info is None:
         return None
+    check_type = check_type or info.check_type
+    if config is not None:
+        # Same per-type validation the generic create path applies.
+        params = CONFIG_MODELS[check_type](**config).model_dump(exclude_unset=True)
+    else:
+        # The resolver's config only describes its own check type.
+        params = dict(info.config) if check_type == info.check_type else {}
     existing = db.scalars(
         select(MonitorItem).where(
-            MonitorItem.target_type == "hardware",
-            MonitorItem.target_id == hardware_id,
+            MonitorItem.target_type == target_type,
+            MonitorItem.target_id == target_id,
             MonitorItem.check_type == check_type,
         )
     ).first()
     if existing is not None:
-        return _to_dict(existing)
-    label = hw.name or hw.hostname or hw.ip_address
+        return existing
     item = MonitorItem(
-        name=f"{label} ({check_type})",
+        name=f"{info.label} ({check_type})",
         check_type=check_type,
-        host=hw.ip_address,
-        params={"packet_count": 5} if check_type == "icmp" else {},
+        host=info.host,
+        params=params,
         interval_secs=60,
         max_retries=0,
         enabled=True,
-        target_type="hardware",
-        target_id=hardware_id,
+        target_type=target_type,
+        target_id=target_id,
         last_status=PENDING,
         next_due_at=datetime.now(UTC),
     )
     db.add(item)
+    db.flush()
+    return item
+
+
+def create_target_monitor(
+    db: Session,
+    target_type: str,
+    target_id: int,
+    check_type: str | None = None,
+    config: dict | None = None,
+) -> dict | None:
+    """Quick-create a default monitor for an inventory entity and commit it."""
+    item = _build_target_monitor(db, target_type, target_id, check_type, config)
+    if item is None:
+        return None
     db.commit()
     db.refresh(item)
     return _to_dict(item)
 
 
-def set_hardware_paused(db: Session, hardware_id: int, paused: bool) -> bool:
-    """Pause/resume every monitor attached to a hardware node."""
-    items = _hardware_monitors(db, hardware_id)
+def set_target_paused(db: Session, target_type: str, target_id: int, paused: bool) -> bool:
+    """Pause/resume every monitor attached to an inventory entity."""
+    items = _target_monitors(db, target_type, target_id)
     if not items:
         return False
     now = datetime.now(UTC)
@@ -416,9 +461,9 @@ def set_hardware_paused(db: Session, hardware_id: int, paused: bool) -> bool:
     return True
 
 
-def run_hardware_check(db: Session, hardware_id: int) -> bool:
-    """Publish an immediate check for every monitor attached to a hardware node."""
-    items = _hardware_monitors(db, hardware_id)
+def run_target_check(db: Session, target_type: str, target_id: int) -> bool:
+    """Publish an immediate check for every monitor attached to an inventory entity."""
+    items = _target_monitors(db, target_type, target_id)
     if not items:
         return False
     try:
@@ -440,18 +485,51 @@ def run_hardware_check(db: Session, hardware_id: int) -> bool:
     return True
 
 
-def list_hardware_summaries(db: Session, hardware_ids: list[int] | None = None) -> list[dict]:
-    query = select(MonitorItem).where(MonitorItem.target_type == "hardware")
-    if hardware_ids is not None:
-        query = query.where(MonitorItem.target_id.in_(hardware_ids))
-    items = db.scalars(query).all()
+def list_target_summaries(
+    db: Session, target_type: str, target_ids: list[int] | None = None
+) -> list[dict]:
+    """One rollup row per inventory entity that has monitors, for the list pages."""
+    query = select(MonitorItem).where(MonitorItem.target_type == target_type)
+    if target_ids is not None:
+        if not target_ids:
+            return []
+        query = query.where(MonitorItem.target_id.in_(target_ids))
+    items = list(db.scalars(query.order_by(MonitorItem.id)).all())
+    if not items:
+        return []
+
+    uptimes = _uptime_pct_map(db, [i.id for i in items])
+    latencies = _latest_metric_map(db, [i.id for i in items], "latency_ms")
+
     grouped: dict[int, list[MonitorItem]] = {}
     for item in items:
         if item.target_id is not None:
             grouped.setdefault(item.target_id, []).append(item)
-    res = []
-    for hw_id, hw_items in grouped.items():
-        synthesized = _synthesize_monitor(db, hw_id, hw_items)
-        if synthesized:
-            res.append(synthesized)
-    return res
+
+    summaries = []
+    for target_id, group in grouped.items():
+        primary = group[0]  # lowest id — the monitor auto-created for this target
+        statuses = {i.last_status or PENDING for i in group}
+        if "down" in statuses:
+            status = "down"
+        elif "up" in statuses:
+            status = "up"
+        else:
+            status = primary.last_status or PENDING
+        summaries.append(
+            {
+                "target_type": target_type,
+                "target_id": target_id,
+                "monitor_id": primary.id,
+                "monitor_ids": [i.id for i in group],
+                "enabled": any(i.enabled for i in group),
+                "status": status,
+                "latency_ms": latencies.get(primary.id),
+                "uptime_pct_24h": uptimes.get(primary.id),
+                "last_polled_at": max(
+                    (i.last_polled_at for i in group if i.last_polled_at is not None),
+                    default=None,
+                ),
+            }
+        )
+    return summaries

@@ -8,6 +8,7 @@ import { servicesApi, storageApi, miscApi } from '../../api/client';
 import { Database, Box, Trash2, ArrowRight } from 'lucide-react';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import MapAssignSection from './MapAssignSection';
+import MonitorPanel from '../monitors/MonitorPanel';
 
 function ServiceDetail({ service, isOpen, onClose }) {
   const toast = useToast();
@@ -401,6 +402,8 @@ function ServiceDetail({ service, isOpen, onClose }) {
         .btn-icon.danger { color: var(--color-danger); background: none; border: none; cursor: pointer; }
       `}</style>
       <MapAssignSection entityType="service" entityId={service?.id} />
+
+      <MonitorPanel targetType="service" targetId={service.id} />
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}

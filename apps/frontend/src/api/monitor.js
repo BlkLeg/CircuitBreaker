@@ -13,14 +13,20 @@ export const getMonitorEvents = (id, limit = 50) =>
 export const getMonitorHistory = (id, { metric = 'latency_ms', hours = 24 } = {}) =>
   client.get(`/monitors/${id}/history`, { params: { metric, hours } });
 export const getMonitorUptime = (id) => client.get(`/monitors/${id}/uptime`);
-export const getHardwareSummary = () => client.get('/monitors/hardware-summary');
 
-// Hardware-scoped quick actions (map + discovery review UX).
-export const createHardwareMonitor = (hardwareId) =>
-  client.post(`/monitors/hardware/${hardwareId}`);
-export const pauseHardwareMonitor = (hardwareId) =>
-  client.post(`/monitors/hardware/${hardwareId}/pause`);
-export const resumeHardwareMonitor = (hardwareId) =>
-  client.post(`/monitors/hardware/${hardwareId}/resume`);
-export const runHardwareCheck = (hardwareId) =>
-  client.post(`/monitors/hardware/${hardwareId}/check`);
+// Target-scoped quick actions — target_type is
+// hardware | compute_unit | service | external_node.
+export const getTargetSummary = (targetType, targetIds) =>
+  client.get('/monitors/target-summary', {
+    params: { target_type: targetType, ...(targetIds ? { target_ids: targetIds } : {}) },
+    // FastAPI wants repeated keys (target_ids=1&target_ids=2), not axios' default "[]" suffix.
+    paramsSerializer: { indexes: null },
+  });
+export const createTargetMonitor = (targetType, targetId, body) =>
+  client.post(`/monitors/target/${targetType}/${targetId}`, body ?? null);
+export const pauseTargetMonitor = (targetType, targetId) =>
+  client.post(`/monitors/target/${targetType}/${targetId}/pause`);
+export const resumeTargetMonitor = (targetType, targetId) =>
+  client.post(`/monitors/target/${targetType}/${targetId}/resume`);
+export const runTargetCheck = (targetType, targetId) =>
+  client.post(`/monitors/target/${targetType}/${targetId}/check`);

@@ -24,10 +24,10 @@ import { mapsApi } from '../api/maps';
 import ScanImportModal from '../components/ScanImportModal';
 import LLDPReviewModal from '../components/LLDPReviewModal';
 import {
-  createHardwareMonitor,
-  pauseHardwareMonitor,
-  resumeHardwareMonitor,
-  runHardwareCheck,
+  createTargetMonitor,
+  pauseTargetMonitor,
+  resumeTargetMonitor,
+  runTargetCheck,
 } from '../api/monitor.js';
 import { useSettings } from '../context/SettingsContext';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -96,6 +96,7 @@ import {
   normalizeBoundaryName,
   DEFAULT_BOUNDARY_COLOR,
   DEFAULT_BOUNDARY_FILL_OPACITY,
+  MONITOR_TARGET_TYPES,
 } from '../components/map/mapConstants';
 import {
   applyEdgeSidesForEdge,
@@ -1185,6 +1186,47 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
     [navigate, openQuickCreateModal, toast]
   );
 
+  // Monitor quick actions, for every node type the check engine can probe.
+  const handleMonitorAction = useCallback(
+    async (action, nodeId) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      const targetType = MONITOR_TARGET_TYPES.get(node?.originalType);
+      if (!node?._refId || !targetType) {
+        toast.error('Monitoring is not available for this node type.');
+        return;
+      }
+      try {
+        if (action === 'monitor_create') {
+          await createTargetMonitor(targetType, node._refId);
+          toast.success('Monitoring enabled');
+          fetchData();
+        } else if (action === 'monitor_toggle') {
+          const next = !node.data?.monitor_enabled;
+          await (next
+            ? resumeTargetMonitor(targetType, node._refId)
+            : pauseTargetMonitor(targetType, node._refId));
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === nodeId ? { ...n, data: { ...n.data, monitor_enabled: next } } : n
+            )
+          );
+          toast.success(next ? 'Monitoring resumed' : 'Monitoring paused');
+        } else {
+          await runTargetCheck(targetType, node._refId);
+          toast.success('Probe triggered');
+          fetchData();
+        }
+      } catch (err) {
+        toast.error(
+          err?.response?.status === 404
+            ? 'No address to probe — add an IP address or hostname first.'
+            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
+        );
+      }
+    },
+    [fetchData, setNodes, toast]
+  );
+
   const handleContextAction = useCallback(
     async (action, data) => {
       const { nodeId, targetId } = data;
@@ -1264,29 +1306,8 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
           }
         } else if (handleQuickCreateAction(action, nodeId)) {
           return;
-        } else if (action === 'monitor_create') {
-          const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?._refId) return;
-          await createHardwareMonitor(nd._refId);
-          toast.success('Monitoring enabled');
-          fetchData();
-        } else if (action === 'monitor_toggle') {
-          const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?._refId) return;
-          const next = !nd.data?.monitor_enabled;
-          await (next ? resumeHardwareMonitor(nd._refId) : pauseHardwareMonitor(nd._refId));
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, data: { ...n.data, monitor_enabled: next } } : n
-            )
-          );
-          toast.success(next ? 'Monitoring resumed' : 'Monitoring paused');
-        } else if (action === 'monitor_check_now') {
-          const nd = nodesRef.current.find((n) => n.id === nodeId);
-          if (!nd?._refId) return;
-          await runHardwareCheck(nd._refId);
-          toast.success('Probe triggered');
-          fetchData();
+        } else if (action.startsWith('monitor_')) {
+          await handleMonitorAction(action, nodeId);
         } else if (action === 'lldp_enrich') {
           const nd = nodesRef.current.find((n) => n.id === nodeId);
           if (!nd?._refId) {
@@ -1321,6 +1342,7 @@ function MapInternal({ mapId, maps, onMapSwitch, onMapCreate, onMapRename, onMap
       fetchData,
       handleAliasAction,
       handleDeleteNodeAction,
+      handleMonitorAction,
       handleQuickCreateAction,
       handleRoleAction,
       handleUpdateStatusAction,

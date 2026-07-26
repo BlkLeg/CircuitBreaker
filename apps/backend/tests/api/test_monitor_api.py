@@ -63,38 +63,171 @@ async def test_missing_monitor_404(client, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_hardware_quick_monitor(client, auth_headers, factories):
-    hw = factories.hardware(ip_address="192.0.2.50")
-    resp = await client.post(f"/api/v1/monitors/hardware/{hw.id}", headers=auth_headers)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["check_type"] == "icmp"
-    assert body["target_type"] == "hardware" and body["target_id"] == hw.id
-
-    # idempotent per (hardware, check_type)
-    again = await client.post(f"/api/v1/monitors/hardware/{hw.id}", headers=auth_headers)
-    assert again.json()["id"] == body["id"]
-
-    paused = await client.post(f"/api/v1/monitors/hardware/{hw.id}/pause", headers=auth_headers)
-    assert paused.status_code == 200
-    resumed = await client.post(f"/api/v1/monitors/hardware/{hw.id}/resume", headers=auth_headers)
-    assert resumed.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_hardware_quick_monitor_missing_404(client, auth_headers):
-    assert (
-        await client.post("/api/v1/monitors/hardware/999999", headers=auth_headers)
-    ).status_code == 404
-    assert (
-        await client.post("/api/v1/monitors/hardware/999999/pause", headers=auth_headers)
-    ).status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_uptime_and_history_empty_ok(client, auth_headers):
     mid = (await _create(client, auth_headers)).json()["id"]
     uptime = await client.get(f"/api/v1/monitors/{mid}/uptime", headers=auth_headers)
     assert uptime.json() == {"pct_24h": None}
     history = await client.get(f"/api/v1/monitors/{mid}/history", headers=auth_headers)
     assert history.json() == []
+
+
+# ── Target-scoped routes (inventory pages, drawers, map) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_hardware(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.50")
+    resp = await client.post(f"/api/v1/monitors/target/hardware/{hw.id}", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["check_type"] == "icmp"
+    assert body["target_type"] == "hardware" and body["target_id"] == hw.id
+
+    # idempotent per (hardware, check_type)
+    again = await client.post(f"/api/v1/monitors/target/hardware/{hw.id}", headers=auth_headers)
+    assert again.json()["id"] == body["id"]
+
+    for action in ("pause", "resume", "check"):
+        resp = await client.post(
+            f"/api/v1/monitors/target/hardware/{hw.id}/{action}", headers=auth_headers
+        )
+        assert resp.status_code == 200, action
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_missing_404(client, auth_headers):
+    assert (
+        await client.post("/api/v1/monitors/target/hardware/999999", headers=auth_headers)
+    ).status_code == 404
+    assert (
+        await client.post("/api/v1/monitors/target/hardware/999999/pause", headers=auth_headers)
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_compute_unit(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.60")
+    cu = factories.compute_unit(hardware_id=hw.id, ip_address="192.0.2.61")
+
+    resp = await client.post(f"/api/v1/monitors/target/compute_unit/{cu.id}", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["check_type"] == "icmp"
+    assert body["target_type"] == "compute_unit" and body["target_id"] == cu.id
+
+    # idempotent
+    again = await client.post(f"/api/v1/monitors/target/compute_unit/{cu.id}", headers=auth_headers)
+    assert again.json()["id"] == body["id"]
+
+    for action in ("pause", "resume", "check"):
+        resp = await client.post(
+            f"/api/v1/monitors/target/compute_unit/{cu.id}/{action}", headers=auth_headers
+        )
+        assert resp.status_code == 200, action
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_service_uses_http(client, auth_headers, factories):
+    svc = factories.service(name="grafana", url="https://grafana.lan/login")
+    resp = await client.post(f"/api/v1/monitors/target/service/{svc.id}", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["check_type"] == "http"
+    assert body["host"] == "grafana.lan"
+    assert body["config"] == {"url": "https://grafana.lan/login"}
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_external_node(client, auth_headers, factories):
+    node = factories.external_node(ip_address="api.example.com")
+    resp = await client.post(
+        f"/api/v1/monitors/target/external_node/{node.id}", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["check_type"] == "icmp"
+    assert body["host"] == "api.example.com"
+    assert body["target_type"] == "external_node" and body["target_id"] == node.id
+
+    summary = await client.get(
+        "/api/v1/monitors/target-summary",
+        headers=auth_headers,
+        params={"target_type": "external_node"},
+    )
+    assert [r["target_id"] for r in summary.json()] == [node.id]
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_accepts_overrides(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.62")
+    resp = await client.post(
+        f"/api/v1/monitors/target/hardware/{hw.id}",
+        headers=auth_headers,
+        json={"check_type": "tcp", "config": {"port": 22}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["check_type"] == "tcp"
+    assert resp.json()["config"] == {"port": 22}
+
+
+@pytest.mark.asyncio
+async def test_target_quick_monitor_invalid_config_422(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.63")
+    resp = await client.post(
+        f"/api/v1/monitors/target/hardware/{hw.id}",
+        headers=auth_headers,
+        json={"check_type": "tcp", "config": {"bogus": 1}},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_target_unknown_type_422(client, auth_headers):
+    resp = await client.post("/api/v1/monitors/target/nonsense/1", headers=auth_headers)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_target_unprobeable_404(client, auth_headers, factories):
+    svc = factories.service(name="no-address")
+    assert (
+        await client.post(f"/api/v1/monitors/target/service/{svc.id}", headers=auth_headers)
+    ).status_code == 404
+    assert (
+        await client.post("/api/v1/monitors/target/compute_unit/999999", headers=auth_headers)
+    ).status_code == 404
+    assert (
+        await client.post("/api/v1/monitors/target/service/999999/pause", headers=auth_headers)
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_target_summary(client, auth_headers, factories):
+    hw = factories.hardware(ip_address="192.0.2.64")
+    cu = factories.compute_unit(hardware_id=hw.id, ip_address="192.0.2.65")
+    await client.post(f"/api/v1/monitors/target/compute_unit/{cu.id}", headers=auth_headers)
+
+    resp = await client.get(
+        "/api/v1/monitors/target-summary",
+        headers=auth_headers,
+        params={"target_type": "compute_unit"},
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert len(rows) == 1
+    assert rows[0]["target_id"] == cu.id
+    assert rows[0]["enabled"] is True
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["monitor_ids"] == [rows[0]["monitor_id"]]
+
+    scoped = await client.get(
+        "/api/v1/monitors/target-summary",
+        headers=auth_headers,
+        params={"target_type": "compute_unit", "target_ids": [999999]},
+    )
+    assert scoped.json() == []
+
+    bad = await client.get(
+        "/api/v1/monitors/target-summary", headers=auth_headers, params={"target_type": "nope"}
+    )
+    assert bad.status_code == 422

@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-object-injection */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity } from 'lucide-react';
@@ -18,35 +17,7 @@ import { SkeletonTable } from '../components/common/SkeletonTable';
 import { useToast } from '../components/common/Toast';
 import CheckHistoryBar from '../components/monitors/CheckHistoryBar';
 import MonitorForm from '../components/monitors/MonitorForm';
-
-const STATUS_LABEL = { up: 'Up', down: 'Down', pending: 'Pending', maintenance: 'Maintenance' };
-const STATUS_COLORS = {
-  up: 'var(--color-success, #22c55e)',
-  down: 'var(--color-danger, #ef4444)',
-  pending: 'var(--color-warning, #eab308)',
-  maintenance: 'var(--color-info, #3b82f6)',
-  paused: 'var(--color-muted, #9ca3af)',
-};
-
-function StatusPill({ status, enabled }) {
-  const key = enabled ? status : 'paused';
-  const label = enabled ? STATUS_LABEL[status] || status : 'Paused';
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: 999,
-        fontSize: 12,
-        fontWeight: 600,
-        color: '#fff',
-        background: STATUS_COLORS[key] || STATUS_COLORS.paused,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
+import StatusPill from '../components/monitors/StatusPill';
 
 export default function MonitorsPage() {
   const navigate = useNavigate();

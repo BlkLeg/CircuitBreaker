@@ -97,10 +97,10 @@ vi.mock('../api/client', () => {
 });
 
 vi.mock('../api/monitor.js', () => ({
-  createHardwareMonitor: vi.fn(),
-  pauseHardwareMonitor: vi.fn(),
-  resumeHardwareMonitor: vi.fn(),
-  runHardwareCheck: vi.fn(),
+  createTargetMonitor: vi.fn().mockResolvedValue({ data: {} }),
+  pauseTargetMonitor: vi.fn().mockResolvedValue({ data: {} }),
+  resumeTargetMonitor: vi.fn().mockResolvedValue({ data: {} }),
+  runTargetCheck: vi.fn().mockResolvedValue({ data: {} }),
 }));
 
 vi.mock('react-router-dom', () => ({

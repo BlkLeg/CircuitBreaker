@@ -187,6 +187,15 @@ export const NODE_TYPE_ROUTES = new Map([
   ['external', '/external-nodes'],
 ]);
 
+// Map node type → monitor target type. Only these node types can be probed by
+// the check engine, so only they get the monitor sidebar/context-menu actions.
+export const MONITOR_TARGET_TYPES = new Map([
+  ['hardware', 'hardware'],
+  ['compute', 'compute_unit'],
+  ['service', 'service'],
+  ['external', 'external_node'],
+]);
+
 export const BASE_NODE_STYLE = {
   background: 'transparent',
   border: 'none',

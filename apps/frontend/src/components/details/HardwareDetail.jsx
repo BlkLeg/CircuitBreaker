@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import PropTypes from 'prop-types';
 import Drawer from '../common/Drawer';
 import MapAssignSection from './MapAssignSection';
+import MonitorPanel from '../monitors/MonitorPanel';
 import logger from '../../utils/logger';
 import DocsPanel from '../common/DocsPanel';
 import {
@@ -776,6 +777,8 @@ function HardwareDetail({ hardware, isOpen, onClose }) {
       <MapAssignSection entityType="hardware" entityId={hardware?.id} />
 
       <TelemetryPanel hardwareId={hardware.id} role={hardware.role} />
+
+      <MonitorPanel targetType="hardware" targetId={hardware.id} />
 
       <style>{`
         .tabs { display: flex; border-bottom: 1px solid var(--color-border); gap: 16px; flex-wrap: wrap; }

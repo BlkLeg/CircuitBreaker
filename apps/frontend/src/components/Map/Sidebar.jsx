@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { telemetryApi, docsApi, servicesApi } from '../../api/client';
+import { MONITOR_TARGET_TYPES } from '../map/mapConstants';
 
 function formatSpeedLabel(mbps) {
   const value = Number(mbps) || 0;
@@ -705,7 +706,7 @@ export default function Sidebar({
 
             <SidebarTelemetryBlock node={node} />
 
-            {node?.originalType === 'hardware' && onMonitorAction && (
+            {MONITOR_TARGET_TYPES.has(node?.originalType) && onMonitorAction && (
               <div
                 style={{
                   marginBottom: 12,
@@ -1108,6 +1109,6 @@ Sidebar.propTypes = {
   onOpenInHud: PropTypes.func,
   /** Called with { left, top, right, bottom } whenever the panel repositions, or null when hidden */
   onBoundsChange: PropTypes.func,
-  /** Called with 'monitor_create' | 'monitor_toggle' | 'monitor_check_now' for hardware nodes */
+  /** Called with 'monitor_create' | 'monitor_toggle' | 'monitor_check_now' for monitorable nodes */
   onMonitorAction: PropTypes.func,
 };

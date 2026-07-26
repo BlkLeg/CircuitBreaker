@@ -136,18 +136,25 @@ class MonitorHistoryPoint(BaseModel):
     value: float
 
 
-class HardwareMonitorSummary(BaseModel):
-    """Legacy synthesized per-hardware view (map + integrations panels)."""
+class TargetMonitorCreate(BaseModel):
+    """Optional overrides when quick-creating a monitor for an inventory entity.
 
-    id: int
-    hardware_id: int
+    Omit both and the target resolver picks a sensible default per entity type.
+    """
+
+    check_type: CheckType | None = None
+    config: dict | None = None
+
+
+class TargetMonitorSummary(BaseModel):
+    """Per-target monitor rollup for the inventory pages, drawers, and map."""
+
+    target_type: str
+    target_id: int
+    monitor_id: int
+    monitor_ids: list[int]
     enabled: bool
-    interval_secs: int
-    probe_methods: list[str]
-    last_status: str
-    last_checked_at: str | None
-    latency_ms: float | None
-    consecutive_failures: int
-    uptime_pct_24h: float | None
-    created_at: str
-    updated_at: str
+    status: str
+    latency_ms: float | None = None
+    uptime_pct_24h: float | None = None
+    last_polled_at: datetime | None = None

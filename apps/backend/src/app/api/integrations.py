@@ -157,7 +157,7 @@ def create_integration(
 
 @router.get("/monitors", response_model=list[IntegrationMonitorRead])
 def list_all_monitors(db: Session = Depends(get_db)) -> list[IntegrationMonitorRead]:
-    """All monitors across all integrations — used by StatusGroupBuilder."""
+    """All monitors across all integrations — used by the integrations settings panel."""
     rows = (
         db.query(IntegrationMonitor, Integration.name)
         .join(Integration, IntegrationMonitor.integration_id == Integration.id)

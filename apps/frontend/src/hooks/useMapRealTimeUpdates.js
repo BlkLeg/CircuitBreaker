@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { discoveryApi, telemetryApi } from '../api/client';
-import { getHardwareSummary } from '../api/monitor';
+import { getTargetSummary } from '../api/monitor';
+import { MONITOR_TARGET_TYPES } from '../components/map/mapConstants';
 import { discoveryEmitter } from './useDiscoveryStream';
 import { telemetryEmitter } from './useTelemetryStream';
 import { getPendingResults } from '../api/discovery';
@@ -175,16 +176,19 @@ export function useMapRealTimeUpdates({
     };
   }, [setNodes, nodesRef, unmountedRef, telemetryConnected]);
 
-  // Monitor polling — refresh every 60 s so node latency badges and sidebar stay live
+  // Monitor polling — refresh every 60 s so node latency badges and sidebar stay
+  // live for every monitorable entity type (hardware, compute, service, external).
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
         if (unmountedRef?.current) return;
-        const res = await getHardwareSummary();
+        const responses = await Promise.all(
+          [...MONITOR_TARGET_TYPES.values()].map((targetType) => getTargetSummary(targetType))
+        );
         if (unmountedRef?.current) return;
-        const monitors = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        const summaries = responses.flatMap((res) => (Array.isArray(res?.data) ? res.data : []));
         setNodes((prev) =>
-          applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, monitors)
+          applyMonitorUpdates(nodesRef.current.length ? nodesRef.current : prev, summaries)
         );
       } catch (err) {
         console.warn('Monitor polling failed:', err);

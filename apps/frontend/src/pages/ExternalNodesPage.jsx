@@ -12,6 +12,9 @@ import Drawer from '../components/common/Drawer';
 import { useToast } from '../components/common/Toast';
 import { useSettings } from '../context/SettingsContext';
 import { validateDuplicateName } from '../utils/validation';
+import { useTargetMonitors } from '../hooks/useTargetMonitors';
+import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
+import MonitorPanel from '../components/monitors/MonitorPanel';
 
 const PROVIDER_OPTIONS = [
   'AWS',
@@ -171,9 +174,34 @@ function ExternalNodesPage() {
     fetchTags();
   }, [fetchTags]);
 
+  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitors = useTargetMonitors('external_node', monitorTargetIds);
+
+  const monitorAction = useCallback(
+    async (fn, successMsg) => {
+      try {
+        await fn();
+        toast.success(successMsg);
+      } catch (err) {
+        const status = err?.response?.status;
+        toast.error(
+          status === 404
+            ? 'No address to probe — add an IP address or hostname first.'
+            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
+        );
+      }
+    },
+    [toast]
+  );
+
   const COLUMNS_WITH_TAGS = useMemo(
     () => [
       ...COLUMNS,
+      {
+        key: 'monitor',
+        label: 'Monitor',
+        render: (_, row) => <MonitorStatusCell state={monitors.byId[row.id]} />,
+      },
       {
         key: 'tags',
         label: 'Tags',
@@ -193,7 +221,7 @@ function ExternalNodesPage() {
         ),
       },
     ],
-    [allTags, fetchData, fetchTags, COLUMNS]
+    [allTags, fetchData, fetchTags, COLUMNS, monitors.byId]
   );
 
   const handleCellSave = useCallback(
@@ -387,6 +415,15 @@ function ExternalNodesPage() {
             setShowForm(true);
           }}
           onDelete={handleDelete}
+          renderMonitorAction={(row) => (
+            <MonitorCell
+              state={monitors.byId[row.id]}
+              onEnable={() => monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')}
+              onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
+              onResume={() => monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')}
+              onCheckNow={() => monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')}
+            />
+          )}
           onRowClick={openDetail}
           editableColumns={['name', 'provider', 'kind', 'region', 'ip_address', 'environment']}
           onCellSave={handleCellSave}
@@ -489,6 +526,8 @@ function ExternalNodesPage() {
                 </ul>
               )}
             </div>
+
+            <MonitorPanel targetType="external_node" targetId={detailTarget.id} />
           </div>
         )}
       </Drawer>

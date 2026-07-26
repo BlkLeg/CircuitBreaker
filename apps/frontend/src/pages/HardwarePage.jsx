@@ -7,7 +7,6 @@ import SearchBox from '../components/SearchBox';
 import TagFilter from '../components/TagFilter';
 import TagsCell from '../components/TagsCell';
 import { hardwareApi, clustersApi, computeUnitsApi, tagsApi } from '../api/client';
-import { integrationsApi } from '../api/integrations.js';
 import HardwareDetail from '../components/details/HardwareDetail';
 
 // 15-second TTL cache for the cluster list — refreshed on tab switch, invalidated after mutations
@@ -23,6 +22,8 @@ import IconPickerModal, { IconImg } from '../components/common/IconPickerModal';
 import { useSettings } from '../context/SettingsContext';
 import { useToast } from '../components/common/Toast';
 import { validateIpAddress, validateDuplicateName } from '../utils/validation';
+import { useTargetMonitors } from '../hooks/useTargetMonitors';
+import MonitorCell, { MonitorStatusCell } from '../components/monitors/MonitorCell';
 
 const TAIL_COLUMNS = [
   {
@@ -318,6 +319,9 @@ function HardwarePage() {
     if (activeTab === 'clusters') fetchClusters();
   }, [activeTab, fetchClusters]);
 
+  const monitorTargetIds = useMemo(() => items.map((i) => i.id), [items]);
+  const monitors = useTargetMonitors('hardware', monitorTargetIds);
+
   const COLUMNS = useMemo(
     () => [
       { key: 'id', label: 'ID' },
@@ -348,6 +352,11 @@ function HardwarePage() {
       },
       ...TAIL_COLUMNS,
       {
+        key: 'monitor',
+        label: 'Monitor',
+        render: (_, row) => <MonitorStatusCell state={monitors.byId[row.id]} />,
+      },
+      {
         key: 'tags',
         label: 'Tags',
         render: (v, row) => (
@@ -366,7 +375,7 @@ function HardwarePage() {
         ),
       },
     ],
-    [vendorIconMode, allTags, fetchData, fetchTags, HARDWARE_ROLE_LABELS]
+    [vendorIconMode, allTags, fetchData, fetchTags, HARDWARE_ROLE_LABELS, monitors.byId]
   );
 
   const HARDWARE_EDITABLE = [
@@ -486,19 +495,22 @@ function HardwarePage() {
     });
   };
 
-  const handleAddMonitor = async (row) => {
-    try {
-      await integrationsApi.createNativeMonitor({ entity_type: 'hardware', entity_id: row.id });
-      toast.success('Monitor created — add it to a status page group to make it visible.');
-    } catch (err) {
-      const status = err?.response?.status;
-      if (status === 409) {
-        toast.error('Monitor already exists for this entity.');
-      } else {
-        toast.error(err?.response?.data?.detail || err.message || 'Failed to create monitor.');
+  const monitorAction = useCallback(
+    async (fn, successMsg) => {
+      try {
+        await fn();
+        toast.success(successMsg);
+      } catch (err) {
+        const status = err?.response?.status;
+        toast.error(
+          status === 404
+            ? 'No address to probe — add an IP address or hostname first.'
+            : err?.response?.data?.detail || err.message || 'Failed to update monitoring.'
+        );
       }
-    }
-  };
+    },
+    [toast]
+  );
 
   const handleClusterSubmit = async (values) => {
     try {
@@ -621,7 +633,21 @@ function HardwarePage() {
                 setShowForm(true);
               }}
               onDelete={handleDelete}
-              onMonitor={handleAddMonitor}
+              renderMonitorAction={(row) => (
+                <MonitorCell
+                  state={monitors.byId[row.id]}
+                  onEnable={() =>
+                    monitorAction(() => monitors.enable(row.id), 'Monitoring enabled.')
+                  }
+                  onPause={() => monitorAction(() => monitors.pause(row.id), 'Monitoring paused.')}
+                  onResume={() =>
+                    monitorAction(() => monitors.resume(row.id), 'Monitoring resumed.')
+                  }
+                  onCheckNow={() =>
+                    monitorAction(() => monitors.checkNow(row.id), 'Probe triggered.')
+                  }
+                />
+              )}
               onRowClick={(row) => setDetailTarget(row)}
               editableColumns={HARDWARE_EDITABLE}
               onCellSave={handleCellSave}

@@ -23,7 +23,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { mapsApi } from '../../api/maps';
-import { DEVICE_ICON_MAP } from './mapConstants';
+import { DEVICE_ICON_MAP, MONITOR_TARGET_TYPES } from './mapConstants';
 
 // Curated list of icons available in the icon picker (role-based keys from DEVICE_ICON_MAP)
 const ICON_PICKER_OPTIONS = [
@@ -572,7 +572,7 @@ function ContextMenu({
           </button>
         )}
 
-        {entityType === 'hardware' && (
+        {MONITOR_TARGET_TYPES.has(entityType) && (
           <>
             <div className="tw-my-1 tw-border-t tw-border-cb-border" />
             {node.data?.monitor_status != null ? (

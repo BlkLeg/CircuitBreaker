@@ -3,7 +3,7 @@
  * No React dependencies — safe to import from any module.
  */
 
-import { ENTITY_FIELDS } from '../components/map/mapConstants';
+import { ENTITY_FIELDS, MONITOR_TARGET_TYPES } from '../components/map/mapConstants';
 import { validateIpAddress } from './validation';
 import { servicesApi, computeUnitsApi, storageApi } from '../api/client';
 
@@ -24,25 +24,41 @@ export function applyTelemetryUpdate(current, nodeId, res) {
   });
 }
 
-export function applyMonitorUpdates(current, monitors) {
-  const byHwId = {};
-  monitors.forEach((m) => {
-    byHwId[m.hardware_id] = m;
-  });
+export const UNMONITORED_NODE_FIELDS = {
+  monitor_enabled: null,
+  monitor_id: null,
+  monitor_status: null,
+  monitor_latency_ms: null,
+  monitor_last_checked_at: null,
+  monitor_uptime_pct_24h: null,
+};
+
+/**
+ * Fold per-target monitor rollups (GET /monitors/target-summary) onto map nodes.
+ * Rows are matched by monitor target type + entity id, so hardware, compute
+ * units, services and external nodes all stay live.
+ */
+export function applyMonitorUpdates(current, summaries) {
+  const byTarget = new Map(summaries.map((row) => [`${row.target_type}:${row.target_id}`, row]));
   return current.map((cn) => {
-    if (cn.originalType !== 'hardware') return cn;
-    const m = byHwId[cn._refId];
-    if (!m) return cn;
+    const targetType = MONITOR_TARGET_TYPES.get(cn.originalType);
+    if (!targetType) return cn;
+    const row = byTarget.get(`${targetType}:${cn._refId}`);
+    if (!row) {
+      // Monitoring was removed elsewhere — drop the stale badge.
+      if (cn.data?.monitor_id == null) return cn;
+      return { ...cn, data: { ...cn.data, ...UNMONITORED_NODE_FIELDS } };
+    }
     return {
       ...cn,
       data: {
         ...cn.data,
-        monitor_enabled: m.enabled ?? true,
-        monitor_id: m.id ?? null,
-        monitor_status: m.last_status ?? null,
-        monitor_latency_ms: m.latency_ms ?? null,
-        monitor_last_checked_at: m.last_checked_at ?? null,
-        monitor_uptime_pct_24h: m.uptime_pct_24h ?? null,
+        monitor_enabled: row.enabled ?? true,
+        monitor_id: row.monitor_id ?? null,
+        monitor_status: row.status ?? null,
+        monitor_latency_ms: row.latency_ms ?? null,
+        monitor_last_checked_at: row.last_polled_at ?? null,
+        monitor_uptime_pct_24h: row.uptime_pct_24h ?? null,
       },
     };
   });

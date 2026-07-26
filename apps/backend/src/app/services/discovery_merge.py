@@ -14,8 +14,6 @@ from app.core.time import utcnow_iso
 from app.db.models import (
     AppSettings,
     Hardware,
-    Integration,
-    IntegrationMonitor,
     KbOui,
     ScanResult,
     Service,
@@ -54,58 +52,34 @@ def _assign_to_default_map(db: Session, entity_type: str, entity_id: int) -> Non
         db.flush()
 
 
-def _maybe_auto_create_native_monitor(db: Session, hardware: Hardware) -> None:
-    """If auto_monitor_on_discovery is enabled, create a native monitor for new hardware.
+def _maybe_auto_create_monitor(db: Session, hardware: Hardware) -> None:
+    """If auto_monitor_on_discovery is enabled, monitor newly discovered hardware.
 
-    Non-blocking: exceptions are caught so they never roll back the caller's transaction.
-    Call this after db.flush() so hardware.id is populated, but before db.commit().
+    Creates a MonitorItem on the native monitoring engine (idempotent per
+    hardware + check type). Non-blocking: exceptions are caught so they never
+    roll back the caller's transaction. Call this after db.flush() so
+    hardware.id is populated, but before db.commit().
     """
     try:
         settings = db.query(AppSettings).first()
         if not settings or not settings.auto_monitor_on_discovery:
             return
-        native = db.query(Integration).filter(Integration.type == "native").first()
-        if not native:
-            return
-        # Idempotent — skip if a monitor already exists for this hardware
-        existing = (
-            db.query(IntegrationMonitor)
-            .filter(
-                IntegrationMonitor.integration_id == native.id,
-                IntegrationMonitor.linked_hardware_id == hardware.id,
-            )
-            .first()
-        )
-        if existing:
-            return
-        from app.integrations.native_probe import derive_probe_config
+        from app.services import monitor_service
 
-        probe_type, probe_target, probe_port = derive_probe_config(hardware=hardware)
-        if not probe_target:
+        # Build-only: the caller owns this transaction and commits it.
+        item = monitor_service._build_target_monitor(db, "hardware", hardware.id)
+        if item is None:
             return  # nothing to probe
-        monitor = IntegrationMonitor(
-            integration_id=native.id,
-            external_id=f"native-hw-{hardware.id}",
-            name=hardware.name,
-            linked_hardware_id=hardware.id,
-            probe_type=probe_type,
-            probe_target=probe_target,
-            probe_port=probe_port,
-            probe_interval_s=60,
-            status="pending",
-        )
-        db.add(monitor)
         logger.info(
-            "Auto-created native monitor for hardware %d (%s) probe=%s target=%s",
+            "Auto-created monitor %s for hardware %d (%s) check=%s host=%s",
+            item.id,
             hardware.id,
             hardware.name,
-            probe_type,
-            probe_target,
+            item.check_type,
+            item.host,
         )
     except Exception:
-        logger.exception(
-            "Failed to auto-create native monitor for hardware %d — continuing", hardware.id
-        )
+        logger.exception("Failed to auto-create monitor for hardware %d — continuing", hardware.id)
 
 
 async def _emit_result_processed_event(db: Session, result_id: int, status: str) -> None:
@@ -497,7 +471,7 @@ def merge_scan_result(
                         setattr(hw, k, v)
                 db.add(hw)
                 db.flush()
-                _maybe_auto_create_native_monitor(db, hw)
+                _maybe_auto_create_monitor(db, hw)
                 _assign_to_default_map(db, "hardware", hw.id)
 
                 result.matched_entity_type = "hardware"

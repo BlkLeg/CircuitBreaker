@@ -544,22 +544,6 @@ export const topologiesApi = {
   bulkNodes: (id, nodes) => client.put(`/topologies/${id}/nodes`, { nodes }),
 };
 
-export const statusApi = {
-  listPages: () => client.get('/status/pages'),
-  createPage: (data) => client.post('/status/pages', data),
-  updatePage: (id, data) => client.patch(`/status/pages/${id}`, data),
-  deletePage: (id) => client.delete(`/status/pages/${id}`),
-  listGroups: (pageId) => client.get(`/status/pages/${pageId}/groups`),
-  createGroup: (data) => client.post('/status/groups', data),
-  bulkCreateGroup: (data) => client.post('/status/groups/bulk', data),
-  updateGroup: (id, data) => client.patch(`/status/groups/${id}`, data),
-  deleteGroup: (id) => client.delete(`/status/groups/${id}`),
-  history: (params) => client.get('/status/history', { params }),
-  dashboardV2: (params) => client.get('/status/dashboard/v2', { params }),
-  availableEntities: (params) => client.get('/status/available-entities', { params }),
-  refresh: () => client.post('/status/refresh'),
-};
-
 export const racksApi = {
   list: () => client.get('/racks'),
   get: (id) => client.get(`/racks/${id}`),

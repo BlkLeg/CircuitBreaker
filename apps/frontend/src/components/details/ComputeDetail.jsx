@@ -12,6 +12,7 @@ import { getOsOption } from '../../icons/osOptions';
 import { CPU_BRAND_MAP } from '../../config/cpuBrands';
 import VulnerabilityPanel from './VulnerabilityPanel';
 import MapAssignSection from './MapAssignSection';
+import MonitorPanel from '../monitors/MonitorPanel';
 
 function ComputeDetail({ compute = null, isOpen, onClose }) {
   const toast = useToast();
@@ -481,6 +482,8 @@ function ComputeDetail({ compute = null, isOpen, onClose }) {
         .field-group .field-label { display: block; font-size: 0.85rem; color: var(--color-text-muted); margin-bottom: 4px; }
       `}</style>
       <MapAssignSection entityType="compute" entityId={compute?.id} />
+
+      <MonitorPanel targetType="compute_unit" targetId={compute.id} />
       <ConfirmDialog
         open={confirmState.open}
         message={confirmState.message}

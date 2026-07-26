@@ -300,6 +300,24 @@ class PlaceNodeInput(BaseModel):
     environment: str = "default"
 
 
+# Graph include-key → monitor target type, for the node types the check engine probes.
+_MONITOR_TARGET_TYPES = {
+    "hardware": "hardware",
+    "compute": "compute_unit",
+    "services": "service",
+    "external": "external_node",
+}
+
+_UNMONITORED_FIELDS: dict[str, Any] = {
+    "monitor_id": None,
+    "monitor_enabled": None,
+    "monitor_status": None,
+    "monitor_latency_ms": None,
+    "monitor_last_checked_at": None,
+    "monitor_uptime_pct_24h": None,
+}
+
+
 def build_topology_graph(
     db: Session,
     environment: str | None = None,
@@ -360,6 +378,32 @@ def build_topology_graph(
     def get_docs(etype: Any, eid: Any) -> list[Any]:
         result: list[Any] = entity_docs_map.get((etype, eid), [])
         return result
+
+    # Monitor rollups for every node type the check engine can probe, so the map,
+    # its sidebar, and its context menu offer the same one-click monitoring as the
+    # inventory pages. Absent from the map ⇒ that entity is not monitored.
+    from app.services import monitor_service
+
+    monitor_rollups: dict[tuple[str, int], dict] = {}
+    for include_key, target_type in _MONITOR_TARGET_TYPES.items():
+        if include_key not in include_set:
+            continue
+        for row in monitor_service.list_target_summaries(db, target_type):
+            monitor_rollups[(target_type, row["target_id"])] = row
+
+    def monitor_fields(target_type: str, entity_id: int) -> dict[str, Any]:
+        row = monitor_rollups.get((target_type, entity_id))
+        if row is None:
+            return dict(_UNMONITORED_FIELDS)
+        polled = row["last_polled_at"]
+        return {
+            "monitor_id": row["monitor_id"],
+            "monitor_enabled": row["enabled"],
+            "monitor_status": row["status"],
+            "monitor_latency_ms": row["latency_ms"],
+            "monitor_last_checked_at": polled.isoformat() if polled is not None else None,
+            "monitor_uptime_pct_24h": row["uptime_pct_24h"],
+        }
 
     # Pre-build compute_id → [storage_pool_names] via service→storage relationships
     cu_storage_pools: dict[int, list[str]] = {}
@@ -495,18 +539,7 @@ def build_topology_graph(
             selectinload(Hardware.storage_items),
         )
 
-        # Execute once; reuse list for monitor batch-load and node iteration.
         _all_hw = db.execute(hw_query).unique().scalars().all()
-        _all_hw_ids = [hw.id for hw in _all_hw]
-
-        from app.services import monitor_service
-
-        _monitors = (
-            monitor_service.list_hardware_summaries(db, hardware_ids=_all_hw_ids)
-            if _all_hw_ids
-            else []
-        )
-        _monitor_map = {m["hardware_id"]: m for m in _monitors}
 
         for hw in _all_hw:
             # Build storage_summary by aggregating attached storage items
@@ -560,18 +593,7 @@ def build_topology_graph(
                     "download_speed_mbps": hw.download_speed_mbps,
                     "upload_speed_mbps": hw.upload_speed_mbps,
                     "ip_conflict": conflict_map.get(("hardware", hw.id), False),
-                    "monitor_status": _monitor_map[hw.id]["last_status"]
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_latency_ms": _monitor_map[hw.id]["latency_ms"]
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_last_checked_at": _monitor_map[hw.id]["last_checked_at"]
-                    if hw.id in _monitor_map
-                    else None,
-                    "monitor_uptime_pct_24h": _monitor_map[hw.id]["uptime_pct_24h"]
-                    if hw.id in _monitor_map
-                    else None,
+                    **monitor_fields("hardware", hw.id),
                     "proxmox_node_name": hw.proxmox_node_name,
                     "integration_config_id": hw.integration_config_id,
                 }
@@ -658,6 +680,7 @@ def build_topology_graph(
                     "tags": get_tags("compute", cu.id),
                     "docs": get_docs("compute_unit", cu.id),
                     "ip_conflict": conflict_map.get(("compute_unit", cu.id), False),
+                    **monitor_fields("compute_unit", cu.id),
                     "proxmox_vmid": cu.proxmox_vmid,
                     "proxmox_type": cu.proxmox_type,
                     "proxmox_status": (
@@ -723,6 +746,7 @@ def build_topology_graph(
                     "tags": get_tags("services", svc.id),
                     "docs": get_docs("service", svc.id),
                     "ip_conflict": bool(svc.ip_conflict),
+                    **monitor_fields("service", svc.id),
                 }
             )
             # Link to Compute
@@ -899,6 +923,7 @@ def build_topology_graph(
                     "label": f"{ext.name} ({ext.provider})" if ext.provider else ext.name,
                     "icon_slug": ext.icon_slug,
                     "tags": get_tags("external", ext.id),
+                    **monitor_fields("external_node", ext.id),
                     "meta": {
                         "provider": ext.provider,
                         "kind": ext.kind,

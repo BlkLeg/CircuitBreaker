@@ -237,6 +237,13 @@ export function useMapDataLoad({
           integration_config_id: n.integration_config_id ?? null,
           device_type: n.device_type ?? null,
           docs: Array.isArray(n.docs) ? n.docs : [],
+          // Monitor rollup — null across the board when the entity isn't monitored.
+          monitor_id: n.monitor_id ?? null,
+          monitor_enabled: n.monitor_enabled ?? null,
+          monitor_status: n.monitor_status ?? null,
+          monitor_latency_ms: n.monitor_latency_ms ?? null,
+          monitor_last_checked_at: n.monitor_last_checked_at ?? null,
+          monitor_uptime_pct_24h: n.monitor_uptime_pct_24h ?? null,
         };
         return nodeShell;
       });
