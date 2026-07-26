@@ -62,12 +62,17 @@ def apply_proxmox_overrides(
    `target_type`/`target_id` (one query per entity type, no N+1).
 2. For each, determine whether Proxmox has a fresh opinion:
    - `Hardware`: `proxmox_node_name` is set AND `telemetry_last_polled` is
-     within the freshness window. A successful poll *is* the reachability
-     signal — `proxmox_telemetry.py`'s node-poll loop only updates
-     `telemetry_last_polled` when the Proxmox API call for that node
-     actually succeeds; a failed/unreachable node is skipped and its
-     timestamp goes stale. So "fresh timestamp" already means "Proxmox
-     confirms this node is up" — no separate boolean needed.
+     within the freshness window AND `telemetry_status` is not one of the
+     non-live statuses (`unknown`, `unreachable`, `error`, `unconfigured` —
+     see `telemetry_service._NON_LIVE_STATUSES`). Freshness alone is *not*
+     sufficient: `telemetry_last_polled` is also stamped unconditionally by
+     `proxmox_discovery.py`'s `_upsert_node()` (including for offline nodes)
+     and by the telemetry-ingest paths (`telemetry_service.py`,
+     `telemetry_ingest_worker.py`), so a genuinely down node can still carry
+     a "fresh" timestamp from one of those other writers. `telemetry_status`
+     is the field that reliably reflects whether the most recent write
+     actually confirmed the node live, across all of those writers — so
+     both freshness and a live `telemetry_status` are required together.
    - `ComputeUnit`: `proxmox_vmid` is set AND `telemetry_last_polled` (new
      column, see below) is within the freshness window. The running signal
      is `status == "active"` (already set by the existing VM-poll path).

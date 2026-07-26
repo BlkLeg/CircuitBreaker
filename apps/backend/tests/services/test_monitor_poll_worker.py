@@ -123,11 +123,15 @@ async def test_poll_one_returns_up_and_msg():
 
 async def test_process_batch_applies_proxmox_override(db_session, factories):
     factory, orig_close = _noop_close_factory(db_session)
-    hw = factories.hardware(proxmox_node_name="pve1", telemetry_last_polled=datetime.now(UTC))
+    hw = factories.hardware(
+        proxmox_node_name="pve1",
+        telemetry_last_polled=datetime.now(UTC),
+        telemetry_status="healthy",
+    )
     item = MonitorItem(
         name="pve-node",
         host="10.0.0.9",
-        check_type="fake_down",
+        check_type="icmp",
         target_type="hardware",
         target_id=hw.id,
         max_retries=0,
@@ -143,7 +147,7 @@ async def test_process_batch_applies_proxmox_override(db_session, factories):
         patch(
             "app.workers.monitor_poll_worker.COLLECTORS",
             {
-                "fake_down": lambda host, params: CheckResult(
+                "icmp": lambda host, params: CheckResult(
                     up=False, samples=[Sample("avail", 0.0)], msg="100% packet loss"
                 )
             },
@@ -157,7 +161,7 @@ async def test_process_batch_applies_proxmox_override(db_session, factories):
                     "target_type": "hardware",
                     "target_id": hw.id,
                     "host": item.host,
-                    "check_type": "fake_down",
+                    "check_type": "icmp",
                     "params": {},
                 }
             ],
