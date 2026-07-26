@@ -129,6 +129,26 @@ def db_session(setup_db):
         connection.close()
 
 
+@pytest_asyncio.fixture
+async def async_db_session(setup_db):
+    """Per-test ASYNC DB session (SAVEPOINT-based isolation), mirroring db_session
+    above. Needed for code paths that genuinely `await` AsyncSession calls (e.g.
+    proxmox_telemetry.py) rather than the sync ORM Session used everywhere else.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.async_session import async_engine
+
+    async with async_engine.connect() as connection:
+        outer_tx = await connection.begin()
+        session = AsyncSession(bind=connection, join_transaction_mode="create_savepoint")
+        try:
+            yield session
+        finally:
+            await session.close()
+            await outer_tx.rollback()
+
+
 # ── ASGI HTTP client ──────────────────────────────────────────────────────────
 
 

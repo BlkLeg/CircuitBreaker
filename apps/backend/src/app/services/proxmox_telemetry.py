@@ -498,6 +498,7 @@ async def poll_vm_telemetry(db: AsyncSession) -> dict[int, Exception | None]:
 
                     cu.proxmox_status = pve_status
                     cu.status = "active" if status.get("status") == "running" else "inactive"
+                    cu.telemetry_last_polled = now
 
                     db.add(
                         TelemetryTimeseries(
