@@ -14,6 +14,7 @@ from app.schemas.monitor import (
     MonitorOverview,
     MonitorRead,
     MonitorUpdate,
+    MonitorUptimeRead,
     TargetMonitorCreate,
     TargetMonitorSummary,
     TargetType,
@@ -223,7 +224,7 @@ def get_history(
     return monitor_service.get_history(db, monitor_id, metric=metric, hours=hours)
 
 
-@router.get("/{monitor_id}/uptime")
+@router.get("/{monitor_id}/uptime", response_model=MonitorUptimeRead)
 def get_uptime(monitor_id: int, db: Session = Depends(get_db)) -> Any:
     if not monitor_service.get_monitor(db, monitor_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)

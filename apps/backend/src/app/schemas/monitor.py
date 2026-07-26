@@ -145,6 +145,17 @@ class MonitorCheckPoint(BaseModel):
     created_at: datetime
 
 
+class MonitorUptimeRead(BaseModel):
+    """Availability across every window the detail page renders."""
+
+    pct_24h: float | None = None
+    pct_7d: float | None = None
+    pct_30d: float | None = None
+    pct_365d: float | None = None
+    pct_total: float | None = None
+    last_polled_at: datetime | None = None
+
+
 class MonitorOverview(MonitorRead):
     """A monitor plus the compact series the dashboard cards render.
 

@@ -68,7 +68,14 @@ async def test_missing_monitor_404(client, auth_headers):
 async def test_uptime_and_history_empty_ok(client, auth_headers):
     mid = (await _create(client, auth_headers)).json()["id"]
     uptime = await client.get(f"/api/v1/monitors/{mid}/uptime", headers=auth_headers)
-    assert uptime.json() == {"pct_24h": None}
+    assert uptime.json() == {
+        "pct_24h": None,
+        "pct_7d": None,
+        "pct_30d": None,
+        "pct_365d": None,
+        "pct_total": None,
+        "last_polled_at": None,
+    }
     history = await client.get(f"/api/v1/monitors/{mid}/history", headers=auth_headers)
     assert history.json() == []
 
