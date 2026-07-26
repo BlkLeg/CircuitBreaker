@@ -34,7 +34,7 @@ PYTHON ?= $(shell python3 -c "import sys; print('python3' if sys.version_info >=
 # ==============================================================================
 # CORE TARGETS
 # ==============================================================================
-.PHONY: help install dev backend backend-watch frontend migrate reset-oobe stop ensure-nmap
+.PHONY: help install dev backend backend-watch frontend monitor-workers migrate reset-oobe stop ensure-nmap
 
 help: ## Show available targets
 	awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -50,8 +50,11 @@ ensure-nmap: ## Fail early if the nmap binary is missing (discovery needs it)
 	  echo "ERROR: nmap not found. Install it (Fedora: sudo dnf install nmap; Debian: sudo apt install nmap) then re-run."; \
 	  exit 1; }
 
-dev: ensure-nmap deps-up stop ## Native backend + frontend + deps
-	trap 'kill 0; wait' EXIT; $(MAKE) --no-print-directory backend & $(MAKE) --no-print-directory frontend
+dev: ensure-nmap deps-up stop ## Native backend + frontend + monitor workers + deps
+	trap 'kill 0; wait' EXIT; \
+		$(MAKE) --no-print-directory backend & \
+		$(MAKE) --no-print-directory monitor-workers & \
+		$(MAKE) --no-print-directory frontend
 
 stop: ## Kill any process holding the dev ports
 	lsof -ti tcp:$(BACKEND_PORT) | xargs -r kill -9 || true
@@ -79,6 +82,22 @@ backend-watch:  ## Native backend WITH reload (post-fix only)
 frontend:  ## Native frontend
 	@echo "Starting frontend → http://localhost:5173"
 	cd $(FRONTEND_DIR) && npm start
+
+# The monitoring engine needs its own clock + poll workers (supervisord runs
+# these in the container). Without them monitors stay "pending" forever.
+monitor-workers:  ## Native monitor scheduler + poll worker
+	@echo "Starting monitor scheduler + poll worker"
+	cd $(BACKEND_DIR) && \
+		trap 'kill 0; wait' EXIT; \
+		for kind in monitor_scheduler monitor_poll; do \
+			CB_DATA_DIR="$(CURDIR)/$(BACKEND_DIR)/.dev-data" \
+			CB_DB_URL="$(CB_DB_URL_DEV)" \
+			CB_REDIS_URL="$(CB_REDIS_URL_DEV)" \
+			NATS_URL="$(CB_NATS_URL_DEV)" \
+			NATS_AUTH_TOKEN="$(NATS_AUTH_TOKEN_DEV)" \
+			PYTHONPATH=src $(CURDIR)/.venv/bin/python -m app.workers.main --type=$$kind & \
+		done; \
+		wait
 
 migrate: ## Run Alembic DB migrations
 	cd $(BACKEND_DIR) && CB_DB_URL="$(CB_DB_URL_DEV)" PYTHONPATH=src $(CURDIR)/.venv/bin/alembic upgrade head
