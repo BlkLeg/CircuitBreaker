@@ -14,11 +14,11 @@ export const STATUS_LABEL = {
 };
 
 export const STATUS_COLORS = {
-  up: 'var(--color-success, #22c55e)',
-  down: 'var(--color-danger, #ef4444)',
-  pending: 'var(--color-warning, #eab308)',
-  maintenance: 'var(--color-info, #3b82f6)',
-  paused: 'var(--color-muted, #9ca3af)',
+  up: 'var(--color-success)',
+  down: 'var(--color-danger)',
+  pending: 'var(--color-warning)',
+  maintenance: 'var(--color-info)',
+  paused: 'var(--color-muted)',
 };
 
 export default function StatusPill({ status, enabled = true, title }) {
