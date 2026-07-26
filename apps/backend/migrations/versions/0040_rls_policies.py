@@ -63,19 +63,14 @@ def upgrade() -> None:
         )
 
     # Ensure the application role bypasses RLS (it sets the variable itself)
-    # Check if role exists first before trying to alter it (fresh installs may not have it yet)
-    result = bind.execute(
-        sa.text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'breaker')")
-    )
-    if result.scalar():
-        try:
-            op.execute(sa.text("ALTER ROLE breaker SET row_security = off"))
-        except Exception as exc:  # noqa: BLE001
-            import logging
+    try:
+        op.execute(sa.text("ALTER ROLE breaker SET row_security = off"))
+    except Exception as exc:  # noqa: BLE001
+        import logging
 
-            logging.getLogger(__name__).warning(
-                "Could not set row_security=off on breaker role: %s (RLS may block queries)", exc
-            )
+        logging.getLogger(__name__).warning(
+            "Could not set row_security=off on breaker role: %s (RLS may block queries)", exc
+        )
 
 
 def downgrade() -> None:
