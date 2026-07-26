@@ -7,14 +7,18 @@ import socket
 import ssl
 import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from app.services.monitoring.collectors import CheckResult, Sample, register
 
+if TYPE_CHECKING:
+    import httpx
+
 _DEFAULT_RANGES = ["200-299"]
 
 
-def _request(url: str, params: dict) -> tuple[httpx.Response, float]:  # noqa: F821
+def _request(url: str, params: dict) -> tuple[httpx.Response, float]:
     """One HTTP request. Returns (response, latency_ms). Mocked in tests."""
     import httpx
 
@@ -72,6 +76,17 @@ def _json_path(data: object, path: str) -> object:
     return cur
 
 
+def _rdn_map(rdns: object) -> dict[str, str]:
+    """Flatten an ssl RDN sequence — (((key, value),), ...) — into a plain dict."""
+    out: dict[str, str] = {}
+    if not isinstance(rdns, tuple):
+        return out
+    for rdn in rdns:
+        if isinstance(rdn, tuple) and rdn and isinstance(rdn[0], tuple) and len(rdn[0]) == 2:
+            out[str(rdn[0][0])] = str(rdn[0][1])
+    return out
+
+
 def _tls_details(url: str, timeout: float) -> dict | None:
     """Best-effort certificate capture for https URLs. Never raises."""
     parsed = urlparse(url)
@@ -84,11 +99,15 @@ def _tls_details(url: str, timeout: float) -> dict | None:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as tls:
                 cert = tls.getpeercert()
+        if not cert:
+            return None
         not_after = cert.get("notAfter")
+        if not isinstance(not_after, str):
+            return None
         expires = datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=UTC)
         days = (expires - datetime.now(UTC)).days
-        subject = dict(x[0] for x in cert.get("subject", ()))
-        issuer = dict(x[0] for x in cert.get("issuer", ()))
+        subject = _rdn_map(cert.get("subject", ()))
+        issuer = _rdn_map(cert.get("issuer", ()))
         return {
             "tls": {
                 "subject_cn": subject.get("commonName"),

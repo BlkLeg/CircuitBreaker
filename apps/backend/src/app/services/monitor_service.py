@@ -64,7 +64,7 @@ def _latest_metric_map(db: Session, item_ids: list[int], metric: str) -> dict[in
         .order_by(TelemetryTimeseries.item_id, TelemetryTimeseries.ts.desc())
         .all()
     )
-    return {r.item_id: r.value for r in rows}
+    return {r.item_id: r.value for r in rows if r.item_id is not None}
 
 
 def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[int, float]:
