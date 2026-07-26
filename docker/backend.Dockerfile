@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     snmp \
     ipmitool \
     nmap \
+    iputils-ping \
     libpcap0.8 \
     postgresql-client \
     redis-server \
