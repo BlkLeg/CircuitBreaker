@@ -49,6 +49,7 @@ export default function MonitorDetailPage() {
 
   const status = statuses.get(monitorId)?.status || monitor.status;
   const tls = monitor.check_type === 'http' && monitor.config?.url?.startsWith('https');
+  const lastPolled = uptime?.last_polled_at ?? monitor.last_polled_at;
 
   const handleCheck = () =>
     runCheck(monitorId)
@@ -93,11 +94,7 @@ export default function MonitorDetailPage() {
         <dt className="text-muted">Total Uptime</dt>
         <dd>{uptime?.pct_total != null ? `${uptime.pct_total}%` : '—'}</dd>
         <dt className="text-muted">Last Polled</dt>
-        <dd>
-          {(uptime?.last_polled_at ?? monitor.last_polled_at)
-            ? new Date(uptime?.last_polled_at ?? monitor.last_polled_at).toLocaleString()
-            : '—'}
-        </dd>
+        <dd>{lastPolled ? new Date(lastPolled).toLocaleString() : '—'}</dd>
         <dt className="text-muted">24 Hour</dt>
         <dd>{uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}</dd>
         <dt className="text-muted">7-Day</dt>
