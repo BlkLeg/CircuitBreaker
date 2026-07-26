@@ -6,9 +6,10 @@ import CheckHistoryBar from '../components/monitors/CheckHistoryBar.jsx';
 
 describe('monitor status colours', () => {
   it('pulls every status colour from a theme token', () => {
-    for (const status of ['up', 'down', 'pending', 'maintenance']) {
+    const labels = { up: 'Up', down: 'Down', pending: 'Pending', maintenance: 'Maintenance' };
+    for (const [status, label] of Object.entries(labels)) {
       const { unmount } = render(<StatusPill status={status} />);
-      const pill = screen.getByText(new RegExp(status, 'i'));
+      const pill = screen.getByText(label);
       expect(pill.style.background).toContain('var(--color-');
       expect(pill.style.background).not.toMatch(/#[0-9a-f]{6}/i);
       unmount();

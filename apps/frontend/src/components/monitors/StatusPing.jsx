@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- key is one of our own status strings */
 import React from 'react';
 import PropTypes from 'prop-types';
 
