@@ -25,7 +25,9 @@ def pytest_configure(config):
     global _PG_CONTAINER
     from testcontainers.postgres import PostgresContainer
 
-    _PG_CONTAINER = PostgresContainer("postgres:16-alpine")
+    # TimescaleDB-on-pg16, not vanilla postgres: rollup_worker.py's
+    # calculate_daily_rollups uses time_bucket(), a TimescaleDB-only function.
+    _PG_CONTAINER = PostgresContainer("timescale/timescaledb:2.14.2-pg16")
     _PG_CONTAINER.start()
 
     # Settings() is a module-level singleton in config.py — set env before import
@@ -33,6 +35,16 @@ def pytest_configure(config):
     os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
     os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
     os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
+
+    import psycopg2
+
+    conn = psycopg2.connect(
+        _PG_CONTAINER.get_connection_url().replace("postgresql+psycopg2", "postgresql")
+    )
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+    conn.close()
 
 
 def pytest_unconfigure(config):
