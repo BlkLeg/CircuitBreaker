@@ -226,7 +226,10 @@ def viewer_headers(viewer_login):
 
 
 # ── Pytest markers ────────────────────────────────────────────────────────────
-# Note: pytest_configure_node is not a valid pytest hook; removed in pytest 9.x
+
+
+def pytest_configure_node(node):
+    pass
 
 
 pytest_plugins = ["pytest_asyncio"]
