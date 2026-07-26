@@ -24,7 +24,7 @@ _EXCLUDED_TABLES = {
     "audit_log",
     "certificates",
     "credentials",
-    "daily_uptime_stats",
+    "monitor_daily_stats",
     "integration_configs",
     "listener_events",
     "monitor_events",

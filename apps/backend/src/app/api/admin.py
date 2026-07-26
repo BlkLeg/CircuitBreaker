@@ -401,7 +401,7 @@ def _wipe_entities_keep_docs(db: Session) -> None:
         models.HardwareConnection,
         models.HardwareMonitor,
         models.UptimeEvent,
-        models.DailyUptimeStats,
+        models.MonitorDailyStats,
         models.TelemetryTimeseries,
         models.EntityTag,
         models.EntityDoc,

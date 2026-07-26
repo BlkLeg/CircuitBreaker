@@ -1,7 +1,7 @@
 """Worker to aggregate daily uptime stats.
 
-Runs periodically to aggregate UptimeEvents into DailyUptimeStats
-for efficient 24h uptime reporting.
+Runs periodically to aggregate raw telemetry into MonitorDailyStats
+for efficient long-range uptime reporting (365d, all-time).
 """
 
 import logging
@@ -10,40 +10,26 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.db.models import DailyUptimeStats, MonitorItem
+from app.db.models import MonitorDailyStats, MonitorItem
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 
 def calculate_daily_rollups(db: Session, target_date: str) -> None:
-    """Calculate and upsert daily uptime stats for all monitored hardware using telemetry."""
-    hardware_ids = db.scalars(
-        select(MonitorItem.target_id)
-        .where(MonitorItem.target_type == "hardware", MonitorItem.target_id.isnot(None))
-        .distinct()
-    ).all()
+    """Calculate and upsert daily uptime stats for every monitor using telemetry."""
+    item_ids = db.scalars(select(MonitorItem.id)).all()
 
     dt_start = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=UTC)
     dt_end = dt_start + timedelta(days=1)
 
-    for hw_id in hardware_ids:
-        items = db.scalars(
-            select(MonitorItem.id).where(
-                MonitorItem.target_type == "hardware", MonitorItem.target_id == hw_id
-            )
-        ).all()
-
-        if not items:
-            continue
-
-        # time_bucket by minute, max(value) tells if any item was up in that minute
+    for item_id in item_ids:
         query = text("""
             SELECT count(*) as up_minutes
             FROM (
                 SELECT time_bucket('1 minute', ts) as minute_bucket, max(value) as max_avail
                 FROM telemetry_timeseries
-                WHERE item_id = ANY(:item_ids) 
+                WHERE item_id = :item_id
                   AND metric = 'avail'
                   AND ts >= :start_ts AND ts < :end_ts
                 GROUP BY minute_bucket
@@ -52,21 +38,21 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
         """)
 
         up_minutes = (
-            db.scalar(query, {"item_ids": list(items), "start_ts": dt_start, "end_ts": dt_end}) or 0
+            db.scalar(query, {"item_id": item_id, "start_ts": dt_start, "end_ts": dt_end}) or 0
         )
 
         total_minutes = 24 * 60
 
         stat = db.scalar(
-            select(DailyUptimeStats).where(
-                DailyUptimeStats.hardware_id == hw_id,
-                DailyUptimeStats.date == target_date,
+            select(MonitorDailyStats).where(
+                MonitorDailyStats.item_id == item_id,
+                MonitorDailyStats.date == target_date,
             )
         )
 
         if not stat:
-            stat = DailyUptimeStats(
-                hardware_id=hw_id,
+            stat = MonitorDailyStats(
+                item_id=item_id,
                 date=target_date,
                 total_minutes=total_minutes,
                 uptime_minutes=int(up_minutes),
@@ -94,7 +80,7 @@ def _run_rollup_job_impl() -> None:
 
         log_worker_audit(
             action="rollup_failed",
-            entity_type="daily_uptime_stats",
+            entity_type="monitor_daily_stats",
             details=str(exc)[:200],
             severity="error",
             worker_name="rollup_worker",

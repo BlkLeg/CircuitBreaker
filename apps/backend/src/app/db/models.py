@@ -297,15 +297,15 @@ class UptimeEvent(Base):
     hardware: Mapped["Hardware"] = relationship("Hardware")
 
 
-class DailyUptimeStats(Base):
-    """Daily aggregated rollups for hardware uptime."""
+class MonitorDailyStats(Base):
+    """Daily aggregated uptime rollup for a monitor, across every target type."""
 
-    __tablename__ = "daily_uptime_stats"
-    __table_args__ = (UniqueConstraint("hardware_id", "date"),)
+    __tablename__ = "monitor_daily_stats"
+    __table_args__ = (UniqueConstraint("item_id", "date", name="uq_monitor_daily_stats_item_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    hardware_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey(_FK_HARDWARE_ID, ondelete="CASCADE"), nullable=False, index=True
+    item_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monitor_items.id", ondelete="CASCADE"), nullable=False, index=True
     )
     date: Mapped[str] = mapped_column(String, nullable=False)  # ISO date string YYYY-MM-DD
     total_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -314,8 +314,6 @@ class DailyUptimeStats(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
-
-    hardware: Mapped["Hardware"] = relationship("Hardware")
 
 
 class PrivacyScoreHistory(Base):
