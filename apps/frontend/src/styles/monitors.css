@@ -1,0 +1,363 @@
+/* ── Monitors dashboard ─────────────────────────────────────────────────────
+   The card wall on /monitors. Keyframes, :hover and prefers-reduced-motion
+   can't live in inline styles, which is why this page has a stylesheet while
+   the smaller monitor components style themselves inline. */
+
+/* Status ping — solid core plus an expanding ring, one per group heading. */
+.mon-ping {
+  position: relative;
+  flex: none;
+  display: inline-block;
+}
+.mon-ping[data-status='up'] {
+  --mon-ping-color: var(--color-success);
+}
+.mon-ping[data-status='down'] {
+  --mon-ping-color: var(--color-danger);
+}
+.mon-ping[data-status='pending'] {
+  --mon-ping-color: var(--color-warning);
+}
+.mon-ping[data-status='maintenance'] {
+  --mon-ping-color: var(--color-info);
+}
+.mon-ping[data-status='paused'] {
+  --mon-ping-color: var(--color-muted);
+}
+.mon-ping-core,
+.mon-ping-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--mon-ping-color);
+}
+.mon-ping-ring {
+  opacity: 0.7;
+  animation-name: mon-ripple;
+  animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  animation-iteration-count: infinite;
+}
+@keyframes mon-ripple {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  70%,
+  100% {
+    transform: scale(3.4);
+    opacity: 0;
+  }
+}
+
+/* Summary tiles — counts that double as the status filter. */
+.mon-tiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.mon-tile {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--color-text);
+  font: inherit;
+}
+.mon-tile:hover {
+  border-color: var(--color-primary);
+}
+.mon-tile[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+.mon-tile b {
+  display: block;
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+.mon-tile span {
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Toolbar — search, type chips, sort. */
+.mon-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.mon-search {
+  flex: 1 1 180px;
+  min-width: 140px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 5px 9px;
+  color: var(--color-text);
+  font-size: 0.8rem;
+}
+.mon-chip {
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.mon-chip:hover {
+  border-color: var(--color-primary);
+}
+.mon-chip[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb), 0.08);
+}
+
+/* Groups and the wall. */
+.mon-group {
+  margin-top: 14px;
+}
+.mon-group-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  margin: 0 0 7px;
+}
+.mon-group-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+.mon-wall {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 1280px) {
+  .mon-wall {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
+  .mon-wall {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mon-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .mon-wall {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Cards. */
+.mon-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-top: 2px solid var(--mon-status-color, var(--color-border));
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 120ms ease;
+}
+.mon-card[data-status='up'] {
+  --mon-status-color: var(--color-success);
+}
+.mon-card[data-status='down'] {
+  --mon-status-color: var(--color-danger);
+}
+.mon-card[data-status='pending'] {
+  --mon-status-color: var(--color-warning);
+}
+.mon-card[data-status='maintenance'] {
+  --mon-status-color: var(--color-info);
+}
+.mon-card[data-status='paused'] {
+  --mon-status-color: var(--color-muted);
+  opacity: 0.62;
+}
+.mon-card:hover {
+  border-color: var(--color-primary);
+}
+.mon-card[data-expanded='true'] {
+  grid-column: 1 / -1;
+  border-color: var(--color-primary);
+  opacity: 1;
+}
+.mon-card-face {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 9px 10px;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+.mon-card-face:focus-visible,
+.mon-tile:focus-visible,
+.mon-chip:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+.mon-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mon-card-name {
+  font-weight: 700;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mon-badge {
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  flex: none;
+}
+.mon-target {
+  color: var(--color-text-muted);
+  font-size: 0.64rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mon-card-mid {
+  min-height: 20px;
+  margin: 7px 0;
+}
+.mon-card-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.mon-headline {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--mon-status-color);
+}
+.mon-uptime {
+  color: var(--color-text-muted);
+  font-size: 0.64rem;
+}
+
+/* Sparkline. */
+.mon-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+}
+.mon-spark span {
+  width: 3px;
+  border-radius: 1px;
+  background: var(--color-primary);
+  opacity: 0.7;
+}
+
+/* Expanded body. */
+.mon-card-detail {
+  border-top: 1px solid var(--color-border);
+  padding: 10px;
+  animation: mon-expand 140ms ease-out;
+}
+@keyframes mon-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.mon-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+.mon-stats b {
+  display: block;
+  font-size: 0.95rem;
+}
+.mon-stats span {
+  color: var(--color-text-muted);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mon-events {
+  border-top: 1px solid var(--color-border);
+  margin-top: 8px;
+  padding-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  list-style: none;
+}
+.mon-events li {
+  display: flex;
+  gap: 8px;
+}
+.mon-events time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.mon-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+/* Empty and loading states. */
+.mon-empty {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 28px;
+  text-align: center;
+  margin-top: 16px;
+}
+.mon-skeleton {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  height: 96px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mon-ping-ring {
+    animation: none;
+    opacity: 0;
+  }
+  .mon-card-detail {
+    animation: none;
+  }
+  .mon-card {
+    transition: none;
+  }
+}

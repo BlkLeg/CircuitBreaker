@@ -1,15 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
-import {
   getMonitor,
   getMonitorEvents,
   getMonitorHistory,
@@ -21,48 +12,8 @@ import {
 import { useMonitorStream } from '../hooks/useMonitorStream';
 import { useToast } from '../components/common/Toast';
 import CheckHistoryBar from '../components/monitors/CheckHistoryBar';
+import LatencyChart from '../components/monitors/LatencyChart';
 import StatusPill from '../components/monitors/StatusPill';
-
-function LatencyChart({ points }) {
-  if (points.length < 2) return <p className="text-muted">Not enough data yet.</p>;
-  const data = points.map((p) => ({
-    ts: new Date(p.ts).getTime(),
-    value: p.value,
-  }));
-  return (
-    <ResponsiveContainer width="100%" height={160}>
-      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border, #333)" />
-        <XAxis
-          dataKey="ts"
-          type="number"
-          domain={['dataMin', 'dataMax']}
-          tickFormatter={(t) => new Date(t).toLocaleTimeString()}
-          stroke="var(--color-muted, #9ca3af)"
-          fontSize={11}
-        />
-        <YAxis
-          stroke="var(--color-muted, #9ca3af)"
-          fontSize={11}
-          tickFormatter={(v) => `${Math.round(v)}`}
-          width={40}
-        />
-        <Tooltip
-          labelFormatter={(t) => new Date(t).toLocaleString()}
-          formatter={(v) => [`${Math.round(v)} ms`, 'Latency']}
-        />
-        <Line
-          type="monotone"
-          dataKey="value"
-          stroke="var(--color-cb-primary, #3b82f6)"
-          strokeWidth={1.5}
-          dot={false}
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
 
 export default function MonitorDetailPage() {
   const { id } = useParams();
