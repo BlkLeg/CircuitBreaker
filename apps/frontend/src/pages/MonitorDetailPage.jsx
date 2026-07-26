@@ -36,7 +36,7 @@ export default function MonitorDetailPage() {
     setMonitor(m.data);
     setEvents(ev.data);
     setHistory(hist.data);
-    setUptime(up.data.pct_24h);
+    setUptime(up.data);
   }, [monitorId]);
 
   useEffect(() => {
@@ -90,10 +90,22 @@ export default function MonitorDetailPage() {
         <dd>{monitor.config?.url || monitor.host}</dd>
         <dt className="text-muted">Interval</dt>
         <dd>{monitor.interval_secs}s</dd>
-        <dt className="text-muted">Uptime (24h)</dt>
-        <dd>{uptime != null ? `${uptime}%` : '—'}</dd>
-        <dt className="text-muted">Last check</dt>
-        <dd>{monitor.last_polled_at ? new Date(monitor.last_polled_at).toLocaleString() : '—'}</dd>
+        <dt className="text-muted">Total Uptime</dt>
+        <dd>{uptime?.pct_total != null ? `${uptime.pct_total}%` : '—'}</dd>
+        <dt className="text-muted">Last Polled</dt>
+        <dd>
+          {(uptime?.last_polled_at ?? monitor.last_polled_at)
+            ? new Date(uptime?.last_polled_at ?? monitor.last_polled_at).toLocaleString()
+            : '—'}
+        </dd>
+        <dt className="text-muted">24 Hour</dt>
+        <dd>{uptime?.pct_24h != null ? `${uptime.pct_24h}%` : '—'}</dd>
+        <dt className="text-muted">7-Day</dt>
+        <dd>{uptime?.pct_7d != null ? `${uptime.pct_7d}%` : '—'}</dd>
+        <dt className="text-muted">30-Day</dt>
+        <dd>{uptime?.pct_30d != null ? `${uptime.pct_30d}%` : '—'}</dd>
+        <dt className="text-muted">365-Day</dt>
+        <dd>{uptime?.pct_365d != null ? `${uptime.pct_365d}%` : '—'}</dd>
       </dl>
 
       <section style={{ marginTop: 20 }}>
