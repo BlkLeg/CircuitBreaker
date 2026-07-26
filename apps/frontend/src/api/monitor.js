@@ -1,6 +1,8 @@
 import client from './client.jsx';
 
 export const listMonitors = (params = {}) => client.get('/monitors', { params });
+// One request for the whole dashboard: monitors + compact latency/check series.
+export const getMonitorsOverview = () => client.get('/monitors/overview');
 export const getMonitor = (id) => client.get(`/monitors/${id}`);
 export const createMonitor = (data) => client.post('/monitors', data);
 export const updateMonitor = (id, data) => client.patch(`/monitors/${id}`, data);

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 
@@ -231,3 +233,94 @@ async def test_target_summary(client, auth_headers, factories):
         "/api/v1/monitors/target-summary", headers=auth_headers, params={"target_type": "nope"}
     )
     assert bad.status_code == 422
+
+
+# ── Overview (the dashboard's single fetch) ──────────────────────────────────
+
+
+def _sample(mid, value, ts):
+    from app.db.models import TelemetryTimeseries
+
+    return TelemetryTimeseries(
+        entity_type="monitor",
+        entity_id=0,
+        item_id=mid,
+        metric="latency_ms",
+        value=value,
+        source="monitor",
+        ts=ts,
+    )
+
+
+def _event(mid, status, msg, ts):
+    from app.db.models import MonitorEvent
+
+    return MonitorEvent(item_id=mid, event_type=status, status_to=status, msg=msg, created_at=ts)
+
+
+@pytest.mark.asyncio
+async def test_overview_includes_series_and_checks(client, auth_headers, db_session):
+    mid = (await _create(client, auth_headers, name="overview-target")).json()["id"]
+    base = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    for i, value in enumerate([10.0, 20.0, 30.0]):
+        db_session.add(_sample(mid, value, base + timedelta(minutes=i)))
+    for i, status in enumerate(["up", "down", "up"]):
+        db_session.add(_event(mid, status, f"event {i}", base + timedelta(minutes=i)))
+    db_session.commit()
+
+    resp = await client.get("/api/v1/monitors/overview", headers=auth_headers)
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["id"] == mid)
+
+    # every MonitorRead field the page renders is still present
+    assert row["name"] == "overview-target"
+    assert row["check_type"] == "http"
+    assert row["status"] == "pending"
+
+    # latency series is oldest → newest, for the sparkline
+    assert row["latency_series"] == [10.0, 20.0, 30.0]
+
+    # checks are newest first, matching GET /events and CheckHistoryBar
+    assert [c["msg"] for c in row["recent_checks"]] == ["event 2", "event 1", "event 0"]
+    assert row["recent_checks"][0]["status_to"] == "up"
+    assert set(row["recent_checks"][0]) == {"id", "status_to", "msg", "created_at"}
+
+
+@pytest.mark.asyncio
+async def test_overview_caps_series_lengths(client, auth_headers, db_session):
+    mid = (await _create(client, auth_headers, name="chatty")).json()["id"]
+    base = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    for i in range(30):
+        db_session.add(_sample(mid, float(i), base + timedelta(seconds=i)))
+        db_session.add(_event(mid, "up", f"e{i}", base + timedelta(seconds=i)))
+    db_session.commit()
+
+    row = next(
+        r
+        for r in (await client.get("/api/v1/monitors/overview", headers=auth_headers)).json()
+        if r["id"] == mid
+    )
+    assert len(row["latency_series"]) == 12
+    assert row["latency_series"] == [float(i) for i in range(18, 30)]  # newest 12, oldest first
+    assert len(row["recent_checks"]) == 20
+    assert row["recent_checks"][0]["msg"] == "e29"  # newest first
+
+
+@pytest.mark.asyncio
+async def test_overview_empty_series_for_fresh_monitor(client, auth_headers):
+    mid = (await _create(client, auth_headers, name="fresh")).json()["id"]
+    row = next(
+        r
+        for r in (await client.get("/api/v1/monitors/overview", headers=auth_headers)).json()
+        if r["id"] == mid
+    )
+    assert row["latency_series"] == []
+    assert row["recent_checks"] == []
+
+
+@pytest.mark.asyncio
+async def test_overview_route_wins_over_monitor_id(client, auth_headers):
+    """ "/overview" must not be parsed as a monitor id."""
+    resp = await client.get("/api/v1/monitors/overview", headers=auth_headers)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)

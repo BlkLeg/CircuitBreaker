@@ -86,6 +86,76 @@ def _uptime_pct_map(db: Session, item_ids: list[int], hours: int = 24) -> dict[i
     return {item_id: round(avg * 100, 1) for item_id, avg in rows if avg is not None}
 
 
+def _latency_series_map(db: Session, item_ids: list[int], limit: int) -> dict[int, list[float]]:
+    """Last `limit` latency samples per monitor, oldest → newest (sparkline order)."""
+    if not item_ids:
+        return {}
+    ranked = (
+        select(
+            TelemetryTimeseries.item_id,
+            TelemetryTimeseries.value,
+            TelemetryTimeseries.ts,
+            func.row_number()
+            .over(
+                partition_by=TelemetryTimeseries.item_id,
+                order_by=TelemetryTimeseries.ts.desc(),
+            )
+            .label("rn"),
+        )
+        .where(
+            TelemetryTimeseries.item_id.in_(item_ids),
+            TelemetryTimeseries.metric == "latency_ms",
+        )
+        .subquery()
+    )
+    rows = db.execute(
+        select(ranked.c.item_id, ranked.c.value)
+        .where(ranked.c.rn <= limit)
+        .order_by(ranked.c.item_id, ranked.c.ts.asc())
+    ).all()
+    series: dict[int, list[float]] = {}
+    for item_id, value in rows:
+        series.setdefault(item_id, []).append(value)
+    return series
+
+
+def _recent_checks_map(db: Session, item_ids: list[int], limit: int) -> dict[int, list[dict]]:
+    """Last `limit` events per monitor, newest first — the shape CheckHistoryBar takes."""
+    if not item_ids:
+        return {}
+    ranked = (
+        select(
+            MonitorEvent.id,
+            MonitorEvent.item_id,
+            MonitorEvent.status_to,
+            MonitorEvent.msg,
+            MonitorEvent.created_at,
+            func.row_number()
+            .over(partition_by=MonitorEvent.item_id, order_by=MonitorEvent.created_at.desc())
+            .label("rn"),
+        )
+        .where(MonitorEvent.item_id.in_(item_ids))
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            ranked.c.id,
+            ranked.c.item_id,
+            ranked.c.status_to,
+            ranked.c.msg,
+            ranked.c.created_at,
+        )
+        .where(ranked.c.rn <= limit)
+        .order_by(ranked.c.item_id, ranked.c.created_at.desc())
+    ).all()
+    checks: dict[int, list[dict]] = {}
+    for ev_id, item_id, status_to, msg, created_at in rows:
+        checks.setdefault(item_id, []).append(
+            {"id": ev_id, "status_to": status_to, "msg": msg, "created_at": created_at}
+        )
+    return checks
+
+
 def list_monitors(
     db: Session,
     *,
@@ -105,6 +175,30 @@ def list_monitors(
     uptimes = _uptime_pct_map(db, ids)
     latencies = _latest_metric_map(db, ids, "latency_ms")
     return [_to_dict(i, uptimes.get(i.id), latencies.get(i.id)) for i in items]
+
+
+def list_overview(db: Session, *, latency_points: int = 12, check_points: int = 20) -> list[dict]:
+    """Everything the monitors dashboard renders, in one round trip.
+
+    Four bulk queries regardless of monitor count — the page it feeds used to
+    fetch events per monitor.
+    """
+    items = list(db.scalars(select(MonitorItem).order_by(MonitorItem.name, MonitorItem.id)).all())
+    if not items:
+        return []
+    ids = [i.id for i in items]
+    uptimes = _uptime_pct_map(db, ids)
+    latencies = _latest_metric_map(db, ids, "latency_ms")
+    series = _latency_series_map(db, ids, latency_points)
+    checks = _recent_checks_map(db, ids, check_points)
+    return [
+        {
+            **_to_dict(item, uptimes.get(item.id), latencies.get(item.id)),
+            "latency_series": series.get(item.id, []),
+            "recent_checks": checks.get(item.id, []),
+        }
+        for item in items
+    ]
 
 
 def get_monitor(db: Session, monitor_id: int) -> dict | None:

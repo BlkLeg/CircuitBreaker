@@ -136,6 +136,26 @@ class MonitorHistoryPoint(BaseModel):
     value: float
 
 
+class MonitorCheckPoint(BaseModel):
+    """One past check, trimmed to what the dashboard's history bar draws."""
+
+    id: int
+    status_to: str
+    msg: str
+    created_at: datetime
+
+
+class MonitorOverview(MonitorRead):
+    """A monitor plus the compact series the dashboard cards render.
+
+    latency_series is oldest → newest (the order a sparkline draws); recent_checks
+    is newest first, matching GET /monitors/{id}/events.
+    """
+
+    latency_series: list[float] = Field(default_factory=list)
+    recent_checks: list[MonitorCheckPoint] = Field(default_factory=list)
+
+
 class TargetMonitorCreate(BaseModel):
     """Optional overrides when quick-creating a monitor for an inventory entity.
 

@@ -11,6 +11,7 @@ from app.schemas.monitor import (
     MonitorCreate,
     MonitorEventRead,
     MonitorHistoryPoint,
+    MonitorOverview,
     MonitorRead,
     MonitorUpdate,
     TargetMonitorCreate,
@@ -36,6 +37,15 @@ def list_monitors(
     return monitor_service.list_monitors(
         db, target_type=target_type, target_id=target_id, enabled=enabled
     )
+
+
+@router.get("/overview", response_model=list[MonitorOverview])
+def monitors_overview(db: Session = Depends(get_db)) -> Any:
+    """Every monitor plus its compact latency series and recent checks — one request.
+
+    Declared before "/{monitor_id}" so "overview" isn't parsed as a monitor id.
+    """
+    return monitor_service.list_overview(db)
 
 
 # ── Target-scoped actions (inventory list pages, detail drawers, map) ─────────
