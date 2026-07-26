@@ -121,6 +121,62 @@ async def test_poll_one_returns_up_and_msg():
     assert row[0] == 1
 
 
+async def test_process_batch_applies_proxmox_override(db_session, factories):
+    factory, orig_close = _noop_close_factory(db_session)
+    hw = factories.hardware(proxmox_node_name="pve1", telemetry_last_polled=datetime.now(UTC))
+    item = MonitorItem(
+        name="pve-node",
+        host="10.0.0.9",
+        check_type="fake_down",
+        target_type="hardware",
+        target_id=hw.id,
+        max_retries=0,
+        interval_secs=60,
+        last_status="down",
+        next_due_at=datetime.now(UTC) + timedelta(seconds=60),
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    fake_redis = AsyncMock()
+    with (
+        patch(
+            "app.workers.monitor_poll_worker.COLLECTORS",
+            {
+                "fake_down": lambda host, params: CheckResult(
+                    up=False, samples=[Sample("avail", 0.0)], msg="100% packet loss"
+                )
+            },
+        ),
+        patch.object(mpw, "get_redis", AsyncMock(return_value=fake_redis)),
+    ):
+        await process_batch(
+            [
+                {
+                    "item_id": item.id,
+                    "target_type": "hardware",
+                    "target_id": hw.id,
+                    "host": item.host,
+                    "check_type": "fake_down",
+                    "params": {},
+                }
+            ],
+            factory,
+        )
+    db_session.close = orig_close
+
+    db_session.expire_all()
+    fresh = db_session.get(MonitorItem, item.id)
+    assert fresh.last_status == "up"  # Proxmox override flipped it: down -> up = "recovered"
+
+    sample = (
+        db_session.query(TelemetryTimeseries)
+        .filter(TelemetryTimeseries.item_id == item.id, TelemetryTimeseries.metric == "avail")
+        .one()
+    )
+    assert sample.value == 1.0
+
+
 async def test_process_batch_applies_state_and_publishes(db_session):
     factory, orig_close = _noop_close_factory(db_session)
     item = MonitorItem(

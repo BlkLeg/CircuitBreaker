@@ -24,6 +24,7 @@ from app.core.subjects import (
     monitor_alert_payload,
 )
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
+from app.services.monitoring.proxmox_override import apply_proxmox_overrides
 from app.services.monitoring.state import AppliedTransition, apply_result
 from app.services.monitoring.writer import SampleRow, write_samples
 
@@ -77,6 +78,7 @@ async def process_batch(items: list[dict], db_factory: Callable[[], Any]) -> int
     transitions: list[AppliedTransition] = []
     db = db_factory()
     try:
+        outcomes = apply_proxmox_overrides(db, items, outcomes)
         written = write_samples(db, [row for row, _, _ in outcomes])
         for row, up, msg in outcomes:
             item_id, _, _, _, ts = row
