@@ -17,6 +17,7 @@ from app.db.models import (
     ComputeUnit,
     ExternalNode,
     Hardware,
+    MonitorDailyStats,
     MonitorEvent,
     MonitorItem,
     Service,
@@ -328,8 +329,29 @@ def get_history(
     return [{"ts": r.ts, "value": r.value} for r in rows]
 
 
+def _rollup_pct(db: Session, item_id: int, *, since_date: str | None = None) -> float | None:
+    query = select(
+        func.sum(MonitorDailyStats.uptime_minutes), func.sum(MonitorDailyStats.total_minutes)
+    ).where(MonitorDailyStats.item_id == item_id)
+    if since_date is not None:
+        query = query.where(MonitorDailyStats.date >= since_date)
+    up, total = db.execute(query).one()
+    if not total:
+        return None
+    return round(up / total * 100, 1)
+
+
 def get_uptime(db: Session, monitor_id: int) -> dict:
-    return {"pct_24h": _uptime_pct_map(db, [monitor_id]).get(monitor_id)}
+    item = db.get(MonitorItem, monitor_id)
+    since_365d = (datetime.now(UTC) - timedelta(days=365)).strftime("%Y-%m-%d")
+    return {
+        "pct_24h": _uptime_pct_map(db, [monitor_id], hours=24).get(monitor_id),
+        "pct_7d": _uptime_pct_map(db, [monitor_id], hours=24 * 7).get(monitor_id),
+        "pct_30d": _uptime_pct_map(db, [monitor_id], hours=24 * 30).get(monitor_id),
+        "pct_365d": _rollup_pct(db, monitor_id, since_date=since_365d),
+        "pct_total": _rollup_pct(db, monitor_id),
+        "last_polled_at": item.last_polled_at if item else None,
+    }
 
 
 def run_immediate_check(db: Session, monitor_id: int) -> bool:
