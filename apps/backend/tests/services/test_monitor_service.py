@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from app.db.models import MonitorDailyStats, TelemetryTimeseries
 from app.schemas.monitor import HttpConfig, MonitorCreate
 from app.services import monitor_service
+from app.workers import rollup_worker
 
 
 def test_create_validates_config_per_type():
@@ -144,6 +145,66 @@ def test_get_uptime_long_windows_from_rollups(db_session):
     uptime = monitor_service.get_uptime(db_session, created["id"])
     assert uptime["pct_365d"] == 75.0
     assert uptime["pct_total"] == 75.0
+
+
+def _seed_full_day_of_uptime(db_session, item_id, day, *, every_mins=5):
+    """Write avail=1.0 telemetry across a full UTC day at a realistic poll interval."""
+    db_session.add_all(
+        [
+            TelemetryTimeseries(
+                entity_type="monitor",
+                entity_id=0,
+                item_id=item_id,
+                metric="avail",
+                value=1.0,
+                ts=day + timedelta(minutes=m),
+            )
+            for m in range(0, 24 * 60, every_mins)
+        ]
+    )
+    db_session.commit()
+
+
+def test_get_uptime_total_is_100_for_fully_up_day_end_to_end(db_session):
+    """Worker + service together: a monitor up all day reads 100%, not interval/1440."""
+    created = monitor_service.create_monitor(
+        db_session, MonitorCreate(name="e2e", check_type="icmp", host="192.0.2.23", config={})
+    )
+    day = (datetime.now(UTC) - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _seed_full_day_of_uptime(db_session, created["id"], day)
+
+    rollup_worker.calculate_daily_rollups(db_session, day.date().isoformat())
+
+    uptime = monitor_service.get_uptime(db_session, created["id"])
+    assert uptime["pct_total"] == 100.0
+    assert uptime["pct_365d"] == 100.0
+
+
+def test_get_uptime_365d_excludes_rows_older_than_the_window(db_session):
+    """Rows past 365 days drop out of pct_365d but still count toward pct_total."""
+    created = monitor_service.create_monitor(
+        db_session, MonitorCreate(name="win", check_type="icmp", host="192.0.2.24", config={})
+    )
+    day = (datetime.now(UTC) - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    _seed_full_day_of_uptime(db_session, created["id"], day)
+    rollup_worker.calculate_daily_rollups(db_session, day.date().isoformat())
+
+    today = datetime.now(UTC).date()
+    db_session.add(
+        MonitorDailyStats(
+            item_id=created["id"],
+            date=(today - timedelta(days=400)).isoformat(),
+            total_minutes=100,
+            uptime_minutes=0,
+        )
+    )
+    db_session.commit()
+
+    uptime = monitor_service.get_uptime(db_session, created["id"])
+    # 288 observed minutes yesterday, all up; the 400-day-old 0/100 row is out of window.
+    assert uptime["pct_365d"] == 100.0
+    # ...but all-time still sees it: 288 / (288 + 100).
+    assert uptime["pct_total"] == 74.2
 
 
 def test_get_uptime_no_data_is_none(db_session):

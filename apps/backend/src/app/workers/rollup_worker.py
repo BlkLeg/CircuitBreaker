@@ -25,7 +25,9 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
 
     for item_id in item_ids:
         query = text("""
-            SELECT count(*) as up_minutes
+            SELECT
+                count(*) FILTER (WHERE max_avail > 0) AS up_minutes,
+                count(*) AS observed_minutes
             FROM (
                 SELECT time_bucket('1 minute', ts) as minute_bucket, max(value) as max_avail
                 FROM telemetry_timeseries
@@ -34,14 +36,11 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
                   AND ts >= :start_ts AND ts < :end_ts
                 GROUP BY minute_bucket
             ) sub
-            WHERE max_avail > 0
         """)
 
-        up_minutes = (
-            db.scalar(query, {"item_id": item_id, "start_ts": dt_start, "end_ts": dt_end}) or 0
-        )
-
-        total_minutes = 24 * 60
+        up_minutes, observed_minutes = db.execute(
+            query, {"item_id": item_id, "start_ts": dt_start, "end_ts": dt_end}
+        ).one()
 
         stat = db.scalar(
             select(MonitorDailyStats).where(
@@ -50,16 +49,23 @@ def calculate_daily_rollups(db: Session, target_date: str) -> None:
             )
         )
 
+        # No telemetry observed for this day: the "no data yet" contract requires
+        # the absence of a row (so _rollup_pct returns None), not a 0% row.
+        if not observed_minutes:
+            if stat:
+                db.delete(stat)
+            continue
+
         if not stat:
             stat = MonitorDailyStats(
                 item_id=item_id,
                 date=target_date,
-                total_minutes=total_minutes,
+                total_minutes=int(observed_minutes),
                 uptime_minutes=int(up_minutes),
             )
             db.add(stat)
         else:
-            stat.total_minutes = total_minutes
+            stat.total_minutes = int(observed_minutes)
             stat.uptime_minutes = int(up_minutes)
             stat.updated_at = datetime.now(UTC)
 

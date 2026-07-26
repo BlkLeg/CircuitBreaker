@@ -47,8 +47,9 @@ def test_rollup_covers_non_hardware_target_types(db_session):
         )
     )
     assert stat is not None
-    assert stat.total_minutes == 1440
-    assert stat.uptime_minutes >= 1
+    # 6 samples at 10-minute spacing land in 6 distinct 1-minute buckets, all up.
+    assert stat.total_minutes == 6
+    assert stat.uptime_minutes == 6
 
 
 def test_rollup_covers_standalone_monitor(db_session):
@@ -74,11 +75,25 @@ def test_rollup_covers_standalone_monitor(db_session):
         )
     )
     assert stat is not None
+    assert stat.total_minutes == 1
     assert stat.uptime_minutes == 0
 
 
 def test_rollup_upserts_on_rerun(db_session):
     item = _make_item(db_session)
+    day = datetime(2026, 7, 20, tzinfo=UTC)
+    db_session.add(
+        TelemetryTimeseries(
+            entity_type="monitor",
+            entity_id=0,
+            item_id=item.id,
+            metric="avail",
+            value=1.0,
+            ts=day,
+        )
+    )
+    db_session.commit()
+
     calculate_daily_rollups(db_session, "2026-07-20")
     calculate_daily_rollups(db_session, "2026-07-20")
     count = db_session.scalar(
@@ -87,3 +102,10 @@ def test_rollup_upserts_on_rerun(db_session):
         .where(MonitorDailyStats.item_id == item.id, MonitorDailyStats.date == "2026-07-20")
     )
     assert count == 1
+    stat = db_session.scalar(
+        select(MonitorDailyStats).where(
+            MonitorDailyStats.item_id == item.id, MonitorDailyStats.date == "2026-07-20"
+        )
+    )
+    assert stat.total_minutes == 1
+    assert stat.uptime_minutes == 1
