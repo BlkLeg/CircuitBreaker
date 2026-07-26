@@ -411,6 +411,7 @@ class ComputeUnit(Base):
     proxmox_type: Mapped[str | None] = mapped_column(String, nullable=True)  # "qemu" | "lxc"
     proxmox_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     proxmox_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    telemetry_last_polled: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     integration_config_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("integration_configs.id", ondelete="SET NULL"), nullable=True
     )

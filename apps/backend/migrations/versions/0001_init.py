@@ -80,6 +80,7 @@ _EXCLUDED_COLUMNS: dict[str, set[str]] = {
         "proxmox_status",
         "proxmox_type",
         "proxmox_vmid",
+        "telemetry_last_polled",
     },
     "discovery_profiles": {"vlan_ids"},
     "external_nodes": {"tenant_id"},
