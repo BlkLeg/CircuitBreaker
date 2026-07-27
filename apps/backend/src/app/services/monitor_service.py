@@ -338,7 +338,7 @@ def _rollup_pct(db: Session, item_id: int, *, since_date: str | None = None) -> 
     up, total = db.execute(query).one()
     if not total:
         return None
-    return round(up / total * 100, 1)
+    return round(float(up) / float(total) * 100, 1)
 
 
 def get_uptime(db: Session, monitor_id: int) -> dict:

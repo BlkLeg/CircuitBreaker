@@ -122,12 +122,15 @@ def _proxmox_opinion(
 ) -> tuple[bool | None, str]:
     target_type = item.get("target_type")
     target_id = item.get("target_id")
+    if not isinstance(target_id, int):
+        return None, ""
 
     if target_type == "hardware":
         hw = hw_map.get(target_id)
+        if hw is None:
+            return None, "node"
         is_fresh = (
-            hw is not None
-            and hw.proxmox_node_name
+            hw.proxmox_node_name
             and hw.telemetry_last_polled is not None
             and hw.telemetry_last_polled >= cutoff
         )
@@ -144,9 +147,10 @@ def _proxmox_opinion(
 
     if target_type == "compute_unit":
         cu = cu_map.get(target_id)
+        if cu is None:
+            return None, ""
         is_fresh = (
-            cu is not None
-            and cu.proxmox_vmid is not None
+            cu.proxmox_vmid is not None
             and cu.telemetry_last_polled is not None
             and cu.telemetry_last_polled >= cutoff
         )
