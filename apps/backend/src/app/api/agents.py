@@ -67,6 +67,8 @@ def get_agent_events(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("viewer")],
 ) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     return list(
         db.execute(
             select(AgentEvent)
@@ -148,6 +150,8 @@ def post_approve(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
 ) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.approve_agent(
         db,
         agent_id,
@@ -164,6 +168,8 @@ def post_reject(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
 ) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
     return _to_read(db, agent)
 
@@ -175,6 +181,8 @@ def post_revoke(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
 ) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
     return _to_read(db, agent)
 

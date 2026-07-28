@@ -91,11 +91,23 @@ async def test_approve_honors_capability_overrides(client, factories, auth_heade
 
 
 @pytest.mark.asyncio
+async def test_approve_returns_404_for_unknown_agent(client, auth_headers):
+    resp = await client.post("/api/v1/agents/999999999/approve", json={}, headers=auth_headers)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_reject_sets_rejected_status(client, factories, auth_headers):
     agent = factories.agent(status="pending")
     resp = await client.post(f"/api/v1/agents/{agent.id}/reject", headers=auth_headers)
     assert resp.status_code == 200
     assert resp.json()["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_reject_returns_404_for_unknown_agent(client, auth_headers):
+    resp = await client.post("/api/v1/agents/999999999/reject", headers=auth_headers)
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -108,6 +120,14 @@ async def test_revoke_records_reason(client, factories, auth_headers):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_revoke_returns_404_for_unknown_agent(client, auth_headers):
+    resp = await client.post(
+        "/api/v1/agents/999999999/revoke", json={"reason": "n/a"}, headers=auth_headers
+    )
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -132,6 +152,13 @@ async def test_delete_requires_admin(client, factories, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_delete_requires_admin_not_viewer(client, factories, viewer_headers):
+    agent = factories.agent()
+    resp = await client.delete(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_events_endpoint_lists_history(client, factories, viewer_headers):
     agent = factories.agent()
     factories.agent_event(agent, event_type="enrolled")
@@ -141,6 +168,12 @@ async def test_events_endpoint_lists_history(client, factories, viewer_headers):
     assert resp.status_code == 200
     types = [e["event_type"] for e in resp.json()]
     assert types == ["approved", "enrolled"]  # newest first
+
+
+@pytest.mark.asyncio
+async def test_events_endpoint_returns_404_for_unknown_agent(client, viewer_headers):
+    resp = await client.get("/api/v1/agents/999999999/events", headers=viewer_headers)
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
