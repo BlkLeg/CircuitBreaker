@@ -50,6 +50,7 @@ from app.api.admin import router as admin_router
 from app.api.admin_audit import router as admin_audit_router
 from app.api.admin_db import router as admin_db_router
 from app.api.admin_users import router as admin_users_router
+from app.api.agents import router as agents_router
 from app.api.assets import router as assets_router
 from app.api.branding import public_router as branding_public_router
 from app.api.branding import router as branding_router
@@ -1588,6 +1589,12 @@ app.include_router(
     ws_agents_authenticated_router,
     prefix=f"{_V1}/agents",
     tags=["agents-ws"],
+    dependencies=[Depends(require_auth)],
+)
+app.include_router(
+    agents_router,
+    prefix=f"{_V1}/agents",
+    tags=["agents"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
