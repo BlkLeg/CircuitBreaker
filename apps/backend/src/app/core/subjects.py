@@ -49,6 +49,10 @@ ALERT_EVENT = "notifications.alert"
 MONITOR_ALERT_DOWN = "alert.monitor.down.{item_id}"  # formatted at publish time
 MONITOR_ALERT_RECOVERED = "alert.monitor.recovered.{item_id}"
 
+# ── Agents ────────────────────────────────────────────────────────────────────
+
+AGENT_EVENT = "agents.event"
+
 # ── Topology (map / rack live updates) ───────────────────────────────────────
 
 TOPOLOGY_NODE_MOVED = "topology.node.moved"

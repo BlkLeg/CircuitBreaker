@@ -16,6 +16,7 @@ import socket
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from app.core.agent_crypto import (
     ClockSkewError,
@@ -23,10 +24,15 @@ from app.core.agent_crypto import (
     check_clock_skew,
     get_server_static_keypair,
 )
-from app.core.time import utcnow
+from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
+from app.core.security import decode_token
+from app.core.time import utcnow, utcnow_iso
+from app.db.models import User
 from app.db.session import SessionLocal
 from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, AgentFrame
 from app.services import agent_enrollment, agent_link, agent_registry
+from app.services.settings_service import get_or_create_settings
+from app.services.user_service import is_session_revoked
 
 _logger = logging.getLogger(__name__)
 
@@ -36,6 +42,7 @@ authenticated_router = APIRouter()
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
 _LINK_POLL_SECONDS = 5.0
 _LINK_DEAD_SECONDS = 60.0  # three missed 20s heartbeats
+_STREAM_AUTH_TIMEOUT_SECONDS = 10.0
 
 
 def _ack_bytes(responder: NoiseIKResponder, payload: dict) -> bytes:
@@ -233,6 +240,7 @@ async def link_stream(websocket: WebSocket) -> None:
 
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)
+    await agent_registry.broadcast_presence(agent_id, "connected")
     await websocket.send_bytes(_capabilities_bytes(responder, grants))
 
     last_activity = utcnow()
@@ -265,6 +273,167 @@ async def link_stream(websocket: WebSocket) -> None:
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
     finally:
         await agent_registry.mark_presence_disconnected(agent_id)
+        await agent_registry.broadcast_presence(agent_id, "disconnected")
         with SessionLocal() as db:
             agent_registry.record_event(db, agent_id, "disconnected")
             db.commit()
+
+
+def _extract_client_ip(websocket: WebSocket) -> str:
+    """Extract real client IP, honouring X-Forwarded-For set by nginx."""
+    forwarded = websocket.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if websocket.client:
+        return websocket.client.host
+    return "unknown"
+
+
+async def _ping_loop(ws: WebSocket, main_task: asyncio.Task) -> None:
+    try:
+        while True:
+            await asyncio.sleep(30)
+            if ws.application_state == WebSocketState.DISCONNECTED:
+                main_task.cancel()
+                break
+            await ws.send_text(json.dumps({"type": "ping", "ts": utcnow_iso()}))
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        _logger.debug("Agent presence WS ping loop error: %s", exc)
+        main_task.cancel()
+
+
+async def _redis_agent_listener(websocket: WebSocket, stop_event: asyncio.Event) -> None:
+    """Mirrors ws_discovery.py's _redis_discovery_listener — see that
+    docstring for why Redis pub/sub is the primary cross-worker path."""
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        await stop_event.wait()
+        return
+
+    pubsub = r.pubsub()
+    try:
+        await pubsub.subscribe("cb:agents:events")
+        while not stop_event.is_set():
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg["type"] == "message":
+                if websocket.application_state == WebSocketState.DISCONNECTED:
+                    break
+                try:
+                    await websocket.send_text(msg["data"])
+                except Exception:
+                    break
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        _logger.debug("Redis agent listener error: %s", exc)
+    finally:
+        try:
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+        except Exception:
+            pass
+
+
+@authenticated_router.websocket("/stream")
+async def agent_presence_stream(websocket: WebSocket) -> None:
+    """Token-as-first-message auth — see ws_monitors.py's monitor_stream and
+    ws_discovery.py's discovery_stream for the identical protocol this
+    duplicates. Router-level Depends(require_auth) is defense-in-depth only;
+    a browser's native WebSocket constructor cannot set an Authorization
+    header on the handshake, so a bearer-token (no-cookie) client can never
+    satisfy it — this handler's own check is the real gate."""
+    await websocket.accept()
+
+    if ws_require_wss() and not is_websocket_secure(dict(websocket.scope)):
+        try:
+            await websocket.send_text(json.dumps({"error": "wss_required"}))
+            await websocket.close(code=1008)
+        except Exception:
+            pass
+        return
+
+    client_ip = _extract_client_ip(websocket)
+
+    try:
+        raw_token = token_from_websocket_scope(dict(websocket.scope))
+        if not raw_token:
+            try:
+                raw_token = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=_STREAM_AUTH_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                await websocket.send_text(json.dumps({"error": "auth_timeout"}))
+                await websocket.close(code=1008)
+                return
+            except WebSocketDisconnect:
+                return
+
+        authenticated = False
+        user_id: int | None = None
+
+        with SessionLocal() as db:
+            cfg = get_or_create_settings(db)
+            if cfg.jwt_secret and not is_session_revoked(db, raw_token):
+                uid = decode_token(raw_token, cfg.jwt_secret)
+                if uid is not None:
+                    u = db.get(User, uid)
+                    if u and u.is_active:
+                        if not (u.locked_until and u.locked_until > utcnow()):
+                            if not (
+                                u.role == "demo" and u.demo_expires and u.demo_expires <= utcnow()
+                            ):
+                                authenticated = True
+                                user_id = uid
+
+        if not authenticated:
+            _logger.warning("Agent presence WS auth failed (ip=%s)", client_ip)
+            await websocket.send_text(json.dumps({"error": "unauthorized"}))
+            await websocket.close(code=1008)
+            return
+
+        from app.core.ws_manager import ws_manager
+
+        accepted = await ws_manager.connect(websocket, user_id=user_id, client_ip=client_ip)
+        if not accepted:
+            await websocket.send_text(json.dumps({"error": "connection_limit_exceeded"}))
+            await websocket.close(code=1008)
+            return
+
+        await websocket.send_text(json.dumps({"status": "connected"}))
+
+        _current_task = asyncio.current_task()
+        assert _current_task is not None
+        ping_task = asyncio.create_task(_ping_loop(websocket, _current_task))
+        stop_event = asyncio.Event()
+        listener_task = asyncio.create_task(_redis_agent_listener(websocket, stop_event))
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if isinstance(msg, dict) and msg.get("type") == "ping":
+                        await websocket.send_text(json.dumps({"type": "pong", "ts": utcnow_iso()}))
+                except Exception:
+                    pass
+        except WebSocketDisconnect:
+            pass
+        finally:
+            stop_event.set()
+            ping_task.cancel()
+            listener_task.cancel()
+            await ws_manager.disconnect(websocket)
+
+    except Exception as exc:
+        _logger.error("Agent presence WS unhandled error (ip=%s): %s", client_ip, exc)
+        try:
+            from app.core.ws_manager import ws_manager
+
+            await ws_manager.disconnect(websocket)
+            await websocket.close(code=1011)
+        except Exception:
+            pass

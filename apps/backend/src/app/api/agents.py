@@ -144,7 +144,7 @@ async def post_pairing_lookup(
 
 
 @router.post("/{agent_id}/approve", response_model=AgentRead)
-def post_approve(
+async def post_approve(
     agent_id: int,
     payload: ApproveRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -159,11 +159,12 @@ def post_approve(
         hardware_id=payload.hardware_id,
         capability_overrides=payload.capabilities,
     )
+    await agent_registry.broadcast_presence(agent_id, "approved")
     return _to_read(db, agent)
 
 
 @router.post("/{agent_id}/reject", response_model=AgentRead)
-def post_reject(
+async def post_reject(
     agent_id: int,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[User, require_role("admin")],
@@ -171,11 +172,12 @@ def post_reject(
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
+    await agent_registry.broadcast_presence(agent_id, "rejected")
     return _to_read(db, agent)
 
 
 @router.post("/{agent_id}/revoke", response_model=AgentRead)
-def post_revoke(
+async def post_revoke(
     agent_id: int,
     payload: RevokeRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -184,6 +186,7 @@ def post_revoke(
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
+    await agent_registry.broadcast_presence(agent_id, "revoked")
     return _to_read(db, agent)
 
 

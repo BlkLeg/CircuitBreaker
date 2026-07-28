@@ -249,3 +249,44 @@ async def refresh_presence_heartbeat(db: Session, agent_id: int, worker: str) ->
     ):
         agent.last_seen_at = now
         db.flush()
+
+
+_AGENTS_REDIS_CHANNEL = "cb:agents:events"
+
+
+async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None = None) -> None:
+    """Push a presence event to every live WS /api/agents/stream viewer.
+
+    Redis pub/sub is the cross-worker path (mirrors discovery_service.py's
+    _emit_ws_event), but ws_manager.broadcast is always also attempted on
+    this worker: /stream's Redis subscribe (Task 15) happens asynchronously
+    right after connect, so a viewer whose subscribe hasn't landed yet would
+    otherwise miss the event outright. Presence flips are infrequent enough
+    that occasional duplicate delivery of an idempotent status message is a
+    non-issue. Never raises — a bad payload or dead Redis/NATS must not
+    abort the caller's own mutation (approve/reject/revoke, connect/
+    disconnect).
+    """
+    from app.core import subjects
+    from app.core.nats_client import nats_client
+    from app.core.redis import get_redis
+    from app.core.ws_manager import ws_manager
+
+    message = {"agent_id": agent_id, "event_type": event_type, "detail": detail}
+
+    try:
+        r = await get_redis()
+        if r is not None:
+            await r.publish(_AGENTS_REDIS_CHANNEL, json.dumps(message, default=str))
+    except Exception as exc:
+        _logger.debug("agent presence broadcast (redis) failed: %s", exc)
+
+    try:
+        await ws_manager.broadcast(message)
+    except Exception as exc:
+        _logger.debug("agent presence broadcast (ws_manager) failed: %s", exc)
+
+    try:
+        await nats_client.publish(subjects.AGENT_EVENT, message)
+    except Exception as exc:
+        _logger.debug("agent presence broadcast (nats) failed: %s", exc)
