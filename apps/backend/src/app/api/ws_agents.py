@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import socket
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -24,8 +25,8 @@ from app.core.agent_crypto import (
 )
 from app.core.time import utcnow
 from app.db.session import SessionLocal
-from app.schemas.agent_frame import TYPE_HELLO_ACK
-from app.services import agent_enrollment, agent_registry
+from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, AgentFrame
+from app.services import agent_enrollment, agent_link, agent_registry
 
 _logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ unauthenticated_router = APIRouter()
 authenticated_router = APIRouter()
 
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
+_LINK_POLL_SECONDS = 5.0
+_LINK_DEAD_SECONDS = 60.0  # three missed 20s heartbeats
 
 
 def _ack_bytes(responder: NoiseIKResponder, payload: dict) -> bytes:
@@ -181,3 +184,87 @@ async def enroll_stream(websocket: WebSocket) -> None:
                     )
         except WebSocketDisconnect:
             break
+
+
+def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool]) -> bytes:
+    frame = {
+        "v": 1,
+        "type": TYPE_CAPABILITIES_SET,
+        "seq": 0,
+        "ts": utcnow().isoformat(),
+        "payload": grants,
+    }
+    return responder.encrypt(json.dumps(frame).encode())
+
+
+@unauthenticated_router.websocket("/link")
+async def link_stream(websocket: WebSocket) -> None:
+    await websocket.accept()
+
+    try:
+        handshake_msg = await asyncio.wait_for(
+            websocket.receive_bytes(), timeout=_HANDSHAKE_TIMEOUT_SECONDS
+        )
+    except Exception:
+        # Same broad catch as enroll_stream — an anonymous, adversarial-by-default
+        # client can send anything as its first frame.
+        await websocket.close(code=1008)
+        return
+
+    server_priv, _ = get_server_static_keypair()
+    responder = NoiseIKResponder(server_priv)
+    try:
+        response = responder.read_message(handshake_msg)
+    except Exception:
+        await websocket.close(code=1008)
+        return
+    await websocket.send_bytes(response)
+
+    device_pk_hex = responder.remote_static().hex()
+    with SessionLocal() as db:
+        agent = agent_registry.get_agent_by_device_pk(db, device_pk_hex)
+        if agent is None or agent.status != "active":
+            await websocket.close(code=1008)
+            return
+        agent_id = agent.id
+        grants = agent_registry.grants_dict(db, agent_id)
+        agent_registry.record_event(db, agent_id, "connected")
+        db.commit()
+
+    worker = socket.gethostname()
+    await agent_registry.mark_presence_connected(agent_id, worker=worker)
+    await websocket.send_bytes(_capabilities_bytes(responder, grants))
+
+    last_activity = utcnow()
+    try:
+        while True:
+            try:
+                ct = await asyncio.wait_for(websocket.receive_bytes(), timeout=_LINK_POLL_SECONDS)
+            except TimeoutError:
+                if (utcnow() - last_activity).total_seconds() >= _LINK_DEAD_SECONDS:
+                    break
+                with SessionLocal() as db:
+                    fresh = agent_registry.get_agent(db, agent_id)
+                    if fresh is None or fresh.status != "active":
+                        break
+                continue
+            except WebSocketDisconnect:
+                break
+
+            last_activity = utcnow()
+            try:
+                pt = responder.decrypt(ct)
+                agent_frame = AgentFrame.model_validate_json(pt)
+            except Exception:
+                continue
+
+            with SessionLocal() as db:
+                fresh = agent_registry.get_agent(db, agent_id)
+                if fresh is None or fresh.status != "active":
+                    break
+                await agent_link.dispatch_frame(db, fresh, agent_frame)
+    finally:
+        await agent_registry.mark_presence_disconnected(agent_id)
+        with SessionLocal() as db:
+            agent_registry.record_event(db, agent_id, "disconnected")
+            db.commit()
