@@ -27,6 +27,8 @@ type Options struct {
 	Key               *enroll.DeviceKey
 	AgentVersion      string
 	OnCapabilitiesSet func(json.RawMessage) error
+	OnUpdate          func(json.RawMessage) error
+	OnConnected       func()
 }
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
@@ -35,6 +37,12 @@ type Options struct {
 func Run(ctx context.Context, opts Options) error {
 	if opts.OnCapabilitiesSet == nil {
 		opts.OnCapabilitiesSet = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnUpdate == nil {
+		opts.OnUpdate = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnConnected == nil {
+		opts.OnConnected = func() {}
 	}
 	attempt := 0
 	for {
@@ -96,6 +104,7 @@ func runOnce(ctx context.Context, opts Options) error {
 	if err := session.ReadHandshakeMessage(msg2); err != nil {
 		return fmt.Errorf("link: %w", err)
 	}
+	opts.OnConnected()
 
 	incoming := make(chan frame.Frame)
 	readErrCh := make(chan error, 1)
@@ -155,6 +164,10 @@ func runOnce(ctx context.Context, opts Options) error {
 			case frame.TypeCapabilitiesSet:
 				if err := opts.OnCapabilitiesSet(f.Payload); err != nil {
 					log.Printf("link: applying capabilities.set: %v", err)
+				}
+			case frame.TypeUpdate:
+				if err := opts.OnUpdate(f.Payload); err != nil {
+					log.Printf("link: update failed: %v", err)
 				}
 			}
 		case <-ticker.C:

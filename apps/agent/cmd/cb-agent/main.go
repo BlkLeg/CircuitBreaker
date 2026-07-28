@@ -2,15 +2,20 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/update"
 )
 
 // AgentVersion is overridden at build time via -ldflags "-X main.AgentVersion=1.2.3".
@@ -56,11 +61,65 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 	}
 
+	binaryPath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+
+	if pendingVersion, present, _ := update.ReadMarker(config.StateDir()); present {
+		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
+		go func() {
+			time.Sleep(2 * time.Minute)
+			if v, stillPresent, _ := update.ReadMarker(config.StateDir()); stillPresent && v == pendingVersion {
+				log.Printf("cb-agent: update to %s did not confirm within 2 minutes — rolling back", pendingVersion)
+				if err := update.Rollback(binaryPath); err != nil {
+					log.Printf("cb-agent: rollback failed: %v", err)
+					return
+				}
+				update.ClearMarker(config.StateDir())
+				syscall.Exec(binaryPath, os.Args, os.Environ()) //nolint:errcheck // best-effort re-exec after rollback
+			}
+		}()
+	}
+
+	var confirmOnce sync.Once
+	onConnected := func() {
+		confirmOnce.Do(func() {
+			update.ClearMarker(config.StateDir())
+		})
+	}
+
+	onUpdate := func(payload json.RawMessage) error {
+		var instr update.Instruction
+		if err := json.Unmarshal(payload, &instr); err != nil {
+			return err
+		}
+		tmpPath, err := update.Download(cfg, instr)
+		if err != nil {
+			return err
+		}
+		if err := update.VerifySHA256(tmpPath, instr.SHA256); err != nil {
+			os.Remove(tmpPath)
+			return err
+		}
+		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+			return err
+		}
+		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+			return err
+		}
+		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
+		return syscall.Exec(binaryPath, os.Args, os.Environ())
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := link.Run(ctx, link.Options{
 		Config: cfg, Key: key, AgentVersion: AgentVersion,
 		OnCapabilitiesSet: capGate.ApplyGrants,
+		OnUpdate:          onUpdate,
+		OnConnected:       onConnected,
 	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)

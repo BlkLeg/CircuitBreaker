@@ -1,6 +1,42 @@
 import json
+from contextlib import contextmanager
 
 import pytest
+
+
+@contextmanager
+def _auth_enabled(enabled: bool):
+    """Deterministically pin AppSettings.auth_enabled for one test and
+    restore whatever it was before.
+
+    Needed because the app_cfg fixture (session-scoped, and — like every
+    other seed in this codebase that must be visible to a WS handler's own
+    SessionLocal() connection, see [[ws-auth-enabled-router-gate]] — commits
+    for real via SessionLocal(), not the SAVEPOINT-rolled-back db_session)
+    sets auth_enabled=True exactly once per pytest session and that change
+    is never rolled back. Once any earlier test in the same run has pulled
+    in app_cfg (directly or via `client`), auth_enabled stays True for every
+    test after it — so this test cannot assume the fixture default holds.
+    """
+    from app.db.models import AppSettings
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as db:
+        cfg = db.query(AppSettings).first()
+        original = cfg.auth_enabled if cfg is not None else False
+        if cfg is None:
+            cfg = AppSettings(id=1)
+            db.add(cfg)
+        cfg.auth_enabled = enabled
+        db.commit()
+    try:
+        yield
+    finally:
+        with SessionLocal() as db:
+            cfg = db.query(AppSettings).first()
+            if cfg is not None:
+                cfg.auth_enabled = original
+                db.commit()
 
 
 def test_stream_rejects_connection_with_no_cookie_and_auth_timeout(ws_client, monkeypatch):
@@ -12,14 +48,19 @@ def test_stream_rejects_connection_with_no_cookie_and_auth_timeout(ws_client, mo
     # actually sleeping the real 10s auth timeout per test run.
     monkeypatch.setattr(ws_agents, "_STREAM_AUTH_TIMEOUT_SECONDS", 0.2)
 
-    with ws_client.websocket_connect("/api/v1/agents/stream") as ws:
-        # No cookie present (TestClient doesn't set one) and we never send a
-        # first-message token — server sends an auth_timeout error, then
-        # closes 1008.
-        msg = json.loads(ws.receive_text())
-        assert msg["error"] == "auth_timeout"
-        with pytest.raises(WebSocketDisconnect):
-            ws.receive_text()
+    # The handler's own auth-timeout branch is only reachable pre-OOBE
+    # (auth_enabled=False) — once True, the router-level require_auth
+    # dependency 401s a cookie-less WS handshake before this endpoint's body
+    # ever runs. See _auth_enabled()'s docstring and [[ws-auth-enabled-router-gate]].
+    with _auth_enabled(False):
+        with ws_client.websocket_connect("/api/v1/agents/stream") as ws:
+            # No cookie present (TestClient doesn't set one) and we never send a
+            # first-message token — server sends an auth_timeout error, then
+            # closes 1008.
+            msg = json.loads(ws.receive_text())
+            assert msg["error"] == "auth_timeout"
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
 
 
 def _login_viewer(ws_client, app_cfg):

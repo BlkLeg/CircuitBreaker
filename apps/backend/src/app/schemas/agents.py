@@ -75,3 +75,7 @@ class RevokeRequest(BaseModel):
 
 class CapabilitiesUpdateRequest(BaseModel):
     capabilities: dict[str, bool]
+
+
+class UpdateRequest(BaseModel):
+    version: str | None = None

@@ -120,6 +120,13 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		grantsBytes, _ := json.Marshal(grants)
 		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(grantsBytes))
 
+		update := map[string]any{
+			"v": 1, "type": "update", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]string{"version": "0.2.0", "sha256": "abc123", "arch": "amd64", "os": "linux"},
+		}
+		updateBytes, _ := json.Marshal(update)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(updateBytes))
+
 		for {
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
@@ -145,7 +152,7 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 
-	var capabilitiesApplied int32
+	var capabilitiesApplied, connectedCount, updateApplied int32
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
@@ -153,11 +160,34 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 			atomic.AddInt32(&capabilitiesApplied, 1)
 			return nil
 		},
+		OnConnected: func() {
+			atomic.AddInt32(&connectedCount, 1)
+		},
+		OnUpdate: func(payload json.RawMessage) error {
+			var instr struct {
+				Version string `json:"version"`
+			}
+			if err := json.Unmarshal(payload, &instr); err != nil {
+				return err
+			}
+			if instr.Version != "0.2.0" {
+				t.Errorf("OnUpdate payload version = %q, want %q", instr.Version, "0.2.0")
+			}
+			atomic.AddInt32(&updateApplied, 1)
+			return nil
+		},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = Run(ctx, opts) // returns ctx.Err() (deadline exceeded) — that's the expected exit
+
+	if atomic.LoadInt32(&connectedCount) == 0 {
+		t.Error("OnConnected was never called")
+	}
+	if atomic.LoadInt32(&updateApplied) == 0 {
+		t.Error("OnUpdate was never called")
+	}
 
 	if atomic.LoadInt32(&capabilitiesApplied) == 0 {
 		t.Error("OnCapabilitiesSet was never called")

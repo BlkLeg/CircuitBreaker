@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	DefaultCapBytes       int64 = 64 * 1024 * 1024
-	DrainInterleaveRatio        = 4 // one spooled frame per four live frames
-	queueFilename                = "queue.jsonl"
+	DefaultCapBytes      int64 = 64 * 1024 * 1024
+	DrainInterleaveRatio       = 4 // one spooled frame per four live frames
+	queueFilename              = "queue.jsonl"
 )
 
 // Spool is a bounded, oldest-dropped, append-only queue for *data* frames

@@ -29,8 +29,8 @@ from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.db.session import SessionLocal
-from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, AgentFrame
-from app.services import agent_enrollment, agent_link, agent_registry
+from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, TYPE_UPDATE, AgentFrame
+from app.services import agent_enrollment, agent_link, agent_registry, agent_update
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
 
@@ -255,6 +255,16 @@ async def link_stream(websocket: WebSocket) -> None:
                     fresh = agent_registry.get_agent(db, agent_id)
                     if fresh is None or fresh.status != "active":
                         break
+                pending = await agent_update.pop_pending_update(agent_id)
+                if pending is not None:
+                    update_frame = {
+                        "v": 1,
+                        "type": TYPE_UPDATE,
+                        "seq": 0,
+                        "ts": utcnow().isoformat(),
+                        "payload": pending,
+                    }
+                    await websocket.send_bytes(responder.encrypt(json.dumps(update_frame).encode()))
                 continue
             except WebSocketDisconnect:
                 break

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,8 +22,9 @@ from app.schemas.agents import (
     PairingLookupRequest,
     PairingLookupResponse,
     RevokeRequest,
+    UpdateRequest,
 )
-from app.services import agent_enrollment, agent_registry
+from app.services import agent_enrollment, agent_registry, agent_update
 
 router = APIRouter(tags=["agents"])
 
@@ -215,3 +217,58 @@ def delete_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
     db.delete(agent)
     db.flush()
+
+
+@router.post("/{agent_id}/update")
+async def post_update(
+    agent_id: int,
+    payload: UpdateRequest,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, require_role("admin")],
+) -> Any:
+    agent = agent_registry.get_agent(db, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    version = payload.version or agent_update.latest_version()
+    if version is None:
+        raise HTTPException(status_code=400, detail="No agent binaries available on this instance")
+
+    sha256 = agent_update.get_binary_sha256(version, agent.os or "linux", agent.arch or "amd64")
+    if sha256 is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No binary for {agent.os}/{agent.arch} at version {version}",
+        )
+
+    await agent_update.request_update(
+        agent_id,
+        version=version,
+        sha256=sha256,
+        arch=agent.arch or "amd64",
+        os_name=agent.os or "linux",
+    )
+    agent_registry.record_event(
+        db,
+        agent_id,
+        "version_changed",
+        actor_user_id=user.id,
+        detail={"target_version": version},
+    )
+    return {"status": "queued", "version": version}
+
+
+# Unauthenticated — the agent has no user session; integrity comes from the
+# SHA-256 delivered over the Noise-encrypted link, not from route auth.
+binary_router = APIRouter(tags=["agents-binary"])
+
+
+@binary_router.get("/binary/{version}/{os_name}/{arch}")
+def get_binary(version: str, os_name: str, arch: str) -> FileResponse:
+    try:
+        path = agent_update.binary_path(version, os_name, arch)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Binary not found") from None
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Binary not found")
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
