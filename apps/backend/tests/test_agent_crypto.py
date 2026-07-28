@@ -1,4 +1,13 @@
-from app.core.agent_crypto import get_server_static_keypair, server_fingerprint
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.core.agent_crypto import (
+    ClockSkewError,
+    check_clock_skew,
+    get_server_static_keypair,
+    server_fingerprint,
+)
 
 
 def test_server_static_keypair_is_stable_across_calls(db_session, app_cfg):
@@ -76,3 +85,85 @@ def test_noise_ik_responder_completes_handshake_against_python_initiator():
     ct2 = responder.encrypt(b"hello from server")
     pt2 = recv_cipher.decrypt_with_ad(b"", ct2)
     assert pt2 == b"hello from server"
+
+
+def test_noise_ik_responder_precondition_guards_raise_before_handshake_completes():
+    from app.core.agent_crypto import NoiseIKResponder, _generate_keypair
+
+    server_priv, _ = _generate_keypair()
+    responder = NoiseIKResponder(server_priv)
+
+    with pytest.raises(RuntimeError):
+        responder.remote_static()
+    with pytest.raises(RuntimeError):
+        responder.encrypt(b"x")
+    with pytest.raises(RuntimeError):
+        responder.decrypt(b"x")
+
+
+# ── check_clock_skew / ClockSkewError ──────────────────────────────────────
+
+_REF = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def test_check_clock_skew_within_window_does_not_raise():
+    ts = _REF - timedelta(seconds=30)
+    check_clock_skew(ts, now=_REF)  # should not raise
+
+
+def test_check_clock_skew_past_timestamp_outside_window_raises():
+    ts = _REF - timedelta(seconds=90)
+    with pytest.raises(ClockSkewError):
+        check_clock_skew(ts, now=_REF)
+
+
+def test_check_clock_skew_future_timestamp_outside_window_raises():
+    ts = _REF + timedelta(seconds=90)
+    with pytest.raises(ClockSkewError):
+        check_clock_skew(ts, now=_REF)
+
+
+def test_check_clock_skew_raises_specifically_clock_skew_error_not_generic():
+    ts = _REF - timedelta(seconds=90)
+    try:
+        check_clock_skew(ts, now=_REF)
+    except ClockSkewError:
+        pass
+    except Exception as exc:  # pragma: no cover - failure path only
+        pytest.fail(f"expected ClockSkewError, got {type(exc).__name__}: {exc}")
+    else:
+        pytest.fail("expected ClockSkewError, nothing was raised")
+
+
+def test_check_clock_skew_boundary_exactly_60s_does_not_raise():
+    # Implementation uses a strict `>` comparison against the 60s threshold,
+    # so a delta of exactly 60.0s is still within the allowed window.
+    ts = _REF - timedelta(seconds=60)
+    check_clock_skew(ts, now=_REF)  # should not raise
+
+
+def test_check_clock_skew_boundary_just_over_60s_raises():
+    ts = _REF - timedelta(seconds=60, milliseconds=1)
+    with pytest.raises(ClockSkewError):
+        check_clock_skew(ts, now=_REF)
+
+
+def test_check_clock_skew_naive_timestamp_is_treated_as_utc_and_does_not_typeerror():
+    # A naive ts (no tzinfo) must not blow up comparing against an
+    # aware `now` — it should be treated as UTC, matching app.core.time's
+    # convention elsewhere in the codebase.
+    naive_ts = _REF.replace(tzinfo=None) - timedelta(seconds=30)
+    check_clock_skew(naive_ts, now=_REF)  # should not raise, and not TypeError
+
+
+def test_check_clock_skew_naive_timestamp_outside_window_raises_clock_skew_error():
+    naive_ts = _REF.replace(tzinfo=None) - timedelta(seconds=90)
+    with pytest.raises(ClockSkewError):
+        check_clock_skew(naive_ts, now=_REF)
+
+
+def test_check_clock_skew_defaults_now_to_the_real_current_time():
+    # No `now=` passed: a very old timestamp must still raise using the
+    # real wall-clock default.
+    with pytest.raises(ClockSkewError):
+        check_clock_skew(datetime(2000, 1, 1, tzinfo=UTC))

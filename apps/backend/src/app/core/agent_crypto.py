@@ -43,6 +43,11 @@ class ClockSkewError(Exception):
     """Raised when a handshake timestamp falls outside the allowed skew window."""
 
 
+def _public_from_private(priv_bytes: bytes) -> bytes:
+    """Derive the raw 32-byte X25519 public key for raw 32-byte private key material."""
+    return x25519.X25519PrivateKey.from_private_bytes(priv_bytes).public_key().public_bytes_raw()
+
+
 def _generate_keypair() -> tuple[bytes, bytes]:
     """Generate a fresh raw X25519 keypair: (private_bytes, public_bytes), 32 bytes each."""
     priv = x25519.X25519PrivateKey.generate()
@@ -68,12 +73,7 @@ def _load_or_create_keypair() -> tuple[bytes, bytes]:
         if row.agent_server_private_key:
             priv_hex = vault.decrypt(row.agent_server_private_key)
             priv_bytes = bytes.fromhex(priv_hex)
-            pub_bytes = (
-                x25519.X25519PrivateKey.from_private_bytes(priv_bytes)
-                .public_key()
-                .public_bytes_raw()
-            )
-            return priv_bytes, pub_bytes
+            return priv_bytes, _public_from_private(priv_bytes)
 
         priv_bytes, pub_bytes = _generate_keypair()
         row.agent_server_private_key = vault.encrypt(priv_bytes.hex())
@@ -112,9 +112,7 @@ def check_clock_skew(ts: datetime, *, now: datetime | None = None) -> None:
 
 def _keypair_from_private(priv_bytes: bytes) -> X25519KeyPair:
     """Build a dissononce X25519KeyPair from raw 32-byte private key material."""
-    pub_bytes = (
-        x25519.X25519PrivateKey.from_private_bytes(priv_bytes).public_key().public_bytes_raw()
-    )
+    pub_bytes = _public_from_private(priv_bytes)
     return X25519KeyPair(X25519PublicKey(pub_bytes), X25519PrivateKey(priv_bytes))
 
 
@@ -152,7 +150,9 @@ class NoiseIKResponder:
     def remote_static(self) -> bytes:
         """The agent's device public key, known once the IK handshake's single
         inbound message has been processed by read_message()."""
-        return self._state.rs.data if self._state.rs is not None else b""
+        if self._state.rs is None:
+            raise RuntimeError("handshake not complete: call read_message() first")
+        return self._state.rs.data
 
     def encrypt(self, plaintext: bytes) -> bytes:
         if self._cipher_pair is None:
