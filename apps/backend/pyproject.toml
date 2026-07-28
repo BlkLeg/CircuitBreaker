@@ -29,6 +29,7 @@ dependencies = [
     "prometheus-client>=0.20.0",
     "pyipmi>=0.4.0",
     "cryptography>=48.0.1",
+    "dissononce>=0.34.3",
     "requests>=2.33.0",
     "python-nmap>=0.7.1",
     "pysnmp>=6.1",

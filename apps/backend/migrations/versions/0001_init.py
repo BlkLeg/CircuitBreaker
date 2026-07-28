@@ -60,6 +60,7 @@ _EXCLUDED_TABLES = {
 
 _EXCLUDED_COLUMNS: dict[str, set[str]] = {
     "app_settings": {
+        "agent_server_private_key",
         "airgap_mode",
         "arp_enabled",
         "deep_dive_max_parallel",

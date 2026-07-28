@@ -1197,6 +1197,10 @@ class AppSettings(Base):
     vault_key_hash: Mapped[str | None] = mapped_column(Text)  # SHA-256 of the vault key
     vault_key_rotation_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     vault_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # cb-agent: server's static X25519 identity for the Noise IK agent link.
+    # Hex-encoded private key, vault-encrypted at rest. Generated once on first
+    # use by app.core.agent_crypto and never rotated within this slice.
+    agent_server_private_key: Mapped[str | None] = mapped_column(Text)
     # Phase 7.5: PostgreSQL backup retention
     db_backup_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     # Security hardening
