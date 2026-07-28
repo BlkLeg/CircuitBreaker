@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/link"
@@ -50,9 +51,17 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
+	capGate := capability.New(config.StateDir())
+	if err := capGate.LoadCached(); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := link.Run(ctx, link.Options{Config: cfg, Key: key, AgentVersion: AgentVersion}); err != nil && ctx.Err() == nil {
+	if err := link.Run(ctx, link.Options{
+		Config: cfg, Key: key, AgentVersion: AgentVersion,
+		OnCapabilitiesSet: capGate.ApplyGrants,
+	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
