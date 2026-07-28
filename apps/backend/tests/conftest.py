@@ -35,6 +35,13 @@ def pytest_configure(config):
     os.environ["CB_JWT_SECRET"] = "ci-test-jwt-secret-minimum-32-chars-xxxx"
     os.environ["CB_VAULT_KEY"] = "hUQwP5Pb5SDdz_8mBBe0aPn7B6K1lItbytzXv7eaGLk="
     os.environ["NATS_AUTH_TOKEN"] = "ci-test-nats-token"
+    # The `setup_db` fixture builds schema directly via SQLAlchemy metadata
+    # (models.Base.metadata.create_all), not via Alembic. main.py's startup
+    # lifespan auto-migrate phase (only exercised once a real ASGI lifespan
+    # runs, e.g. via the `ws_client` TestClient fixture) would otherwise try
+    # to run migrations against tables that already exist in their final
+    # shape and fail/cancel. Tests don't need it either way.
+    os.environ["CB_AUTO_MIGRATE"] = "false"
 
     import psycopg2
 
@@ -171,6 +178,57 @@ async def client(db_session, app_cfg):
         timeout=30.0,
     ) as ac:
         yield ac
+    app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture
+def ws_client(db_session):
+    """Sync TestClient for WebSocket routes — httpx's ASGITransport (used by
+    the async `client` fixture) does not support the WS upgrade.
+
+    Unlike `client`, `TestClient` runs the app's real startup lifespan —
+    including the Phase 1 `/data` writable-volume check in main.py — so
+    CB_DATA_DIR is pointed at a throwaway temp dir for the fixture's
+    lifetime; this dev host has no writable `/data` outside a container.
+
+    It also means `await nats_client.connect()` actually runs (the `client`
+    fixture's ASGITransport never triggers lifespan, so no prior test in this
+    suite has exercised this path). nats-py's client retries the *initial*
+    connect indefinitely when `max_reconnect_attempts=-1` (set unconditionally
+    in app.core.nats_client), so with no NATS broker reachable on this host
+    the lifespan never completes. NATS is unrelated to the agent-enrollment
+    handshake this fixture exists for, and the app already degrades to a
+    no-op NATS client when unavailable — connect() is stubbed here to make
+    that degradation actually apply to the full-lifespan path too, rather
+    than changing production reconnect behavior.
+    """
+    import tempfile
+    from unittest.mock import AsyncMock
+
+    from starlette.testclient import TestClient
+
+    from app.core.nats_client import nats_client
+    from app.db.session import get_db
+    from app.main import app
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    original_nats_connect = nats_client.connect
+    nats_client.connect = AsyncMock(return_value=None)
+    with tempfile.TemporaryDirectory() as tmp_data_dir:
+        old_data_dir = os.environ.get("CB_DATA_DIR")
+        os.environ["CB_DATA_DIR"] = tmp_data_dir
+        try:
+            with TestClient(app) as tc:
+                yield tc
+        finally:
+            if old_data_dir is None:
+                os.environ.pop("CB_DATA_DIR", None)
+            else:
+                os.environ["CB_DATA_DIR"] = old_data_dir
+    nats_client.connect = original_nats_connect
     app.dependency_overrides.pop(get_db, None)
 
 

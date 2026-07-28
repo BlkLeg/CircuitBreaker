@@ -73,6 +73,8 @@ from app.api.tenants import router as tenants_router
 from app.api.timezones import router as timezones_router
 from app.api.topologies import router as topologies_router
 from app.api.vault import router as vault_router
+from app.api.ws_agents import authenticated_router as ws_agents_authenticated_router
+from app.api.ws_agents import unauthenticated_router as ws_agents_unauthenticated_router
 from app.api.ws_discovery import router as ws_discovery_router
 from app.api.ws_monitors import router as ws_monitors_router
 from app.api.ws_telemetry import router as ws_telemetry_router
@@ -1571,6 +1573,21 @@ app.include_router(
     ws_topology_router,
     prefix=f"{_V1}/topology",
     tags=["topology-ws"],
+    dependencies=[Depends(require_auth)],
+)
+# Deliberately WITHOUT dependencies=[Depends(require_auth)] — the Noise IK
+# handshake performed inside /enroll (and /link, added later) is this
+# router's authentication. Every other WS router in this file requires a
+# session; this one must not.
+app.include_router(
+    ws_agents_unauthenticated_router,
+    prefix=f"{_V1}/agents",
+    tags=["agents-ws"],
+)
+app.include_router(
+    ws_agents_authenticated_router,
+    prefix=f"{_V1}/agents",
+    tags=["agents-ws"],
     dependencies=[Depends(require_auth)],
 )
 app.include_router(
