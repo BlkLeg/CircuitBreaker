@@ -248,10 +248,6 @@ def viewer_headers(viewer_login):
 # ── Pytest markers ────────────────────────────────────────────────────────────
 
 
-def pytest_configure_node(node):
-    pass
-
-
 pytest_plugins = ["pytest_asyncio"]
 
 

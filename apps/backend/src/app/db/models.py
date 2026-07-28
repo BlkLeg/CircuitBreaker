@@ -280,6 +280,98 @@ class MonitorEvent(Base):
     __table_args__ = (Index("ix_monitor_events_item_time", "item_id", "created_at"),)
 
 
+class Agent(Base):
+    """A cb-agent instance enrolled against this Circuit Breaker server."""
+
+    __tablename__ = "agents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    device_pk: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    # pending|active|revoked|rejected
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    hostname: Mapped[str | None] = mapped_column(String, nullable=True)
+    machine_id_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    os: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    arch: Mapped[str | None] = mapped_column(String, nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    hardware_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID, ondelete="SET NULL"), nullable=True
+    )
+    tenant_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True
+    )
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    __table_args__ = (Index("ix_agents_fingerprint", "fingerprint"),)
+
+
+class AgentCapabilityGrant(Base):
+    """Per-agent, per-capability enable/disable — default-deny beyond host_telemetry."""
+
+    __tablename__ = "agent_capability_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    # host_telemetry|remote_probe|local_discovery
+    capability: Mapped[str] = mapped_column(String, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    granted_by_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id",
+            "capability",
+            name="uq_agent_capability_grants_agent_capability",
+        ),
+    )
+
+
+class AgentEvent(Base):
+    """Timeline entry for an agent — enrolled, approved, revoked, capability_violation, etc."""
+
+    __tablename__ = "agent_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (Index("ix_agent_events_agent_time", "agent_id", "created_at"),)
+
+
 class UptimeEvent(Base):
     """Rolling history of probe results for a monitored hardware device."""
 

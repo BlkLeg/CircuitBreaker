@@ -140,3 +140,51 @@ class Factories:
         self.session.add(profile)
         self.session.flush()
         return profile
+
+    # ── Agents ────────────────────────────────────────────────────────────────
+
+    def agent(self, status: str = "pending", **kwargs):
+        import hashlib
+        import secrets
+
+        from app.db.models import Agent
+
+        device_pk = kwargs.pop("device_pk", secrets.token_hex(32))
+        defaults = {
+            "device_pk": device_pk,
+            "fingerprint": hashlib.sha256(bytes.fromhex(device_pk)).hexdigest()[:32],
+            "status": status,
+            "hostname": fake.hostname(),
+            "os": "linux",
+            "arch": "amd64",
+            "agent_version": "0.1.0",
+        }
+        defaults.update(kwargs)
+        agent = Agent(**defaults)
+        self.session.add(agent)
+        self.session.flush()
+        return agent
+
+    def agent_capability_grant(
+        self,
+        agent,
+        capability: str = "host_telemetry",
+        enabled: bool = True,
+        **kwargs,
+    ):
+        from app.db.models import AgentCapabilityGrant
+
+        defaults = {"agent_id": agent.id, "capability": capability, "enabled": enabled}
+        defaults.update(kwargs)
+        grant = AgentCapabilityGrant(**defaults)
+        self.session.add(grant)
+        return grant
+
+    def agent_event(self, agent, event_type: str = "enrolled", **kwargs):
+        from app.db.models import AgentEvent
+
+        defaults = {"agent_id": agent.id, "event_type": event_type}
+        defaults.update(kwargs)
+        event = AgentEvent(**defaults)
+        self.session.add(event)
+        return event

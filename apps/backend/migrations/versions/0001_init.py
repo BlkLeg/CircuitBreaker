@@ -20,6 +20,9 @@ depends_on: str | Sequence[str] | None = None
 
 
 _EXCLUDED_TABLES = {
+    "agent_capability_grants",
+    "agent_events",
+    "agents",
     "api_tokens",
     "audit_log",
     "certificates",
