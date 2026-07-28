@@ -59,7 +59,13 @@ async def enroll_stream(websocket: WebSocket) -> None:
         handshake_msg = await asyncio.wait_for(
             websocket.receive_bytes(), timeout=_HANDSHAKE_TIMEOUT_SECONDS
         )
-    except (TimeoutError, WebSocketDisconnect):
+    except Exception:
+        # Broad on purpose: this is the very first frame from an anonymous,
+        # adversarial-by-default client. Besides TimeoutError/WebSocketDisconnect,
+        # Starlette's receive_bytes() raises a bare KeyError if the client sends a
+        # TEXT frame instead of BINARY as its first message (it indexes
+        # message["bytes"], which a text frame's message dict doesn't have). Any
+        # unexpected shape here degrades to a clean close, never a crash.
         await websocket.close(code=1008)
         return
 
@@ -88,6 +94,14 @@ async def enroll_stream(websocket: WebSocket) -> None:
         await websocket.send_bytes(_error_bytes(responder, "clock_skew"))
         await websocket.close(code=1008)
         return
+    except Exception:
+        # A missing "ts" key raises KeyError; a malformed timestamp string raises
+        # ValueError from fromisoformat(). Neither is a clock-skew condition, but
+        # both are just as reachable by any anonymous client that completes the
+        # handshake (no prior registration required), so they get the same clean
+        # close as every other malformed-input path in this handler.
+        await websocket.close(code=1008)
+        return
 
     payload = hello.get("payload", {})
     device_pk_hex = responder.remote_static().hex()
@@ -95,7 +109,15 @@ async def enroll_stream(websocket: WebSocket) -> None:
 
     with SessionLocal() as db:
         existing = agent_registry.get_agent_by_device_pk(db, device_pk_hex)
-        if existing is not None and existing.status == "revoked":
+        # revoked and rejected both close cleanly with no new row: device_pk is
+        # unique, so falling through to create_pending_agent() for either would
+        # raise an uncaught IntegrityError on the existing row. Nothing in the
+        # spec describes a rejected-agent re-enrollment flow, so — same as
+        # revoked — the safer default is to refuse the reconnect rather than
+        # invent silent re-enrollment semantics; an operator who wants to let a
+        # previously-rejected device retry needs an explicit admin action (reset
+        # to pending) that isn't part of this slice.
+        if existing is not None and existing.status in ("revoked", "rejected"):
             await websocket.close(code=1008)
             return
         if existing is not None and existing.status == "active":

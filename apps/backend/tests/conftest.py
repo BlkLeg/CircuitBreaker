@@ -214,22 +214,27 @@ def ws_client(db_session):
     def override_get_db():
         yield db_session
 
-    app.dependency_overrides[get_db] = override_get_db
     original_nats_connect = nats_client.connect
-    nats_client.connect = AsyncMock(return_value=None)
+    old_data_dir = os.environ.get("CB_DATA_DIR")
     with tempfile.TemporaryDirectory() as tmp_data_dir:
-        old_data_dir = os.environ.get("CB_DATA_DIR")
-        os.environ["CB_DATA_DIR"] = tmp_data_dir
+        # All three pieces of shared/global state this fixture mutates —
+        # dependency override, NATS stub, CB_DATA_DIR — are set and torn down
+        # inside one try/finally so a mid-test exception (anywhere in the
+        # `with TestClient(app)` block below) can never leak any of them onto
+        # subsequent tests in the session.
         try:
+            app.dependency_overrides[get_db] = override_get_db
+            nats_client.connect = AsyncMock(return_value=None)
+            os.environ["CB_DATA_DIR"] = tmp_data_dir
             with TestClient(app) as tc:
                 yield tc
         finally:
+            app.dependency_overrides.pop(get_db, None)
+            nats_client.connect = original_nats_connect
             if old_data_dir is None:
                 os.environ.pop("CB_DATA_DIR", None)
             else:
                 os.environ["CB_DATA_DIR"] = old_data_dir
-    nats_client.connect = original_nats_connect
-    app.dependency_overrides.pop(get_db, None)
 
 
 # ── Model factories ───────────────────────────────────────────────────────────
