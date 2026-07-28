@@ -61,15 +61,23 @@ async def resolve_pairing_code(code: str) -> int | None:
 
 
 async def consume_pairing_code(code: str) -> int | None:
-    """Resolve then delete — makes the code single-use."""
+    """Atomically get-and-delete — makes the code single-use.
+
+    Uses Redis's native ``GETDEL`` (server-side atomic since Redis 6.2; this
+    project targets ``redis:7-alpine``, see docker-compose.deps.yml) instead
+    of a separate GET followed by DELETE. A get-then-delete pair is not
+    atomic: two concurrent callers could both complete the GET and observe
+    the same agent_id before either DELETE fires, letting the same
+    single-use code be consumed twice. GETDEL closes that race by resolving
+    and deleting in one round trip the server executes atomically.
+    """
     from app.core.redis import get_redis
 
-    agent_id = await resolve_pairing_code(code)
-    if agent_id is not None:
-        r = await get_redis()
-        if r is not None:
-            await r.delete(f"agent_pairing:{_hash_code(code)}")
-    return agent_id
+    r = await get_redis()
+    if r is None:
+        return None
+    val = await r.getdel(f"agent_pairing:{_hash_code(code)}")
+    return int(val) if val is not None else None
 
 
 async def record_pairing_miss(ip: str) -> None:
