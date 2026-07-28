@@ -21,6 +21,8 @@ func main() {
 		runVersion()
 	case "status":
 		runStatus()
+	case "enroll":
+		runEnroll()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(1)
@@ -40,4 +42,21 @@ func runStatus() {
 	}
 	fmt.Printf("fingerprint: %s\n", key.FingerprintGrouped())
 	fmt.Println("link: not yet implemented (Task 11)")
+}
+
+func runEnroll() {
+	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	if err := enroll.Run(cfg, key, AgentVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
 }
