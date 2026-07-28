@@ -1,0 +1,57 @@
+[
+  {
+    "description": "hello — agent to server, full enrollment payload",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-07-27T12:00:00Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "box1.local", "machine_id_hash": "deadbeef",
+        "os": "linux", "os_version": "6.1", "arch": "amd64", "agent_version": "0.1.0",
+        "primary_macs": ["aa:bb:cc:dd:ee:ff"]
+      }
+    }
+  },
+  {
+    "description": "heartbeat — minimal payload",
+    "json": {"v": 1, "type": "heartbeat", "seq": 42, "ts": "2026-07-27T12:00:20Z", "payload": {}}
+  },
+  {
+    "description": "hello.ack — server to agent, pairing code",
+    "json": {
+      "v": 1, "type": "hello.ack", "seq": 0, "ts": "2026-07-27T12:00:00Z",
+      "payload": {"agent_id": 7, "pairing_code": "ABCD-EFGH-JKMN", "magic_link": "/agents/enroll?c=ABCD-EFGH-JKMN"}
+    }
+  },
+  {
+    "description": "hello.ack — approval transition",
+    "json": {"v": 1, "type": "hello.ack", "seq": 1, "ts": "2026-07-27T12:05:00Z", "payload": {"agent_id": 7, "status": "active"}}
+  },
+  {
+    "description": "capabilities.set — mixed grants",
+    "json": {
+      "v": 1, "type": "capabilities.set", "seq": 2, "ts": "2026-07-27T12:05:01Z",
+      "payload": {"host_telemetry": true, "remote_probe": false, "local_discovery": false}
+    }
+  },
+  {
+    "description": "capability.violation — agent reporting a server-side drop",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 100, "ts": "2026-07-27T12:10:00Z",
+      "payload": {"frame_type": "probe.result", "reason": "capability not granted"}
+    }
+  },
+  {
+    "description": "ping — empty payload, large seq",
+    "json": {"v": 1, "type": "ping", "seq": 18446744073709551615, "ts": "2026-07-27T12:15:00Z", "payload": {}}
+  },
+  {
+    "description": "log — unicode payload",
+    "json": {
+      "v": 1, "type": "log", "seq": 3, "ts": "2026-07-27T12:20:00Z",
+      "payload": {"level": "warn", "msg": "unable to read /proc — hidepid≠0 détecté"}
+    }
+  },
+  {
+    "description": "disconnect — server-initiated close reason",
+    "json": {"v": 1, "type": "disconnect", "seq": 0, "ts": "2026-07-27T12:25:00Z", "payload": {"reason": "revoked"}}
+  }
+]
