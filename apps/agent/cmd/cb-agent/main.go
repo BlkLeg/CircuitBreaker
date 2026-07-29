@@ -33,6 +33,8 @@ func main() {
 		runStatus()
 	case "enroll":
 		runEnroll()
+	case "uninstall":
+		runUninstall()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(1)
@@ -156,4 +158,31 @@ func runEnroll() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runUninstall() {
+	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := notifyUninstall(cfg, key); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: could not notify server (continuing anyway): %v\n", err)
+	}
+	fmt.Println("Notified the server. Run as root to finish removal:")
+	fmt.Println("  systemctl disable --now cb-agent")
+	fmt.Println("  rm -f /etc/systemd/system/cb-agent.service /usr/local/bin/cb-agent")
+	fmt.Println("  rm -rf /var/lib/cb-agent /etc/circuit-breaker")
+}
+
+func notifyUninstall(cfg *config.Config, key *enroll.DeviceKey) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return link.Uninstall(ctx, link.Options{Config: cfg, Key: key})
 }

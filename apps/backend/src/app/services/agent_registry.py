@@ -96,7 +96,7 @@ def reject_agent(db: Session, agent_id: int, *, actor_user_id: int) -> Agent:
 
 
 def revoke_agent(
-    db: Session, agent_id: int, *, actor_user_id: int, reason: str | None = None
+    db: Session, agent_id: int, *, actor_user_id: int | None, reason: str | None = None
 ) -> Agent:
     agent = db.get(Agent, agent_id)
     if agent is None:
@@ -290,3 +290,19 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
         await nats_client.publish(subjects.AGENT_EVENT, message)
     except Exception as exc:
         _logger.debug("agent presence broadcast (nats) failed: %s", exc)
+
+
+_PENDING_EXPIRY_DAYS = 7
+
+
+def expire_stale_pending_agents(db: Session) -> int:
+    from datetime import timedelta
+
+    cutoff = utcnow() - timedelta(days=_PENDING_EXPIRY_DAYS)
+    query = select(Agent).where(Agent.status == "pending", Agent.enrolled_at < cutoff)
+    stale = list(db.execute(query).scalars())
+    for agent in stale:
+        agent.status = "rejected"
+        record_event(db, agent.id, "rejected", detail={"reason": "pending_expired"})
+    db.commit()
+    return len(stale)

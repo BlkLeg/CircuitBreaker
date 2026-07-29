@@ -17,6 +17,7 @@ from app.schemas.agent_frame import (
     TYPE_LOG,
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
+    TYPE_UNINSTALL,
     AgentFrame,
 )
 from app.services import agent_registry
@@ -44,9 +45,14 @@ async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:
     _logger.info("agent %s: %s", agent.id, frame.payload)
 
 
+async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    agent_registry.revoke_agent(db, agent.id, actor_user_id=None, reason="uninstalled by agent")
+
+
 _HANDLERS: dict[str, Handler] = {
     TYPE_HEARTBEAT: _handle_heartbeat,
     TYPE_LOG: _handle_log,
+    TYPE_UNINSTALL: _handle_uninstall,
 }
 
 

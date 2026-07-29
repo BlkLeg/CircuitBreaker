@@ -113,6 +113,16 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		}
 		conn.WriteMessage(websocket.BinaryMessage, msg2)
 
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
 		grants := map[string]any{
 			"v": 1, "type": "capabilities.set", "seq": 0, "ts": time.Now().UTC(),
 			"payload": map[string]bool{"host_telemetry": true},

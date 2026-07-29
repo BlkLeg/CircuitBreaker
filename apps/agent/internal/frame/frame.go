@@ -41,6 +41,7 @@ const (
 	TypeDiscoveryFinding    = "discovery.finding"
 	TypeCapabilityViolation = "capability.violation"
 	TypeLog                 = "log"
+	TypeUninstall           = "uninstall"
 )
 
 // Frame type constants — server -> agent.

@@ -227,6 +227,20 @@ async def link_stream(websocket: WebSocket) -> None:
         return
     await websocket.send_bytes(response)
 
+    try:
+        hello_ct = await asyncio.wait_for(
+            websocket.receive_bytes(), timeout=_HANDSHAKE_TIMEOUT_SECONDS
+        )
+        hello = json.loads(responder.decrypt(hello_ct))
+        check_clock_skew(datetime.fromisoformat(hello["ts"]).replace(tzinfo=None))
+    except ClockSkewError:
+        await websocket.send_bytes(_error_bytes(responder, "clock_skew"))
+        await websocket.close(code=1008)
+        return
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
     device_pk_hex = responder.remote_static().hex()
     with SessionLocal() as db:
         agent = agent_registry.get_agent_by_device_pk(db, device_pk_hex)

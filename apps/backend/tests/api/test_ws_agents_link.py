@@ -1,11 +1,23 @@
 import hashlib
 import json
 import secrets
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from app.core.agent_crypto import get_server_static_keypair
 from tests.helpers.agent_noise_client import TestNoiseInitiator
+
+
+def _send_hello(initiator, ws, *, ts=None) -> None:
+    frame = {
+        "v": 1,
+        "type": "hello",
+        "seq": 0,
+        "ts": (ts or datetime.now(UTC)).isoformat(),
+        "payload": {},
+    }
+    ws.send_bytes(initiator.encrypt(json.dumps(frame).encode()))
 
 
 def _active_agent_with_key(db_session):
@@ -51,6 +63,7 @@ def test_link_sends_capabilities_set_on_connect(db_session, ws_client):
         initiator = TestNoiseInitiator(agent_priv, server_pub)
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
 
         first = json.loads(initiator.decrypt(ws.receive_bytes()))
         assert first["type"] == "capabilities.set"
@@ -65,6 +78,7 @@ def test_link_records_connected_then_disconnected_events(db_session, ws_client):
         initiator = TestNoiseInitiator(agent_priv, server_pub)
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
         ws.receive_bytes()  # capabilities.set
 
     from app.db.models import AgentEvent
@@ -75,6 +89,22 @@ def test_link_records_connected_then_disconnected_events(db_session, ws_client):
     ]
     assert "connected" in types
     assert "disconnected" in types
+
+
+def test_link_rejects_stale_handshake_timestamp(db_session, ws_client):
+    _agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+
+        stale_ts = datetime.now(UTC) - timedelta(minutes=5)
+        _send_hello(initiator, ws, ts=stale_ts)
+
+        err = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert err["payload"]["error"] == "clock_skew"
 
 
 def test_link_refuses_unknown_device_pk(ws_client):
@@ -88,4 +118,5 @@ def test_link_refuses_unknown_device_pk(ws_client):
             initiator = TestNoiseInitiator(agent_priv, server_pub)
             ws.send_bytes(initiator.write_message())
             initiator.read_message(ws.receive_bytes())
+            _send_hello(initiator, ws)
             ws.receive_bytes()  # should never arrive — connection closes 1008 first

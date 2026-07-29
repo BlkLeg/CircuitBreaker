@@ -19,6 +19,7 @@ TYPE_PROBE_RESULT = "probe.result"
 TYPE_DISCOVERY_FINDING = "discovery.finding"
 TYPE_CAPABILITY_VIOLATION = "capability.violation"
 TYPE_LOG = "log"
+TYPE_UNINSTALL = "uninstall"
 
 # server -> agent
 TYPE_HELLO_ACK = "hello.ack"
