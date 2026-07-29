@@ -19,6 +19,7 @@ from app.schemas.agents import (
     AgentSummary,
     ApproveRequest,
     CapabilitiesUpdateRequest,
+    InstallCommandResponse,
     PairingLookupRequest,
     PairingLookupResponse,
     RevokeRequest,
@@ -49,6 +50,18 @@ def get_pending_agents(
     _user: Annotated[User, require_role("viewer")],
 ) -> Any:
     return agent_registry.list_agents(db, status="pending")
+
+
+@router.get("/install-command", response_model=InstallCommandResponse)
+def get_install_command(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    from app.services import agent_install
+
+    server_url = f"{request.url.scheme}://{request.url.netloc}"
+    return agent_install.build_install_command(db, server_url)
 
 
 @router.get("/{agent_id}", response_model=AgentRead)

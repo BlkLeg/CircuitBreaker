@@ -79,3 +79,9 @@ class CapabilitiesUpdateRequest(BaseModel):
 
 class UpdateRequest(BaseModel):
     version: str | None = None
+
+
+class InstallCommandResponse(BaseModel):
+    tls_mode: str
+    command: str
+    script_sha256: str

@@ -1945,6 +1945,24 @@ async def favicon_file():
     return Response(status_code=404)
 
 
+@app.get("/install-agent.sh", include_in_schema=False)
+def get_install_agent_script(request: Request) -> Response:
+    from app.db.session import SessionLocal
+    from app.services import agent_install
+
+    server_url = f"{request.url.scheme}://{request.url.netloc}"
+    with SessionLocal() as db:
+        cert = agent_install._active_certificate(db)
+        tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
+        script = agent_install.render_install_script(
+            server_url=server_url,
+            server_static_pk_hex=agent_install.get_server_static_keypair()[1].hex(),
+            tls_pin=tls_pin,
+            manifest=agent_install.agent_update.load_manifest(),
+        )
+    return Response(content=script, media_type="text/x-shellscript")
+
+
 if _frontend_dir:
     _assets = _frontend_dir / "assets"
     if _assets.exists():
