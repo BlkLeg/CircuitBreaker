@@ -180,8 +180,14 @@ CB_REDIS_PASSWORD="$(cat "$REDIS_PASS_FILE")"
 
 # Default CB_REDIS_URL to include the generated password when not already
 # explicitly set by the user.
+# Password must be URL-encoded (openssl rand -base64 output commonly
+# contains '/' and '+', which break urlparse/redis-py's URL parsing —
+# same pitfall as CB_DB_URL above).
 if [ -z "${CB_REDIS_URL_SET_BY_USER:-}" ]; then
-  export CB_REDIS_URL="redis://:${CB_REDIS_PASSWORD}@127.0.0.1:6379/0"
+  export CB_REDIS_URL="redis://:$(
+    python3 -c 'import os; from urllib.parse import quote
+print(quote(os.environ["CB_REDIS_PASSWORD"], safe=""))'
+  )@127.0.0.1:6379/0"
 fi
 
 # Allow breaker user to reach the Docker socket if mounted (group-based, not world-readable)

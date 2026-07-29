@@ -17,6 +17,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/noiseconn"
+	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
 // Run dials WS /api/agents/enroll, completes the Noise IK handshake, sends
@@ -44,7 +45,7 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/enroll"
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	conn, _, err := tlsdial.NewDialer(cfg.TLSPin).Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("enroll: dial %s: %w", u.String(), err)
 	}

@@ -105,7 +105,7 @@ def patch_agent(
         raise HTTPException(status_code=404, detail="Agent not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(agent, field, value)
-    db.flush()
+    db.commit()
     return _to_read(db, agent)
 
 
@@ -174,6 +174,7 @@ async def post_approve(
         hardware_id=payload.hardware_id,
         capability_overrides=payload.capabilities,
     )
+    db.commit()
     await agent_registry.broadcast_presence(agent_id, "approved")
     return _to_read(db, agent)
 
@@ -187,6 +188,7 @@ async def post_reject(
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
+    db.commit()
     await agent_registry.broadcast_presence(agent_id, "rejected")
     return _to_read(db, agent)
 
@@ -201,6 +203,7 @@ async def post_revoke(
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
+    db.commit()
     await agent_registry.broadcast_presence(agent_id, "revoked")
     return _to_read(db, agent)
 
@@ -216,6 +219,7 @@ def put_capabilities(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
+    db.commit()
     return _to_read(db, agent)
 
 
@@ -229,7 +233,7 @@ def delete_agent(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     db.delete(agent)
-    db.flush()
+    db.commit()
 
 
 @router.post("/{agent_id}/update")
@@ -268,6 +272,7 @@ async def post_update(
         actor_user_id=user.id,
         detail={"target_version": version},
     )
+    db.commit()
     return {"status": "queued", "version": version}
 
 

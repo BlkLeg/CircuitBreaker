@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -108,14 +109,36 @@ def _active_certificate(db: Session) -> Certificate | None:
     return db.execute(select(Certificate).order_by(Certificate.updated_at.desc())).scalars().first()
 
 
+def _live_nginx_cert_pem() -> str | None:
+    """Read nginx.mono.conf's actual TLS listener cert straight off disk.
+
+    The `Certificate` table (certificate_service.py) manages a separate,
+    unrelated concern — nginx's own `ssl_certificate` always points at
+    {CB_DATA_DIR}/tls/fullchain.pem regardless of what that table contains,
+    and entrypoint-mono.sh generates that file's default self-signed cert
+    with a CN-only subject (no SAN), so this is the only source that
+    reliably matches what an agent's TLS handshake actually sees.
+    """
+    import os
+
+    path = Path(os.environ.get("CB_DATA_DIR", "/data")) / "tls" / "fullchain.pem"
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
 def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
     """Public (Let's Encrypt) certs are already trusted by the OS/agent's TLS
-    stack — no pin needed, and their cert_pem isn't guaranteed to be present/
-    parseable here anyway. Self-signed is the only case that needs a pin, and
-    only when an actual Certificate row exists (falls back to no-pin/TOFU
-    otherwise)."""
+    stack — no pin needed. Self-signed needs a pin computed from the cert
+    nginx actually serves (see `_live_nginx_cert_pem`), falling back to a
+    `Certificate` row's cert_pem, then no-pin/TOFU, when that file is
+    unavailable (e.g. this code running outside the mono container)."""
     if cert is not None and cert.type == "letsencrypt":
         return "public", ""
+    live_pem = _live_nginx_cert_pem()
+    if live_pem is not None:
+        return "self_signed", _spki_pin(live_pem)
     if cert is not None:
         return "self_signed", _spki_pin(cert.cert_pem)
     return "self_signed", ""
