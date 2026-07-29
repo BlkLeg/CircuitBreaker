@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   Bell,
   Users,
+  Satellite,
 } from 'lucide-react';
 
 /**
@@ -29,6 +30,7 @@ export const NAV_ITEMS = [
     items: [
       { path: '/map', icon: Map, label: 'Map', labelKey: 'header.map' },
       { path: '/discovery', icon: ScanSearch, label: 'Discovery', labelKey: 'header.discovery' },
+      { path: '/agents', icon: Satellite, label: 'Agents', labelKey: 'header.agents' },
       { path: '/hardware', icon: Cpu, label: 'Hardware', labelKey: 'header.hardware' },
       { path: '/compute-units', icon: Server, label: 'Compute', labelKey: 'header.compute' },
       { path: '/services', icon: Layers, label: 'Services', labelKey: 'header.services' },
@@ -110,6 +112,7 @@ export const NAV_MAP = {
   '/storage': { icon: HardDrive, label: 'Storage', labelKey: 'header.storage' },
   '/map': { icon: Map, label: 'Map', labelKey: 'header.map' },
   '/discovery': { icon: ScanSearch, label: 'Discovery', labelKey: 'header.discovery' },
+  '/agents': { icon: Satellite, label: 'Agents', labelKey: 'header.agents' },
   '/docs': { icon: BookOpen, label: 'Docs', labelKey: 'header.docs' },
   '/logs': { icon: ScrollText, label: 'Logs', labelKey: 'header.logs' },
   '/settings': { icon: Settings, label: 'Settings', labelKey: 'header.settings' },
@@ -127,6 +130,7 @@ export const NAV_MAP = {
  */
 export const DEFAULT_ORDER = [
   '/discovery',
+  '/agents',
   '/map',
   '/hardware',
   '/compute-units',

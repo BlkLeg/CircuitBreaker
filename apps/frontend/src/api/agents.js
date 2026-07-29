@@ -1,0 +1,17 @@
+import client from './client.jsx';
+
+export const listAgents = (params = {}) => client.get('/agents', { params });
+export const listPendingAgents = () => client.get('/agents/pending');
+export const getAgent = (id) => client.get(`/agents/${id}`);
+export const getAgentEvents = (id, limit = 50) =>
+  client.get(`/agents/${id}/events`, { params: { limit } });
+export const patchAgent = (id, data) => client.patch(`/agents/${id}`, data);
+export const lookupPairingCode = (code) => client.post('/agents/pairing/lookup', { code });
+export const approveAgent = (id, data = {}) => client.post(`/agents/${id}/approve`, data);
+export const rejectAgent = (id) => client.post(`/agents/${id}/reject`);
+export const revokeAgent = (id, reason) => client.post(`/agents/${id}/revoke`, { reason });
+export const setAgentCapabilities = (id, capabilities) =>
+  client.put(`/agents/${id}/capabilities`, { capabilities });
+export const deleteAgent = (id) => client.delete(`/agents/${id}`);
+export const getInstallCommand = () => client.get('/agents/install-command');
+export const triggerAgentUpdate = (id, version) => client.post(`/agents/${id}/update`, { version });
