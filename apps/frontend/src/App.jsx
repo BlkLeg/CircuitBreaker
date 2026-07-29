@@ -50,6 +50,7 @@ const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
 const MonitorsPage = React.lazy(() => import('./pages/MonitorsPage'));
 const MonitorDetailPage = React.lazy(() => import('./pages/MonitorDetailPage'));
 const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
+const AgentDetailPage = React.lazy(() => import('./pages/AgentDetailPage'));
 const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
 const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
@@ -173,6 +174,7 @@ function AppInner() {
                   <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
                   <Route path="/agents" element={<AgentsPage />} />
                   <Route path="/agents/enroll" element={<AgentsPage />} />
+                  <Route path="/agents/:id" element={<AgentDetailPage />} />
                   <Route
                     path="/admin/users"
                     element={
