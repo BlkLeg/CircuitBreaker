@@ -209,6 +209,7 @@ addopts = [
 markers = [
     "security: security regression tests (from audit report)",
     "slow: tests that take > 2 seconds",
+    "e2e: requires Docker; not run by default",
 ]
 
 [tool.poetry]

@@ -1,0 +1,43 @@
+name: cb-agent-e2e
+
+services:
+  circuitbreaker:
+    extends:
+      file: ../../../docker-compose.yml
+      service: circuitbreaker
+    # CB_DB_PASSWORD/CB_VAULT_KEY/CB_JWT_SECRET/NATS_AUTH_TOKEN/CB_PORT/
+    # CB_PORT_HTTPS are read from ./.env (colocated with this file) — the
+    # extended service's own `${VAR:?...}` and `${VAR:-default}` references
+    # are interpolated using this project's env context too, so .env is the
+    # single source for both the base file's substitutions and this
+    # overlay's explicit values below.
+    environment:
+      - CB_DB_PASSWORD=${CB_DB_PASSWORD}
+      - CB_VAULT_KEY=${CB_VAULT_KEY}
+      - CB_JWT_SECRET=${CB_JWT_SECRET}
+      - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN}
+    volumes:
+      # --workers 1: a pre-existing, out-of-scope bug — OOBE bootstrap's
+      # vault-key rotation (auth_service._generate_and_persist_vault_key)
+      # only reinitializes the in-memory vault singleton of the uvicorn
+      # worker process that handled the request. With the default
+      # --workers 2, a sibling worker keeps the stale pre-rotation key,
+      # so any request landing there fails to decrypt agent_server_private_key
+      # (or any other vault-encrypted value) with cryptography.fernet.InvalidToken.
+      # Single-worker sidesteps it here; a real fix needs cross-process vault
+      # key sync and is out of scope for this slice.
+      - ./supervisord-e2e.conf:/etc/supervisor/conf.d/supervisord.conf:ro
+
+  cb-agent:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    depends_on:
+      - circuitbreaker
+    volumes:
+      - cb-agent-state:/var/lib/cb-agent
+      - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
+    network_mode: service:circuitbreaker
+
+volumes:
+  cb-agent-state:

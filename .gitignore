@@ -44,6 +44,10 @@ docker/.env
 frontend/.env.local
 frontend/.env.*.local
 .env
+# Fake, fixed test credentials required for the e2e harness to `docker
+# compose up` at all (the base compose file's ${VAR:?...} guards) — not a
+# real secret.
+!apps/agent/e2e/.env
 .envrc
 .github/workflows/.env
 .github/workflows/.env.*
@@ -54,6 +58,7 @@ frontend/.env.*.local
 docker/data/
 data/audit/
 circuitbreaker-data/
+e2e-data/
 /data/
 dump.rdb
 
