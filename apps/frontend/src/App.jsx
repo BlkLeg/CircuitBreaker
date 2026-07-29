@@ -49,6 +49,7 @@ const IPAMPage = React.lazy(() => import('./pages/IPAMPage'));
 const CertificatesPage = React.lazy(() => import('./pages/CertificatesPage'));
 const MonitorsPage = React.lazy(() => import('./pages/MonitorsPage'));
 const MonitorDetailPage = React.lazy(() => import('./pages/MonitorDetailPage'));
+const AgentsPage = React.lazy(() => import('./pages/AgentsPage'));
 const PrivacyPage = React.lazy(() => import('./pages/PrivacyPage'));
 const NotificationsPage = React.lazy(() => import('./pages/NotificationsPage'));
 const TenantsPage = React.lazy(() => import('./pages/TenantsPage'));
@@ -170,6 +171,8 @@ function AppInner() {
                   />
                   <Route path="/discovery" element={<DiscoveryPage />} />
                   <Route path="/discovery/history" element={<Navigate to="/discovery" replace />} />
+                  <Route path="/agents" element={<AgentsPage />} />
+                  <Route path="/agents/enroll" element={<AgentsPage />} />
                   <Route
                     path="/admin/users"
                     element={
