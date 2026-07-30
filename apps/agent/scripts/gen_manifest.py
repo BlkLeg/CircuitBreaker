@@ -11,4 +11,4 @@ for f in dist.glob("cb-agent-*"):
     arch_os = f.name.removeprefix("cb-agent-")
     manifest[version][arch_os] = hashlib.sha256(f.read_bytes()).hexdigest()
 
-pathlib.Path("dist/manifest.json").write_text(json.dumps(manifest, indent=2))
+(dist.parent / "manifest.json").write_text(json.dumps(manifest, indent=2))

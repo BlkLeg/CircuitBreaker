@@ -1,5 +1,5 @@
 VERSION ?= $(shell git -C .. describe --tags --always --dirty 2>/dev/null || echo 0.0.0-dev)
-DIST := dist/$(VERSION)
+DIST ?= dist/$(VERSION)
 
 .PHONY: build-all manifest clean
 

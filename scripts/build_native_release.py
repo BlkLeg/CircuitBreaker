@@ -25,6 +25,7 @@ FRONTEND_DIST = REPO_ROOT / "apps" / "frontend" / "dist"
 BACKEND_ROOT = REPO_ROOT / "apps" / "backend"
 VERSION_FILE = REPO_ROOT / "VERSION"
 DOCS_SEED_FILE = REPO_ROOT / "DocsPage.md"
+AGENT_ROOT = REPO_ROOT / "apps" / "agent"
 
 
 def detect_target() -> tuple[str, str]:
@@ -110,6 +111,20 @@ def ensure_pyinstaller_available() -> None:
         "Or install PyInstaller directly:\n"
         "  .venv/bin/pip install pyinstaller"
     )
+
+
+def build_agent_binaries(version: str, work_dir: Path) -> Path:
+    """Cross-compile cb-agent (linux/amd64 + linux/arm64) and write its
+    manifest.json, isolated under work_dir so this can never read or write
+    a developer's own local apps/agent/dist/ build artifacts."""
+    agent_dist = work_dir / "agent-dist"
+    subprocess.run(
+        ["make", "manifest"],
+        cwd=AGENT_ROOT,
+        env={**os.environ, "VERSION": version, "DIST": str(agent_dist / version)},
+        check=True,
+    )
+    return agent_dist
 
 
 def _collect_migration_hidden_imports() -> list[str]:
@@ -314,6 +329,10 @@ def stage_bundle(
     shutil.copytree(BACKEND_ROOT / "migrations", backend_share / "migrations", dirs_exist_ok=True)
     shutil.copytree(frontend_dir, frontend_share, dirs_exist_ok=True)
 
+    agent_binaries_src = work_dir / "agent-dist"
+    if agent_binaries_src.exists():
+        shutil.copytree(agent_binaries_src, bundle_dir / "agent-binaries", dirs_exist_ok=True)
+
     # Bundle config.toml template if present
     config_default = REPO_ROOT / "packaging" / "config.toml.default"
     if config_default.exists():
@@ -352,6 +371,7 @@ def stage_bundle(
             "migrations": "share/backend/migrations",
             "deploy": "deploy",
             "installer": "install.sh",
+            "agent_binaries": "agent-binaries",
         },
     }
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -610,6 +630,8 @@ def main() -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     ensure_pyinstaller_available()
+    if target_os == "linux":
+        build_agent_binaries(version, work_dir)
     binary_path = build_binary(target_os, work_dir)
     bundle_dir, manifest = stage_bundle(
         binary_path=binary_path,
