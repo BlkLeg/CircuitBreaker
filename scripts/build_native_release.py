@@ -505,9 +505,16 @@ def create_appimage(
     if src_share.exists():
         shutil.copytree(src_share, share_dir, dirs_exist_ok=True)
 
+    agent_binaries_src = bundle_dir / "agent-binaries"
+    if agent_binaries_src.exists():
+        agent_binaries_dst = appdir / "usr" / "share" / "circuit-breaker" / "agent-binaries"
+        shutil.copytree(agent_binaries_src, agent_binaries_dst, dirs_exist_ok=True)
+
     apprun = appdir / "AppRun"
     apprun.write_text(
-        '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/circuit-breaker" "$@"\n'
+        '#!/bin/sh\n'
+        'export CB_AGENT_BINARIES_DIR="$(dirname "$(readlink -f "$0")")/usr/share/circuit-breaker/agent-binaries"\n'
+        'exec "$(dirname "$(readlink -f "$0")")/usr/bin/circuit-breaker" "$@"\n'
     )
     apprun.chmod(0o755)
 
