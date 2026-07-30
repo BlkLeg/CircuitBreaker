@@ -840,6 +840,24 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # Auto-reject agents left pending approval for too long (Task 22 gap:
+    # expire_stale_pending_agents existed and was unit-tested but was never
+    # actually scheduled).
+    def _expire_pending_agents_job() -> None:
+        from app.services import agent_registry
+
+        with get_session_context() as db:
+            count = agent_registry.expire_stale_pending_agents(db)
+            if count:
+                _logger.info("expired %d stale pending agent(s)", count)
+
+    scheduler.add_job(
+        _expire_pending_agents_job,
+        trigger=CronTrigger(hour=3, minute=30),
+        id="expire_pending_agents",
+        replace_existing=True,
+    )
+
     # Daily uptime rollup for fast historical uptime reads.
     from app.workers.rollup_worker import run_rollup_job
 
