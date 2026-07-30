@@ -5,6 +5,7 @@ Run explicitly:
     cd apps/agent/e2e && pytest test_agent_e2e.py -v -m e2e
 """
 
+import hashlib
 import re
 import subprocess
 import time
@@ -75,6 +76,17 @@ def test_agent_enrolls_approves_goes_online_and_revoke_closes_link():
         script = client.get("/install-agent.sh").text
         server_pk = re.search(r'CB_SERVER_STATIC_PK="([0-9a-f]+)"', script).group(1)
         tls_pin = re.search(r'CB_TLS_PIN="([^"]*)"', script).group(1)
+        version = re.search(r"/api/v1/agents/binary/([^/]+)/linux/", script).group(1)
+        binary_sha256 = re.search(
+            r'\$CB_ARCH" = "amd64" \]; then CB_BINARY_SHA256="([0-9a-f]{64})"', script
+        ).group(1)
+        binary = client.get(f"/api/v1/agents/binary/{version}/linux/amd64")
+        assert binary.status_code == 200, binary.text
+        assert hashlib.sha256(binary.content).hexdigest() == binary_sha256, (
+            "downloaded cb-agent binary does not match the sha256 pinned in "
+            "install-agent.sh — Dockerfile.mono's agent-builder stage may be "
+            "stale or missing"
+        )
         (E2E_DIR / "agent.toml").write_text(
             f'server_url = "{BASE_URL}"\n'
             f'server_static_pk = "{server_pk}"\n'
