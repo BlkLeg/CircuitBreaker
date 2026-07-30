@@ -35,6 +35,7 @@ CB_REDIS_URL=redis://127.0.0.1:6379/0
 NATS_AUTH_TOKEN=${NATS_TOKEN}
 STATIC_DIR=/usr/local/share/circuit-breaker/frontend
 CB_ALEMBIC_INI=/usr/local/share/circuit-breaker/backend/alembic.ini
+CB_AGENT_BINARIES_DIR=/usr/local/share/circuit-breaker/agent-binaries
 EOF
   chmod 600 /etc/circuit-breaker/circuit-breaker.env
   chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env

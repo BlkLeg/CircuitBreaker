@@ -32,6 +32,11 @@ contents:
   - src: dist/native/bundle/share/VERSION
     dst: /usr/local/share/circuit-breaker/VERSION
 
+  # Agent binaries + manifest (for the in-app "install agent" command)
+  - src: dist/native/bundle/agent-binaries/
+    dst: /usr/local/share/circuit-breaker/agent-binaries/
+    type: tree
+
   # Default config template
   - src: packaging/config.toml.default
     dst: /usr/local/share/circuit-breaker/config.toml.default
