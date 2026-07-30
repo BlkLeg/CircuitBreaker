@@ -92,6 +92,76 @@ check_node() {
     esac
 }
 
+# ── Go 1.22 + make ───────────────────────────────────────────────────────────────
+check_go() {
+    # Accept any Go >= 1.22 (apps/agent/go.mod requires go 1.22)
+    local ver
+    ver=$(go version 2>/dev/null | grep -oP 'go\K[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || echo "0.0")
+    local major minor
+    major=$(echo "$ver" | cut -d. -f1)
+    minor=$(echo "$ver" | cut -d. -f2)
+    if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 22 ]; }; then
+        ok "go ${ver} (satisfies >=1.22)"
+    else
+        log "go ${ver} found — need 1.22+, attempting install"
+        local distro
+        distro=$(detect_distro)
+        case "$distro" in
+            ubuntu|debian)
+                # Debian/Ubuntu's golang-go package is often older than 1.22
+                # depending on release, so install a pinned version straight
+                # from go.dev to reliably hit the go.mod floor.
+                local goarch
+                case "$(uname -m)" in
+                    x86_64)  goarch="amd64" ;;
+                    aarch64) goarch="arm64" ;;
+                    *)       echo "ERROR: Unsupported arch $(uname -m) for Go install" >&2; exit 1 ;;
+                esac
+                local go_pin="1.22.10"
+                local tmpdir
+                tmpdir=$(mktemp -d)
+                curl -fsSL "https://go.dev/dl/go${go_pin}.linux-${goarch}.tar.gz" -o "$tmpdir/go.tar.gz"
+                sudo rm -rf /usr/local/go
+                sudo tar -C /usr/local -xzf "$tmpdir/go.tar.gz"
+                rm -rf "$tmpdir"
+                sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+                sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+                ok "go ${go_pin} installed"
+                ;;
+            fedora|rhel|centos|rocky|almalinux)
+                sudo dnf install -y golang ;;
+            arch|manjaro)
+                sudo pacman -S --noconfirm go ;;
+            alpine)
+                sudo apk add --no-cache go ;;
+            *)
+                echo "ERROR: Cannot install Go 1.22+ on distro '${distro}'. Install manually." >&2
+                exit 1 ;;
+        esac
+    fi
+
+    if command -v make &>/dev/null; then
+        ok "make $(make --version | head -1)"
+        return
+    fi
+    log "make not found — attempting install"
+    local distro
+    distro=$(detect_distro)
+    case "$distro" in
+        ubuntu|debian)
+            sudo apt-get install -y build-essential ;;
+        fedora|rhel|centos|rocky|almalinux)
+            sudo dnf install -y make ;;
+        arch|manjaro)
+            sudo pacman -S --noconfirm make ;;
+        alpine)
+            sudo apk add --no-cache make ;;
+        *)
+            echo "ERROR: Cannot install make on distro '${distro}'. Install manually." >&2
+            exit 1 ;;
+    esac
+}
+
 # ── nfpm ───────────────────────────────────────────────────────────────────────
 install_nfpm() {
     if nfpm --version &>/dev/null; then
@@ -157,6 +227,7 @@ install_appimagetool() {
 
 check_python
 check_node
+check_go
 install_nfpm
 install_appimagetool
 

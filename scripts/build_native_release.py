@@ -113,6 +113,18 @@ def ensure_pyinstaller_available() -> None:
     )
 
 
+def ensure_go_available() -> None:
+    missing = [tool for tool in ("go", "make") if shutil.which(tool) is None]
+    if not missing:
+        return
+    raise SystemExit(
+        f"{' and '.join(missing)} required to cross-compile cb-agent binaries but not found on PATH.\n"
+        "Install them first, for example:\n"
+        "  bash scripts/install-build-deps.sh\n"
+        "Or install Go (>=1.22) and make directly via your distro's package manager."
+    )
+
+
 def build_agent_binaries(version: str, work_dir: Path) -> Path:
     """Cross-compile cb-agent (linux/amd64 + linux/arm64) and write its
     manifest.json, isolated under work_dir so this can never read or write
@@ -638,6 +650,7 @@ def main() -> int:
 
     ensure_pyinstaller_available()
     if target_os == "linux":
+        ensure_go_available()
         build_agent_binaries(version, work_dir)
     binary_path = build_binary(target_os, work_dir)
     bundle_dir, manifest = stage_bundle(
