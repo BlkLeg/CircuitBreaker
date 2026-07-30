@@ -19,6 +19,7 @@ import hashlib
 import logging
 from datetime import UTC, datetime
 from functools import lru_cache
+from typing import cast
 
 from cryptography.hazmat.primitives.asymmetric import x25519
 from dissononce.cipher.chachapoly import ChaChaPolyCipher
@@ -152,16 +153,16 @@ class NoiseIKResponder:
         inbound message has been processed by read_message()."""
         if self._state.rs is None:
             raise RuntimeError("handshake not complete: call read_message() first")
-        return self._state.rs.data
+        return cast(bytes, self._state.rs.data)
 
     def encrypt(self, plaintext: bytes) -> bytes:
         if self._cipher_pair is None:
             raise RuntimeError("handshake not complete: call read_message() first")
         _, send_cipher = self._cipher_pair
-        return send_cipher.encrypt_with_ad(b"", plaintext)
+        return cast(bytes, send_cipher.encrypt_with_ad(b"", plaintext))
 
     def decrypt(self, ciphertext: bytes) -> bytes:
         if self._cipher_pair is None:
             raise RuntimeError("handshake not complete: call read_message() first")
         recv_cipher, _ = self._cipher_pair
-        return recv_cipher.decrypt_with_ad(b"", ciphertext)
+        return cast(bytes, recv_cipher.decrypt_with_ad(b"", ciphertext))

@@ -9,6 +9,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any, cast
 
 AGENT_BINARIES_DIR = Path(os.getenv("CB_AGENT_BINARIES_DIR", "/opt/circuitbreaker/agent-binaries"))
 
@@ -17,12 +18,14 @@ AGENT_BINARIES_DIR = Path(os.getenv("CB_AGENT_BINARIES_DIR", "/opt/circuitbreake
 # identifier segment before it's anywhere near a filesystem path.
 _SAFE_SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 
+Manifest = dict[str, dict[str, str]]
 
-def load_manifest() -> dict:
+
+def load_manifest() -> Manifest:
     path = AGENT_BINARIES_DIR / "manifest.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    return cast(Manifest, json.loads(path.read_text()))
 
 
 def get_binary_sha256(version: str, os_name: str, arch: str) -> str | None:
@@ -64,7 +67,7 @@ async def request_update(
     await r.set(f"agent_pending_update:{agent_id}", payload)
 
 
-async def pop_pending_update(agent_id: int) -> dict | None:
+async def pop_pending_update(agent_id: int) -> dict[str, Any] | None:
     from app.core.redis import get_redis
 
     r = await get_redis()
@@ -75,4 +78,4 @@ async def pop_pending_update(agent_id: int) -> dict | None:
     if val is None:
         return None
     await r.delete(key)
-    return json.loads(val)
+    return cast(dict[str, Any], json.loads(val))
