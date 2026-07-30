@@ -25,6 +25,9 @@ package() {
     install -d "${pkgdir}/usr/local/share/circuit-breaker"
     cp -r share/ "${pkgdir}/usr/local/share/circuit-breaker/"
 
+    install -d "${pkgdir}/usr/local/share/circuit-breaker/agent-binaries"
+    cp -r agent-binaries/. "${pkgdir}/usr/local/share/circuit-breaker/agent-binaries/"
+
     install -d "${pkgdir}/var/lib/circuit-breaker"
     install -d "${pkgdir}/var/log/circuit-breaker"
     install -d "${pkgdir}/etc/circuit-breaker"
