@@ -490,6 +490,16 @@ stage0_install_bundle() {
     cb_ok "Deploy templates installed"
   fi
 
+  # Copy agent binaries (absent in bundles built before this feature —
+  # guarded so upgrading from an older release tarball degrades gracefully
+  # instead of failing the install)
+  if [[ -d "${CB_BUNDLE_DIR}/agent-binaries" ]]; then
+    mkdir -p /opt/circuitbreaker/agent-binaries
+    cp -rf "${CB_BUNDLE_DIR}/agent-binaries/." /opt/circuitbreaker/agent-binaries/
+    chown -R root:root /opt/circuitbreaker/agent-binaries/
+    cb_ok "Agent binaries installed"
+  fi
+
   # Cleanup
   rm -rf /tmp/cb-bundle
   if [[ -z "$CB_LOCAL_BUNDLE" ]] && [[ -n "${CB_BUNDLE_TARBALL:-}" ]]; then
