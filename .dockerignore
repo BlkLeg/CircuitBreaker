@@ -23,6 +23,7 @@ docker/.env
 # Build artefacts (rebuilt inside Docker)
 dist/
 apps/frontend/dist/
+apps/agent/dist/
 build/
 *.spec
 

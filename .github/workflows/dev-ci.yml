@@ -165,3 +165,10 @@ jobs:
           docker build -f Dockerfile.mono \
             -t "circuitbreaker:${CB_VERSION}" \
             .
+
+      - name: Verify agent binaries are baked into the image
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          docker run --rm "circuitbreaker:${CB_VERSION}" \
+            sh -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'

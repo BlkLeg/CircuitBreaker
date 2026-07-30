@@ -60,7 +60,7 @@ def _bootstrap_admin(client: httpx.Client) -> str:
 
 @pytest.mark.e2e
 def test_agent_enrolls_approves_goes_online_and_revoke_closes_link():
-    subprocess.run([*COMPOSE, "up", "-d", "circuitbreaker"], check=True, cwd=E2E_DIR)
+    subprocess.run([*COMPOSE, "up", "-d", "--build", "circuitbreaker"], check=True, cwd=E2E_DIR)
     try:
         # verify=False is deliberate and test-scoped: the mono container generates
         # a fresh self-signed cert per run with no stable CA to pin/trust here,
@@ -77,9 +77,14 @@ def test_agent_enrolls_approves_goes_online_and_revoke_closes_link():
         server_pk = re.search(r'CB_SERVER_STATIC_PK="([0-9a-f]+)"', script).group(1)
         tls_pin = re.search(r'CB_TLS_PIN="([^"]*)"', script).group(1)
         version = re.search(r"/api/v1/agents/binary/([^/]+)/linux/", script).group(1)
-        binary_sha256 = re.search(
+        binary_sha256_match = re.search(
             r'\$CB_ARCH" = "amd64" \]; then CB_BINARY_SHA256="([0-9a-f]{64})"', script
-        ).group(1)
+        )
+        assert binary_sha256_match, (
+            "install-agent.sh has no amd64 binary digest — Dockerfile.mono's "
+            "agent-builder stage may be stale or missing"
+        )
+        binary_sha256 = binary_sha256_match.group(1)
         binary = client.get(f"/api/v1/agents/binary/{version}/linux/amd64")
         assert binary.status_code == 200, binary.text
         assert hashlib.sha256(binary.content).hexdigest() == binary_sha256, (
