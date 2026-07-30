@@ -170,5 +170,5 @@ jobs:
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          docker run --rm "circuitbreaker:${CB_VERSION}" \
-            sh -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'
+          docker run --rm --entrypoint sh "circuitbreaker:${CB_VERSION}" \
+            -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'
