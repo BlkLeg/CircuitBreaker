@@ -35,7 +35,8 @@ type Options struct {
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
 // reconnecting with exponential backoff + jitter (1s -> 5m cap) on any
-// disconnect. It returns ctx.Err() on cancellation.
+// disconnect. It returns ctx.Err() on cancellation. Backoff resets to the
+// floor after a run that reached an accepted hello.ack (see backoffState).
 func Run(ctx context.Context, opts Options) error {
 	if opts.OnCapabilitiesSet == nil {
 		opts.OnCapabilitiesSet = func(json.RawMessage) error { return nil }
@@ -46,17 +47,16 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.OnConnected == nil {
 		opts.OnConnected = func() {}
 	}
-	attempt := 0
+	var backoff backoffState
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := runOnce(ctx, opts)
+		stable, err := runOnce(ctx, opts)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		delay := backoffDelay(attempt)
-		attempt++
+		delay := backoff.next(stable)
 		log.Printf("link: disconnected (%v) — reconnecting in %s", err, delay)
 		select {
 		case <-ctx.Done():
@@ -66,62 +66,71 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
-func runOnce(ctx context.Context, opts Options) error {
+// runOnce dials, handshakes, and serves one /link connection until it drops
+// or ctx is cancelled. The returned bool reports whether the connection
+// reached a stable, accepted hello.ack at any point during the run — the
+// signal Run uses to reset reconnect backoff to its floor rather than
+// continuing an exponential progression from a prior run's failures.
+func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	remotePub, err := hex.DecodeString(opts.Config.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
-		return fmt.Errorf("link: invalid server_static_pk: %w", err)
+		return false, fmt.Errorf("link: invalid server_static_pk: %w", err)
 	}
 	var remotePubArr [32]byte
 	copy(remotePubArr[:], remotePub)
 
 	session, err := noiseconn.NewInitiator(opts.Key.Private, opts.Key.Public, remotePubArr)
 	if err != nil {
-		return fmt.Errorf("link: %w", err)
+		return false, fmt.Errorf("link: %w", err)
 	}
 
 	u, err := url.Parse(opts.Config.ServerURL)
 	if err != nil {
-		return fmt.Errorf("link: invalid server_url: %w", err)
+		return false, fmt.Errorf("link: invalid server_url: %w", err)
 	}
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/link"
 
 	conn, _, err := tlsdial.NewDialer(opts.Config.TLSPin).DialContext(ctx, u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("link: dial: %w", err)
+		return false, fmt.Errorf("link: dial: %w", err)
 	}
 	defer conn.Close()
 
 	msg1, err := session.WriteHandshakeMessage()
 	if err != nil {
-		return fmt.Errorf("link: %w", err)
+		return false, fmt.Errorf("link: %w", err)
 	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, msg1); err != nil {
-		return fmt.Errorf("link: send handshake: %w", err)
+		return false, fmt.Errorf("link: send handshake: %w", err)
 	}
 	_, msg2, err := conn.ReadMessage()
 	if err != nil {
-		return fmt.Errorf("link: read handshake response: %w", err)
+		return false, fmt.Errorf("link: read handshake response: %w", err)
 	}
 	if err := session.ReadHandshakeMessage(msg2); err != nil {
-		return fmt.Errorf("link: %w", err)
+		return false, fmt.Errorf("link: %w", err)
 	}
 
 	helloPayload := hostinfo.Collect(opts.AgentVersion)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
-		return fmt.Errorf("link: encode hello payload: %w", err)
+		return false, fmt.Errorf("link: encode hello payload: %w", err)
 	}
 	helloBytes, err := frame.Encode(helloFrame)
 	if err != nil {
-		return fmt.Errorf("link: %w", err)
+		return false, fmt.Errorf("link: %w", err)
 	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(helloBytes)); err != nil {
-		return fmt.Errorf("link: send hello: %w", err)
+		return false, fmt.Errorf("link: send hello: %w", err)
 	}
 
-	opts.OnConnected()
+	// opts.OnConnected fires from the hello.ack case below, once the server
+	// has actually accepted this session — not here, right after the bare
+	// Noise handshake. A handshake alone doesn't mean the server considers
+	// the agent linked (e.g. it could still reject on device-key mismatch
+	// or policy), so gating on hello.ack is the correct success signal.
 
 	incoming := make(chan frame.Frame)
 	readErrCh := make(chan error, 1)
@@ -162,6 +171,7 @@ func runOnce(ctx context.Context, opts Options) error {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 	var seq uint64
+	var connectedFired bool
 
 	sendHeartbeat := func() error {
 		seq++
@@ -176,17 +186,37 @@ func runOnce(ctx context.Context, opts Options) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return stable, ctx.Err()
 		case err := <-readErrCh:
-			return fmt.Errorf("link: connection lost: %w", err)
+			return stable, fmt.Errorf("link: connection lost: %w", err)
 		case f := <-incoming:
 			switch f.Type {
+			case frame.TypeHelloAck:
+				var ack frame.HelloAckPayload
+				if err := json.Unmarshal(f.Payload, &ack); err != nil {
+					log.Printf("link: malformed hello.ack payload: %v", err)
+					continue
+				}
+				if !ack.Accepted {
+					log.Printf("link: hello.ack rejected: %s", ack.Reason)
+					continue
+				}
+				// The server accepted this session — flag the run stable
+				// (Run resets reconnect backoff to its floor for stable
+				// runs) and fire OnConnected exactly once per connection,
+				// even though the server may re-send hello.ack later (e.g.
+				// to push a refreshed capabilities set).
+				stable = true
+				if !connectedFired {
+					connectedFired = true
+					opts.OnConnected()
+				}
 			case frame.TypePing:
 				if err := sendHeartbeat(); err != nil {
-					return err
+					return stable, err
 				}
 			case frame.TypeDisconnect:
-				return errors.New("link: server requested disconnect")
+				return stable, errors.New("link: server requested disconnect")
 			case frame.TypeCapabilitiesSet:
 				if err := opts.OnCapabilitiesSet(f.Payload); err != nil {
 					log.Printf("link: applying capabilities.set: %v", err)
@@ -198,7 +228,7 @@ func runOnce(ctx context.Context, opts Options) error {
 			}
 		case <-ticker.C:
 			if err := sendHeartbeat(); err != nil {
-				return err
+				return stable, err
 			}
 		}
 	}

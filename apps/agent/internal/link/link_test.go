@@ -123,15 +123,22 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 			return
 		}
 
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
 		grants := map[string]any{
-			"v": 1, "type": "capabilities.set", "seq": 0, "ts": time.Now().UTC(),
+			"v": 1, "type": "capabilities.set", "seq": 1, "ts": time.Now().UTC(),
 			"payload": map[string]bool{"host_telemetry": true},
 		}
 		grantsBytes, _ := json.Marshal(grants)
 		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(grantsBytes))
 
 		update := map[string]any{
-			"v": 1, "type": "update", "seq": 1, "ts": time.Now().UTC(),
+			"v": 1, "type": "update", "seq": 2, "ts": time.Now().UTC(),
 			"payload": map[string]string{"version": "0.2.0", "sha256": "abc123", "arch": "amd64", "os": "linux"},
 		}
 		updateBytes, _ := json.Marshal(update)
@@ -303,5 +310,194 @@ func TestRun_DropsReplayedAndInvalidInboundFrames(t *testing.T) {
 	}
 	if v, ok := lastPayload.Load().(string); !ok || !strings.Contains(v, "remote_probe") {
 		t.Errorf("last applied payload = %v, want the seq=3 frame's payload", v)
+	}
+}
+
+// TestRun_OnConnectedWaitsForAcceptedHelloAck drives handshake + hello to
+// completion, then deliberately withholds hello.ack behind a gate so the
+// test can assert OnConnected has NOT fired off the bare handshake — only
+// after the gate is released and an accepted hello.ack actually arrives.
+func TestRun_OnConnectedWaitsForAcceptedHelloAck(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	release := make(chan struct{})
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		// Handshake and hello are both done at this point, but we
+		// deliberately hold off on hello.ack until the test releases us —
+		// this is what proves OnConnected isn't tied to bare handshake
+		// completion.
+		<-release
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 7},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var connectedCount int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnConnected: func() {
+			atomic.AddInt32(&connectedCount, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = Run(ctx, opts)
+		close(done)
+	}()
+
+	// Give the handshake+hello round trip time to land on the wire while
+	// hello.ack is still withheld, then assert OnConnected has not fired.
+	time.Sleep(300 * time.Millisecond)
+	if got := atomic.LoadInt32(&connectedCount); got != 0 {
+		t.Fatalf("OnConnected fired %d time(s) before any hello.ack was sent, want 0", got)
+	}
+
+	close(release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&connectedCount) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("OnConnected never fired after an accepted hello.ack was sent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+}
+
+// TestRun_OnConnectedNeverFiresOnRejectedHelloAck sends a hello.ack with
+// accepted:false and asserts OnConnected is never called for the lifetime
+// of the run — link success requires an *accepted* hello.ack, not merely
+// receipt of one.
+func TestRun_OnConnectedNeverFiresOnRejectedHelloAck(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": false, "reason": "device_pk_mismatch"},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var connectedCount int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnConnected: func() {
+			atomic.AddInt32(&connectedCount, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := atomic.LoadInt32(&connectedCount); got != 0 {
+		t.Errorf("OnConnected fired %d time(s) on a rejected hello.ack, want 0", got)
 	}
 }

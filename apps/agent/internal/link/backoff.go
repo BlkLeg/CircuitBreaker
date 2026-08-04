@@ -32,3 +32,27 @@ func backoffDelay(attempt int) time.Duration {
 	jitter := time.Duration(rand.Int63n(int64(base/4) + 1))
 	return base + jitter
 }
+
+// backoffState tracks the reconnect-attempt counter across Run's retry
+// loop. Each runOnce reports whether its connection was ever "stable" —
+// i.e. it received an accepted hello.ack before disconnecting. A stable
+// run resets the counter to the floor before computing its delay, so the
+// next reconnect starts the 1s-5m jittered progression over again rather
+// than continuing from wherever a prior run of failures left off; an
+// unstable run (one that never got past handshake/hello, or was rejected)
+// continues that progression. The zero value is ready to use, starting at
+// attempt 0.
+type backoffState struct {
+	attempt int
+}
+
+// next reports the delay to wait before the next reconnect attempt and
+// advances the counter for the following call.
+func (b *backoffState) next(stable bool) time.Duration {
+	if stable {
+		b.attempt = 0
+	}
+	delay := backoffDelay(b.attempt)
+	b.attempt++
+	return delay
+}
