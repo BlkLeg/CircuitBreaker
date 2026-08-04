@@ -2,6 +2,7 @@ package frame
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -35,5 +36,140 @@ func TestEncodeDecode_RoundTrips(t *testing.T) {
 func TestDecode_RejectsMalformedJSON(t *testing.T) {
 	if _, err := Decode([]byte("not json")); err == nil {
 		t.Fatal("expected error decoding malformed frame, got nil")
+	}
+}
+
+func TestHelloPayload_MissingFieldsDecodeToZeroValues(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want HelloPayload
+	}{
+		{
+			name: "empty object",
+			json: `{}`,
+			want: HelloPayload{},
+		},
+		{
+			name: "hostname only",
+			json: `{"hostname":"box1.local"}`,
+			want: HelloPayload{Hostname: "box1.local"},
+		},
+		{
+			name: "all fields",
+			json: `{"device_pk":"ab12","hostname":"box1.local","machine_id_hash":"deadbeef",` +
+				`"os":"linux","os_version":"6.1","arch":"amd64","agent_version":"0.1.0",` +
+				`"primary_macs":["aa:bb:cc:dd:ee:ff"],` +
+				`"readiness":[{"collector":"host.docker","state":"ready"}],"spool_depth":3}`,
+			want: HelloPayload{
+				DevicePK: "ab12", Hostname: "box1.local", MachineIDHash: "deadbeef",
+				OS: "linux", OSVersion: "6.1", Arch: "amd64", AgentVersion: "0.1.0",
+				PrimaryMACs: []string{"aa:bb:cc:dd:ee:ff"},
+				Readiness:   []Readiness{{Collector: "host.docker", State: "ready"}},
+				SpoolDepth:  3,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got HelloPayload
+			if err := json.Unmarshal([]byte(tt.json), &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("Unmarshal() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTransportRekeyPayload_EncodeDecode(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload TransportRekeyPayload
+	}{
+		{name: "outbound", payload: TransportRekeyPayload{Direction: "outbound", Generation: 1}},
+		{name: "inbound, large generation", payload: TransportRekeyPayload{Direction: "inbound", Generation: 9999}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.payload)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			var got TransportRekeyPayload
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if got != tt.payload {
+				t.Errorf("round-trip = %+v, want %+v", got, tt.payload)
+			}
+		})
+	}
+}
+
+func TestKeyRotatePayload_EncodeDecode(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload KeyRotatePayload
+	}{
+		{
+			name: "device key rotation",
+			payload: KeyRotatePayload{
+				Kind: "device", SuccessorPK: "ef01ab23cd45",
+				Expiry: time.Date(2026, 8, 3, 12, 35, 0, 0, time.UTC),
+			},
+		},
+		{
+			name: "server key rotation",
+			payload: KeyRotatePayload{
+				Kind: "server", SuccessorPK: "1234567890ab",
+				Expiry: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.payload)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			var got KeyRotatePayload
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if got.Kind != tt.payload.Kind || got.SuccessorPK != tt.payload.SuccessorPK {
+				t.Errorf("round-trip = %+v, want %+v", got, tt.payload)
+			}
+			if !got.Expiry.Equal(tt.payload.Expiry) {
+				t.Errorf("Expiry round-trip = %v, want %v", got.Expiry, tt.payload.Expiry)
+			}
+		})
+	}
+}
+
+func TestHelloAckPayload_ServerTimeOmittedWhenNil(t *testing.T) {
+	payload := HelloAckPayload{Accepted: true, AgentID: 7}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, present := raw["server_time"]; present {
+		t.Errorf("server_time present in %s, want omitted when nil", data)
+	}
+
+	var got HelloAckPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.ServerTime != nil {
+		t.Errorf("ServerTime = %v, want nil", got.ServerTime)
+	}
+	if !got.Accepted || got.AgentID != 7 {
+		t.Errorf("round-trip = %+v, want Accepted=true AgentID=7", got)
 	}
 }

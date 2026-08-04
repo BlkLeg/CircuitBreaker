@@ -6,7 +6,31 @@
       "payload": {
         "device_pk": "ab12cd34", "hostname": "box1.local", "machine_id_hash": "deadbeef",
         "os": "linux", "os_version": "6.1", "arch": "amd64", "agent_version": "0.1.0",
-        "primary_macs": ["aa:bb:cc:dd:ee:ff"]
+        "primary_macs": ["aa:bb:cc:dd:ee:ff"],
+        "readiness": [
+          {"collector": "host.docker", "state": "ready"},
+          {
+            "collector": "host.hwmon", "state": "degraded",
+            "reason": "no hwmon sensors present", "remediation": "install lm-sensors",
+            "missing": ["/sys/class/hwmon"]
+          }
+        ],
+        "spool_depth": 0
+      }
+    }
+  },
+  {
+    "description": "hello — old-shaped empty payload (backward compatibility)",
+    "json": {"v": 1, "type": "hello", "seq": 0, "ts": "2026-07-27T12:00:00Z", "payload": {}}
+  },
+  {
+    "description": "hello — partial payload missing readiness and spool_depth (backward compatibility)",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-07-27T12:00:00Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "box1.local", "machine_id_hash": "deadbeef",
+        "os": "linux", "os_version": "", "arch": "amd64", "agent_version": "0.1.0",
+        "primary_macs": []
       }
     }
   },
@@ -24,6 +48,24 @@
   {
     "description": "hello.ack — approval transition",
     "json": {"v": 1, "type": "hello.ack", "seq": 1, "ts": "2026-07-27T12:05:00Z", "payload": {"agent_id": 7, "status": "active"}}
+  },
+  {
+    "description": "hello.ack — link establishment, accepted with authoritative grants",
+    "json": {
+      "v": 1, "type": "hello.ack", "seq": 0, "ts": "2026-07-27T12:05:02Z",
+      "payload": {
+        "accepted": true, "server_time": "2026-07-27T12:05:02Z",
+        "capabilities": {"host_telemetry": true, "remote_probe": false, "local_discovery": false},
+        "agent_id": 7
+      }
+    }
+  },
+  {
+    "description": "hello.ack — link establishment, rejected with reason",
+    "json": {
+      "v": 1, "type": "hello.ack", "seq": 0, "ts": "2026-07-27T12:05:03Z",
+      "payload": {"accepted": false, "reason": "device key revoked", "server_time": "2026-07-27T12:05:03Z"}
+    }
   },
   {
     "description": "capabilities.set — mixed grants",
@@ -53,5 +95,39 @@
   {
     "description": "disconnect — server-initiated close reason",
     "json": {"v": 1, "type": "disconnect", "seq": 0, "ts": "2026-07-27T12:25:00Z", "payload": {"reason": "revoked"}}
+  },
+  {
+    "description": "transport.rekey — agent announcing its outbound cipher rekey",
+    "json": {
+      "v": 1, "type": "transport.rekey", "seq": 55, "ts": "2026-07-27T12:15:00Z",
+      "payload": {"direction": "outbound", "generation": 1}
+    }
+  },
+  {
+    "description": "transport.rekey — server announcing its inbound cipher rekey, high generation",
+    "json": {
+      "v": 1, "type": "transport.rekey", "seq": 0, "ts": "2026-07-27T12:30:00Z",
+      "payload": {"direction": "inbound", "generation": 9999}
+    }
+  },
+  {
+    "description": "key.rotate — device key rotation",
+    "json": {
+      "v": 1, "type": "key.rotate", "seq": 0, "ts": "2026-07-27T12:35:00Z",
+      "payload": {
+        "kind": "device", "successor_pk": "ef01ab23cd45",
+        "expiry": "2026-08-03T12:35:00Z"
+      }
+    }
+  },
+  {
+    "description": "key.rotate — server key rotation",
+    "json": {
+      "v": 1, "type": "key.rotate", "seq": 0, "ts": "2026-07-27T12:36:00Z",
+      "payload": {
+        "kind": "server", "successor_pk": "1234567890ab",
+        "expiry": "2026-08-10T00:00:00Z"
+      }
+    }
   }
 ]

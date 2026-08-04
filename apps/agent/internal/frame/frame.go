@@ -55,3 +55,75 @@ const (
 	TypeDisconnect       = "disconnect"
 	TypePing             = "ping"
 )
+
+// Frame type constants — bidirectional (either side may send it about its own cipher).
+const (
+	TypeTransportRekey = "transport.rekey"
+)
+
+// Payload shapes below are the structured wire format for a subset of frame types. They are
+// schema/codec only: nothing in this package parses Frame.Payload into these types
+// automatically, and no rekey/rotation *behavior* lives here (see Frame.Payload's callers in
+// internal/link and internal/enroll, and the corresponding backend handlers). Callers that want
+// the typed form decode Frame.Payload into these structs themselves; the conformance corpus in
+// conformance_test.go pins their wire shape against apps/backend/src/app/schemas/agent_frame.py.
+
+// Readiness reports one collector's ability to run, carried in HelloPayload.Readiness — see
+// specs/2026-07-26-cb-agent-design.md §4.3.
+type Readiness struct {
+	Collector   string   `json:"collector"`
+	State       string   `json:"state"` // ready | degraded | unavailable
+	Reason      string   `json:"reason,omitempty"`
+	Remediation string   `json:"remediation,omitempty"`
+	Missing     []string `json:"missing,omitempty"`
+}
+
+// HelloPayload is the agent -> server `hello` payload's structured shape
+// (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). Every field is optional so an
+// old-shaped hello — including today's empty `{}` payload — still decodes: absent fields take
+// their Go zero value rather than failing decode.
+type HelloPayload struct {
+	DevicePK      string      `json:"device_pk,omitempty"`
+	Hostname      string      `json:"hostname,omitempty"`
+	MachineIDHash string      `json:"machine_id_hash,omitempty"`
+	OS            string      `json:"os,omitempty"`
+	OSVersion     string      `json:"os_version,omitempty"`
+	Arch          string      `json:"arch,omitempty"`
+	AgentVersion  string      `json:"agent_version,omitempty"`
+	PrimaryMACs   []string    `json:"primary_macs,omitempty"`
+	Readiness     []Readiness `json:"readiness,omitempty"`
+	SpoolDepth    int         `json:"spool_depth,omitempty"`
+}
+
+// HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
+// post-enrollment link-establishment handshake (specs/2026-07-26-cb-agent-design.md §4.2: the
+// server "re-sends the authoritative set on every hello.ack"). The enrollment socket
+// (WS /api/agents/enroll) also emits `hello.ack` frames for pairing-code/status messages with a
+// different, untyped payload shape (see ws_agents.py's `_ack_bytes`); this struct models only
+// the link ack. All fields are optional/zero-valued when absent.
+type HelloAckPayload struct {
+	Accepted     bool            `json:"accepted,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
+	ServerTime   *time.Time      `json:"server_time,omitempty"`
+	Capabilities map[string]bool `json:"capabilities,omitempty"`
+	AgentID      int64           `json:"agent_id,omitempty"`
+}
+
+// TransportRekeyPayload announces a Noise cipher rekey for one direction of the link.
+// Direction is relative to the sender: "outbound" is the sender's send cipher, "inbound" is
+// its receive cipher. Generation is a per-direction, per-session counter the sender increments
+// each rekey, letting the receiver tell rekey announcements apart. This is schema only — Task 5
+// wires the actual rekey mechanism and the 15-minute timing.
+type TransportRekeyPayload struct {
+	Direction  string `json:"direction"` // "inbound" | "outbound"
+	Generation uint64 `json:"generation"`
+}
+
+// KeyRotatePayload carries a pending device-key or server-key rotation: the kind of key being
+// rotated, the successor public key material, and when the rotation must complete by. This is
+// schema only — Tasks 27/28 wire the rotation state machine.
+type KeyRotatePayload struct {
+	Kind        string    `json:"kind"` // "device" | "server"
+	SuccessorPK string    `json:"successor_pk"`
+	Expiry      time.Time `json:"expiry"`
+}
