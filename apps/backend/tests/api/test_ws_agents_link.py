@@ -242,6 +242,36 @@ def test_link_records_connected_then_disconnected_events(db_session, ws_client):
     assert "disconnected" in types
 
 
+def test_link_registers_connection_owner_on_connect_and_deregisters_on_disconnect(
+    db_session, ws_client, monkeypatch
+):
+    """Task 8: /link's connect path claims cross-worker control-routing
+    ownership of the agent for the life of the socket (via this worker's
+    process-wide `agent_registry.WORKER_ID`) and releases it once the socket
+    closes — exercised end-to-end over the real WebSocket, not just by
+    calling the registry functions directly."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        _connect_linked(ws, agent_priv, server_pub)
+
+        owner = ws_client.portal.call(agent_registry.get_agent_connection_owner, agent.id)
+        assert owner == agent_registry.WORKER_ID
+
+    owner_after_disconnect = ws_client.portal.call(
+        agent_registry.get_agent_connection_owner, agent.id
+    )
+    assert owner_after_disconnect is None
+
+
 def test_link_rejects_stale_handshake_timestamp(db_session, ws_client):
     _agent, agent_priv = _active_agent_with_key(db_session)
     _, server_pub = get_server_static_keypair()
@@ -436,6 +466,16 @@ class _FakeTTLRedis:
     async def setex(self, key: str, ttl: float, value: str) -> bool:
         self._store[key] = (time.monotonic() + ttl, value)
         return True
+
+    async def get(self, key: str) -> str | None:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            del self._store[key]
+            return None
+        return value
 
     async def exists(self, key: str) -> int:
         entry = self._store.get(key)

@@ -341,6 +341,12 @@ async def link_stream(websocket: WebSocket) -> None:
 
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)
+    # Distinct from the presence "worker" label above: register_agent_connection
+    # records *this process's* WORKER_ID as the owner of agent_id's live socket,
+    # which is what a later worker's control-frame publish (Task 9) resolves
+    # against to route delivery here. See agent_registry.WORKER_ID's docstring
+    # for why the two aren't the same identifier.
+    await agent_registry.register_agent_connection(agent_id)
     await agent_registry.broadcast_presence(agent_id, "connected")
     outbound_seq = _OutboundSeq()
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
@@ -462,6 +468,7 @@ async def link_stream(websocket: WebSocket) -> None:
                     continue
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
     finally:
+        await agent_registry.deregister_agent_connection(agent_id)
         await agent_registry.mark_presence_disconnected(agent_id)
         await agent_registry.broadcast_presence(agent_id, "disconnected")
         with SessionLocal() as db:

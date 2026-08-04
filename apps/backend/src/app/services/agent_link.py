@@ -67,6 +67,10 @@ async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> Non
     import socket
 
     await agent_registry.refresh_presence_heartbeat(db, agent.id, worker=socket.gethostname())
+    # Same refresh cadence as presence above, for the connection-ownership
+    # registry (Task 8) — keeps the two TTL keys expiring in lockstep rather
+    # than one outliving the other.
+    await agent_registry.refresh_agent_connection(agent.id)
 
 
 async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:

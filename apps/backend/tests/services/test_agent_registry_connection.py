@@ -1,0 +1,331 @@
+"""Task 8: cross-worker agent connection/control registry.
+
+Covers `agent_registry.register_agent_connection` / `deregister_agent_connection`
+/ `refresh_agent_connection` / `get_agent_connection_owner` (the Redis-backed
+`agent_id -> worker_id` registry) and `publish_agent_control_frame` /
+`claim_agent_control_frames` (the generic pub/sub delivery primitive), in
+isolation from ws_agents.py's /link wiring — see test_ws_agents_link.py for
+the end-to-end connect/disconnect coverage over the real WebSocket.
+"""
+
+import asyncio
+import time
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services import agent_registry as svc
+
+
+class _FakeRedisBus:
+    """Shared in-memory Redis double: a TTL-key store plus pub/sub, backing
+    multiple independent client handles the way several OS processes would
+    all connect to the one real Redis instance.
+
+    Not the same double as conftest's `redis_mock` (no pub/sub, no real TTL
+    eviction) or test_ws_agents_link.py's `_FakeTTLRedis` (no pub/sub) — this
+    task specifically needs both a real-TTL key store *and* pub/sub in the
+    same backing store, which neither existing double provides.
+    """
+
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[float, str]] = {}
+        self._channels: dict[str, list[asyncio.Queue]] = {}
+
+    def client(self) -> "_FakeRedisClient":
+        return _FakeRedisClient(self)
+
+
+class _FakeRedisClient:
+    def __init__(self, bus: _FakeRedisBus) -> None:
+        self._bus = bus
+
+    async def setex(self, key: str, ttl: float, value: str) -> bool:
+        self._bus._store[key] = (time.monotonic() + ttl, value)
+        return True
+
+    async def get(self, key: str) -> str | None:
+        entry = self._bus._store.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            del self._bus._store[key]
+            return None
+        return value
+
+    async def delete(self, key: str) -> int:
+        return 1 if self._bus._store.pop(key, None) is not None else 0
+
+    async def exists(self, key: str) -> int:
+        return 1 if await self.get(key) is not None else 0
+
+    async def publish(self, channel: str, message: str) -> int:
+        subs = self._bus._channels.get(channel, [])
+        for q in subs:
+            q.put_nowait(message)
+        return len(subs)
+
+    def pubsub(self) -> "_FakePubSub":
+        return _FakePubSub(self._bus)
+
+
+class _FakePubSub:
+    def __init__(self, bus: _FakeRedisBus) -> None:
+        self._bus = bus
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._channels: list[str] = []
+
+    async def subscribe(self, channel: str) -> None:
+        self._channels.append(channel)
+        self._bus._channels.setdefault(channel, []).append(self._queue)
+
+    # Mirrors redis-py's pubsub.get_message(timeout=...) signature.
+    async def get_message(
+        self,
+        ignore_subscribe_messages: bool = True,
+        timeout: float = 1.0,  # noqa: ASYNC109
+    ):
+        try:
+            data = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except TimeoutError:
+            return None
+        return {"type": "message", "data": data}
+
+    async def unsubscribe(self) -> None:
+        for channel in self._channels:
+            subs = self._bus._channels.get(channel, [])
+            if self._queue in subs:
+                subs.remove(self._queue)
+        self._channels = []
+
+    async def aclose(self) -> None:
+        pass
+
+
+# ── registry: register / refresh / deregister / lookup ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_register_agent_connection_writes_ttl_key_with_worker_id(monkeypatch):
+    redis_client = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    ok = await svc.register_agent_connection(5, worker_id="worker-A")
+
+    assert ok is True
+    redis_client.setex.assert_called_once()
+    key, ttl, value = redis_client.setex.call_args[0]
+    assert key == "agent:connection:5"
+    assert ttl == 60
+    assert value == "worker-A"
+
+
+@pytest.mark.asyncio
+async def test_register_agent_connection_returns_false_and_logs_when_redis_down(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    with caplog.at_level("WARNING"):
+        ok = await svc.register_agent_connection(5, worker_id="worker-A")
+
+    assert ok is False
+    assert any("registry unavailable" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_connection_resets_ttl(monkeypatch):
+    redis_client = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    await svc.refresh_agent_connection(5, worker_id="worker-A")
+
+    redis_client.setex.assert_called_once_with("agent:connection:5", 60, "worker-A")
+
+
+@pytest.mark.asyncio
+async def test_refresh_agent_connection_is_a_noop_when_redis_down(monkeypatch):
+    redis_client = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    await svc.refresh_agent_connection(5, worker_id="worker-A")  # must not raise
+
+    redis_client.setex.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_agent_connection_owner_returns_none_when_absent(monkeypatch):
+    redis_client = AsyncMock()
+    redis_client.get.return_value = None
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    assert await svc.get_agent_connection_owner(5) is None
+
+
+@pytest.mark.asyncio
+async def test_deregister_removes_entry_when_still_owned_by_this_worker(monkeypatch):
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    await svc.register_agent_connection(5, worker_id="worker-A")
+    assert await svc.get_agent_connection_owner(5) == "worker-A"
+
+    await svc.deregister_agent_connection(5, worker_id="worker-A")
+
+    assert await svc.get_agent_connection_owner(5) is None
+
+
+@pytest.mark.asyncio
+async def test_deregister_leaves_entry_untouched_when_owned_by_a_different_worker(monkeypatch):
+    """A stale worker's disconnect-path teardown must not clobber a newer
+    connection's registry entry — the race this compare-and-delete guards
+    against: the agent reconnects to worker B before worker A's own `finally`
+    block gets to run its deregister call."""
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    await svc.register_agent_connection(5, worker_id="worker-A")
+    await svc.register_agent_connection(5, worker_id="worker-B")  # reconnect elsewhere
+
+    await svc.deregister_agent_connection(5, worker_id="worker-A")  # worker A's stale teardown
+
+    assert await svc.get_agent_connection_owner(5) == "worker-B"
+
+
+@pytest.mark.asyncio
+async def test_deregister_is_a_noop_when_redis_down(monkeypatch):
+    redis_client = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    await svc.deregister_agent_connection(5, worker_id="worker-A")  # must not raise
+
+    redis_client.get.assert_not_called()
+    redis_client.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connection_registry_ttl_expiry_removes_stale_entry(monkeypatch):
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+    monkeypatch.setattr(svc, "_CONNECTION_TTL_SECONDS", 0.2)
+
+    await svc.register_agent_connection(5, worker_id="worker-A")
+    assert await svc.get_agent_connection_owner(5) == "worker-A"
+
+    await asyncio.sleep(0.3)  # past the shrunk TTL, no refresh sent
+
+    assert await svc.get_agent_connection_owner(5) is None
+
+
+# ── delivery primitive: publish / claim ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_publish_agent_control_frame_returns_false_when_redis_unavailable(monkeypatch):
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    delivered = await svc.publish_agent_control_frame(5, {"type": "ping"})
+
+    assert delivered is False
+
+
+@pytest.mark.asyncio
+async def test_publish_agent_control_frame_publishes_json_to_agent_channel(monkeypatch):
+    redis_client = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    delivered = await svc.publish_agent_control_frame(5, {"type": "ping", "seq": 3})
+
+    assert delivered is True
+    redis_client.publish.assert_called_once()
+    channel, payload = redis_client.publish.call_args[0]
+    assert channel == "cb:agents:control:5"
+    import json
+
+    assert json.loads(payload) == {"type": "ping", "seq": 3}
+
+
+async def _first_frame(agen):
+    async for frame in agen:
+        return frame
+    return None
+
+
+@pytest.mark.asyncio
+async def test_control_frame_published_for_agent_owned_by_worker_b_is_claimed_only_by_worker_b(
+    monkeypatch,
+):
+    """The cross-worker routing proof: two simulated worker processes (A and
+    B) both listen on the same agent's control channel via independent
+    `claim_agent_control_frames` generators, backed by the same shared fake
+    Redis (standing in for the one real Redis instance two OS processes would
+    both talk to, per the task brief's confirmed test-double reading). Only
+    worker B — the registered owner — ever observes the published frame."""
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    await svc.register_agent_connection(7, worker_id="worker-B")
+
+    listen_a = svc.claim_agent_control_frames(7, worker_id="worker-A")
+    listen_b = svc.claim_agent_control_frames(7, worker_id="worker-B")
+
+    task_a = asyncio.create_task(asyncio.wait_for(_first_frame(listen_a), timeout=1.0))
+    task_b = asyncio.create_task(asyncio.wait_for(_first_frame(listen_b), timeout=1.0))
+    # Let both listener generators reach their subscribed, awaiting-a-message
+    # state before publishing — otherwise the publish could race ahead of one
+    # or both subscriptions and never get delivered at all (ordinary Redis
+    # pub/sub fire-and-forget semantics, faithfully modeled by the fake).
+    await asyncio.sleep(0.05)
+
+    delivered = await svc.publish_agent_control_frame(7, {"type": "ping"})
+    assert delivered is True
+
+    frame_b = await task_b
+    assert frame_b == {"type": "ping"}
+
+    with pytest.raises(asyncio.TimeoutError):
+        await task_a
+
+    await listen_a.aclose()
+    await listen_b.aclose()
+
+
+@pytest.mark.asyncio
+async def test_claim_agent_control_frames_drops_message_when_ownership_changes_mid_flight(
+    monkeypatch,
+):
+    """A worker still subscribed after losing ownership (its own teardown
+    hasn't cancelled the listener task yet) must not yield a frame meant for
+    whichever worker owns the connection now — the explicit per-message
+    ownership re-check, not just "am I subscribed", is what "claim" means
+    here."""
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    await svc.register_agent_connection(9, worker_id="worker-A")
+
+    listen_a = svc.claim_agent_control_frames(9, worker_id="worker-A")
+    task_a = asyncio.create_task(asyncio.wait_for(_first_frame(listen_a), timeout=1.0))
+    await asyncio.sleep(0.05)
+
+    # Ownership moves to worker B before the frame is published — worker A's
+    # listener is still subscribed (its task hasn't been cancelled) but no
+    # longer owns the connection.
+    await svc.register_agent_connection(9, worker_id="worker-B")
+
+    await svc.publish_agent_control_frame(9, {"type": "ping"})
+
+    with pytest.raises(asyncio.TimeoutError):
+        await task_a
+
+    await listen_a.aclose()
+
+
+@pytest.mark.asyncio
+async def test_claim_agent_control_frames_returns_immediately_when_redis_unavailable(monkeypatch):
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    frames = [frame async for frame in svc.claim_agent_control_frames(5, worker_id="worker-A")]
+
+    assert frames == []

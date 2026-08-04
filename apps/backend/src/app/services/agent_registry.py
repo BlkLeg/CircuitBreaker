@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+import uuid
+from collections.abc import AsyncIterator, Awaitable
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -325,6 +327,200 @@ async def broadcast_presence(agent_id: int, event_type: str, detail: dict | None
         await nats_client.publish(subjects.AGENT_EVENT, message)
     except Exception as exc:
         _logger.debug("agent presence broadcast (nats) failed: %s", exc)
+
+
+WORKER_ID = uuid.uuid4().hex
+"""Identifies *this* worker process for cross-worker /link connection
+ownership and control-frame routing (Task 8).
+
+No existing identifier in the codebase is fit for this purpose. The closest
+candidate — the `worker` string `mark_presence_connected`/
+`refresh_presence_heartbeat` already record (`socket.gethostname()`, set by
+ws_agents.py's `link_stream`) — is a purely cosmetic display label for the UI
+presence payload, not a routing key: multiple backend worker processes
+commonly run on one host (e.g. multiple uvicorn/gunicorn workers), so
+hostname alone cannot say *which one* currently holds a given agent's live
+socket. There is likewise no existing per-process id from the NATS
+integration (nats_client.py has no client-id concept surfaced to callers) or
+from Redis channel naming (`cb:agents:events` is a single shared channel, not
+per-worker). Absent such a concept, this is the "reasonable per-process UUID
+generated at worker startup" the task brief allows for: generated once, at
+this module's import time (i.e. once per worker process), and stable for
+that process's lifetime.
+"""
+
+_CONNECTION_KEY_PREFIX = "agent:connection:"
+# Same cadence as presence (_PRESENCE_TTL_SECONDS) — refreshed alongside it
+# from the same heartbeat, so the two keys expire together rather than one
+# outliving the other.
+_CONNECTION_TTL_SECONDS = _PRESENCE_TTL_SECONDS
+
+
+def _connection_key(agent_id: int) -> str:
+    return f"{_CONNECTION_KEY_PREFIX}{agent_id}"
+
+
+async def register_agent_connection(agent_id: int, *, worker_id: str = WORKER_ID) -> bool:
+    """Record that `worker_id` currently holds `agent_id`'s live /link socket.
+
+    Mirrors `mark_presence_connected`'s TTL-key pattern exactly (same 60s
+    TTL). Unlike `mark_presence_connected`, a Redis-unavailable outcome is
+    logged rather than silently swallowed: the /link WebSocket itself doesn't
+    need Redis and can proceed either way, but with no registry entry this
+    worker becomes unreachable for cross-worker control routing for as long
+    as Redis stays down — a guarantee the global constraints call out as
+    something that must "fail clearly, not silently weaken". Returns True on
+    success, False when Redis is unavailable.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        _logger.warning(
+            "agent %s: connection registry unavailable (Redis down) — "
+            "cross-worker control routing disabled for this connection",
+            agent_id,
+        )
+        return False
+    await r.setex(_connection_key(agent_id), _CONNECTION_TTL_SECONDS, worker_id)
+    return True
+
+
+async def refresh_agent_connection(agent_id: int, *, worker_id: str = WORKER_ID) -> None:
+    """Refresh the connection-registry TTL — call on the same cadence as
+    `refresh_presence_heartbeat` (see agent_link.py's `_handle_heartbeat`),
+    so a long-lived connection's registry entry never expires out from under
+    it purely from the passage of time."""
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return
+    await r.setex(_connection_key(agent_id), _CONNECTION_TTL_SECONDS, worker_id)
+
+
+async def deregister_agent_connection(agent_id: int, *, worker_id: str = WORKER_ID) -> None:
+    """Remove the registry entry, but only if it's still this worker's.
+
+    A fast disconnect/reconnect can land the agent on a *different* worker
+    before this worker's own teardown runs (its `finally` block races the new
+    connection's own `register_agent_connection`). Blindly deleting on
+    disconnect — as `mark_presence_disconnected` does for the presence key —
+    would then erase the new owner's freshly-written entry. Compare-and-delete
+    avoids that: only ever remove the row this worker itself owns.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return
+    current = await r.get(_connection_key(agent_id))
+    if current == worker_id:
+        await r.delete(_connection_key(agent_id))
+
+
+async def get_agent_connection_owner(agent_id: int) -> str | None:
+    """The `worker_id` of whichever worker currently holds `agent_id`'s live
+    /link socket, or None if no worker is registered (agent offline, or the
+    registry entry expired)."""
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return None
+    return cast(str | None, await cast(Awaitable[Any], r.get(_connection_key(agent_id))))
+
+
+_CONTROL_CHANNEL_PREFIX = "cb:agents:control:"
+
+
+def _control_channel(agent_id: int) -> str:
+    return f"{_CONTROL_CHANNEL_PREFIX}{agent_id}"
+
+
+async def publish_agent_control_frame(agent_id: int, frame: dict) -> bool:
+    """Hand a control frame to whichever worker currently holds `agent_id`'s
+    live /link socket.
+
+    This is the generic delivery primitive only: it hands `frame` off over
+    `agent_id`'s dedicated Redis pub/sub channel, published by any worker
+    process regardless of whether it owns the connection. It does NOT itself
+    know or care what `frame` means — Task 9 wires specific frame types
+    (capabilities.set, update, disconnect, key-rotation, ping) through this.
+    Actual delivery to the live socket depends on the owning worker running
+    `claim_agent_control_frames` for this agent (also Task 9's concern).
+
+    Never raises — a bad payload or dead Redis must not abort the caller's
+    own control-plane action. Returns True once the frame has been published
+    (note: publish success does not guarantee an owning worker was listening
+    — Redis pub/sub has no persistence/replay for messages published to a
+    channel with no current subscriber), False when Redis is unavailable or
+    publish itself failed.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        _logger.warning("agent %s: control frame not published — Redis unavailable", agent_id)
+        return False
+    try:
+        await r.publish(_control_channel(agent_id), json.dumps(frame, default=str))
+        return True
+    except Exception as exc:
+        _logger.warning("agent %s: control frame publish failed: %s", agent_id, exc)
+        return False
+
+
+async def claim_agent_control_frames(
+    agent_id: int, *, worker_id: str = WORKER_ID
+) -> AsyncIterator[dict]:
+    """Async generator: yields each control frame published for `agent_id`
+    while — and only while — `worker_id` is currently registered as the
+    owner of that agent's connection (`register_agent_connection`).
+
+    This is the "claim" half of the delivery primitive: subscribing to
+    `agent_id`'s channel alone is not sufficient authorization to act on a
+    frame, because a message can arrive after this worker's own connection
+    has already handed off to another worker (e.g. the agent reconnected
+    elsewhere) but before whatever holds this generator has gotten around to
+    stopping it. Re-checking ownership per message, rather than once at
+    subscribe time, closes that window — a frame that arrives for an agent
+    this worker no longer owns is silently dropped rather than delivered to
+    a socket that's already gone.
+
+    Callers own the generator's lifetime: run it inside its own `asyncio`
+    task for the life of the /link connection and cancel that task to stop
+    listening (e.g. when the socket closes) — cancellation reaches this
+    generator as an ordinary `GeneratorExit`/`CancelledError` at its current
+    `await`, and the `finally` block below unsubscribes cleanly, mirroring
+    `_redis_agent_listener`'s teardown in ws_agents.py. Wiring this into
+    `link_stream` itself is Task 9's job, not this primitive's.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return
+    pubsub = r.pubsub()
+    try:
+        await pubsub.subscribe(_control_channel(agent_id))
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg is None or msg.get("type") != "message":
+                continue
+            owner = await get_agent_connection_owner(agent_id)
+            if owner != worker_id:
+                continue
+            try:
+                yield json.loads(msg["data"])
+            except (TypeError, ValueError) as exc:
+                _logger.warning("agent %s: malformed control frame dropped: %s", agent_id, exc)
+    finally:
+        try:
+            await pubsub.unsubscribe()
+            await pubsub.aclose()
+        except Exception:
+            pass
 
 
 _PENDING_EXPIRY_DAYS = 7

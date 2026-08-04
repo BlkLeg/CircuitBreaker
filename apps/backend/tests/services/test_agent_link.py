@@ -21,6 +21,24 @@ async def test_dispatch_heartbeat_refreshes_presence(db_session, factories, monk
 
 
 @pytest.mark.asyncio
+async def test_dispatch_heartbeat_refreshes_connection_registry(db_session, factories, monkeypatch):
+    """Task 8: the connection-ownership registry refreshes on the same
+    heartbeat cadence as presence, so it doesn't expire out from under a
+    long-lived connection purely from the 60s TTL elapsing."""
+    from unittest.mock import AsyncMock
+
+    agent = factories.agent(status="active")
+    monkeypatch.setattr("app.services.agent_registry.refresh_presence_heartbeat", AsyncMock())
+    refresh_connection = AsyncMock()
+    monkeypatch.setattr("app.services.agent_registry.refresh_agent_connection", refresh_connection)
+
+    frame = AgentFrame(type="heartbeat", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    refresh_connection.assert_called_once_with(agent.id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("frame_type", ["log", "telemetry.host", "uninstall"])
 async def test_dispatch_non_heartbeat_frame_does_not_refresh_presence(
     db_session, factories, monkeypatch, frame_type
