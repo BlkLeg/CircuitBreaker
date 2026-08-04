@@ -106,8 +106,11 @@ def receive_frame(
     Rejects (recording a `protocol_violation` AgentEvent and returning None
     for the caller to drop the frame and keep the connection open):
       - malformed bodies — bytes that don't parse as an AgentFrame at all,
-        or decode with a negative `seq` (never producible by the Go agent's
-        `uint64` counter, but not excluded by the wire schema either);
+        or decode with a blank/empty `type` (schema-legal for pydantic's
+        `str`, but structurally incomplete — mirrors the Go agent's
+        `seqguard.go` `f.Type == ""` check) or a negative `seq` (never
+        producible by the Go agent's `uint64` counter, but not excluded by
+        the wire schema either);
       - unsupported protocol versions — `v` != FRAME_VERSION;
       - non-increasing sequence numbers — `seq` <= the last one accepted in
         this session (covers both exact-duplicate replays and any
@@ -138,6 +141,15 @@ def receive_frame(
             agent,
             reason="unsupported_version",
             detail={"v": candidate.v, "frame_type": candidate.type},
+        )
+        return None
+
+    if not candidate.type.strip():
+        _record_protocol_violation(
+            db,
+            agent,
+            reason="malformed_frame",
+            detail={"seq": candidate.seq, "frame_type": candidate.type},
         )
         return None
 

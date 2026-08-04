@@ -174,6 +174,22 @@ def test_receive_frame_rejects_frame_missing_required_fields(db_session, factori
     assert violation.detail["reason"] == "malformed_frame"
 
 
+def test_receive_frame_rejects_empty_type(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    assert agent_link.receive_frame(db_session, agent, _raw(type="", seq=0)) is None
+
+    violation = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="protocol_violation")
+        .one()
+    )
+    assert violation.detail["reason"] == "malformed_frame"
+    assert violation.detail["seq"] == 0
+
+
 def test_receive_frame_rejects_negative_sequence(db_session, factories):
     from app.db.models import AgentEvent
 
