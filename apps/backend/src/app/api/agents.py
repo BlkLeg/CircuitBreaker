@@ -12,6 +12,7 @@ from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.db.models import Agent, AgentEvent, User
 from app.db.session import get_db
+from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_UPDATE
 from app.schemas.agents import (
     AgentEventRead,
     AgentPatch,
@@ -209,7 +210,7 @@ async def post_revoke(
 
 
 @router.put("/{agent_id}/capabilities", response_model=AgentRead)
-def put_capabilities(
+async def put_capabilities(
     agent_id: int,
     payload: CapabilitiesUpdateRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -220,6 +221,21 @@ def put_capabilities(
         raise HTTPException(status_code=404, detail="Agent not found")
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
     db.commit()
+    # Immediate cross-worker push (Task 9) on top of the DB write above: if the
+    # agent is connected right now, whichever worker holds its /link socket
+    # picks this up via agent_registry.claim_agent_control_frames and applies
+    # it without waiting on anything poll-based. The authoritative grants
+    # dict is re-read post-commit (not `payload.capabilities`) so an agent
+    # that was never granted some capability the request didn't mention still
+    # gets the full, correct set — mirrors what the initial connect-time
+    # capabilities.set send in ws_agents.py already does. Never raises (see
+    # publish_agent_control_frame's docstring) — a dead/degraded Redis must
+    # not fail this request; the agent still picks the change up next time it
+    # (re)connects or via its own periodic status poll.
+    await agent_registry.publish_agent_control_frame(
+        agent_id,
+        {"type": TYPE_CAPABILITIES_SET, "payload": agent_registry.grants_dict(db, agent_id)},
+    )
     return _to_read(db, agent)
 
 
@@ -264,6 +280,24 @@ async def post_update(
         sha256=sha256,
         arch=agent.arch or "amd64",
         os_name=agent.os or "linux",
+    )
+    # Immediate cross-worker push (Task 9), same reasoning as put_capabilities
+    # above: request_update above already queues the pending update in Redis,
+    # which link_stream's existing _LINK_POLL_SECONDS poll (agent_update.
+    # pop_pending_update) picks up as the recovery fallback if this publish is
+    # missed or Redis is briefly unavailable for it specifically — that
+    # queued key is left untouched either way.
+    await agent_registry.publish_agent_control_frame(
+        agent_id,
+        {
+            "type": TYPE_UPDATE,
+            "payload": {
+                "version": version,
+                "sha256": sha256,
+                "arch": agent.arch or "amd64",
+                "os": agent.os or "linux",
+            },
+        },
     )
     agent_registry.record_event(
         db,

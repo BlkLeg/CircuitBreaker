@@ -35,6 +35,7 @@ from app.db.models import User
 from app.db.session import SessionLocal
 from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
+    TYPE_DISCONNECT,
     TYPE_HEARTBEAT,
     TYPE_HELLO_ACK,
     TYPE_PING,
@@ -280,6 +281,61 @@ async def _send_ping(websocket: WebSocket, responder: NoiseIKResponder, seq: int
     await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
 
 
+def _control_frame_bytes(responder: NoiseIKResponder, claimed: dict, seq: int) -> bytes | None:
+    """Wire-encode one control-plane frame claimed via the Task 8 registry
+    (`agent_registry.claim_agent_control_frames`) for immediate delivery down
+    this /link connection.
+
+    `claimed` is whatever `agent_registry.publish_agent_control_frame`'s
+    caller published — `{"type": <frame type>, "payload": {...}}` by
+    convention (`payload` optional). This is intentionally generic over
+    `type`: it doesn't validate against CAPABILITY_FOR_TYPE or otherwise
+    special-case capabilities.set/update/disconnect/key.rotate/ping — any of
+    those (and any future control frame type) rides the same envelope, same
+    as the connect-time `_capabilities_bytes` and the poll-fallback
+    `update_frame` in `link_stream` below already do by hand for their one
+    frame type each. A malformed claim (missing/blank "type") is dropped
+    rather than raising, mirroring `agent_link.receive_frame`'s tolerance of
+    malformed input on the inbound side — a bad publish must not take the
+    connection down.
+    """
+    frame_type = claimed.get("type")
+    if not isinstance(frame_type, str) or not frame_type.strip():
+        _logger.warning("dropping malformed claimed control frame (no type): %r", claimed)
+        return None
+    frame = {
+        "v": 1,
+        "type": frame_type,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": claimed.get("payload") or {},
+    }
+    return responder.encrypt(json.dumps(frame).encode())
+
+
+async def _run_control_frame_listener(agent_id: int, queue: asyncio.Queue[dict]) -> None:
+    """Background task: claims control-plane frames published for `agent_id`
+    via the Task 8 registry (`agent_registry.claim_agent_control_frames`) and
+    hands each to `queue` for `link_stream`'s main loop to encrypt and send.
+
+    Deliberately does *not* touch the websocket, `responder`, or the
+    connection's `_OutboundSeq` itself — those are the main loop's alone, so
+    there is exactly one place that ever advances the Noise send cipher or
+    writes to the socket, and a claimed control frame can never race a
+    directly-handled one (rekey/ping/poll-fallback update) for the send
+    slot. Mirrors `_redis_agent_listener`'s task-per-connection shape for
+    `/stream`, but hands frames off via a queue instead of sending directly,
+    for that reason.
+    """
+    try:
+        async for frame in agent_registry.claim_agent_control_frames(agent_id):
+            await queue.put(frame)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _logger.warning("agent %s: control frame listener error: %s", agent_id, exc)
+
+
 @unauthenticated_router.websocket("/link")
 async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -351,6 +407,16 @@ async def link_stream(websocket: WebSocket) -> None:
     outbound_seq = _OutboundSeq()
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
 
+    # Task 9: listen for control-plane frames (capabilities.set, update,
+    # disconnect, key.rotate, ping — whatever a REST/service-layer caller
+    # publishes via agent_registry.publish_agent_control_frame, potentially
+    # from a *different* worker process than this one) claimed for this
+    # connection's agent_id, for as long as this worker holds the
+    # connection. Cancelled in the `finally` block below alongside the rest
+    # of this connection's teardown.
+    control_queue: asyncio.Queue[dict] = asyncio.Queue()
+    control_task = asyncio.create_task(_run_control_frame_listener(agent_id, control_queue))
+
     # last_heartbeat_at is the WS-level read deadline's clock — deliberately
     # *not* "last time any frame arrived". It only ever advances on a valid
     # inbound `heartbeat` frame (below), so a run of other traffic (a
@@ -365,6 +431,12 @@ async def link_stream(websocket: WebSocket) -> None:
     last_rekey_at = utcnow()
     last_ping_sent_at = utcnow()
     inbound_session = agent_link.LinkSessionState()
+    # Held across loop iterations (only ever replaced once it actually
+    # completes, in the receive-handling branch below) rather than recreated
+    # every pass — recreating it each iteration would mean cancelling a
+    # pending receive_bytes() every time a control frame wins the race below,
+    # which risks dropping whatever the agent sends in that same window.
+    receive_task: asyncio.Task[bytes] | None = None
     try:
         while True:
             # Server->agent cipher rekey, on this side's own clock and
@@ -397,9 +469,44 @@ async def link_stream(websocket: WebSocket) -> None:
                     break
                 last_ping_sent_at = utcnow()
 
-            try:
-                ct = await asyncio.wait_for(websocket.receive_bytes(), timeout=_LINK_POLL_SECONDS)
-            except TimeoutError:
+            # Race one persistent inbound-WS read against the control-plane
+            # queue (Task 9), bounded by the same _LINK_POLL_SECONDS cadence
+            # the old single `wait_for(receive_bytes(), ...)` used — a claimed
+            # control frame short-circuits that wait instead of waiting out
+            # the rest of the poll interval, which is the "immediate" half of
+            # this task; the DB-status/pending-update poll fallback below is
+            # otherwise untouched and still runs on its original cadence.
+            if receive_task is None:
+                receive_task = asyncio.ensure_future(websocket.receive_bytes())
+            control_get_task = asyncio.ensure_future(control_queue.get())
+            done, _pending = await asyncio.wait(
+                {receive_task, control_get_task},
+                timeout=_LINK_POLL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if control_get_task in done:
+                claimed = control_get_task.result()
+                frame_bytes = _control_frame_bytes(responder, claimed, outbound_seq.next())
+                if frame_bytes is not None:
+                    try:
+                        await websocket.send_bytes(frame_bytes)
+                    except (WebSocketDisconnect, RuntimeError):
+                        break
+                    if claimed.get("type") == TYPE_DISCONNECT:
+                        # The frame telling the agent to disconnect has gone
+                        # out — nothing more to do on this connection. (No
+                        # call site publishes this frame type yet — Task 10
+                        # is what wires revoke/reject to it — but delivery is
+                        # ready the moment one does.)
+                        break
+            else:
+                control_get_task.cancel()
+
+            if not done:
+                # Neither inbound WS data nor a control frame arrived within
+                # the poll interval — identical to the old TimeoutError
+                # branch this replaces.
                 if (utcnow() - last_heartbeat_at).total_seconds() >= _LINK_DEAD_SECONDS:
                     break
                 with SessionLocal() as db:
@@ -415,10 +522,27 @@ async def link_stream(websocket: WebSocket) -> None:
                         "ts": utcnow().isoformat(),
                         "payload": pending,
                     }
-                    await websocket.send_bytes(responder.encrypt(json.dumps(update_frame).encode()))
+                    try:
+                        await websocket.send_bytes(
+                            responder.encrypt(json.dumps(update_frame).encode())
+                        )
+                    except (WebSocketDisconnect, RuntimeError):
+                        break
                 continue
+
+            if receive_task not in done:
+                # Only a control frame fired this cycle — loop straight back
+                # around for more rather than waiting out the rest of the
+                # poll interval; `receive_task` itself is left untouched and
+                # picked back up next iteration.
+                continue
+
+            try:
+                ct = receive_task.result()
             except WebSocketDisconnect:
                 break
+            finally:
+                receive_task = None
 
             try:
                 pt = responder.decrypt(ct)
@@ -468,6 +592,21 @@ async def link_stream(websocket: WebSocket) -> None:
                     continue
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
     finally:
+        control_task.cancel()
+        if receive_task is not None:
+            receive_task.cancel()
+        for task in (control_task, receive_task):
+            if task is None:
+                continue
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                # Both are expected here: cancellation raises CancelledError
+                # on the awaited task itself, and websocket.receive_bytes()
+                # can also raise WebSocketDisconnect if the socket closed out
+                # from under it in the same instant. Neither should block or
+                # fail this connection's teardown.
+                pass
         await agent_registry.deregister_agent_connection(agent_id)
         await agent_registry.mark_presence_disconnected(agent_id)
         await agent_registry.broadcast_presence(agent_id, "disconnected")

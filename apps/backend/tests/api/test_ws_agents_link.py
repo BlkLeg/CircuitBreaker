@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import secrets
@@ -458,10 +459,21 @@ class _FakeTTLRedis:
     clock). conftest's `redis_mock` fixture is deliberately not reused here:
     its backing dict never evicts on TTL, which is exactly the behavior
     these tests need to exercise (presence keys genuinely expiring absent a
-    heartbeat refresh)."""
+    heartbeat refresh).
+
+    Also carries pub/sub (`publish`/`pubsub`, Task 9), matching
+    test_agent_registry_connection.py's `_FakeRedisBus`/`_FakeRedisClient`
+    split but as one class: every test in this file monkeypatches
+    `app.core.redis.get_redis` to return a single instance of this double,
+    so link_stream's own `subscribe` and a test's direct
+    `publish_agent_control_frame` call naturally share the same in-memory
+    channel registry below — standing in for the one real Redis instance a
+    socket-holding worker and a REST-handling worker would both talk to.
+    """
 
     def __init__(self) -> None:
         self._store: dict[str, tuple[float, str]] = {}
+        self._channels: dict[str, list[asyncio.Queue]] = {}
 
     async def setex(self, key: str, ttl: float, value: str) -> bool:
         self._store[key] = (time.monotonic() + ttl, value)
@@ -499,6 +511,53 @@ class _FakeTTLRedis:
         the twin of this double and why it doesn't attempt to model true
         Redis-side atomicity."""
         return _FakeCompareAndDeleteScript(self._store)
+
+    async def publish(self, channel: str, message: str) -> int:
+        subs = self._channels.get(channel, [])
+        for q in subs:
+            q.put_nowait(message)
+        return len(subs)
+
+    def pubsub(self) -> "_FakePubSubSession":
+        return _FakePubSubSession(self)
+
+
+class _FakePubSubSession:
+    """Stand-in for redis-py's `Redis.pubsub()` session — subscribe/
+    get_message/unsubscribe/aclose only, matching what
+    `agent_registry.claim_agent_control_frames` actually calls. Twin of
+    test_agent_registry_connection.py's `_FakePubSub`, backed by
+    `_FakeTTLRedis._channels` instead of a separate bus object."""
+
+    def __init__(self, redis: "_FakeTTLRedis") -> None:
+        self._redis = redis
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._subscribed: list[str] = []
+
+    async def subscribe(self, channel: str) -> None:
+        self._subscribed.append(channel)
+        self._redis._channels.setdefault(channel, []).append(self._queue)
+
+    async def get_message(
+        self,
+        ignore_subscribe_messages: bool = True,
+        timeout: float = 1.0,  # noqa: ASYNC109
+    ):
+        try:
+            data = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except TimeoutError:
+            return None
+        return {"type": "message", "data": data}
+
+    async def unsubscribe(self) -> None:
+        for channel in self._subscribed:
+            subs = self._redis._channels.get(channel, [])
+            if self._queue in subs:
+                subs.remove(self._queue)
+        self._subscribed = []
+
+    async def aclose(self) -> None:
+        pass
 
 
 class _FakeCompareAndDeleteScript:
@@ -693,3 +752,100 @@ def test_link_refuses_unknown_device_pk(ws_client):
             initiator.read_message(ws.receive_bytes())
             _send_hello(initiator, ws)
             ws.receive_bytes()  # should never arrive — connection closes 1008 first
+
+
+def _receive_bytes_with_timeout(ws, timeout: float = 2.0) -> bytes:
+    """`WebSocketTestSession.receive` (what `ws.receive_bytes()` calls) has no
+    built-in timeout — it blocks forever if nothing arrives. Run it on a
+    worker thread so a genuine delivery bug in the code under test surfaces
+    as a test failure within `timeout` rather than hanging the suite. Doesn't
+    join the thread on timeout (`shutdown(wait=False)`) since a hung
+    `receive_bytes()` call would never return to let it — an acceptable
+    thread leak on the failure path only."""
+    import concurrent.futures
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(ws.receive_bytes)
+    try:
+        return future.result(timeout=timeout)
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_link_delivers_capabilities_set_published_by_another_worker(
+    db_session, ws_client, monkeypatch
+):
+    """Task 9 end-to-end proof. `agent_registry.publish_agent_control_frame`
+    is exactly what `PUT /agents/{id}/capabilities` (agents.py's
+    `put_capabilities`) calls after committing a grant change — calling it
+    directly here stands in for that REST request landing on a *different*
+    worker process than the one holding this agent's live /link socket (the
+    two would share one real Redis instance; `_FakeTTLRedis` plays that role
+    for both sides here). What's under test is link_stream's own claim-and-
+    deliver wiring, not the registry primitives themselves — those already
+    have dedicated coverage in test_agent_registry_connection.py without any
+    real /link connection involved at all."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+        # Give link_stream's background control-frame listener a moment to
+        # actually subscribe before publishing — otherwise the publish could
+        # race ahead of the subscribe and never be delivered at all (ordinary
+        # Redis pub/sub fire-and-forget semantics), mirroring
+        # test_agent_registry_connection.py's identical precaution.
+        time.sleep(0.1)
+
+        published = ws_client.portal.call(
+            agent_registry.publish_agent_control_frame,
+            agent.id,
+            {"type": "capabilities.set", "payload": {"remote_probe": True}},
+        )
+        assert published is True
+
+        raw = _receive_bytes_with_timeout(ws, timeout=2.0)
+        frame = json.loads(initiator.decrypt(raw))
+        assert frame["type"] == "capabilities.set"
+        assert frame["payload"] == {"remote_probe": True}
+
+
+def test_link_delivers_disconnect_published_by_another_worker(db_session, ws_client, monkeypatch):
+    """Companion to the capabilities.set proof above, for `disconnect`. No
+    REST/service-layer call site publishes this frame type yet — wiring
+    revoke/reject to it is Task 10's job — but link_stream's claim-and-
+    deliver path is generic over frame type (`_control_frame_bytes` doesn't
+    special-case capabilities.set vs. anything else), so delivery already
+    works correctly ahead of Task 10 adding the trigger."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+        time.sleep(0.1)
+
+        published = ws_client.portal.call(
+            agent_registry.publish_agent_control_frame,
+            agent.id,
+            {"type": "disconnect", "payload": {"reason": "revoked"}},
+        )
+        assert published is True
+
+        raw = _receive_bytes_with_timeout(ws, timeout=2.0)
+        frame = json.loads(initiator.decrypt(raw))
+        assert frame["type"] == "disconnect"
+        assert frame["payload"] == {"reason": "revoked"}

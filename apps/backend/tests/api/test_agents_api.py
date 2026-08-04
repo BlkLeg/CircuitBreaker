@@ -145,6 +145,73 @@ async def test_capabilities_put_updates_grants(client, factories, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_capabilities_put_publishes_control_frame_for_immediate_delivery(
+    client, factories, auth_headers, monkeypatch
+):
+    """Task 9: put_capabilities also pushes the change through
+    agent_registry.publish_agent_control_frame — the cross-worker delivery
+    primitive Task 8 added — on top of the DB write, so a connected agent
+    picks it up immediately regardless of which worker holds its /link
+    socket. See test_ws_agents_link.py's
+    test_link_delivers_capabilities_set_published_by_another_worker for the
+    matching end-to-end proof that a published frame actually reaches the
+    socket; this test only pins the call site's payload."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(agent_registry, "publish_agent_control_frame", publish)
+
+    resp = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={"capabilities": {"remote_probe": True}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+
+    publish.assert_called_once()
+    published_agent_id, frame = publish.call_args[0]
+    assert published_agent_id == agent.id
+    assert frame["type"] == "capabilities.set"
+    # The full, authoritative grants set — not just the one capability this
+    # request changed — same as the connect-time capabilities.set send.
+    assert frame["payload"] == {"remote_probe": True, "host_telemetry": True}
+
+
+@pytest.mark.asyncio
+async def test_capabilities_put_succeeds_even_when_control_frame_publish_fails(
+    client, factories, auth_headers, monkeypatch
+):
+    """publish_agent_control_frame never raises (see its docstring), but this
+    pins the caller-side contract too: a degraded/unavailable Redis must not
+    fail the request or leave the DB write unapplied — the agent still picks
+    the change up on its own next reconnect/poll."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+
+    monkeypatch.setattr(
+        agent_registry, "publish_agent_control_frame", AsyncMock(return_value=False)
+    )
+
+    resp = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={"capabilities": {"remote_probe": True}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["capabilities"]["remote_probe"] is True
+
+
+@pytest.mark.asyncio
 async def test_delete_requires_admin(client, factories, auth_headers):
     agent = factories.agent()
     resp = await client.delete(f"/api/v1/agents/{agent.id}", headers=auth_headers)
@@ -289,6 +356,43 @@ async def test_update_queues_pending_update_at_latest_version(
         arch="amd64",
         os_name="linux",
     )
+
+
+@pytest.mark.asyncio
+async def test_update_publishes_control_frame_for_immediate_delivery(
+    client, factories, auth_headers, monkeypatch, tmp_path
+):
+    """Task 9: post_update also pushes the update trigger through
+    agent_registry.publish_agent_control_frame, on top of the existing
+    Redis-queued pending update (agent_update.request_update, left
+    untouched above) that link_stream's poll fallback still consumes if this
+    publish is missed or delivered to no listener."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry, agent_update
+
+    monkeypatch.setattr(agent_update, "AGENT_BINARIES_DIR", tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps({"0.2.0": {"linux-amd64": "abc123"}}))
+    agent = factories.agent(status="active", os="linux", arch="amd64")
+
+    monkeypatch.setattr(agent_update, "request_update", AsyncMock())
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(agent_registry, "publish_agent_control_frame", publish)
+
+    resp = await client.post(f"/api/v1/agents/{agent.id}/update", json={}, headers=auth_headers)
+    assert resp.status_code == 200
+
+    publish.assert_called_once()
+    published_agent_id, frame = publish.call_args[0]
+    assert published_agent_id == agent.id
+    assert frame["type"] == "update"
+    assert frame["payload"] == {
+        "version": "0.2.0",
+        "sha256": "abc123",
+        "arch": "amd64",
+        "os": "linux",
+    }
 
 
 @pytest.mark.asyncio
