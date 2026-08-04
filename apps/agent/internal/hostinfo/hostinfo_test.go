@@ -36,9 +36,11 @@ func TestIdentityReadiness(t *testing.T) {
 }
 
 // TestCollect exercises the real assembly path end-to-end against the actual host — this test
-// environment always has a real hostname and architecture, so those are asserted precisely; the
-// machine-id/os-release/MAC values are environment-dependent so only structural invariants are
-// checked (field wiring is correct; nothing panics; the result decodes to the Task 1 schema).
+// environment always has a real hostname, architecture, and GOOS, so those are asserted
+// precisely (OS in particular must equal runtime.GOOS exactly, never a distro identifier — see
+// hostinfo.go's package doc); the machine-id/os-release-derived OSVersion/MAC values are
+// environment-dependent so only structural invariants are checked (field wiring is correct;
+// nothing panics; the result decodes to the Task 1 schema).
 func TestCollect(t *testing.T) {
 	got := Collect("1.2.3")
 
@@ -51,8 +53,8 @@ func TestCollect(t *testing.T) {
 	if got.Hostname == "" {
 		t.Error("Collect().Hostname is empty, want the real host's hostname")
 	}
-	if got.OS == "" {
-		t.Error("Collect().OS is empty, want at least the runtime.GOOS fallback")
+	if got.OS != runtime.GOOS {
+		t.Errorf("Collect().OS = %q, want %q (GOOS-style, per the backend's self-update binary lookup — see hostinfo.go's package doc)", got.OS, runtime.GOOS)
 	}
 	if len(got.Readiness) != 1 {
 		t.Fatalf("Collect().Readiness has %d entries, want 1", len(got.Readiness))

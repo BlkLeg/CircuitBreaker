@@ -3,7 +3,6 @@ package hostinfo
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
@@ -76,17 +75,17 @@ VERSION_ID=9
 			wantVersionID: "9",
 		},
 		{
-			name:          "empty file falls back to runtime.GOOS with no version",
+			name:          "empty file yields empty id and version",
 			content:       "",
-			wantID:        runtime.GOOS,
+			wantID:        "",
 			wantVersionID: "",
 		},
 		{
-			name: "missing ID falls back to runtime.GOOS but keeps a present VERSION_ID",
+			name: "missing ID yields empty id but keeps a present VERSION_ID",
 			content: `NAME="Mystery Linux"
 VERSION_ID=1
 `,
-			wantID:        runtime.GOOS,
+			wantID:        "",
 			wantVersionID: "1",
 		},
 	}
@@ -133,12 +132,34 @@ func TestOSReleaseFromPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("no path readable falls back to runtime.GOOS", func(t *testing.T) {
+	t.Run("no path readable yields empty id and version", func(t *testing.T) {
 		missing1 := filepath.Join(dir, "missing-1")
 		missing2 := filepath.Join(dir, "missing-2")
 		id, versionID := osReleaseFromPaths([]string{missing1, missing2})
-		if id != runtime.GOOS || versionID != "" {
-			t.Errorf("osReleaseFromPaths = (%q, %q), want (%q, \"\")", id, versionID, runtime.GOOS)
+		if id != "" || versionID != "" {
+			t.Errorf("osReleaseFromPaths = (%q, %q), want (\"\", \"\")", id, versionID)
 		}
 	})
+}
+
+func TestFormatOSVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		id        string
+		versionID string
+		want      string
+	}{
+		{name: "id and version both present", id: "fedora", versionID: "44", want: "fedora 44"},
+		{name: "id only, no version", id: "arch", versionID: "", want: "arch"},
+		{name: "version only, no id", id: "", versionID: "44", want: "44"},
+		{name: "neither present", id: "", versionID: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatOSVersion(tt.id, tt.versionID)
+			if got != tt.want {
+				t.Errorf("formatOSVersion(%q, %q) = %q, want %q", tt.id, tt.versionID, got, tt.want)
+			}
+		})
+	}
 }

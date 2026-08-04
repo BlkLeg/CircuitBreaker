@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"os"
-	"runtime"
 	"strings"
 )
 
@@ -14,8 +13,11 @@ import (
 var osReleaseSourcePaths = []string{"/etc/os-release", "/usr/lib/os-release"}
 
 // osRelease returns the distro ID (e.g. "ubuntu", "fedora") and VERSION_ID (e.g. "22.04", "44")
-// from the first readable os-release file. If neither file is readable, or the file has no ID
-// line, it falls back to runtime.GOOS so the OS field is never blank on a normal build.
+// from the first readable os-release file, feeding HelloPayload.OSVersion via formatOSVersion
+// (see hostinfo.go's package doc for why this is kept separate from the GOOS-style
+// HelloPayload.OS). If neither file is readable, or the file has no ID line, both return values
+// are empty — there is no runtime.GOOS fallback here; that field's fallback lives directly in
+// Collect, sourced from runtime.GOOS, independent of os-release.
 func osRelease() (id, versionID string) {
 	return osReleaseFromPaths(osReleaseSourcePaths)
 }
@@ -28,7 +30,7 @@ func osReleaseFromPaths(paths []string) (id, versionID string) {
 		}
 		return parseOSRelease(data)
 	}
-	return runtime.GOOS, ""
+	return "", ""
 }
 
 // parseOSRelease implements the relevant subset of the os-release format (a shell-sourceable
@@ -54,10 +56,24 @@ func parseOSRelease(data []byte) (id, versionID string) {
 			versionID = value
 		}
 	}
-	if id == "" {
-		id = runtime.GOOS
-	}
 	return id, versionID
+}
+
+// formatOSVersion combines the distro ID and VERSION_ID parsed from os-release into the single
+// "name version" string HelloPayload.OSVersion reports (e.g. "fedora 44"). Either half may be
+// missing (unreadable file, or a VERSION_ID-less rolling-release distro); this degrades
+// gracefully to whichever half is present, or "" if neither is.
+func formatOSVersion(id, versionID string) string {
+	switch {
+	case id == "" && versionID == "":
+		return ""
+	case id == "":
+		return versionID
+	case versionID == "":
+		return id
+	default:
+		return id + " " + versionID
+	}
 }
 
 // unquoteOSReleaseValue strips one layer of matching double or single quotes, the only quoting

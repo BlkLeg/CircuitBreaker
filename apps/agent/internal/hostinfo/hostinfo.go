@@ -2,10 +2,19 @@
 // and every link reconnect alike (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). It is
 // schema-agnostic collection only: nothing here validates or sequences hello frames (see
 // internal/enroll and internal/link for that).
+//
+// HelloPayload.OS vs HelloPayload.OSVersion: OS is the GOOS-style platform string (runtime.GOOS,
+// e.g. "linux") that the backend's self-update binary lookup keys release manifests on
+// (agent_update.get_binary_sha256(version, agent.os, agent.arch) against "<os>-<arch>" manifest
+// entries) — it must never be a distro identifier. OSVersion carries the human-useful distro
+// detail instead (distro ID + VERSION_ID from /etc/os-release, e.g. "fedora 44"). Do not swap
+// these: populating OS from os-release breaks self-update for every host whose distro ID isn't
+// literally "linux".
 package hostinfo
 
 import (
 	"os"
+	"runtime"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
 )
@@ -19,14 +28,14 @@ import (
 // intended real source once it exists.
 func Collect(agentVersion string) frame.HelloPayload {
 	hostname, _ := os.Hostname()
-	osID, osVersion := osRelease()
+	distroID, distroVersion := osRelease()
 	machineIDHash := machineIDHash()
 
 	return frame.HelloPayload{
 		Hostname:      hostname,
 		MachineIDHash: machineIDHash,
-		OS:            osID,
-		OSVersion:     osVersion,
+		OS:            runtime.GOOS,
+		OSVersion:     formatOSVersion(distroID, distroVersion),
 		Arch:          goArch(),
 		AgentVersion:  agentVersion,
 		PrimaryMACs:   primaryMACs(),
