@@ -229,7 +229,7 @@ class MonitorItem(Base):
     __tablename__ = "monitor_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False, default="")
+    name: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     # hardware|compute_unit|external_node|service|ip — None for standalone monitors
     target_type: Mapped[str | None] = mapped_column(String, nullable=True)
     target_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -237,7 +237,7 @@ class MonitorItem(Base):
     check_type: Mapped[str] = mapped_column(String, nullable=False)  # icmp|tcp|http|dns
     params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     interval_secs: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
-    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # interval while in pending (retrying); None falls back to interval_secs
     retry_interval_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
