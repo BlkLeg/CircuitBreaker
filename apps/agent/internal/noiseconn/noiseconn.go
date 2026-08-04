@@ -10,6 +10,13 @@ import (
 // Session wraps a Noise_IK_25519_ChaChaPoly_SHA256 handshake in the
 // initiator role — the agent's role per spec §2.2. The responder counterpart
 // is app.core.agent_crypto.NoiseIKResponder on the Python side.
+//
+// Goroutine affinity: the send cipher (Encrypt, RekeySend) and the receive
+// cipher (Decrypt, RekeyRecv) are independent objects, so a Session is safe
+// to use from exactly two goroutines provided one owns the send half and the
+// other owns the receive half — which is precisely how internal/link uses it
+// (its reader goroutine decrypts and rekeys inbound; its main loop encrypts
+// and rekeys outbound). Sharing either half across goroutines is a data race.
 type Session struct {
 	hs   *noise.HandshakeState
 	send *noise.CipherState
@@ -68,4 +75,25 @@ func (s *Session) Decrypt(ciphertext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("noiseconn: decrypt: %w", err)
 	}
 	return pt, nil
+}
+
+// RekeySend applies the Noise spec §11.3 REKEY operation to the send cipher:
+// k = first 32 bytes of ENCRYPT(k, 2^64-1, zerolen, zeros[32]). The nonce
+// counter n is deliberately *not* reset (spec §11.3: "Rekey() only updates
+// the cipher's k value, it doesn't reset n"), so the peer's matching
+// RekeyRecv keeps its own n in lockstep.
+//
+// Callers must send the `transport.rekey` announcement frame *before* calling
+// this — that frame has to be encrypted under the old key or the peer can't
+// decrypt the very message telling it to rekey.
+func (s *Session) RekeySend() {
+	s.send.Rekey()
+}
+
+// RekeyRecv applies the same REKEY operation to the receive cipher. Callers
+// must call it immediately after decrypting the peer's `transport.rekey`
+// frame, before decrypting anything else — every frame after that
+// announcement is sealed under the new key.
+func (s *Session) RekeyRecv() {
+	s.recv.Rekey()
 }

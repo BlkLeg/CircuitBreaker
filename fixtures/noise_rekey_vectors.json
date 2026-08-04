@@ -1,0 +1,18 @@
+{
+  "description": "Cross-language test vector for the Noise Protocol Framework REKEY operation (spec rev 34 §11.3) under ChaChaPoly, pinning github.com/flynn/noise's CipherState.Rekey() against dissononce's Cipher.rekey(). Both sides of the agent link rekey their transport ciphers with this operation every 15 minutes; if the two implementations ever diverge the link silently stops decrypting, so both languages assert against these bytes. Consumed by apps/agent/internal/noiseconn/rekey_conformance_test.go and apps/backend/tests/test_noise_rekey_conformance.py.",
+  "cipher": "ChaChaPoly",
+  "rekey_definition": "k' = ENCRYPT(k, 2^64-1, zerolen, zeros[32])[:32]; the nonce counter n is NOT reset",
+  "initial_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "rekeyed_keys_hex": [
+    "50835543a205b22c9323f2022bc4f67d838f90e61d5ccf33c4513e01f85b5042",
+    "30fe3726fa0f864af01d15663c77f95e490e30143788af57e90d56fb9aa71609",
+    "83a272a70ec674e16167ca927f6556225f00403ccf784202ea421eec6250d359"
+  ],
+  "transport_message": {
+    "comment": "Sealed with the 3rd-generation key above at nonce 3 with empty associated data — i.e. what a cipher state that had rekeyed three times and encrypted three messages produces. The nonce is deliberately non-zero: a rekey must NOT reset n, and a receiver that reset it would fail to decrypt this.",
+    "nonce": 3,
+    "ad_hex": "",
+    "plaintext_hex": "63697263756974627265616b65722072656b657920636f6e666f726d616e636520766563746f72",
+    "ciphertext_hex": "e157bb61c9a5297e8cc8f7171efee63e4e5e32c2eda984b74a2086868d1f832928a479442ef40629b90516b141651f5737760c14667fd8"
+  }
+}

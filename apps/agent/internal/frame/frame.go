@@ -119,8 +119,9 @@ type HelloAckPayload struct {
 // TransportRekeyPayload announces a Noise cipher rekey for one direction of the link.
 // Direction is relative to the sender: "outbound" is the sender's send cipher, "inbound" is
 // its receive cipher. Generation is a per-direction, per-session counter the sender increments
-// each rekey, letting the receiver tell rekey announcements apart. This is schema only — Task 5
-// wires the actual rekey mechanism and the 15-minute timing.
+// each rekey, letting the receiver tell rekey announcements apart. Generations are strictly
+// sequential from 1 per direction per connection. internal/link drives the 15-minute timing and
+// the cipher swap; app/api/ws_agents.py does the same for the server->agent direction.
 type TransportRekeyPayload struct {
 	Direction  string `json:"direction"` // "inbound" | "outbound"
 	Generation uint64 `json:"generation"`

@@ -101,8 +101,9 @@ class TransportRekeyPayload(BaseModel):
     """Announces a Noise cipher rekey for one direction of the link. `direction` is relative to
     the sender: "outbound" is the sender's send cipher, "inbound" is its receive cipher.
     `generation` is a per-direction, per-session counter the sender increments each rekey,
-    letting the receiver tell rekey announcements apart. Schema only — Task 5 wires the actual
-    rekey mechanism and the 15-minute timing.
+    letting the receiver tell rekey announcements apart; generations are strictly sequential
+    from 1 per direction per connection. app/api/ws_agents.py drives the 15-minute timing and
+    the cipher swap for the server->agent direction; internal/link does the same on the agent.
     """
 
     direction: str  # "inbound" | "outbound"

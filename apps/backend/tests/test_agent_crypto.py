@@ -101,6 +101,135 @@ def test_noise_ik_responder_precondition_guards_raise_before_handshake_completes
         responder.decrypt(b"x")
 
 
+# ── in-session transport rekey ─────────────────────────────────────────────
+
+
+def _handshaken_pair():
+    """A completed responder plus the matching test initiator, ready for
+    transport traffic in both directions."""
+    from app.core.agent_crypto import NoiseIKResponder, _generate_keypair, _public_from_private
+    from tests.helpers.agent_noise_client import TestNoiseInitiator
+
+    server_priv, _ = _generate_keypair()
+    agent_priv, _ = _generate_keypair()
+
+    responder = NoiseIKResponder(server_priv)
+    initiator = TestNoiseInitiator(agent_priv, _public_from_private(server_priv))
+    initiator.read_message(responder.read_message(initiator.write_message()))
+    return responder, initiator
+
+
+@pytest.mark.parametrize(
+    ("agent_rekeys_per_round", "server_rekeys_per_round"),
+    [(1, 1), (3, 1), (1, 2), (1, 0), (0, 1)],
+    ids=["even", "agent-faster", "server-faster", "agent-only", "server-only"],
+)
+def test_rekey_keeps_both_directions_working_across_intervals(
+    agent_rekeys_per_round, server_rekeys_per_round
+):
+    """Several rekey intervals in sequence, with the two directions advancing
+    at deliberately different rates — neither side's timer waits on the
+    other's, so an implementation that coupled them would break here."""
+    responder, initiator = _handshaken_pair()
+
+    for round_no in range(5):
+        for i in range(2):
+            up = f"agent->server r{round_no} m{i}".encode()
+            assert responder.decrypt(initiator.encrypt(up)) == up
+
+            down = f"server->agent r{round_no} m{i}".encode()
+            assert initiator.decrypt(responder.encrypt(down)) == down
+
+        for _ in range(agent_rekeys_per_round):
+            # The announcement itself would go out under the old key; both
+            # halves of that direction then advance one generation.
+            initiator.rekey_send()
+            responder.rekey_recv(initiator.send_generation)
+        for _ in range(server_rekeys_per_round):
+            generation = responder.next_send_generation
+            responder.rekey_send()
+            initiator.rekey_recv()
+            assert initiator.recv_generation == generation
+
+
+def test_rekey_send_generation_advances_one_at_a_time():
+    responder, _initiator = _handshaken_pair()
+
+    assert responder.next_send_generation == 1
+    responder.rekey_send()
+    assert responder.next_send_generation == 2
+    responder.rekey_send()
+    assert responder.next_send_generation == 3
+
+
+@pytest.mark.parametrize(
+    ("applied", "offered"),
+    [(0, 0), (0, 2), (2, 2), (2, 1), (2, 4)],
+    ids=["zero", "skips-first", "replay", "decreasing", "gap"],
+)
+def test_rekey_recv_rejects_out_of_step_generations(applied, offered):
+    """Generations are strictly sequential from 1. Anything else means our view
+    of the agent's send cipher has diverged from the agent's own, which is
+    fatal to the session rather than a droppable frame."""
+    from app.core.agent_crypto import RekeyError
+
+    responder, initiator = _handshaken_pair()
+    for _ in range(applied):
+        initiator.rekey_send()
+        responder.rekey_recv(initiator.send_generation)
+
+    with pytest.raises(RekeyError):
+        responder.rekey_recv(offered)
+
+
+def test_rekey_recv_rejection_leaves_the_cipher_untouched():
+    """A rejected announcement must not half-apply: traffic encrypted under the
+    generation actually in force still decrypts afterwards."""
+    from app.core.agent_crypto import RekeyError
+
+    responder, initiator = _handshaken_pair()
+    initiator.rekey_send()
+    responder.rekey_recv(initiator.send_generation)
+
+    with pytest.raises(RekeyError):
+        responder.rekey_recv(99)
+
+    assert responder.decrypt(initiator.encrypt(b"still in step")) == b"still in step"
+
+
+def test_one_sided_rekey_breaks_only_that_direction():
+    """The two ciphers are fully independent: a missed rekey on one direction
+    must not disturb the other."""
+    from dissononce.exceptions.decrypt import DecryptFailedException
+
+    responder, initiator = _handshaken_pair()
+
+    initiator.rekey_send()  # responder never applies the matching rekey_recv
+
+    with pytest.raises(DecryptFailedException):
+        responder.decrypt(initiator.encrypt(b"ping"))
+
+    assert initiator.decrypt(responder.encrypt(b"still fine")) == b"still fine"
+
+
+def test_rekey_before_handshake_raises():
+    from app.core.agent_crypto import NoiseIKResponder, _generate_keypair
+
+    server_priv, _ = _generate_keypair()
+    responder = NoiseIKResponder(server_priv)
+
+    with pytest.raises(RuntimeError):
+        responder.rekey_send()
+    with pytest.raises(RuntimeError):
+        responder.rekey_recv(1)
+
+
+def test_production_rekey_interval_is_fifteen_minutes():
+    from app.core.agent_crypto import REKEY_INTERVAL_SECONDS
+
+    assert REKEY_INTERVAL_SECONDS == 15 * 60
+
+
 # ── check_clock_skew / ClockSkewError ──────────────────────────────────────
 
 _REF = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)

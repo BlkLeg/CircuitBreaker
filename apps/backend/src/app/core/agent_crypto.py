@@ -4,10 +4,12 @@ The server holds one static X25519 keypair for its whole lifetime, generated on
 first use and persisted (encrypted) via the existing credential vault. Every
 enrolling/linking agent verifies against this same public key.
 
-Rekeying is out of scope for this slice: a link session is re-established
-(fresh Noise IK handshake) on every reconnect, so a single-handshake
-responder per connection is correct and complete here. In-session rekey is
-deferred to a later slice.
+A link session is established by one Noise IK handshake per connection, and
+its two transport ciphers are then rekeyed in place every REKEY_INTERVAL_SECONDS
+— independently per direction — via `transport.rekey` control frames (see
+`NoiseIKResponder.rekey_send`/`rekey_recv` and ws_agents.py's link_stream).
+Long-term key rotation (`key.rotate`) is a separate mechanism and is not
+handled here.
 
 SECURITY: this module handles the server's static private key. Never log key
 material (private key bytes/hex, shared secrets, or raw handshake payloads).
@@ -39,9 +41,62 @@ _logger = logging.getLogger(__name__)
 
 _CLOCK_SKEW_SECONDS = 60
 
+# How often each side rotates its *own* outbound transport cipher. The agent
+# times its agent->server cipher in internal/link/link.go's `rekeyInterval`;
+# this is the server->agent counterpart. The two are independent — neither
+# side waits on the other. Tests monkeypatch this module attribute (which is
+# why ws_agents.py reads it through the module rather than importing the value).
+REKEY_INTERVAL_SECONDS = 15 * 60
+
+# The only `transport.rekey` direction either side ever sends: `direction` is
+# sender-relative, so "outbound" means "the cipher I encrypt with", which the
+# receiver matches against its own receive cipher.
+REKEY_DIRECTION_OUTBOUND = "outbound"
+
 
 class ClockSkewError(Exception):
     """Raised when a handshake timestamp falls outside the allowed skew window."""
+
+
+class RekeyError(Exception):
+    """Raised when an inbound `transport.rekey` announcement can't be applied —
+    a wrong direction or an out-of-step generation. Both mean our view of the
+    peer's send cipher has diverged from the peer's own, which the
+    authenticated, ordered Noise transport otherwise makes impossible, so the
+    caller should tear the connection down and let a fresh handshake
+    resynchronize it."""
+
+
+def _spec_rekey(state: CipherState) -> None:
+    """Apply the Noise spec §11.3 REKEY operation to *state* in place.
+
+    REKEY(k) is defined as the first 32 bytes of ENCRYPT(k, 2^64-1, zerolen,
+    zeros[32]), and Rekey() must leave the nonce counter n untouched ("it
+    doesn't reset n" — spec §11.3), so both peers' counters stay in lockstep
+    across a rekey.
+
+    dissononce 0.34.3's own ``CipherState.rekey()`` cannot be used directly:
+    it applies the correct derivation but then (a) omits the spec's truncation
+    to 32 bytes, storing the full 48-byte ChaChaPoly output as the key — which
+    makes the very next encrypt raise ``ValueError: ChaCha20Poly1305 key must
+    be 32 bytes`` — and (b) resets n to 0 via ``initialize_key``. The
+    derivation itself (``Cipher.rekey``) is spec-correct and is what we call
+    here, so this is the standard REKEY, not a custom one: it reproduces
+    github.com/flynn/noise's ``CipherState.Rekey()`` byte-for-byte, which
+    fixtures/noise_rekey_vectors.json pins from both languages.
+
+    Reaching into ``_key``/``_nonce`` is unavoidable — dissononce exposes no
+    public getters, and ``SymmetricState.split()`` hardcodes its ``CipherState``
+    construction so a subclass can't be injected. Both attributes are pinned by
+    tests in tests/test_agent_crypto.py so a dissononce upgrade that renames or
+    fixes them fails loudly instead of silently desynchronizing the link.
+    """
+    nonce = state._nonce
+    key = state._key
+    if key is None:  # pragma: no cover - only reachable pre-handshake
+        raise RekeyError("cannot rekey a cipher state with no key")
+    state.initialize_key(state.cipher.rekey(key)[:32])
+    state.set_nonce(nonce)
 
 
 def _public_from_private(priv_bytes: bytes) -> bytes:
@@ -120,8 +175,13 @@ def _keypair_from_private(priv_bytes: bytes) -> X25519KeyPair:
 class NoiseIKResponder:
     """Server-side (responder) half of a single Noise_IK_25519_ChaChaPoly_SHA256
     handshake. One instance is good for exactly one handshake/session — a new
-    link session (e.g. on reconnect) gets a fresh instance. Rekeying within a
-    session is out of scope for this slice.
+    link session (e.g. on reconnect) gets a fresh instance.
+
+    Within a session each transport cipher is rekeyed in place on its own
+    schedule: `rekey_send` rotates the server->agent cipher (announced by a
+    `transport.rekey` frame this side sends), `rekey_recv` rotates the
+    agent->server cipher (in response to one the agent sends). The two
+    directions carry independent generation counters and never rekey together.
     """
 
     def __init__(self, server_private: bytes) -> None:
@@ -139,6 +199,12 @@ class NoiseIKResponder:
         # reverse direction (Noise spec 5.2 Split()). As the responder we
         # decrypt with c1 and encrypt with c2.
         self._cipher_pair: tuple[CipherState, CipherState] | None = None
+        # Per-direction rekey counters for this session, both starting at 0
+        # (no rekey yet). They reset with the instance, i.e. on every
+        # reconnect, because a fresh handshake gives both sides fresh split
+        # keys. The agent keeps the mirror-image pair in link.go.
+        self._send_generation = 0
+        self._recv_generation = 0
 
     def read_message(self, data: bytes) -> bytes:
         """Process the initiator's single IK message, return our response message."""
@@ -166,3 +232,41 @@ class NoiseIKResponder:
             raise RuntimeError("handshake not complete: call read_message() first")
         recv_cipher, _ = self._cipher_pair
         return cast(bytes, recv_cipher.decrypt_with_ad(b"", ciphertext))
+
+    @property
+    def next_send_generation(self) -> int:
+        """The generation number the next server->agent `transport.rekey`
+        announcement must carry. Read it when building the frame, then call
+        `rekey_send` once the frame is on the wire."""
+        return self._send_generation + 1
+
+    def rekey_send(self) -> None:
+        """Rotate the server->agent cipher.
+
+        Call this strictly *after* the `transport.rekey` announcement has been
+        encrypted and sent: that frame has to go out under the old key, or the
+        agent cannot decrypt the message telling it to rekey.
+        """
+        if self._cipher_pair is None:
+            raise RuntimeError("handshake not complete: call read_message() first")
+        _, send_cipher = self._cipher_pair
+        _spec_rekey(send_cipher)
+        self._send_generation += 1
+
+    def rekey_recv(self, generation: int) -> None:
+        """Rotate the agent->server cipher in response to the agent's
+        `transport.rekey`.
+
+        Call this immediately after decrypting that frame and before
+        decrypting anything else — every subsequent frame from the agent is
+        sealed under the new key. Generations are strictly sequential from 1;
+        anything else raises RekeyError.
+        """
+        if self._cipher_pair is None:
+            raise RuntimeError("handshake not complete: call read_message() first")
+        expected = self._recv_generation + 1
+        if generation != expected:
+            raise RekeyError(f"transport.rekey generation {generation}, want {expected}")
+        recv_cipher, _ = self._cipher_pair
+        _spec_rekey(recv_cipher)
+        self._recv_generation = generation

@@ -16,11 +16,15 @@ import socket
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
+from app.core import agent_crypto
 from app.core.agent_crypto import (
+    REKEY_DIRECTION_OUTBOUND,
     ClockSkewError,
     NoiseIKResponder,
+    RekeyError,
     check_clock_skew,
     get_server_static_keypair,
 )
@@ -29,7 +33,13 @@ from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.db.session import SessionLocal
-from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, TYPE_UPDATE
+from app.schemas.agent_frame import (
+    TYPE_CAPABILITIES_SET,
+    TYPE_HELLO_ACK,
+    TYPE_TRANSPORT_REKEY,
+    TYPE_UPDATE,
+    TransportRekeyPayload,
+)
 from app.services import agent_enrollment, agent_link, agent_registry, agent_update
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
@@ -219,6 +229,30 @@ class _OutboundSeq:
         return value
 
 
+async def _send_transport_rekey(
+    websocket: WebSocket, responder: NoiseIKResponder, seq: int
+) -> None:
+    """Announce and then apply one server->agent cipher rekey.
+
+    The announcement is encrypted under the *old* send key and only then does
+    the cipher rotate — the agent has to be able to decrypt the very frame
+    that tells it to rekey. Its mirror image is `sendRekey` in
+    apps/agent/internal/link/link.go.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_TRANSPORT_REKEY,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {
+            "direction": REKEY_DIRECTION_OUTBOUND,
+            "generation": responder.next_send_generation,
+        },
+    }
+    await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
+    responder.rekey_send()
+
+
 @unauthenticated_router.websocket("/link")
 async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -274,9 +308,27 @@ async def link_stream(websocket: WebSocket) -> None:
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
 
     last_activity = utcnow()
+    last_rekey_at = utcnow()
     inbound_session = agent_link.LinkSessionState()
     try:
         while True:
+            # Server->agent cipher rekey, on this side's own clock and
+            # independent of whatever the agent is doing with its own
+            # outbound cipher. Checked once per loop iteration, so the
+            # deadline is honoured within _LINK_POLL_SECONDS whether or not
+            # the agent is sending anything.
+            if (utcnow() - last_rekey_at).total_seconds() >= agent_crypto.REKEY_INTERVAL_SECONDS:
+                try:
+                    await _send_transport_rekey(websocket, responder, outbound_seq.next())
+                except (WebSocketDisconnect, RuntimeError):
+                    # The agent can drop between the frame we just handled and
+                    # this send; that's an ordinary disconnect, not an error.
+                    # (Starlette surfaces a send on an already-closed socket as
+                    # RuntimeError.) Leaving the loop runs the same cleanup as
+                    # any other disconnect.
+                    break
+                last_rekey_at = utcnow()
+
             try:
                 ct = await asyncio.wait_for(websocket.receive_bytes(), timeout=_LINK_POLL_SECONDS)
             except TimeoutError:
@@ -312,6 +364,36 @@ async def link_stream(websocket: WebSocket) -> None:
                     break
                 agent_frame = agent_link.receive_frame(db, fresh, pt, inbound_session)
                 if agent_frame is None:
+                    continue
+                if agent_frame.type == TYPE_TRANSPORT_REKEY:
+                    # Applied here, inline, rather than through
+                    # agent_link.dispatch_frame: the swap has to land before
+                    # the next receive_bytes/decrypt, since every frame the
+                    # agent sends after this one is sealed under the new key.
+                    # Note this runs after receive_frame's sequence guard on
+                    # purpose — a replayed announcement must not be able to
+                    # push our receive cipher a generation ahead of the
+                    # agent's send cipher.
+                    try:
+                        rekey = TransportRekeyPayload.model_validate(agent_frame.payload)
+                        if rekey.direction != REKEY_DIRECTION_OUTBOUND:
+                            raise RekeyError(f"unexpected direction {rekey.direction!r}")
+                        responder.rekey_recv(rekey.generation)
+                    except (ValidationError, RekeyError) as exc:
+                        # Fatal: once the agent has rotated its send cipher,
+                        # not applying the matching receive rekey leaves the
+                        # two permanently out of step and nothing further
+                        # would decrypt. Drop the connection and let the
+                        # agent's reconnect re-handshake instead.
+                        _logger.warning("agent %s: bad transport.rekey: %s", agent_id, exc)
+                        agent_registry.record_event(
+                            db,
+                            agent_id,
+                            "protocol_violation",
+                            detail={"reason": "invalid_transport_rekey", "error": str(exc)[:200]},
+                        )
+                        db.commit()
+                        break
                     continue
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
     finally:

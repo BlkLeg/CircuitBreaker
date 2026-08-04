@@ -38,6 +38,21 @@ var heartbeatInterval = 20 * time.Second
 // tests can shrink it.
 var stabilityWindow = 30 * time.Second
 
+// rekeyInterval is how often each side rotates its *own* outbound Noise
+// cipher (spec §3.5). The two directions are independent: the agent times its
+// agent->server cipher here, the server times its server->agent cipher in
+// ws_agents.py's link_stream, and neither waits on the other. A var, not a
+// const, so tests can shrink it — production stays at 15 minutes.
+var rekeyInterval = 15 * time.Minute
+
+// rekeyDirectionOutbound is the only `transport.rekey` direction either side
+// ever sends. `direction` is sender-relative (see frame.TransportRekeyPayload),
+// so "outbound" means "the cipher I encrypt with", which the receiver matches
+// to its own receive cipher. A peer has no way to rekey our send cipher, so an
+// inbound frame claiming direction "inbound" is nonsense and gets rejected
+// rather than guessed at.
+const rekeyDirectionOutbound = "outbound"
+
 type Options struct {
 	Config            *config.Config
 	Key               *enroll.DeviceKey
@@ -155,6 +170,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	readErrCh := make(chan error, 1)
 	go func() {
 		var guard inboundSeqGuard
+		// inboundRekeyGen counts the server->agent cipher rekeys applied on
+		// this connection. It lives in (and is only touched by) this
+		// goroutine, alongside session.Decrypt/RekeyRecv — see Session's
+		// goroutine-affinity note.
+		var inboundRekeyGen uint64
 		for {
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
@@ -175,8 +195,25 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				// Security-relevant rejection: replayed/decreasing sequence,
 				// unsupported version, or a malformed envelope. Drop the
 				// frame and keep the connection alive rather than tearing
-				// down the whole link over one bad server frame.
+				// down the whole link over one bad server frame. Note this
+				// runs *before* the transport.rekey handling below on
+				// purpose: a replayed rekey announcement must not be able to
+				// push our receive cipher a generation ahead of the server's
+				// send cipher.
 				log.Printf("link: rejecting inbound frame: %v", err)
+				continue
+			}
+			if f.Type == frame.TypeTransportRekey {
+				// Handled here rather than in the main select loop below
+				// because the swap has to happen before the *next*
+				// conn.ReadMessage/Decrypt: every frame the server sends
+				// after this one is sealed under the new key. Handing it to
+				// the main loop would let this goroutine race ahead and
+				// decrypt the following frame with the stale key.
+				if err := applyInboundRekey(session, f, &inboundRekeyGen); err != nil {
+					readErrCh <- err
+					return
+				}
 				continue
 			}
 			select {
@@ -189,7 +226,13 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
+	rekeyTicker := time.NewTicker(rekeyInterval)
+	defer rekeyTicker.Stop()
 	var seq uint64
+	// outboundRekeyGen counts the agent->server cipher rekeys announced on
+	// this connection. It resets per connection because each reconnect
+	// performs a fresh Noise handshake, giving both sides fresh split keys.
+	var outboundRekeyGen uint64
 	var connectedFired bool
 	// stableC fires once the connection has stayed up for stabilityWindow
 	// past its first accepted hello.ack. It starts nil (blocks forever in
@@ -205,6 +248,39 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			return err
 		}
 		return conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data))
+	}
+
+	// sendRekey announces and then applies one agent->server cipher rekey.
+	// The announcement must go out under the *old* key — otherwise the server
+	// cannot decrypt the frame that tells it to rekey — so the Encrypt call
+	// strictly precedes session.RekeySend(). Both run on this goroutine,
+	// which is the sole owner of the send cipher.
+	sendRekey := func() error {
+		outboundRekeyGen++
+		payload, err := json.Marshal(frame.TransportRekeyPayload{
+			Direction:  rekeyDirectionOutbound,
+			Generation: outboundRekeyGen,
+		})
+		if err != nil {
+			return fmt.Errorf("link: encode transport.rekey payload: %w", err)
+		}
+		seq++
+		rekeyFrame := frame.Frame{
+			V:       frame.FrameVersion,
+			Type:    frame.TypeTransportRekey,
+			Seq:     seq,
+			TS:      time.Now().UTC(),
+			Payload: payload,
+		}
+		data, err := frame.Encode(rekeyFrame)
+		if err != nil {
+			return err
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data)); err != nil {
+			return fmt.Errorf("link: send transport.rekey: %w", err)
+		}
+		session.RekeySend()
+		return nil
 	}
 
 	for {
@@ -255,6 +331,10 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			if err := sendHeartbeat(); err != nil {
 				return stable, err
 			}
+		case <-rekeyTicker.C:
+			if err := sendRekey(); err != nil {
+				return stable, err
+			}
 		case <-stableC:
 			// The connection has stayed up for stabilityWindow since its
 			// first accepted hello.ack — reset backoff to the floor on the
@@ -263,6 +343,37 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			stable = true
 		}
 	}
+}
+
+// applyInboundRekey validates one decrypted server->agent `transport.rekey`
+// announcement and, if it checks out, advances the session's receive cipher
+// one generation. *gen is the count of rekeys applied so far on this
+// connection and is incremented in place on success.
+//
+// Every failure here is fatal to the connection rather than a dropped frame.
+// Once the server has rekeyed its send cipher, ignoring the announcement
+// leaves the two ciphers permanently out of step, so nothing after this point
+// would decrypt anyway; failing fast turns an undecryptable stream into a
+// clean reconnect (which re-handshakes and resynchronizes) instead of a
+// confusing decrypt-error cascade.
+func applyInboundRekey(session *noiseconn.Session, f frame.Frame, gen *uint64) error {
+	var payload frame.TransportRekeyPayload
+	if err := json.Unmarshal(f.Payload, &payload); err != nil {
+		return fmt.Errorf("link: malformed transport.rekey payload: %w", err)
+	}
+	if payload.Direction != rekeyDirectionOutbound {
+		return fmt.Errorf("link: transport.rekey with unexpected direction %q", payload.Direction)
+	}
+	// Generations are strictly sequential from 1. A gap or repeat means our
+	// view of the server's send cipher has diverged from the server's, which
+	// the authenticated, ordered Noise transport otherwise makes impossible.
+	if payload.Generation != *gen+1 {
+		return fmt.Errorf(
+			"link: transport.rekey generation %d, want %d", payload.Generation, *gen+1)
+	}
+	session.RekeyRecv()
+	*gen = payload.Generation
+	return nil
 }
 
 // Uninstall performs one short-lived connection: handshake, hello, then an

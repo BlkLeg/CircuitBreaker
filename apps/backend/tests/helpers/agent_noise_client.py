@@ -1,6 +1,12 @@
 """Python-side Noise IK *initiator*, used only by tests to simulate the Go
-agent's handshake behavior against the real ws_agents.py responder — see
-app.core.agent_crypto.NoiseIKResponder for the server-side half."""
+agent's handshake and transport behavior against the real ws_agents.py
+responder — see app.core.agent_crypto.NoiseIKResponder for the server-side
+half, and apps/agent/internal/link/link.go for the Go behavior this mirrors.
+
+The rekey helpers below deliberately reuse the production ``_spec_rekey``
+rather than reimplementing REKEY, so a test passing here means the real
+derivation ran. That the derivation matches the Go agent's is proven
+separately, against a shared fixture, in test_noise_rekey_conformance.py."""
 
 from __future__ import annotations
 
@@ -13,10 +19,12 @@ from dissononce.processing.impl.cipherstate import CipherState
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
 
-from app.core.agent_crypto import _keypair_from_private
+from app.core.agent_crypto import _keypair_from_private, _spec_rekey
 
 
 class TestNoiseInitiator:
+    __test__ = False  # not a pytest test class despite the name
+
     def __init__(self, agent_private: bytes, server_public: bytes) -> None:
         self._state = HandshakeState(
             SymmetricState(CipherState(ChaChaPolyCipher()), SHA256Hash()),
@@ -30,6 +38,8 @@ class TestNoiseInitiator:
             rs=X25519PublicKey(server_public),
         )
         self._ciphers: tuple[CipherState, CipherState] | None = None
+        self.send_generation = 0
+        self.recv_generation = 0
 
     def write_message(self) -> bytes:
         buf = bytearray()
@@ -47,3 +57,17 @@ class TestNoiseInitiator:
     def decrypt(self, ciphertext: bytes) -> bytes:
         _, recv_cipher = self._ciphers
         return recv_cipher.decrypt_with_ad(b"", ciphertext)
+
+    def rekey_send(self) -> None:
+        """Rotate the agent->server cipher. Callers must have already sent the
+        `transport.rekey` announcement under the old key."""
+        send_cipher, _ = self._ciphers
+        _spec_rekey(send_cipher)
+        self.send_generation += 1
+
+    def rekey_recv(self) -> None:
+        """Rotate the server->agent cipher, immediately after decrypting the
+        server's `transport.rekey` announcement."""
+        _, recv_cipher = self._ciphers
+        _spec_rekey(recv_cipher)
+        self.recv_generation += 1

@@ -18,6 +18,8 @@ import (
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
+	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/noiseconn"
 )
 
 // generateTestKeypair mirrors noiseconn_test.go's generateKeypair.
@@ -678,4 +680,235 @@ func TestRunOnce_StaysUpPastStabilityWindowIsStable(t *testing.T) {
 	if err != context.DeadlineExceeded {
 		t.Errorf("runOnce err = %v, want context.DeadlineExceeded", err)
 	}
+}
+
+func (s *testResponderSession) RekeySend() { s.send.Rekey() }
+func (s *testResponderSession) RekeyRecv() { s.recv.Rekey() }
+
+// TestRun_RekeysBothDirectionsOverMultipleIntervals runs the real link loop
+// with rekeyInterval shrunk from 15 minutes to a few milliseconds, so several
+// rekey generations elapse in each direction inside one test.
+//
+// The fake server plays the full protocol on both sides: it applies the
+// agent's `transport.rekey` announcements to its own receive cipher, and
+// independently announces + applies its own send-cipher rekeys on a different
+// schedule. Traffic has to keep flowing across every generation, which is only
+// possible if the old-key-then-rekey ordering and the key derivation both hold
+// on both sides.
+func TestRun_RekeysBothDirectionsOverMultipleIntervals(t *testing.T) {
+	originalRekey, originalHeartbeat := rekeyInterval, heartbeatInterval
+	rekeyInterval = 60 * time.Millisecond
+	heartbeatInterval = 40 * time.Millisecond
+	defer func() { rekeyInterval, heartbeatInterval = originalRekey, originalHeartbeat }()
+
+	const serverRekeyTarget = 3
+	serverPriv, serverPub := generateTestKeypair(t)
+	var agentRekeys, heartbeatsAfterFirstRekey, badRekeyFrames int32
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		if _, helloCt, err := conn.ReadMessage(); err != nil {
+			return
+		} else if _, err := responder.Decrypt(helloCt); err != nil {
+			return
+		}
+
+		var outSeq uint64
+		send := func(typ string, payload any) {
+			f := map[string]any{
+				"v": 1, "type": typ, "seq": outSeq, "ts": time.Now().UTC(), "payload": payload,
+			}
+			outSeq++
+			data, _ := json.Marshal(f)
+			conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(data))
+		}
+
+		send("hello.ack", map[string]any{"accepted": true, "agent_id": 1})
+
+		// Server -> agent rekey: announce under the OLD send key, then rotate,
+		// then prove the agent followed by sending a frame under the NEW key
+		// that it must still be able to apply.
+		serverRekeys := uint64(0)
+		serverRekey := func() {
+			serverRekeys++
+			send("transport.rekey", map[string]any{
+				"direction": "outbound", "generation": serverRekeys,
+			})
+			responder.RekeySend()
+			send("capabilities.set", map[string]bool{"host_telemetry": true})
+		}
+
+		var seenAgentRekeys uint64
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				// Any decrypt failure here means the two sides' ciphers fell
+				// out of step — the exact bug this test exists to catch.
+				atomic.AddInt32(&badRekeyFrames, 1)
+				return
+			}
+			var f struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Direction  string `json:"direction"`
+					Generation uint64 `json:"generation"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(pt, &f); err != nil {
+				atomic.AddInt32(&badRekeyFrames, 1)
+				return
+			}
+
+			switch f.Type {
+			case "transport.rekey":
+				// The announcement itself arrived under the old key (it just
+				// decrypted); rotate the receive cipher to match the agent's
+				// send cipher, which it rotated right after sending this.
+				seenAgentRekeys++
+				if f.Payload.Direction != "outbound" || f.Payload.Generation != seenAgentRekeys {
+					atomic.AddInt32(&badRekeyFrames, 1)
+					return
+				}
+				responder.RekeyRecv()
+				atomic.StoreInt32(&agentRekeys, int32(seenAgentRekeys))
+			case "heartbeat":
+				if seenAgentRekeys > 0 {
+					atomic.AddInt32(&heartbeatsAfterFirstRekey, 1)
+				}
+			}
+
+			if serverRekeys < serverRekeyTarget {
+				serverRekey()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var capabilitiesApplied int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnCapabilitiesSet: func(json.RawMessage) error {
+			atomic.AddInt32(&capabilitiesApplied, 1)
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := atomic.LoadInt32(&badRekeyFrames); got != 0 {
+		t.Errorf("server saw %d undecryptable/malformed frames, want 0", got)
+	}
+	if got := atomic.LoadInt32(&agentRekeys); got < 3 {
+		t.Errorf("agent announced %d outbound rekeys, want at least 3", got)
+	}
+	if got := atomic.LoadInt32(&heartbeatsAfterFirstRekey); got == 0 {
+		t.Error("no agent heartbeat decrypted after the first agent->server rekey")
+	}
+	if got := atomic.LoadInt32(&capabilitiesApplied); got < serverRekeyTarget {
+		t.Errorf("agent applied %d capabilities.set frames sent under rekeyed server keys, want %d",
+			got, serverRekeyTarget)
+	}
+}
+
+// TestApplyInboundRekey covers the validation around the receive-side cipher
+// swap. Every rejection is fatal on purpose: once the peer has rotated its
+// send cipher, skipping the matching receive rekey leaves the direction
+// permanently undecryptable, so failing fast into a reconnect is the only
+// recoverable outcome.
+func TestApplyInboundRekey(t *testing.T) {
+	tests := []struct {
+		name    string
+		startAt uint64
+		payload string
+		wantErr bool
+		wantGen uint64
+	}{
+		{name: "first generation", startAt: 0, payload: `{"direction":"outbound","generation":1}`, wantGen: 1},
+		{name: "next generation", startAt: 7, payload: `{"direction":"outbound","generation":8}`, wantGen: 8},
+		{name: "replayed generation", startAt: 3, payload: `{"direction":"outbound","generation":3}`, wantErr: true, wantGen: 3},
+		{name: "skipped generation", startAt: 3, payload: `{"direction":"outbound","generation":5}`, wantErr: true, wantGen: 3},
+		{name: "zero generation", startAt: 0, payload: `{"direction":"outbound","generation":0}`, wantErr: true},
+		{name: "inbound direction is nonsense", startAt: 0, payload: `{"direction":"inbound","generation":1}`, wantErr: true},
+		{name: "missing direction", startAt: 0, payload: `{"generation":1}`, wantErr: true},
+		{name: "malformed payload", startAt: 0, payload: `not json`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session, _, _ := newHandshakenSession(t)
+			gen := tt.startAt
+			err := applyInboundRekey(session, frame.Frame{
+				V: frame.FrameVersion, Type: frame.TypeTransportRekey,
+				Payload: json.RawMessage(tt.payload),
+			}, &gen)
+
+			if tt.wantErr && err == nil {
+				t.Fatal("applyInboundRekey() error = nil, want an error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("applyInboundRekey() error = %v, want nil", err)
+			}
+			if gen != tt.wantGen {
+				t.Errorf("generation = %d, want %d", gen, tt.wantGen)
+			}
+		})
+	}
+}
+
+// newHandshakenSession returns a completed initiator Session plus the
+// responder's receive/send ciphers, for tests that need to poke at cipher
+// state directly rather than over a socket.
+func newHandshakenSession(t *testing.T) (*noiseconn.Session, *noise.CipherState, *noise.CipherState) {
+	t.Helper()
+	serverPriv, serverPub := generateTestKeypair(t)
+	agentPriv, agentPub := generateTestKeypair(t)
+
+	session, err := noiseconn.NewInitiator(agentPriv, agentPub, serverPub)
+	if err != nil {
+		t.Fatalf("NewInitiator() error = %v", err)
+	}
+	responder := newTestResponderSession(t, serverPriv, serverPub)
+	msg1, err := session.WriteHandshakeMessage()
+	if err != nil {
+		t.Fatalf("WriteHandshakeMessage() error = %v", err)
+	}
+	msg2, err := responder.ReadHandshakeMessage(msg1)
+	if err != nil {
+		t.Fatalf("responder handshake: %v", err)
+	}
+	if err := session.ReadHandshakeMessage(msg2); err != nil {
+		t.Fatalf("ReadHandshakeMessage() error = %v", err)
+	}
+	return session, responder.recv, responder.send
 }
