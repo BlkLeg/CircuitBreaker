@@ -148,6 +148,8 @@ class Hardware(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # v0.3.0: machine ID hashing for agent matching
+    machine_id_hash: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # v0.4.0: Windscribe privacy metrics
     privacy_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     threat_profile: Mapped[list | None] = mapped_column(JSONB, nullable=True)
