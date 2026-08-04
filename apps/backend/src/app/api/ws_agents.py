@@ -40,6 +40,7 @@ from app.schemas.agent_frame import (
     TYPE_PING,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
+    HelloPayload,
     TransportRekeyPayload,
 )
 from app.services import agent_enrollment, agent_link, agent_registry, agent_update
@@ -323,6 +324,17 @@ async def link_stream(websocket: WebSocket) -> None:
             await websocket.close(code=1008)
             return
         agent_id = agent.id
+        try:
+            hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
+        except ValidationError as exc:
+            # Malformed metadata in an otherwise-valid, otherwise-accepted
+            # hello isn't fatal to the link — every field is optional and
+            # this connection has already cleared handshake + device-pk
+            # lookup. Just skip the row refresh for this hello rather than
+            # tearing down the connection over metadata alone.
+            _logger.warning("agent %s: malformed hello payload: %s", agent_id, exc)
+        else:
+            agent_registry.update_hello_metadata(db, agent, hello_payload)
         grants = agent_registry.grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
         db.commit()

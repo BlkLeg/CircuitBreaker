@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, Hardware
+from app.schemas.agent_frame import HelloPayload
 
 _logger = logging.getLogger(__name__)
 
@@ -41,6 +42,33 @@ def get_agent(db: Session, agent_id: int) -> Agent | None:
 
 def get_agent_by_device_pk(db: Session, device_pk: str) -> Agent | None:
     return db.execute(select(Agent).where(Agent.device_pk == device_pk)).scalar_one_or_none()
+
+
+def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> None:
+    """Refresh the `Agent` row's device-reported fields from an accepted `hello`.
+
+    Enrollment (`ws_agents.enroll_stream`) only ever sets os/os_version/arch/
+    agent_version/primary_macs once, at enrollment time. This is the
+    counterpart called on every accepted `/link` hello afterwards, so the row
+    tracks reality as a device is upgraded or its network config changes (see
+    specs/2026-07-26-cb-agent-design.md §4.6: "the agent reports its version
+    in `hello`; the UI shows which agents are behind").
+
+    Only overwrites a field when the hello actually supplied a value for it —
+    an old-shaped or partial hello payload (every `HelloPayload` field is
+    optional) must never blank out data recorded at enrollment or on a prior
+    hello. Caller is responsible for the commit/flush.
+    """
+    if payload.os is not None:
+        agent.os = payload.os
+    if payload.os_version is not None:
+        agent.os_version = payload.os_version
+    if payload.arch is not None:
+        agent.arch = payload.arch
+    if payload.agent_version is not None:
+        agent.agent_version = payload.agent_version
+    if payload.primary_macs:
+        agent.primary_macs = payload.primary_macs
 
 
 def list_agents(db: Session, *, status: str | None = None) -> list[Agent]:

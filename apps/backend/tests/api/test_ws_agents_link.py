@@ -10,13 +10,13 @@ from app.core.agent_crypto import get_server_static_keypair
 from tests.helpers.agent_noise_client import TestNoiseInitiator
 
 
-def _send_hello(initiator, ws, *, ts=None) -> None:
+def _send_hello(initiator, ws, *, ts=None, payload=None) -> None:
     frame = {
         "v": 1,
         "type": "hello",
         "seq": 0,
         "ts": (ts or datetime.now(UTC)).isoformat(),
-        "payload": {},
+        "payload": payload or {},
     }
     ws.send_bytes(initiator.encrypt(json.dumps(frame).encode()))
 
@@ -69,6 +69,103 @@ def test_link_sends_capabilities_set_on_connect(db_session, ws_client):
         first = json.loads(initiator.decrypt(ws.receive_bytes()))
         assert first["type"] == "capabilities.set"
         assert first["payload"]["host_telemetry"] is True
+
+
+def test_link_persists_hello_metadata_onto_agent_row(db_session, ws_client):
+    """A hello carrying OS/version/arch/MAC metadata results in the Agent row
+    reflecting those values once the server has accepted it and sent
+    capabilities.set (the /link handshake's functional equivalent of
+    hello.ack) — real DB row, not a mock."""
+    from app.db.models import Agent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    assert agent.os is None
+    assert agent.agent_version is None
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(
+            initiator,
+            ws,
+            payload={
+                "os": "linux",
+                "os_version": "6.8.0-ubuntu",
+                "arch": "amd64",
+                "agent_version": "0.3.1",
+                "primary_macs": ["aa:bb:cc:dd:ee:ff"],
+            },
+        )
+        first = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert first["type"] == "capabilities.set"
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.os == "linux"
+    assert refreshed.os_version == "6.8.0-ubuntu"
+    assert refreshed.arch == "amd64"
+    assert refreshed.agent_version == "0.3.1"
+    assert refreshed.primary_macs == ["aa:bb:cc:dd:ee:ff"]
+
+
+def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
+    """The row tracks the *latest* reported version across separate link
+    sessions — an agent that self-updates between connects must not leave
+    its row pinned to the version it enrolled with."""
+    from app.db.models import Agent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.3.0"})
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    assert db_session.get(Agent, agent.id).agent_version == "0.3.0"
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.3.1"})
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    assert db_session.get(Agent, agent.id).agent_version == "0.3.1"
+
+
+def test_link_empty_hello_payload_does_not_blank_existing_metadata(db_session, ws_client):
+    """An old-shaped/empty hello (every HelloPayload field defaults to None
+    or []) must not erase metadata a prior hello or enrollment already
+    recorded — only fields the hello actually reports get overwritten."""
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    with SessionLocal() as setup_db:
+        fresh = setup_db.get(Agent, agent.id)
+        fresh.os = "linux"
+        fresh.agent_version = "0.2.0"
+        setup_db.commit()
+
+    _, server_pub = get_server_static_keypair()
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)  # empty payload, like today's real hellos
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.os == "linux"
+    assert refreshed.agent_version == "0.2.0"
 
 
 def test_link_records_connected_then_disconnected_events(db_session, ws_client):
