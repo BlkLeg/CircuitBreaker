@@ -24,6 +24,20 @@ import (
 
 var heartbeatInterval = 20 * time.Second
 
+// stabilityWindow is how long a connection must stay up after an accepted
+// hello.ack before Run treats the run as "stable" and resets reconnect
+// backoff to its floor. Gating on hello.ack alone isn't enough: a link that
+// connects, gets accepted, then drops almost immediately (e.g. a transient
+// server-side error one heartbeat tick later) would otherwise reset backoff
+// on every cycle, defeating exponential backoff for a flapping link and
+// risking a reconnect storm against the server. 30s — 1.5x the default
+// heartbeatInterval — is a judgment call (not specified numerically in the
+// brief/spec): long enough that a connection which drops shortly after
+// accept clearly doesn't qualify, short enough not to meaningfully delay
+// backoff recovery for a genuinely healthy link. A var, not a const, so
+// tests can shrink it.
+var stabilityWindow = 30 * time.Second
+
 type Options struct {
 	Config            *config.Config
 	Key               *enroll.DeviceKey
@@ -36,7 +50,8 @@ type Options struct {
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
 // reconnecting with exponential backoff + jitter (1s -> 5m cap) on any
 // disconnect. It returns ctx.Err() on cancellation. Backoff resets to the
-// floor after a run that reached an accepted hello.ack (see backoffState).
+// floor after a run that reached an accepted hello.ack and then stayed up
+// for at least stabilityWindow (see backoffState).
 func Run(ctx context.Context, opts Options) error {
 	if opts.OnCapabilitiesSet == nil {
 		opts.OnCapabilitiesSet = func(json.RawMessage) error { return nil }
@@ -68,9 +83,13 @@ func Run(ctx context.Context, opts Options) error {
 
 // runOnce dials, handshakes, and serves one /link connection until it drops
 // or ctx is cancelled. The returned bool reports whether the connection
-// reached a stable, accepted hello.ack at any point during the run — the
-// signal Run uses to reset reconnect backoff to its floor rather than
-// continuing an exponential progression from a prior run's failures.
+// reached an accepted hello.ack and then stayed up for at least
+// stabilityWindow before the run ended — the signal Run uses to reset
+// reconnect backoff to its floor rather than continuing an exponential
+// progression from a prior run's failures. An accepted hello.ack alone is
+// not sufficient: a connection that drops before the window elapses does
+// not count as stable, so a flapping link keeps its backoff progression
+// instead of resetting to the floor every cycle.
 func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	remotePub, err := hex.DecodeString(opts.Config.ServerStaticPK)
 	if err != nil || len(remotePub) != 32 {
@@ -172,6 +191,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	defer ticker.Stop()
 	var seq uint64
 	var connectedFired bool
+	// stableC fires once the connection has stayed up for stabilityWindow
+	// past its first accepted hello.ack. It starts nil (blocks forever in
+	// the select below) until that hello.ack arrives; a nil channel there
+	// is safe and never selects.
+	var stableC <-chan time.Time
 
 	sendHeartbeat := func() error {
 		seq++
@@ -201,15 +225,16 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 					log.Printf("link: hello.ack rejected: %s", ack.Reason)
 					continue
 				}
-				// The server accepted this session — flag the run stable
-				// (Run resets reconnect backoff to its floor for stable
-				// runs) and fire OnConnected exactly once per connection,
-				// even though the server may re-send hello.ack later (e.g.
-				// to push a refreshed capabilities set).
-				stable = true
+				// The server accepted this session — fire OnConnected and
+				// start the stability-window timer exactly once per
+				// connection, even though the server may re-send hello.ack
+				// later (e.g. to push a refreshed capabilities set). stable
+				// only flips true if the connection is still up when
+				// stableC fires below; a drop before then leaves it false.
 				if !connectedFired {
 					connectedFired = true
 					opts.OnConnected()
+					stableC = time.After(stabilityWindow)
 				}
 			case frame.TypePing:
 				if err := sendHeartbeat(); err != nil {
@@ -230,6 +255,12 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			if err := sendHeartbeat(); err != nil {
 				return stable, err
 			}
+		case <-stableC:
+			// The connection has stayed up for stabilityWindow since its
+			// first accepted hello.ack — reset backoff to the floor on the
+			// next reconnect. stableC only ever fires once (time.After),
+			// so no need to clear it back to nil afterward.
+			stable = true
 		}
 	}
 }
