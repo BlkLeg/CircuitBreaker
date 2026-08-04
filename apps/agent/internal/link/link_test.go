@@ -216,6 +216,117 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 	}
 }
 
+// TestRun_RespondsToServerPingWithImmediateHeartbeat verifies the agent's
+// handling of the server->agent `ping` frame (frame.TypePing): a WS-level
+// liveness probe distinct from the agent's own heartbeat ticker. The ticker
+// is stretched to 5s — far longer than this test runs — so any heartbeat
+// frame the fake server observes can only be the agent's immediate reply to
+// the `ping`, not its regular cadence (ws_agents.py's `_send_ping` is the
+// server-side counterpart that sends this frame).
+func TestRun_RespondsToServerPingWithImmediateHeartbeat(t *testing.T) {
+	originalInterval := heartbeatInterval
+	heartbeatInterval = 5 * time.Second
+	defer func() { heartbeatInterval = originalInterval }()
+
+	serverPriv, serverPub := generateTestKeypair(t)
+	heartbeatReceived := make(chan struct{}, 1)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		var outSeq uint64
+		send := func(typ string, payload any) {
+			f := map[string]any{
+				"v": 1, "type": typ, "seq": outSeq, "ts": time.Now().UTC(), "payload": payload,
+			}
+			outSeq++
+			data, _ := json.Marshal(f)
+			conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(data))
+		}
+
+		send("hello.ack", map[string]any{"accepted": true, "agent_id": 1})
+		send("ping", map[string]any{})
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f map[string]any
+			json.Unmarshal(pt, &f)
+			if f["type"] == "heartbeat" {
+				select {
+				case heartbeatReceived <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = Run(ctx, opts)
+		close(done)
+	}()
+
+	select {
+	case <-heartbeatReceived:
+		// Good — the agent replied to the ping well before its own 5s
+		// heartbeat ticker could ever have fired.
+	case <-time.After(1 * time.Second):
+		t.Fatal("agent did not send a heartbeat frame in response to a server ping frame")
+	}
+
+	cancel()
+	<-done
+}
+
 // TestRun_DropsReplayedAndInvalidInboundFrames drives the same handshake as
 // TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet, but has the fake server
 // send a run of frames designed to be rejected by the inbound sequence

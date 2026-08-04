@@ -35,7 +35,9 @@ from app.db.models import User
 from app.db.session import SessionLocal
 from app.schemas.agent_frame import (
     TYPE_CAPABILITIES_SET,
+    TYPE_HEARTBEAT,
     TYPE_HELLO_ACK,
+    TYPE_PING,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
     TransportRekeyPayload,
@@ -52,6 +54,7 @@ authenticated_router = APIRouter()
 _HANDSHAKE_TIMEOUT_SECONDS = 10.0
 _LINK_POLL_SECONDS = 5.0
 _LINK_DEAD_SECONDS = 60.0  # three missed 20s heartbeats
+_LINK_PING_INTERVAL_SECONDS = 20.0  # matches the agent's own heartbeatInterval
 _STREAM_AUTH_TIMEOUT_SECONDS = 10.0
 
 
@@ -253,6 +256,29 @@ async def _send_transport_rekey(
     responder.rekey_send()
 
 
+async def _send_ping(websocket: WebSocket, responder: NoiseIKResponder, seq: int) -> None:
+    """Active WS-protocol-level liveness probe, sent on its own cadence.
+
+    Distinct from the application `heartbeat` frame the agent sends
+    unprompted on its own 20s ticker: this actively nudges the agent rather
+    than only ever passively waiting on its heartbeat. It's the server-side
+    counterpart of the agent's `case frame.TypePing` handling in
+    apps/agent/internal/link/link.go, which replies with an immediate
+    heartbeat. It does *not* itself refresh presence or the dead-connection
+    deadline — only a genuine inbound `heartbeat` frame does that (see
+    `link_stream`'s `last_heartbeat_at`); a ping is a request for a
+    heartbeat, not a substitute for one.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_PING,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {},
+    }
+    await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
+
+
 @unauthenticated_router.websocket("/link")
 async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -307,8 +333,19 @@ async def link_stream(websocket: WebSocket) -> None:
     outbound_seq = _OutboundSeq()
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
 
-    last_activity = utcnow()
+    # last_heartbeat_at is the WS-level read deadline's clock — deliberately
+    # *not* "last time any frame arrived". It only ever advances on a valid
+    # inbound `heartbeat` frame (below), so a run of other traffic (a
+    # transport.rekey announcement, a log frame, a stray malformed frame)
+    # can never mask a stalled agent heartbeat and keep a hung connection
+    # alive: _LINK_DEAD_SECONDS is measured from the last real heartbeat,
+    # not the last byte. Redis presence freshness (agent_registry's TTL key)
+    # already tracks the same thing independently, via
+    # agent_link._handle_heartbeat -> refresh_presence_heartbeat; this is
+    # the WS-connection-teardown mirror of that same rule.
+    last_heartbeat_at = utcnow()
     last_rekey_at = utcnow()
+    last_ping_sent_at = utcnow()
     inbound_session = agent_link.LinkSessionState()
     try:
         while True:
@@ -329,10 +366,23 @@ async def link_stream(websocket: WebSocket) -> None:
                     break
                 last_rekey_at = utcnow()
 
+            # WS-protocol-level ping, on its own cadence and independent of
+            # the rekey timer above — an active nudge distinct from the
+            # application `heartbeat` frame the agent sends unprompted. The
+            # agent replies to a `ping` with an immediate heartbeat (see
+            # apps/agent/internal/link/link.go's `case frame.TypePing`),
+            # which is what actually advances last_heartbeat_at below.
+            if (utcnow() - last_ping_sent_at).total_seconds() >= _LINK_PING_INTERVAL_SECONDS:
+                try:
+                    await _send_ping(websocket, responder, outbound_seq.next())
+                except (WebSocketDisconnect, RuntimeError):
+                    break
+                last_ping_sent_at = utcnow()
+
             try:
                 ct = await asyncio.wait_for(websocket.receive_bytes(), timeout=_LINK_POLL_SECONDS)
             except TimeoutError:
-                if (utcnow() - last_activity).total_seconds() >= _LINK_DEAD_SECONDS:
+                if (utcnow() - last_heartbeat_at).total_seconds() >= _LINK_DEAD_SECONDS:
                     break
                 with SessionLocal() as db:
                     fresh = agent_registry.get_agent(db, agent_id)
@@ -352,7 +402,6 @@ async def link_stream(websocket: WebSocket) -> None:
             except WebSocketDisconnect:
                 break
 
-            last_activity = utcnow()
             try:
                 pt = responder.decrypt(ct)
             except Exception:
@@ -365,6 +414,10 @@ async def link_stream(websocket: WebSocket) -> None:
                 agent_frame = agent_link.receive_frame(db, fresh, pt, inbound_session)
                 if agent_frame is None:
                     continue
+                if agent_frame.type == TYPE_HEARTBEAT:
+                    # The one and only thing that refreshes the dead-connection
+                    # deadline — see last_heartbeat_at's docstring above.
+                    last_heartbeat_at = utcnow()
                 if agent_frame.type == TYPE_TRANSPORT_REKEY:
                     # Applied here, inline, rather than through
                     # agent_link.dispatch_frame: the swap has to land before

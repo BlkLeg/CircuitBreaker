@@ -21,6 +21,33 @@ async def test_dispatch_heartbeat_refreshes_presence(db_session, factories, monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("frame_type", ["log", "telemetry.host", "uninstall"])
+async def test_dispatch_non_heartbeat_frame_does_not_refresh_presence(
+    db_session, factories, monkeypatch, frame_type
+):
+    """Presence freshness must track `heartbeat` frames specifically, not
+    "any traffic on the socket" — a log line, a telemetry report, or any
+    other non-heartbeat frame type must never refresh presence, or a chatty
+    agent whose heartbeat ticker has actually stalled could look perpetually
+    online."""
+    from unittest.mock import AsyncMock
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+    refresh = AsyncMock()
+    monkeypatch.setattr("app.services.agent_registry.refresh_presence_heartbeat", refresh)
+
+    frame = AgentFrame(
+        type=frame_type,
+        ts="2026-07-27T12:00:00Z",
+        payload={"cpu": 0.1} if frame_type == "telemetry.host" else {},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_ungranted_frame_records_violation_and_does_not_dispatch(
     db_session,
     factories,
