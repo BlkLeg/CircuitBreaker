@@ -69,6 +69,45 @@ class _FakeRedisClient:
     def pubsub(self) -> "_FakePubSub":
         return _FakePubSub(self._bus)
 
+    def register_script(self, script: str) -> "_FakeCompareAndDeleteScript":
+        """Stand-in for redis-py's `register_script`/EVALSHA.
+
+        Not a general Lua interpreter — this fake only understands the one
+        script `agent_registry.deregister_agent_connection` actually
+        registers (`_COMPARE_AND_DELETE_LUA`), and reimplements its exact
+        semantics (get, compare, conditionally del — including honoring TTL
+        expiry) directly in Python against the shared `_bus._store`. Good
+        enough to prove the caller wires `register_script`/EVALSHA the same
+        way `rate_limit_middleware.py` does and that the compare-and-delete
+        behavior is correct; it cannot prove server-side atomicity, since
+        that guarantee comes from real Redis executing the script in one
+        step, not from anything a Python fake can model. See
+        `test_deregister_leaves_entry_untouched_when_owned_by_a_different_worker`
+        for why true concurrent interleaving isn't (and can't be) exercised
+        here.
+        """
+        return _FakeCompareAndDeleteScript(self._bus)
+
+
+class _FakeCompareAndDeleteScript:
+    def __init__(self, bus: _FakeRedisBus) -> None:
+        self._bus = bus
+
+    async def __call__(self, keys: list[str], args: list[str]) -> int:
+        key = keys[0]
+        expected = args[0]
+        entry = self._bus._store.get(key)
+        if entry is None:
+            return 0
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            del self._bus._store[key]
+            return 0
+        if value != expected:
+            return 0
+        del self._bus._store[key]
+        return 1
+
 
 class _FakePubSub:
     def __init__(self, bus: _FakeRedisBus) -> None:
@@ -181,7 +220,25 @@ async def test_deregister_leaves_entry_untouched_when_owned_by_a_different_worke
     """A stale worker's disconnect-path teardown must not clobber a newer
     connection's registry entry — the race this compare-and-delete guards
     against: the agent reconnects to worker B before worker A's own `finally`
-    block gets to run its deregister call."""
+    block gets to run its deregister call.
+
+    This exercises the sequential (non-concurrent) case of the guard: by the
+    time worker A's deregister runs, worker B's register has already fully
+    landed, so `_FakeCompareAndDeleteScript` sees the "wrong" value and
+    declines to delete — proving the compare-and-delete *logic* is correct.
+    It does not, and cannot, prove the *atomicity* the Lua script buys over a
+    GET-then-DELETE: this fake's coroutine bodies never actually suspend
+    mid-method the way a real network round trip would, so there is no
+    `await` point for `asyncio.gather`/interleaved tasks to land another
+    write between a "GET" and a "DELETE" in the first place — the race the
+    old two-round-trip implementation was vulnerable to simply cannot be
+    reproduced against this in-memory double, atomic or not. Confidence that
+    the fix is real comes from the implementation now issuing exactly one
+    `register_script`/EVALSHA call (mirroring `rate_limit_middleware.py`'s
+    already-relied-upon pattern for the same TOCTOU concern) rather than
+    separate `get`/`delete` calls, not from a test that catches the race in
+    the act.
+    """
     bus = _FakeRedisBus()
     monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
 

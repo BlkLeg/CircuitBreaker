@@ -399,6 +399,24 @@ async def refresh_agent_connection(agent_id: int, *, worker_id: str = WORKER_ID)
     await r.setex(_connection_key(agent_id), _CONNECTION_TTL_SECONDS, worker_id)
 
 
+# Atomic compare-and-delete (executed server-side via EVALSHA, the same
+# register_script/EVALSHA idiom rate_limit_middleware.py uses for its
+# sliding-window check). A GET-then-DELETE from Python would be two separate
+# round trips with a window between them for another worker's
+# register_agent_connection (SETEX) to land — this worker's DELETE would then
+# blindly remove the new owner's freshly-written entry. Running the
+# compare-and-delete as a single Lua script closes that window: Redis
+# executes it as one atomic server-side step, so no other command can
+# interleave between the GET and the DELETE.
+_COMPARE_AND_DELETE_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+
 async def deregister_agent_connection(agent_id: int, *, worker_id: str = WORKER_ID) -> None:
     """Remove the registry entry, but only if it's still this worker's.
 
@@ -406,17 +424,19 @@ async def deregister_agent_connection(agent_id: int, *, worker_id: str = WORKER_
     before this worker's own teardown runs (its `finally` block races the new
     connection's own `register_agent_connection`). Blindly deleting on
     disconnect — as `mark_presence_disconnected` does for the presence key —
-    would then erase the new owner's freshly-written entry. Compare-and-delete
-    avoids that: only ever remove the row this worker itself owns.
+    would then erase the new owner's freshly-written entry. The compare and
+    the delete run as a single atomic Lua script (`_COMPARE_AND_DELETE_LUA`)
+    rather than a GET followed by a DELETE, so only ever the row this worker
+    itself owns is removed, even if another worker's register races in
+    between what would otherwise be two separate round trips.
     """
     from app.core.redis import get_redis
 
     r = await get_redis()
     if r is None:
         return
-    current = await r.get(_connection_key(agent_id))
-    if current == worker_id:
-        await r.delete(_connection_key(agent_id))
+    script = r.register_script(_COMPARE_AND_DELETE_LUA)
+    await script(keys=[_connection_key(agent_id)], args=[worker_id])
 
 
 async def get_agent_connection_owner(agent_id: int) -> str | None:

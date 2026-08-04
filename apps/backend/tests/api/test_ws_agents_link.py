@@ -490,6 +490,36 @@ class _FakeTTLRedis:
     async def delete(self, key: str) -> int:
         return 1 if self._store.pop(key, None) is not None else 0
 
+    def register_script(self, script: str) -> "_FakeCompareAndDeleteScript":
+        """Stand-in for redis-py's `register_script`/EVALSHA, needed because
+        `/link`'s disconnect teardown now runs
+        `agent_registry.deregister_agent_connection`'s atomic compare-and-
+        delete Lua script (not a plain GET/DELETE) — see
+        test_agent_registry_connection.py's `_FakeCompareAndDeleteScript` for
+        the twin of this double and why it doesn't attempt to model true
+        Redis-side atomicity."""
+        return _FakeCompareAndDeleteScript(self._store)
+
+
+class _FakeCompareAndDeleteScript:
+    def __init__(self, store: dict[str, tuple[float, str]]) -> None:
+        self._store = store
+
+    async def __call__(self, keys: list[str], args: list[str]) -> int:
+        key = keys[0]
+        expected = args[0]
+        entry = self._store.get(key)
+        if entry is None:
+            return 0
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            del self._store[key]
+            return 0
+        if value != expected:
+            return 0
+        del self._store[key]
+        return 1
+
 
 def test_link_presence_goes_stale_when_only_non_heartbeat_frames_arrive(
     db_session, ws_client, monkeypatch
