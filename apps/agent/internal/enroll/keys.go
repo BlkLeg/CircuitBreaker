@@ -20,22 +20,43 @@ type DeviceKey struct {
 
 const deviceKeyFilename = "device.key"
 
+// LoadDeviceKey reads <stateDir>/device.key if present, without ever
+// creating one. ok is false with a nil error when no key exists yet — the
+// correct response for read-only/inspection callers like `cb-agent status`
+// and `cb-agent version`, which must not generate agent identity as a side
+// effect of an inspection command.
+func LoadDeviceKey(stateDir string) (key *DeviceKey, ok bool, err error) {
+	path := filepath.Join(stateDir, deviceKeyFilename)
+
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("enroll: read %s: %w", path, err)
+	}
+	if len(data) != 32 {
+		return nil, false, fmt.Errorf("enroll: device.key at %s has length %d, want 32", path, len(data))
+	}
+	var priv [32]byte
+	copy(priv[:], data)
+	key, err = deviceKeyFromPrivate(priv)
+	if err != nil {
+		return nil, false, err
+	}
+	return key, true, nil
+}
+
 // LoadOrCreateDeviceKey reads <stateDir>/device.key if present, else generates
 // an X25519 keypair and persists the private key (mode 0600).
 func LoadOrCreateDeviceKey(stateDir string) (*DeviceKey, error) {
-	path := filepath.Join(stateDir, deviceKeyFilename)
-
-	if data, err := os.ReadFile(path); err == nil {
-		if len(data) != 32 {
-			return nil, fmt.Errorf("enroll: device.key at %s has length %d, want 32", path, len(data))
-		}
-		var priv [32]byte
-		copy(priv[:], data)
-		return deviceKeyFromPrivate(priv)
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("enroll: read %s: %w", path, err)
+	if key, ok, err := LoadDeviceKey(stateDir); err != nil {
+		return nil, err
+	} else if ok {
+		return key, nil
 	}
 
+	path := filepath.Join(stateDir, deviceKeyFilename)
 	var priv [32]byte
 	if _, err := rand.Read(priv[:]); err != nil {
 		return nil, fmt.Errorf("enroll: generate private key: %w", err)

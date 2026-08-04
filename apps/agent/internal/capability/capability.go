@@ -72,3 +72,17 @@ func (g *Gate) Allowed(capability string) bool {
 	defer g.mu.RUnlock()
 	return g.grants[capability]
 }
+
+// Grants returns a snapshot copy of the full current grant set — for callers
+// that need the whole set (e.g. the runtime status writer) rather than one
+// capability via Allowed. The copy is safe to hold onto: it is never mutated
+// by the Gate after being returned.
+func (g *Gate) Grants() map[string]bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make(map[string]bool, len(g.grants))
+	for k, v := range g.grants {
+		out[k] = v
+	}
+	return out
+}

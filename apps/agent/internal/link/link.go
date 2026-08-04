@@ -60,6 +60,17 @@ type Options struct {
 	OnCapabilitiesSet func(json.RawMessage) error
 	OnUpdate          func(json.RawMessage) error
 	OnConnected       func()
+	// OnRejected fires whenever an explicit hello.ack rejection arrives
+	// (accepted: false), with the server's stated reason. Unlike
+	// OnConnected/OnDisconnected this does not end the connection — the
+	// loop keeps reading in case the server later sends an accepted ack —
+	// so it may fire more than once per connection.
+	OnRejected func(reason string)
+	// OnDisconnected fires once per runOnce call that ends other than by ctx
+	// cancellation — a dropped socket, a read/decrypt error, a dial failure,
+	// or the server requesting disconnect — with the error that ended it.
+	// cause is never nil when this fires from Run's reconnect loop.
+	OnDisconnected func(cause error)
 }
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
@@ -77,6 +88,12 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.OnConnected == nil {
 		opts.OnConnected = func() {}
 	}
+	if opts.OnRejected == nil {
+		opts.OnRejected = func(string) {}
+	}
+	if opts.OnDisconnected == nil {
+		opts.OnDisconnected = func(error) {}
+	}
 	var backoff backoffState
 	for {
 		if ctx.Err() != nil {
@@ -88,6 +105,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		delay := backoff.next(stable)
 		log.Printf("link: disconnected (%v) — reconnecting in %s", err, delay)
+		opts.OnDisconnected(err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -299,6 +317,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				}
 				if !ack.Accepted {
 					log.Printf("link: hello.ack rejected: %s", ack.Reason)
+					opts.OnRejected(ack.Reason)
 					continue
 				}
 				// The server accepted this session — fire OnConnected and

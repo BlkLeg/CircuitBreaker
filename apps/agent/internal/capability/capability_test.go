@@ -47,6 +47,32 @@ func TestGate_PersistsAcrossRestartViaLoadCached(t *testing.T) {
 	}
 }
 
+func TestGate_Grants_ReturnsIndependentSnapshot(t *testing.T) {
+	g := New(t.TempDir())
+	payload, _ := json.Marshal(map[string]bool{"host_telemetry": true, "remote_probe": false})
+	if err := g.ApplyGrants(payload); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+
+	snap := g.Grants()
+	if !snap["host_telemetry"] || snap["remote_probe"] {
+		t.Errorf("Grants() = %+v, want {host_telemetry:true, remote_probe:false}", snap)
+	}
+
+	// Mutating the returned map must not affect the Gate's internal state.
+	snap["host_telemetry"] = false
+	if !g.Allowed("host_telemetry") {
+		t.Error("mutating the Grants() snapshot changed the Gate's own state")
+	}
+}
+
+func TestGate_Grants_EmptyWhenNoneApplied(t *testing.T) {
+	g := New(t.TempDir())
+	if got := g.Grants(); len(got) != 0 {
+		t.Errorf("Grants() = %+v, want empty map before any ApplyGrants call", got)
+	}
+}
+
 func TestGate_LoadCached_NoOpWhenFileMissing(t *testing.T) {
 	g := New(t.TempDir())
 	if err := g.LoadCached(); err != nil {
