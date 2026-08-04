@@ -17,6 +17,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/noiseconn"
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
@@ -106,7 +107,12 @@ func runOnce(ctx context.Context, opts Options) error {
 		return fmt.Errorf("link: %w", err)
 	}
 
-	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC(), Payload: json.RawMessage("{}")}
+	helloPayload := hostinfo.Collect(opts.AgentVersion)
+	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
+	helloFrame.Payload, err = json.Marshal(helloPayload)
+	if err != nil {
+		return fmt.Errorf("link: encode hello payload: %w", err)
+	}
 	helloBytes, err := frame.Encode(helloFrame)
 	if err != nil {
 		return fmt.Errorf("link: %w", err)
@@ -232,8 +238,16 @@ func Uninstall(ctx context.Context, opts Options) error {
 		return fmt.Errorf("link: %w", err)
 	}
 
-	hello := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC(), Payload: json.RawMessage("{}")}
-	helloBytes, _ := frame.Encode(hello)
+	helloPayload := hostinfo.Collect(opts.AgentVersion)
+	hello := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
+	hello.Payload, err = json.Marshal(helloPayload)
+	if err != nil {
+		return fmt.Errorf("link: encode hello payload: %w", err)
+	}
+	helloBytes, err := frame.Encode(hello)
+	if err != nil {
+		return fmt.Errorf("link: %w", err)
+	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(helloBytes)); err != nil {
 		return fmt.Errorf("link: send hello: %w", err)
 	}

@@ -2,13 +2,11 @@
 package enroll
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -16,6 +14,7 @@ import (
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/noiseconn"
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
@@ -67,18 +66,12 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 		return fmt.Errorf("enroll: %w", err)
 	}
 
-	hostname, _ := os.Hostname()
-	helloPayload := map[string]any{
-		"hostname":        hostname,
-		"machine_id_hash": readMachineIDHash(),
-		"os":              "linux",
-		"os_version":      "",
-		"arch":            runtimeArch(),
-		"agent_version":   agentVersion,
-		"primary_macs":    []string{},
-	}
+	helloPayload := hostinfo.Collect(agentVersion)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
-	helloFrame.Payload, _ = json.Marshal(helloPayload)
+	helloFrame.Payload, err = json.Marshal(helloPayload)
+	if err != nil {
+		return fmt.Errorf("enroll: encode hello payload: %w", err)
+	}
 	helloBytes, err := frame.Encode(helloFrame)
 	if err != nil {
 		return fmt.Errorf("enroll: %w", err)
@@ -127,23 +120,4 @@ func Run(cfg *config.Config, key *DeviceKey, agentVersion string) error {
 			return errors.New("enroll: agent was revoked")
 		}
 	}
-}
-
-func readMachineIDHash() string {
-	data, err := os.ReadFile("/etc/machine-id")
-	if err != nil {
-		data, err = os.ReadFile("/var/lib/dbus/machine-id")
-		if err != nil {
-			return ""
-		}
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-func runtimeArch() string {
-	// Populated properly via runtime.GOARCH; kept as a named function so
-	// Task 21's cross-compile step has one obvious place to verify arch
-	// reporting for both amd64 and arm64 builds.
-	return goArch()
 }
