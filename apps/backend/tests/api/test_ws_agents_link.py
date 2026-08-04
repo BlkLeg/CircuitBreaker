@@ -57,8 +57,16 @@ def _active_agent_with_key(db_session):
     return agent, agent_priv
 
 
-def test_link_sends_capabilities_set_on_connect(db_session, ws_client):
-    _agent, agent_priv = _active_agent_with_key(db_session)
+def test_link_sends_hello_ack_then_capabilities_set_on_connect(db_session, ws_client):
+    """The real Go agent (`internal/link/link.go`) only fires `OnConnected` —
+    which resets reconnect backoff and gates link success (Task 4) — on an
+    accepted `hello.ack` frame; it never applies capabilities from anything
+    else at connect time. So `/link` must send a genuine `hello.ack` first
+    (accepted, this agent's id, and — per the durable-delivery guarantee
+    documented on `HelloAckPayload` — the complete current grant set),
+    immediately followed by the existing `capabilities.set` push that
+    actually drives the Go agent's `OnCapabilitiesSet` callback today."""
+    agent, agent_priv = _active_agent_with_key(db_session)
     _, server_pub = get_server_static_keypair()
 
     with ws_client.websocket_connect("/api/v1/agents/link") as ws:
@@ -67,16 +75,24 @@ def test_link_sends_capabilities_set_on_connect(db_session, ws_client):
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws)
 
-        first = json.loads(initiator.decrypt(ws.receive_bytes()))
-        assert first["type"] == "capabilities.set"
-        assert first["payload"]["host_telemetry"] is True
+        ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert ack["type"] == "hello.ack"
+        assert ack["seq"] == 0
+        assert ack["payload"]["accepted"] is True
+        assert ack["payload"]["agent_id"] == agent.id
+        assert ack["payload"]["capabilities"]["host_telemetry"] is True
+        assert "server_time" in ack["payload"]
+
+        second = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert second["type"] == "capabilities.set"
+        assert second["seq"] == 1
+        assert second["payload"]["host_telemetry"] is True
 
 
 def test_link_persists_hello_metadata_onto_agent_row(db_session, ws_client):
     """A hello carrying OS/version/arch/MAC metadata results in the Agent row
     reflecting those values once the server has accepted it and sent
-    capabilities.set (the /link handshake's functional equivalent of
-    hello.ack) — real DB row, not a mock."""
+    hello.ack/capabilities.set — real DB row, not a mock."""
     from app.db.models import Agent
 
     agent, agent_priv = _active_agent_with_key(db_session)
@@ -99,8 +115,10 @@ def test_link_persists_hello_metadata_onto_agent_row(db_session, ws_client):
                 "primary_macs": ["aa:bb:cc:dd:ee:ff"],
             },
         )
-        first = json.loads(initiator.decrypt(ws.receive_bytes()))
-        assert first["type"] == "capabilities.set"
+        ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert ack["type"] == "hello.ack"
+        second = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert second["type"] == "capabilities.set"
 
     db_session.expire_all()
     refreshed = db_session.get(Agent, agent.id)
@@ -132,6 +150,7 @@ def test_link_explicit_empty_primary_macs_blanks_stored_value(db_session, ws_cli
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws, payload={"primary_macs": []})
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     db_session.expire_all()
@@ -158,6 +177,7 @@ def test_link_omitted_primary_macs_leaves_stored_value_untouched(db_session, ws_
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws, payload={"agent_version": "0.3.2"})
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     db_session.expire_all()
@@ -178,6 +198,7 @@ def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws, payload={"agent_version": "0.3.0"})
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     db_session.expire_all()
@@ -188,6 +209,7 @@ def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws, payload={"agent_version": "0.3.1"})
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     db_session.expire_all()
@@ -214,6 +236,7 @@ def test_link_empty_hello_payload_does_not_blank_existing_metadata(db_session, w
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws)  # empty payload, like today's real hellos
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     db_session.expire_all()
@@ -231,6 +254,7 @@ def test_link_records_connected_then_disconnected_events(db_session, ws_client):
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws)
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
     from app.db.models import AgentEvent
@@ -315,6 +339,7 @@ def test_link_rejects_replayed_and_invalid_sequences_but_stays_connected(db_sess
         ws.send_bytes(initiator.write_message())
         initiator.read_message(ws.receive_bytes())
         _send_hello(initiator, ws)
+        ws.receive_bytes()  # hello.ack
         ws.receive_bytes()  # capabilities.set
 
         _send_frame(initiator, ws, seq=0)  # accepted, becomes the baseline
@@ -338,11 +363,21 @@ def test_link_rejects_replayed_and_invalid_sequences_but_stays_connected(db_sess
 
 
 def _connect_linked(ws, agent_priv, server_pub):
-    """Handshake + hello + drain the initial capabilities.set."""
+    """Handshake + hello + drain the initial hello.ack and capabilities.set.
+
+    Real hello.ack (accepted, agent_id, capabilities, server_time) is sent
+    first — it's what the real Go agent's `case frame.TypeHelloAck` gates
+    `OnConnected`/backoff-reset on (see `link.go`) — followed immediately by
+    a `capabilities.set` carrying the same grants, which is what actually
+    drives the Go agent's `OnCapabilitiesSet` application today.
+    """
     initiator = TestNoiseInitiator(agent_priv, server_pub)
     ws.send_bytes(initiator.write_message())
     initiator.read_message(ws.receive_bytes())
     _send_hello(initiator, ws)
+    ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+    assert ack["type"] == "hello.ack"
+    assert ack["payload"]["accepted"] is True
     assert json.loads(initiator.decrypt(ws.receive_bytes()))["type"] == "capabilities.set"
     return initiator
 
@@ -966,3 +1001,93 @@ def test_reject_publishes_disconnect_control_frame(
     db_session.expire_all()
     refreshed = db_session.get(Agent, agent.id)
     assert refreshed.status == "rejected"
+
+
+def test_capabilities_put_delivers_immediate_push_over_live_link(
+    db_session, ws_client, monkeypatch, factories, app_cfg
+):
+    """Task 11's first half, end-to-end: the real `PUT
+    /agents/{id}/capabilities` REST endpoint (not
+    `publish_agent_control_frame` called directly, unlike the companion Task
+    9 proof `test_link_delivers_capabilities_set_published_by_another_worker`
+    above) delivers a `capabilities.set` push to a live /link socket
+    immediately — without waiting for the poll-based fallback or a
+    reconnect. Mirrors `test_revoke_delivers_immediate_disconnect_over_live_link`'s
+    shape for the capabilities-grant trigger instead of revoke/reject."""
+    from unittest.mock import AsyncMock
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+    headers = _login_admin(ws_client, factories)
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+        # Give link_stream's background control-frame listener a moment to
+        # actually subscribe before the REST call publishes — mirrors the
+        # same precaution in the companion cross-worker-publish proof above.
+        time.sleep(0.1)
+
+        resp = ws_client.put(
+            f"/api/v1/agents/{agent.id}/capabilities",
+            json={"capabilities": {"remote_probe": True}},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+
+        raw = _receive_bytes_with_timeout(ws, timeout=2.0)
+        frame = json.loads(initiator.decrypt(raw))
+        assert frame["type"] == "capabilities.set"
+        # The full, authoritative grant set (host_telemetry from
+        # _active_agent_with_key's seed data plus the newly-granted
+        # remote_probe) — not just the one capability this request named.
+        assert frame["payload"] == {"host_telemetry": True, "remote_probe": True}
+
+
+def test_link_hello_ack_resends_complete_grants_regardless_of_prior_push_success(
+    db_session, ws_client
+):
+    """Task 11's durable-delivery half: the DB stays authoritative, so a
+    fresh `hello.ack` on reconnect always carries the *complete* current
+    grant set — even when the grant change that produced it was never pushed
+    to any live socket at all (the strongest form of "a missed push",
+    stronger than a failed `publish_agent_control_frame` call, which Task 9
+    already proves never fails the request — see
+    test_agents_api.py::test_capabilities_put_succeeds_even_when_control_frame_publish_fails).
+    No connection was live when the grant changed here, so there was no
+    push to miss; the next hello.ack must still reflect it correctly."""
+    from app.db.session import SessionLocal
+    from app.services import agent_registry
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+        first_ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert first_ack["payload"]["capabilities"] == {"host_telemetry": True}
+
+    # Change the grant set with no /link socket connected at all — nothing
+    # to push to, and nothing that could have "failed" to push either.
+    with SessionLocal() as db:
+        agent_registry.set_capability_grants(
+            db, agent.id, {"host_telemetry": False, "remote_probe": True}, actor_user_id=None
+        )
+        db.commit()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+        second_ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert second_ack["type"] == "hello.ack"
+        assert second_ack["payload"]["capabilities"] == {
+            "host_telemetry": False,
+            "remote_probe": True,
+        }

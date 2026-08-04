@@ -60,11 +60,19 @@ _LINK_PING_INTERVAL_SECONDS = 20.0  # matches the agent's own heartbeatInterval
 _STREAM_AUTH_TIMEOUT_SECONDS = 10.0
 
 
-def _ack_bytes(responder: NoiseIKResponder, payload: dict) -> bytes:
+def _ack_bytes(responder: NoiseIKResponder, payload: dict, seq: int = 0) -> bytes:
+    """Wire-encode one `hello.ack` frame.
+
+    Used both by `enroll_stream` (pairing-code/status payloads, always at
+    `seq=0` since that socket has no outbound sequence counter of its own)
+    and by `link_stream` (the real `HelloAckPayload` shape — accepted,
+    agent_id, capabilities, server_time — at whatever `seq` its
+    `_OutboundSeq` counter is on).
+    """
     frame = {
         "v": 1,
         "type": TYPE_HELLO_ACK,
-        "seq": 0,
+        "seq": seq,
         "ts": utcnow().isoformat(),
         "payload": payload,
     }
@@ -420,6 +428,38 @@ async def link_stream(websocket: WebSocket) -> None:
     await agent_registry.register_agent_connection(agent_id)
     await agent_registry.broadcast_presence(agent_id, "connected")
     outbound_seq = _OutboundSeq()
+    # A genuine `hello.ack` — accepted, this agent's id, the complete current
+    # grant set, and server_time (HelloAckPayload, Task 1) — must go out
+    # first: the real Go agent (apps/agent/internal/link/link.go) only fires
+    # OnConnected (resets reconnect backoff, gates link success — Task 4)
+    # from its `case frame.TypeHelloAck` branch when `Accepted` is true.
+    # Before this, /link never sent a `hello.ack` frame at all, so that
+    # gating logic could never actually fire in production. Task 1's
+    # HelloAckPayload doc comment ("the server re-sends the authoritative
+    # set on every hello.ack") is why the full grants dict rides along here
+    # too, not just capabilities.set below — this is the durable-delivery
+    # half of Task 11: a missed capabilities.set push (Task 9's cross-worker
+    # delivery) is corrected the moment the agent's next reconnect completes
+    # this same hello.ack exchange, independent of push success/failure.
+    #
+    # The capabilities.set frame right after is left in place alongside it,
+    # not replaced by it: today's Go agent only ever applies grants via its
+    # `OnCapabilitiesSet` callback (fired on `case frame.TypeCapabilitiesSet`
+    # — see link.go), never by reading HelloAckPayload.Capabilities off the
+    # hello.ack itself, so it's still needed for the grants to actually take
+    # effect on connect.
+    await websocket.send_bytes(
+        _ack_bytes(
+            responder,
+            {
+                "accepted": True,
+                "agent_id": agent_id,
+                "server_time": utcnow().isoformat(),
+                "capabilities": grants,
+            },
+            outbound_seq.next(),
+        )
+    )
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
 
     # Task 9: listen for control-plane frames (capabilities.set, update,
