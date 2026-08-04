@@ -29,7 +29,7 @@ from app.core.security import decode_token
 from app.core.time import utcnow, utcnow_iso
 from app.db.models import User
 from app.db.session import SessionLocal
-from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, TYPE_UPDATE, AgentFrame
+from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_HELLO_ACK, TYPE_UPDATE
 from app.services import agent_enrollment, agent_link, agent_registry, agent_update
 from app.services.settings_service import get_or_create_settings
 from app.services.user_service import is_session_revoked
@@ -193,15 +193,30 @@ async def enroll_stream(websocket: WebSocket) -> None:
             break
 
 
-def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool]) -> bytes:
+def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool], seq: int) -> bytes:
     frame = {
         "v": 1,
         "type": TYPE_CAPABILITIES_SET,
-        "seq": 0,
+        "seq": seq,
         "ts": utcnow().isoformat(),
         "payload": grants,
     }
     return responder.encrypt(json.dumps(frame).encode())
+
+
+class _OutboundSeq:
+    """Per-connection strictly-increasing sequence counter for frames the
+    server sends down one /link session (capabilities.set, update, ...),
+    mirroring the agent's own per-session `seq` counter in
+    internal/link/link.go. Starts at 0, like the agent's hello frame."""
+
+    def __init__(self) -> None:
+        self._next = 0
+
+    def next(self) -> int:
+        value = self._next
+        self._next += 1
+        return value
 
 
 @unauthenticated_router.websocket("/link")
@@ -255,9 +270,11 @@ async def link_stream(websocket: WebSocket) -> None:
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)
     await agent_registry.broadcast_presence(agent_id, "connected")
-    await websocket.send_bytes(_capabilities_bytes(responder, grants))
+    outbound_seq = _OutboundSeq()
+    await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
 
     last_activity = utcnow()
+    inbound_session = agent_link.LinkSessionState()
     try:
         while True:
             try:
@@ -274,7 +291,7 @@ async def link_stream(websocket: WebSocket) -> None:
                     update_frame = {
                         "v": 1,
                         "type": TYPE_UPDATE,
-                        "seq": 0,
+                        "seq": outbound_seq.next(),
                         "ts": utcnow().isoformat(),
                         "payload": pending,
                     }
@@ -286,7 +303,6 @@ async def link_stream(websocket: WebSocket) -> None:
             last_activity = utcnow()
             try:
                 pt = responder.decrypt(ct)
-                agent_frame = AgentFrame.model_validate_json(pt)
             except Exception:
                 continue
 
@@ -294,6 +310,9 @@ async def link_stream(websocket: WebSocket) -> None:
                 fresh = agent_registry.get_agent(db, agent_id)
                 if fresh is None or fresh.status != "active":
                     break
+                agent_frame = agent_link.receive_frame(db, fresh, pt, inbound_session)
+                if agent_frame is None:
+                    continue
                 await agent_link.dispatch_frame(db, fresh, agent_frame)
     finally:
         await agent_registry.mark_presence_disconnected(agent_id)

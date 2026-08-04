@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// FrameVersion is the only wire protocol version this package's encoder/decoder
+// currently understands, mirroring apps/backend/src/app/schemas/agent_frame.py's
+// FRAME_VERSION. Receivers on both sides reject a decoded Frame whose V differs
+// from this as an unsupported-version frame (see internal/link's inbound sequence
+// guard and agent_link.py's receive_frame).
+const FrameVersion = 1
+
 // Frame is the wire envelope for every agent<->server message, nested inside
 // the Noise-encrypted channel. v1 — see specs/2026-07-26-cb-agent-design.md §3.4.
 type Frame struct {

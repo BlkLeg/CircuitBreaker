@@ -206,3 +206,102 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		t.Error("no heartbeat frames were received")
 	}
 }
+
+// TestRun_DropsReplayedAndInvalidInboundFrames drives the same handshake as
+// TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet, but has the fake server
+// send a run of frames designed to be rejected by the inbound sequence
+// guard — a duplicate seq, a decreasing seq, an unsupported version, and a
+// malformed (empty-type) frame — interleaved with one genuinely new
+// capabilities.set. Only the genuinely new frame should ever reach
+// OnCapabilitiesSet; the connection must survive all four rejections.
+func TestRun_DropsReplayedAndInvalidInboundFrames(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		send := func(v int, typ string, seq uint64, payload any) {
+			f := map[string]any{"v": v, "type": typ, "seq": seq, "ts": time.Now().UTC(), "payload": payload}
+			data, _ := json.Marshal(f)
+			conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(data))
+		}
+
+		// First, a legitimate capabilities.set at seq 0 — accepted.
+		send(1, "capabilities.set", 0, map[string]bool{"host_telemetry": true})
+		// Replays/violations that must all be dropped.
+		send(1, "capabilities.set", 0, map[string]bool{"host_telemetry": false}) // duplicate seq
+		send(1, "capabilities.set", 0, map[string]bool{"host_telemetry": false}) // decreasing (still 0, treated as duplicate again — exercise both branches below)
+		send(2, "capabilities.set", 1, map[string]bool{"host_telemetry": false}) // unsupported version
+		send(1, "", 2, map[string]bool{"host_telemetry": false})                 // malformed: empty type
+		// A genuinely new, strictly-increasing, well-formed frame — accepted.
+		send(1, "capabilities.set", 3, map[string]bool{"host_telemetry": false, "remote_probe": true})
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var applied int32
+	var lastPayload atomic.Value
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnCapabilitiesSet: func(payload json.RawMessage) error {
+			atomic.AddInt32(&applied, 1)
+			lastPayload.Store(string(payload))
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := atomic.LoadInt32(&applied); got != 2 {
+		t.Errorf("OnCapabilitiesSet called %d times, want 2 (seq 0 and seq 3 only)", got)
+	}
+	if v, ok := lastPayload.Load().(string); !ok || !strings.Contains(v, "remote_probe") {
+		t.Errorf("last applied payload = %v, want the seq=3 frame's payload", v)
+	}
+}

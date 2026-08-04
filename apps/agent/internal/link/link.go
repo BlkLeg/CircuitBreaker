@@ -126,6 +126,7 @@ func runOnce(ctx context.Context, opts Options) error {
 	incoming := make(chan frame.Frame)
 	readErrCh := make(chan error, 1)
 	go func() {
+		var guard inboundSeqGuard
 		for {
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
@@ -141,6 +142,14 @@ func runOnce(ctx context.Context, opts Options) error {
 			if err != nil {
 				readErrCh <- err
 				return
+			}
+			if err := guard.validate(f); err != nil {
+				// Security-relevant rejection: replayed/decreasing sequence,
+				// unsupported version, or a malformed envelope. Drop the
+				// frame and keep the connection alive rather than tearing
+				// down the whole link over one bad server frame.
+				log.Printf("link: rejecting inbound frame: %v", err)
+				continue
 			}
 			select {
 			case incoming <- f:

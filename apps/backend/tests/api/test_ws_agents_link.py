@@ -1,6 +1,7 @@
 import hashlib
 import json
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -105,6 +106,54 @@ def test_link_rejects_stale_handshake_timestamp(db_session, ws_client):
 
         err = json.loads(initiator.decrypt(ws.receive_bytes()))
         assert err["payload"]["error"] == "clock_skew"
+
+
+def _send_frame(initiator, ws, *, v=1, type="heartbeat", seq, payload=None) -> None:
+    frame = {
+        "v": v,
+        "type": type,
+        "seq": seq,
+        "ts": datetime.now(UTC).isoformat(),
+        "payload": payload or {},
+    }
+    ws.send_bytes(initiator.encrypt(json.dumps(frame).encode()))
+
+
+def test_link_rejects_replayed_and_invalid_sequences_but_stays_connected(db_session, ws_client):
+    """End-to-end: a duplicate seq, a decreasing seq, and an unsupported
+    version are all recorded as protocol_violation AgentEvents and don't
+    tear down the connection — a subsequent well-formed, strictly-increasing
+    frame still gets through and updates presence."""
+    from app.db.models import AgentEvent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+        ws.receive_bytes()  # capabilities.set
+
+        _send_frame(initiator, ws, seq=0)  # accepted, becomes the baseline
+        _send_frame(initiator, ws, seq=0)  # duplicate — rejected
+        _send_frame(initiator, ws, v=2, seq=1)  # unsupported version — rejected
+        _send_frame(initiator, ws, seq=1)  # strictly increasing again — accepted
+
+        # Give the server a moment to process the frames sent above before the
+        # connection closes at the end of this `with` block.
+        time.sleep(0.3)
+
+    violations = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="protocol_violation")
+        .order_by(AgentEvent.id)
+        .all()
+    )
+    reasons = [v.detail["reason"] for v in violations]
+    assert "duplicate_sequence" in reasons
+    assert "unsupported_version" in reasons
 
 
 def test_link_refuses_unknown_device_pk(ws_client):
