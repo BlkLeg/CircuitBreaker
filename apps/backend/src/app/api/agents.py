@@ -12,7 +12,7 @@ from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.db.models import Agent, AgentEvent, User
 from app.db.session import get_db
-from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_UPDATE
+from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_DISCONNECT, TYPE_UPDATE
 from app.schemas.agents import (
     AgentEventRead,
     AgentPatch,
@@ -191,6 +191,17 @@ async def post_reject(
     agent = agent_registry.reject_agent(db, agent_id, actor_user_id=user.id)
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "rejected")
+    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # trigger): a rejected agent is never expected to hold a live /link
+    # socket in practice (enroll_stream only ever leaves a device pending or
+    # active), but publishing here is harmless and cheap on the off chance
+    # one is connected — same never-raises guarantee as
+    # put_capabilities' publish above, so a dead/degraded Redis can't fail
+    # this request. The DB status flip above is still authoritative recovery
+    # if pub/sub delivery is missed entirely.
+    await agent_registry.publish_agent_control_frame(
+        agent_id, {"type": TYPE_DISCONNECT, "payload": {"reason": "rejected"}}
+    )
     return _to_read(db, agent)
 
 
@@ -206,6 +217,17 @@ async def post_revoke(
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "revoked")
+    # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
+    # trigger): if the agent is connected right now, whichever worker holds
+    # its /link socket picks this up via
+    # agent_registry.claim_agent_control_frames and closes the connection
+    # without waiting on the next poll interval. Never raises (see
+    # publish_agent_control_frame's docstring) — a dead/degraded Redis must
+    # not fail this request; the still-revoked DB status is the recovery
+    # path an agent's own poll (or its next reconnect attempt) picks up.
+    await agent_registry.publish_agent_control_frame(
+        agent_id, {"type": TYPE_DISCONNECT, "payload": {"reason": payload.reason or "revoked"}}
+    )
     return _to_read(db, agent)
 
 

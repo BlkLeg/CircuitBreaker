@@ -153,6 +153,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
             return
         if existing is not None and existing.status == "pending":
             agent = existing
+            newly_created = False
         else:
             agent = agent_registry.create_pending_agent(
                 db,
@@ -167,9 +168,23 @@ async def enroll_stream(websocket: WebSocket) -> None:
                 primary_macs=payload.get("primary_macs"),
                 reported_ip=client_ip,
             )
+            newly_created = True
         db.commit()
         agent_id = agent.id
         code = await agent_enrollment.mint_pairing_code(agent_id)
+
+    if newly_created:
+        # Immediate push to every live /api/agents/stream viewer (the
+        # add-agent panel), mirroring the connected/disconnected broadcasts
+        # elsewhere in this module — without this, a brand-new pending
+        # enrollment is invisible to the UI until its next 30s poll. Only
+        # fired for a genuinely new row: a device retrying the /enroll
+        # handshake while its prior enrollment is still pending (the
+        # `existing.status == "pending"` branch above) reuses that same
+        # already-announced row, so re-broadcasting here would be a
+        # duplicate "new agent" event for something the UI already knows
+        # about.
+        await agent_registry.broadcast_presence(agent_id, "enrolled")
 
     await websocket.send_bytes(
         _ack_bytes(

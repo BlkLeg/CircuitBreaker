@@ -849,3 +849,120 @@ def test_link_delivers_disconnect_published_by_another_worker(db_session, ws_cli
         frame = json.loads(initiator.decrypt(raw))
         assert frame["type"] == "disconnect"
         assert frame["payload"] == {"reason": "revoked"}
+
+
+def _login_admin(ws_client, factories):
+    """Creates and logs in an admin user through `ws_client` itself (not the
+    separate async `client` fixture) so the session cookie lands in
+    `ws_client`'s own cookie jar and every subsequent `ws_client.post(...)`
+    in the same test carries it automatically — same reasoning as
+    test_ws_agents_stream.py's `_login_viewer`. `factories` (backed by
+    `db_session`) is safe to combine with `ws_client` here because
+    `ws_client`'s own `get_db` override already points at that same
+    `db_session` instance (see conftest.py's `ws_client` fixture) — unlike
+    the WS /link and /enroll handlers below, which open their own
+    `SessionLocal()` and therefore need a real committed row instead."""
+    admin = factories.user(role="admin", password="TestPassword123!")
+    resp = ws_client.post(
+        "/api/v1/auth/login", json={"email": admin.email, "password": "TestPassword123!"}
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    csrf = resp.cookies.get("cb_csrf", "test-csrf-token")
+    return {"Authorization": f"Bearer {token}", "X-CSRF-Token": csrf}
+
+
+def test_revoke_delivers_immediate_disconnect_over_live_link(
+    db_session, ws_client, monkeypatch, factories, app_cfg
+):
+    """Task 10 end-to-end proof, genuinely exercising the real `POST
+    /agents/{id}/revoke` REST endpoint (not `publish_agent_control_frame`
+    called directly, unlike the companion proof above which stands in for a
+    cross-worker publish) — the trigger this task adds on top of Task 9's
+    already-proven generic claim-and-deliver delivery mechanics. Asserts both
+    halves of the required behavior: the DB status flip AND the immediate
+    disconnect frame landing on the live socket, without waiting for the
+    poll-based fallback."""
+    from unittest.mock import AsyncMock
+
+    from app.db.models import Agent
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+    headers = _login_admin(ws_client, factories)
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+        # Give link_stream's background control-frame listener a moment to
+        # actually subscribe before the REST call publishes — mirrors the
+        # same precaution in the companion cross-worker-publish proof above.
+        time.sleep(0.1)
+
+        resp = ws_client.post(
+            f"/api/v1/agents/{agent.id}/revoke",
+            json={"reason": "compromised"},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "revoked"
+
+        raw = _receive_bytes_with_timeout(ws, timeout=2.0)
+        frame = json.loads(initiator.decrypt(raw))
+        assert frame["type"] == "disconnect"
+        assert frame["payload"] == {"reason": "compromised"}
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.status == "revoked"
+    assert refreshed.revoke_reason == "compromised"
+
+
+def test_reject_publishes_disconnect_control_frame(
+    db_session, ws_client, monkeypatch, factories, app_cfg
+):
+    """Reject's counterpart to the revoke proof above. A rejected agent is
+    never expected to hold a live /link socket in normal operation (only a
+    still-pending device can be rejected, and pending devices never reach
+    /link — see enroll_stream's active/pending/revoked/rejected branching),
+    so this asserts the publish call itself lands on the agent's control
+    channel — the same level of proof Task 9's own registry-only tests use
+    in test_agent_registry_connection.py — rather than a live socket
+    delivery, which would require contradicting that invariant."""
+    from unittest.mock import AsyncMock
+
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, _agent_priv = _active_agent_with_key(db_session)
+    with SessionLocal() as db:
+        row = db.get(Agent, agent.id)
+        row.status = "pending"
+        db.commit()
+
+    headers = _login_admin(ws_client, factories)
+
+    # Subscribe to the agent's control channel first (mirrors
+    # claim_agent_control_frames' own subscribe-then-publish ordering
+    # requirement) so the reject endpoint's publish is observed directly,
+    # without a live /link connection in the loop.
+    pubsub = fake_redis.pubsub()
+    ws_client.portal.call(pubsub.subscribe, f"cb:agents:control:{agent.id}")
+
+    resp = ws_client.post(f"/api/v1/agents/{agent.id}/reject", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+    msg = ws_client.portal.call(pubsub.get_message, True, 2.0)
+    assert msg is not None and msg["type"] == "message"
+    frame = json.loads(msg["data"])
+    assert frame == {"type": "disconnect", "payload": {"reason": "rejected"}}
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.status == "rejected"
