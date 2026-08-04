@@ -132,8 +132,7 @@ def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
     """Public (Let's Encrypt) certs are already trusted by the OS/agent's TLS
     stack — no pin needed. Self-signed needs a pin computed from the cert
     nginx actually serves (see `_live_nginx_cert_pem`), falling back to a
-    `Certificate` row's cert_pem, then no-pin/TOFU, when that file is
-    unavailable (e.g. this code running outside the mono container)."""
+    `Certificate` row's cert_pem. Fails closed if neither source is available."""
     if cert is not None and cert.type == "letsencrypt":
         return "public", ""
     live_pem = _live_nginx_cert_pem()
@@ -141,7 +140,10 @@ def _tls_mode_and_pin(cert: Certificate | None) -> tuple[str, str]:
         return "self_signed", _spki_pin(live_pem)
     if cert is not None:
         return "self_signed", _spki_pin(cert.cert_pem)
-    return "self_signed", ""
+    raise ValueError(
+        "Cannot obtain TLS pin for self-signed certificate: "
+        "neither live nginx cert nor database cert available"
+    )
 
 
 def render_install_script(
