@@ -33,6 +33,39 @@ class AgentRead(AgentSummary):
     capabilities: dict[str, bool] = {}
 
 
+class HardwareSummary(BaseModel):
+    """Linked-hardware summary for a fleet table row.
+
+    Mirrors the "id + name" shape `HardwareClusterMemberRead.hardware_name`
+    and `PairingLookupResponse.proposed_hardware_name` already use elsewhere
+    for hardware display, plus the identifying fields (`hostname`,
+    `ip_address`, `mac_address`) — the same fields `agent_registry.
+    propose_hardware_match` matches an agent against — rather than the full
+    `Hardware` row.
+    """
+
+    id: int
+    name: str
+    hostname: str | None = None
+    ip_address: str | None = None
+    mac_address: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AgentPresenceRead(BaseModel):
+    """One fleet table row's worth of presence + grant + hardware data —
+    the bulk lookup Task 12 adds so `AgentsPage` (Task 14) can render the
+    whole fleet from a single request instead of one per-agent call."""
+
+    agent_id: int
+    online: bool
+    connected_since: datetime | None
+    last_seen_at: datetime | None
+    capabilities: dict[str, bool] = {}
+    hardware: HardwareSummary | None = None
+
+
 class AgentPatch(BaseModel):
     name: str | None = None
     notes: str | None = None

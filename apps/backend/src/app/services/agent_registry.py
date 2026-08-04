@@ -12,6 +12,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -189,6 +190,25 @@ def grants_dict(db: Session, agent_id: int) -> dict[str, bool]:
     }
 
 
+def bulk_grants_dict(db: Session, agent_ids: list[int]) -> dict[int, dict[str, bool]]:
+    """`grants_dict`, but for many agents in one query.
+
+    The bulk presence endpoint (Task 12) needs per-agent capability grants for
+    a whole fleet without issuing one `AgentCapabilityGrant` SELECT per agent.
+    Every id in `agent_ids` is present in the result (mapped to `{}` if it has
+    no grant rows) so callers can index it unconditionally rather than
+    special-casing a missing key.
+    """
+    result: dict[int, dict[str, bool]] = {agent_id: {} for agent_id in agent_ids}
+    if not agent_ids:
+        return result
+    for g in db.execute(
+        select(AgentCapabilityGrant).where(AgentCapabilityGrant.agent_id.in_(agent_ids))
+    ).scalars():
+        result.setdefault(g.agent_id, {})[g.capability] = g.enabled
+    return result
+
+
 def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
     """Descending-confidence match: MAC -> hostname (spec §3.3).
 
@@ -263,6 +283,53 @@ async def is_agent_online(agent_id: int) -> bool:
     if r is None:
         return False
     return bool(await r.exists(_presence_key(agent_id)))
+
+
+def _offline_presence() -> dict[str, Any]:
+    return {"online": False, "connected_since": None}
+
+
+async def bulk_presence(agent_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """`is_agent_online`, but for a whole fleet in one Redis round trip.
+
+    The bulk presence REST endpoint (Task 12) must not do one `EXISTS`/`GET`
+    per agent — this issues a single `MGET` across every agent's
+    `agent:presence:{id}` key instead. Every id in `agent_ids` is present in
+    the result, mapped to `{"online": bool, "connected_since": datetime |
+    None}`: a missing or TTL-expired key (never connected, or the connection
+    dropped without a fresh heartbeat) resolves to `online=False,
+    connected_since=None`, exactly as a single `is_agent_online` call would
+    for that agent — and a Redis-unavailable outcome degrades every agent to
+    that same offline default, mirroring `is_agent_online`'s own
+    degrade-gracefully contract rather than raising or partially answering.
+    """
+    if not agent_ids:
+        return {}
+
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return {agent_id: _offline_presence() for agent_id in agent_ids}
+
+    keys = [_presence_key(agent_id) for agent_id in agent_ids]
+    raw_values = await r.mget(keys)
+
+    result: dict[int, dict[str, Any]] = {}
+    for agent_id, raw in zip(agent_ids, raw_values, strict=True):
+        if raw is None:
+            result[agent_id] = _offline_presence()
+            continue
+        connected_since: datetime | None = None
+        try:
+            payload = json.loads(raw)
+            connected_at = payload.get("connected_at")
+            if connected_at:
+                connected_since = datetime.fromisoformat(connected_at)
+        except (TypeError, ValueError):
+            _logger.warning("agent %s: malformed presence payload dropped", agent_id)
+        result[agent_id] = {"online": True, "connected_since": connected_since}
+    return result
 
 
 async def refresh_presence_heartbeat(db: Session, agent_id: int, worker: str) -> None:

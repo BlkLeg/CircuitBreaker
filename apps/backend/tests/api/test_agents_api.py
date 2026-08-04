@@ -1,4 +1,21 @@
+import json
+from unittest.mock import AsyncMock
+
 import pytest
+
+
+def _redis_with_presence(presence_by_key: dict[str, dict]):
+    """Fake Redis client whose `mget` resolves each key against
+    `presence_by_key` (agent:presence:{id} -> payload dict), independent of
+    the order the caller passes keys in — the bulk endpoint queries the DB
+    for its agent id order, which isn't test-controlled."""
+    redis_client = AsyncMock()
+
+    async def fake_mget(keys):
+        return [json.dumps(presence_by_key[k]) if k in presence_by_key else None for k in keys]
+
+    redis_client.mget.side_effect = fake_mget
+    return redis_client
 
 
 @pytest.mark.asyncio
@@ -427,3 +444,166 @@ async def test_get_binary_rejects_path_traversal(client, tmp_path, monkeypatch):
 
     resp = await client.get("/api/v1/agents/binary/..%2F..%2Fetc/linux/passwd")
     assert resp.status_code == 404
+
+
+# ── Task 12: bulk presence REST endpoint ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_presence_requires_viewer_auth(client):
+    resp = await client.get("/api/v1/agents/presence")
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_presence_returns_whole_fleet_by_default(client, factories, viewer_headers):
+    agent_a = factories.agent(status="active", hostname="box1")
+    agent_b = factories.agent(status="pending", hostname="box2")
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    ids = {row["agent_id"] for row in resp.json()}
+    assert ids == {agent_a.id, agent_b.id}
+
+
+@pytest.mark.asyncio
+async def test_presence_filters_by_explicit_id_list(client, factories, viewer_headers):
+    agent_a = factories.agent(status="active")
+    factories.agent(status="active")  # not requested — must be excluded
+
+    resp = await client.get(
+        "/api/v1/agents/presence", params={"ids": [agent_a.id]}, headers=viewer_headers
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [row["agent_id"] for row in body] == [agent_a.id]
+
+
+@pytest.mark.asyncio
+async def test_presence_reports_online_true_with_connected_since_from_redis(
+    client, factories, viewer_headers, monkeypatch
+):
+    agent = factories.agent(status="active")
+    connected_at = "2026-08-04T10:00:00+00:00"
+    redis_client = _redis_with_presence(
+        {f"agent:presence:{agent.id}": {"connected_at": connected_at, "worker": "w1"}}
+    )
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["online"] is True
+    from datetime import datetime
+
+    assert datetime.fromisoformat(row["connected_since"]) == datetime.fromisoformat(connected_at)
+
+
+@pytest.mark.asyncio
+async def test_presence_reports_offline_when_presence_key_ttl_expired(
+    client, factories, viewer_headers, monkeypatch
+):
+    agent = factories.agent(status="active")
+    # No entry for this agent's presence key at all — same as having expired.
+    redis_client = _redis_with_presence({})
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["online"] is False
+    assert row["connected_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_presence_reflects_last_seen_at_from_db(
+    client, factories, viewer_headers, monkeypatch
+):
+    from app.core.time import utcnow
+
+    last_seen = utcnow()
+    agent = factories.agent(status="active", last_seen_at=last_seen)
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["last_seen_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_presence_includes_capability_grants(client, factories, viewer_headers, monkeypatch):
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["capabilities"] == {"host_telemetry": True, "remote_probe": False}
+
+
+@pytest.mark.asyncio
+async def test_presence_includes_linked_hardware_summary(
+    client, factories, viewer_headers, monkeypatch
+):
+    hw = factories.hardware(
+        name="rack-1",
+        hostname="rack1.local",
+        ip_address="10.0.0.9",
+        mac_address="aa:bb:cc:dd:ee:ff",
+    )
+    agent = factories.agent(status="active", hardware_id=hw.id)
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["hardware"] == {
+        "id": hw.id,
+        "name": "rack-1",
+        "hostname": "rack1.local",
+        "ip_address": "10.0.0.9",
+        "mac_address": "aa:bb:cc:dd:ee:ff",
+    }
+
+
+@pytest.mark.asyncio
+async def test_presence_hardware_is_null_when_agent_has_no_linked_hardware(
+    client, factories, viewer_headers, monkeypatch
+):
+    agent = factories.agent(status="active")
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    row = next(r for r in resp.json() if r["agent_id"] == agent.id)
+    assert row["hardware"] is None
+
+
+@pytest.mark.asyncio
+async def test_presence_issues_single_mget_regardless_of_fleet_size(
+    client, factories, viewer_headers, monkeypatch
+):
+    """Task 12: a bulk endpoint, not N+1 per-agent Redis reads."""
+    for _ in range(5):
+        factories.agent(status="active")
+    redis_client = _redis_with_presence({})
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 5
+    redis_client.mget.assert_called_once()
+    redis_client.get.assert_not_called()
+    redis_client.exists.assert_not_called()

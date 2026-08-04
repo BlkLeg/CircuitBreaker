@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -192,3 +193,105 @@ async def test_refresh_presence_heartbeat_throttles_postgres_write(
 
     redis_client.setex.assert_called_once()
     assert agent.last_seen_at == original_last_seen  # throttled — no write within 60s
+
+
+# ── Task 12: bulk presence / bulk grants (fleet REST endpoint) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_bulk_presence_reports_online_with_connected_since_for_present_keys(monkeypatch):
+    connected_at = "2026-08-04T10:00:00+00:00"
+    redis_client = AsyncMock()
+
+    async def fake_mget(keys):
+        store = {"agent:presence:5": json.dumps({"connected_at": connected_at, "worker": "w1"})}
+        return [store.get(k) for k in keys]
+
+    redis_client.mget.side_effect = fake_mget
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    result = await svc.bulk_presence([5])
+
+    assert result == {5: {"online": True, "connected_since": datetime.fromisoformat(connected_at)}}
+
+
+@pytest.mark.asyncio
+async def test_bulk_presence_reports_offline_for_missing_or_ttl_expired_keys(monkeypatch):
+    redis_client = AsyncMock()
+    redis_client.mget.side_effect = lambda keys: [None for _ in keys]
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    result = await svc.bulk_presence([5, 6])
+
+    assert result == {
+        5: {"online": False, "connected_since": None},
+        6: {"online": False, "connected_since": None},
+    }
+
+
+@pytest.mark.asyncio
+async def test_bulk_presence_uses_single_mget_call_not_n_plus_1(monkeypatch):
+    redis_client = AsyncMock()
+    redis_client.mget.side_effect = lambda keys: [None for _ in keys]
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=redis_client))
+
+    await svc.bulk_presence([1, 2, 3, 4])
+
+    redis_client.mget.assert_called_once()
+    (keys,), _kwargs = redis_client.mget.call_args
+    assert set(keys) == {
+        "agent:presence:1",
+        "agent:presence:2",
+        "agent:presence:3",
+        "agent:presence:4",
+    }
+    redis_client.get.assert_not_called()
+    redis_client.exists.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bulk_presence_all_offline_when_redis_unavailable(monkeypatch):
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    result = await svc.bulk_presence([5, 6])
+
+    assert result == {
+        5: {"online": False, "connected_since": None},
+        6: {"online": False, "connected_since": None},
+    }
+
+
+@pytest.mark.asyncio
+async def test_bulk_presence_empty_input_returns_empty_dict_without_calling_redis(monkeypatch):
+    get_redis = AsyncMock()
+    monkeypatch.setattr("app.core.redis.get_redis", get_redis)
+
+    result = await svc.bulk_presence([])
+
+    assert result == {}
+    get_redis.assert_not_called()
+
+
+def test_bulk_grants_dict_maps_capability_grants_per_agent(db_session, factories):
+    agent_a = factories.agent(status="active")
+    agent_b = factories.agent(status="active")
+    factories.agent_capability_grant(agent_a, capability="host_telemetry", enabled=True)
+    factories.agent_capability_grant(agent_a, capability="remote_probe", enabled=False)
+    factories.agent_capability_grant(agent_b, capability="local_discovery", enabled=True)
+
+    result = svc.bulk_grants_dict(db_session, [agent_a.id, agent_b.id])
+
+    assert result == {
+        agent_a.id: {"host_telemetry": True, "remote_probe": False},
+        agent_b.id: {"local_discovery": True},
+    }
+
+
+def test_bulk_grants_dict_empty_for_agent_with_no_grants(db_session, factories):
+    agent = factories.agent(status="pending")
+
+    assert svc.bulk_grants_dict(db_session, [agent.id]) == {agent.id: {}}
+
+
+def test_bulk_grants_dict_empty_list_returns_empty_dict(db_session):
+    assert svc.bulk_grants_dict(db_session, []) == {}

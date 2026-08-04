@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
 from sqlalchemy import select
@@ -10,16 +10,18 @@ from sqlalchemy.orm import Session
 
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
-from app.db.models import Agent, AgentEvent, User
+from app.db.models import Agent, AgentEvent, Hardware, User
 from app.db.session import get_db
 from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_DISCONNECT, TYPE_UPDATE
 from app.schemas.agents import (
     AgentEventRead,
     AgentPatch,
+    AgentPresenceRead,
     AgentRead,
     AgentSummary,
     ApproveRequest,
     CapabilitiesUpdateRequest,
+    HardwareSummary,
     InstallCommandResponse,
     PairingLookupRequest,
     PairingLookupResponse,
@@ -63,6 +65,60 @@ def get_install_command(
 
     server_url = f"{request.url.scheme}://{request.url.netloc}"
     return agent_install.build_install_command(db, server_url)
+
+
+@router.get("/presence", response_model=list[AgentPresenceRead])
+async def get_agents_presence(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+    ids: Annotated[list[int] | None, Query()] = None,
+) -> Any:
+    """Bulk online/offline + grants + linked-hardware summary, one request for
+    the whole fleet (or an explicit `ids` list) — what `AgentsPage` (Task 14)
+    needs to render its table without an N+1 per-agent call.
+
+    Declared before "/{agent_id}" so "presence" isn't parsed as an agent id,
+    same as "/pending" and "/install-command" above.
+
+    `ids=[]` (present but empty) intentionally returns no rows, distinct from
+    omitting `ids` entirely (whole fleet) — mirrors monitor.py's
+    target_summary/list_target_summaries `target_ids` convention.
+    """
+    if ids is not None and not ids:
+        return []
+
+    stmt = select(Agent)
+    if ids is not None:
+        stmt = stmt.where(Agent.id.in_(ids))
+    agents = list(db.execute(stmt).scalars())
+    agent_ids = [agent.id for agent in agents]
+
+    presence = await agent_registry.bulk_presence(agent_ids)
+    grants = agent_registry.bulk_grants_dict(db, agent_ids)
+
+    hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
+    hardware_by_id: dict[int, Hardware] = {}
+    if hardware_ids:
+        hardware_by_id = {
+            hw.id: hw
+            for hw in db.execute(select(Hardware).where(Hardware.id.in_(hardware_ids))).scalars()
+        }
+
+    return [
+        AgentPresenceRead(
+            agent_id=agent.id,
+            online=presence[agent.id]["online"],
+            connected_since=presence[agent.id]["connected_since"],
+            last_seen_at=agent.last_seen_at,
+            capabilities=grants[agent.id],
+            hardware=(
+                HardwareSummary.model_validate(hardware_by_id[agent.hardware_id])
+                if agent.hardware_id in hardware_by_id
+                else None
+            ),
+        )
+        for agent in agents
+    ]
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
