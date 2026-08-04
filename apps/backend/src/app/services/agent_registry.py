@@ -54,20 +54,27 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
     specs/2026-07-26-cb-agent-design.md §4.6: "the agent reports its version
     in `hello`; the UI shows which agents are behind").
 
-    Only overwrites a field when the hello actually supplied a value for it —
-    an old-shaped or partial hello payload (every `HelloPayload` field is
-    optional) must never blank out data recorded at enrollment or on a prior
-    hello. Caller is responsible for the commit/flush.
+    Only overwrites a field when the hello payload actually *included* it —
+    gated on presence (`payload.model_fields_set`), not truthiness. An
+    old-shaped or partial hello payload (every `HelloPayload` field is
+    optional) omits fields it doesn't know about, and those must never blank
+    out data recorded at enrollment or on a prior hello. Conversely, a hello
+    that explicitly sends a falsy value — e.g. `"primary_macs": []` because
+    the device now has zero up network interfaces — must persist that value;
+    checking truthiness instead of presence would make that update
+    unrepresentable, since an omitted key and an explicit `[]` both parse to
+    the same default. Caller is responsible for the commit/flush.
     """
-    if payload.os is not None:
+    fields_set = payload.model_fields_set
+    if "os" in fields_set:
         agent.os = payload.os
-    if payload.os_version is not None:
+    if "os_version" in fields_set:
         agent.os_version = payload.os_version
-    if payload.arch is not None:
+    if "arch" in fields_set:
         agent.arch = payload.arch
-    if payload.agent_version is not None:
+    if "agent_version" in fields_set:
         agent.agent_version = payload.agent_version
-    if payload.primary_macs:
+    if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
 
 

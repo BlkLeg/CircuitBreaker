@@ -110,6 +110,59 @@ def test_link_persists_hello_metadata_onto_agent_row(db_session, ws_client):
     assert refreshed.primary_macs == ["aa:bb:cc:dd:ee:ff"]
 
 
+def test_link_explicit_empty_primary_macs_blanks_stored_value(db_session, ws_client):
+    """A hello that explicitly sends `"primary_macs": []` (field genuinely
+    present in the payload, e.g. the device now has zero up network
+    interfaces) must overwrite a previously-stored non-empty MAC list —
+    presence, not truthiness, gates the update."""
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    with SessionLocal() as setup_db:
+        row = setup_db.get(Agent, agent.id)
+        row.primary_macs = ["aa:bb:cc:dd:ee:ff"]
+        setup_db.commit()
+
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"primary_macs": []})
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    assert db_session.get(Agent, agent.id).primary_macs == []
+
+
+def test_link_omitted_primary_macs_leaves_stored_value_untouched(db_session, ws_client):
+    """A hello that omits `primary_macs` entirely (an old-shaped agent, or
+    today's real hellos that don't report it) must leave the previously
+    stored MAC list alone — distinct from explicitly sending `[]`."""
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    with SessionLocal() as setup_db:
+        row = setup_db.get(Agent, agent.id)
+        row.primary_macs = ["aa:bb:cc:dd:ee:ff"]
+        setup_db.commit()
+
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.3.2"})
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    assert db_session.get(Agent, agent.id).primary_macs == ["aa:bb:cc:dd:ee:ff"]
+
+
 def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
     """The row tracks the *latest* reported version across separate link
     sessions — an agent that self-updates between connects must not leave
