@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -695,5 +696,359 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	}
 	if reExecCalls != 0 {
 		t.Errorf("reExec called %d times, want 0 — a failed rollback must not re-exec into whatever partial state resulted", reExecCalls)
+	}
+}
+
+// --- Task 29: self-performing `cb-agent uninstall` -----------------------
+
+// TestRequireRoot covers the "non-root invocation refuses with a clear
+// error" requirement directly, without needing the test process to actually
+// run as either uid — euid is passed in rather than read from the real
+// process, exactly the same "inject the identity, don't rely on the real
+// one" approach TestAuditStateDir_OwnershipMismatchFailsLoudly next door
+// uses.
+func TestRequireRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		euid    int
+		wantErr bool
+	}{
+		{name: "root (euid 0) is permitted", euid: 0, wantErr: false},
+		{name: "non-root euid refuses", euid: 1000, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := requireRoot(tt.euid)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("requireRoot(%d) error = %v, want error presence = %v", tt.euid, err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "root") {
+				t.Errorf("requireRoot(%d) error = %q, want it to mention root", tt.euid, err)
+			}
+		})
+	}
+}
+
+// fakeSystemctl builds a systemctlRunner test double that records every
+// invocation (in order) into calls, and fails invocations for which
+// shouldFail (nil means "never fail") returns true — the fake-systemctl
+// harness the brief asks for, standing in for a real systemd (which unit
+// tests must never touch).
+func fakeSystemctl(calls *[][]string, shouldFail func(args []string) bool) systemctlRunner {
+	return func(args ...string) error {
+		*calls = append(*calls, append([]string(nil), args...))
+		if shouldFail != nil && shouldFail(args) {
+			return errors.New("fake systemctl failure")
+		}
+		return nil
+	}
+}
+
+// seedUninstallFootprint builds a temp-directory stand-in for
+// defaultUninstallPaths — a unit file, binary, and its ".previous" update-
+// swap backup (plain files), plus a config dir containing only this
+// agent's own agent.toml (so it comes out empty and is itself removable —
+// TestPerformUninstall_ConfigDirCoLocatedWithServerFilesLeftIntact below
+// covers the opposite, populated case) and a state dir (populated the way
+// Task 30's auditStateDir expects: device.key/grants.json/status.json
+// directly under it, plus a spool/ subdirectory) — so performUninstall's
+// "remove the whole state dir" behavior is exercised against a realistic
+// footprint, not just an empty directory.
+func seedUninstallFootprint(t *testing.T) uninstallPaths {
+	t.Helper()
+	root := t.TempDir()
+
+	unitFile := filepath.Join(root, "cb-agent.service")
+	if err := os.WriteFile(unitFile, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatalf("seed unit file: %v", err)
+	}
+	binary := filepath.Join(root, "cb-agent")
+	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	previousBinary := binary + ".previous"
+	if err := os.WriteFile(previousBinary, []byte("old binary"), 0o755); err != nil {
+		t.Fatalf("seed previous binary: %v", err)
+	}
+	configDir := filepath.Join(root, "circuit-breaker")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("seed config dir: %v", err)
+	}
+	configFile := filepath.Join(configDir, "agent.toml")
+	if err := os.WriteFile(configFile, []byte("server_url = \"\"\n"), 0o644); err != nil {
+		t.Fatalf("seed agent.toml: %v", err)
+	}
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "spool"), 0o755); err != nil {
+		t.Fatalf("seed state dir: %v", err)
+	}
+	for _, name := range sensitiveAuditFiles {
+		if err := os.WriteFile(filepath.Join(stateDir, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	return uninstallPaths{
+		unitFile:       unitFile,
+		binary:         binary,
+		previousBinary: previousBinary,
+		configFile:     configFile,
+		configDir:      configDir,
+		stateDir:       stateDir,
+	}
+}
+
+// TestPerformUninstall_RemovesExpectedPathsAndReloadsSystemd is this task's
+// core requirement: "root invocation removes the expected unit/binary/
+// config/state paths and reloads systemd". Root itself is never exercised
+// here (requireRoot is the gate for that, tested separately) — this proves
+// the actual removal logic, temp-directory paths standing in for the real
+// root-owned /etc and /usr/local/bin locations. Because seedUninstallFootprint's
+// configDir contains only agent.toml, removing it empties the directory, so
+// this also covers configDir itself being removed once nothing but this
+// agent's own file was in it (the non-co-located case).
+func TestPerformUninstall_RemovesExpectedPathsAndReloadsSystemd(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if !result.DisabledUnit {
+		t.Errorf("DisabledUnit = false (err=%v), want true", result.DisableErr)
+	}
+	if !result.ReloadedDaemon {
+		t.Errorf("ReloadedDaemon = false (err=%v), want true", result.ReloadErr)
+	}
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none", result.RemoveErrs)
+	}
+
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v", result.Removed, wantRemoved)
+	}
+
+	for _, path := range wantRemoved {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("stat %s after performUninstall = %v, want IsNotExist", path, err)
+		}
+	}
+
+	wantCalls := [][]string{
+		{"disable", "--now", uninstallUnitName},
+		{"daemon-reload"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("systemctl calls = %v, want %v (disable-before-remove, reload last)", calls, wantCalls)
+	}
+}
+
+// TestPerformUninstall_ConfigDirCoLocatedWithServerFilesLeftIntact is the
+// regression test for this round's Critical finding: on a host where
+// cb-agent monitors the CircuitBreaker server itself, /etc/circuit-breaker
+// also holds the server's own config.toml and circuit-breaker.env (the
+// latter holding CB_VAULT_KEY, CB_DB_URL, NATS_AUTH_TOKEN — see
+// packaging/postinstall.sh and apps/backend/src/app/core/config_toml.py).
+// Uninstalling cb-agent must remove only its own agent.toml, must leave
+// configDir and every other file in it untouched, and must not report this
+// as an error.
+func TestPerformUninstall_ConfigDirCoLocatedWithServerFilesLeftIntact(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	serverConfig := filepath.Join(paths.configDir, "config.toml")
+	if err := os.WriteFile(serverConfig, []byte("[server]\n"), 0o644); err != nil {
+		t.Fatalf("seed server config.toml: %v", err)
+	}
+	serverEnv := filepath.Join(paths.configDir, "circuit-breaker.env")
+	if err := os.WriteFile(serverEnv, []byte("CB_VAULT_KEY=super-secret\n"), 0o600); err != nil {
+		t.Fatalf("seed server circuit-breaker.env: %v", err)
+	}
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none — a non-empty configDir must be a silent no-op, not an error", result.RemoveErrs)
+	}
+
+	if _, err := os.Stat(paths.configFile); !os.IsNotExist(err) {
+		t.Errorf("stat agent.toml after performUninstall = %v, want IsNotExist — this agent's own config must still be removed", err)
+	}
+	for _, p := range []string{paths.configDir, serverConfig, serverEnv} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("stat %s after performUninstall = %v, want it to still exist — must not touch the co-located server's files", p, err)
+		}
+	}
+
+	for _, path := range result.Removed {
+		if path == paths.configDir {
+			t.Errorf("Removed = %v, want configDir absent — it still has the server's own files in it", result.Removed)
+		}
+	}
+
+	data, err := os.ReadFile(serverEnv)
+	if err != nil {
+		t.Fatalf("re-read circuit-breaker.env: %v", err)
+	}
+	if string(data) != "CB_VAULT_KEY=super-secret\n" {
+		t.Errorf("circuit-breaker.env content = %q, want untouched", data)
+	}
+}
+
+// TestPerformUninstall_RemovesPreviousBinaryBackup is the regression test
+// for this round's ".previous" finding: internal/update.Swap leaves a
+// backup at <binary path>+".previous" (NOT under the state dir), and it
+// must be removed by uninstall when present, without affecting anything
+// else.
+func TestPerformUninstall_RemovesPreviousBinaryBackup(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "cb-agent")
+	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	previousBinary := binary + ".previous"
+	if err := os.WriteFile(previousBinary, []byte("old binary"), 0o755); err != nil {
+		t.Fatalf("seed previous binary: %v", err)
+	}
+	paths := uninstallPaths{binary: binary, previousBinary: previousBinary}
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none", result.RemoveErrs)
+	}
+	if _, err := os.Stat(previousBinary); !os.IsNotExist(err) {
+		t.Errorf("stat .previous backup after performUninstall = %v, want IsNotExist", err)
+	}
+	found := false
+	for _, p := range result.Removed {
+		if p == previousBinary {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Removed = %v, want it to include the .previous backup %s", result.Removed, previousBinary)
+	}
+}
+
+// TestPerformUninstall_MissingPathsSkippedWithoutError covers a second
+// uninstall attempt (or a partial/manual removal beforehand) where some or
+// all paths are already gone — that must not be reported as an error, and
+// systemd must still be disabled/reloaded.
+func TestPerformUninstall_MissingPathsSkippedWithoutError(t *testing.T) {
+	root := t.TempDir()
+	paths := uninstallPaths{
+		unitFile:       filepath.Join(root, "does-not-exist", "cb-agent.service"),
+		binary:         filepath.Join(root, "does-not-exist", "cb-agent"),
+		previousBinary: filepath.Join(root, "does-not-exist", "cb-agent.previous"),
+		configFile:     filepath.Join(root, "does-not-exist", "circuit-breaker", "agent.toml"),
+		configDir:      filepath.Join(root, "does-not-exist", "circuit-breaker"),
+		stateDir:       filepath.Join(root, "does-not-exist", "state"),
+	}
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if len(result.Removed) != 0 {
+		t.Errorf("Removed = %v, want none — nothing existed on disk", result.Removed)
+	}
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none — a missing path is not an error", result.RemoveErrs)
+	}
+	if !result.DisabledUnit || !result.ReloadedDaemon {
+		t.Errorf("DisabledUnit=%v ReloadedDaemon=%v, want both true even with nothing to remove", result.DisabledUnit, result.ReloadedDaemon)
+	}
+}
+
+// TestPerformUninstall_SystemctlDisableFailureDoesNotBlockFileRemoval
+// verifies the three phases are independent: a failed `systemctl disable`
+// (unit never installed, or systemd unavailable) must not prevent file
+// removal or the final daemon-reload attempt.
+func TestPerformUninstall_SystemctlDisableFailureDoesNotBlockFileRemoval(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	failDisable := func(args []string) bool { return len(args) > 0 && args[0] == "disable" }
+	result := performUninstall(paths, fakeSystemctl(&calls, failDisable))
+
+	if result.DisabledUnit {
+		t.Error("DisabledUnit = true, want false for a fake systemctl that fails disable")
+	}
+	if result.DisableErr == nil {
+		t.Error("DisableErr = nil, want the fake failure recorded")
+	}
+	if !result.ReloadedDaemon {
+		t.Errorf("ReloadedDaemon = false (err=%v), want true — a failed disable must not block daemon-reload", result.ReloadErr)
+	}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v — a failed disable must not block file removal", result.Removed, wantRemoved)
+	}
+}
+
+// TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval mirrors the
+// previous test for the opposite ordering: a failed final daemon-reload must
+// not retroactively hide the fact that every file was actually removed.
+func TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	failReload := func(args []string) bool { return len(args) > 0 && args[0] == "daemon-reload" }
+	result := performUninstall(paths, fakeSystemctl(&calls, failReload))
+
+	if !result.DisabledUnit {
+		t.Errorf("DisabledUnit = false (err=%v), want true", result.DisableErr)
+	}
+	if result.ReloadedDaemon {
+		t.Error("ReloadedDaemon = true, want false for a fake systemctl that fails daemon-reload")
+	}
+	if result.ReloadErr == nil {
+		t.Error("ReloadErr = nil, want the fake failure recorded")
+	}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v — a failed daemon-reload must not hide successful file removal", result.Removed, wantRemoved)
+	}
+}
+
+// TestResolveUninstallPaths_UsesRunningBinaryPathNotHardcodedLiteral is the
+// regression test for this round's "hardcoded literal instead of
+// os.Executable()" finding: resolveUninstallPaths must resolve the actual
+// running binary's path (here, the go test binary) rather than trusting
+// defaultUninstallPaths.binary's "/usr/local/bin/cb-agent" literal, and
+// previousBinary must be derived from that resolved path.
+func TestResolveUninstallPaths_UsesRunningBinaryPathNotHardcodedLiteral(t *testing.T) {
+	wantExe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable() unavailable in this test environment: %v", err)
+	}
+
+	paths := resolveUninstallPaths()
+
+	if paths.binary != wantExe {
+		t.Errorf("resolveUninstallPaths().binary = %q, want os.Executable() result %q", paths.binary, wantExe)
+	}
+	if paths.binary == defaultUninstallPaths.binary {
+		t.Errorf("resolveUninstallPaths().binary = %q, want it to differ from the hardcoded literal %q in this test environment", paths.binary, defaultUninstallPaths.binary)
+	}
+	wantPrevious := wantExe + ".previous"
+	if paths.previousBinary != wantPrevious {
+		t.Errorf("resolveUninstallPaths().previousBinary = %q, want %q (derived from the resolved binary path)", paths.previousBinary, wantPrevious)
+	}
+
+	// Every other field must still come through from defaultUninstallPaths
+	// untouched.
+	if paths.unitFile != defaultUninstallPaths.unitFile {
+		t.Errorf("resolveUninstallPaths().unitFile = %q, want %q", paths.unitFile, defaultUninstallPaths.unitFile)
+	}
+	if paths.configFile != defaultUninstallPaths.configFile {
+		t.Errorf("resolveUninstallPaths().configFile = %q, want %q", paths.configFile, defaultUninstallPaths.configFile)
+	}
+	if paths.configDir != defaultUninstallPaths.configDir {
+		t.Errorf("resolveUninstallPaths().configDir = %q, want %q", paths.configDir, defaultUninstallPaths.configDir)
+	}
+	if paths.stateDir != defaultUninstallPaths.stateDir {
+		t.Errorf("resolveUninstallPaths().stateDir = %q, want %q", paths.stateDir, defaultUninstallPaths.stateDir)
 	}
 }
