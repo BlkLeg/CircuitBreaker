@@ -9,12 +9,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
+	"circuitbreaker.dev/cb-agent/internal/update"
 )
 
 // TestPrintVersion covers the Task 20 bug fix directly: `cb-agent version`
@@ -448,5 +450,112 @@ func TestCheckOwnership_PerFileClass(t *testing.T) {
 				t.Error("checkOwnership() error = nil, want a loud failure for a gid mismatch")
 			}
 		})
+	}
+}
+
+// --- Task 25: durable update swap and rollback --------------------------
+
+// TestWatchForRollback_NoConfirmationTriggersRollback covers "a restart
+// without hello.ack within 2 minutes triggers rollback to the previous
+// binary". rollbackWindow is shrunk to a few tens of milliseconds (mirrors
+// internal/link's stabilityWindow/rekeyInterval shrink-for-tests pattern)
+// rather than sleeping for real minutes; nothing ever clears the marker, so
+// watchForRollback must conclude the update never confirmed.
+func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
+	orig := rollbackWindow
+	rollbackWindow = 30 * time.Millisecond
+	defer func() { rollbackWindow = orig }()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cb-agent")
+	if err := os.WriteFile(target, []byte("new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.WriteMarker(dir, "0.6.0"); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	reExecCalls := 0
+	reExec := func() error {
+		reExecCalls++
+		return nil
+	}
+
+	watchForRollback(dir, target, "0.6.0", reExec)
+
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "old binary" {
+		t.Errorf("target contents = (%q, %v), want rolled back to %q", got, err, "old binary")
+	}
+	if _, present, _ := update.ReadMarker(dir); present {
+		t.Error("marker still present after rollback, want cleared")
+	}
+	version, present, err := update.ReadRollbackReport(dir)
+	if err != nil || !present || version != "0.6.0" {
+		t.Errorf("ReadRollbackReport() = (%q, %v, %v), want (\"0.6.0\", true, nil) — the fresh process re-exec'd below needs this to report update.status(rolled_back)", version, present, err)
+	}
+	if reExecCalls != 1 {
+		t.Errorf("reExec called %d times, want exactly 1", reExecCalls)
+	}
+}
+
+// TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary covers "a
+// restart that gets hello.ack within 2 minutes retains the new binary and
+// clears the marker". A goroutine simulates onConnected's hello.ack-gated
+// confirmation (Task 4) by clearing the marker partway through the window;
+// watchForRollback must observe that and leave the new binary and backup
+// alone, never re-exec.
+func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
+	orig := rollbackWindow
+	rollbackWindow = 150 * time.Millisecond
+	defer func() { rollbackWindow = orig }()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cb-agent")
+	if err := os.WriteFile(target, []byte("new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := update.WriteMarker(dir, "0.7.0"); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	confirmed := make(chan struct{})
+	go func() {
+		// Well inside the 150ms window — simulates onConnected firing from
+		// an accepted hello.ack shortly after the daemon reconnects.
+		time.Sleep(20 * time.Millisecond)
+		if err := update.ClearMarker(dir); err != nil {
+			t.Errorf("ClearMarker() error = %v", err)
+		}
+		close(confirmed)
+	}()
+
+	reExecCalls := 0
+	reExec := func() error {
+		reExecCalls++
+		return nil
+	}
+
+	watchForRollback(dir, target, "0.7.0", reExec)
+	<-confirmed // watchForRollback already outlasted this by construction; just for cleanliness.
+
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "new binary" {
+		t.Errorf("target contents = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", got, err, "new binary")
+	}
+	if _, present, _ := update.ReadMarker(dir); present {
+		t.Error("marker still present, want cleared by the simulated onConnected confirmation")
+	}
+	if _, present, _ := update.ReadRollbackReport(dir); present {
+		t.Error("rollback report present, want none — the update confirmed, no rollback happened")
+	}
+	if reExecCalls != 0 {
+		t.Errorf("reExec called %d times, want 0 (a confirmed update must not re-exec)", reExecCalls)
 	}
 }

@@ -27,6 +27,63 @@ import (
 // AgentVersion is overridden at build time via -ldflags "-X main.AgentVersion=1.2.3".
 var AgentVersion = "0.0.0-dev"
 
+// rollbackWindow is how long runDaemon, after resuming with a pending update
+// marker (internal/update.WriteMarker), waits for a successful hello.ack-
+// gated OnConnected (Task 4) to clear that marker before concluding the
+// update never confirmed and rolling back to the previous binary. A var, not
+// a const, so tests can shrink it rather than waiting out the production
+// value — mirrors internal/link's stabilityWindow/rekeyInterval pattern.
+var rollbackWindow = 2 * time.Minute
+
+// watchForRollback waits up to rollbackWindow for the update marker naming
+// pendingVersion to be cleared — which onConnected (wired in runDaemon)
+// does exactly once, the moment a post-update connection reaches an
+// accepted hello.ack (Task 4's OnConnected gating, not merely a completed
+// Noise handshake). If the marker is still present and still names
+// pendingVersion once the window elapses, the update never confirmed:
+// watchForRollback restores the previous binary, persists a rollback report
+// for the next connection to send (this process has no live link to report
+// over — that's exactly why it's rolling back), clears the marker, and
+// re-execs via reExec.
+//
+// reExec is a parameter rather than a direct syscall.Exec call so tests can
+// observe a rollback decision without actually replacing the test binary's
+// process image; runDaemon passes a closure that does call syscall.Exec.
+func watchForRollback(stateDir, binaryPath, pendingVersion string, reExec func() error) {
+	time.Sleep(rollbackWindow)
+
+	v, stillPresent, err := update.ReadMarker(stateDir)
+	if err != nil {
+		log.Printf("cb-agent: %v", err)
+		return
+	}
+	if !stillPresent || v != pendingVersion {
+		// Cleared by onConnected (confirmed) or superseded by a newer
+		// update's marker — either way, this window's job is done.
+		return
+	}
+
+	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, rollbackWindow)
+	if err := update.Rollback(binaryPath); err != nil {
+		log.Printf("cb-agent: rollback failed: %v", err)
+		return
+	}
+	// This process has no live /link connection to report the rollback over
+	// (that's precisely why it's rolling back) — persist it so the process
+	// re-exec'd below, once it reconnects, sends the
+	// update.status(rolled_back) frame (see
+	// internal/update.WriteRollbackReport's doc comment).
+	if err := update.WriteRollbackReport(stateDir, pendingVersion); err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+	if err := update.ClearMarker(stateDir); err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+	if err := reExec(); err != nil {
+		log.Printf("cb-agent: re-exec after rollback failed: %v", err)
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		runDaemon()
@@ -115,26 +172,9 @@ func runDaemon() {
 
 	if pendingVersion, present, _ := update.ReadMarker(config.StateDir()); present {
 		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
-		go func() {
-			time.Sleep(2 * time.Minute)
-			if v, stillPresent, _ := update.ReadMarker(config.StateDir()); stillPresent && v == pendingVersion {
-				log.Printf("cb-agent: update to %s did not confirm within 2 minutes — rolling back", pendingVersion)
-				if err := update.Rollback(binaryPath); err != nil {
-					log.Printf("cb-agent: rollback failed: %v", err)
-					return
-				}
-				// This process has no live /link connection to report the
-				// rollback over (that's precisely why it's rolling back) —
-				// persist it so the process re-exec'd below, once it
-				// reconnects, sends the update.status(rolled_back) frame
-				// (see internal/update.WriteRollbackReport's doc comment).
-				if err := update.WriteRollbackReport(config.StateDir(), pendingVersion); err != nil {
-					log.Printf("cb-agent: %v", err)
-				}
-				update.ClearMarker(config.StateDir())
-				syscall.Exec(binaryPath, os.Args, os.Environ()) //nolint:errcheck // best-effort re-exec after rollback
-			}
-		}()
+		go watchForRollback(config.StateDir(), binaryPath, pendingVersion, func() error {
+			return syscall.Exec(binaryPath, os.Args, os.Environ())
+		})
 	}
 
 	var confirmOnce sync.Once
@@ -191,13 +231,29 @@ func runDaemon() {
 			}
 			return err
 		}
-		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+		// Task 25: the rollback marker must be durably written *before* the
+		// binary is actually replaced, not after. If a crash lands between
+		// these two steps, the marker still correctly names the version
+		// that was about to be installed — a recoverable state, since the
+		// swap never ran and there's nothing to roll back. Writing the
+		// marker only after a successful Swap would instead let a crash in
+		// that window leave a replaced (and possibly broken) binary running
+		// with no marker at all — no rollback safety net.
+		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+			os.Remove(tmpPath)
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
 			}
 			return err
 		}
-		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+			// The swap never happened — clear the marker rather than
+			// leaving a stale one that would (harmlessly, but pointlessly)
+			// send a future restart into a rollback attempt against a
+			// backup that was never created.
+			if clearErr := update.ClearMarker(config.StateDir()); clearErr != nil {
+				log.Printf("cb-agent: %v", clearErr)
+			}
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
 			}
