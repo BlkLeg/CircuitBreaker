@@ -8,6 +8,7 @@ this module sits directly behind.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -53,6 +54,84 @@ def count_pending_agents(db: Session) -> int:
     return db.execute(
         select(func.count()).select_from(Agent).where(Agent.status == "pending")
     ).scalar_one()
+
+
+_PENDING_ENROLLMENT_LOCK_KEY = "agent_enroll_pending_cap_lock"
+_PENDING_ENROLLMENT_LOCK_TTL_SECONDS = 5
+_PENDING_ENROLLMENT_LOCK_RETRY_ATTEMPTS = 10
+_PENDING_ENROLLMENT_LOCK_RETRY_DELAY_SECONDS = 0.05
+
+
+async def acquire_pending_enrollment_lock() -> str | None:
+    """Short-lived, cross-worker Redis lock serializing the
+    count_pending_agents-then-create_pending_agent-then-commit sequence in
+    ws_agents.enroll_stream's concurrent-pending-enrollment cap.
+
+    Without this, two /enroll connections landing on different worker
+    processes (each opening its own `SessionLocal()`) can race: both read
+    `count_pending_agents` under Postgres's default READ COMMITTED
+    isolation before either commits its INSERT, both see a count under
+    `MAX_CONCURRENT_PENDING_AGENTS`, and both insert — overshooting the cap.
+    That's a genuine cross-transaction TOCTOU, not something a single
+    session's isolation level protects against on its own.
+
+    Deliberately NOT a live Redis gauge (INCR on create, DECR on
+    approve/reject/revoke/expire-stale): that would need release hooks
+    threaded into every one of those code paths — scattered across
+    agents.py's approval/rejection endpoints and the expiry worker — to
+    avoid silently drifting from the DB's actual pending count over time.
+    This lock only ever wraps the brief "count, then insert, then commit"
+    sequence; the DB row count stays the sole source of truth, and Redis is
+    purely a mutual-exclusion primitive around reading it consistently —
+    same "reuse a proven primitive, don't invent a new counter mechanism"
+    reasoning as `check_and_record_ws_attempt` reusing the pairing-miss
+    lockout's counter pattern.
+
+    Retries briefly with a short delay: contention here should be rare
+    (needs near-simultaneous new-device enrollments) and short-lived (the
+    critical section is a handful of DB statements, not the whole Noise
+    handshake). Returns the lock's random token — needed so only the
+    holder that actually acquired it can release it, via
+    `release_pending_enrollment_lock` — or `None` if it couldn't be
+    acquired within the retry budget, or if Redis is unreachable. Callers
+    must treat `None` the same as "at capacity" and refuse the enrollment
+    (fail closed, matching `check_and_record_ws_attempt`'s stance) rather
+    than proceeding without the guard.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return None
+
+    token = uuid.uuid4().hex
+    for _ in range(_PENDING_ENROLLMENT_LOCK_RETRY_ATTEMPTS):
+        acquired = await r.set(
+            _PENDING_ENROLLMENT_LOCK_KEY,
+            token,
+            nx=True,
+            ex=_PENDING_ENROLLMENT_LOCK_TTL_SECONDS,
+        )
+        if acquired:
+            return token
+        await asyncio.sleep(_PENDING_ENROLLMENT_LOCK_RETRY_DELAY_SECONDS)
+    return None
+
+
+async def release_pending_enrollment_lock(token: str) -> None:
+    """Release the lock from `acquire_pending_enrollment_lock`, but only if
+    it's still this caller's — same atomic compare-and-delete Lua script as
+    `deregister_agent_connection`'s `_COMPARE_AND_DELETE_LUA` below, guarding
+    against releasing a different holder's lock in the (TTL-bounded, rare)
+    case ours already expired and someone else acquired it in the meantime.
+    """
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    if r is None:
+        return
+    script = r.register_script(_COMPARE_AND_DELETE_LUA)
+    await script(keys=[_PENDING_ENROLLMENT_LOCK_KEY], args=[token])
 
 
 def get_agent(db: Session, agent_id: int) -> Agent | None:

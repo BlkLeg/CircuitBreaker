@@ -170,6 +170,7 @@ async def enroll_stream(websocket: WebSocket) -> None:
             )
             await websocket.close(code=1000)
             return
+        pending_lock_token = None
         if existing is not None and existing.status == "pending":
             agent = existing
             newly_created = False
@@ -178,8 +179,24 @@ async def enroll_stream(websocket: WebSocket) -> None:
             # genuinely-new-row path — a device_pk already pending (the
             # branch above) is reusing an existing row, not adding to the
             # count, so it's never blocked by this check.
+            #
+            # The count-then-insert-then-commit sequence below is wrapped in
+            # a cross-worker Redis lock (fix round, Important #1): two
+            # /enroll connections on different workers could otherwise both
+            # read `count_pending_agents` before either committed, both see
+            # a count under the cap, and both insert — overshooting it. The
+            # lock is held until *after* `db.commit()` further down, not
+            # just past the count check, since the race is only actually
+            # closed once the new row is durably visible to the next
+            # session's count query — see acquire_pending_enrollment_lock's
+            # docstring for why this is a lock, not a Redis gauge.
+            pending_lock_token = await agent_registry.acquire_pending_enrollment_lock()
+            if pending_lock_token is None:
+                await websocket.close(code=1013)
+                return
             pending_count = agent_registry.count_pending_agents(db)
             if pending_count >= agent_registry.MAX_CONCURRENT_PENDING_AGENTS:
+                await agent_registry.release_pending_enrollment_lock(pending_lock_token)
                 await websocket.close(code=1013)
                 return
             agent = agent_registry.create_pending_agent(
@@ -197,6 +214,8 @@ async def enroll_stream(websocket: WebSocket) -> None:
             )
             newly_created = True
         db.commit()
+        if pending_lock_token is not None:
+            await agent_registry.release_pending_enrollment_lock(pending_lock_token)
         agent_id = agent.id
         code = await agent_enrollment.mint_pairing_code(agent_id)
 

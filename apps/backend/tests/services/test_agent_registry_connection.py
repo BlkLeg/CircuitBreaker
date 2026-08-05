@@ -44,6 +44,16 @@ class _FakeRedisClient:
         self._bus._store[key] = (time.monotonic() + ttl, value)
         return True
 
+    async def set(self, key: str, value: str, nx: bool = False, ex: float | None = None) -> bool:
+        """Backs acquire_pending_enrollment_lock's SET NX EX. Checks
+        expiry-aware existence for `nx` the same way `get`/`exists` do below,
+        so a key past its TTL is correctly treated as absent."""
+        if nx and await self.exists(key):
+            return False
+        expires_at = time.monotonic() + ex if ex is not None else float("inf")
+        self._bus._store[key] = (expires_at, value)
+        return True
+
     async def get(self, key: str) -> str | None:
         entry = self._bus._store.get(key)
         if entry is None:
@@ -386,3 +396,164 @@ async def test_claim_agent_control_frames_returns_immediately_when_redis_unavail
     frames = [frame async for frame in svc.claim_agent_control_frames(5, worker_id="worker-A")]
 
     assert frames == []
+
+
+# ── Task 21 fix round (Important #1): concurrent-pending-enrollment lock ──────
+#
+# count_pending_agents(db) + create_pending_agent(db, ...) used to run as two
+# independent statements with no lock — under concurrent /enroll connections
+# on different workers, each opening its own SessionLocal(), several could
+# all observe a count under MAX_CONCURRENT_PENDING_AGENTS before any of them
+# committed, and all insert, overshooting the cap. acquire_pending_enrollment_
+# lock/release_pending_enrollment_lock close that window with a short-lived,
+# cross-worker Redis lock (SET NX EX + the same compare-and-delete Lua script
+# deregister_agent_connection above already uses).
+
+
+@pytest.mark.asyncio
+async def test_acquire_pending_enrollment_lock_is_mutually_exclusive(monkeypatch):
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    first_token = await svc.acquire_pending_enrollment_lock()
+    assert first_token is not None
+
+    # A second acquire attempt, while the first still holds the lock, must
+    # fail — proving the lock actually excludes concurrent holders rather
+    # than just handing out a token unconditionally. Retries would otherwise
+    # mask this by eventually succeeding once the (much longer) TTL lapses,
+    # so the retry budget is dropped to make this fast and unambiguous.
+    monkeypatch.setattr(svc, "_PENDING_ENROLLMENT_LOCK_RETRY_ATTEMPTS", 1)
+    second_token = await svc.acquire_pending_enrollment_lock()
+    assert second_token is None
+
+
+@pytest.mark.asyncio
+async def test_release_pending_enrollment_lock_frees_it_for_the_next_acquirer(monkeypatch):
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    token = await svc.acquire_pending_enrollment_lock()
+    assert token is not None
+
+    await svc.release_pending_enrollment_lock(token)
+
+    next_token = await svc.acquire_pending_enrollment_lock()
+    assert next_token is not None
+    assert next_token != token
+
+
+@pytest.mark.asyncio
+async def test_release_pending_enrollment_lock_only_releases_own_token(monkeypatch):
+    """Compare-and-delete, not a bare delete: releasing with the wrong token
+    (e.g. a call racing in after this holder's lock already expired and a
+    *different* holder acquired it) must not clear someone else's lock."""
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    real_token = await svc.acquire_pending_enrollment_lock()
+    assert real_token is not None
+
+    await svc.release_pending_enrollment_lock("not-the-real-token")
+
+    monkeypatch.setattr(svc, "_PENDING_ENROLLMENT_LOCK_RETRY_ATTEMPTS", 1)
+    still_held = await svc.acquire_pending_enrollment_lock()
+    assert still_held is None  # the real holder's lock is still in place
+
+
+@pytest.mark.asyncio
+async def test_acquire_pending_enrollment_lock_fails_closed_when_redis_unavailable(monkeypatch):
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    assert await svc.acquire_pending_enrollment_lock() is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_pending_enrollment_attempts_cannot_overshoot_cap_when_locked(
+    monkeypatch, db_session
+):
+    """The actual race the fix closes: several concurrent attempts to
+    create a new pending agent, each its own real DB session (mirroring
+    several /enroll connections on different workers), racing on
+    count_pending_agents + create_pending_agent + commit.
+
+    Genuine OS-thread concurrency, not `asyncio.gather` over coroutines:
+    `SessionLocal` is a *sync* SQLAlchemy session with no `await` between
+    the count and the insert, so under asyncio's single-threaded
+    cooperative scheduling that whole sequence always runs as one
+    uninterruptible block regardless of any lock — `asyncio.gather` alone
+    can never actually interleave it, which would make a test built that
+    way pass even with the lock removed entirely (verified by hand: it
+    does). Real `concurrent.futures` threads give real parallelism instead
+    — psycopg releases the GIL during the actual DB round trip, so two
+    threads' count-then-insert sequences can genuinely race — while the
+    lock's own acquire/release (async, needs the event loop) is dispatched
+    back onto this test's loop via `run_coroutine_threadsafe` from each
+    worker thread.
+    """
+    import secrets
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    bus = _FakeRedisBus()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=bus.client()))
+
+    # Other tests in this suite create pending agents via real committed
+    # SessionLocal() connections that outlive `db_session`'s own per-test
+    # rollback (same reason test_ws_agents_enroll.py's concurrent-pending-cap
+    # tests measure a baseline instead of assuming an empty table) — count
+    # what's already there and cap exactly one above it.
+    baseline_pending = db_session.query(Agent).filter_by(status="pending").count()
+    monkeypatch.setattr(svc, "MAX_CONCURRENT_PENDING_AGENTS", baseline_pending + 1)
+
+    loop = asyncio.get_running_loop()
+
+    def _attempt_new_pending_agent() -> bool:
+        # Runs in a real worker thread — acquire/release are async, so
+        # they're dispatched onto the test's event loop from here. The main
+        # thread must stay free to actually *run* that loop while this
+        # blocks on `.result()`, which is exactly why the outer call below
+        # uses `loop.run_in_executor` (awaited, non-blocking for the main
+        # thread) rather than `ThreadPoolExecutor.map()` directly (blocking
+        # the main thread — and therefore the loop these coroutines need to
+        # run on — would deadlock every worker thread against itself).
+        token = asyncio.run_coroutine_threadsafe(
+            svc.acquire_pending_enrollment_lock(), loop
+        ).result()
+        assert token is not None, "lock should always be acquirable in this test"
+        try:
+            time.sleep(0.05)  # real thread sleep — widen the TOCTOU window on purpose
+            with SessionLocal() as db:
+                if svc.count_pending_agents(db) >= svc.MAX_CONCURRENT_PENDING_AGENTS:
+                    return False
+                svc.create_pending_agent(
+                    db,
+                    device_pk=secrets.token_hex(32),
+                    fingerprint=secrets.token_hex(16),
+                    hostname="race-test-locked",
+                )
+                db.commit()
+                return True
+        finally:
+            asyncio.run_coroutine_threadsafe(
+                svc.release_pending_enrollment_lock(token), loop
+            ).result()
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = await asyncio.gather(
+            *(loop.run_in_executor(executor, _attempt_new_pending_agent) for _ in range(3))
+        )
+
+    assert sum(results) == 1  # exactly one new row — never overshoots the cap
+    assert db_session.query(Agent).filter_by(hostname="race-test-locked").count() == 1
+    # Sanity-checked by hand (not shipped as its own test — asserting a raw
+    # race condition reliably reproduces is inherently timing-dependent and
+    # flaky against a fast local test DB): removing the lock from
+    # `_attempt_new_pending_agent` above and re-running this same
+    # real-thread setup does let multiple concurrent attempts see a
+    # pre-commit count and all insert, overshooting the cap — confirming
+    # the lock (not some other accident of scheduling) is what keeps the
+    # assertion above at exactly 1.

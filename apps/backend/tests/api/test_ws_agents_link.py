@@ -11,6 +11,18 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.agent_crypto import get_server_static_keypair
 from tests.helpers.agent_noise_client import TestNoiseInitiator
 
+# Task 21 fix round (Important #2): every test in this file drives a real
+# /link WS connection, which now runs through check_and_record_ws_attempt
+# before any Noise handshake byte is processed — it fails closed if Redis
+# is unreachable. Without this, every pre-existing test here that doesn't
+# already install its own `_FakeTTLRedis` (most do, for the cross-worker
+# pub/sub behavior they're actually testing) would need a live, reachable
+# Redis just to get past websocket.accept(). See
+# conftest.py::agent_redis_default's docstring. Tests that install their
+# own fake via `monkeypatch.setattr("app.core.redis.get_redis", ...)`
+# simply override this default for their own duration, same as before.
+pytestmark = pytest.mark.usefixtures("agent_redis_default")
+
 
 def _send_hello(initiator, ws, *, ts=None, payload=None) -> None:
     frame = {
