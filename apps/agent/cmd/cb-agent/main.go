@@ -18,6 +18,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
 	"circuitbreaker.dev/cb-agent/internal/update"
 )
@@ -79,6 +80,18 @@ func runDaemon() {
 	}
 	if err := statusWriter.SetReadiness(hostinfo.Collect(AgentVersion).Readiness); err != nil {
 		log.Printf("cb-agent: status: %v", err)
+	}
+
+	// sp is the outbound *data* frame spool (internal/spool) — never
+	// heartbeat/control traffic, see frame.IsDataFrame. Opening it here, at
+	// daemon startup and before the link ever connects, is what makes an
+	// unclean shutdown's persisted backlog recover (spool.Open's load()) and
+	// become visible in `cb-agent status` before this run's first connection
+	// attempt even completes.
+	sp, err := openSpool(cfg, config.StateDir(), statusWriter)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
 	}
 
 	binaryPath, err := os.Executable()
@@ -188,6 +201,12 @@ func runDaemon() {
 		return syscall.Exec(binaryPath, os.Args, os.Environ())
 	}
 
+	onSpoolStats := func(depth int, bytes int64) {
+		if err := statusWriter.SetSpoolStats(depth, bytes); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := link.Run(ctx, link.Options{
@@ -206,10 +225,41 @@ func runDaemon() {
 				log.Printf("cb-agent: %v", err)
 			}
 		},
+		Spool:        sp,
+		OnSpoolStats: onSpoolStats,
+		// DataFrames is left unset: no producer exists yet in Slice 1 (Global
+		// Constraints — the spool stays idle end-to-end until Slice 2+ wires
+		// a real telemetry/probe/discovery collector into it).
 	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// openSpool opens the outbound data-frame spool at stateDir, defaulting its
+// capacity to spool.DefaultCapBytes when cfg leaves SpoolCapBytes at its
+// zero value (no spool_cap_bytes configured in agent.toml), and reports the
+// spool's post-recovery depth/size into statusWriter. spool.Open's load()
+// does the actual unclean-shutdown recovery (internal/spool); calling it
+// here, before the daemon's first link attempt, is what makes that recovery
+// happen at daemon startup rather than never.
+func openSpool(cfg *config.Config, stateDir string, statusWriter *status.Writer) (*spool.Spool, error) {
+	capBytes := cfg.SpoolCapBytes
+	if capBytes <= 0 {
+		capBytes = spool.DefaultCapBytes
+	}
+	sp, err := spool.Open(stateDir, capBytes)
+	if err != nil {
+		return nil, err
+	}
+	size, err := sp.SizeBytes()
+	if err != nil {
+		return nil, err
+	}
+	if err := statusWriter.SetSpoolStats(sp.Len(), size); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	return sp, nil
 }
 
 func runVersion() {

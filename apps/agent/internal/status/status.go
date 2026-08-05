@@ -163,10 +163,12 @@ func (w *Writer) SetReadiness(readiness []frame.Readiness) error {
 }
 
 // SetSpoolStats records the outbound spool's current backlog depth (frame
-// count) and size in bytes. Not yet called anywhere in the daemon — the
-// spool has no live wiring into the daemon's data path yet (that's a later
-// task); this method exists so that wiring has an obvious, already-tested
-// place to report into.
+// count) and size in bytes. Called at daemon startup (after spool.Open's
+// unclean-shutdown recovery) and on every subsequent spool mutation via
+// internal/link's Options.OnSpoolStats — see cmd/cb-agent's openSpool and
+// dataFrameSender. Both fields stay at zero in practice today: Slice 1 has
+// no data frame producer, so nothing ever enqueues (Global Constraints —
+// "the spool ... stays idle in heartbeat-only Slice 1 operation").
 func (w *Writer) SetSpoolStats(depth int, bytes int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
