@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Satellite } from 'lucide-react';
 import {
   deleteAgent,
+  getAgent,
+  getAgentsPresence,
   getInstallCommand,
   listAgents,
   lookupPairingCode,
@@ -15,10 +17,29 @@ import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 
 const REFRESH_MS = 30000;
 
+// Short labels for the fleet table's compact "Capabilities" column — mirrors
+// AgentDetailPage's CAPABILITY_LABELS (kept separate/duplicated rather than
+// shared, matching this codebase's existing pattern of per-view capability
+// label maps, e.g. AgentApprovalModal's CAPABILITY_INFO).
+const CAPABILITY_LABELS = {
+  host_telemetry: 'Host telemetry',
+  remote_probe: 'Remote probe',
+  local_discovery: 'Local discovery',
+};
+
+function formatCapabilities(capabilities) {
+  if (!capabilities) return '—';
+  const granted = Object.entries(capabilities)
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => CAPABILITY_LABELS[key] ?? key);
+  return granted.length > 0 ? granted.join(', ') : '—';
+}
+
 export default function AgentsPage() {
   const toast = useToast();
   const [params, setParams] = useSearchParams();
   const [agents, setAgents] = useState([]);
+  const [presenceById, setPresenceById] = useState(() => new Map());
   const [loading, setLoading] = useState(true);
   const [installCommand, setInstallCommand] = useState(null);
   const [pairingInput, setPairingInput] = useState('');
@@ -32,6 +53,15 @@ export default function AgentsPage() {
       .then(({ data }) => setAgents(data))
       .catch(() => toast.error('Could not load agents'))
       .finally(() => setLoading(false));
+
+    // Task 12 bulk presence: online/connected_since/capabilities/hardware for
+    // the whole fleet in one request. Kept on its own promise chain so a
+    // presence hiccup (e.g. Redis briefly unavailable) never blanks the page
+    // — the table just falls back to showing no online/capability data for
+    // that refresh instead of an error.
+    getAgentsPresence()
+      .then(({ data }) => setPresenceById(new Map(data.map((p) => [p.agent_id, p]))))
+      .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -39,6 +69,25 @@ export default function AgentsPage() {
     const interval = setInterval(load, REFRESH_MS);
     return () => clearInterval(interval);
   }, [load]);
+
+  // Live "enrolled" events (Task 10) name only an agent_id — fetch and splice
+  // in the new record immediately rather than waiting up to REFRESH_MS for
+  // the next poll to surface it in the pending banner.
+  const handledEnrollmentsRef = useRef(new Set());
+  useEffect(() => {
+    statuses.forEach((status, agentId) => {
+      if (status.event_type !== 'enrolled') return;
+      if (handledEnrollmentsRef.current.has(agentId)) return;
+      handledEnrollmentsRef.current.add(agentId);
+      getAgent(agentId)
+        .then(({ data }) => {
+          setAgents((prev) => (prev.some((a) => a.id === data.id) ? prev : [data, ...prev]));
+        })
+        .catch(() => {
+          // Best-effort: the next poll tick will pick it up if this fetch fails.
+        });
+    });
+  }, [statuses]);
 
   // Magic-link entry: /agents/enroll?c=<code>
   useEffect(() => {
@@ -55,16 +104,32 @@ export default function AgentsPage() {
   }, []);
 
   const merged = useMemo(() => {
-    if (statuses.size === 0) return agents;
     return agents.map((a) => {
+      const presence = presenceById.get(a.id);
+      let row = presence
+        ? {
+            ...a,
+            online: presence.online,
+            connected_since: presence.connected_since,
+            last_seen_at: presence.last_seen_at ?? a.last_seen_at,
+            capabilities: presence.capabilities,
+            hardware: presence.hardware,
+          }
+        : a;
+
       const push = statuses.get(a.id);
-      if (!push) return a;
-      if (push.event_type === 'revoked' || push.event_type === 'rejected') {
-        return { ...a, status: push.event_type };
+      if (push) {
+        if (push.event_type === 'connected') {
+          row = { ...row, online: true };
+        } else if (push.event_type === 'disconnected') {
+          row = { ...row, online: false };
+        } else if (push.event_type === 'revoked' || push.event_type === 'rejected') {
+          row = { ...row, status: push.event_type };
+        }
       }
-      return a;
+      return row;
     });
-  }, [agents, statuses]);
+  }, [agents, presenceById, statuses]);
 
   const pending = merged.filter((a) => a.status === 'pending');
   const others = merged.filter((a) => a.status !== 'pending');
@@ -167,11 +232,15 @@ export default function AgentsPage() {
         <thead>
           <tr>
             <th>Status</th>
+            <th>Online</th>
             <th>Name</th>
             <th>Host</th>
             <th>OS / Arch</th>
             <th>Version</th>
             <th>Last seen</th>
+            <th>Connected since</th>
+            <th>Capabilities</th>
+            <th>Hardware</th>
             <th />
           </tr>
         </thead>
@@ -179,6 +248,15 @@ export default function AgentsPage() {
           {others.map((a) => (
             <tr key={a.id}>
               <td>{a.status}</td>
+              <td>
+                {a.online == null ? (
+                  '—'
+                ) : (
+                  <span className={a.online ? 'agents-page__online' : 'agents-page__offline'}>
+                    {a.online ? 'online' : 'offline'}
+                  </span>
+                )}
+              </td>
               <td>{a.name ?? a.hostname}</td>
               <td>{a.hostname}</td>
               <td>
@@ -186,6 +264,11 @@ export default function AgentsPage() {
               </td>
               <td>{a.agent_version}</td>
               <td>{a.last_seen_at ?? 'never'}</td>
+              <td>
+                {a.online && a.connected_since ? new Date(a.connected_since).toLocaleString() : '—'}
+              </td>
+              <td>{formatCapabilities(a.capabilities)}</td>
+              <td>{a.hardware ? a.hardware.name : '—'}</td>
               <td>
                 {a.status === 'active' && (
                   <button type="button" onClick={() => setRevokeTarget(a)}>
