@@ -40,24 +40,59 @@ func NewDialer(pin string) *websocket.Dialer {
 		return websocket.DefaultDialer
 	}
 	return &websocket.Dialer{
-		Proxy: http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // verified below via VerifyPeerCertificate
-			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				if len(rawCerts) == 0 {
-					return fmt.Errorf("tlsdial: server presented no certificate")
-				}
-				cert, err := x509.ParseCertificate(rawCerts[0])
-				if err != nil {
-					return fmt.Errorf("tlsdial: parse server certificate: %w", err)
-				}
-				sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-				got := base64.StdEncoding.EncodeToString(sum[:])
-				if got != pin {
-					return fmt.Errorf("tlsdial: certificate pin mismatch (got %s, want %s)", got, pin)
-				}
-				return nil
-			},
+		Proxy:           http.ProxyFromEnvironment,
+		TLSClientConfig: pinnedTLSConfig(pin),
+	}
+}
+
+// NewTransport returns an *http.Transport configured for the same TLS trust
+// policy as NewDialer, for callers making plain HTTPS requests (e.g. the
+// update binary download) rather than a websocket upgrade — see
+// internal/update.Download, which previously bypassed this pinning entirely
+// via a bare http.Get.
+//
+// When pin is empty, TLSClientConfig is left nil, which makes the transport
+// fall back to Go's standard system CA trust store — the same "public"
+// tls_mode trust NewDialer's pin == "" branch gets via
+// websocket.DefaultDialer's underlying transport.
+//
+// When pin is non-empty, verification is replaced with the identical exact
+// SPKI-digest match NewDialer's pin != "" branch uses.
+//
+// Both branches set Proxy: http.ProxyFromEnvironment explicitly, matching
+// NewDialer, so HTTPS_PROXY/NO_PROXY are honored the same way for downloads
+// as for the link/enroll websocket connections.
+func NewTransport(pin string) *http.Transport {
+	t := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if pin == "" {
+		return t
+	}
+	t.TLSClientConfig = pinnedTLSConfig(pin)
+	return t
+}
+
+// pinnedTLSConfig builds the tls.Config shared by NewDialer and NewTransport's
+// pin != "" branches: standard chain/hostname verification is disabled in
+// favor of an exact match of the leaf certificate's base64 SHA-256 SPKI
+// digest against pin (see package doc for why — self-signed LAN certs
+// commonly lack a SAN, which the standard verifier rejects outright).
+func pinnedTLSConfig(pin string) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, // verified below via VerifyPeerCertificate
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("tlsdial: server presented no certificate")
+			}
+			cert, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("tlsdial: parse server certificate: %w", err)
+			}
+			sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+			got := base64.StdEncoding.EncodeToString(sum[:])
+			if got != pin {
+				return fmt.Errorf("tlsdial: certificate pin mismatch (got %s, want %s)", got, pin)
+			}
+			return nil
 		},
 	}
 }

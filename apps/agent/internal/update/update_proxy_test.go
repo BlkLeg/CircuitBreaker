@@ -4,6 +4,7 @@ package update
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ import (
 // CONNECT request, dials the requested target itself, replies 200, and then
 // splices the two connections together as an opaque byte tunnel — enough to
 // prove a real download routes through the configured HTTPS_PROXY rather
-// than assuming net/http's default Transport does the right thing.
+// than assuming tlsdial.NewTransport's Proxy field alone proves it.
 type connectProxy struct {
 	ln           net.Listener
 	connectCount atomic.Int64
@@ -111,12 +112,15 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestDownload_RespectsHTTPSProxyEnv confirms Download's http.Get — which
-// relies on http.DefaultClient/http.DefaultTransport's default
-// Proxy: http.ProxyFromEnvironment rather than any explicit wiring — actually
-// routes through HTTPS_PROXY end to end, closing the audit for the update
-// downloader (see enroll/link/tlsdial's dialers, wired through
-// tlsdial.NewDialer, checked separately).
+// TestDownload_RespectsHTTPSProxyEnv confirms Download — which now routes
+// through tlsdial.NewTransport(cfg.TLSPin) rather than http.Get/
+// http.DefaultClient — actually dials through HTTPS_PROXY end to end, for
+// the pin != "" (pinned/self-signed) branch, which is the one that
+// previously bypassed HTTPS_PROXY entirely (Task 13's fix covered enroll/
+// link, not the update downloader). The pin == "" branch shares
+// tlsdial.NewTransport's identical Proxy wiring and is covered generically
+// by tlsdial_test.go; a self-signed test server can't exercise it here
+// without also faking the system trust store.
 func TestDownload_RespectsHTTPSProxyEnv(t *testing.T) {
 	content := []byte("fake binary contents for proxy test")
 	sum := sha256.Sum256(content)
@@ -126,6 +130,9 @@ func TestDownload_RespectsHTTPSProxyEnv(t *testing.T) {
 		_, _ = w.Write(content)
 	}))
 	defer srv.Close()
+
+	certSum := sha256.Sum256(srv.Certificate().RawSubjectPublicKeyInfo)
+	pin := base64.StdEncoding.EncodeToString(certSum[:])
 
 	// srv.URL is loopback (127.0.0.1:PORT), which http.ProxyFromEnvironment
 	// always dials direct — see connectProxy.overrideTarget's doc comment —
@@ -140,23 +147,8 @@ func TestDownload_RespectsHTTPSProxyEnv(t *testing.T) {
 	testProxy.setOverrideTarget(realAddr)
 	defer testProxy.setOverrideTarget("")
 
-	// Download uses http.Get (http.DefaultClient), which by default verifies
-	// against the system trust store and would reject srv's self-signed
-	// cert. httptest.Server.Client()'s Transport already trusts it, but that
-	// Transport leaves Proxy nil (see httptest/server.go's Start()) — reusing
-	// it wholesale would silently defeat the very thing under test. So build
-	// a transport that combines srv's TLS trust with a real
-	// Proxy: http.ProxyFromEnvironment, matching what http.DefaultTransport
-	// (which Download() actually runs on in production) sets by default.
-	origTransport := http.DefaultClient.Transport
-	http.DefaultClient.Transport = &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: srv.Client().Transport.(*http.Transport).TLSClientConfig,
-	}
-	defer func() { http.DefaultClient.Transport = origTransport }()
-
 	before := testProxy.connectCount.Load()
-	cfg := &config.Config{ServerURL: "https://update-test-target.example.com:" + port}
+	cfg := &config.Config{ServerURL: "https://update-test-target.example.com:" + port, TLSPin: pin}
 	instr := Instruction{Version: "0.2.0", SHA256: wantHash, Arch: "amd64", OS: "linux"}
 
 	tmpPath, err := Download(cfg, instr)
