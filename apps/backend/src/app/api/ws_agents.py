@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import socket
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -424,10 +425,18 @@ def _control_frame_bytes(responder: NoiseIKResponder, claimed: dict, seq: int) -
     return responder.encrypt(json.dumps(frame).encode())
 
 
-async def _run_control_frame_listener(agent_id: int, queue: asyncio.Queue[dict]) -> None:
+async def _run_control_frame_listener(
+    agent_id: int, queue: asyncio.Queue[dict], *, worker_id: str
+) -> None:
     """Background task: claims control-plane frames published for `agent_id`
     via the Task 8 registry (`agent_registry.claim_agent_control_frames`) and
     hands each to `queue` for `link_stream`'s main loop to encrypt and send.
+
+    `worker_id` must be the same per-connection value `link_stream` passed to
+    `register_agent_connection` — `claim_agent_control_frames` only yields
+    frames while `worker_id` is still registered as `agent_id`'s connection
+    owner, so a mismatch here would silently starve delivery for the whole
+    life of the connection.
 
     Deliberately does *not* touch the websocket, `responder`, or the
     connection's `_OutboundSeq` itself — those are the main loop's alone, so
@@ -439,7 +448,7 @@ async def _run_control_frame_listener(agent_id: int, queue: asyncio.Queue[dict])
     for that reason.
     """
     try:
-        async for frame in agent_registry.claim_agent_control_frames(agent_id):
+        async for frame in agent_registry.claim_agent_control_frames(agent_id, worker_id=worker_id):
             await queue.put(frame)
     except asyncio.CancelledError:
         raise
@@ -539,11 +548,25 @@ async def link_stream(websocket: WebSocket) -> None:
     worker = socket.gethostname()
     await agent_registry.mark_presence_connected(agent_id, worker=worker)
     # Distinct from the presence "worker" label above: register_agent_connection
-    # records *this process's* WORKER_ID as the owner of agent_id's live socket,
-    # which is what a later worker's control-frame publish (Task 9) resolves
+    # records this *connection's* ownership of agent_id's live socket, which
+    # is what a later worker's control-frame publish (Task 9) resolves
     # against to route delivery here. See agent_registry.WORKER_ID's docstring
-    # for why the two aren't the same identifier.
-    await agent_registry.register_agent_connection(agent_id)
+    # for why the "worker" label and this aren't the same identifier.
+    #
+    # The registered value is `connection_id`, not the bare process-wide
+    # WORKER_ID: cb-agent uninstall's one-shot notifier (internal/link/
+    # link.go's `Uninstall`) deliberately opens a *second* /link connection
+    # for an agent whose persistent daemon connection is often still live
+    # (runUninstall notifies before it stops the service). On a single
+    # worker process both connections would share the identical WORKER_ID,
+    # so a bare-WORKER_ID compare-and-delete on disconnect (deregister_
+    # agent_connection) couldn't tell them apart — the short-lived second
+    # connection's teardown would evict the first, still-live connection's
+    # entry. Suffixing WORKER_ID with a per-connection id keeps WORKER_ID's
+    # cross-worker meaning (still a prefix, for operator traceability) while
+    # making ownership unique per socket, not per process.
+    connection_id = f"{agent_registry.WORKER_ID}:{uuid.uuid4().hex[:12]}"
+    await agent_registry.register_agent_connection(agent_id, worker_id=connection_id)
     await agent_registry.broadcast_presence(agent_id, "connected")
     outbound_seq = _OutboundSeq()
     # A genuine `hello.ack` — accepted, this agent's id, the complete current
@@ -604,7 +627,9 @@ async def link_stream(websocket: WebSocket) -> None:
     # connection. Cancelled in the `finally` block below alongside the rest
     # of this connection's teardown.
     control_queue: asyncio.Queue[dict] = asyncio.Queue()
-    control_task = asyncio.create_task(_run_control_frame_listener(agent_id, control_queue))
+    control_task = asyncio.create_task(
+        _run_control_frame_listener(agent_id, control_queue, worker_id=connection_id)
+    )
 
     # last_heartbeat_at is the WS-level read deadline's clock — deliberately
     # *not* "last time any frame arrived". It only ever advances on a valid
@@ -735,7 +760,20 @@ async def link_stream(websocket: WebSocket) -> None:
 
             try:
                 pt = responder.decrypt(ct)
-            except Exception:
+            except Exception as exc:
+                # Deliberately still not fatal to the connection — an
+                # adversarial or momentarily-desynced peer must not be able
+                # to kill the link over one bad frame — but this used to be
+                # a completely silent drop (Task 31's E2E investigation
+                # flagged it as "the single most under-instrumented point in
+                # the entire path", capable of swallowing a real frame, e.g.
+                # an uninstall notification, with zero trace). Logged, not
+                # recorded as a protocol_violation AgentEvent: that audit
+                # trail is for receive_frame's decoded-but-invalid
+                # rejections, and an undecryptable frame never gets that far.
+                _logger.warning(
+                    "agent %s: dropped undecryptable inbound /link frame: %s", agent_id, exc
+                )
                 continue
 
             with SessionLocal() as db:
@@ -749,6 +787,13 @@ async def link_stream(websocket: WebSocket) -> None:
                     # The one and only thing that refreshes the dead-connection
                     # deadline — see last_heartbeat_at's docstring above.
                     last_heartbeat_at = utcnow()
+                    # Refreshed here with `connection_id`, not inside
+                    # agent_link._handle_heartbeat (which only ever sees
+                    # agent_registry's default, process-wide WORKER_ID) —
+                    # see connection_id's own docstring above for why the
+                    # registry entry has to be scoped per-connection, not
+                    # per-worker-process.
+                    await agent_registry.refresh_agent_connection(agent_id, worker_id=connection_id)
                 if agent_frame.type == TYPE_TRANSPORT_REKEY:
                     # Applied here, inline, rather than through
                     # agent_link.dispatch_frame: the swap has to land before
@@ -803,7 +848,7 @@ async def link_stream(websocket: WebSocket) -> None:
                 # from under it in the same instant. Neither should block or
                 # fail this connection's teardown.
                 pass
-        await agent_registry.deregister_agent_connection(agent_id)
+        await agent_registry.deregister_agent_connection(agent_id, worker_id=connection_id)
         await agent_registry.mark_presence_disconnected(agent_id)
         await agent_registry.broadcast_presence(agent_id, "disconnected")
         with SessionLocal() as db:

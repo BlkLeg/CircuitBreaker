@@ -71,10 +71,17 @@ async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> Non
     import socket
 
     await agent_registry.refresh_presence_heartbeat(db, agent.id, worker=socket.gethostname())
-    # Same refresh cadence as presence above, for the connection-ownership
-    # registry (Task 8) — keeps the two TTL keys expiring in lockstep rather
-    # than one outliving the other.
-    await agent_registry.refresh_agent_connection(agent.id)
+    # The connection-ownership registry (Task 8) is *not* refreshed here.
+    # It used to be, via agent_registry.refresh_agent_connection(agent.id)
+    # — but that call only ever has access to agent_registry's default,
+    # process-wide WORKER_ID, whereas the registry entry itself must be
+    # scoped per-connection (see ws_agents.py link_stream's `connection_id`
+    # docstring for why: a second /link connection sharing one worker
+    # process, e.g. cb-agent uninstall's one-shot notifier alongside an
+    # agent's still-live daemon connection, would otherwise be
+    # indistinguishable from it). link_stream refreshes it directly, in its
+    # own TYPE_HEARTBEAT branch, where the connection's actual per-socket
+    # id is in scope.
 
 
 async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:

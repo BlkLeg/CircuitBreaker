@@ -414,10 +414,16 @@ def test_link_registers_connection_owner_on_connect_and_deregisters_on_disconnec
     db_session, ws_client, monkeypatch
 ):
     """Task 8: /link's connect path claims cross-worker control-routing
-    ownership of the agent for the life of the socket (via this worker's
-    process-wide `agent_registry.WORKER_ID`) and releases it once the socket
-    closes — exercised end-to-end over the real WebSocket, not just by
-    calling the registry functions directly."""
+    ownership of the agent for the life of the socket and releases it once
+    the socket closes — exercised end-to-end over the real WebSocket, not
+    just by calling the registry functions directly.
+
+    The registered value is scoped to *this connection*, not just this
+    worker process — see test_link_second_connections_teardown_does_not_
+    evict_still_live_first_connection below for why a bare process-wide
+    `agent_registry.WORKER_ID` value isn't enough — but it's still prefixed
+    with WORKER_ID for operational traceability (which worker owns a given
+    live connection)."""
     from unittest.mock import AsyncMock
 
     from app.services import agent_registry
@@ -432,12 +438,74 @@ def test_link_registers_connection_owner_on_connect_and_deregisters_on_disconnec
         _connect_linked(ws, agent_priv, server_pub)
 
         owner = ws_client.portal.call(agent_registry.get_agent_connection_owner, agent.id)
-        assert owner == agent_registry.WORKER_ID
+        assert owner is not None
+        assert owner.startswith(agent_registry.WORKER_ID)
 
     owner_after_disconnect = ws_client.portal.call(
         agent_registry.get_agent_connection_owner, agent.id
     )
     assert owner_after_disconnect is None
+
+
+def test_link_stale_second_connections_teardown_does_not_evict_a_refreshed_first_connection(
+    db_session, ws_client, monkeypatch
+):
+    """cb-agent uninstall's one-shot notifier (internal/link/link.go's
+    `Uninstall`) deliberately opens a *second* /link connection for an
+    agent whose persistent daemon connection is often still live —
+    `runUninstall` notifies before it stops the service (cmd/cb-agent/
+    main.go's `notifyUninstallBestEffort` runs before `performUninstall`).
+    Registering is last-write-wins by design (whichever connection most
+    recently registered is control-routing's current target — see
+    `register_agent_connection`'s docstring), so connection B's connect
+    legitimately overwrites connection A's entry; that part isn't the bug.
+
+    The bug is in what happens next: if connection A sends a heartbeat
+    (refreshing its own entry back on top of B's) *before* B disconnects,
+    B's teardown must not blindly delete whatever is currently registered —
+    only an entry that is still actually B's own. Scoped only to this
+    worker process's bare `agent_registry.WORKER_ID` (identical for both
+    connections), `deregister_agent_connection`'s compare-and-delete
+    couldn't tell A's freshly-refreshed entry from B's stale one and would
+    delete it anyway — evicting a connection that never disconnected and
+    breaking control-frame routing to it until its next heartbeat happens
+    to re-register."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws_a:
+        initiator_a = _connect_linked(ws_a, agent_priv, server_pub)
+
+        # Second, short-lived connection for the SAME agent — mirrors the
+        # uninstall notifier connecting while the daemon's own persistent
+        # connection (ws_a) is still open. Overwrites the registry entry;
+        # expected, not yet the bug.
+        with ws_client.websocket_connect("/api/v1/agents/link") as ws_b:
+            _connect_linked(ws_b, agent_priv, server_pub)
+
+            # Connection A retakes ownership — e.g. a heartbeat lands —
+            # *while B is still connected*, racing B's still-pending teardown.
+            _send_frame(initiator_a, ws_a, seq=1)
+            time.sleep(0.3)
+            owner_after_a_refreshes = ws_client.portal.call(
+                agent_registry.get_agent_connection_owner, agent.id
+            )
+            assert owner_after_a_refreshes is not None
+
+        # Connection B's teardown just ran, racing after A's refresh above.
+        # Connection A is still open (never disconnected) and must still own
+        # the registry entry, unchanged.
+        owner_after_b_closes = ws_client.portal.call(
+            agent_registry.get_agent_connection_owner, agent.id
+        )
+        assert owner_after_b_closes == owner_after_a_refreshes
 
 
 def test_link_rejects_stale_handshake_timestamp(db_session, ws_client):
@@ -630,6 +698,51 @@ def test_link_drops_connection_on_an_out_of_step_transport_rekey(
         .all()
     )
     assert [v.detail["reason"] for v in violations] == ["invalid_transport_rekey"]
+
+
+def test_link_logs_undecryptable_inbound_frame_instead_of_silently_dropping_it(
+    db_session, ws_client, caplog
+):
+    """link_stream's main receive loop wraps `responder.decrypt(ct)` in a
+    bare `except Exception: continue` with no logging at all — Task 31's
+    E2E investigation flagged this as "the single most under-instrumented
+    point in the entire path", capable of silently swallowing a real frame
+    (e.g. the one-shot uninstall notification) with zero trace to root-cause
+    from. A frame that fails to decrypt must still be logged, even though
+    dropping it (not tearing down the connection) remains correct — an
+    adversarial or desynced peer must not be able to kill the link over one
+    bad frame."""
+    import logging
+
+    from app.db.models import AgentEvent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with caplog.at_level(logging.WARNING, logger="app.api.ws_agents"):
+        with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+            _connect_linked(ws, agent_priv, server_pub)
+            # Not a validly-encrypted frame under either side's cipher —
+            # exercises the decrypt() call directly, distinct from a
+            # decryptable-but-malformed frame body (receive_frame's own
+            # validation, covered elsewhere).
+            ws.send_bytes(b"not-a-valid-noise-ciphertext")
+            time.sleep(0.3)
+
+    assert any(
+        str(agent.id) in record.getMessage() and "decrypt" in record.getMessage().lower()
+        for record in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+    # Dropping is silent to the wire protocol too — no protocol_violation
+    # recorded for an undecryptable frame (that AgentEvent is reserved for
+    # receive_frame's own decoded-but-invalid rejections).
+    violations = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="protocol_violation")
+        .all()
+    )
+    assert violations == []
 
 
 class _FakeTTLRedis:
@@ -1859,9 +1972,7 @@ def test_link_hello_ack_resends_active_rotation_key_rotate_frame(
         assert rotate_frame["payload"]["successor_pk"] == state.successor_pub.hex()
 
 
-def test_link_hello_ack_omits_key_rotate_frame_when_no_rotation_is_active(
-    db_session, ws_client
-):
+def test_link_hello_ack_omits_key_rotate_frame_when_no_rotation_is_active(db_session, ws_client):
     """The common case: with no rotation in progress, hello.ack is followed
     by capabilities.set and nothing else — no key.rotate frame is sent."""
     agent, agent_priv = _active_agent_with_key(db_session)

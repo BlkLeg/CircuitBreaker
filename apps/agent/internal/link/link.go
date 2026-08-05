@@ -761,12 +761,40 @@ func Uninstall(ctx context.Context, opts Options) error {
 	// real WS close frame and giving the peer a brief window to respond (or
 	// to simply finish reading) makes an ordinary graceful close far more
 	// likely than an abrupt reset.
+	//
+	// A single ReadMessage() here only ever drained the *first* of
+	// whatever the server had queued — but the real /link server
+	// (ws_agents.py's link_stream) unconditionally sends two messages on
+	// accept, hello.ack then capabilities.set, before this one-shot
+	// connection's close-handshake even begins, and either send caller can
+	// add more before the read deadline fires. Draining just one still left
+	// the second sitting unread in the local kernel receive buffer at the
+	// moment Close() ran, i.e. exactly the RST-triggering condition this
+	// close-handshake exists to avoid. drainPending loops until nothing
+	// more is available (an error — the peer's own close, or the deadline
+	// below) rather than stopping after the first message.
 	_ = conn.WriteControl(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
 		time.Now().Add(2*time.Second),
 	)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, _ = conn.ReadMessage() // best-effort drain; result/error not meaningful here
+	drainPending(conn, time.Now().Add(2*time.Second)) // best-effort; count not meaningful to the caller
 	return nil
+}
+
+// drainPending reads and discards inbound WebSocket messages on conn until
+// ReadMessage returns an error — the peer's own close frame arriving, the
+// given deadline elapsing, or the connection otherwise ending — and returns
+// how many messages it discarded. Used by Uninstall's close-handshake (see
+// its comment) to empty the local receive buffer of everything the server
+// queued before this connection closes, not just the first message.
+func drainPending(conn *websocket.Conn, deadline time.Time) int {
+	_ = conn.SetReadDeadline(deadline)
+	n := 0
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return n
+		}
+		n++
+	}
 }

@@ -25,7 +25,9 @@ async def test_dispatch_uninstall_revokes_agent_and_preserves_row(db_session, fa
 
     db_session.expire_all()
     refreshed = db_session.get(Agent, agent_id)
-    assert refreshed is not None, "agent row must still be present after uninstall — revoked, not deleted"
+    assert refreshed is not None, (
+        "agent row must still be present after uninstall — revoked, not deleted"
+    )
     assert refreshed.status == "revoked"
     assert refreshed.revoked_at is not None
     assert refreshed.revoke_reason == "uninstalled by agent"
@@ -50,22 +52,19 @@ async def test_dispatch_heartbeat_refreshes_presence(db_session, factories, monk
     refresh.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_dispatch_heartbeat_refreshes_connection_registry(db_session, factories, monkeypatch):
-    """Task 8: the connection-ownership registry refreshes on the same
-    heartbeat cadence as presence, so it doesn't expire out from under a
-    long-lived connection purely from the 60s TTL elapsing."""
-    from unittest.mock import AsyncMock
-
-    agent = factories.agent(status="active")
-    monkeypatch.setattr("app.services.agent_registry.refresh_presence_heartbeat", AsyncMock())
-    refresh_connection = AsyncMock()
-    monkeypatch.setattr("app.services.agent_registry.refresh_agent_connection", refresh_connection)
-
-    frame = AgentFrame(type="heartbeat", ts="2026-07-27T12:00:00Z", payload={})
-    await agent_link.dispatch_frame(db_session, agent, frame)
-
-    refresh_connection.assert_called_once_with(agent.id)
+# test_dispatch_heartbeat_refreshes_connection_registry used to live here,
+# asserting _handle_heartbeat called agent_registry.refresh_agent_connection.
+# It no longer does: that refresh moved to ws_agents.py's link_stream itself
+# (its TYPE_HEARTBEAT branch), because the registry entry must be scoped to
+# *this connection*, not agent_link's process-wide default WORKER_ID — see
+# link_stream's `connection_id` docstring for why (a second /link connection
+# sharing one worker process, e.g. cb-agent uninstall's one-shot notifier
+# alongside an agent's still-live daemon connection, would otherwise be
+# indistinguishable from it and could evict it on disconnect).
+# test_ws_agents_link.py::
+# test_link_stale_second_connections_teardown_does_not_evict_a_refreshed_first_connection
+# covers the refresh (and the bug it fixes) end-to-end over the real
+# WebSocket, where connection_id is actually in scope.
 
 
 @pytest.mark.asyncio
