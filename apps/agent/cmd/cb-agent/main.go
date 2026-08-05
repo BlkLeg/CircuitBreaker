@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -14,7 +16,9 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
+	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/status"
 	"circuitbreaker.dev/cb-agent/internal/update"
 )
 
@@ -63,6 +67,20 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 	}
 
+	// statusWriter is the source `cb-agent status` reads from — see
+	// internal/status. It starts from whatever the capability gate already
+	// has cached (a restart while disconnected shouldn't make status forget
+	// the last-known grants) and the readiness this host can report before
+	// any link attempt (readiness has no network dependency — see
+	// hostinfo.Collect).
+	statusWriter := status.NewWriter(config.StateDir(), AgentVersion, key.FingerprintGrouped())
+	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	if err := statusWriter.SetReadiness(hostinfo.Collect(AgentVersion).Readiness); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+
 	binaryPath, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
@@ -90,6 +108,31 @@ func runDaemon() {
 		confirmOnce.Do(func() {
 			update.ClearMarker(config.StateDir())
 		})
+		if err := statusWriter.SetAccepted(); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
+	onRejected := func(reason string) {
+		if err := statusWriter.SetRejected(reason); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
+	onDisconnected := func(cause error) {
+		if err := statusWriter.SetDisconnected(cause); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+	}
+
+	onCapabilitiesSet := func(payload json.RawMessage) error {
+		if err := capGate.ApplyGrants(payload); err != nil {
+			return err
+		}
+		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		return nil
 	}
 
 	onUpdate := func(payload json.RawMessage) error {
@@ -119,9 +162,11 @@ func runDaemon() {
 	defer stop()
 	if err := link.Run(ctx, link.Options{
 		Config: cfg, Key: key, AgentVersion: AgentVersion,
-		OnCapabilitiesSet: capGate.ApplyGrants,
+		OnCapabilitiesSet: onCapabilitiesSet,
 		OnUpdate:          onUpdate,
 		OnConnected:       onConnected,
+		OnRejected:        onRejected,
+		OnDisconnected:    onDisconnected,
 	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
@@ -129,18 +174,96 @@ func runDaemon() {
 }
 
 func runVersion() {
-	fmt.Printf("cb-agent %s\n", AgentVersion)
-}
-
-func runStatus() {
-	dir := config.StateDir()
-	key, err := enroll.LoadOrCreateDeviceKey(dir)
-	if err != nil {
+	if err := printVersion(os.Stdout, config.StateDir(), AgentVersion); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("fingerprint: %s\n", key.FingerprintGrouped())
-	fmt.Println("link status: run without a subcommand to start the daemon")
+}
+
+// printVersion writes "cb-agent <version>" and, only when a device key
+// already exists at stateDir, a "fingerprint: ..." line. It reads
+// device.key if present but never creates one — `cb-agent version` is an
+// inspection command and must not generate agent identity as a side effect.
+func printVersion(w io.Writer, stateDir, agentVersion string) error {
+	fmt.Fprintf(w, "cb-agent %s\n", agentVersion)
+	key, ok, err := enroll.LoadDeviceKey(stateDir)
+	if err != nil {
+		return err
+	}
+	if ok {
+		fmt.Fprintf(w, "fingerprint: %s\n", key.FingerprintGrouped())
+	}
+	return nil
+}
+
+func runStatus() {
+	if err := printStatus(os.Stdout, config.StateDir()); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// printStatus reads the daemon's runtime status file (internal/status) and
+// reports truthful daemon state. It never touches device.key and never
+// starts or contacts the daemon — if the daemon has never run, or hasn't
+// reached its first status write yet, it says so rather than fabricating a
+// state.
+func printStatus(w io.Writer, stateDir string) error {
+	st, ok, err := status.Read(stateDir)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintln(w, "no status recorded yet — the daemon has not run, or has not reached its first link attempt")
+		return nil
+	}
+
+	fmt.Fprintf(w, "version: %s\n", st.Version)
+	if st.Fingerprint != "" {
+		fmt.Fprintf(w, "fingerprint: %s\n", st.Fingerprint)
+	}
+	fmt.Fprintf(w, "link: %s\n", st.LinkState)
+	if !st.LastConnected.IsZero() {
+		fmt.Fprintf(w, "last connected: %s\n", st.LastConnected.Format(time.RFC3339))
+	}
+	if st.LastError != "" {
+		fmt.Fprintf(w, "last error: %s (%s)\n", st.LastError, st.LastErrorAt.Format(time.RFC3339))
+	}
+
+	if len(st.Grants) == 0 {
+		fmt.Fprintln(w, "grants: none")
+	} else {
+		fmt.Fprintln(w, "grants:")
+		for _, name := range sortedKeys(st.Grants) {
+			fmt.Fprintf(w, "  %s: %v\n", name, st.Grants[name])
+		}
+	}
+
+	if len(st.Readiness) == 0 {
+		fmt.Fprintln(w, "readiness: none reported")
+	} else {
+		for _, r := range st.Readiness {
+			line := fmt.Sprintf("readiness: %s = %s", r.Collector, r.State)
+			if r.Reason != "" {
+				line += fmt.Sprintf(" (%s)", r.Reason)
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
+
+	fmt.Fprintf(w, "spool: depth=%d bytes=%d\n", st.SpoolDepth, st.SpoolBytes)
+	return nil
+}
+
+// sortedKeys returns m's keys sorted, so printStatus's grants listing has a
+// stable, testable order instead of Go's randomized map iteration.
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func runEnroll() {

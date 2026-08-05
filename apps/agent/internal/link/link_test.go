@@ -537,7 +537,9 @@ func TestRun_OnConnectedWaitsForAcceptedHelloAck(t *testing.T) {
 // TestRun_OnConnectedNeverFiresOnRejectedHelloAck sends a hello.ack with
 // accepted:false and asserts OnConnected is never called for the lifetime
 // of the run — link success requires an *accepted* hello.ack, not merely
-// receipt of one.
+// receipt of one. It also asserts OnRejected fires exactly once with the
+// server's stated reason, since the two hooks exist precisely to distinguish
+// this outcome from an accepted link.
 func TestRun_OnConnectedNeverFiresOnRejectedHelloAck(t *testing.T) {
 	serverPriv, serverPub := generateTestKeypair(t)
 
@@ -597,12 +599,17 @@ func TestRun_OnConnectedNeverFiresOnRejectedHelloAck(t *testing.T) {
 		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
 	}
 
-	var connectedCount int32
+	var connectedCount, rejectedCount int32
+	var lastReason atomic.Value
 	opts := Options{
 		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
 		Key:    key, AgentVersion: "0.1.0-test",
 		OnConnected: func() {
 			atomic.AddInt32(&connectedCount, 1)
+		},
+		OnRejected: func(reason string) {
+			atomic.AddInt32(&rejectedCount, 1)
+			lastReason.Store(reason)
 		},
 	}
 
@@ -612,6 +619,191 @@ func TestRun_OnConnectedNeverFiresOnRejectedHelloAck(t *testing.T) {
 
 	if got := atomic.LoadInt32(&connectedCount); got != 0 {
 		t.Errorf("OnConnected fired %d time(s) on a rejected hello.ack, want 0", got)
+	}
+	if got := atomic.LoadInt32(&rejectedCount); got == 0 {
+		t.Error("OnRejected never fired for a rejected hello.ack")
+	}
+	if got, _ := lastReason.Load().(string); got != "device_pk_mismatch" {
+		t.Errorf("OnRejected reason = %q, want %q", got, "device_pk_mismatch")
+	}
+}
+
+// TestRun_OnDisconnectedFiresWithCauseOnConnectionLoss drives an accepted
+// hello.ack and then has the fake server close the connection, asserting
+// OnDisconnected fires with a non-nil cause — the hook main.go uses to
+// record the daemon's last error in the runtime status file.
+func TestRun_OnDisconnectedFiresWithCauseOnConnectionLoss(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+		// Drop the connection immediately by returning — the deferred
+		// conn.Close() fires, and the client's next read fails.
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var disconnectedCount int32
+	var lastCause atomic.Value
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnDisconnected: func(cause error) {
+			atomic.AddInt32(&disconnectedCount, 1)
+			lastCause.Store(cause)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := atomic.LoadInt32(&disconnectedCount); got == 0 {
+		t.Fatal("OnDisconnected never fired after the connection dropped")
+	}
+	cause, _ := lastCause.Load().(error)
+	if cause == nil {
+		t.Error("OnDisconnected fired with a nil cause, want a non-nil error describing the drop")
+	}
+}
+
+// TestRun_OnDisconnectedNotCalledOnCleanShutdown asserts OnDisconnected does
+// not fire when Run exits because its context was cancelled — an
+// intentional daemon shutdown is not a link failure and must not be
+// recorded as one.
+func TestRun_OnDisconnectedNotCalledOnCleanShutdown(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	var connectedCount, disconnectedCount int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnConnected: func() {
+			atomic.AddInt32(&connectedCount, 1)
+		},
+		OnDisconnected: func(error) {
+			atomic.AddInt32(&disconnectedCount, 1)
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = Run(ctx, opts)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&connectedCount) == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("OnConnected never fired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+
+	if got := atomic.LoadInt32(&disconnectedCount); got != 0 {
+		t.Errorf("OnDisconnected fired %d time(s) on a clean ctx-cancelled shutdown, want 0", got)
 	}
 }
 
