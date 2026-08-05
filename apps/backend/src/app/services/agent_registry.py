@@ -210,16 +210,23 @@ def bulk_grants_dict(db: Session, agent_ids: list[int]) -> dict[int, dict[str, b
 
 
 def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
-    """Descending-confidence match: MAC -> hostname (spec §3.3).
+    """Descending-confidence match: machine_id_hash -> MAC -> hostname (spec §3.3).
 
-    The design doc's match order is machine_id_hash -> MAC -> hostname, but
-    `Hardware` has no `machine_id_hash` column in the current schema (only
-    `Agent` does) — confirmed via `grep -n machine_id_hash
-    apps/backend/src/app/db/models.py`. The machine_id_hash branch is
-    dropped for slice 1 per the task brief's guidance; adding a matching
-    column to `Hardware` is a reasonable follow-up migration but is not
-    spec'd here and is not invented in this task.
+    `Hardware.machine_id_hash` (Task 16) is the strongest signal — a device's
+    `/etc/machine-id` hash survives hostname renames and NIC swaps that would
+    defeat the MAC/hostname branches below, so it's checked first. Falls
+    through to an exact MAC-address match (any of the agent's reported
+    `primary_macs`), then an exact hostname match, returning the first hit at
+    whichever confidence tier produces one; `None` if nothing matches at any
+    tier.
     """
+    if agent.machine_id_hash:
+        match = db.execute(
+            select(Hardware).where(Hardware.machine_id_hash == agent.machine_id_hash)
+        ).scalar_one_or_none()
+        if match is not None:
+            return match
+
     for mac in agent.primary_macs or []:
         match = db.execute(select(Hardware).where(Hardware.mac_address == mac)).scalar_one_or_none()
         if match is not None:
@@ -231,6 +238,31 @@ def propose_hardware_match(db: Session, agent: Agent) -> Hardware | None:
         ).scalar_one_or_none()
 
     return None
+
+
+def has_duplicate_machine_id(db: Session, agent: Agent) -> bool:
+    """True if some *other* `Agent` row reports the same `machine_id_hash`.
+
+    Surfaced identically from both the agent-detail endpoint and the
+    pairing-lookup endpoint (api/agents.py `_to_read` / `post_pairing_lookup`)
+    so an operator sees the same duplicate-machine warning regardless of
+    which screen (fleet detail view vs. pairing-code approval flow) they use
+    to review a device — see spec §3.3's "Duplicate machine_id_hash" row.
+    An agent with no reported machine_id_hash (old-shaped hello, or a host
+    that couldn't read /etc/machine-id) can never be flagged as a duplicate;
+    there is nothing to compare.
+    """
+    if not agent.machine_id_hash:
+        return False
+    return (
+        db.execute(
+            select(Agent).where(
+                Agent.machine_id_hash == agent.machine_id_hash,
+                Agent.id != agent.id,
+            )
+        ).scalar_one_or_none()
+        is not None
+    )
 
 
 def record_event(

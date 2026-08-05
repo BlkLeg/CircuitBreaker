@@ -31,6 +31,14 @@ class AgentRead(AgentSummary):
     approved_at: datetime | None
     connected_since: datetime | None
     capabilities: dict[str, bool] = {}
+    # Populated by api/agents.py's `_to_read` (not ORM attributes) from
+    # `agent_registry.propose_hardware_match`/`has_duplicate_machine_id` —
+    # the same host-linkage proposal and duplicate-machine warning the
+    # pairing-lookup endpoint (`PairingLookupResponse`) surfaces, so the
+    # agent-detail view and the pairing-code approval flow never disagree.
+    proposed_hardware_id: int | None = None
+    proposed_hardware_name: str | None = None
+    duplicate_machine_id: bool = False
 
 
 class HardwareSummary(BaseModel):

@@ -84,24 +84,41 @@ def test_record_event_persists_detail(db_session, factories):
     assert event.detail == {"type": "probe.result"}
 
 
-def test_propose_hardware_match_by_machine_id_hash_beats_mac(db_session, factories):
+def test_propose_hardware_match_by_machine_id_hash_beats_mac_and_hostname(db_session, factories):
+    """Descending-confidence match order per spec §3.3: machine_id_hash -> MAC
+    -> hostname. `Hardware.machine_id_hash` (Task 16) lets this resolve the
+    strongest signal first even when a weaker MAC/hostname match also exists."""
     from app.db.models import Hardware
 
+    hw_by_hostname = Hardware(name="by-hostname", hostname="box1")
     hw_by_mac = Hardware(name="by-mac", mac_address="aa:bb:cc:dd:ee:ff")
-    hw_by_machine_id = Hardware(name="by-machine-id")
-    db_session.add_all([hw_by_mac, hw_by_machine_id])
+    hw_by_machine_id = Hardware(name="by-machine-id", machine_id_hash="deadbeef")
+    db_session.add_all([hw_by_hostname, hw_by_mac, hw_by_machine_id])
     db_session.flush()
 
     agent = factories.agent(
+        hostname="box1",
         machine_id_hash="deadbeef",
         primary_macs=["aa:bb:cc:dd:ee:ff"],
     )
-    # `Hardware` has no `machine_id_hash` column in the current schema (confirmed
-    # via `grep -n machine_id_hash apps/backend/src/app/db/models.py` — the only
-    # hit inside the Hardware class range is `mac_address`; `machine_id_hash`
-    # belongs to `Agent`). Per the brief's guidance, `propose_hardware_match`
-    # drops the machine_id_hash branch for slice 1 and falls straight through to
-    # MAC -> hostname, so this narrows to an exact MAC match on `hw_by_mac`.
+    match = svc.propose_hardware_match(db_session, agent)
+    assert match is not None
+    assert match.id == hw_by_machine_id.id
+
+
+def test_propose_hardware_match_mac_beats_hostname_when_no_machine_id_match(db_session, factories):
+    from app.db.models import Hardware
+
+    hw_by_hostname = Hardware(name="by-hostname", hostname="box1")
+    hw_by_mac = Hardware(name="by-mac", mac_address="aa:bb:cc:dd:ee:ff")
+    db_session.add_all([hw_by_hostname, hw_by_mac])
+    db_session.flush()
+
+    agent = factories.agent(
+        hostname="box1",
+        machine_id_hash="no-such-hash",
+        primary_macs=["aa:bb:cc:dd:ee:ff"],
+    )
     match = svc.propose_hardware_match(db_session, agent)
     assert match is not None
     assert match.id == hw_by_mac.id
@@ -114,16 +131,37 @@ def test_propose_hardware_match_falls_back_to_hostname(db_session, factories):
     db_session.add(hw_by_hostname)
     db_session.flush()
 
-    agent = factories.agent(hostname="box-by-hostname", primary_macs=[])
+    agent = factories.agent(hostname="box-by-hostname", primary_macs=[], machine_id_hash=None)
     match = svc.propose_hardware_match(db_session, agent)
     assert match is not None
     assert match.id == hw_by_hostname.id
 
 
 def test_propose_hardware_match_returns_none_when_no_match(db_session, factories):
-    agent = factories.agent(hostname="no-such-host", primary_macs=["11:22:33:44:55:66"])
+    agent = factories.agent(
+        hostname="no-such-host", primary_macs=["11:22:33:44:55:66"], machine_id_hash=None
+    )
     match = svc.propose_hardware_match(db_session, agent)
     assert match is None
+
+
+def test_has_duplicate_machine_id_true_when_another_agent_shares_hash(db_session, factories):
+    factories.agent(machine_id_hash="shared-hash")
+    agent = factories.agent(machine_id_hash="shared-hash")
+
+    assert svc.has_duplicate_machine_id(db_session, agent) is True
+
+
+def test_has_duplicate_machine_id_false_when_unique(db_session, factories):
+    agent = factories.agent(machine_id_hash="unique-hash")
+
+    assert svc.has_duplicate_machine_id(db_session, agent) is False
+
+
+def test_has_duplicate_machine_id_false_when_agent_has_no_hash(db_session, factories):
+    agent = factories.agent(machine_id_hash=None)
+
+    assert svc.has_duplicate_machine_id(db_session, agent) is False
 
 
 def test_grants_dict_reduces_grants_to_capability_bool_map(db_session, factories):
