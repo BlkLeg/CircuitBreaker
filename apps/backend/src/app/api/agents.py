@@ -159,12 +159,27 @@ def patch_agent(
     agent_id: int,
     payload: AgentPatch,
     db: Annotated[Session, Depends(get_db)],
-    _user: Annotated[User, require_role("editor")],
+    user: Annotated[User, require_role("editor")],
 ) -> Any:
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+
+    fields = payload.model_dump(exclude_unset=True)
+    # hardware_id (Task 19: host-link editing after approval) is handled
+    # separately from a plain setattr, same as approve_agent's own
+    # hardware_id param — it needs FK validation (a plain setattr would
+    # otherwise surface an unhandled IntegrityError for a bogus id) and an
+    # `agent_events` row recording the change, neither of which a bare field
+    # assignment gives us. `name`/`notes` have neither concern, so they stay
+    # on the generic path below.
+    if "hardware_id" in fields:
+        hardware_id = fields.pop("hardware_id")
+        if hardware_id is not None and db.get(Hardware, hardware_id) is None:
+            raise HTTPException(status_code=404, detail="Hardware not found")
+        agent_registry.set_hardware_link(db, agent_id, hardware_id, actor_user_id=user.id)
+
+    for field, value in fields.items():
         setattr(agent, field, value)
     db.commit()
     return _to_read(db, agent)
