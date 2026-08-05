@@ -475,3 +475,93 @@ def test_enroll_reconnect_of_pending_device_unaffected_by_concurrent_cap(
     ack_payload2 = json.loads(ack_pt2)["payload"]
     assert ack_payload2["agent_id"] == first_agent_id
     assert db_session.query(Agent).filter_by(status="pending").count() == baseline_pending + 1
+
+
+def test_enroll_releases_pending_lock_on_exception(db_session, ws_client, monkeypatch):
+    """Regression test for fix round 2: the pending-enrollment Redis lock
+    acquired in the new-agent path must be released even if an exception
+    (e.g., a race-condition IntegrityError from duplicate device_pk) occurs
+    between acquire_pending_enrollment_lock() and db.commit().
+
+    Without the try/finally wrapper around that region, the lock sits held
+    for its full 5s TTL on every such failure, wrongly blocking unrelated new
+    enrollments for that duration. This test verifies the lock is actually
+    released by successfully enrolling a *different* device immediately after
+    an enroll attempt that raises an exception."""
+    from sqlalchemy.exc import IntegrityError
+
+    _, server_pub = get_server_static_keypair()
+    agent_priv_1 = secrets.token_bytes(32)
+    agent_priv_2 = secrets.token_bytes(32)
+
+    from app.services import agent_registry
+
+    original_create_pending = agent_registry.create_pending_agent
+
+    exception_raised = False
+
+    def mock_create_pending_raises(*args, **kwargs):
+        nonlocal exception_raised
+        exception_raised = True
+        # Simulate a same-device_pk race that slips past the `existing is
+        # None` check (that read happens before lock acquisition) — the
+        # db.flush() in the real create_pending_agent will raise IntegrityError
+        # on device_pk unique constraint violation.
+        raise IntegrityError(
+            "Duplicate device_pk", orig="Duplicate", params={}
+        )
+
+    # First connection: monkeypatch create_pending_agent to raise, simulating
+    # a race. The lock must be released even though the exception is raised
+    # before db.commit().
+    monkeypatch.setattr(agent_registry, "create_pending_agent", mock_create_pending_raises)
+
+    # The exception will propagate and close the WebSocket connection. We
+    # can't directly catch it, but we just need the connection attempt to
+    # happen and fail — the important thing is that the finally block in
+    # enroll_stream still runs and releases the lock.
+    try:
+        with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+            initiator = TestNoiseInitiator(agent_priv_1, server_pub)
+            ws.send_bytes(initiator.write_message())
+            initiator.read_message(ws.receive_bytes())
+            ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+            # The handler will close the connection due to IntegrityError,
+            # causing receive_bytes to raise. We ignore it.
+            try:
+                ws.receive_bytes()
+            except Exception:
+                pass
+    except Exception:
+        # Connection closed due to exception in handler.
+        pass
+
+    assert exception_raised, "Mock should have been called"
+
+    # Restore the real create_pending_agent for the second connection.
+    monkeypatch.setattr(agent_registry, "create_pending_agent", original_create_pending)
+
+    # Second connection: a *different* device enrolling immediately after.
+    # If the lock was leaked (held for its full 5s TTL), this would be
+    # rejected with code=1013 (rate limited / pending cap). Instead, it must
+    # succeed because the lock was released via the finally block.
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws2:
+        initiator2 = TestNoiseInitiator(agent_priv_2, server_pub)
+        ws2.send_bytes(initiator2.write_message())
+        initiator2.read_message(ws2.receive_bytes())
+        ws2.send_bytes(initiator2.encrypt(_make_hello_frame_bytes()))
+
+        ack_ct = ws2.receive_bytes()
+        ack_pt = initiator2.decrypt(ack_ct)
+
+    ack = json.loads(ack_pt)
+    assert ack["type"] == "hello.ack"
+    assert "pairing_code" in ack["payload"]
+    assert "agent_id" in ack["payload"]
+
+    # Verify the second device actually created a pending agent.
+    from app.core.agent_crypto import _public_from_private
+
+    device_pk_hex_2 = _public_from_private(agent_priv_2).hex()
+    agent = db_session.query(Agent).filter_by(device_pk=device_pk_hex_2).one()
+    assert agent.status == "pending"

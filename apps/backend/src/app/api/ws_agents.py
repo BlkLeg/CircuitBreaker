@@ -171,51 +171,62 @@ async def enroll_stream(websocket: WebSocket) -> None:
             await websocket.close(code=1000)
             return
         pending_lock_token = None
-        if existing is not None and existing.status == "pending":
-            agent = existing
-            newly_created = False
-        else:
-            # Task 21: concurrent-pending-enrollment cap. Only guards the
-            # genuinely-new-row path — a device_pk already pending (the
-            # branch above) is reusing an existing row, not adding to the
-            # count, so it's never blocked by this check.
-            #
-            # The count-then-insert-then-commit sequence below is wrapped in
-            # a cross-worker Redis lock (fix round, Important #1): two
-            # /enroll connections on different workers could otherwise both
-            # read `count_pending_agents` before either committed, both see
-            # a count under the cap, and both insert — overshooting it. The
-            # lock is held until *after* `db.commit()` further down, not
-            # just past the count check, since the race is only actually
-            # closed once the new row is durably visible to the next
-            # session's count query — see acquire_pending_enrollment_lock's
-            # docstring for why this is a lock, not a Redis gauge.
-            pending_lock_token = await agent_registry.acquire_pending_enrollment_lock()
-            if pending_lock_token is None:
-                await websocket.close(code=1013)
-                return
-            pending_count = agent_registry.count_pending_agents(db)
-            if pending_count >= agent_registry.MAX_CONCURRENT_PENDING_AGENTS:
+        try:
+            if existing is not None and existing.status == "pending":
+                agent = existing
+                newly_created = False
+            else:
+                # Task 21: concurrent-pending-enrollment cap. Only guards the
+                # genuinely-new-row path — a device_pk already pending (the
+                # branch above) is reusing an existing row, not adding to the
+                # count, so it's never blocked by this check.
+                #
+                # The count-then-insert-then-commit sequence below is wrapped in
+                # a cross-worker Redis lock (fix round, Important #1): two
+                # /enroll connections on different workers could otherwise both
+                # read `count_pending_agents` before either committed, both see
+                # a count under the cap, and both insert — overshooting it. The
+                # lock is held until *after* `db.commit()` further down, not
+                # just past the count check, since the race is only actually
+                # closed once the new row is durably visible to the next
+                # session's count query — see acquire_pending_enrollment_lock's
+                # docstring for why this is a lock, not a Redis gauge.
+                #
+                # Everything from here through db.commit() below runs inside
+                # this try, whose finally always releases the lock (fix round
+                # 2): create_pending_agent's db.flush() — e.g. a same-device_pk
+                # race that slips past the `existing is None` check above,
+                # since that read happens before this lock is even acquired —
+                # or db.commit() itself can raise, and without the finally the
+                # lock would otherwise sit held for its full TTL on every such
+                # failure, wrongly rejecting unrelated new enrollments in the
+                # meantime.
+                pending_lock_token = await agent_registry.acquire_pending_enrollment_lock()
+                if pending_lock_token is None:
+                    await websocket.close(code=1013)
+                    return
+                pending_count = agent_registry.count_pending_agents(db)
+                if pending_count >= agent_registry.MAX_CONCURRENT_PENDING_AGENTS:
+                    await websocket.close(code=1013)
+                    return
+                agent = agent_registry.create_pending_agent(
+                    db,
+                    device_pk=device_pk_hex,
+                    fingerprint=fingerprint,
+                    hostname=payload.get("hostname"),
+                    machine_id_hash=payload.get("machine_id_hash"),
+                    os=payload.get("os"),
+                    os_version=payload.get("os_version"),
+                    arch=payload.get("arch"),
+                    agent_version=payload.get("agent_version"),
+                    primary_macs=payload.get("primary_macs"),
+                    reported_ip=client_ip,
+                )
+                newly_created = True
+            db.commit()
+        finally:
+            if pending_lock_token is not None:
                 await agent_registry.release_pending_enrollment_lock(pending_lock_token)
-                await websocket.close(code=1013)
-                return
-            agent = agent_registry.create_pending_agent(
-                db,
-                device_pk=device_pk_hex,
-                fingerprint=fingerprint,
-                hostname=payload.get("hostname"),
-                machine_id_hash=payload.get("machine_id_hash"),
-                os=payload.get("os"),
-                os_version=payload.get("os_version"),
-                arch=payload.get("arch"),
-                agent_version=payload.get("agent_version"),
-                primary_macs=payload.get("primary_macs"),
-                reported_ip=client_ip,
-            )
-            newly_created = True
-        db.commit()
-        if pending_lock_token is not None:
-            await agent_registry.release_pending_enrollment_lock(pending_lock_token)
         agent_id = agent.id
         code = await agent_enrollment.mint_pairing_code(agent_id)
 
