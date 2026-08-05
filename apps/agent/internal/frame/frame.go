@@ -68,6 +68,39 @@ const (
 	TypeTransportRekey = "transport.rekey"
 )
 
+// controlFrameTypes are the frame types that must never reach the outbound
+// spool (internal/spool): link-protocol control traffic, plus the heartbeat
+// liveness signal, none of which is host data the spool exists to buffer
+// through an outage (spec §4.4). This is deliberately a deny-list rather than
+// an allow-list of known data types: every type not named here — including
+// telemetry/probe/discovery/log payloads Slice 2+ has not introduced yet —
+// classifies as a data frame, so internal/link's spool wiring needs no code
+// change to pick up a future slice's new data frame type (Global
+// Constraints: "wire the mechanism ... so it activates automatically once
+// Slice 2+ introduces data frames").
+var controlFrameTypes = map[string]bool{
+	TypeHello:            true,
+	TypeHeartbeat:        true,
+	TypeUninstall:        true,
+	TypeHelloAck:         true,
+	TypeCapabilitiesSet:  true,
+	TypeProbeAssign:      true,
+	TypeDiscoveryRequest: true,
+	TypeKeyRotate:        true,
+	TypeUpdate:           true,
+	TypeDisconnect:       true,
+	TypePing:             true,
+	TypeTransportRekey:   true,
+}
+
+// IsDataFrame reports whether typ is a data frame eligible for the outbound
+// spool, as opposed to heartbeat/control traffic which must never reach the
+// spool's write path. See controlFrameTypes' doc comment for why this is a
+// deny-list.
+func IsDataFrame(typ string) bool {
+	return !controlFrameTypes[typ]
+}
+
 // Payload shapes below are the structured wire format for a subset of frame types. They are
 // schema/codec only: nothing in this package parses Frame.Payload into these types
 // automatically, and no rekey/rotation *behavior* lives here (see Frame.Payload's callers in

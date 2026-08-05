@@ -148,6 +148,44 @@ func TestKeyRotatePayload_EncodeDecode(t *testing.T) {
 	}
 }
 
+// TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse locks in the deny-list:
+// every frame type that carries link-protocol control traffic or the
+// heartbeat liveness signal must never be classified as a data frame, since
+// internal/link uses IsDataFrame to decide what's eligible for the outbound
+// spool (spec: heartbeat/control frames must never reach the spool's write
+// path).
+func TestIsDataFrame_ControlAndHeartbeatTypesReturnFalse(t *testing.T) {
+	controlTypes := []string{
+		TypeHello, TypeHeartbeat, TypeUninstall,
+		TypeHelloAck, TypeCapabilitiesSet, TypeProbeAssign, TypeDiscoveryRequest,
+		TypeKeyRotate, TypeUpdate, TypeDisconnect, TypePing,
+		TypeTransportRekey,
+	}
+	for _, typ := range controlTypes {
+		if IsDataFrame(typ) {
+			t.Errorf("IsDataFrame(%q) = true, want false (control/heartbeat frame)", typ)
+		}
+	}
+}
+
+// TestIsDataFrame_KnownAndUnknownDataTypesReturnTrue verifies the classifier
+// is a deny-list, not an allow-list: today's real data-frame constants
+// (Slice 2+ payloads not yet produced anywhere) and a made-up type neither
+// this package nor any slice has ever defined both classify as data frames.
+// That's the point — the mechanism must activate automatically for whatever
+// data frame type a future slice introduces, without a code change here.
+func TestIsDataFrame_KnownAndUnknownDataTypesReturnTrue(t *testing.T) {
+	dataTypes := []string{
+		TypeTelemetryHost, TypeProbeResult, TypeDiscoveryFinding, TypeCapabilityViolation, TypeLog,
+		"test.fakedata", // fake, test-only type — never a real Slice 1-4 payload
+	}
+	for _, typ := range dataTypes {
+		if !IsDataFrame(typ) {
+			t.Errorf("IsDataFrame(%q) = false, want true (data frame)", typ)
+		}
+	}
+}
+
 func TestHelloAckPayload_ServerTimeOmittedWhenNil(t *testing.T) {
 	payload := HelloAckPayload{Accepted: true, AgentID: 7}
 	data, err := json.Marshal(payload)

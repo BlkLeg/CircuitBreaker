@@ -19,6 +19,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/noiseconn"
+	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/tlsdial"
 )
 
@@ -71,6 +72,30 @@ type Options struct {
 	// or the server requesting disconnect — with the error that ended it.
 	// cause is never nil when this fires from Run's reconnect loop.
 	OnDisconnected func(cause error)
+
+	// Spool durably buffers outbound *data* frames (never heartbeat/control
+	// traffic — frame.IsDataFrame draws that line) when a live send fails,
+	// and is drained back into the live stream at
+	// spool.DrainInterleaveRatio (see dataFrameSender in outbound.go). Nil
+	// disables spooling entirely — e.g. Uninstall's one-shot connection has
+	// no ongoing data-frame flow to buffer, and today's daemon has no real
+	// data frame producer yet either (Global Constraints: "the spool ...
+	// stays idle in heartbeat-only Slice 1 operation").
+	Spool *spool.Spool
+
+	// DataFrames is where a producer outside this package — a Slice 2+
+	// telemetry/probe/discovery collector — sends outbound data frames for
+	// this link to transmit. runOnce assigns V/Seq/TS itself before sending,
+	// same as it does for heartbeat/rekey frames. A nil channel (Slice 1's
+	// default: nothing produces data frames yet) simply never selects, so
+	// the whole mechanism stays inert until a real producer exists.
+	DataFrames <-chan frame.Frame
+
+	// OnSpoolStats fires after every spool mutation (a live-send failure
+	// enqueues, or a drain succeeds or fails-and-re-enqueues) with the
+	// spool's resulting depth and size in bytes, so callers can mirror it
+	// into e.g. status.Writer.SetSpoolStats. May be nil.
+	OnSpoolStats func(depth int, bytes int64)
 }
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
@@ -301,12 +326,34 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		return nil
 	}
 
+	// sender wires the spool into this connection's outbound data-frame
+	// flow (never heartbeat/control traffic — see Options.Spool/DataFrames
+	// and dataFrameSender's doc comment). opts.Spool/OnSpoolStats are nil in
+	// today's daemon config (no producer exists yet), which newDataFrameSender
+	// and dataFrameSender both handle as "spooling disabled".
+	sendDataFrame := func(f frame.Frame) error {
+		data, err := frame.Encode(f)
+		if err != nil {
+			return err
+		}
+		return conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data))
+	}
+	sender := newDataFrameSender(opts.Spool, sendDataFrame, opts.OnSpoolStats)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return stable, ctx.Err()
 		case err := <-readErrCh:
 			return stable, fmt.Errorf("link: connection lost: %w", err)
+		case f := <-opts.DataFrames:
+			seq++
+			f.V = frame.FrameVersion
+			f.Seq = seq
+			f.TS = time.Now().UTC()
+			if err := sender.sendLive(f); err != nil {
+				return stable, err
+			}
 		case f := <-incoming:
 			switch f.Type {
 			case frame.TypeHelloAck:
