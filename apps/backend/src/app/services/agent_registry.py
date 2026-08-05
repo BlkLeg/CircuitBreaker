@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -30,6 +30,13 @@ DEFAULT_CAPABILITY_GRANTS: dict[str, bool] = {
     "local_discovery": False,
 }
 
+# Task 21: cap on agents simultaneously awaiting approval. An anonymous
+# /enroll flood using a fresh device keypair per connection creates a new
+# `Agent` row every time (device_pk is unique, so there's no per-device
+# reuse to fall back on), so without a ceiling nothing bounds how many
+# pending rows — and their live-held /enroll poll connections — accumulate.
+MAX_CONCURRENT_PENDING_AGENTS = 100
+
 
 def create_pending_agent(db: Session, **fields: Any) -> Agent:
     agent = Agent(status="pending", **fields)
@@ -37,6 +44,15 @@ def create_pending_agent(db: Session, **fields: Any) -> Agent:
     db.flush()
     record_event(db, agent.id, "enrolled")
     return agent
+
+
+def count_pending_agents(db: Session) -> int:
+    """Number of agents currently in `pending` status, i.e. awaiting
+    approval. Backs the concurrent-pending-enrollment cap in
+    ws_agents.enroll_stream."""
+    return db.execute(
+        select(func.count()).select_from(Agent).where(Agent.status == "pending")
+    ).scalar_one()
 
 
 def get_agent(db: Session, agent_id: int) -> Agent | None:

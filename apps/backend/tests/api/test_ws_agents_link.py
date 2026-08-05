@@ -6,6 +6,7 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from app.core.agent_crypto import get_server_static_keypair
 from tests.helpers.agent_noise_client import TestNoiseInitiator
@@ -536,6 +537,30 @@ class _FakeTTLRedis:
 
     async def delete(self, key: str) -> int:
         return 1 if self._store.pop(key, None) is not None else 0
+
+    async def incr(self, key: str) -> int:
+        """Task 21: backs check_and_record_ws_attempt's per-IP/global
+        counters. Stores the running count alongside a far-future
+        placeholder expiry until `expire()` sets the real one, mirroring
+        real Redis's INCR-creates-a-persistent-key-until-EXPIRE semantics."""
+        entry = self._store.get(key)
+        if entry is not None and time.monotonic() >= entry[0]:
+            entry = None
+        current = int(entry[1]) if entry is not None else 0
+        current += 1
+        expires_at = entry[0] if entry is not None else float("inf")
+        self._store[key] = (expires_at, str(current))
+        return current
+
+    async def expire(self, key: str, ttl: float, nx: bool = False) -> bool:
+        entry = self._store.get(key)
+        if entry is None:
+            return False
+        expires_at, value = entry
+        if nx and expires_at != float("inf"):
+            return False
+        self._store[key] = (time.monotonic() + ttl, value)
+        return True
 
     def register_script(self, script: str) -> "_FakeCompareAndDeleteScript":
         """Stand-in for redis-py's `register_script`/EVALSHA, needed because
@@ -1091,3 +1116,64 @@ def test_link_hello_ack_resends_complete_grants_regardless_of_prior_push_success
             "host_telemetry": False,
             "remote_probe": True,
         }
+
+
+def test_link_rejects_further_attempts_from_ip_past_per_ip_limit(
+    db_session, ws_client, monkeypatch
+):
+    """Task 21: same attempt-rate gate as /enroll, wired into /link — once
+    this IP's per-attempt counter trips, the connection is refused before a
+    single Noise handshake byte is processed."""
+    from app.services import agent_enrollment
+
+    monkeypatch.setattr(agent_enrollment, "_WS_ATTEMPT_IP_LIMIT", 1)
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    # First attempt: under the (lowered) limit, completes normally.
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+        ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert ack["payload"]["accepted"] is True
+
+    # Second attempt from the same (TestClient-fixed) source IP: over the
+    # limit, rejected immediately with no handshake response at all.
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with ws_client.websocket_connect("/api/v1/agents/link") as ws2:
+            initiator2 = TestNoiseInitiator(agent_priv, server_pub)
+            ws2.send_bytes(initiator2.write_message())
+            ws2.receive_bytes()  # nothing coming — server already closed
+
+    assert exc_info.value.code == 1013
+
+
+def test_link_attempt_counter_is_independent_from_enroll(db_session, ws_client, monkeypatch):
+    """Exhausting /link's per-IP counter must not block /enroll from the
+    same IP, and vice versa — separate key namespaces per endpoint (see
+    check_and_record_ws_attempt)."""
+    from app.services import agent_enrollment
+
+    monkeypatch.setattr(agent_enrollment, "_WS_ATTEMPT_IP_LIMIT", 1)
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+        json.loads(initiator.decrypt(ws.receive_bytes()))
+
+    # /link is now over its own (lowered) per-IP limit, but /enroll — a
+    # different endpoint namespace — must still accept a fresh attempt from
+    # the very same source IP.
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as enroll_ws:
+        enroll_initiator = TestNoiseInitiator(secrets.token_bytes(32), server_pub)
+        enroll_ws.send_bytes(enroll_initiator.write_message())
+        # No exception — the handshake response arrives normally.
+        enroll_initiator.read_message(enroll_ws.receive_bytes())

@@ -1,4 +1,5 @@
 import json
+import secrets
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -182,6 +183,34 @@ def test_enroll_rejects_reconnect_from_previously_rejected_device(db_session, ws
     assert agents[0].status == "rejected"
 
 
+def _redis_client_with_no_pubsub_relay():
+    """An AsyncMock Redis client whose `incr`/`expire` behave like real
+    expiring counters (so Task 21's check_and_record_ws_attempt still
+    passes /enroll's attempt-rate gate) but whose `pubsub()` is left as an
+    unconfigured AsyncMock — calling it returns a bare coroutine object
+    with no `.subscribe()`, which `ws_agents._redis_agent_listener` catches
+    and silently degrades from (see its try/except around `pubsub.
+    subscribe(...)`). That reproduces the single-path, ws_manager-only
+    delivery the two tests below depend on for a deterministic message
+    order, without reporting Redis as fully down — which, post-Task-21,
+    would also refuse the /enroll connection itself before any of that
+    machinery even runs.
+    """
+    counts: dict[str, int] = {}
+
+    async def _incr(key):
+        counts[key] = counts.get(key, 0) + 1
+        return counts[key]
+
+    async def _expire(key, ttl, nx=False):
+        return True
+
+    client = AsyncMock()
+    client.incr.side_effect = _incr
+    client.expire.side_effect = _expire
+    return client
+
+
 def _login_viewer(ws_client):
     """Seeds a viewer user via a real committed connection (SessionLocal(),
     matching what agent_presence_stream itself uses) — db_session's
@@ -224,15 +253,18 @@ def test_enroll_broadcasts_enrolled_event_to_stream_viewers(
 ):
     """Task 10 end-to-end proof: a brand-new pending enrollment pushes an
     `enrolled` event to every live /api/agents/stream viewer immediately,
-    not only on the add-agent panel's 30s poll. Redis is unavailable in the
-    unit-test environment, so broadcast_presence falls back to
-    ws_manager.broadcast — proven genuinely end-to-end here by actually
-    running the /enroll handshake and reading the event back off a real
-    /stream connection, mirroring
+    not only on the add-agent panel's 30s poll. Redis's pub/sub relay is
+    disabled (see `_redis_client_with_no_pubsub_relay`), so broadcast_presence
+    falls back to ws_manager.broadcast — proven genuinely end-to-end here by
+    actually running the /enroll handshake and reading the event back off a
+    real /stream connection, mirroring
     test_ws_agents_stream.py::test_stream_authenticates_via_session_cookie_and_forwards_broadcast."""
     import secrets
 
-    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "app.core.redis.get_redis",
+        AsyncMock(return_value=_redis_client_with_no_pubsub_relay()),
+    )
 
     _login_viewer(ws_client)
 
@@ -271,7 +303,10 @@ def test_enroll_reconnect_of_still_pending_device_does_not_rebroadcast(
     /stream viewer within the test's observation window."""
     import secrets
 
-    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        "app.core.redis.get_redis",
+        AsyncMock(return_value=_redis_client_with_no_pubsub_relay()),
+    )
 
     _login_viewer(ws_client)
 
@@ -320,3 +355,150 @@ def test_enroll_reconnect_of_still_pending_device_does_not_rebroadcast(
 
     agents = db_session.query(Agent).filter_by(id=first_agent_id).all()
     assert len(agents) == 1
+
+
+def test_enroll_rejects_further_attempts_from_ip_past_per_ip_limit(ws_client, monkeypatch):
+    """Task 21: once this IP's per-attempt counter trips, the connection is
+    refused before a single Noise handshake byte is processed — the server
+    never even replies to the client's handshake message."""
+    from app.services import agent_enrollment
+
+    monkeypatch.setattr(agent_enrollment, "_WS_ATTEMPT_IP_LIMIT", 1)
+
+    # First attempt: under the (lowered) limit, completes the full handshake normally.
+    _, server_pub = get_server_static_keypair()
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+        initiator = TestNoiseInitiator(secrets.token_bytes(32), server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+        initiator.decrypt(ws.receive_bytes())
+
+    # Second attempt from the same (TestClient-fixed) source IP: over the
+    # limit, rejected immediately with no handshake response at all.
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with ws_client.websocket_connect("/api/v1/agents/enroll") as ws2:
+            initiator2 = TestNoiseInitiator(secrets.token_bytes(32), server_pub)
+            ws2.send_bytes(initiator2.write_message())
+            ws2.receive_bytes()  # nothing coming — server already closed
+
+    assert exc_info.value.code == 1013
+
+
+def test_enroll_rejects_regardless_of_ip_once_global_limit_exceeded(ws_client, monkeypatch):
+    """Task 21: the global counter trips independently of the per-IP one —
+    lowering only the global limit (leaving the per-IP ceiling at its
+    default) still rejects a subsequent attempt. (Per-IP independence of
+    the global counter — i.e. that a *different* IP is what actually stays
+    unblocked — is covered at the unit level in
+    test_agent_enrollment.py::test_ws_attempt_exceeding_global_limit_rejects_regardless_of_ip,
+    since Starlette's TestClient can't be made to present a different
+    source IP per connection here.)"""
+    from app.services import agent_enrollment
+
+    monkeypatch.setattr(agent_enrollment, "_WS_ATTEMPT_GLOBAL_LIMIT", 1)
+
+    _, server_pub = get_server_static_keypair()
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+        initiator = TestNoiseInitiator(secrets.token_bytes(32), server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+        initiator.decrypt(ws.receive_bytes())
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with ws_client.websocket_connect("/api/v1/agents/enroll") as ws2:
+            initiator2 = TestNoiseInitiator(secrets.token_bytes(32), server_pub)
+            ws2.send_bytes(initiator2.write_message())
+            ws2.receive_bytes()
+
+    assert exc_info.value.code == 1013
+
+
+def test_enroll_rejects_new_pending_agent_past_concurrent_cap(db_session, ws_client, monkeypatch):
+    """Task 21: once MAX_CONCURRENT_PENDING_AGENTS agents already await
+    approval, a brand-new device's /enroll handshake is refused before a new
+    pending row (and its long-held approval-poll connection) is created for
+    it. A device that already has a pending row of its own is unaffected —
+    only the *new-row* path is capped (see enroll_stream's `else` branch)."""
+    from app.core.agent_crypto import _public_from_private
+    from app.db.session import SessionLocal
+    from app.services import agent_registry
+
+    # Other tests in this module create pending agents via real committed
+    # SessionLocal() connections (same reason test_enroll_rejects_reconnect
+    # _from_previously_rejected_device does) that outlive `db_session`'s own
+    # per-test rollback, so the DB isn't guaranteed empty of pending agents
+    # here — count what's already there and cap exactly one above it.
+    baseline_pending = db_session.query(Agent).filter_by(status="pending").count()
+    monkeypatch.setattr(agent_registry, "MAX_CONCURRENT_PENDING_AGENTS", baseline_pending + 1)
+
+    # Seed exactly the (lowered) cap's worth of pending agents directly —
+    # cheaper than driving that many real handshakes end to end.
+    with SessionLocal() as db:
+        agent_registry.create_pending_agent(
+            db,
+            device_pk=secrets.token_hex(32),
+            fingerprint=secrets.token_hex(16),
+            hostname="filler-box",
+        )
+        db.commit()
+
+    _, server_pub = get_server_static_keypair()
+    agent_priv = secrets.token_bytes(32)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+            initiator = TestNoiseInitiator(agent_priv, server_pub)
+            ws.send_bytes(initiator.write_message())
+            initiator.read_message(ws.receive_bytes())
+            ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+            ws.receive_bytes()
+
+    assert exc_info.value.code == 1013
+
+    device_pk_hex = _public_from_private(agent_priv).hex()
+    agents_for_device = db_session.query(Agent).filter_by(device_pk=device_pk_hex).all()
+    assert agents_for_device == []
+    assert db_session.query(Agent).filter_by(status="pending").count() == baseline_pending + 1
+
+
+def test_enroll_reconnect_of_pending_device_unaffected_by_concurrent_cap(
+    db_session, ws_client, monkeypatch
+):
+    """The concurrent-pending cap only guards the create-a-new-row path — a
+    device reconnecting to /enroll while its own enrollment is still pending
+    reuses that same row (see the reconnect-of-still-pending tests above),
+    so it must succeed even when the cap is already saturated by *other*
+    agents' pending rows."""
+    from app.services import agent_registry
+
+    # See test_enroll_rejects_new_pending_agent_past_concurrent_cap for why
+    # the cap is set relative to a measured baseline rather than assumed 0.
+    baseline_pending = db_session.query(Agent).filter_by(status="pending").count()
+    monkeypatch.setattr(agent_registry, "MAX_CONCURRENT_PENDING_AGENTS", baseline_pending + 1)
+
+    _, server_pub = get_server_static_keypair()
+    agent_priv = secrets.token_bytes(32)
+
+    # First connection creates the one new pending row the (lowered) cap allows.
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+        ack_pt = initiator.decrypt(ws.receive_bytes())
+    first_agent_id = json.loads(ack_pt)["payload"]["agent_id"]
+
+    # Same device reconnects while its own enrollment is still pending —
+    # reuses its row rather than needing a fresh slot under the cap.
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws2:
+        initiator2 = TestNoiseInitiator(agent_priv, server_pub)
+        ws2.send_bytes(initiator2.write_message())
+        initiator2.read_message(ws2.receive_bytes())
+        ws2.send_bytes(initiator2.encrypt(_make_hello_frame_bytes()))
+        ack_pt2 = initiator2.decrypt(ws2.receive_bytes())
+
+    ack_payload2 = json.loads(ack_pt2)["payload"]
+    assert ack_payload2["agent_id"] == first_agent_id
+    assert db_session.query(Agent).filter_by(status="pending").count() == baseline_pending + 1

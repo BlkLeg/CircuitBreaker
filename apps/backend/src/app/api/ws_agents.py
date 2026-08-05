@@ -88,6 +88,17 @@ async def enroll_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     client_ip = websocket.client.host if websocket.client else "unknown"
 
+    # Task 21: per-IP + global attempt-rate gate, checked before any Noise
+    # handshake byte is read. A bare close with no payload — this endpoint
+    # has no cipher to send an encrypted error frame under yet, and even a
+    # plaintext reason would leak which limit tripped to an anonymous,
+    # adversarial-by-default caller. 1013 ("Try Again Later") signals
+    # "rate limited, retry later" without distinguishing per-IP, global, or
+    # (further below) the concurrent-pending-enrollment cap.
+    if not await agent_enrollment.check_and_record_ws_attempt("enroll", client_ip):
+        await websocket.close(code=1013)
+        return
+
     try:
         handshake_msg = await asyncio.wait_for(
             websocket.receive_bytes(), timeout=_HANDSHAKE_TIMEOUT_SECONDS
@@ -163,6 +174,14 @@ async def enroll_stream(websocket: WebSocket) -> None:
             agent = existing
             newly_created = False
         else:
+            # Task 21: concurrent-pending-enrollment cap. Only guards the
+            # genuinely-new-row path — a device_pk already pending (the
+            # branch above) is reusing an existing row, not adding to the
+            # count, so it's never blocked by this check.
+            pending_count = agent_registry.count_pending_agents(db)
+            if pending_count >= agent_registry.MAX_CONCURRENT_PENDING_AGENTS:
+                await websocket.close(code=1013)
+                return
             agent = agent_registry.create_pending_agent(
                 db,
                 device_pk=device_pk_hex,
@@ -362,6 +381,13 @@ async def _run_control_frame_listener(agent_id: int, queue: asyncio.Queue[dict])
 @unauthenticated_router.websocket("/link")
 async def link_stream(websocket: WebSocket) -> None:
     await websocket.accept()
+    client_ip = websocket.client.host if websocket.client else "unknown"
+
+    # Task 21: same attempt-rate gate as enroll_stream, before any Noise
+    # handshake byte is read — see its comment for the close-code rationale.
+    if not await agent_enrollment.check_and_record_ws_attempt("link", client_ip):
+        await websocket.close(code=1013)
+        return
 
     try:
         handshake_msg = await asyncio.wait_for(
