@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
@@ -270,5 +271,182 @@ func TestOpenSpool_DefaultsCapWhenConfigZero(t *testing.T) {
 	}
 	if got := sp.Len(); got != 3 {
 		t.Errorf("Len() = %d, want 3 — a zero cap (not defaulted) would have evicted down to 1", got)
+	}
+}
+
+// --- Task 30: startup ownership/mode audit -------------------------------
+
+// sensitiveAuditFiles mirrors the file classes auditStateDir enforces —
+// identity (device.key), cached capability grant (grants.json), and runtime
+// status (status.json) — so tests can drive all three from one table
+// instead of triplicating each case.
+var sensitiveAuditFiles = []string{"device.key", "grants.json", "status.json"}
+
+// TestAuditStateDir_MissingStateDir covers the "never ran yet" case — no
+// state directory exists at all. This is not an error: nothing has been
+// created, so there is nothing to audit, and callers that need the
+// directory to exist (enroll.LoadOrCreateDeviceKey et al.) create it
+// themselves before auditStateDir ever runs in the real startup sequence.
+func TestAuditStateDir_MissingStateDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := auditStateDir(dir, os.Geteuid(), os.Getegid()); err != nil {
+		t.Errorf("auditStateDir() error = %v, want nil for a state dir that was never created", err)
+	}
+}
+
+// TestAuditStateDir_MissingSensitiveFileIsNotError covers a fresh install
+// that has an identity but has never received a capabilities.set frame
+// (spec §4.2) — grants.json legitimately does not exist yet. Auditing must
+// not treat an individual missing sensitive file as an error.
+func TestAuditStateDir_MissingSensitiveFileIsNotError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "device.key"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed device.key: %v", err)
+	}
+	// grants.json and status.json deliberately absent.
+
+	if err := auditStateDir(dir, os.Geteuid(), os.Getegid()); err != nil {
+		t.Errorf("auditStateDir() error = %v, want nil when grants.json/status.json don't exist yet", err)
+	}
+}
+
+// TestAuditStateDir_CorrectOwnershipAndModesPassSilently is the "well-formed
+// install" baseline: every sensitive file already at 0600, owned by the
+// user this process actually runs as. auditStateDir must return nil and
+// must not touch any file (no unnecessary chmod).
+func TestAuditStateDir_CorrectOwnershipAndModesPassSilently(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range sensitiveAuditFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	if err := auditStateDir(dir, os.Geteuid(), os.Getegid()); err != nil {
+		t.Errorf("auditStateDir() error = %v, want nil for correct ownership and mode", err)
+	}
+
+	for _, name := range sensitiveAuditFiles {
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %04o after audit, want unchanged 0600", name, got)
+		}
+	}
+}
+
+// TestAuditStateDir_CorrectsWrongMode covers the actual gap this task
+// closes: status.json's mode was only ever set at creation (Task 20) — this
+// asserts every one of the three sensitive file classes gets its mode
+// corrected back to 0600 at startup, not merely at creation, if it is ever
+// found wider.
+func TestAuditStateDir_CorrectsWrongMode(t *testing.T) {
+	for _, name := range sensitiveAuditFiles {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+				t.Fatalf("seed %s: %v", name, err)
+			}
+
+			if err := auditStateDir(dir, os.Geteuid(), os.Getegid()); err != nil {
+				t.Fatalf("auditStateDir() error = %v, want nil (mode drift is corrected, not fatal)", err)
+			}
+
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat %s: %v", path, err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Errorf("%s mode after audit = %04o, want corrected to 0600", name, got)
+			}
+		})
+	}
+}
+
+// TestAuditStateDir_OwnershipMismatchFailsLoudly covers the fail-loud path:
+// when the state directory (and everything under it) isn't owned by the
+// user the daemon is actually running as, auditStateDir must return an
+// error rather than silently continuing — the caller in runDaemon turns
+// this into a startup abort. It also asserts nothing gets chmod'd once
+// ownership has already failed: a daemon that's about to refuse to start
+// has no business mutating files it may not trust.
+func TestAuditStateDir_OwnershipMismatchFailsLoudly(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range sensitiveAuditFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	// A uid that cannot equal os.Geteuid() — this process's own euid,
+	// offset by one — stands in for "owned by someone other than the
+	// dedicated agent user" without requiring root to actually chown a
+	// file to a different real user in a test environment.
+	wrongUID := os.Geteuid() + 1
+
+	err := auditStateDir(dir, wrongUID, os.Getegid())
+	if err == nil {
+		t.Fatal("auditStateDir() error = nil, want a loud failure on ownership mismatch")
+	}
+
+	for _, name := range sensitiveAuditFiles {
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != 0o644 {
+			t.Errorf("%s mode = %04o after a failed ownership audit, want untouched 0644 (no mode-correction after a fail-loud abort)", name, got)
+		}
+	}
+}
+
+// fakeFileInfo wraps a real os.FileInfo but reports a caller-supplied
+// syscall.Stat_t from Sys(), so checkOwnership's uid/gid comparison can be
+// exercised against an arbitrary owner without needing to actually chown a
+// file to a different real user (which requires root).
+type fakeFileInfo struct {
+	os.FileInfo
+	stat syscall.Stat_t
+}
+
+func (f fakeFileInfo) Sys() any { return &f.stat }
+
+// TestCheckOwnership_PerFileClass exercises checkOwnership directly against
+// each sensitive file class with a synthetic owner, so a file-level (not
+// just directory-level) ownership mismatch on device.key, grants.json, and
+// status.json specifically is proven to fail loudly.
+func TestCheckOwnership_PerFileClass(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range sensitiveAuditFiles {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+				t.Fatalf("seed %s: %v", name, err)
+			}
+			realInfo, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat %s: %v", path, err)
+			}
+
+			// Matching owner passes silently.
+			match := fakeFileInfo{FileInfo: realInfo, stat: syscall.Stat_t{Uid: 42, Gid: 42}}
+			if err := checkOwnership(path, match, 42, 42); err != nil {
+				t.Errorf("checkOwnership() error = %v, want nil for a matching owner", err)
+			}
+
+			// Mismatched owner fails loudly.
+			mismatch := fakeFileInfo{FileInfo: realInfo, stat: syscall.Stat_t{Uid: 42, Gid: 42}}
+			if err := checkOwnership(path, mismatch, 43, 42); err == nil {
+				t.Error("checkOwnership() error = nil, want a loud failure for a uid mismatch")
+			}
+			if err := checkOwnership(path, mismatch, 42, 43); err == nil {
+				t.Error("checkOwnership() error = nil, want a loud failure for a gid mismatch")
+			}
+		})
 	}
 }
