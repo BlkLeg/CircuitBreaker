@@ -434,3 +434,223 @@ async def test_receive_frame_then_dispatch_frame_pipeline(db_session, factories,
 
     await agent_link.dispatch_frame(db_session, agent, frame)
     refresh.assert_called_once()
+
+
+# ── key.rotate, kind="device" (Task 27) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_device_kind_starts_rotation(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+    successor = "bb" * 32
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": successor,
+            # Deliberately a much longer window than the server's own
+            # default — start_device_key_rotation must ignore this, the
+            # transition window is server-controlled, not client-negotiable.
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_device_pk == successor
+    assert agent.pending_device_pk_expiry is not None
+    from datetime import UTC, datetime
+
+    delta = (agent.pending_device_pk_expiry - datetime.now(UTC)).total_seconds()
+    from app.services import agent_registry
+
+    assert delta < agent_registry.DEVICE_KEY_ROTATION_WINDOW_SECONDS + 5
+
+    event = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="key_rotation_started")
+        .one()
+    )
+    assert "expires_at" in event.detail
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_ignores_server_kind_from_an_agent(db_session, factories):
+    """kind="server" is Task 28's direction (server -> agent); an inbound
+    frame claiming it is not a request this handler understands and must be
+    dropped, not misinterpreted as a device-key rotation request."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={"kind": "server", "successor_pk": "cc" * 32, "expiry": "2026-09-01T12:00:00Z"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_device_pk is None
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_malformed_payload_does_not_raise(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(type="key.rotate", ts="2026-08-04T12:00:00Z", payload={"kind": "device"})
+    await agent_link.dispatch_frame(db_session, agent, frame)  # must not raise
+
+    assert agent.pending_device_pk is None
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_successor_pk",
+    [
+        "zz" * 32,  # not hex
+        "ab" * 31,  # too short
+        "ab" * 5000,  # unbounded-length input (review finding I1)
+    ],
+)
+async def test_dispatch_key_rotate_malformed_successor_pk_does_not_raise(
+    db_session, factories, bad_successor_pk
+):
+    """C1 regression: `KeyRotatePayload.successor_pk` must reject a non-hex
+    or wrong-length value at frame-decode time (pydantic ValidationError,
+    caught in `_handle_key_rotate`) rather than reaching
+    `start_device_key_rotation`'s `bytes.fromhex(...)`, which would raise an
+    unhandled ValueError that — over the real /link socket — tears down the
+    agent's connection (see tests/api/test_ws_agents_link.py's live-socket
+    proof of the same finding)."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": bad_successor_pk,
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)  # must not raise
+
+    assert agent.pending_device_pk is None
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_rejects_successor_matching_current_key(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": agent.device_pk,
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_device_pk is None
+    event = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="key_rotation_rejected")
+        .one()
+    )
+    assert event.detail == {"reason": "successor_matches_current"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_requires_no_capability_grant(db_session, factories):
+    """key.rotate is a transport/security control frame like heartbeat/
+    update.status — dispatched regardless of capability grants, and must
+    never record a capability_violation."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": "dd" * 32,
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    violations = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="capability_violation")
+        .count()
+    )
+    assert violations == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_publishes_ack_control_frame(db_session, factories, monkeypatch):
+    """Once the pending key is durably committed, the server acknowledges it
+    back to the agent over the same key.rotate frame type/kind — the ack the
+    agent's own atomic device.key swap is gated on."""
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.agent_registry.publish_agent_control_frame", publish)
+
+    agent = factories.agent(status="active")
+    successor = "ee" * 32
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={"kind": "device", "successor_pk": successor, "expiry": "2026-09-01T12:00:00Z"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    publish.assert_called_once()
+    call_agent_id, call_frame = publish.call_args[0]
+    assert call_agent_id == agent.id
+    assert call_frame["type"] == "key.rotate"
+    assert call_frame["payload"]["kind"] == "device"
+    assert call_frame["payload"]["successor_pk"] == successor
+    assert "expiry" in call_frame["payload"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_key_rotate_does_not_publish_ack_when_rejected(
+    db_session, factories, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr("app.services.agent_registry.publish_agent_control_frame", publish)
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": agent.device_pk,
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    publish.assert_not_called()

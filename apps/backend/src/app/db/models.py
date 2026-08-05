@@ -306,6 +306,17 @@ class Agent(Base):
     # an `update.status` frame with phase failed/rolled_back arrives for it
     # (agent_link._handle_update_status). Never set directly by a hello.
     pending_update_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Task 27: device-key rotation. Set together by
+    # agent_registry.start_device_key_rotation once an authenticated `/link`
+    # session's `key.rotate` (kind="device") frame is accepted; cleared
+    # together either by agent_registry.settle_device_key_rotation (promotion
+    # on the first successful link under the new key, or lazy cleanup once
+    # the transition window has elapsed) — never set/cleared independently of
+    # each other.
+    pending_device_pk: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    pending_device_pk_expiry: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(

@@ -9,16 +9,19 @@ this module sits directly behind.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core import agent_crypto
 from app.core.time import utcnow
 from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, Hardware
 from app.schemas.agent_frame import HelloPayload
@@ -37,6 +40,20 @@ DEFAULT_CAPABILITY_GRANTS: dict[str, bool] = {
 # reuse to fall back on), so without a ceiling nothing bounds how many
 # pending rows — and their live-held /enroll poll connections — accumulate.
 MAX_CONCURRENT_PENDING_AGENTS = 100
+
+# Task 27: default device-key rotation transition window (Global Constraints:
+# "Device-key transition window defaults to 15 minutes"). Tests monkeypatch
+# this module attribute the same way tests monkeypatch
+# agent_crypto.REKEY_INTERVAL_SECONDS.
+DEVICE_KEY_ROTATION_WINDOW_SECONDS = 15 * 60
+
+# Task 27 fix round 1: a device public key is a 32-byte X25519 key, i.e.
+# exactly 64 lowercase hex characters. Mirrors
+# app.schemas.agent_frame.KeyRotatePayload's own validator — duplicated
+# rather than imported so this module's collision/format guard doesn't
+# raise on bad hex even if a future or direct caller reaches
+# `start_device_key_rotation` without going through that schema layer.
+_HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def create_pending_agent(db: Session, **fields: Any) -> Agent:
@@ -140,6 +157,46 @@ def get_agent(db: Session, agent_id: int) -> Agent | None:
 
 def get_agent_by_device_pk(db: Session, device_pk: str) -> Agent | None:
     return db.execute(select(Agent).where(Agent.device_pk == device_pk)).scalar_one_or_none()
+
+
+def resolve_agent_for_handshake(db: Session, device_pk_hex: str) -> Agent | None:
+    """Look up the Agent whose identity a completed `/link` Noise handshake's
+    initiator static key (`NoiseIKResponder.remote_static().hex()`) currently
+    authenticates.
+
+    This is `get_agent_by_device_pk`, extended (Task 27) to also match an
+    in-progress device-key rotation's not-yet-expired `pending_device_pk` —
+    see `agent_crypto.device_identity_matches` for why that check belongs to
+    the crypto module rather than duplicating its time-window logic here.
+    ws_agents.py's `link_stream` uses this instead of `get_agent_by_device_pk`
+    directly; `enroll_stream` keeps using the exact-match function as-is,
+    since enrollment has no rotation concept — a device mid-rotation
+    reconnects over `/link`, it doesn't re-enroll.
+    """
+    agent = get_agent_by_device_pk(db, device_pk_hex)
+    if agent is not None:
+        return agent
+
+    # `.first()`, not `.scalar_one_or_none()`: `pending_device_pk` is a
+    # non-unique indexed column (unlike `device_pk`), so this must never be
+    # able to raise `MultipleResultsFound` on a duplicate — even though
+    # `start_device_key_rotation`'s collision check is what actually
+    # prevents that duplicate from being written in the first place, this
+    # read path is a defensive backstop against one somehow slipping through
+    # (Task 27 fix round 1).
+    candidate = (
+        db.execute(select(Agent).where(Agent.pending_device_pk == device_pk_hex)).scalars().first()
+    )
+    if candidate is None:
+        return None
+    if agent_crypto.device_identity_matches(
+        device_pk_hex,
+        current_pk=candidate.device_pk,
+        pending_pk=candidate.pending_device_pk,
+        pending_expiry=candidate.pending_device_pk_expiry,
+    ):
+        return candidate
+    return None
 
 
 def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> None:
@@ -312,6 +369,171 @@ def revoke_agent(
     record_event(db, agent.id, "revoked", actor_user_id=actor_user_id, detail={"reason": reason})
     db.flush()
     return agent
+
+
+def start_device_key_rotation(
+    db: Session,
+    agent: Agent,
+    successor_pk: str,
+    *,
+    window_seconds: int | None = None,
+) -> bool:
+    """Begin a device-key rotation for `agent`: persists `successor_pk` as its
+    `pending_device_pk`, with an expiry `window_seconds` (default
+    `DEVICE_KEY_ROTATION_WINDOW_SECONDS`, i.e. 15 minutes per Global
+    Constraints) from now, and records `key_rotation_started`.
+
+    Per Global Constraints ("The authenticated old Noise channel authorizes
+    device-key rotation"), the only authorization this function requires is
+    that its caller reached it from a `key.rotate` (kind="device") frame
+    successfully decrypted and dispatched over an already-established `/link`
+    session for this exact `agent` row — see `agent_link._handle_key_rotate`.
+    This function itself performs no channel/identity check of its own, and
+    the server-computed expiry always wins over whatever `expiry` the agent's
+    own `KeyRotatePayload` proposed: the transition window is entirely
+    server-controlled, not client-negotiable.
+
+    Rejects (records `key_rotation_rejected`, leaves the row untouched, and
+    returns `False`) rather than storing a pending key that could never be
+    safely promoted:
+      - `successor_pk` isn't exactly 64 lowercase hex characters (a 32-byte
+        X25519 public key) — defense in depth alongside
+        `KeyRotatePayload._successor_pk_must_be_hex_pubkey`'s frame-decode-time
+        validator: this function must never raise on a malformed value even
+        if some future/direct caller bypasses the schema layer, since
+        `hashlib.sha256(bytes.fromhex(successor_pk))` below would otherwise
+        raise an unhandled `ValueError` on bad hex.
+      - `successor_pk` identical to the agent's current `device_pk` — a
+        no-op rotation.
+      - `successor_pk` already claimed by a *different* Agent row, either as
+        its current `device_pk` or as another agent's in-progress
+        `pending_device_pk` — storing it anyway would either collide with
+        `device_pk`'s uniqueness constraint the moment
+        `settle_device_key_rotation` tried to promote it, or leave two
+        agents with the same `pending_device_pk`, which makes
+        `resolve_agent_for_handshake`'s lookup on that column ambiguous.
+
+    A second call while a prior pending rotation is still unexpired simply
+    supersedes it (new successor key, restarted timer) — Task 27 places no
+    "reject a second rotation while one is active" requirement on device-key
+    rotation the way Task 28 does for the server's own key.
+    """
+    if not _HEX_PK_RE.fullmatch(successor_pk):
+        record_event(
+            db,
+            agent.id,
+            "key_rotation_rejected",
+            detail={"reason": "successor_pk_malformed"},
+        )
+        return False
+
+    if successor_pk == agent.device_pk:
+        record_event(
+            db,
+            agent.id,
+            "key_rotation_rejected",
+            detail={"reason": "successor_matches_current"},
+        )
+        return False
+
+    collision = (
+        db.execute(
+            select(Agent).where(
+                or_(Agent.device_pk == successor_pk, Agent.pending_device_pk == successor_pk),
+                Agent.id != agent.id,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if collision is not None:
+        record_event(
+            db,
+            agent.id,
+            "key_rotation_rejected",
+            detail={"reason": "successor_key_in_use"},
+        )
+        return False
+
+    window = window_seconds if window_seconds is not None else DEVICE_KEY_ROTATION_WINDOW_SECONDS
+    expiry = utcnow() + timedelta(seconds=window)
+    agent.pending_device_pk = successor_pk
+    agent.pending_device_pk_expiry = expiry
+    record_event(
+        db,
+        agent.id,
+        "key_rotation_started",
+        detail={
+            "successor_fingerprint": hashlib.sha256(bytes.fromhex(successor_pk)).hexdigest()[:16],
+            "expires_at": expiry.isoformat(),
+        },
+    )
+    db.flush()
+    return True
+
+
+def settle_device_key_rotation(
+    db: Session, agent: Agent, connected_device_pk: str, *, now: datetime | None = None
+) -> None:
+    """Settle whichever side of an in-progress device-key rotation one
+    accepted `/link` handshake represents. Call once per accepted handshake,
+    right after `resolve_agent_for_handshake` has already confirmed
+    `connected_device_pk` is a currently-valid identity for `agent` (its
+    current key, or its unexpired pending key) — this function trusts that
+    check rather than repeating it.
+
+    - Connected on the *pending* key: this is the rotation's first successful
+      link under the new identity (Task 27: "promote the pending identity on
+      its first successful link"). Promotes it to `device_pk`, clears the
+      pending fields, and records `key_rotated`.
+    - Connected on the *current* key while a pending rotation has passed its
+      expiry: lazily clears the stale pending fields and records
+      `key_rotation_expired` — there is no scheduled sweep for this (compare
+      `expire_stale_pending_agents`, which does run on a schedule for a
+      different column); the agent's own next reconnect on its unchanged
+      current key is what notices and clears it.
+    - Connected on the current key with no pending rotation, or with one
+      that's still inside its window: no-op.
+
+    A residual, deliberately-unhandled race: if some *other* Agent row
+    enrolls with the exact bytes of this agent's `pending_device_pk` between
+    `start_device_key_rotation`'s collision check and this promotion, the
+    `device_pk` UNIQUE constraint raises here. No caller in this codebase
+    catches that today (the equivalent enrollment-side race is exactly as
+    unhandled), so this doesn't newly introduce a gap.
+    """
+    reference = now if now is not None else utcnow()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+
+    if agent.pending_device_pk is not None and connected_device_pk == agent.pending_device_pk:
+        old_pk = agent.device_pk
+        agent.device_pk = agent.pending_device_pk
+        agent.pending_device_pk = None
+        agent.pending_device_pk_expiry = None
+        record_event(
+            db,
+            agent.id,
+            "key_rotated",
+            detail={
+                "old_fingerprint": hashlib.sha256(bytes.fromhex(old_pk)).hexdigest()[:16],
+                "new_fingerprint": hashlib.sha256(bytes.fromhex(connected_device_pk)).hexdigest()[
+                    :16
+                ],
+            },
+        )
+        db.flush()
+        return
+
+    if agent.pending_device_pk is not None and agent.pending_device_pk_expiry is not None:
+        expiry = agent.pending_device_pk_expiry
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if reference > expiry:
+            agent.pending_device_pk = None
+            agent.pending_device_pk_expiry = None
+            record_event(db, agent.id, "key_rotation_expired")
+            db.flush()
 
 
 def set_capability_grants(
