@@ -1,5 +1,29 @@
 name: cb-agent-e2e
 
+# Network topology (Task 31): cb-agent gets its OWN network namespace on a
+# dedicated Docker bridge network (agent-net), not
+# `network_mode: service:circuitbreaker` (the old, pre-Task-31 setup, which
+# had the agent share the server's network namespace entirely — no real
+# network boundary at all, and a direct conflict with the "no inbound route"
+# requirement below).
+#
+# circuitbreaker is attached to BOTH the implicit default network (so its
+# ports: mapping keeps working for the host-side test client hitting
+# localhost:8443) and agent-net (so the agent can reach it there). cb-agent
+# is attached ONLY to agent-net, and — critically — publishes/exposes no
+# ports at all: nothing outside this compose project, and nothing else on
+# agent-net either, has any route INTO the agent's container. The agent
+# dials OUT to circuitbreaker over agent-net (Docker's embedded DNS resolves
+# the "circuitbreaker" service name); nothing ever dials in. This is the
+# realistic "no extra setup, outbound-only HTTPS/WSS, never listen on a
+# remote-subnet port" shape the whole feature guarantees (see
+# test_agent_e2e.py's test_agent_outbound_only_topology_has_no_inbound_route
+# for the connectivity-probe proof).
+networks:
+  default: {}
+  agent-net:
+    driver: bridge
+
 services:
   circuitbreaker:
     extends:
@@ -16,6 +40,11 @@ services:
       - CB_VAULT_KEY=${CB_VAULT_KEY}
       - CB_JWT_SECRET=${CB_JWT_SECRET}
       - NATS_AUTH_TOKEN=${NATS_AUTH_TOKEN}
+      # Test-only rekey-interval override (Task 31 step 8) — read only if
+      # set; absent from every non-e2e deployment, so this changes nothing
+      # about REKEY_INTERVAL_SECONDS's production 15-minute default anywhere
+      # else. See app/core/agent_crypto.py's _resolve_rekey_interval_seconds.
+      - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
     volumes:
       # --workers 1: a pre-existing, out-of-scope bug — OOBE bootstrap's
       # vault-key rotation (auth_service._generate_and_persist_vault_key)
@@ -27,6 +56,22 @@ services:
       # Single-worker sidesteps it here; a real fix needs cross-process vault
       # key sync and is out of scope for this slice.
       - ./supervisord-e2e.conf:/etc/supervisor/conf.d/supervisord.conf:ro
+    # Base compose sets read_only: true (root filesystem is otherwise
+    # immutable, with specific tmpfs mounts for the paths that need to be
+    # writable in production). Overridden to false here, e2e-only: step 7's
+    # update/rollback scenario (test_agent_e2e.py) needs to drop a second
+    # agent-binary version + rewritten manifest.json into
+    # /opt/circuitbreaker/agent-binaries at runtime via `docker compose
+    # exec`, without rebuilding the whole mono image — and that directory
+    # isn't one of the base file's tmpfs exceptions (a tmpfs mount there
+    # would instead shadow the image's already-baked-in v1 binaries/
+    # manifest, breaking step 1's fetch-and-verify check). This relaxation
+    # is scoped to this throwaway e2e container only; it is not carried into
+    # any production compose file.
+    read_only: false
+    networks:
+      - default
+      - agent-net
 
   cb-agent:
     build:
@@ -37,7 +82,12 @@ services:
     volumes:
       - cb-agent-state:/var/lib/cb-agent
       - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
-    network_mode: service:circuitbreaker
+    environment:
+      - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
+    # ONLY agent-net — no `default`, no published/exposed ports anywhere in
+    # this file for this service. See the top-of-file topology note.
+    networks:
+      - agent-net
 
 volumes:
   cb-agent-state:
