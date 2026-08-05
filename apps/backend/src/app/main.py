@@ -1965,6 +1965,7 @@ async def favicon_file():
 
 @app.get("/install-agent.sh", include_in_schema=False)
 def get_install_agent_script(request: Request) -> Response:
+    from app.core import agent_crypto
     from app.db.session import SessionLocal
     from app.services import agent_install
 
@@ -1972,9 +1973,13 @@ def get_install_agent_script(request: Request) -> Response:
     with SessionLocal() as db:
         cert = agent_install._active_certificate(db)
         tls_mode, tls_pin = agent_install._tls_mode_and_pin(cert)
+        # Task 28: same successor-preferred key selection as
+        # agent_install.build_install_command — see its comment.
+        state = agent_crypto.load_server_key_rotation_state(db)
+        server_pub = state.successor_pub if state.successor_pub is not None else state.current_pub
         script = agent_install.render_install_script(
             server_url=server_url,
-            server_static_pk_hex=agent_install.get_server_static_keypair()[1].hex(),
+            server_static_pk_hex=server_pub.hex(),
             tls_pin=tls_pin,
             manifest=agent_install.agent_update.load_manifest(),
         )

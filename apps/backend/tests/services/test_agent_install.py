@@ -156,3 +156,73 @@ def test_build_install_command_fails_closed_without_pin(monkeypatch, db_session)
     # No certificate in database
     with pytest.raises(ValueError, match="Cannot obtain TLS pin"):
         agent_install.build_install_command(db_session, "https://cb.example.com")
+
+
+# ── Task 28: install scripts reflect the successor key after activation ────
+
+
+def _add_letsencrypt_cert(db_session) -> None:
+    """A `letsencrypt`-typed cert makes `_tls_mode_and_pin` return an empty,
+    deterministic pin (`tls_mode="public"`) — these tests only care about
+    which server public key `build_install_command` embeds, not TLS pinning,
+    so this sidesteps `test_build_install_command_fails_closed_without_pin`'s
+    fail-closed path entirely."""
+    from datetime import timedelta
+
+    from app.core.time import utcnow
+    from app.db.models import Certificate
+
+    db_session.add(
+        Certificate(
+            domain="cb.example.com",
+            type="letsencrypt",
+            cert_pem="-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            key_pem="-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----",
+            expires_at=utcnow() + timedelta(days=60),
+        )
+    )
+    db_session.flush()
+
+
+def test_build_install_command_uses_current_key_with_no_rotation_in_progress(db_session, app_cfg):
+    import hashlib
+
+    from app.core.agent_crypto import get_server_static_keypair
+
+    _, current_pub = get_server_static_keypair()
+    _add_letsencrypt_cert(db_session)
+
+    resp = agent_install.build_install_command(db_session, "https://cb.example.com")
+
+    expected_script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex=current_pub.hex(),
+        tls_pin="",
+        manifest=agent_install.agent_update.load_manifest(),
+    )
+    assert resp.script_sha256 == hashlib.sha256(expected_script.encode()).hexdigest()
+
+
+def test_build_install_command_prefers_successor_key_once_rotation_starts(db_session, app_cfg):
+    import hashlib
+
+    from app.core.agent_crypto import get_server_static_keypair, start_server_key_rotation
+
+    get_server_static_keypair()  # ensure the current key exists before rotating
+    _add_letsencrypt_cert(db_session)
+    state = start_server_key_rotation(db_session)
+    assert state is not None and state.successor_pub is not None
+
+    resp = agent_install.build_install_command(db_session, "https://cb.example.com")
+
+    expected_script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex=state.successor_pub.hex(),
+        tls_pin="",
+        manifest=agent_install.agent_update.load_manifest(),
+    )
+    # build_install_command's own script hash must match a script rendered
+    # with the *successor* key, not the current one — the successor key is
+    # the one this fresh install stays valid under after the current key is
+    # retired at the end of the overlap window.
+    assert resp.script_sha256 == hashlib.sha256(expected_script.encode()).hexdigest()

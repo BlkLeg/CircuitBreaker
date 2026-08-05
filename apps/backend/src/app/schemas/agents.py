@@ -135,3 +135,15 @@ class InstallCommandResponse(BaseModel):
     tls_mode: str
     command: str
     script_sha256: str
+
+
+class ServerKeyRotationStatus(BaseModel):
+    """Task 28: the server's identity-key rotation state, as surfaced to
+    admins. Never carries key material — fingerprints only, same convention
+    as `app.core.agent_crypto.server_fingerprint`."""
+
+    active: bool
+    current_key_fingerprint: str
+    successor_key_fingerprint: str | None = None
+    started_at: datetime | None = None
+    overlap_expires_at: datetime | None = None

@@ -5,9 +5,12 @@ import pytest
 from app.core.agent_crypto import (
     ClockSkewError,
     check_clock_skew,
+    complete_ik_handshake,
     device_identity_matches,
     get_server_static_keypair,
+    load_server_key_rotation_state,
     server_fingerprint,
+    start_server_key_rotation,
 )
 
 
@@ -392,3 +395,173 @@ def test_device_identity_matches_defaults_now_to_the_real_current_time():
         pending_pk="bb",
         pending_expiry=datetime.now(UTC) + timedelta(minutes=10),
     )
+
+
+# ── server-key rotation with an overlap window (Task 28) ───────────────────
+
+
+def test_load_server_key_rotation_state_defaults_to_no_active_rotation(db_session, app_cfg):
+    current_priv, current_pub = get_server_static_keypair()
+
+    state = load_server_key_rotation_state(db_session)
+
+    assert state.rotation_active is False
+    assert state.successor_priv is None
+    assert state.successor_pub is None
+    assert state.started_at is None
+    assert state.overlap_expires_at is None
+    assert state.current_priv == current_priv
+    assert state.current_pub == current_pub
+
+
+def test_start_server_key_rotation_generates_distinct_successor_with_overlap_expiry(
+    db_session, app_cfg
+):
+    current_priv, _ = get_server_static_keypair()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    state = start_server_key_rotation(db_session, overlap_seconds=3600, now=now)
+
+    assert state is not None
+    assert state.rotation_active is True
+    assert state.current_priv == current_priv
+    assert state.successor_priv is not None
+    assert state.successor_priv != current_priv
+    assert state.started_at == now
+    assert state.overlap_expires_at == now + timedelta(seconds=3600)
+
+
+def test_start_server_key_rotation_defaults_to_seven_day_overlap(db_session, app_cfg):
+    from app.core.agent_crypto import SERVER_KEY_OVERLAP_SECONDS
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert SERVER_KEY_OVERLAP_SECONDS == 7 * 24 * 60 * 60
+
+    state = start_server_key_rotation(db_session, now=now)
+
+    assert state.overlap_expires_at == now + timedelta(days=7)
+
+
+def test_start_server_key_rotation_rejects_second_call_while_overlap_is_active(
+    db_session, app_cfg
+):
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    first = start_server_key_rotation(db_session, overlap_seconds=3600, now=now)
+    assert first is not None
+
+    second = start_server_key_rotation(
+        db_session, overlap_seconds=3600, now=now + timedelta(minutes=5)
+    )
+
+    assert second is None
+    # The first rotation's successor must be untouched by the rejected call.
+    state = load_server_key_rotation_state(db_session, now=now + timedelta(minutes=5))
+    assert state.successor_priv == first.successor_priv
+
+
+def test_start_server_key_rotation_allowed_again_once_prior_overlap_has_elapsed(
+    db_session, app_cfg
+):
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    first = start_server_key_rotation(db_session, overlap_seconds=60, now=now)
+    assert first is not None
+
+    past_expiry = now + timedelta(seconds=61)
+    second = start_server_key_rotation(db_session, overlap_seconds=60, now=past_expiry)
+
+    assert second is not None
+    assert second.rotation_active is True
+    # The first rotation's successor was promoted to current before the new
+    # one's successor was generated.
+    assert second.current_priv == first.successor_priv
+    assert second.successor_priv != first.successor_priv
+
+
+def _write_message_against(server_pub: bytes) -> tuple[bytes, bytes]:
+    """One Noise IK initiator message keyed to `server_pub`, plus the agent's
+    own private key (for building a full initiator later if a test needs
+    one). Returns (msg1, agent_priv)."""
+    import secrets
+
+    from tests.helpers.agent_noise_client import TestNoiseInitiator
+
+    agent_priv = secrets.token_bytes(32)
+    initiator = TestNoiseInitiator(agent_priv, server_pub)
+    return initiator.write_message(), agent_priv
+
+
+def test_complete_ik_handshake_succeeds_against_current_key_with_no_rotation(db_session, app_cfg):
+    _, server_pub = get_server_static_keypair()
+    msg1, _ = _write_message_against(server_pub)
+
+    result = complete_ik_handshake(msg1, db_session)
+
+    assert result is not None
+    _responder, _response, key_kind = result
+    assert key_kind == "current"
+
+
+def test_complete_ik_handshake_rejects_unknown_key(db_session, app_cfg):
+    import secrets
+
+    from cryptography.hazmat.primitives.asymmetric import x25519
+
+    get_server_static_keypair()
+    unrelated_pub = (
+        x25519.X25519PrivateKey.from_private_bytes(secrets.token_bytes(32))
+        .public_key()
+        .public_bytes_raw()
+    )
+    msg1, _ = _write_message_against(unrelated_pub)
+
+    assert complete_ik_handshake(msg1, db_session) is None
+
+
+def test_complete_ik_handshake_succeeds_against_both_keys_during_overlap_window(
+    db_session, app_cfg
+):
+    _, current_pub = get_server_static_keypair()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = start_server_key_rotation(db_session, overlap_seconds=3600, now=now)
+    assert state is not None and state.successor_pub is not None
+
+    current_msg, _ = _write_message_against(current_pub)
+    successor_msg, _ = _write_message_against(state.successor_pub)
+
+    current_result = complete_ik_handshake(current_msg, db_session, now=now + timedelta(minutes=1))
+    successor_result = complete_ik_handshake(
+        successor_msg, db_session, now=now + timedelta(minutes=1)
+    )
+
+    assert current_result is not None
+    assert current_result[2] == "current"
+    assert successor_result is not None
+    assert successor_result[2] == "successor"
+
+
+def test_complete_ik_handshake_retires_previous_key_once_overlap_elapses(db_session, app_cfg):
+    """The clock is advanced explicitly (`now=`) rather than sleeping a real
+    7 days — a handshake against the *old* current key must be rejected once
+    the overlap window has elapsed, while the successor (now promoted to
+    the sole current key) keeps working."""
+    _, old_current_pub = get_server_static_keypair()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    state = start_server_key_rotation(db_session, overlap_seconds=60, now=now)
+    assert state is not None and state.successor_pub is not None
+    successor_pub = state.successor_pub
+
+    past_expiry = now + timedelta(seconds=61)
+    old_key_msg, _ = _write_message_against(old_current_pub)
+    successor_msg, _ = _write_message_against(successor_pub)
+
+    old_key_result = complete_ik_handshake(old_key_msg, db_session, now=past_expiry)
+    successor_result = complete_ik_handshake(successor_msg, db_session, now=past_expiry)
+
+    assert old_key_result is None
+    assert successor_result is not None
+    assert successor_result[2] == "current"
+
+    # The rotation has genuinely settled, not just been excluded in this call.
+    settled_state = load_server_key_rotation_state(db_session, now=past_expiry)
+    assert settled_state.rotation_active is False
+    assert settled_state.current_pub == successor_pub

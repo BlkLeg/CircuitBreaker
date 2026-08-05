@@ -536,6 +536,34 @@ def settle_device_key_rotation(
             db.flush()
 
 
+def record_server_key_pin(
+    db: Session, agent: Agent, key_kind: str, *, now: datetime | None = None
+) -> None:
+    """Record that `agent`'s most recent successful `/link` Noise handshake
+    authenticated against the server's "current" or "successor" identity key
+    (Task 28) — `key_kind` is whichever of those two strings
+    `agent_crypto.complete_ik_handshake` returned for that handshake.
+
+    Purely observational: nothing about handshake acceptance depends on
+    these two timestamp columns (`agent_crypto.complete_ik_handshake` already
+    decided acceptance before this is ever called). They exist so an
+    admin's server-key rotation status view can answer "how much of the
+    fleet has already pinned the successor key" — see `Agent.
+    server_pk_current_pinned_at`/`server_pk_successor_pinned_at`'s docstring
+    — rather than only knowing the rotation's global start/overlap timing.
+    An unrecognized `key_kind` (should never happen — the crypto layer only
+    ever produces "current"/"successor") is treated the same as "current",
+    matching `settle_device_key_rotation`'s bias toward not raising on
+    caller-internal invariants it trusts rather than re-validates.
+    """
+    reference = now if now is not None else utcnow()
+    if key_kind == "successor":
+        agent.server_pk_successor_pinned_at = reference
+    else:
+        agent.server_pk_current_pinned_at = reference
+    db.flush()
+
+
 def set_capability_grants(
     db: Session, agent_id: int, grants: dict[str, bool], *, actor_user_id: int
 ) -> list[AgentCapabilityGrant]:

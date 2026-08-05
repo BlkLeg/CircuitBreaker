@@ -305,3 +305,47 @@ def test_start_device_key_rotation_rejects_successor_already_pending_for_another
     resolved = svc.resolve_agent_for_handshake(db_session, shared_successor)
     assert resolved is not None
     assert resolved.id == agent_a.id
+
+
+# ── record_server_key_pin (Task 28) ────────────────────────────────────────
+
+
+def test_record_server_key_pin_current_sets_current_timestamp_only(db_session, factories):
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "current")
+
+    assert agent.server_pk_current_pinned_at is not None
+    assert agent.server_pk_successor_pinned_at is None
+
+
+def test_record_server_key_pin_successor_sets_successor_timestamp_only(db_session, factories):
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "successor")
+
+    assert agent.server_pk_successor_pinned_at is not None
+    assert agent.server_pk_current_pinned_at is None
+
+
+def test_record_server_key_pin_honors_explicit_now(db_session, factories):
+    agent = factories.agent(status="active")
+    when = utcnow() - timedelta(days=1)
+
+    svc.record_server_key_pin(db_session, agent, "current", now=when)
+
+    assert agent.server_pk_current_pinned_at == when
+
+
+def test_record_server_key_pin_updates_independently_across_calls(db_session, factories):
+    """Reconnecting on the current key after previously pinning the
+    successor (or vice versa) must not clear the other column — each
+    reflects its own key's most recent handshake."""
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "successor")
+    successor_ts = agent.server_pk_successor_pinned_at
+    svc.record_server_key_pin(db_session, agent, "current")
+
+    assert agent.server_pk_current_pinned_at is not None
+    assert agent.server_pk_successor_pinned_at == successor_ts

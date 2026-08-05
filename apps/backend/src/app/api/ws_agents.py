@@ -26,7 +26,6 @@ from app.core.agent_crypto import (
     NoiseIKResponder,
     RekeyError,
     check_clock_skew,
-    get_server_static_keypair,
 )
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.security import decode_token
@@ -113,14 +112,16 @@ async def enroll_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    server_priv, _ = get_server_static_keypair()
-    responder = NoiseIKResponder(server_priv)
-    try:
-        response = responder.read_message(handshake_msg)
-    except Exception:
+    # Task 28: tries the server's current identity key first, then (only
+    # while a server-key rotation's overlap window is still open) its
+    # successor — see agent_crypto.complete_ik_handshake's docstring.
+    with SessionLocal() as db:
+        handshake_result = agent_crypto.complete_ik_handshake(handshake_msg, db)
+    if handshake_result is None:
         _logger.info("agent enroll: handshake failed from %s", client_ip)
         await websocket.close(code=1008)
         return
+    responder, response, server_key_kind = handshake_result
     await websocket.send_bytes(response)
 
     try:
@@ -223,6 +224,10 @@ async def enroll_stream(websocket: WebSocket) -> None:
                     reported_ip=client_ip,
                 )
                 newly_created = True
+            # Task 28: which of the server's two overlapping identity keys
+            # this handshake actually authenticated against — see
+            # agent_registry.record_server_key_pin's docstring.
+            agent_registry.record_server_key_pin(db, agent, server_key_kind)
             db.commit()
         finally:
             if pending_lock_token is not None:
@@ -429,13 +434,15 @@ async def link_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    server_priv, _ = get_server_static_keypair()
-    responder = NoiseIKResponder(server_priv)
-    try:
-        response = responder.read_message(handshake_msg)
-    except Exception:
+    # Task 28: tries the server's current identity key first, then (only
+    # while a server-key rotation's overlap window is still open) its
+    # successor — see agent_crypto.complete_ik_handshake's docstring.
+    with SessionLocal() as db:
+        handshake_result = agent_crypto.complete_ik_handshake(handshake_msg, db)
+    if handshake_result is None:
         await websocket.close(code=1008)
         return
+    responder, response, server_key_kind = handshake_result
     await websocket.send_bytes(response)
 
     try:
@@ -470,6 +477,10 @@ async def link_stream(websocket: WebSocket) -> None:
         # see settle_device_key_rotation's docstring. A no-op when no
         # rotation is in progress (the common case).
         agent_registry.settle_device_key_rotation(db, agent, device_pk_hex)
+        # Task 28: which of the server's two overlapping identity keys this
+        # handshake actually authenticated against — see
+        # agent_registry.record_server_key_pin's docstring.
+        agent_registry.record_server_key_pin(db, agent, server_key_kind)
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
