@@ -128,6 +128,7 @@ def approve_agent(
     *,
     approving_user_id: int,
     hardware_id: int | None = None,
+    host_link_action: str | None = None,
     capability_overrides: dict[str, bool] | None = None,
 ) -> Agent:
     agent = db.get(Agent, agent_id)
@@ -152,7 +153,17 @@ def approve_agent(
             )
         )
 
-    record_event(db, agent.id, "approved", actor_user_id=approving_user_id)
+    # host_link_action (Task 18's AgentApprovalModal: accept/select/create/
+    # unlinked) is descriptive of *how* hardware_id was chosen, not required
+    # for linkage itself — recorded on the event detail so the audit trail
+    # distinguishes "approver accepted the proposed match" from "approver
+    # picked a different record" even when both land on the same
+    # hardware_id. Omitted entirely (both keys None) for older/untyped
+    # callers so existing `approved` event assertions keep matching.
+    detail = None
+    if hardware_id is not None or host_link_action is not None:
+        detail = {"hardware_id": hardware_id, "host_link_action": host_link_action}
+    record_event(db, agent.id, "approved", actor_user_id=approving_user_id, detail=detail)
     db.flush()
     return agent
 

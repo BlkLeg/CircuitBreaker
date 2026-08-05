@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -107,6 +107,15 @@ class PairingLookupResponse(BaseModel):
 
 class ApproveRequest(BaseModel):
     hardware_id: int | None = None
+    # Explicit record of which host-link path the approver took
+    # (`AgentApprovalModal`, Task 18) — "accept" the proposed match, "select"
+    # a different existing Hardware row, "create" one from reported facts
+    # (frontend creates it via POST /hardware first, then approves with the
+    # resulting id), or leave the agent "unlinked". Purely descriptive for
+    # the approval event's audit detail; `hardware_id` above is what
+    # actually drives linkage. Optional/omittable so existing untyped
+    # callers (and tests predating Task 18) keep working.
+    host_link_action: Literal["accept", "select", "create", "unlinked"] | None = None
     capabilities: dict[str, bool] | None = None
 
 
