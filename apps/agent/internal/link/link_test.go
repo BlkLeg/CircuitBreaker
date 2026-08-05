@@ -1278,6 +1278,42 @@ func (s *testResponderSession) RekeyRecv() { s.recv.Rekey() }
 // schedule. Traffic has to keep flowing across every generation, which is only
 // possible if the old-key-then-rekey ordering and the key derivation both hold
 // on both sides.
+// TestResolveRekeyInterval_UnsetIsInert pins the production-safety guarantee
+// for rekeyIntervalEnvOverride: with CB_AGENT_TEST_REKEY_INTERVAL_SECONDS
+// unset (the state of every real deployment), resolveRekeyInterval must
+// return exactly the 15-minute production default — byte-for-byte identical
+// to what this function returned before the override existed. This is the
+// test the doc comments on rekeyIntervalEnvOverride/rekeyInterval point to.
+func TestResolveRekeyInterval_UnsetIsInert(t *testing.T) {
+	t.Setenv(rekeyIntervalEnvOverride, "")
+	if got := resolveRekeyInterval(); got != 15*time.Minute {
+		t.Fatalf("resolveRekeyInterval() with env unset = %v, want 15m0s (production default must not move)", got)
+	}
+}
+
+// TestResolveRekeyInterval_HonorsOverride confirms the override actually
+// takes effect when explicitly set — the other half of the contract next to
+// TestResolveRekeyInterval_UnsetIsInert.
+func TestResolveRekeyInterval_HonorsOverride(t *testing.T) {
+	t.Setenv(rekeyIntervalEnvOverride, "7")
+	if got := resolveRekeyInterval(); got != 7*time.Second {
+		t.Fatalf("resolveRekeyInterval() with env=7 = %v, want 7s", got)
+	}
+}
+
+// TestResolveRekeyInterval_IgnoresGarbageAndNonPositive confirms malformed or
+// non-positive overrides are silently ignored rather than e.g. panicking or
+// producing a zero/negative ticker interval — the fallback is always the
+// production default in that case, never a broken interval.
+func TestResolveRekeyInterval_IgnoresGarbageAndNonPositive(t *testing.T) {
+	for _, v := range []string{"not-a-number", "0", "-5"} {
+		t.Setenv(rekeyIntervalEnvOverride, v)
+		if got := resolveRekeyInterval(); got != 15*time.Minute {
+			t.Fatalf("resolveRekeyInterval() with env=%q = %v, want 15m0s (production default)", v, got)
+		}
+	}
+}
+
 func TestRun_RekeysBothDirectionsOverMultipleIntervals(t *testing.T) {
 	originalRekey, originalHeartbeat := rekeyInterval, heartbeatInterval
 	rekeyInterval = 60 * time.Millisecond

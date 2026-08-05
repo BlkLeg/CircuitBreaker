@@ -234,6 +234,51 @@ def test_production_rekey_interval_is_fifteen_minutes():
     assert REKEY_INTERVAL_SECONDS == 15 * 60
 
 
+# ── _resolve_rekey_interval_seconds / CB_AGENT_TEST_REKEY_INTERVAL_SECONDS ──
+# Production-safety tests for the Docker-E2E-only override (Task 31). The
+# Go-side counterpart (resolveRekeyInterval / rekeyIntervalEnvOverride) has
+# its own equivalent tests in apps/agent/internal/link/link_test.go.
+
+
+def test_rekey_interval_seconds_unset_is_inert(monkeypatch):
+    """With the override env var unset — every real deployment — resolving
+    the interval must return exactly the 15-minute production default,
+    byte-for-byte identical to before this override existed."""
+    from app.core.agent_crypto import _resolve_rekey_interval_seconds
+
+    monkeypatch.delenv("CB_AGENT_TEST_REKEY_INTERVAL_SECONDS", raising=False)
+    assert _resolve_rekey_interval_seconds() == 15 * 60
+
+
+def test_rekey_interval_seconds_honors_override(monkeypatch):
+    from app.core.agent_crypto import _resolve_rekey_interval_seconds
+
+    monkeypatch.setenv("CB_AGENT_TEST_REKEY_INTERVAL_SECONDS", "7")
+    assert _resolve_rekey_interval_seconds() == 7
+
+
+@pytest.mark.parametrize("value", ["not-a-number", "0", "-5"])
+def test_rekey_interval_seconds_ignores_garbage_and_non_positive(monkeypatch, value):
+    """Malformed or non-positive overrides fall back to the production
+    default rather than producing a zero/negative rekey interval."""
+    from app.core.agent_crypto import _resolve_rekey_interval_seconds
+
+    monkeypatch.setenv("CB_AGENT_TEST_REKEY_INTERVAL_SECONDS", value)
+    assert _resolve_rekey_interval_seconds() == 15 * 60
+
+
+def test_module_level_rekey_interval_matches_resolver_with_no_override():
+    """REKEY_INTERVAL_SECONDS, as actually imported by ws_agents.py, was set
+    at module-load time under the test environment's real (unset) env var —
+    confirms the wiring, not just the resolver function in isolation."""
+    import os
+
+    from app.core.agent_crypto import REKEY_INTERVAL_SECONDS
+
+    assert os.environ.get("CB_AGENT_TEST_REKEY_INTERVAL_SECONDS") in (None, "")
+    assert REKEY_INTERVAL_SECONDS == 15 * 60
+
+
 # ── check_clock_skew / ClockSkewError ──────────────────────────────────────
 
 _REF = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)

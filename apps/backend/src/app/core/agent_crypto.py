@@ -34,6 +34,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import cast
@@ -58,12 +59,45 @@ _logger = logging.getLogger(__name__)
 
 _CLOCK_SKEW_SECONDS = 60
 
+# Narrowly-scoped, test-only override — the Python-side counterpart of
+# internal/link/link.go's rekeyIntervalEnvOverride/resolveRekeyInterval. If
+# set to a positive integer, it replaces the production 15-minute default
+# below. It exists solely so the Docker E2E harness (apps/agent/e2e) can
+# exercise a real Noise rekey cycle without waiting out 15 real minutes on
+# the server side too (both sides rekey independently, on their own
+# schedule — see the module docstring). No production deployment path ever
+# sets this variable; unset, REKEY_INTERVAL_SECONDS is byte-for-byte the same
+# 900 it has always been (see test_agent_crypto.py's
+# test_rekey_interval_seconds_unset_is_inert). Global Constraints mandates
+# the 15-minute production default; this override changes nothing about that
+# default, it only lets a test ask for something shorter.
+_REKEY_INTERVAL_ENV_OVERRIDE = "CB_AGENT_TEST_REKEY_INTERVAL_SECONDS"
+
+
+def _resolve_rekey_interval_seconds() -> int:
+    """Resolve REKEY_INTERVAL_SECONDS, honoring _REKEY_INTERVAL_ENV_OVERRIDE.
+
+    Split out from the module-level assignment purely so a unit test can
+    call it directly (with monkeypatched os.environ) rather than depending on
+    import-time timing.
+    """
+    override = os.environ.get(_REKEY_INTERVAL_ENV_OVERRIDE)
+    if override:
+        try:
+            value = int(override)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return 15 * 60
+
+
 # How often each side rotates its *own* outbound transport cipher. The agent
 # times its agent->server cipher in internal/link/link.go's `rekeyInterval`;
 # this is the server->agent counterpart. The two are independent — neither
 # side waits on the other. Tests monkeypatch this module attribute (which is
 # why ws_agents.py reads it through the module rather than importing the value).
-REKEY_INTERVAL_SECONDS = 15 * 60
+REKEY_INTERVAL_SECONDS = _resolve_rekey_interval_seconds()
 
 # The only `transport.rekey` direction either side ever sends: `direction` is
 # sender-relative, so "outbound" means "the cipher I encrypt with", which the

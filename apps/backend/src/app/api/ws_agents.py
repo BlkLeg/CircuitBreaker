@@ -360,7 +360,13 @@ async def _send_transport_rekey(
         },
     }
     await websocket.send_bytes(responder.encrypt(json.dumps(frame).encode()))
+    generation = responder.next_send_generation
     responder.rekey_send()
+    # Diagnostic only — no key material, just a generation counter — mirrors
+    # link.go's own sendRekey log line and is the only externally-observable
+    # signal that a rekey happened at all, which the Docker E2E harness
+    # (apps/agent/e2e) greps for.
+    _logger.info("agent link: performed outbound transport.rekey (generation %d)", generation)
 
 
 async def _send_ping(websocket: WebSocket, responder: NoiseIKResponder, seq: int) -> None:
@@ -757,6 +763,13 @@ async def link_stream(websocket: WebSocket) -> None:
                         if rekey.direction != REKEY_DIRECTION_OUTBOUND:
                             raise RekeyError(f"unexpected direction {rekey.direction!r}")
                         responder.rekey_recv(rekey.generation)
+                        # Diagnostic only, mirrors the outbound log line above
+                        # and link.go's applyInboundRekey — no key material.
+                        _logger.info(
+                            "agent %s: applied inbound transport.rekey (generation %d)",
+                            agent_id,
+                            rekey.generation,
+                        )
                     except (ValidationError, RekeyError) as exc:
                         # Fatal: once the agent has rotated its send cipher,
                         # not applying the matching receive rekey leaves the
