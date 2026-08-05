@@ -36,6 +36,15 @@ function formatCapabilities(capabilities) {
   return granted.length > 0 ? granted.join(', ') : '—';
 }
 
+// Fleet filters (spec §5.1: "Filters on status, capability, and online
+// state"). Values mirror the `agents.status` enum (§3.1: pending | active |
+// revoked | rejected) minus `pending` — pending rows never appear in the
+// filterable table, they're pinned in the banner above it — and the
+// `agent_capability_grants.capability` enum (host_telemetry | remote_probe |
+// local_discovery).
+const STATUS_FILTER_VALUES = ['active', 'revoked', 'rejected'];
+const ONLINE_FILTER_VALUES = ['online', 'offline'];
+
 export default function AgentsPage() {
   const toast = useToast();
   const [params, setParams] = useSearchParams();
@@ -52,6 +61,33 @@ export default function AgentsPage() {
   const [revokeTarget, setRevokeTarget] = useState(null);
 
   const { statuses, connected } = useAgentLive();
+
+  // Fleet filters live in the URL (mirrors MonitorsPage's statusFilter/
+  // typeFilter pattern) so a filtered view is bookmarkable/shareable.
+  const statusFilter = STATUS_FILTER_VALUES.includes(params.get('status'))
+    ? params.get('status')
+    : 'all';
+  const capabilityFilter = Object.hasOwn(CAPABILITY_LABELS, params.get('capability'))
+    ? params.get('capability')
+    : 'all';
+  const onlineFilter = ONLINE_FILTER_VALUES.includes(params.get('online'))
+    ? params.get('online')
+    : 'all';
+
+  const setFilterParam = useCallback(
+    (key, value) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (value && value !== 'all') next.set(key, value);
+          else next.delete(key);
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setParams]
+  );
 
   const load = useCallback(() => {
     listAgents()
@@ -145,6 +181,16 @@ export default function AgentsPage() {
 
   const pending = merged.filter((a) => a.status === 'pending');
   const others = merged.filter((a) => a.status !== 'pending');
+
+  // Filters apply only to the fleet table (`others`) — pending agents stay
+  // pinned in the banner above regardless of which filters are active.
+  const filteredOthers = others.filter((a) => {
+    if (statusFilter !== 'all' && a.status !== statusFilter) return false;
+    if (capabilityFilter !== 'all' && !a.capabilities?.[capabilityFilter]) return false;
+    if (onlineFilter === 'online' && a.online !== true) return false;
+    if (onlineFilter === 'offline' && a.online !== false) return false;
+    return true;
+  });
 
   const handlePairingSubmit = async () => {
     try {
@@ -240,6 +286,48 @@ export default function AgentsPage() {
         </section>
       )}
 
+      <div className="filter-bar agents-page__filters">
+        <label htmlFor="agents-filter-status">Status</label>
+        <select
+          id="agents-filter-status"
+          className="filter-select"
+          value={statusFilter}
+          onChange={(e) => setFilterParam('status', e.target.value)}
+        >
+          <option value="all">All statuses</option>
+          <option value="active">Active</option>
+          <option value="revoked">Revoked</option>
+          <option value="rejected">Rejected</option>
+        </select>
+
+        <label htmlFor="agents-filter-capability">Capability</label>
+        <select
+          id="agents-filter-capability"
+          className="filter-select"
+          value={capabilityFilter}
+          onChange={(e) => setFilterParam('capability', e.target.value)}
+        >
+          <option value="all">All capabilities</option>
+          {Object.entries(CAPABILITY_LABELS).map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="agents-filter-online">Online</label>
+        <select
+          id="agents-filter-online"
+          className="filter-select"
+          value={onlineFilter}
+          onChange={(e) => setFilterParam('online', e.target.value)}
+        >
+          <option value="all">All</option>
+          <option value="online">Online</option>
+          <option value="offline">Offline</option>
+        </select>
+      </div>
+
       <table className="agents-page__table">
         <thead>
           <tr>
@@ -257,7 +345,12 @@ export default function AgentsPage() {
           </tr>
         </thead>
         <tbody>
-          {others.map((a) => (
+          {filteredOthers.length === 0 && others.length > 0 && (
+            <tr>
+              <td colSpan={11}>No agents match the current filters.</td>
+            </tr>
+          )}
+          {filteredOthers.map((a) => (
             <tr key={a.id}>
               <td>{a.status}</td>
               <td>

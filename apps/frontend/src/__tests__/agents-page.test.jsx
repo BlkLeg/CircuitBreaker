@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AgentsPage from '../pages/AgentsPage';
 
@@ -49,7 +49,7 @@ vi.mock('../hooks/useAgentLive', () => ({ useAgentLive: mockUseAgentLive }));
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() };
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
-import { getAgent, getAgentsPresence } from '../api/agents';
+import { getAgent, getAgentsPresence, listAgents } from '../api/agents';
 
 describe('AgentsPage', () => {
   beforeEach(() => {
@@ -96,8 +96,12 @@ describe('AgentsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
-    expect(screen.getByText('Host telemetry')).toBeInTheDocument();
-    expect(screen.getByText('rack-a-switch')).toBeInTheDocument();
+    // Scoped to the table: the Task 15 capability filter's <select> now also
+    // renders a "Host telemetry" option, so an unscoped getByText would match
+    // both.
+    const table = screen.getByRole('table');
+    expect(within(table).getByText('Host telemetry')).toBeInTheDocument();
+    expect(within(table).getByText('rack-a-switch')).toBeInTheDocument();
   });
 
   it('inserts a newly enrolled agent as a pending row without waiting for the poll', async () => {
@@ -259,5 +263,169 @@ describe('AgentsPage', () => {
     );
 
     await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+  });
+});
+
+// Task 15: status / capability / online filters, plus verifying pending rows
+// stay pinned above the (now filterable) fleet table under every combination.
+describe('AgentsPage fleet filters', () => {
+  const FLEET = [
+    {
+      id: 1,
+      status: 'pending',
+      hostname: 'pending-host',
+      fingerprint: 'p'.repeat(32),
+      os: 'linux',
+      arch: 'amd64',
+    },
+    {
+      id: 2,
+      status: 'active',
+      name: 'Telemetry Agent',
+      hostname: 'telemetry-host',
+      fingerprint: 'a'.repeat(32),
+      os: 'linux',
+      arch: 'amd64',
+      agent_version: '0.1.0',
+    },
+    {
+      id: 3,
+      status: 'active',
+      name: 'Probe Agent',
+      hostname: 'probe-host',
+      fingerprint: 'b'.repeat(32),
+      os: 'linux',
+      arch: 'amd64',
+      agent_version: '0.1.0',
+    },
+    {
+      id: 4,
+      status: 'revoked',
+      name: 'Revoked Agent',
+      hostname: 'revoked-host',
+      fingerprint: 'c'.repeat(32),
+      os: 'linux',
+      arch: 'amd64',
+      agent_version: '0.1.0',
+    },
+    {
+      id: 5,
+      status: 'rejected',
+      name: 'Rejected Agent',
+      hostname: 'rejected-host',
+      fingerprint: 'd'.repeat(32),
+      os: 'linux',
+      arch: 'amd64',
+      agent_version: '0.1.0',
+    },
+  ];
+
+  const PRESENCE = [
+    {
+      agent_id: 2,
+      online: true,
+      connected_since: '2026-08-05T10:00:00Z',
+      last_seen_at: '2026-08-05T10:00:00Z',
+      capabilities: { host_telemetry: true, remote_probe: false, local_discovery: false },
+      hardware: null,
+    },
+    {
+      agent_id: 3,
+      online: false,
+      connected_since: null,
+      last_seen_at: '2026-08-04T10:00:00Z',
+      capabilities: { host_telemetry: false, remote_probe: true, local_discovery: false },
+      hardware: null,
+    },
+    // agent 4 (revoked) and agent 5 (rejected) have no presence entry, so
+    // `online` stays null/unknown for them — neither the "online" nor
+    // "offline" filter option should match an unknown row.
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
+    listAgents.mockResolvedValue({ data: FLEET });
+    getAgentsPresence.mockResolvedValue({ data: PRESENCE });
+  });
+
+  async function renderPage() {
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getByText('Telemetry Agent')).toBeInTheDocument());
+  }
+
+  it('narrows the table to the selected status, leaving the pending row pinned', async () => {
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'revoked' } });
+
+    await waitFor(() => expect(screen.getByText('Revoked Agent')).toBeInTheDocument());
+    expect(screen.queryByText('Telemetry Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Probe Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument();
+
+    // Pending row stays pinned in its banner regardless of the status filter.
+    expect(screen.getByText(/Waiting for approval/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+
+  it('narrows the table to the selected capability', async () => {
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText('Capability'), { target: { value: 'remote_probe' } });
+
+    await waitFor(() => expect(screen.getByText('Probe Agent')).toBeInTheDocument());
+    expect(screen.queryByText('Telemetry Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Revoked Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument();
+
+    expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+
+  it('narrows the table to the selected online state', async () => {
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText('Online'), { target: { value: 'online' } });
+
+    await waitFor(() => expect(screen.getByText('Telemetry Agent')).toBeInTheDocument());
+    expect(screen.queryByText('Probe Agent')).not.toBeInTheDocument(); // reported offline
+    expect(screen.queryByText('Revoked Agent')).not.toBeInTheDocument(); // unknown (no presence)
+    expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument(); // unknown (no presence)
+
+    expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+
+  it('applies status, capability, and online filters together while the pending row stays pinned', async () => {
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'active' } });
+    fireEvent.change(screen.getByLabelText('Capability'), { target: { value: 'host_telemetry' } });
+    fireEvent.change(screen.getByLabelText('Online'), { target: { value: 'online' } });
+
+    await waitFor(() => expect(screen.getByText('Telemetry Agent')).toBeInTheDocument());
+    expect(screen.queryByText('Probe Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Revoked Agent')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rejected Agent')).not.toBeInTheDocument();
+
+    // All three filters active at once must still leave pending pinned above
+    // the table, in its own banner, untouched by any of them.
+    expect(screen.getByText(/Waiting for approval/i)).toBeInTheDocument();
+    expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
+  });
+
+  it('shows an empty-state row when no fleet rows match, without hiding the pending banner', async () => {
+    await renderPage();
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'active' } });
+    fireEvent.change(screen.getByLabelText('Capability'), { target: { value: 'local_discovery' } });
+
+    await waitFor(() =>
+      expect(screen.getByText('No agents match the current filters.')).toBeInTheDocument()
+    );
+    expect(screen.getByText(/pending-host/i)).toBeInTheDocument();
   });
 });
