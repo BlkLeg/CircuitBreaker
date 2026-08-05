@@ -1,7 +1,6 @@
 import json
 import secrets
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -9,6 +8,19 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.agent_crypto import get_server_static_keypair
 from app.db.models import Agent
 from tests.helpers.agent_noise_client import TestNoiseInitiator
+
+# Task 21 fix round (Important #2): every test in this file drives a real
+# /enroll WS connection, which now runs through check_and_record_ws_attempt
+# (and, for a new pending agent, acquire_pending_enrollment_lock) before any
+# Noise handshake byte is processed — both fail closed if Redis is
+# unreachable. Without this, every pre-existing test here (most of which
+# predate rate limiting and have nothing to do with it) would need a live,
+# reachable Redis just to get past websocket.accept(). See
+# conftest.py::agent_redis_default's docstring. Tests below that need
+# specific Redis behavior (rate-limit thresholds, Redis-down, a custom
+# fake) still monkeypatch `get_redis` themselves, which simply overrides
+# this default for their own duration.
+pytestmark = pytest.mark.usefixtures("agent_redis_default")
 
 
 def _make_hello_frame_bytes(**overrides) -> bytes:
@@ -183,34 +195,6 @@ def test_enroll_rejects_reconnect_from_previously_rejected_device(db_session, ws
     assert agents[0].status == "rejected"
 
 
-def _redis_client_with_no_pubsub_relay():
-    """An AsyncMock Redis client whose `incr`/`expire` behave like real
-    expiring counters (so Task 21's check_and_record_ws_attempt still
-    passes /enroll's attempt-rate gate) but whose `pubsub()` is left as an
-    unconfigured AsyncMock — calling it returns a bare coroutine object
-    with no `.subscribe()`, which `ws_agents._redis_agent_listener` catches
-    and silently degrades from (see its try/except around `pubsub.
-    subscribe(...)`). That reproduces the single-path, ws_manager-only
-    delivery the two tests below depend on for a deterministic message
-    order, without reporting Redis as fully down — which, post-Task-21,
-    would also refuse the /enroll connection itself before any of that
-    machinery even runs.
-    """
-    counts: dict[str, int] = {}
-
-    async def _incr(key):
-        counts[key] = counts.get(key, 0) + 1
-        return counts[key]
-
-    async def _expire(key, ttl, nx=False):
-        return True
-
-    client = AsyncMock()
-    client.incr.side_effect = _incr
-    client.expire.side_effect = _expire
-    return client
-
-
 def _login_viewer(ws_client):
     """Seeds a viewer user via a real committed connection (SessionLocal(),
     matching what agent_presence_stream itself uses) — db_session's
@@ -248,23 +232,17 @@ def _login_viewer(ws_client):
     assert resp.status_code == 200, resp.text
 
 
-def test_enroll_broadcasts_enrolled_event_to_stream_viewers(
-    db_session, ws_client, app_cfg, monkeypatch
-):
+def test_enroll_broadcasts_enrolled_event_to_stream_viewers(db_session, ws_client, app_cfg):
     """Task 10 end-to-end proof: a brand-new pending enrollment pushes an
     `enrolled` event to every live /api/agents/stream viewer immediately,
-    not only on the add-agent panel's 30s poll. Redis's pub/sub relay is
-    disabled (see `_redis_client_with_no_pubsub_relay`), so broadcast_presence
-    falls back to ws_manager.broadcast — proven genuinely end-to-end here by
-    actually running the /enroll handshake and reading the event back off a
-    real /stream connection, mirroring
+    not only on the add-agent panel's 30s poll. The module-level
+    `agent_redis_default` fixture's pub/sub never actually relays anything
+    (see conftest.py's `_FakeNullPubSub`), so broadcast_presence falls back
+    to ws_manager.broadcast — proven genuinely end-to-end here by actually
+    running the /enroll handshake and reading the event back off a real
+    /stream connection, mirroring
     test_ws_agents_stream.py::test_stream_authenticates_via_session_cookie_and_forwards_broadcast."""
     import secrets
-
-    monkeypatch.setattr(
-        "app.core.redis.get_redis",
-        AsyncMock(return_value=_redis_client_with_no_pubsub_relay()),
-    )
 
     _login_viewer(ws_client)
 
@@ -292,7 +270,7 @@ def test_enroll_broadcasts_enrolled_event_to_stream_viewers(
 
 
 def test_enroll_reconnect_of_still_pending_device_does_not_rebroadcast(
-    db_session, ws_client, app_cfg, monkeypatch
+    db_session, ws_client, app_cfg
 ):
     """A device that reconnects to /enroll while its prior enrollment is
     still pending reuses that same row (see
@@ -302,11 +280,6 @@ def test_enroll_reconnect_of_still_pending_device_does_not_rebroadcast(
     duplicate "new agent" notification. No second event should reach a live
     /stream viewer within the test's observation window."""
     import secrets
-
-    monkeypatch.setattr(
-        "app.core.redis.get_redis",
-        AsyncMock(return_value=_redis_client_with_no_pubsub_relay()),
-    )
 
     _login_viewer(ws_client)
 
@@ -502,3 +475,93 @@ def test_enroll_reconnect_of_pending_device_unaffected_by_concurrent_cap(
     ack_payload2 = json.loads(ack_pt2)["payload"]
     assert ack_payload2["agent_id"] == first_agent_id
     assert db_session.query(Agent).filter_by(status="pending").count() == baseline_pending + 1
+
+
+def test_enroll_releases_pending_lock_on_exception(db_session, ws_client, monkeypatch):
+    """Regression test for fix round 2: the pending-enrollment Redis lock
+    acquired in the new-agent path must be released even if an exception
+    (e.g., a race-condition IntegrityError from duplicate device_pk) occurs
+    between acquire_pending_enrollment_lock() and db.commit().
+
+    Without the try/finally wrapper around that region, the lock sits held
+    for its full 5s TTL on every such failure, wrongly blocking unrelated new
+    enrollments for that duration. This test verifies the lock is actually
+    released by successfully enrolling a *different* device immediately after
+    an enroll attempt that raises an exception."""
+    from sqlalchemy.exc import IntegrityError
+
+    _, server_pub = get_server_static_keypair()
+    agent_priv_1 = secrets.token_bytes(32)
+    agent_priv_2 = secrets.token_bytes(32)
+
+    from app.services import agent_registry
+
+    original_create_pending = agent_registry.create_pending_agent
+
+    exception_raised = False
+
+    def mock_create_pending_raises(*args, **kwargs):
+        nonlocal exception_raised
+        exception_raised = True
+        # Simulate a same-device_pk race that slips past the `existing is
+        # None` check (that read happens before lock acquisition) — the
+        # db.flush() in the real create_pending_agent will raise IntegrityError
+        # on device_pk unique constraint violation.
+        raise IntegrityError(
+            "Duplicate device_pk", orig="Duplicate", params={}
+        )
+
+    # First connection: monkeypatch create_pending_agent to raise, simulating
+    # a race. The lock must be released even though the exception is raised
+    # before db.commit().
+    monkeypatch.setattr(agent_registry, "create_pending_agent", mock_create_pending_raises)
+
+    # The exception will propagate and close the WebSocket connection. We
+    # can't directly catch it, but we just need the connection attempt to
+    # happen and fail — the important thing is that the finally block in
+    # enroll_stream still runs and releases the lock.
+    try:
+        with ws_client.websocket_connect("/api/v1/agents/enroll") as ws:
+            initiator = TestNoiseInitiator(agent_priv_1, server_pub)
+            ws.send_bytes(initiator.write_message())
+            initiator.read_message(ws.receive_bytes())
+            ws.send_bytes(initiator.encrypt(_make_hello_frame_bytes()))
+            # The handler will close the connection due to IntegrityError,
+            # causing receive_bytes to raise. We ignore it.
+            try:
+                ws.receive_bytes()
+            except Exception:
+                pass
+    except Exception:
+        # Connection closed due to exception in handler.
+        pass
+
+    assert exception_raised, "Mock should have been called"
+
+    # Restore the real create_pending_agent for the second connection.
+    monkeypatch.setattr(agent_registry, "create_pending_agent", original_create_pending)
+
+    # Second connection: a *different* device enrolling immediately after.
+    # If the lock was leaked (held for its full 5s TTL), this would be
+    # rejected with code=1013 (rate limited / pending cap). Instead, it must
+    # succeed because the lock was released via the finally block.
+    with ws_client.websocket_connect("/api/v1/agents/enroll") as ws2:
+        initiator2 = TestNoiseInitiator(agent_priv_2, server_pub)
+        ws2.send_bytes(initiator2.write_message())
+        initiator2.read_message(ws2.receive_bytes())
+        ws2.send_bytes(initiator2.encrypt(_make_hello_frame_bytes()))
+
+        ack_ct = ws2.receive_bytes()
+        ack_pt = initiator2.decrypt(ack_ct)
+
+    ack = json.loads(ack_pt)
+    assert ack["type"] == "hello.ack"
+    assert "pairing_code" in ack["payload"]
+    assert "agent_id" in ack["payload"]
+
+    # Verify the second device actually created a pending agent.
+    from app.core.agent_crypto import _public_from_private
+
+    device_pk_hex_2 = _public_from_private(agent_priv_2).hex()
+    agent = db_session.query(Agent).filter_by(device_pk=device_pk_hex_2).one()
+    assert agent.status == "pending"
