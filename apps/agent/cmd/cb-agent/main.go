@@ -329,6 +329,7 @@ func runDaemon() {
 	defer stop()
 	if err := link.Run(ctx, link.Options{
 		Config: cfg, Key: key, AgentVersion: AgentVersion,
+		StateDir:          config.StateDir(),
 		OnCapabilitiesSet: onCapabilitiesSet,
 		OnUpdate:          onUpdate,
 		OnConnected:       onConnected,

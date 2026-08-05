@@ -305,3 +305,106 @@ def test_start_device_key_rotation_rejects_successor_already_pending_for_another
     resolved = svc.resolve_agent_for_handshake(db_session, shared_successor)
     assert resolved is not None
     assert resolved.id == agent_a.id
+
+
+# ── record_server_key_pin (Task 28) ────────────────────────────────────────
+
+
+def test_record_server_key_pin_current_sets_current_timestamp_only(db_session, factories):
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "current")
+
+    assert agent.server_pk_current_pinned_at is not None
+    assert agent.server_pk_successor_pinned_at is None
+
+
+def test_record_server_key_pin_successor_sets_successor_timestamp_only(db_session, factories):
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "successor")
+
+    assert agent.server_pk_successor_pinned_at is not None
+    assert agent.server_pk_current_pinned_at is None
+
+
+def test_record_server_key_pin_honors_explicit_now(db_session, factories):
+    agent = factories.agent(status="active")
+    when = utcnow() - timedelta(days=1)
+
+    svc.record_server_key_pin(db_session, agent, "current", now=when)
+
+    assert agent.server_pk_current_pinned_at == when
+
+
+def test_record_server_key_pin_updates_independently_across_calls(db_session, factories):
+    """Reconnecting on the current key after previously pinning the
+    successor (or vice versa) must not clear the other column — each
+    reflects its own key's most recent handshake."""
+    agent = factories.agent(status="active")
+
+    svc.record_server_key_pin(db_session, agent, "successor")
+    successor_ts = agent.server_pk_successor_pinned_at
+    svc.record_server_key_pin(db_session, agent, "current")
+
+    assert agent.server_pk_current_pinned_at is not None
+    assert agent.server_pk_successor_pinned_at == successor_ts
+
+
+# ── broadcast_server_key_rotate (Task 28 fix round 1 — Critical finding) ───
+
+
+@pytest.mark.asyncio
+async def test_broadcast_server_key_rotate_pushes_only_to_online_active_agents(
+    db_session, factories, monkeypatch, app_cfg
+):
+    from unittest.mock import AsyncMock
+
+    from app.core import agent_crypto
+
+    online_agent = factories.agent(status="active")
+    offline_agent = factories.agent(status="active")
+    factories.agent(status="pending")  # never considered: not active
+
+    state = agent_crypto.start_server_key_rotation(db_session)
+    assert state is not None
+
+    async def fake_bulk_presence(agent_ids):
+        return {
+            online_agent.id: {"online": True, "connected_since": None},
+            offline_agent.id: {"online": False, "connected_since": None},
+        }
+
+    monkeypatch.setattr(svc, "bulk_presence", fake_bulk_presence)
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(svc, "publish_agent_control_frame", publish)
+
+    pushed = await svc.broadcast_server_key_rotate(db_session, state)
+
+    assert pushed == 1
+    publish.assert_called_once()
+    agent_id_arg, frame_arg = publish.call_args[0]
+    assert agent_id_arg == online_agent.id
+    assert frame_arg["type"] == "key.rotate"
+    assert frame_arg["payload"]["kind"] == "server"
+    assert frame_arg["payload"]["successor_pk"] == state.successor_pub.hex()
+    assert frame_arg["payload"]["expiry"] == state.overlap_expires_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_server_key_rotate_returns_zero_with_no_active_agents(
+    db_session, monkeypatch, app_cfg
+):
+    from unittest.mock import AsyncMock
+
+    from app.core import agent_crypto
+
+    state = agent_crypto.start_server_key_rotation(db_session)
+    assert state is not None
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(svc, "publish_agent_control_frame", publish)
+
+    pushed = await svc.broadcast_server_key_rotate(db_session, state)
+
+    assert pushed == 0
+    publish.assert_not_called()

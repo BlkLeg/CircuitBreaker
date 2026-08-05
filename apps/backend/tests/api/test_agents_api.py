@@ -856,3 +856,64 @@ async def test_presence_issues_single_mget_regardless_of_fleet_size(
     redis_client.mget.assert_called_once()
     redis_client.get.assert_not_called()
     redis_client.exists.assert_not_called()
+
+
+# ── server-key rotation admin endpoints (Task 28) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_server_key_status_requires_admin_not_viewer(client, viewer_headers):
+    resp = await client.get("/api/v1/agents/server-key/status", headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_server_key_rotate_requires_admin_not_viewer(client, viewer_headers):
+    resp = await client.post("/api/v1/agents/server-key/rotate", headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_server_key_status_reports_inactive_with_no_rotation(client, auth_headers):
+    resp = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] is False
+    assert body["successor_key_fingerprint"] is None
+    assert body["started_at"] is None
+    assert body["overlap_expires_at"] is None
+    assert len(body["current_key_fingerprint"]) == 32
+
+
+@pytest.mark.asyncio
+async def test_server_key_rotate_starts_rotation_and_status_reflects_it(client, auth_headers):
+    status_before = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+    current_fingerprint = status_before.json()["current_key_fingerprint"]
+
+    rotate_resp = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+
+    assert rotate_resp.status_code == 201
+    body = rotate_resp.json()
+    assert body["active"] is True
+    assert body["current_key_fingerprint"] == current_fingerprint
+    assert body["successor_key_fingerprint"] is not None
+    assert body["successor_key_fingerprint"] != current_fingerprint
+    assert body["started_at"] is not None
+    assert body["overlap_expires_at"] is not None
+
+    status_after = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+    assert status_after.json() == body
+
+
+@pytest.mark.asyncio
+async def test_server_key_rotate_rejects_second_call_while_overlap_active(client, auth_headers):
+    first = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+    assert first.status_code == 201
+
+    second = await client.post("/api/v1/agents/server-key/rotate", headers=auth_headers)
+
+    assert second.status_code == 409
+    # The first rotation's successor is untouched by the rejected attempt.
+    status = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
+    assert status.json()["successor_key_fingerprint"] == first.json()["successor_key_fingerprint"]

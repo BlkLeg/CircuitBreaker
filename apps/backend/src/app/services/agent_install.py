@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.agent_crypto import get_server_static_keypair
+from app.core import agent_crypto
 from app.db.models import Certificate
 from app.schemas.agents import InstallCommandResponse
 from app.services import agent_update
@@ -181,7 +181,14 @@ def render_install_script(
 
 
 def build_install_command(db: Session, server_url: str) -> InstallCommandResponse:
-    _, server_pub = get_server_static_keypair()
+    # Task 28: once a server-key rotation has begun, a freshly generated
+    # install prefers the successor identity key over the current one — it's
+    # the key this install will still be valid under once the current key is
+    # retired at the end of the overlap window (agent_crypto.
+    # complete_ik_handshake accepts either for that window's duration, but a
+    # *new* install has no reason to pin the key that's on its way out).
+    state = agent_crypto.load_server_key_rotation_state(db)
+    server_pub = state.successor_pub if state.successor_pub is not None else state.current_pub
     server_static_pk_hex = server_pub.hex()
 
     cert = _active_certificate(db)

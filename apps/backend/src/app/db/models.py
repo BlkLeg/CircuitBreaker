@@ -317,6 +317,30 @@ class Agent(Base):
     pending_device_pk_expiry: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Task 28: which of the server's two overlapping identity keys (see
+    # app.core.agent_crypto.ServerKeyRotationState) this agent's most recent
+    # successful `/link` Noise handshake actually authenticated against.
+    #
+    # These two columns are rollout-*timing* only, not the pin itself — the
+    # actual per-agent pin (the successor server public key this specific
+    # device now durably trusts, alongside its config file's original one) is
+    # persisted agent-side, in apps/agent/internal/config's
+    # ServerKeyRotation/SaveServerKeyRotation (see internal/link.go's
+    # handleKeyRotate), not here: the server has no visibility into whether a
+    # given agent's local state directory actually holds the successor key,
+    # only into which key its handshakes have used so far. Set by
+    # agent_registry.record_server_key_pin, called from ws_agents.py right
+    # after a handshake completes against whichever key it matched. Purely
+    # observational (nothing about handshake acceptance depends on these),
+    # but lets an admin's rotation status view answer "how much of the fleet
+    # has already switched to authenticating with the successor key" rather
+    # than only knowing the rotation's global timing.
+    server_pk_current_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    server_pk_successor_pinned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(
@@ -1219,8 +1243,26 @@ class AppSettings(Base):
     vault_key_rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # cb-agent: server's static X25519 identity for the Noise IK agent link.
     # Hex-encoded private key, vault-encrypted at rest. Generated once on first
-    # use by app.core.agent_crypto and never rotated within this slice.
+    # use by app.core.agent_crypto.
     agent_server_private_key: Mapped[str | None] = mapped_column(Text)
+    # Task 28: server-key rotation with an overlap window. While a rotation is
+    # in progress, `agent_server_key_pending_private_key` holds the
+    # successor's vault-encrypted private key (same encoding as
+    # agent_server_private_key above), and `agent_server_key_rotation_
+    # overlap_expires_at` is the moment app.core.agent_crypto stops accepting
+    # Noise handshakes against the *current* key and promotes the successor
+    # into agent_server_private_key in its place (Global Constraints:
+    # "Server-key overlap defaults to 7 days"). All three are set together by
+    # start_server_key_rotation and cleared together by that same promotion —
+    # never independently. `_started_at` is purely informational (surfaced on
+    # the admin status endpoint); `_overlap_expires_at` is the actual gate.
+    agent_server_key_pending_private_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_server_key_rotation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    agent_server_key_rotation_overlap_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Phase 7.5: PostgreSQL backup retention
     db_backup_retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     # Security hardening

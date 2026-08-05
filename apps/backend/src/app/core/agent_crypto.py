@@ -1,8 +1,11 @@
 """Server-side X25519 identity and Noise IK responder for the agent link.
 
-The server holds one static X25519 keypair for its whole lifetime, generated on
-first use and persisted (encrypted) via the existing credential vault. Every
-enrolling/linking agent verifies against this same public key.
+The server holds one static X25519 keypair as its stable long-term identity,
+generated on first use and persisted (encrypted) via the existing credential
+vault. Every enrolling/linking agent verifies against this same public key —
+except during a Task 28 server-key rotation's overlap window, when a
+successor keypair is also valid (see `ServerKeyRotationState` /
+`complete_ik_handshake` below).
 
 A link session is established by one Noise IK handshake per connection, and
 its two transport ciphers are then rekeyed in place every REKEY_INTERVAL_SECONDS
@@ -28,9 +31,10 @@ material (private key bytes/hex, shared secrets, or raw handshake payloads).
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import cast
 
@@ -45,6 +49,8 @@ from dissononce.processing.handshakepatterns.interactive.IK import IKHandshakePa
 from dissononce.processing.impl.cipherstate import CipherState
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
+from sqlalchemy import update as sa_update
+from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 
@@ -159,6 +165,231 @@ def server_fingerprint() -> str:
     XXXX-XXXX-... groups is a display concern handled by callers."""
     _, pub = get_server_static_keypair()
     return hashlib.sha256(pub).hexdigest()[:32]
+
+
+# ── Task 28: server-key rotation with an overlap window ────────────────────
+
+# Global Constraints: "Server-key overlap defaults to 7 days." Mirrors
+# agent_registry.DEVICE_KEY_ROTATION_WINDOW_SECONDS's monkeypatch-by-tests
+# convention, but for the server's own identity key rather than one device's.
+SERVER_KEY_OVERLAP_SECONDS = 7 * 24 * 60 * 60
+
+
+@dataclasses.dataclass(frozen=True)
+class ServerKeyRotationState:
+    """The server's current identity keypair, plus (Task 28) an in-progress
+    rotation's successor keypair and overlap-expiry, as of one
+    `load_server_key_rotation_state` call. `successor_priv`/`successor_pub`
+    are `None` whenever no rotation is in progress."""
+
+    current_priv: bytes
+    current_pub: bytes
+    successor_priv: bytes | None
+    successor_pub: bytes | None
+    started_at: datetime | None
+    overlap_expires_at: datetime | None
+
+    @property
+    def rotation_active(self) -> bool:
+        return self.successor_priv is not None
+
+
+def _settle_expired_server_key_rotation(row: object, *, now: datetime) -> bool:
+    """If `row` (an `AppSettings` instance) has an in-progress server-key
+    rotation whose overlap window has elapsed as of `now`, promote the
+    pending successor into `agent_server_private_key` and clear the rotation
+    fields, in place — Task 28's "retire the previous key ... after the
+    configured overlap elapses". Never touches the vault: both columns
+    already hold vault ciphertext, so promotion is a plain string copy, not a
+    decrypt/re-encrypt round trip.
+
+    Returns True if it settled a rotation (caller must commit), False
+    (no-op) otherwise — no rotation in progress, or one still inside its
+    window. `row` is typed `object` rather than `AppSettings` to avoid this
+    core crypto module importing the ORM models module at all; every
+    attribute access below is exactly the three columns Task 28 added to
+    that model.
+    """
+    pending = row.agent_server_key_pending_private_key  # type: ignore[attr-defined]
+    if pending is None:
+        return False
+    expiry = row.agent_server_key_rotation_overlap_expires_at  # type: ignore[attr-defined]
+    if expiry is None:  # pragma: no cover - defensive; the two are always set together
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    if now < expiry:
+        return False
+    row.agent_server_private_key = pending  # type: ignore[attr-defined]
+    row.agent_server_key_pending_private_key = None  # type: ignore[attr-defined]
+    row.agent_server_key_rotation_started_at = None  # type: ignore[attr-defined]
+    row.agent_server_key_rotation_overlap_expires_at = None  # type: ignore[attr-defined]
+    return True
+
+
+def load_server_key_rotation_state(
+    db: Session, *, now: datetime | None = None
+) -> ServerKeyRotationState:
+    """The server's current + (if a Task 28 rotation is in progress) successor
+    identity keypairs, read fresh from `db` on every call.
+
+    Deliberately NOT cached the way `get_server_static_keypair`'s
+    process-lifetime `_load_or_create_keypair` is: rotation state can change
+    underneath a running process — a rotation starting, or its overlap
+    window lapsing — in a way the single stable identity
+    `get_server_static_keypair` models never has to account for. Settles a
+    lapsed rotation lazily, on whichever call happens to notice (the same
+    "next access notices and clears it" convention as
+    `agent_registry.settle_device_key_rotation`'s expired-pending-rotation
+    branch) — there is no scheduled sweep for this either.
+
+    Reuses the exact same `agent_server_private_key` column
+    `get_server_static_keypair` reads, and creates it identically
+    (generate-and-persist on first use) if it's still unset — so whichever
+    of the two code paths happens to run first in a process is the one that
+    generates it, and the two never diverge for the "no rotation ever
+    happened" common case every existing caller of `get_server_static_keypair`
+    still exercises.
+    """
+    from app.services.credential_vault import get_vault
+    from app.services.settings_service import get_or_create_settings
+
+    reference = now if now is not None else utcnow()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+
+    vault = get_vault()
+    row = get_or_create_settings(db)
+
+    if not row.agent_server_private_key:
+        priv_bytes, _ = _generate_keypair()
+        row.agent_server_private_key = vault.encrypt(priv_bytes.hex())
+        db.commit()
+
+    if _settle_expired_server_key_rotation(row, now=reference):
+        db.commit()
+
+    current_priv = bytes.fromhex(vault.decrypt(row.agent_server_private_key))
+    current_pub = _public_from_private(current_priv)
+
+    successor_priv: bytes | None = None
+    successor_pub: bytes | None = None
+    if row.agent_server_key_pending_private_key:
+        successor_priv = bytes.fromhex(vault.decrypt(row.agent_server_key_pending_private_key))
+        successor_pub = _public_from_private(successor_priv)
+
+    return ServerKeyRotationState(
+        current_priv=current_priv,
+        current_pub=current_pub,
+        successor_priv=successor_priv,
+        successor_pub=successor_pub,
+        started_at=row.agent_server_key_rotation_started_at,
+        overlap_expires_at=row.agent_server_key_rotation_overlap_expires_at,
+    )
+
+
+def start_server_key_rotation(
+    db: Session, *, overlap_seconds: int | None = None, now: datetime | None = None
+) -> ServerKeyRotationState | None:
+    """Begin a Task 28 server-key rotation: generate a fresh successor X25519
+    keypair, persist its private key (vault-encrypted, alongside the current
+    one) on the same singleton `AppSettings` row `get_server_static_keypair`
+    already uses, and set an overlap-expiry `overlap_seconds` (default
+    `SERVER_KEY_OVERLAP_SECONDS`, 7 days per Global Constraints) from `now`.
+
+    Returns `None` — rejecting, doing nothing — if a rotation is already
+    active (its overlap window hasn't elapsed yet): `api/agents.py`'s admin
+    endpoint turns that into a 409. Unlike Task 27's
+    `agent_registry.start_device_key_rotation`, which lets a second call
+    simply supersede an in-progress device-key rotation, the brief requires
+    this one to refuse outright while a prior rotation's overlap is still in
+    progress — the server has exactly one rotation in flight at a time.
+
+    Genuinely serializes two concurrent callers (fix round 1 — the
+    `state.rotation_active` check above this function's docstring once
+    described is a plain SELECT with no lock, so two callers racing past it
+    before either commits would otherwise both "win", the second silently
+    overwriting the first's successor keypair): the actual write is a
+    conditional `UPDATE ... WHERE agent_server_key_pending_private_key IS
+    NULL`, whose `WHERE` clause Postgres re-evaluates against the
+    just-committed row for any caller that had to wait on the first's
+    row-level write lock. A caller whose `UPDATE` therefore affects zero
+    rows lost that race and returns `None` exactly as if it had seen
+    `state.rotation_active` true to begin with — its freshly generated (and
+    now-orphaned) successor keypair is simply discarded, never written.
+    """
+    from app.db.models import AppSettings
+    from app.services.credential_vault import get_vault
+
+    reference = now if now is not None else utcnow()
+    state = load_server_key_rotation_state(db, now=reference)
+    if state.rotation_active:
+        return None
+
+    vault = get_vault()
+    window = overlap_seconds if overlap_seconds is not None else SERVER_KEY_OVERLAP_SECONDS
+    priv_bytes, _ = _generate_keypair()
+    encrypted = vault.encrypt(priv_bytes.hex())
+    expiry = reference + timedelta(seconds=window)
+
+    result = db.execute(
+        sa_update(AppSettings)
+        .where(
+            AppSettings.id == 1,
+            AppSettings.agent_server_key_pending_private_key.is_(None),
+        )
+        .values(
+            agent_server_key_pending_private_key=encrypted,
+            agent_server_key_rotation_started_at=reference,
+            agent_server_key_rotation_overlap_expires_at=expiry,
+        )
+    )
+    if result.rowcount == 0:  # type: ignore[attr-defined]
+        # Lost the race — some other caller's rotation committed first (or,
+        # far less likely, the row was deleted out from under us). Nothing
+        # was written on this session's behalf, but roll back regardless so
+        # this session doesn't carry a stale view of the row forward into
+        # whatever its caller does next — same defensive stance
+        # settings_service.get_or_create_settings already takes on its own
+        # concurrent-first-request IntegrityError race.
+        db.rollback()
+        return None
+    db.commit()
+
+    return load_server_key_rotation_state(db, now=reference)
+
+
+def complete_ik_handshake(
+    handshake_msg: bytes, db: Session, *, now: datetime | None = None
+) -> tuple[NoiseIKResponder, bytes, str] | None:
+    """Responder side of one Noise IK handshake message, tried against every
+    currently-valid server private key: the current key, and — only for as
+    long as an in-progress Task 28 rotation's overlap window hasn't elapsed —
+    its successor. Tries the current key first, so the overwhelmingly common
+    no-rotation-in-progress case never pays for a second attempt.
+
+    Returns `(responder, response_bytes, key_kind)` for whichever key's
+    `HandshakeState` actually processed `handshake_msg` — `key_kind` is
+    `"current"` or `"successor"`, letting the caller record which of the
+    server's two keys this handshake authenticated against (see
+    `agent_registry.record_server_key_pin`) — or `None` if `handshake_msg`
+    doesn't validate against any currently-valid key. Never raises: failing
+    against every candidate key is an ordinary "reject this connection"
+    outcome for `ws_agents.py`'s callers, not an exceptional one.
+    """
+    state = load_server_key_rotation_state(db, now=now)
+    candidates: list[tuple[str, bytes]] = [("current", state.current_priv)]
+    if state.successor_priv is not None:
+        candidates.append(("successor", state.successor_priv))
+
+    for key_kind, priv in candidates:
+        responder = NoiseIKResponder(priv)
+        try:
+            response = responder.read_message(handshake_msg)
+        except Exception:
+            continue
+        return responder, response, key_kind
+    return None
 
 
 def check_clock_skew(ts: datetime, *, now: datetime | None = None) -> None:

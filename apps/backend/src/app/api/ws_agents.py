@@ -26,7 +26,6 @@ from app.core.agent_crypto import (
     NoiseIKResponder,
     RekeyError,
     check_clock_skew,
-    get_server_static_keypair,
 )
 from app.core.auth_cookie import is_websocket_secure, token_from_websocket_scope, ws_require_wss
 from app.core.security import decode_token
@@ -38,6 +37,7 @@ from app.schemas.agent_frame import (
     TYPE_DISCONNECT,
     TYPE_HEARTBEAT,
     TYPE_HELLO_ACK,
+    TYPE_KEY_ROTATE,
     TYPE_PING,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
@@ -113,14 +113,16 @@ async def enroll_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    server_priv, _ = get_server_static_keypair()
-    responder = NoiseIKResponder(server_priv)
-    try:
-        response = responder.read_message(handshake_msg)
-    except Exception:
+    # Task 28: tries the server's current identity key first, then (only
+    # while a server-key rotation's overlap window is still open) its
+    # successor — see agent_crypto.complete_ik_handshake's docstring.
+    with SessionLocal() as db:
+        handshake_result = agent_crypto.complete_ik_handshake(handshake_msg, db)
+    if handshake_result is None:
         _logger.info("agent enroll: handshake failed from %s", client_ip)
         await websocket.close(code=1008)
         return
+    responder, response, server_key_kind = handshake_result
     await websocket.send_bytes(response)
 
     try:
@@ -223,6 +225,10 @@ async def enroll_stream(websocket: WebSocket) -> None:
                     reported_ip=client_ip,
                 )
                 newly_created = True
+            # Task 28: which of the server's two overlapping identity keys
+            # this handshake actually authenticated against — see
+            # agent_registry.record_server_key_pin's docstring.
+            agent_registry.record_server_key_pin(db, agent, server_key_kind)
             db.commit()
         finally:
             if pending_lock_token is not None:
@@ -287,6 +293,33 @@ def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool], se
         "seq": seq,
         "ts": utcnow().isoformat(),
         "payload": grants,
+    }
+    return responder.encrypt(json.dumps(frame).encode())
+
+
+def _key_rotate_bytes(
+    responder: NoiseIKResponder, successor_pk_hex: str, expiry: datetime, seq: int
+) -> bytes:
+    """Wire-encode one server -> agent `key.rotate` (kind="server") frame —
+    Task 28's advertisement of an in-progress rotation's successor identity
+    key. Sent unconditionally on every accepted hello.ack for as long as a
+    rotation is active (see link_stream's call site), mirroring Task 11's
+    "re-send the authoritative [capabilities] set on every hello.ack": this
+    is the durability fallback for `agent_registry.broadcast_server_key_rotate`'s
+    live push — a connection this worker didn't hold at push time, or one
+    that hadn't finished establishing yet, still learns the successor key the
+    moment it completes its own hello.ack exchange, live push or not.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_KEY_ROTATE,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {
+            "kind": "server",
+            "successor_pk": successor_pk_hex,
+            "expiry": expiry.isoformat(),
+        },
     }
     return responder.encrypt(json.dumps(frame).encode())
 
@@ -429,13 +462,15 @@ async def link_stream(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
 
-    server_priv, _ = get_server_static_keypair()
-    responder = NoiseIKResponder(server_priv)
-    try:
-        response = responder.read_message(handshake_msg)
-    except Exception:
+    # Task 28: tries the server's current identity key first, then (only
+    # while a server-key rotation's overlap window is still open) its
+    # successor — see agent_crypto.complete_ik_handshake's docstring.
+    with SessionLocal() as db:
+        handshake_result = agent_crypto.complete_ik_handshake(handshake_msg, db)
+    if handshake_result is None:
         await websocket.close(code=1008)
         return
+    responder, response, server_key_kind = handshake_result
     await websocket.send_bytes(response)
 
     try:
@@ -470,6 +505,16 @@ async def link_stream(websocket: WebSocket) -> None:
         # see settle_device_key_rotation's docstring. A no-op when no
         # rotation is in progress (the common case).
         agent_registry.settle_device_key_rotation(db, agent, device_pk_hex)
+        # Task 28: which of the server's two overlapping identity keys this
+        # handshake actually authenticated against — see
+        # agent_registry.record_server_key_pin's docstring.
+        agent_registry.record_server_key_pin(db, agent, server_key_kind)
+        # Task 28: read once per connection, alongside everything else this
+        # block already reads from `db` — used below (after hello.ack /
+        # capabilities.set) to decide whether to also resend the active
+        # rotation's key.rotate frame, the durability fallback for
+        # agent_registry.broadcast_server_key_rotate's live push.
+        rotation_state = agent_crypto.load_server_key_rotation_state(db)
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
@@ -528,6 +573,22 @@ async def link_stream(websocket: WebSocket) -> None:
         )
     )
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
+    # Task 28: resend the active rotation's key.rotate (kind="server") frame
+    # on every accepted hello.ack, exactly like capabilities.set above —
+    # the durability fallback for agent_registry.broadcast_server_key_rotate's
+    # live push (see _key_rotate_bytes' docstring). A no-op the overwhelming
+    # majority of the time (no rotation in progress).
+    if rotation_state.rotation_active:
+        assert rotation_state.successor_pub is not None
+        assert rotation_state.overlap_expires_at is not None
+        await websocket.send_bytes(
+            _key_rotate_bytes(
+                responder,
+                rotation_state.successor_pub.hex(),
+                rotation_state.overlap_expires_at,
+                outbound_seq.next(),
+            )
+        )
 
     # Task 9: listen for control-plane frames (capabilities.set, update,
     # disconnect, key.rotate, ping — whatever a REST/service-layer caller

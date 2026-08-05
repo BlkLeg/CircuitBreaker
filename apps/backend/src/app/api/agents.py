@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -8,6 +9,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core import agent_crypto
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.db.models import Agent, AgentEvent, Hardware, User
@@ -26,6 +28,7 @@ from app.schemas.agents import (
     PairingLookupRequest,
     PairingLookupResponse,
     RevokeRequest,
+    ServerKeyRotationStatus,
     UpdateRequest,
 )
 from app.services import agent_enrollment, agent_registry, agent_update
@@ -69,6 +72,57 @@ def get_install_command(
 
     server_url = f"{request.url.scheme}://{request.url.netloc}"
     return agent_install.build_install_command(db, server_url)
+
+
+def _rotation_status(state: agent_crypto.ServerKeyRotationState) -> ServerKeyRotationStatus:
+    return ServerKeyRotationStatus(
+        active=state.rotation_active,
+        current_key_fingerprint=hashlib.sha256(state.current_pub).hexdigest()[:32],
+        successor_key_fingerprint=(
+            hashlib.sha256(state.successor_pub).hexdigest()[:32]
+            if state.successor_pub is not None
+            else None
+        ),
+        started_at=state.started_at,
+        overlap_expires_at=state.overlap_expires_at,
+    )
+
+
+@router.get("/server-key/status", response_model=ServerKeyRotationStatus)
+def get_server_key_rotation_status(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Task 28: current/successor server identity key fingerprints and
+    overlap timing — never key material itself, same as `/install-command`
+    above never embeds a private key."""
+    return _rotation_status(agent_crypto.load_server_key_rotation_state(db))
+
+
+@router.post("/server-key/rotate", response_model=ServerKeyRotationStatus, status_code=201)
+async def post_server_key_rotate(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Task 28: start a server-key rotation (fresh successor keypair, 7-day
+    overlap by default). Rejects with 409 while a prior rotation's overlap is
+    still active — the server has exactly one rotation in flight at a time
+    (see `agent_crypto.start_server_key_rotation`'s docstring).
+
+    Once the rotation is durably started, immediately pushes the successor
+    key to every currently-connected agent (`agent_registry.
+    broadcast_server_key_rotate`) rather than waiting for each one's next
+    hello.ack to happen to pick it up — see that function's docstring for why
+    a live connection needs this pushed proactively, not only resent lazily.
+    """
+    state = agent_crypto.start_server_key_rotation(db)
+    if state is None:
+        raise HTTPException(
+            status_code=409,
+            detail="A server-key rotation is already active (overlap window in progress)",
+        )
+    await agent_registry.broadcast_server_key_rotate(db, state)
+    return _rotation_status(state)
 
 
 @router.get("/presence", response_model=list[AgentPresenceRead])
