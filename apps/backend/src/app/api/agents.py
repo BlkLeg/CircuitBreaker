@@ -341,6 +341,13 @@ async def post_update(
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Auto-select (when the caller doesn't pin a specific version) considers
+    # only the globally-latest manifest version, by design: an explicit or
+    # auto-selected version incompatible with this agent's OS/arch is still
+    # rejected below via get_binary_sha256 returning None (404) — see
+    # agent_update.latest_version's os_name/arch filter for an alternate,
+    # "pick the newest *compatible* version instead" policy available to
+    # other callers that want it.
     version = payload.version or agent_update.latest_version()
     if version is None:
         raise HTTPException(status_code=400, detail="No agent binaries available on this instance")

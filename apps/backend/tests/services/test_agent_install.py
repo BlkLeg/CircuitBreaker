@@ -18,6 +18,44 @@ def test_render_install_script_embeds_server_identity():
     assert "systemctl enable --now cb-agent" in script
 
 
+def test_render_install_script_picks_highest_semver_not_lexicographic():
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="c" * 44,
+        manifest={
+            "0.2.0": {"linux-amd64": "old-digest"},
+            "0.10.0": {"linux-amd64": "new-digest"},
+        },
+    )
+    # 0.10.0 is the highest version even though a plain string sort would
+    # rank "0.10.0" before "0.2.0".
+    assert "/0.10.0/linux/" in script
+    assert "new-digest" in script
+    assert "old-digest" not in script
+
+
+def test_render_install_script_excludes_other_os_digest_for_same_arch():
+    """The generated script always installs the linux/${CB_ARCH} binary, so
+    a same-arch entry for a different OS (e.g. darwin-amd64 alongside
+    linux-amd64) must never leak its digest into the amd64 case — otherwise
+    the script could verify the downloaded linux binary against a digest
+    computed for an entirely different OS build."""
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="c" * 44,
+        manifest={
+            "0.1.0": {
+                "linux-amd64": "linux-digest",
+                "darwin-amd64": "darwin-digest",
+            },
+        },
+    )
+    assert "linux-digest" in script
+    assert "darwin-digest" not in script
+
+
 def test_render_install_script_is_valid_bash_syntax(tmp_path):
     import subprocess
 

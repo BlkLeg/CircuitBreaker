@@ -153,12 +153,21 @@ def render_install_script(
     tls_pin: str,
     manifest: dict,
 ) -> str:
-    latest = sorted(manifest.keys())[-1] if manifest else "0.0.0"
+    # Highest semver-ordered version, not the lexicographically-last key —
+    # a plain string sort puts "0.10.0" before "0.2.0" (agent_update.py's
+    # latest_version has the same fix, for the same reason).
+    latest = max(manifest.keys(), key=agent_update.semver_key) if manifest else "0.0.0"
     per_arch = manifest.get(latest, {})
+    # The generated script always installs the linux/${CB_ARCH} binary (see
+    # CB_BINARY_URL below), so only "linux-*" manifest entries are eligible
+    # digest sources — a same-arch, different-OS key (e.g. "darwin-amd64"
+    # alongside "linux-amd64") must never satisfy the `$CB_ARCH` match below,
+    # or the script could embed a digest for a binary it isn't downloading.
     cases = (
         "\n".join(
-            f'if [ "$CB_ARCH" = "{arch.split("-")[1]}" ]; then CB_BINARY_SHA256="{digest}"; fi'
+            f'if [ "$CB_ARCH" = "{arch.split("-", 1)[1]}" ]; then CB_BINARY_SHA256="{digest}"; fi'
             for arch, digest in per_arch.items()
+            if arch.split("-", 1)[0] == "linux"
         )
         or 'CB_BINARY_SHA256=""'
     )

@@ -23,18 +23,62 @@ def test_get_binary_sha256_missing_manifest_returns_none(tmp_path, monkeypatch):
     assert svc.get_binary_sha256("0.2.0", "linux", "amd64") is None
 
 
-def test_latest_version_picks_highest_sorted_key(tmp_path, monkeypatch):
+def test_latest_version_picks_highest_semver_not_lexicographic(tmp_path, monkeypatch):
     from app.services import agent_update as svc
 
     monkeypatch.setattr(svc, "AGENT_BINARIES_DIR", tmp_path)
     manifest = {"0.1.0": {}, "0.10.0": {}, "0.2.0": {}}
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
 
-    # NOTE: plain string sort, not semver-aware — "0.10.0" < "0.2.0"
-    # lexicographically. Acceptable for slice 1 since the packaging step
-    # (Task 17) controls version string formatting; flag this as a known
-    # limitation rather than pulling in a semver library for one comparison.
-    assert svc.latest_version() == "0.2.0"
+    # Semver-aware: 0.10.0 is the highest version even though a plain
+    # string sort would put "0.10.0" before "0.2.0" ("1" < "2").
+    assert svc.latest_version() == "0.10.0"
+
+
+def test_latest_version_picks_1_10_0_over_1_9_0(tmp_path, monkeypatch):
+    from app.services import agent_update as svc
+
+    monkeypatch.setattr(svc, "AGENT_BINARIES_DIR", tmp_path)
+    manifest = {"1.9.0": {}, "1.10.0": {}}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    assert svc.latest_version() == "1.10.0"
+
+
+def test_latest_version_filters_by_os_and_arch(tmp_path, monkeypatch):
+    from app.services import agent_update as svc
+
+    monkeypatch.setattr(svc, "AGENT_BINARIES_DIR", tmp_path)
+    manifest = {
+        "1.9.0": {"linux-amd64": "aaa", "linux-arm64": "bbb"},
+        # 1.10.0 is the globally-highest version but never shipped a
+        # windows/arm64 build — an agent reporting that os/arch must not be
+        # offered it.
+        "1.10.0": {"linux-amd64": "ccc"},
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    assert svc.latest_version(os_name="linux", arch="amd64") == "1.10.0"
+    # Highest version *compatible* with arm64 is 1.9.0, since 1.10.0 has no
+    # linux-arm64 entry.
+    assert svc.latest_version(os_name="linux", arch="arm64") == "1.9.0"
+
+
+def test_latest_version_returns_none_for_incompatible_os_arch(tmp_path, monkeypatch):
+    from app.services import agent_update as svc
+
+    monkeypatch.setattr(svc, "AGENT_BINARIES_DIR", tmp_path)
+    manifest = {"1.9.0": {"linux-amd64": "aaa"}}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    assert svc.latest_version(os_name="windows", arch="arm64") is None
+
+
+def test_semver_key_orders_numerically_not_lexicographically():
+    from app.services import agent_update as svc
+
+    versions = ["1.9.0", "1.10.0", "1.2.0", "0.9.9"]
+    assert sorted(versions, key=svc.semver_key) == ["0.9.9", "1.2.0", "1.9.0", "1.10.0"]
 
 
 @pytest.mark.asyncio

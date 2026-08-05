@@ -48,11 +48,48 @@ def binary_path(version: str, os_name: str, arch: str) -> Path:
     return path
 
 
-def latest_version() -> str | None:
+_SEMVER_COMPONENT = re.compile(r"\d+")
+
+
+def semver_key(version: str) -> tuple[int, ...]:
+    """Sort key that orders dotted version strings numerically per
+    component (e.g. "1.10.0" > "1.9.0"), unlike a plain lexicographic string
+    sort — where "1.10.0" < "1.9.0" because "1" < "9" at the first differing
+    character. Each dot-separated component is read for its leading run of
+    digits; a component with no leading digits (e.g. a "-rc1" suffix glued
+    onto the last segment) contributes 0 for that position. This is
+    deliberately not a full SemVer 2.0 precedence implementation (pre-release/
+    build-metadata ordering) — the packaging step (Task 17) only ever
+    produces plain x.y.z tags, so component-wise numeric comparison is
+    sufficient."""
+    return tuple(
+        int(m.group()) if (m := _SEMVER_COMPONENT.match(part)) else 0
+        for part in version.split(".")
+    )
+
+
+def latest_version(*, os_name: str | None = None, arch: str | None = None) -> str | None:
+    """Returns the highest semver-ordered version key in the manifest.
+
+    When os_name and arch are both given, only versions that actually carry
+    a `{os_name}-{arch}` binary are considered — an update auto-selected for
+    an agent must be one that agent can actually install, not merely the
+    globally-newest version. Returns None if the manifest is empty, or (when
+    os_name/arch are given) if no version has a matching binary — the caller
+    must treat that as "no compatible update available" rather than an
+    error."""
     manifest = load_manifest()
     if not manifest:
         return None
-    return sorted(manifest.keys())[-1]
+
+    candidates: list[str] = list(manifest.keys())
+    if os_name is not None and arch is not None:
+        key = f"{os_name}-{arch}"
+        candidates = [v for v in candidates if key in manifest[v]]
+        if not candidates:
+            return None
+
+    return max(candidates, key=semver_key)
 
 
 async def request_update(
