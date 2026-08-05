@@ -744,5 +744,29 @@ func Uninstall(ctx context.Context, opts Options) error {
 
 	uninstallFrame := frame.Frame{V: 1, Type: frame.TypeUninstall, Seq: 1, TS: time.Now().UTC(), Payload: json.RawMessage("{}")}
 	uninstallBytes, _ := frame.Encode(uninstallFrame)
-	return conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(uninstallBytes))
+	if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(uninstallBytes)); err != nil {
+		return fmt.Errorf("link: send uninstall: %w", err)
+	}
+
+	// A bare `defer conn.Close()` firing immediately after the WriteMessage
+	// above raced the server's read: WriteMessage returning nil only means
+	// this frame was handed to the local TCP send buffer, not that the
+	// server has read it — and if this connection's own receive buffer
+	// still holds any unread bytes at the moment Close() runs (e.g. the
+	// server's hello.ack, which this one-shot connection never reads),
+	// Linux answers close() with an RST instead of a graceful FIN. An RST
+	// can silently discard data already handed to the kernel, including the
+	// uninstall frame just "sent" above — so the server could receive
+	// nothing at all despite this function returning success. Sending a
+	// real WS close frame and giving the peer a brief window to respond (or
+	// to simply finish reading) makes an ordinary graceful close far more
+	// likely than an abrupt reset.
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(2*time.Second),
+	)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, _ = conn.ReadMessage() // best-effort drain; result/error not meaningful here
+	return nil
 }
