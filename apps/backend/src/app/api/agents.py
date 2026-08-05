@@ -223,6 +223,7 @@ async def post_approve(
         agent_id,
         approving_user_id=user.id,
         hardware_id=payload.hardware_id,
+        host_link_action=payload.host_link_action,
         capability_overrides=payload.capabilities,
     )
     db.commit()

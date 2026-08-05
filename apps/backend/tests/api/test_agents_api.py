@@ -158,6 +158,45 @@ async def test_approve_honors_capability_overrides(client, factories, auth_heade
 
 
 @pytest.mark.asyncio
+async def test_approve_accepts_hardware_id_and_host_link_action(client, factories, auth_headers):
+    agent = factories.agent(status="pending")
+    hardware = factories.hardware()
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"hardware_id": hardware.id, "host_link_action": "accept"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["hardware_id"] == hardware.id
+
+
+@pytest.mark.asyncio
+async def test_approve_records_host_link_action_on_approved_event(client, factories, auth_headers):
+    agent = factories.agent(status="pending")
+    hardware = factories.hardware()
+    await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"hardware_id": hardware.id, "host_link_action": "create"},
+        headers=auth_headers,
+    )
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}/events", headers=auth_headers)
+    approved = next(e for e in resp.json() if e["event_type"] == "approved")
+    assert approved["detail"] == {"hardware_id": hardware.id, "host_link_action": "create"}
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_unknown_host_link_action(client, factories, auth_headers):
+    agent = factories.agent(status="pending")
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"host_link_action": "bogus"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_approve_returns_404_for_unknown_agent(client, auth_headers):
     resp = await client.post("/api/v1/agents/999999999/approve", json={}, headers=auth_headers)
     assert resp.status_code == 404
