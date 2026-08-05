@@ -168,6 +168,48 @@ def approve_agent(
     return agent
 
 
+def set_hardware_link(
+    db: Session, agent_id: int, hardware_id: int | None, *, actor_user_id: int | None
+) -> Agent:
+    """Change (or clear) which `Hardware` row an already-approved agent is
+    linked to — the post-approval counterpart to `approve_agent`'s
+    `hardware_id` param (Task 18 covers linkage *at* approval time; this is
+    for correcting/relinking it afterwards, e.g. a mismatched proposal was
+    accepted, or the underlying hardware was later retired/replaced).
+
+    Unlike a plain `setattr(agent, "hardware_id", ...)`, this always records
+    the change in `agent_events` — an approved agent's host link is part of
+    its audit trail, so silently overwriting it would leave no record of
+    what changed or when. A no-op call (new value equal to the current one,
+    including None -> None) intentionally records nothing; only an actual
+    linkage change is event-worthy, mirroring `update_hello_metadata`'s
+    change-gated `version_changed` recording.
+
+    Caller (api/agents.py `patch_agent`) is responsible for validating that
+    `hardware_id` refers to an existing `Hardware` row before calling this —
+    this function trusts its input the same way `approve_agent` already
+    does, rather than duplicating that lookup here.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise ValueError(f"agent {agent_id} not found")
+
+    previous_hardware_id = agent.hardware_id
+    if previous_hardware_id == hardware_id:
+        return agent
+
+    agent.hardware_id = hardware_id
+    record_event(
+        db,
+        agent.id,
+        "host_link_changed",
+        actor_user_id=actor_user_id,
+        detail={"previous_hardware_id": previous_hardware_id, "hardware_id": hardware_id},
+    )
+    db.flush()
+    return agent
+
+
 def reject_agent(db: Session, agent_id: int, *, actor_user_id: int) -> Agent:
     agent = db.get(Agent, agent_id)
     if agent is None:
