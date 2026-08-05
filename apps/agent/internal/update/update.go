@@ -26,6 +26,18 @@ type Instruction struct {
 
 const markerFilename = "update_pending"
 
+// rollbackReportFilename persists the version a rollback restored *away*
+// from, across the re-exec that follows a rollback decision. The process
+// that decides to roll back (main.go's 2-minute confirm-window goroutine)
+// has no live /link connection to report over at that moment — that's
+// exactly why it's rolling back — so it writes this marker instead, then
+// re-execs into the restored (prior) binary. That fresh process starts
+// through the normal daemon startup path, and once it reconnects, reports an
+// `update.status` frame with phase "rolled_back" for the version named here,
+// then clears it (see internal/link's ReportPendingUpdateOutcome/
+// ClearPendingUpdateOutcome options and cmd/cb-agent/main.go's wiring).
+const rollbackReportFilename = "rollback_report"
+
 // downloadTimeout bounds the entire update-binary download (connect + TLS
 // handshake + headers + body) via http.Client.Timeout — an update source
 // that hangs mid-response must not wedge the agent's update goroutine
@@ -205,6 +217,38 @@ func ClearMarker(stateDir string) error {
 	err := os.Remove(filepath.Join(stateDir, markerFilename))
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("update: clear marker: %w", err)
+	}
+	return nil
+}
+
+// WriteRollbackReport persists failedVersion — the target version a rollback
+// just restored away from — so the next process (already re-exec'd back to
+// the prior binary) can report it once reconnected. See
+// rollbackReportFilename's doc comment for the full lifecycle.
+func WriteRollbackReport(stateDir, failedVersion string) error {
+	return os.WriteFile(filepath.Join(stateDir, rollbackReportFilename), []byte(failedVersion), 0o600)
+}
+
+// ReadRollbackReport mirrors ReadMarker: ok is false with a nil error when no
+// report is pending (the common case — most connections never rolled back).
+func ReadRollbackReport(stateDir string) (string, bool, error) {
+	data, err := os.ReadFile(filepath.Join(stateDir, rollbackReportFilename))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("update: read rollback report: %w", err)
+	}
+	return string(data), true, nil
+}
+
+// ClearRollbackReport mirrors ClearMarker: removing an already-absent report
+// is not an error, so a caller can call this unconditionally after a
+// successful report-send.
+func ClearRollbackReport(stateDir string) error {
+	err := os.Remove(filepath.Join(stateDir, rollbackReportFilename))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("update: clear rollback report: %w", err)
 	}
 	return nil
 }

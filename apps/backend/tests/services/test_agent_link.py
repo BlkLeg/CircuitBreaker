@@ -251,6 +251,175 @@ def test_receive_frame_rejects_negative_sequence(db_session, factories):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("phase", "expected_event"),
+    [
+        ("started", "update_started"),
+        ("succeeded", "update_succeeded"),
+        ("failed", "update_failed"),
+        ("rolled_back", "update_rolled_back"),
+    ],
+)
+async def test_dispatch_update_status_records_distinct_events(
+    db_session, factories, phase, expected_event
+):
+    """Task 24: each `update.status` phase records its own distinct
+    `agent_events` type — not a single generic event, and not the
+    request-time `update_queued`/reconnect-time `version_changed` events,
+    which are recorded elsewhere (api/agents.py, agent_registry.
+    update_hello_metadata respectively)."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": phase},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    events = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert events == [expected_event]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_failed_records_error_detail(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": "failed", "error": "update: sha256 mismatch"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    event = db_session.query(AgentEvent).filter_by(agent_id=agent.id).one()
+    assert event.detail == {"version": "0.2.0", "error": "update: sha256 mismatch"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["failed", "rolled_back"])
+async def test_dispatch_update_status_terminal_phase_clears_pending_version(
+    db_session, factories, phase
+):
+    """A failed download/verify/swap, or a confirmed rollback, means this
+    attempt will never reconnect at the target version — pending_update_version
+    must clear so a stale target doesn't linger (and so a later, unrelated
+    update can be queued without the clash) and so version_changed never
+    fires for an attempt that's already known to have not landed."""
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": phase},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_update_version is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["started", "succeeded"])
+async def test_dispatch_update_status_non_terminal_phase_leaves_pending_version(
+    db_session, factories, phase
+):
+    """started/succeeded don't resolve the attempt yet — succeeded still
+    awaits the reconnect that actually confirms the new version is running
+    (version_changed), so pending_update_version must survive both."""
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": phase},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_update_version == "0.2.0"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_mismatched_version_leaves_pending_version(
+    db_session, factories
+):
+    """A failed/rolled_back report for some *other* version than the one
+    currently pending must not clear the real pending target — e.g. a stale
+    report from an update attempt that's already been superseded."""
+    agent = factories.agent(status="active", pending_update_version="0.3.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": "failed"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert agent.pending_update_version == "0.3.0"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_malformed_payload_does_not_raise(db_session, factories):
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="update.status", ts="2026-08-04T12:00:00Z", payload={"phase": "started"}
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)  # must not raise
+
+    from app.db.models import AgentEvent
+
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_unknown_phase_is_ignored(db_session, factories):
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": "somersaulting"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+    assert agent.pending_update_version == "0.2.0"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_update_status_requires_no_capability_grant(db_session, factories):
+    """update.status is transport-level like log/heartbeat — dispatched
+    regardless of capability grants, and must never record a
+    capability_violation."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active", pending_update_version="0.2.0")
+
+    frame = AgentFrame(
+        type="update.status",
+        ts="2026-08-04T12:00:00Z",
+        payload={"version": "0.2.0", "phase": "started"},
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    violations = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="capability_violation")
+        .count()
+    )
+    assert violations == 0
+
+
+@pytest.mark.asyncio
 async def test_receive_frame_then_dispatch_frame_pipeline(db_session, factories, monkeypatch):
     """The intended two-stage pipeline: receive_frame validates and decodes,
     dispatch_frame only ever sees frames that already passed validation."""

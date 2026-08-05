@@ -83,6 +83,18 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
     checking truthiness instead of presence would make that update
     unrepresentable, since an omitted key and an explicit `[]` both parse to
     the same default. Caller is responsible for the commit/flush.
+
+    Task 24: this is also the *only* place `version_changed` is ever
+    recorded — deliberately not at update-request time (see
+    `api/agents.py:post_update`, which records `update_queued` instead). A
+    hello reporting `agent_version` that exactly matches
+    `agent.pending_update_version` (the target version a queued update set,
+    see that column's docstring) means the new binary has actually reconnected
+    and identified itself; only then is the fleet-visible version change real,
+    so `pending_update_version` is cleared right after recording it. A hello
+    reporting some *other* version while an update is still pending (e.g. the
+    agent hasn't updated yet, or updated to something unexpected) leaves
+    `pending_update_version` untouched — it isn't this update's resolution.
     """
     fields_set = payload.model_fields_set
     if "os" in fields_set:
@@ -93,6 +105,12 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
         agent.arch = payload.arch
     if "agent_version" in fields_set:
         agent.agent_version = payload.agent_version
+        if (
+            agent.pending_update_version is not None
+            and payload.agent_version == agent.pending_update_version
+        ):
+            record_event(db, agent.id, "version_changed", detail={"version": payload.agent_version})
+            agent.pending_update_version = None
     if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
 

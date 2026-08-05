@@ -82,6 +82,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripTransportRekeyPayload(t, decoded.Payload)
 			case TypeKeyRotate:
 				roundTripKeyRotatePayload(t, decoded.Payload)
+			case TypeUpdateStatus:
+				roundTripUpdateStatusPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -177,6 +179,33 @@ func roundTripTransportRekeyPayload(t *testing.T, raw json.RawMessage) {
 	}
 	if first != second {
 		t.Errorf("TransportRekeyPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+func roundTripUpdateStatusPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first UpdateStatusPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("UpdateStatusPayload decode error = %v", err)
+	}
+	switch first.Phase {
+	case "started", "succeeded", "failed", "rolled_back":
+	default:
+		t.Errorf("Phase = %q, want one of started/succeeded/failed/rolled_back", first.Phase)
+	}
+	if first.Version == "" {
+		t.Error("Version is empty")
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("UpdateStatusPayload encode error = %v", err)
+	}
+	var second UpdateStatusPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("UpdateStatusPayload re-decode error = %v", err)
+	}
+	if first != second {
+		t.Errorf("UpdateStatusPayload round-trip mismatch: got %+v, want %+v", second, first)
 	}
 }
 

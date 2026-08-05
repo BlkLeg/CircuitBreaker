@@ -20,6 +20,14 @@ TYPE_DISCOVERY_FINDING = "discovery.finding"
 TYPE_CAPABILITY_VIOLATION = "capability.violation"
 TYPE_LOG = "log"
 TYPE_UNINSTALL = "uninstall"
+# Task 24: explicit self-update progress signal — the agent reports the
+# transition points the server can't otherwise observe (download-start,
+# swap-success, failure, rollback; queue-time is already server-side, at
+# POST /{agent_id}/update). Additive-only protocol-v1 addition per Global
+# Constraints: an old agent that never sends this frame simply never
+# produces update_started/succeeded/failed/rolled_back agent_events, same as
+# any other frame type it predates.
+TYPE_UPDATE_STATUS = "update.status"
 
 # server -> agent
 TYPE_HELLO_ACK = "hello.ack"
@@ -108,6 +116,27 @@ class TransportRekeyPayload(BaseModel):
 
     direction: str  # "inbound" | "outbound"
     generation: int = 0
+
+
+class UpdateStatusPayload(BaseModel):
+    """agent -> server `update.status` payload (Task 24): one self-update
+    transition the agent itself observed, reported over the live `/link`
+    connection that originally delivered the `update` frame (or the next
+    reconnect, for `rolled_back` — see internal/update/update.go's
+    rollback-report marker, written by a process that decided to roll back
+    before it has any live connection to report over, and read/sent by the
+    next process that reconnects).
+
+    `phase` is one of "started" (download beginning), "succeeded" (binary
+    swapped, marker written, about to re-exec), "failed" (download/verify/
+    swap error — `error` carries a short message), or "rolled_back" (the
+    2-minute confirm window lapsed with no successful reconnect at the new
+    version, so the previous binary was restored).
+    """
+
+    version: str
+    phase: str  # "started" | "succeeded" | "failed" | "rolled_back"
+    error: str | None = None
 
 
 class KeyRotatePayload(BaseModel):

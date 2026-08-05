@@ -299,6 +299,13 @@ class Agent(Base):
     os_version: Mapped[str | None] = mapped_column(String, nullable=True)
     arch: Mapped[str | None] = mapped_column(String, nullable=True)
     agent_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Task 24: the version a queued self-update is expected to land the agent
+    # on, set by POST /{agent_id}/update and cleared once that outcome is
+    # resolved — either `version_changed` fires on a reconnect whose hello
+    # reports this exact version (agent_registry.update_hello_metadata), or
+    # an `update.status` frame with phase failed/rolled_back arrives for it
+    # (agent_link._handle_update_status). Never set directly by a hello.
+    pending_update_version: Mapped[str | None] = mapped_column(String, nullable=True)
     primary_macs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     reported_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     hardware_id: Mapped[int | None] = mapped_column(

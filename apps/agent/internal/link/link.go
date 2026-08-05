@@ -53,13 +53,32 @@ var rekeyInterval = 15 * time.Minute
 // rather than guessed at.
 const rekeyDirectionOutbound = "outbound"
 
+// SendUpdateStatus reports one self-update transition (`update.status`,
+// Task 24) over the live connection it's called from: version is the update
+// target, phase is "started"/"succeeded"/"failed"/"rolled_back", and errMsg
+// is only meaningful alongside "failed" (pass "" otherwise). Best-effort — a
+// non-nil error means the frame didn't go out (e.g. the connection just
+// dropped); callers other than runOnce's own rollback-report check treat that
+// as informational, not fatal, since the underlying update outcome already
+// happened regardless of whether the server heard about it promptly.
+type SendUpdateStatus func(version, phase, errMsg string) error
+
 type Options struct {
 	Config            *config.Config
 	Key               *enroll.DeviceKey
 	AgentVersion      string
 	OnCapabilitiesSet func(json.RawMessage) error
-	OnUpdate          func(json.RawMessage) error
-	OnConnected       func()
+	// OnUpdate applies one `update` instruction (download, verify, swap,
+	// re-exec). send lets it report its own progress — "started" right after
+	// unmarshalling the instruction, "failed" with a message on any
+	// download/verify/swap error, or "succeeded" right before re-exec'ing
+	// into the new binary (re-exec replaces the process image and never
+	// returns to the caller on success, which is why "succeeded" can't
+	// instead be sent by runOnce after OnUpdate returns — cmd/cb-agent/
+	// main.go's onUpdate is the one place that actually knows the swap
+	// landed).
+	OnUpdate    func(payload json.RawMessage, send SendUpdateStatus) error
+	OnConnected func()
 	// OnRejected fires whenever an explicit hello.ack rejection arrives
 	// (accepted: false), with the server's stated reason. Unlike
 	// OnConnected/OnDisconnected this does not end the connection — the
@@ -71,6 +90,19 @@ type Options struct {
 	// or the server requesting disconnect — with the error that ended it.
 	// cause is never nil when this fires from Run's reconnect loop.
 	OnDisconnected func(cause error)
+	// ReportPendingUpdateOutcome, if set, is checked once per connection
+	// right after its first accepted hello.ack (same moment OnConnected
+	// fires) for an update outcome a *previous* process couldn't report live
+	// — today, only the rollback case (see internal/update's
+	// WriteRollbackReport doc comment for why). ok is false when there is
+	// nothing pending, the overwhelmingly common case.
+	ReportPendingUpdateOutcome func() (version string, ok bool)
+	// ClearPendingUpdateOutcome is called after ReportPendingUpdateOutcome's
+	// report has actually been sent (sendUpdateStatus returned no error), so
+	// it isn't repeated on the next reconnect. Never called otherwise — a
+	// send that failed (e.g. the connection dropped immediately after
+	// hello.ack) leaves the report in place for the next reconnect to retry.
+	ClearPendingUpdateOutcome func()
 }
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
@@ -83,13 +115,19 @@ func Run(ctx context.Context, opts Options) error {
 		opts.OnCapabilitiesSet = func(json.RawMessage) error { return nil }
 	}
 	if opts.OnUpdate == nil {
-		opts.OnUpdate = func(json.RawMessage) error { return nil }
+		opts.OnUpdate = func(json.RawMessage, SendUpdateStatus) error { return nil }
 	}
 	if opts.OnConnected == nil {
 		opts.OnConnected = func() {}
 	}
 	if opts.OnRejected == nil {
 		opts.OnRejected = func(string) {}
+	}
+	if opts.ReportPendingUpdateOutcome == nil {
+		opts.ReportPendingUpdateOutcome = func() (string, bool) { return "", false }
+	}
+	if opts.ClearPendingUpdateOutcome == nil {
+		opts.ClearPendingUpdateOutcome = func() {}
 	}
 	if opts.OnDisconnected == nil {
 		opts.OnDisconnected = func(error) {}
@@ -301,6 +339,36 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		return nil
 	}
 
+	// sendUpdateStatus encodes and sends one `update.status` frame (Task 24)
+	// over this connection — see the SendUpdateStatus type doc comment.
+	// Passed to opts.OnUpdate (for started/failed/succeeded, all sent while
+	// this same connection is still live) and used directly below for the
+	// rolled_back report on connect.
+	sendUpdateStatus := func(version, phase, errMsg string) error {
+		payload, err := json.Marshal(frame.UpdateStatusPayload{
+			Version: version, Phase: phase, Error: errMsg,
+		})
+		if err != nil {
+			return fmt.Errorf("link: encode update.status payload: %w", err)
+		}
+		seq++
+		statusFrame := frame.Frame{
+			V:       frame.FrameVersion,
+			Type:    frame.TypeUpdateStatus,
+			Seq:     seq,
+			TS:      time.Now().UTC(),
+			Payload: payload,
+		}
+		data, err := frame.Encode(statusFrame)
+		if err != nil {
+			return err
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data)); err != nil {
+			return fmt.Errorf("link: send update.status: %w", err)
+		}
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -330,6 +398,24 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 					connectedFired = true
 					opts.OnConnected()
 					stableC = time.After(stabilityWindow)
+					// Task 24: report an update outcome a previous process
+					// couldn't send live (the rollback case — see
+					// ReportPendingUpdateOutcome's doc comment) now that this
+					// connection actually has an accepted hello.ack. Only
+					// cleared on a successful send; a failed send (e.g. this
+					// connection drops immediately after) leaves it for the
+					// next reconnect to retry. Nil-guarded (rather than
+					// relying solely on Run's defaulting) since some tests
+					// call runOnce directly without going through Run.
+					if opts.ReportPendingUpdateOutcome != nil {
+						if version, ok := opts.ReportPendingUpdateOutcome(); ok {
+							if err := sendUpdateStatus(version, "rolled_back", ""); err != nil {
+								log.Printf("link: send rolled_back update.status: %v", err)
+							} else if opts.ClearPendingUpdateOutcome != nil {
+								opts.ClearPendingUpdateOutcome()
+							}
+						}
+					}
 				}
 			case frame.TypePing:
 				if err := sendHeartbeat(); err != nil {
@@ -342,7 +428,7 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 					log.Printf("link: applying capabilities.set: %v", err)
 				}
 			case frame.TypeUpdate:
-				if err := opts.OnUpdate(f.Payload); err != nil {
+				if err := opts.OnUpdate(f.Payload, sendUpdateStatus); err != nil {
 					log.Printf("link: update failed: %v", err)
 				}
 			}

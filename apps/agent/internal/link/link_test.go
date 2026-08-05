@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,33 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/noiseconn"
 )
+
+// statusEntry/atomicStatusList capture update.status frames a fake test
+// server observes, guarded by a mutex since the server's read loop runs on
+// its own goroutine concurrently with whatever the test does after Run
+// returns.
+type statusEntry struct {
+	Version, Phase, Error string
+}
+
+type atomicStatusList struct {
+	mu      sync.Mutex
+	entries []statusEntry
+}
+
+func (l *atomicStatusList) add(version, phase, errMsg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, statusEntry{version, phase, errMsg})
+}
+
+func (l *atomicStatusList) snapshot() []statusEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]statusEntry, len(l.entries))
+	copy(out, l.entries)
+	return out
+}
 
 // generateTestKeypair mirrors noiseconn_test.go's generateKeypair.
 func generateTestKeypair(t *testing.T) (priv, pub [32]byte) {
@@ -182,7 +210,7 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 		OnConnected: func() {
 			atomic.AddInt32(&connectedCount, 1)
 		},
-		OnUpdate: func(payload json.RawMessage) error {
+		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
 			var instr struct {
 				Version string `json:"version"`
 			}
@@ -191,6 +219,9 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 			}
 			if instr.Version != "0.2.0" {
 				t.Errorf("OnUpdate payload version = %q, want %q", instr.Version, "0.2.0")
+			}
+			if err := send(instr.Version, "started", ""); err != nil {
+				t.Errorf("send(started) error = %v", err)
 			}
 			atomic.AddInt32(&updateApplied, 1)
 			return nil
@@ -213,6 +244,255 @@ func TestRun_SendsHeartbeatsAndAppliesCapabilitiesSet(t *testing.T) {
 	}
 	if atomic.LoadInt32(&heartbeats) == 0 {
 		t.Error("no heartbeat frames were received")
+	}
+}
+
+// TestRun_OnUpdateSendsStartedThenFailedStatusFrames drives an `update` frame
+// whose OnUpdate callback reports "started" then simulates a download
+// failure by reporting "failed" with a message — the two update.status calls
+// Task 24 expects for a failing update, both sent over the same live
+// connection the `update` frame arrived on, in order, before any retry or
+// reconnect.
+func TestRun_OnUpdateSendsStartedThenFailedStatusFrames(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	type observed struct {
+		Version string `json:"version"`
+		Phase   string `json:"phase"`
+		Error   string `json:"error"`
+	}
+	var mu atomicStatusList
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		grants := map[string]any{
+			"v": 1, "type": "capabilities.set", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]bool{"host_telemetry": true},
+		}
+		grantsBytes, _ := json.Marshal(grants)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(grantsBytes))
+
+		update := map[string]any{
+			"v": 1, "type": "update", "seq": 2, "ts": time.Now().UTC(),
+			"payload": map[string]string{"version": "0.2.0", "sha256": "abc123", "arch": "amd64", "os": "linux"},
+		}
+		updateBytes, _ := json.Marshal(update)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(updateBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			json.Unmarshal(pt, &f)
+			if f.Type == "update.status" {
+				var st observed
+				json.Unmarshal(f.Payload, &st)
+				mu.add(st.Version, st.Phase, st.Error)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnUpdate: func(payload json.RawMessage, send SendUpdateStatus) error {
+			var instr struct {
+				Version string `json:"version"`
+			}
+			if err := json.Unmarshal(payload, &instr); err != nil {
+				return err
+			}
+			if err := send(instr.Version, "started", ""); err != nil {
+				t.Errorf("send(started) error = %v", err)
+			}
+			if err := send(instr.Version, "failed", "simulated download failure"); err != nil {
+				t.Errorf("send(failed) error = %v", err)
+			}
+			return fmt.Errorf("simulated download failure")
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got := mu.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("observed %d update.status frames, want 2: %+v", len(got), got)
+	}
+	if got[0] != (statusEntry{"0.2.0", "started", ""}) {
+		t.Errorf("first update.status = %+v, want {0.2.0 started }", got[0])
+	}
+	if got[1] != (statusEntry{"0.2.0", "failed", "simulated download failure"}) {
+		t.Errorf("second update.status = %+v, want {0.2.0 failed simulated download failure}", got[1])
+	}
+}
+
+// TestRun_ReportsRolledBackOnceConnectedThenClears drives an accepted
+// hello.ack with ReportPendingUpdateOutcome reporting a pending rollback —
+// the situation main.go's rollback goroutine leaves behind for the next
+// process to report, since it has no live connection of its own at the
+// moment it decides to roll back (Task 24). Asserts the agent sends exactly
+// one update.status(rolled_back) frame right after the accepted hello.ack,
+// and that ClearPendingUpdateOutcome fires only once the send actually
+// succeeded.
+func TestRun_ReportsRolledBackOnceConnectedThenClears(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	var mu atomicStatusList
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame after handshake: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f struct {
+				Type    string          `json:"type"`
+				Payload json.RawMessage `json:"payload"`
+			}
+			json.Unmarshal(pt, &f)
+			if f.Type == "update.status" {
+				var st struct {
+					Version string `json:"version"`
+					Phase   string `json:"phase"`
+					Error   string `json:"error"`
+				}
+				json.Unmarshal(f.Payload, &st)
+				mu.add(st.Version, st.Phase, st.Error)
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	pending := true
+	var cleared int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		ReportPendingUpdateOutcome: func() (string, bool) {
+			if !pending {
+				return "", false
+			}
+			return "0.3.0", true
+		},
+		ClearPendingUpdateOutcome: func() {
+			pending = false
+			atomic.AddInt32(&cleared, 1)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got := mu.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("observed %d update.status frames, want 1: %+v", len(got), got)
+	}
+	if got[0] != (statusEntry{"0.3.0", "rolled_back", ""}) {
+		t.Errorf("update.status = %+v, want {0.3.0 rolled_back }", got[0])
+	}
+	if atomic.LoadInt32(&cleared) != 1 {
+		t.Errorf("ClearPendingUpdateOutcome called %d time(s), want 1", cleared)
 	}
 }
 

@@ -97,6 +97,34 @@
     "json": {"v": 1, "type": "disconnect", "seq": 0, "ts": "2026-07-27T12:25:00Z", "payload": {"reason": "revoked"}}
   },
   {
+    "description": "update.status — agent reporting download start",
+    "json": {
+      "v": 1, "type": "update.status", "seq": 10, "ts": "2026-08-04T12:00:00Z",
+      "payload": {"version": "0.2.0", "phase": "started"}
+    }
+  },
+  {
+    "description": "update.status — agent reporting a successful swap",
+    "json": {
+      "v": 1, "type": "update.status", "seq": 11, "ts": "2026-08-04T12:00:30Z",
+      "payload": {"version": "0.2.0", "phase": "succeeded"}
+    }
+  },
+  {
+    "description": "update.status — agent reporting a failed download with an error message",
+    "json": {
+      "v": 1, "type": "update.status", "seq": 10, "ts": "2026-08-04T12:00:05Z",
+      "payload": {"version": "0.2.0", "phase": "failed", "error": "update: download ...: status 502"}
+    }
+  },
+  {
+    "description": "update.status — agent reporting a confirmed rollback after the daemon re-exec'd back to the prior binary",
+    "json": {
+      "v": 1, "type": "update.status", "seq": 0, "ts": "2026-08-04T12:02:30Z",
+      "payload": {"version": "0.2.0", "phase": "rolled_back"}
+    }
+  },
+  {
     "description": "transport.rekey — agent announcing its outbound cipher rekey",
     "json": {
       "v": 1, "type": "transport.rekey", "seq": 55, "ts": "2026-07-27T12:15:00Z",

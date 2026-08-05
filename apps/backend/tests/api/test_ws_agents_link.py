@@ -217,6 +217,98 @@ def test_link_hello_metadata_updates_across_reconnects(db_session, ws_client):
     assert db_session.get(Agent, agent.id).agent_version == "0.3.1"
 
 
+def test_link_version_changed_fires_only_on_reconnect_at_target_version(db_session, ws_client):
+    """Task 24: `version_changed` must never fire at update-request time (that
+    transition is `update_queued`, recorded by api/agents.py:post_update) —
+    only once a later `/link` reconnect's hello reports the agent actually
+    running `pending_update_version`. A reconnect that reports some *other*
+    version (the agent hasn't updated yet) must not record it."""
+    from app.db.models import Agent, AgentEvent
+    from app.db.session import SessionLocal
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    with SessionLocal() as setup_db:
+        row = setup_db.get(Agent, agent.id)
+        row.agent_version = "0.3.0"
+        row.pending_update_version = "0.3.1"  # set by POST /update, simulated directly here
+        setup_db.commit()
+
+    _, server_pub = get_server_static_keypair()
+
+    def _event_types():
+        db_session.expire_all()
+        return [
+            e.event_type
+            for e in db_session.query(AgentEvent)
+            .filter_by(agent_id=agent.id)
+            .order_by(AgentEvent.id)
+        ]
+
+    # First reconnect: still the old version (update queued but not yet
+    # applied) — must not record version_changed.
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.3.0"})
+        ws.receive_bytes()  # hello.ack
+        ws.receive_bytes()  # capabilities.set
+
+    assert "version_changed" not in _event_types()
+    db_session.expire_all()
+    assert db_session.get(Agent, agent.id).pending_update_version == "0.3.1"
+
+    # Second reconnect: the new binary, reporting the target version — this
+    # is the one and only point version_changed may fire.
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.3.1"})
+        ws.receive_bytes()  # hello.ack
+        ws.receive_bytes()  # capabilities.set
+
+    types = _event_types()
+    assert types.count("version_changed") == 1
+    event = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="version_changed")
+        .one()
+    )
+    assert event.detail == {"version": "0.3.1"}
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.agent_version == "0.3.1"
+    assert refreshed.pending_update_version is None
+
+
+def test_link_reconnect_without_pending_update_never_records_version_changed(db_session, ws_client):
+    """An agent with no update queued (`pending_update_version` is None, the
+    common case) must never record version_changed no matter what version its
+    hello reports — there's nothing to compare against."""
+    from app.db.models import AgentEvent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    assert agent.pending_update_version is None
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws, payload={"agent_version": "0.4.0"})
+        ws.receive_bytes()  # hello.ack
+        ws.receive_bytes()  # capabilities.set
+
+    db_session.expire_all()
+    types = [
+        e.event_type
+        for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
+    ]
+    assert "version_changed" not in types
+
+
 def test_link_empty_hello_payload_does_not_blank_existing_metadata(db_session, ws_client):
     """An old-shaped/empty hello (every HelloPayload field defaults to None
     or []) must not erase metadata a prior hello or enrollment already

@@ -426,6 +426,41 @@ async def test_update_queues_pending_update_at_latest_version(
 
 
 @pytest.mark.asyncio
+async def test_update_records_update_queued_not_version_changed(
+    client, factories, auth_headers, monkeypatch, tmp_path
+):
+    """Task 24: queue-time only ever records `update_queued` — `version_changed`
+    must not appear until a later reconnect actually reports the target
+    version (see test_ws_agents_link.py's
+    test_link_reconnect_at_target_version_records_version_changed for that
+    half). Also asserts the row's `pending_update_version` is set to the
+    version just queued, since that's what a later hello/update.status
+    compares against."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_registry, agent_update
+
+    monkeypatch.setattr(agent_update, "AGENT_BINARIES_DIR", tmp_path)
+    (tmp_path / "manifest.json").write_text(json.dumps({"0.2.0": {"linux-amd64": "abc123"}}))
+    agent = factories.agent(status="active", os="linux", arch="amd64", agent_version="0.1.0")
+
+    monkeypatch.setattr(agent_update, "request_update", AsyncMock())
+    monkeypatch.setattr(agent_registry, "publish_agent_control_frame", AsyncMock(return_value=True))
+
+    resp = await client.post(f"/api/v1/agents/{agent.id}/update", json={}, headers=auth_headers)
+    assert resp.status_code == 200
+
+    events_resp = await client.get(f"/api/v1/agents/{agent.id}/events", headers=auth_headers)
+    types = [e["event_type"] for e in events_resp.json()]
+    assert "update_queued" in types
+    assert "version_changed" not in types
+
+    detail_resp = await client.get(f"/api/v1/agents/{agent.id}", headers=auth_headers)
+    assert detail_resp.json()["agent_version"] == "0.1.0"  # untouched at request time
+
+
+@pytest.mark.asyncio
 async def test_update_publishes_control_frame_for_immediate_delivery(
     client, factories, auth_headers, monkeypatch, tmp_path
 ):

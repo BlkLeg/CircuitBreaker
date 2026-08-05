@@ -30,7 +30,9 @@ from app.schemas.agent_frame import (
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
     TYPE_UNINSTALL,
+    TYPE_UPDATE_STATUS,
     AgentFrame,
+    UpdateStatusPayload,
 )
 from app.services import agent_registry
 
@@ -53,7 +55,7 @@ class LinkSessionState:
 
 
 # Frame types requiring no grant are transport-level (hello/heartbeat/log/
-# capability.violation) and are simply absent from this map.
+# capability.violation/update.status) and are simply absent from this map.
 CAPABILITY_FOR_TYPE: dict[str, str] = {
     TYPE_TELEMETRY_HOST: "host_telemetry",
     TYPE_PROBE_RESULT: "remote_probe",
@@ -81,10 +83,54 @@ async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> Non
     agent_registry.revoke_agent(db, agent.id, actor_user_id=None, reason="uninstalled by agent")
 
 
+# Task 24: maps an `update.status` frame's `phase` to the distinct
+# `agent_events` type it records — queue-time (`update_queued`) is recorded
+# separately by api/agents.py:post_update, since that transition is entirely
+# server-side and has no frame to derive from.
+_UPDATE_STATUS_EVENT: dict[str, str] = {
+    "started": "update_started",
+    "succeeded": "update_succeeded",
+    "failed": "update_failed",
+    "rolled_back": "update_rolled_back",
+}
+
+
+async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    try:
+        payload = UpdateStatusPayload.model_validate(frame.payload)
+    except ValidationError:
+        # Tolerate malformed payloads the same way _handle_log/_handle_uninstall
+        # implicitly do for their own shapes — a bad self-report must not take
+        # the connection down or otherwise block dispatch of later frames.
+        _logger.warning("agent %s: malformed update.status payload: %r", agent.id, frame.payload)
+        return
+
+    event_type = _UPDATE_STATUS_EVENT.get(payload.phase)
+    if event_type is None:
+        _logger.warning("agent %s: unknown update.status phase %r", agent.id, payload.phase)
+        return
+
+    detail: dict[str, str] = {"version": payload.version}
+    if payload.error:
+        detail["error"] = payload.error[:200]
+    agent_registry.record_event(db, agent.id, event_type, detail=detail)
+
+    is_terminal_failure = payload.phase in ("failed", "rolled_back")
+    if is_terminal_failure and agent.pending_update_version == payload.version:
+        # This attempt is never going to reconnect at the target version — a
+        # failed download/verify/swap, or a confirmed rollback to the prior
+        # binary — so version_changed must not fire for it later. Clearing
+        # here (rather than leaving it for update_hello_metadata to notice a
+        # mismatch) also lets a *subsequent*, unrelated update be queued
+        # immediately without this stale target lingering.
+        agent.pending_update_version = None
+
+
 _HANDLERS: dict[str, Handler] = {
     TYPE_HEARTBEAT: _handle_heartbeat,
     TYPE_LOG: _handle_log,
     TYPE_UNINSTALL: _handle_uninstall,
+    TYPE_UPDATE_STATUS: _handle_update_status,
 }
 
 

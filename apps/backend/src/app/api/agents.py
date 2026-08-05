@@ -378,10 +378,19 @@ async def post_update(
             },
         },
     )
+    # Task 24: `update_queued` marks queue-time only — the fleet-visible
+    # `version_changed` event doesn't fire until the new binary actually
+    # reconnects and its hello reports this exact version (see
+    # agent_registry.update_hello_metadata). `pending_update_version` is what
+    # that later check compares against, and is also how a subsequent
+    # `update.status` frame (started/succeeded/failed/rolled_back — Task 24,
+    # agent_link._handle_update_status) knows which in-flight attempt it's
+    # reporting on.
+    agent.pending_update_version = version
     agent_registry.record_event(
         db,
         agent_id,
-        "version_changed",
+        "update_queued",
         actor_user_id=user.id,
         detail={"target_version": version},
     )

@@ -8,11 +8,13 @@ from app.schemas.agent_frame import (
     TYPE_HELLO_ACK,
     TYPE_KEY_ROTATE,
     TYPE_TRANSPORT_REKEY,
+    TYPE_UPDATE_STATUS,
     AgentFrame,
     HelloAckPayload,
     HelloPayload,
     KeyRotatePayload,
     TransportRekeyPayload,
+    UpdateStatusPayload,
 )
 
 _CORPUS_PATH = Path(__file__).resolve().parents[3] / "fixtures" / "agent_frame_corpus.json"
@@ -25,6 +27,7 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_HELLO_ACK: HelloAckPayload,
     TYPE_TRANSPORT_REKEY: TransportRekeyPayload,
     TYPE_KEY_ROTATE: KeyRotatePayload,
+    TYPE_UPDATE_STATUS: UpdateStatusPayload,
 }
 
 

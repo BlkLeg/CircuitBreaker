@@ -49,6 +49,12 @@ const (
 	TypeCapabilityViolation = "capability.violation"
 	TypeLog                 = "log"
 	TypeUninstall           = "uninstall"
+	// TypeUpdateStatus reports one self-update transition point the server
+	// can't otherwise observe (download-start, swap-success, failure,
+	// rollback — queue-time is already server-side). Additive-only
+	// protocol-v1 addition (Task 24), mirroring
+	// apps/backend/src/app/schemas/agent_frame.py's TYPE_UPDATE_STATUS.
+	TypeUpdateStatus = "update.status"
 )
 
 // Frame type constants — server -> agent.
@@ -125,6 +131,17 @@ type HelloAckPayload struct {
 type TransportRekeyPayload struct {
 	Direction  string `json:"direction"` // "inbound" | "outbound"
 	Generation uint64 `json:"generation"`
+}
+
+// UpdateStatusPayload is the agent -> server `update.status` payload's
+// structured shape (Task 24), mirroring
+// apps/backend/src/app/schemas/agent_frame.py's UpdateStatusPayload. Phase is
+// one of "started"/"succeeded"/"failed"/"rolled_back"; Error is only ever set
+// alongside "failed".
+type UpdateStatusPayload struct {
+	Version string `json:"version"`
+	Phase   string `json:"phase"` // "started" | "succeeded" | "failed" | "rolled_back"
+	Error   string `json:"error,omitempty"`
 }
 
 // KeyRotatePayload carries a pending device-key or server-key rotation: the kind of key being

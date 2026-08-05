@@ -97,6 +97,14 @@ func runDaemon() {
 					log.Printf("cb-agent: rollback failed: %v", err)
 					return
 				}
+				// This process has no live /link connection to report the
+				// rollback over (that's precisely why it's rolling back) —
+				// persist it so the process re-exec'd below, once it
+				// reconnects, sends the update.status(rolled_back) frame
+				// (see internal/update.WriteRollbackReport's doc comment).
+				if err := update.WriteRollbackReport(config.StateDir(), pendingVersion); err != nil {
+					log.Printf("cb-agent: %v", err)
+				}
 				update.ClearMarker(config.StateDir())
 				syscall.Exec(binaryPath, os.Args, os.Environ()) //nolint:errcheck // best-effort re-exec after rollback
 			}
@@ -135,24 +143,46 @@ func runDaemon() {
 		return nil
 	}
 
-	onUpdate := func(payload json.RawMessage) error {
+	onUpdate := func(payload json.RawMessage, send link.SendUpdateStatus) error {
 		var instr update.Instruction
 		if err := json.Unmarshal(payload, &instr); err != nil {
 			return err
 		}
+		if err := send(instr.Version, "started", ""); err != nil {
+			log.Printf("cb-agent: send started update.status: %v", err)
+		}
 		tmpPath, err := update.Download(cfg, instr)
 		if err != nil {
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
 			return err
 		}
 		if err := update.VerifySHA256(tmpPath, instr.SHA256); err != nil {
 			os.Remove(tmpPath)
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
 			return err
 		}
 		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
 			return err
 		}
 		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
+				log.Printf("cb-agent: send failed update.status: %v", sendErr)
+			}
 			return err
+		}
+		// Reported now, immediately before re-exec: a successful re-exec
+		// replaces this process's image and never returns here, so
+		// "succeeded" can't instead be sent by link.go after OnUpdate
+		// returns (see SendUpdateStatus's doc comment).
+		if err := send(instr.Version, "succeeded", ""); err != nil {
+			log.Printf("cb-agent: send succeeded update.status: %v", err)
 		}
 		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
 		return syscall.Exec(binaryPath, os.Args, os.Environ())
@@ -167,6 +197,15 @@ func runDaemon() {
 		OnConnected:       onConnected,
 		OnRejected:        onRejected,
 		OnDisconnected:    onDisconnected,
+		ReportPendingUpdateOutcome: func() (string, bool) {
+			version, ok, _ := update.ReadRollbackReport(config.StateDir())
+			return version, ok
+		},
+		ClearPendingUpdateOutcome: func() {
+			if err := update.ClearRollbackReport(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+		},
 	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
