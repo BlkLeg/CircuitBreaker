@@ -74,23 +74,47 @@ func TestSwapAndRollback(t *testing.T) {
 func TestMarker_WriteReadClear(t *testing.T) {
 	dir := t.TempDir()
 
-	if _, present, err := ReadMarker(dir); err != nil || present {
-		t.Fatalf("ReadMarker() on fresh dir = (_, %v, %v), want (_, false, nil)", present, err)
+	if _, _, present, err := ReadMarker(dir); err != nil || present {
+		t.Fatalf("ReadMarker() on fresh dir = (_, _, %v, %v), want (_, _, false, nil)", present, err)
 	}
 
 	if err := WriteMarker(dir, "0.2.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
-	version, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.2.0" {
-		t.Fatalf("ReadMarker() = (%q, %v, %v), want (\"0.2.0\", true, nil)", version, present, err)
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.2.0" || swapped {
+		t.Fatalf("ReadMarker() = (%q, %v, %v, %v), want (\"0.2.0\", false, true, nil) — WriteMarker alone must not report a completed swap", version, swapped, present, err)
 	}
 
 	if err := ClearMarker(dir); err != nil {
 		t.Fatalf("ClearMarker() error = %v", err)
 	}
-	if _, present, _ := ReadMarker(dir); present {
+	if _, _, present, _ := ReadMarker(dir); present {
 		t.Error("marker still present after ClearMarker()")
+	}
+}
+
+// TestMarker_MarkSwappedTransitionsPhase covers the two-phase marker
+// lifecycle Task 25's fix-round-1 introduced: WriteMarker alone must report
+// swapped == false (nothing to roll back to yet — see markerPhase's doc
+// comment), and only MarkSwapped (called after a real Swap succeeds) must
+// flip that to true.
+func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := WriteMarker(dir, "0.9.0"); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+	if _, swapped, present, err := ReadMarker(dir); err != nil || !present || swapped {
+		t.Fatalf("ReadMarker() after WriteMarker() = (_, %v, %v, %v), want (_, false, true, nil)", swapped, present, err)
+	}
+
+	if err := MarkSwapped(dir, "0.9.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
+	}
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || !swapped || version != "0.9.0" {
+		t.Fatalf("ReadMarker() after MarkSwapped() = (%q, %v, %v, %v), want (\"0.9.0\", true, true, nil)", version, swapped, present, err)
 	}
 }
 

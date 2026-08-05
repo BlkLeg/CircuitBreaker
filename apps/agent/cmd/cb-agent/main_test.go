@@ -474,8 +474,14 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := update.WriteMarker(dir, "0.6.0"); err != nil {
-		t.Fatalf("WriteMarker() error = %v", err)
+	// MarkSwapped (not the plain WriteMarker) — this test simulates a
+	// restart *after* update.Swap actually completed, i.e. the marker is in
+	// its phasePendingConfirm phase and .previous is genuinely this update's
+	// backup. See TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
+	// for the phasePendingSwap (Swap never ran) case this must be told apart
+	// from.
+	if err := update.MarkSwapped(dir, "0.6.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
 	reExecCalls := 0
@@ -490,7 +496,7 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 	if err != nil || string(got) != "old binary" {
 		t.Errorf("target contents = (%q, %v), want rolled back to %q", got, err, "old binary")
 	}
-	if _, present, _ := update.ReadMarker(dir); present {
+	if _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after rollback, want cleared")
 	}
 	version, present, err := update.ReadRollbackReport(dir)
@@ -521,8 +527,12 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := update.WriteMarker(dir, "0.7.0"); err != nil {
-		t.Fatalf("WriteMarker() error = %v", err)
+	// MarkSwapped, matching the real onUpdate ordering this simulates
+	// (WriteMarker, Swap, MarkSwapped) — see the sibling
+	// NoConfirmationTriggersRollback test's comment for why plain
+	// WriteMarker would not be equivalent here.
+	if err := update.MarkSwapped(dir, "0.7.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
 	confirmed := make(chan struct{})
@@ -549,7 +559,7 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	if err != nil || string(got) != "new binary" {
 		t.Errorf("target contents = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", got, err, "new binary")
 	}
-	if _, present, _ := update.ReadMarker(dir); present {
+	if _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present, want cleared by the simulated onConnected confirmation")
 	}
 	if _, present, _ := update.ReadRollbackReport(dir); present {
@@ -557,5 +567,133 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	}
 	if reExecCalls != 0 {
 		t.Errorf("reExec called %d times, want 0 (a confirmed update must not re-exec)", reExecCalls)
+	}
+}
+
+// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
+// reproduces, live, the fix-round-1 Critical finding: marker-first ordering
+// (Task 25's own fix) broke the invariant that a marker's presence implies
+// ".previous" is *that* update's actual backup, because nothing stopped a
+// crash between WriteMarker and Swap from leaving a marker naming a new
+// version while ".previous" still held a stale, two-versions-back backup
+// from an earlier, already-confirmed update.
+//
+// Scenario: a v0->v1 update already completed and confirmed — target holds
+// the healthy, running v1 binary, and its ".previous" (v0) was retained per
+// the existing "keep .previous until confirmed" design. A v2 update
+// instruction then arrives: WriteMarker("2.0.0") succeeds durably, and the
+// process is killed (power loss, OOM, systemctl restart) before
+// update.Swap ever runs — target is untouched, still the healthy v1 binary.
+// On restart, the marker is present naming "2.0.0"; without this fix,
+// watchForRollback would arm its window and, finding the marker still
+// present after it elapses (no hello.ack — exactly the condition this
+// scenario's server-unreachable window represents), roll back by renaming
+// the STALE v0 ".previous" over the healthy running v1 — a silent
+// multi-version downgrade reported as update.status(rolled_back) for a
+// version ("2.0.0") that was never actually installed.
+//
+// With the fix, WriteMarker alone leaves the marker in phasePendingSwap
+// (swapped == false), which watchForRollback must recognize as "Swap never
+// ran, nothing to roll back" rather than blindly trusting whatever
+// ".previous" happens to be sitting on disk.
+func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing.T) {
+	orig := rollbackWindow
+	rollbackWindow = 30 * time.Millisecond
+	defer func() { rollbackWindow = orig }()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cb-agent")
+	// target is the healthy, currently-running v1 binary from an earlier
+	// v0->v1 update that already completed and confirmed.
+	if err := os.WriteFile(target, []byte("v1 binary (healthy, running)"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The stale backup that confirmed update left behind — two versions
+	// behind whatever "2.0.0" would have been, and must never be used.
+	if err := os.WriteFile(target+".previous", []byte("v0 binary (stale, two versions back)"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduces the crash: a v2 update instruction's WriteMarker succeeded,
+	// but the process died before update.Swap ever ran (main.go's onUpdate
+	// calls these in that order). The marker therefore names "2.0.0" but
+	// carries phasePendingSwap, not phasePendingConfirm.
+	if err := update.WriteMarker(dir, "2.0.0"); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+
+	reExecCalls := 0
+	reExec := func() error {
+		reExecCalls++
+		return nil
+	}
+
+	watchForRollback(dir, target, "2.0.0", reExec)
+
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "v1 binary (healthy, running)" {
+		t.Errorf("target contents = (%q, %v), want unchanged %q — the healthy running v1 binary must never be silently replaced by a stale two-versions-back backup", got, err, "v1 binary (healthy, running)")
+	}
+	if _, _, present, _ := update.ReadMarker(dir); present {
+		t.Error("marker still present after an abandoned (pre-swap) update attempt, want cleared")
+	}
+	if _, present, _ := update.ReadRollbackReport(dir); present {
+		t.Error("rollback report present, want none — nothing was rolled back, so there is nothing to report")
+	}
+	if reExecCalls != 0 {
+		t.Errorf("reExec called %d times, want 0 — an abandoned pre-swap attempt must never re-exec", reExecCalls)
+	}
+}
+
+// TestWatchForRollback_FailedRollbackStillClearsMarker covers the
+// fix-round-1 Important finding: if update.Rollback itself fails (no
+// ".previous" present, unreadable, a cross-device error, ...),
+// watchForRollback must still clear the marker rather than leaving it in
+// place — an uncleared marker would re-arm this exact same doomed rollback
+// attempt on every subsequent restart, forever, since nothing else would
+// ever clear it (the update that wrote it never confirmed, and never will,
+// since it never actually installed).
+//
+// This scenario is a newly-live path after Task 25's marker-first
+// reordering: a first-ever update crashing between WriteMarker and Swap
+// leaves a phasePendingConfirm-less marker with no ".previous" at all to
+// roll back to (there's never been a prior install to back up). This test
+// forces the same failure directly against a phasePendingConfirm marker
+// (Rollback failing for any reason, not just this specific cause) to
+// isolate the marker-clearing behavior from the phase-detection behavior
+// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup already
+// covers.
+func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
+	orig := rollbackWindow
+	rollbackWindow = 30 * time.Millisecond
+	defer func() { rollbackWindow = orig }()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "cb-agent")
+	if err := os.WriteFile(target, []byte("current binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no target+".previous" — Rollback must fail.
+	if err := update.MarkSwapped(dir, "0.8.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
+	}
+
+	reExecCalls := 0
+	reExec := func() error {
+		reExecCalls++
+		return nil
+	}
+
+	watchForRollback(dir, target, "0.8.0", reExec)
+
+	if _, _, present, _ := update.ReadMarker(dir); present {
+		t.Error("marker still present after a failed Rollback, want cleared to avoid a permanently stuck retry loop")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || string(got) != "current binary" {
+		t.Errorf("target contents = (%q, %v), want unchanged %q — a failed rollback must not partially mutate the target", got, err, "current binary")
+	}
+	if reExecCalls != 0 {
+		t.Errorf("reExec called %d times, want 0 — a failed rollback must not re-exec into whatever partial state resulted", reExecCalls)
 	}
 }

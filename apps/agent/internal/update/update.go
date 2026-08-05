@@ -27,6 +27,36 @@ type Instruction struct {
 
 const markerFilename = "update_pending"
 
+// markerPhase distinguishes the two states a still-present rollback marker
+// can be in when read back after an unplanned restart. Before this
+// distinction existed, a marker's mere presence was treated as proof that
+// targetPath+".previous" was *this* update's actual backup — true only
+// because, pre-Task-25, the marker was written after Swap succeeded. Task 25
+// correctly moved WriteMarker to run before Swap (so a crash between the two
+// leaves a recoverable "nothing happened yet" state instead of an unguarded
+// replaced binary), but that reordering broke the old proof: a marker
+// written just before a crash, with Swap never having run, would otherwise
+// be indistinguishable from one written after a real Swap — and
+// watchForRollback would "roll back" to whatever stale .previous happens to
+// be lying around from some earlier, already-confirmed update. Two versions
+// back. Silently.
+//
+//   - phasePendingSwap: WriteMarker has run but Swap has not (yet) durably
+//     completed for this marker's version. The target binary on disk is
+//     untouched — there is nothing to roll back to, and .previous (if one
+//     exists at all) belongs to an earlier, already-confirmed update, not
+//     this one.
+//   - phasePendingConfirm: Swap completed and MarkSwapped recorded that
+//     fact — .previous is now guaranteed to be *this* update's actual
+//     backup, so a rollback (if the update never confirms) is safe and
+//     meaningful.
+type markerPhase string
+
+const (
+	phasePendingSwap    markerPhase = "pending-swap"
+	phasePendingConfirm markerPhase = "pending-confirm"
+)
+
 // rollbackReportFilename persists the version a rollback restored *away*
 // from, across the re-exec that follows a rollback decision. The process
 // that decides to roll back (main.go's 2-minute confirm-window goroutine)
@@ -170,6 +200,20 @@ func moveFile(src, dst string) error {
 		out.Close()
 		os.Remove(dst)
 		return fmt.Errorf("moveFile: copy %s -> %s: %w", src, dst, err)
+	}
+	// This is the production install path in practice — Download() writes
+	// into os.TempDir() while the install target usually lives on a
+	// different mount, so os.Rename above almost always fails with EXDEV and
+	// lands here. Without an explicit Sync, dst's data may still be sitting
+	// in the page cache when Close returns: Close flushes Go-side buffers,
+	// not the kernel's, so a power loss right after a cross-mount swap could
+	// leave dst truncated or partially written — and unlike the same-
+	// filesystem rename path, there would be no way to detect or roll back
+	// that damage, since the file at dst never becomes healthy at all.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("moveFile: sync %s: %w", dst, err)
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("moveFile: close %s: %w", dst, err)
@@ -341,19 +385,69 @@ func Rollback(targetPath string) error {
 // ordering (swap first, marker after) would instead let a crash in that
 // window leave a replaced binary running with no marker at all — no
 // rollback safety net for an update that never got a chance to confirm.
+//
+// The marker written here starts in phasePendingSwap — see MarkSwapped,
+// which callers must invoke once Swap actually succeeds, and markerPhase's
+// doc comment for why that second write matters.
 func WriteMarker(stateDir, targetVersion string) error {
-	return atomicWriteFile(filepath.Join(stateDir, markerFilename), []byte(targetVersion), 0o600)
+	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion)
 }
 
-func ReadMarker(stateDir string) (string, bool, error) {
+// MarkSwapped durably transitions an already-written marker from
+// phasePendingSwap to phasePendingConfirm. Callers (cmd/cb-agent/main.go's
+// onUpdate) must call this immediately after Swap returns successfully,
+// before re-exec — it is what lets a subsequent restart's ReadMarker tell a
+// genuinely fresh backup (this update's own .previous, safe to roll back to)
+// apart from a stale one left over from some earlier, already-confirmed
+// update (unsafe — see markerPhase's doc comment for the downgrade this
+// prevents).
+//
+// If this write itself fails, the swap has already durably happened
+// (Swap returned nil) and cannot be undone from here; the marker is simply
+// left in phasePendingSwap, which means a restart before confirmation will
+// treat this update as abandoned rather than arming a rollback for it. That
+// forfeits this particular update's rollback safety net but is not a
+// correctness violation — the currently-running binary is, in fact, the new
+// one — so callers should log the failure and proceed rather than trying to
+// fail the update outright.
+func MarkSwapped(stateDir, targetVersion string) error {
+	return writeMarkerPhase(stateDir, phasePendingConfirm, targetVersion)
+}
+
+// writeMarkerPhase encodes phase and targetVersion into the marker file as
+// "<phase>\n<targetVersion>" and writes it via atomicWriteFile.
+func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion string) error {
+	data := []byte(string(phase) + "\n" + targetVersion)
+	if err := atomicWriteFile(filepath.Join(stateDir, markerFilename), data, 0o600); err != nil {
+		return fmt.Errorf("update: write marker: %w", err)
+	}
+	return nil
+}
+
+// ReadMarker reads back a marker written by WriteMarker/MarkSwapped.
+// version is the target version the marker names. swapped reports whether
+// Swap has durably completed for that version (i.e. the marker is in
+// phasePendingConfirm, written by MarkSwapped) — callers must treat
+// swapped == false as "nothing to roll back", even though a stale .previous
+// from an earlier, already-confirmed update may still be sitting on disk
+// (see markerPhase's doc comment). present is false with a nil error when no
+// marker exists at all.
+func ReadMarker(stateDir string) (version string, swapped bool, present bool, err error) {
 	data, err := os.ReadFile(filepath.Join(stateDir, markerFilename))
 	if os.IsNotExist(err) {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("update: read marker: %w", err)
+		return "", false, false, fmt.Errorf("update: read marker: %w", err)
 	}
-	return string(data), true, nil
+	phase, rest, ok := strings.Cut(string(data), "\n")
+	if !ok {
+		// Not a format this package's own writers ever produce. Treat
+		// defensively as an unconfirmed swap rather than risking a rollback
+		// against a .previous this marker can't actually vouch for.
+		return string(data), false, true, nil
+	}
+	return rest, markerPhase(phase) == phasePendingConfirm, true, nil
 }
 
 func ClearMarker(stateDir string) error {

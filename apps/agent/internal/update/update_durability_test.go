@@ -4,6 +4,7 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -102,9 +103,9 @@ func TestWriteMarker_OverwritesExistingMarkerAtomically(t *testing.T) {
 		t.Fatalf("WriteMarker(0.2.0) error = %v", err)
 	}
 
-	version, present, err := ReadMarker(dir)
+	version, _, present, err := ReadMarker(dir)
 	if err != nil || !present || version != "0.2.0" {
-		t.Fatalf("ReadMarker() = (%q, %v, %v), want (\"0.2.0\", true, nil)", version, present, err)
+		t.Fatalf("ReadMarker() = (%q, _, %v, %v), want (\"0.2.0\", _, true, nil)", version, present, err)
 	}
 }
 
@@ -128,9 +129,12 @@ func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *test
 	}
 	// Simulated crash: Swap is deliberately never called.
 
-	version, present, err := ReadMarker(dir)
+	version, swapped, present, err := ReadMarker(dir)
 	if err != nil || !present || version != "0.3.0" {
-		t.Fatalf("ReadMarker() after simulated crash = (%q, %v, %v), want (\"0.3.0\", true, nil) — recoverable state", version, present, err)
+		t.Fatalf("ReadMarker() after simulated crash = (%q, _, %v, %v), want (\"0.3.0\", _, true, nil) — recoverable state", version, present, err)
+	}
+	if swapped {
+		t.Error("ReadMarker() reports swapped = true, want false — Swap was never called, there is nothing to roll back to")
 	}
 
 	got, err := os.ReadFile(target)
@@ -143,13 +147,13 @@ func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *test
 }
 
 // TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable mirrors
-// main.go's onUpdate ordering end to end (WriteMarker, then Swap), then
-// simulates a crash immediately after — before re-exec, before any
-// hello.ack. It asserts the on-disk state a fresh restart would find is
-// fully recoverable: the marker names the installed version, the backup
-// exists for Rollback, and the swap itself durably completed. It then
-// exercises both outcomes a real restart's rollback timer could reach from
-// that recovered state.
+// main.go's onUpdate ordering end to end (WriteMarker, then Swap, then
+// MarkSwapped), then simulates a crash immediately after — before re-exec,
+// before any hello.ack. It asserts the on-disk state a fresh restart would
+// find is fully recoverable: the marker names the installed version and
+// reports the swap as completed, the backup exists for Rollback, and the
+// swap itself durably completed. It then exercises both outcomes a real
+// restart's rollback timer could reach from that recovered state.
 func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "cb-agent")
@@ -168,11 +172,14 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Swap() error = %v", err)
 	}
+	if err := MarkSwapped(dir, "0.4.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
+	}
 	// Simulated crash: no re-exec, no hello.ack, nothing else runs.
 
-	version, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.4.0" {
-		t.Fatalf("ReadMarker() after simulated crash = (%q, %v, %v), want (\"0.4.0\", true, nil)", version, present, err)
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.4.0" || !swapped {
+		t.Fatalf("ReadMarker() after simulated crash = (%q, %v, %v, %v), want (\"0.4.0\", true, true, nil)", version, swapped, present, err)
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Errorf("backup %s missing after simulated crash, want it retained until confirmation", backupPath)
@@ -190,5 +197,75 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	got, err = os.ReadFile(target)
 	if err != nil || string(got) != "old binary" {
 		t.Errorf("target contents after recovered rollback = (%q, %v), want %q", got, err, "old binary")
+	}
+}
+
+// TestMoveFile_CrossDeviceCopyFallbackSyncsDestination exercises moveFile's
+// copy+remove fallback — taken when os.Rename fails with EXDEV, which
+// moveFile's own doc comment documents as the ordinary production case,
+// since Download() writes into os.TempDir() while the install target
+// usually lives on a different mount (e.g. /usr/local/bin). Every other
+// test in this package moves files within a single t.TempDir(), which stays
+// on one filesystem and so only ever exercises the rename fast path; this
+// test forces the fallback by using two directories that are genuinely on
+// different filesystems (skipping itself if the environment doesn't offer
+// two, e.g. no writable /dev/shm, or if they happen to share a device).
+//
+// It can't directly observe that Sync() itself ran — that's an OS/hardware
+// durability property, not one visible to a test process without actually
+// crash-testing hardware — but it does force the code path containing that
+// call to run to completion and checks it produces a byte-correct,
+// correctly-moded destination file with the source removed: a regression
+// that broke the fallback's error handling (e.g. Close running before Sync,
+// or an early return skipping the source removal) would show up here as
+// either an error or corrupted/incomplete output.
+func TestMoveFile_CrossDeviceCopyFallbackSyncsDestination(t *testing.T) {
+	const srcRoot, dstRoot = "/dev/shm", "/tmp"
+	var srcStat, dstStat syscall.Stat_t
+	if err := syscall.Stat(srcRoot, &srcStat); err != nil {
+		t.Skipf("%s not available in this environment: %v", srcRoot, err)
+	}
+	if err := syscall.Stat(dstRoot, &dstStat); err != nil {
+		t.Skipf("%s not available in this environment: %v", dstRoot, err)
+	}
+	if srcStat.Dev == dstStat.Dev {
+		t.Skipf("%s and %s are on the same filesystem here (dev %d) — can't force moveFile's EXDEV fallback", srcRoot, dstRoot, srcStat.Dev)
+	}
+
+	srcDir, err := os.MkdirTemp(srcRoot, "cb-agent-update-test-*")
+	if err != nil {
+		t.Skipf("MkdirTemp(%s): %v", srcRoot, err)
+	}
+	defer os.RemoveAll(srcDir)
+	dstDir, err := os.MkdirTemp(dstRoot, "cb-agent-update-test-*")
+	if err != nil {
+		t.Skipf("MkdirTemp(%s): %v", dstRoot, err)
+	}
+	defer os.RemoveAll(dstDir)
+
+	src := filepath.Join(srcDir, "src-binary")
+	content := []byte("cross-device binary contents")
+	if err := os.WriteFile(src, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dstDir, "dst-binary")
+
+	if err := moveFile(src, dst); err != nil {
+		t.Fatalf("moveFile() across %s -> %s error = %v, want nil (EXDEV must fall back to copy+sync)", srcRoot, dstRoot, err)
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source %s still exists after moveFile(), want removed", src)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != string(content) {
+		t.Errorf("destination contents = (%q, %v), want (%q, nil)", got, err, content)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o755 {
+		t.Errorf("destination mode = %04o, want 0755 (source's mode preserved)", gotMode)
 	}
 }
