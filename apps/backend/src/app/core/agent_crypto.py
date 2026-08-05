@@ -49,6 +49,7 @@ from dissononce.processing.handshakepatterns.interactive.IK import IKHandshakePa
 from dissononce.processing.impl.cipherstate import CipherState
 from dissononce.processing.impl.handshakestate import HandshakeState
 from dissononce.processing.impl.symmetricstate import SymmetricState
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -303,9 +304,22 @@ def start_server_key_rotation(
     simply supersede an in-progress device-key rotation, the brief requires
     this one to refuse outright while a prior rotation's overlap is still in
     progress — the server has exactly one rotation in flight at a time.
+
+    Genuinely serializes two concurrent callers (fix round 1 — the
+    `state.rotation_active` check above this function's docstring once
+    described is a plain SELECT with no lock, so two callers racing past it
+    before either commits would otherwise both "win", the second silently
+    overwriting the first's successor keypair): the actual write is a
+    conditional `UPDATE ... WHERE agent_server_key_pending_private_key IS
+    NULL`, whose `WHERE` clause Postgres re-evaluates against the
+    just-committed row for any caller that had to wait on the first's
+    row-level write lock. A caller whose `UPDATE` therefore affects zero
+    rows lost that race and returns `None` exactly as if it had seen
+    `state.rotation_active` true to begin with — its freshly generated (and
+    now-orphaned) successor keypair is simply discarded, never written.
     """
+    from app.db.models import AppSettings
     from app.services.credential_vault import get_vault
-    from app.services.settings_service import get_or_create_settings
 
     reference = now if now is not None else utcnow()
     state = load_server_key_rotation_state(db, now=reference)
@@ -313,12 +327,33 @@ def start_server_key_rotation(
         return None
 
     vault = get_vault()
-    row = get_or_create_settings(db)
     window = overlap_seconds if overlap_seconds is not None else SERVER_KEY_OVERLAP_SECONDS
     priv_bytes, _ = _generate_keypair()
-    row.agent_server_key_pending_private_key = vault.encrypt(priv_bytes.hex())
-    row.agent_server_key_rotation_started_at = reference
-    row.agent_server_key_rotation_overlap_expires_at = reference + timedelta(seconds=window)
+    encrypted = vault.encrypt(priv_bytes.hex())
+    expiry = reference + timedelta(seconds=window)
+
+    result = db.execute(
+        sa_update(AppSettings)
+        .where(
+            AppSettings.id == 1,
+            AppSettings.agent_server_key_pending_private_key.is_(None),
+        )
+        .values(
+            agent_server_key_pending_private_key=encrypted,
+            agent_server_key_rotation_started_at=reference,
+            agent_server_key_rotation_overlap_expires_at=expiry,
+        )
+    )
+    if result.rowcount == 0:  # type: ignore[attr-defined]
+        # Lost the race — some other caller's rotation committed first (or,
+        # far less likely, the row was deleted out from under us). Nothing
+        # was written on this session's behalf, but roll back regardless so
+        # this session doesn't carry a stale view of the row forward into
+        # whatever its caller does next — same defensive stance
+        # settings_service.get_or_create_settings already takes on its own
+        # concurrent-first-request IntegrityError race.
+        db.rollback()
+        return None
     db.commit()
 
     return load_server_key_rotation_state(db, now=reference)

@@ -100,20 +100,28 @@ def get_server_key_rotation_status(
 
 
 @router.post("/server-key/rotate", response_model=ServerKeyRotationStatus, status_code=201)
-def post_server_key_rotate(
+async def post_server_key_rotate(
     db: Annotated[Session, Depends(get_db)],
     _user: Annotated[User, require_role("admin")],
 ) -> Any:
     """Task 28: start a server-key rotation (fresh successor keypair, 7-day
     overlap by default). Rejects with 409 while a prior rotation's overlap is
     still active — the server has exactly one rotation in flight at a time
-    (see `agent_crypto.start_server_key_rotation`'s docstring)."""
+    (see `agent_crypto.start_server_key_rotation`'s docstring).
+
+    Once the rotation is durably started, immediately pushes the successor
+    key to every currently-connected agent (`agent_registry.
+    broadcast_server_key_rotate`) rather than waiting for each one's next
+    hello.ack to happen to pick it up — see that function's docstring for why
+    a live connection needs this pushed proactively, not only resent lazily.
+    """
     state = agent_crypto.start_server_key_rotation(db)
     if state is None:
         raise HTTPException(
             status_code=409,
             detail="A server-key rotation is already active (overlap window in progress)",
         )
+    await agent_registry.broadcast_server_key_rotate(db, state)
     return _rotation_status(state)
 
 

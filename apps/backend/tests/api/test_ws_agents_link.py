@@ -694,6 +694,13 @@ class _FakeTTLRedis:
         self._store[key] = (expires_at, str(current))
         return current
 
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        """Backs `agent_registry.bulk_presence` (Task 28's
+        `broadcast_server_key_rotate` calls it to find which agents are
+        online before pushing) — a plain per-key `get` loop, since this
+        fake's dict-backed store has no real MGET to speed up."""
+        return [await self.get(key) for key in keys]
+
     async def expire(self, key: str, ttl: float, nx: bool = False) -> bool:
         entry = self._store.get(key)
         if entry is None:
@@ -1769,3 +1776,110 @@ def test_link_rejects_previous_server_key_and_accepts_successor_after_overlap_el
 
     with ws_client.websocket_connect("/api/v1/agents/link") as ws:
         _connect_linked(ws, agent_priv, successor_server_pub)
+
+
+# ── Fix round 1 (Critical finding): advertise the successor key over ───────
+# authenticated links, both a live push on rotation start and a durable
+# resend on every hello.ack while the rotation stays active.
+
+
+def test_server_key_rotate_delivers_key_rotate_over_live_link(
+    db_session, ws_client, monkeypatch, factories, app_cfg, _server_key_rotation_cleanup
+):
+    """The real `POST /agents/server-key/rotate` admin endpoint pushes a live
+    `key.rotate` (kind="server") frame to an already-connected agent
+    immediately — not just delivered lazily whenever it next happens to
+    reconnect (proven separately below) — via the same Task 8/9 cross-worker
+    control-frame path Task 9/10/11 already proved for capabilities.set/
+    disconnect. Mirrors test_capabilities_put_delivers_immediate_push_over_
+    live_link's shape for this trigger instead of a capability grant."""
+    import hashlib
+    from unittest.mock import AsyncMock
+
+    fake_redis = _FakeTTLRedis()
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=fake_redis))
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+    headers = _login_admin(ws_client, factories)
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+        # Give link_stream's background control-frame listener a moment to
+        # actually subscribe before the REST call publishes — same
+        # precaution as the companion capabilities.set/disconnect proofs.
+        time.sleep(0.1)
+
+        resp = ws_client.post("/api/v1/agents/server-key/rotate", headers=headers)
+        assert resp.status_code == 201
+        successor_fingerprint = resp.json()["successor_key_fingerprint"]
+
+        raw = _receive_bytes_with_timeout(ws, timeout=2.0)
+        frame = json.loads(initiator.decrypt(raw))
+        assert frame["type"] == "key.rotate"
+        assert frame["payload"]["kind"] == "server"
+        assert len(frame["payload"]["successor_pk"]) == 64
+        assert "expiry" in frame["payload"]
+        # Cross-check against the endpoint's own reported fingerprint — the
+        # same key, not just a plausible-looking one.
+        pushed_fingerprint = hashlib.sha256(
+            bytes.fromhex(frame["payload"]["successor_pk"])
+        ).hexdigest()[:32]
+        assert pushed_fingerprint == successor_fingerprint
+
+
+def test_link_hello_ack_resends_active_rotation_key_rotate_frame(
+    db_session, ws_client, _server_key_rotation_cleanup
+):
+    """Durability half: a *new* connection established while a rotation is
+    active receives the key.rotate frame as part of its own hello.ack
+    sequence, right after capabilities.set — the fallback for whatever the
+    live-push half (proven above) misses (a worker down at push time, a
+    connection that hadn't finished establishing yet, or a publish racing a
+    disconnect), mirroring Task 11's "re-send the authoritative set on every
+    hello.ack" for capabilities.set."""
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+    state = _start_server_key_rotation_committed(overlap_seconds=3600)
+    assert state.successor_pub is not None
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+
+        ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert ack["type"] == "hello.ack"
+        capabilities_frame = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert capabilities_frame["type"] == "capabilities.set"
+        rotate_frame = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert rotate_frame["type"] == "key.rotate"
+        assert rotate_frame["payload"]["kind"] == "server"
+        assert rotate_frame["payload"]["successor_pk"] == state.successor_pub.hex()
+
+
+def test_link_hello_ack_omits_key_rotate_frame_when_no_rotation_is_active(
+    db_session, ws_client
+):
+    """The common case: with no rotation in progress, hello.ack is followed
+    by capabilities.set and nothing else — no key.rotate frame is sent."""
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = TestNoiseInitiator(agent_priv, server_pub)
+        ws.send_bytes(initiator.write_message())
+        initiator.read_message(ws.receive_bytes())
+        _send_hello(initiator, ws)
+
+        ack = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert ack["type"] == "hello.ack"
+        capabilities_frame = json.loads(initiator.decrypt(ws.receive_bytes()))
+        assert capabilities_frame["type"] == "capabilities.set"
+
+        # Nothing else should follow within a short window — send a
+        # heartbeat and confirm the connection stays healthy with no stray
+        # extra frame arriving first.
+        _send_frame(initiator, ws, type="heartbeat", seq=0)
+        time.sleep(0.2)

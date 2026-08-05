@@ -128,6 +128,17 @@ type Options struct {
 	// spool's resulting depth and size in bytes, so callers can mirror it
 	// into e.g. status.Writer.SetSpoolStats. May be nil.
 	OnSpoolStats func(depth int, bytes int64)
+
+	// StateDir is where a Task 28 `key.rotate` (kind="server") frame's
+	// successor server public key is durably persisted (see
+	// config.SaveServerKeyRotation) and where an in-progress rotation
+	// advertised on some earlier connection is read back from before dialing
+	// (see serverKeyCandidates). Empty disables persistence entirely —
+	// candidates then reduce to just opts.Config.ServerStaticPK, and an
+	// inbound key.rotate frame is logged and otherwise ignored — which
+	// matches every caller in this package's test suite that predates Task 28
+	// and never sets this field. cmd/cb-agent/main.go passes config.StateDir().
+	StateDir string
 }
 
 // Run dials WS /api/agents/link and stays connected until ctx is cancelled,
@@ -177,6 +188,89 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
+// serverKeyCandidates returns the ordered list of server static public keys
+// (hex) this connection attempt should be willing to open a Noise IK
+// handshake against: cfg.ServerStaticPK first (the fast path for the
+// overwhelmingly common no-rotation-in-progress case), then — if a Task 28
+// server-key rotation was ever advertised to this agent over some earlier
+// connection (see the frame.TypeKeyRotate case in runOnce's frame switch) and
+// durably persisted via config.SaveServerKeyRotation — its successor key too.
+// Mirrors the server's own accept-either-key-during-the-overlap-window
+// behavior (agent_crypto.complete_ik_handshake), just from the initiator's
+// side: Noise IK's initiator has to fix one `rs` per handshake attempt, so
+// where the server tries multiple *private* keys against one inbound message,
+// the agent instead retries the handshake itself against each candidate
+// *public* key in turn (see the dial loop in runOnce).
+//
+// stateDir == "" (Options.StateDir left unset — every pre-Task-28 caller in
+// this package's test suite) skips the persisted-rotation lookup entirely
+// and returns just cfg.ServerStaticPK, unchanged from this function's
+// absence.
+func serverKeyCandidates(cfg *config.Config, stateDir string) []string {
+	candidates := []string{cfg.ServerStaticPK}
+	if stateDir == "" {
+		return candidates
+	}
+	rotation, err := config.LoadServerKeyRotation(stateDir)
+	if err != nil {
+		log.Printf("link: reading persisted server key rotation: %v", err)
+		return candidates
+	}
+	if rotation != nil && rotation.SuccessorPK != "" && rotation.SuccessorPK != cfg.ServerStaticPK {
+		candidates = append(candidates, rotation.SuccessorPK)
+	}
+	return candidates
+}
+
+// dialAndHandshake dials u and completes the Noise IK handshake against
+// remotePKHex, returning the live connection and initiator session on
+// success. A handshake failure (ReadHandshakeMessage returning an error —
+// the signal that remotePKHex was the wrong server key: the derived shared
+// secret doesn't match, so msg2's AEAD payload fails to decrypt/verify)
+// closes conn itself before returning, so runOnce's candidate loop can
+// simply try the next key with no leaked socket. A dial failure never
+// reaches that point at all — there's nothing to close.
+func dialAndHandshake(
+	ctx context.Context, opts Options, u string, remotePKHex string,
+) (*websocket.Conn, *noiseconn.Session, error) {
+	remotePub, err := hex.DecodeString(remotePKHex)
+	if err != nil || len(remotePub) != 32 {
+		return nil, nil, fmt.Errorf("link: invalid server_static_pk: %w", err)
+	}
+	var remotePubArr [32]byte
+	copy(remotePubArr[:], remotePub)
+
+	session, err := noiseconn.NewInitiator(opts.Key.Private, opts.Key.Public, remotePubArr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("link: %w", err)
+	}
+
+	conn, _, err := tlsdial.NewDialer(opts.Config.TLSPin).DialContext(ctx, u, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("link: dial: %w", err)
+	}
+
+	msg1, err := session.WriteHandshakeMessage()
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("link: %w", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, msg1); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("link: send handshake: %w", err)
+	}
+	_, msg2, err := conn.ReadMessage()
+	if err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("link: read handshake response: %w", err)
+	}
+	if err := session.ReadHandshakeMessage(msg2); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("link: %w", err)
+	}
+	return conn, session, nil
+}
+
 // runOnce dials, handshakes, and serves one /link connection until it drops
 // or ctx is cancelled. The returned bool reports whether the connection
 // reached an accepted hello.ack and then stayed up for at least
@@ -187,18 +281,6 @@ func Run(ctx context.Context, opts Options) error {
 // not count as stable, so a flapping link keeps its backoff progression
 // instead of resetting to the floor every cycle.
 func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
-	remotePub, err := hex.DecodeString(opts.Config.ServerStaticPK)
-	if err != nil || len(remotePub) != 32 {
-		return false, fmt.Errorf("link: invalid server_static_pk: %w", err)
-	}
-	var remotePubArr [32]byte
-	copy(remotePubArr[:], remotePub)
-
-	session, err := noiseconn.NewInitiator(opts.Key.Private, opts.Key.Public, remotePubArr)
-	if err != nil {
-		return false, fmt.Errorf("link: %w", err)
-	}
-
 	u, err := url.Parse(opts.Config.ServerURL)
 	if err != nil {
 		return false, fmt.Errorf("link: invalid server_url: %w", err)
@@ -206,26 +288,26 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = "/api/v1/agents/link"
 
-	conn, _, err := tlsdial.NewDialer(opts.Config.TLSPin).DialContext(ctx, u.String(), nil)
-	if err != nil {
-		return false, fmt.Errorf("link: dial: %w", err)
+	// Task 28: try every currently-trusted server key in turn (current key
+	// first) rather than only ever cfg.ServerStaticPK — see
+	// serverKeyCandidates' doc comment. The common case (no rotation ever
+	// advertised) is exactly one candidate and behaves identically to before
+	// this loop existed.
+	var conn *websocket.Conn
+	var session *noiseconn.Session
+	for _, candidate := range serverKeyCandidates(opts.Config, opts.StateDir) {
+		c, s, dialErr := dialAndHandshake(ctx, opts, u.String(), candidate)
+		if dialErr != nil {
+			err = dialErr
+			continue
+		}
+		conn, session = c, s
+		break
+	}
+	if conn == nil {
+		return false, err
 	}
 	defer conn.Close()
-
-	msg1, err := session.WriteHandshakeMessage()
-	if err != nil {
-		return false, fmt.Errorf("link: %w", err)
-	}
-	if err := conn.WriteMessage(websocket.BinaryMessage, msg1); err != nil {
-		return false, fmt.Errorf("link: send handshake: %w", err)
-	}
-	_, msg2, err := conn.ReadMessage()
-	if err != nil {
-		return false, fmt.Errorf("link: read handshake response: %w", err)
-	}
-	if err := session.ReadHandshakeMessage(msg2); err != nil {
-		return false, fmt.Errorf("link: %w", err)
-	}
 
 	helloPayload := hostinfo.Collect(opts.AgentVersion)
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
@@ -478,6 +560,8 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				if err := opts.OnUpdate(f.Payload, sendUpdateStatus); err != nil {
 					log.Printf("link: update failed: %v", err)
 				}
+			case frame.TypeKeyRotate:
+				handleKeyRotate(opts, f.Payload)
 			}
 		case <-ticker.C:
 			if err := sendHeartbeat(); err != nil {
@@ -495,6 +579,41 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			stable = true
 		}
 	}
+}
+
+// handleKeyRotate processes one inbound `key.rotate` frame (Task 28's
+// server -> agent direction, kind="server" — see
+// frame.KeyRotatePayload's doc comment; kind="device" is Task 27's own
+// direction/mechanism and is not something the server ever sends, so it's
+// logged and ignored here rather than acted on). Durably persists the
+// successor server public key via config.SaveServerKeyRotation so
+// serverKeyCandidates picks it up on every future connection attempt,
+// including across a restart — from that point on this agent trusts EITHER
+// the config file's current ServerStaticPK or this successor key, exactly
+// mirroring the server's own accept-either-key-during-the-overlap-window
+// behavior. Malformed payloads and persistence failures are logged, never
+// fatal to the connection — the same tolerance-of-bad-control-frames stance
+// capabilities.set/update already take in the switch above.
+func handleKeyRotate(opts Options, payload json.RawMessage) {
+	var rotate frame.KeyRotatePayload
+	if err := json.Unmarshal(payload, &rotate); err != nil {
+		log.Printf("link: malformed key.rotate payload: %v", err)
+		return
+	}
+	if rotate.Kind != "server" {
+		log.Printf("link: ignoring key.rotate with unexpected kind %q (server -> agent is kind=server only)", rotate.Kind)
+		return
+	}
+	if opts.StateDir == "" {
+		log.Printf("link: received server-key rotation but StateDir is unset — successor key not persisted")
+		return
+	}
+	state := config.ServerKeyRotation{SuccessorPK: rotate.SuccessorPK, Expiry: rotate.Expiry}
+	if err := config.SaveServerKeyRotation(opts.StateDir, state); err != nil {
+		log.Printf("link: persisting server-key rotation: %v", err)
+		return
+	}
+	log.Printf("link: persisted successor server key from key.rotate — will be trusted alongside the current key on future connections")
 }
 
 // applyInboundRekey validates one decrypted server->agent `transport.rekey`

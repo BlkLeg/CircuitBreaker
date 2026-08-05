@@ -320,13 +320,21 @@ class Agent(Base):
     # Task 28: which of the server's two overlapping identity keys (see
     # app.core.agent_crypto.ServerKeyRotationState) this agent's most recent
     # successful `/link` Noise handshake actually authenticated against.
-    # Timestamps only — the key material itself lives once, globally, on
-    # AppSettings, not per agent. Set by agent_registry.record_server_key_pin,
-    # called from ws_agents.py right after a handshake completes against
-    # whichever key it matched. Purely observational (nothing about
-    # handshake acceptance depends on these), but lets an admin's rotation
-    # status view answer "how much of the fleet has already pinned the
-    # successor key" rather than only knowing the rotation's global timing.
+    #
+    # These two columns are rollout-*timing* only, not the pin itself — the
+    # actual per-agent pin (the successor server public key this specific
+    # device now durably trusts, alongside its config file's original one) is
+    # persisted agent-side, in apps/agent/internal/config's
+    # ServerKeyRotation/SaveServerKeyRotation (see internal/link.go's
+    # handleKeyRotate), not here: the server has no visibility into whether a
+    # given agent's local state directory actually holds the successor key,
+    # only into which key its handshakes have used so far. Set by
+    # agent_registry.record_server_key_pin, called from ws_agents.py right
+    # after a handshake completes against whichever key it matched. Purely
+    # observational (nothing about handshake acceptance depends on these),
+    # but lets an admin's rotation status view answer "how much of the fleet
+    # has already switched to authenticating with the successor key" rather
+    # than only knowing the rotation's global timing.
     server_pk_current_pinned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

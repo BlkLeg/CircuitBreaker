@@ -37,6 +37,7 @@ from app.schemas.agent_frame import (
     TYPE_DISCONNECT,
     TYPE_HEARTBEAT,
     TYPE_HELLO_ACK,
+    TYPE_KEY_ROTATE,
     TYPE_PING,
     TYPE_TRANSPORT_REKEY,
     TYPE_UPDATE,
@@ -296,6 +297,33 @@ def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool], se
     return responder.encrypt(json.dumps(frame).encode())
 
 
+def _key_rotate_bytes(
+    responder: NoiseIKResponder, successor_pk_hex: str, expiry: datetime, seq: int
+) -> bytes:
+    """Wire-encode one server -> agent `key.rotate` (kind="server") frame —
+    Task 28's advertisement of an in-progress rotation's successor identity
+    key. Sent unconditionally on every accepted hello.ack for as long as a
+    rotation is active (see link_stream's call site), mirroring Task 11's
+    "re-send the authoritative [capabilities] set on every hello.ack": this
+    is the durability fallback for `agent_registry.broadcast_server_key_rotate`'s
+    live push — a connection this worker didn't hold at push time, or one
+    that hadn't finished establishing yet, still learns the successor key the
+    moment it completes its own hello.ack exchange, live push or not.
+    """
+    frame = {
+        "v": 1,
+        "type": TYPE_KEY_ROTATE,
+        "seq": seq,
+        "ts": utcnow().isoformat(),
+        "payload": {
+            "kind": "server",
+            "successor_pk": successor_pk_hex,
+            "expiry": expiry.isoformat(),
+        },
+    }
+    return responder.encrypt(json.dumps(frame).encode())
+
+
 class _OutboundSeq:
     """Per-connection strictly-increasing sequence counter for frames the
     server sends down one /link session (capabilities.set, update, ...),
@@ -481,6 +509,12 @@ async def link_stream(websocket: WebSocket) -> None:
         # handshake actually authenticated against — see
         # agent_registry.record_server_key_pin's docstring.
         agent_registry.record_server_key_pin(db, agent, server_key_kind)
+        # Task 28: read once per connection, alongside everything else this
+        # block already reads from `db` — used below (after hello.ack /
+        # capabilities.set) to decide whether to also resend the active
+        # rotation's key.rotate frame, the durability fallback for
+        # agent_registry.broadcast_server_key_rotate's live push.
+        rotation_state = agent_crypto.load_server_key_rotation_state(db)
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
@@ -539,6 +573,22 @@ async def link_stream(websocket: WebSocket) -> None:
         )
     )
     await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
+    # Task 28: resend the active rotation's key.rotate (kind="server") frame
+    # on every accepted hello.ack, exactly like capabilities.set above —
+    # the durability fallback for agent_registry.broadcast_server_key_rotate's
+    # live push (see _key_rotate_bytes' docstring). A no-op the overwhelming
+    # majority of the time (no rotation in progress).
+    if rotation_state.rotation_active:
+        assert rotation_state.successor_pub is not None
+        assert rotation_state.overlap_expires_at is not None
+        await websocket.send_bytes(
+            _key_rotate_bytes(
+                responder,
+                rotation_state.successor_pub.hex(),
+                rotation_state.overlap_expires_at,
+                outbound_seq.next(),
+            )
+        )
 
     # Task 9: listen for control-plane frames (capabilities.set, update,
     # disconnect, key.rotate, ping — whatever a REST/service-layer caller

@@ -477,6 +477,70 @@ def test_start_server_key_rotation_allowed_again_once_prior_overlap_has_elapsed(
     assert second.successor_priv != first.successor_priv
 
 
+def test_start_server_key_rotation_serializes_concurrent_callers(app_cfg):
+    """Fix round 1 (Important finding): two concurrent starts must not both
+    succeed — one caller's freshly generated successor keypair silently
+    overwriting the other's would orphan whichever install script/admin view
+    already picked up the loser's key before it vanished.
+
+    Needs two genuinely independent DB connections (not this file's usual
+    `db_session`, whose single connection can't reproduce cross-connection
+    contention) — same reasoning tests/api/test_ws_agents_link.py's
+    `_active_agent_with_key` gives for using `SessionLocal()` directly — and
+    a `threading.Barrier` so both fire as close to simultaneously as the
+    database's own row-level locking allows; the actual serialization comes
+    from the second caller's conditional `UPDATE` blocking on the first
+    caller's uncommitted row lock, then re-evaluating its `WHERE` clause
+    against the now-committed row once that lock releases (see
+    `start_server_key_rotation`'s docstring).
+    """
+    import threading
+
+    from app.db.session import SessionLocal
+    from app.services.settings_service import get_or_create_settings
+
+    def _clear_rotation_state() -> None:
+        with SessionLocal() as db:
+            row = get_or_create_settings(db)
+            row.agent_server_key_pending_private_key = None
+            row.agent_server_key_rotation_started_at = None
+            row.agent_server_key_rotation_overlap_expires_at = None
+            db.commit()
+
+    # Clean slate: guards against a prior test in this process (or a prior
+    # run of this same test) leaving a real, committed rotation active on
+    # the singleton row — this test's own two attempts commit for real, so
+    # unlike this file's other db_session-based tests there's no rollback to
+    # rely on between runs.
+    _clear_rotation_state()
+
+    barrier = threading.Barrier(2)
+    results: list[object] = [None, None]
+    errors: list[BaseException] = []
+
+    def _attempt(idx: int) -> None:
+        try:
+            with SessionLocal() as db:
+                barrier.wait(timeout=5)
+                results[idx] = start_server_key_rotation(db)
+        except BaseException as exc:  # pragma: no cover - failure path only
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_attempt, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    try:
+        if errors:
+            pytest.fail(f"unexpected error(s) from concurrent callers: {errors!r}")
+        succeeded = [r for r in results if r is not None]
+        assert len(succeeded) == 1, f"expected exactly one rotation to start, got {results!r}"
+    finally:
+        _clear_rotation_state()
+
+
 def _write_message_against(server_pub: bytes) -> tuple[bytes, bytes]:
     """One Noise IK initiator message keyed to `server_pub`, plus the agent's
     own private key (for building a full initiator later if a test needs

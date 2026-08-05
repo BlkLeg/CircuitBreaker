@@ -1495,3 +1495,353 @@ func newHandshakenSession(t *testing.T) (*noiseconn.Session, *noise.CipherState,
 	}
 	return session, responder.recv, responder.send
 }
+
+// ── Task 28: server-key rotation (key.rotate kind="server") ────────────────
+
+func TestServerKeyCandidates_NoStateDirReturnsOnlyConfigKey(t *testing.T) {
+	cfg := &config.Config{ServerStaticPK: strings.Repeat("aa", 32)}
+
+	got := serverKeyCandidates(cfg, "")
+
+	if len(got) != 1 || got[0] != cfg.ServerStaticPK {
+		t.Errorf("serverKeyCandidates() = %v, want [%q]", got, cfg.ServerStaticPK)
+	}
+}
+
+func TestServerKeyCandidates_NoPersistedRotationReturnsOnlyConfigKey(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{ServerStaticPK: strings.Repeat("aa", 32)}
+
+	got := serverKeyCandidates(cfg, dir)
+
+	if len(got) != 1 || got[0] != cfg.ServerStaticPK {
+		t.Errorf("serverKeyCandidates() = %v, want [%q]", got, cfg.ServerStaticPK)
+	}
+}
+
+func TestServerKeyCandidates_IncludesPersistedSuccessor(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{ServerStaticPK: strings.Repeat("aa", 32)}
+	successor := strings.Repeat("bb", 32)
+	if err := config.SaveServerKeyRotation(dir, config.ServerKeyRotation{SuccessorPK: successor}); err != nil {
+		t.Fatalf("SaveServerKeyRotation() error = %v", err)
+	}
+
+	got := serverKeyCandidates(cfg, dir)
+
+	want := []string{cfg.ServerStaticPK, successor}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("serverKeyCandidates() = %v, want %v", got, want)
+	}
+}
+
+func TestServerKeyCandidates_SkipsSuccessorIdenticalToCurrent(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{ServerStaticPK: strings.Repeat("aa", 32)}
+	if err := config.SaveServerKeyRotation(dir, config.ServerKeyRotation{SuccessorPK: cfg.ServerStaticPK}); err != nil {
+		t.Fatalf("SaveServerKeyRotation() error = %v", err)
+	}
+
+	got := serverKeyCandidates(cfg, dir)
+
+	if len(got) != 1 {
+		t.Errorf("serverKeyCandidates() = %v, want exactly [%q]", got, cfg.ServerStaticPK)
+	}
+}
+
+// TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame proves the
+// receiving half of Task 28's fix: an inbound `key.rotate` (kind="server")
+// frame durably persists its successor_pk via config.SaveServerKeyRotation,
+// so it survives past this connection (and a restart).
+func TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+	_, successorPub := generateTestKeypair(t)
+	expiry := time.Now().Add(7 * 24 * time.Hour).UTC().Truncate(time.Second)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("expected a hello frame: %v", err)
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		rotate := map[string]any{
+			"v": 1, "type": "key.rotate", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]any{
+				"kind":         "server",
+				"successor_pk": hex.EncodeToString(successorPub[:]),
+				"expiry":       expiry,
+			},
+		}
+		rotateBytes, _ := json.Marshal(rotate)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(rotateBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config:       &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:          key,
+		AgentVersion: "0.1.0-test",
+		StateDir:     dir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got, err := config.LoadServerKeyRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadServerKeyRotation() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadServerKeyRotation() = nil, want the persisted successor key")
+	}
+	wantPK := hex.EncodeToString(successorPub[:])
+	if got.SuccessorPK != wantPK {
+		t.Errorf("SuccessorPK = %q, want %q", got.SuccessorPK, wantPK)
+	}
+	if !got.Expiry.Equal(expiry) {
+		t.Errorf("Expiry = %v, want %v", got.Expiry, expiry)
+	}
+}
+
+// TestRunOnce_IgnoresKeyRotateWithDeviceKind proves kind="device" — Task 27's
+// own agent -> server direction, never something the server sends — is
+// logged and left alone rather than persisted as a trusted server key.
+func TestRunOnce_IgnoresKeyRotateWithDeviceKind(t *testing.T) {
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+
+		rotate := map[string]any{
+			"v": 1, "type": "key.rotate", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]any{
+				"kind":         "device",
+				"successor_pk": strings.Repeat("ab", 32),
+				"expiry":       time.Now().Add(time.Hour),
+			},
+		}
+		rotateBytes, _ := json.Marshal(rotate)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(rotateBytes))
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	opts := Options{
+		Config:       &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:          key,
+		AgentVersion: "0.1.0-test",
+		StateDir:     dir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	got, err := config.LoadServerKeyRotation(dir)
+	if err != nil {
+		t.Fatalf("LoadServerKeyRotation() error = %v", err)
+	}
+	if got != nil {
+		t.Errorf("LoadServerKeyRotation() = %+v, want nil (kind=device must not be persisted)", got)
+	}
+}
+
+// TestRunOnce_AcceptsSuccessorServerKeyOncePreviousKeyIsNoLongerValid proves
+// the initiator half of Task 28's fix: with a successor key already
+// persisted (as TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame
+// proved key.rotate delivers), the agent still connects successfully even
+// though its config file's ServerStaticPK now names a key the server no
+// longer holds — mirroring the server's own accept-either-key stance from
+// the other direction: candidate 1 (the stale config key) fails the Noise
+// handshake against this server, and the agent falls back to candidate 2
+// (the persisted successor) within the same connection attempt, no reconnect
+// or backoff wait required.
+func TestRunOnce_AcceptsSuccessorServerKeyOncePreviousKeyIsNoLongerValid(t *testing.T) {
+	staleServerPriv, staleServerPub := generateTestKeypair(t)
+	_ = staleServerPriv // never used to build a responder — this server no longer holds it
+	successorPriv, successorPub := generateTestKeypair(t)
+
+	var connectedCount int32
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, successorPriv, successorPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			// Expected for the agent's first candidate (its config still
+			// names staleServerPub, which this server no longer holds the
+			// matching private key for) — exactly the scenario this test
+			// proves recovery from, not a failure of this test itself.
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			return
+		}
+
+		ack := map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		}
+		ackBytes, _ := json.Marshal(ack)
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ackBytes))
+		atomic.AddInt32(&connectedCount, 1)
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := responder.Decrypt(ct); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	// The successor key was already advertised to this agent on some
+	// earlier connection and durably persisted — see
+	// TestRunOnce_PersistsSuccessorServerKeyFromKeyRotateFrame for proof of
+	// that half; this test starts from its result.
+	if err := config.SaveServerKeyRotation(dir, config.ServerKeyRotation{
+		SuccessorPK: hex.EncodeToString(successorPub[:]),
+		Expiry:      time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveServerKeyRotation() error = %v", err)
+	}
+
+	opts := Options{
+		// Deliberately still the *stale* key — proving the agent falls back
+		// to the persisted successor rather than requiring a config rewrite.
+		Config:       &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(staleServerPub[:])},
+		Key:          key,
+		AgentVersion: "0.1.0-test",
+		StateDir:     dir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if atomic.LoadInt32(&connectedCount) == 0 {
+		t.Error("agent never connected using the persisted successor server key")
+	}
+}

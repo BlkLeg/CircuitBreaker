@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.core import agent_crypto
 from app.core.time import utcnow
 from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, Hardware
-from app.schemas.agent_frame import HelloPayload
+from app.schemas.agent_frame import TYPE_KEY_ROTATE, HelloPayload
 
 _logger = logging.getLogger(__name__)
 
@@ -562,6 +562,62 @@ def record_server_key_pin(
     else:
         agent.server_pk_current_pinned_at = reference
     db.flush()
+
+
+async def broadcast_server_key_rotate(
+    db: Session, state: agent_crypto.ServerKeyRotationState
+) -> int:
+    """Push a `key.rotate` (kind="server") control frame — the successor
+    identity key a Task 28 rotation just started — to every currently
+    connected `active` agent, over the same Task 8/9 cross-worker
+    control-frame delivery path (`publish_agent_control_frame`)
+    `agent_link._handle_key_rotate` already uses for its own kind="device"
+    ack.
+
+    Proactive, not lazy: called once, right after `api/agents.py`'s admin
+    rotate endpoint commits the new rotation, so an agent already holding a
+    live `/link` socket learns about the successor key well ahead of the
+    (default 7-day) overlap's end — not only whenever it next happens to
+    reconnect. A socket that never drops for the whole overlap window would
+    otherwise never see this at all. `ws_agents.py`'s `link_stream`
+    separately resends the same frame on every accepted hello.ack for as
+    long as the rotation stays active (mirroring Task 11's full-capability-
+    grant resend) as the durability fallback for whatever this broadcast
+    misses — a worker down at push time, a connection that hadn't finished
+    establishing yet, or a publish racing a disconnect.
+
+    Caller's responsibility, not this function's: `state.rotation_active`
+    must already be true (there is nothing meaningful to advertise
+    otherwise) — asserted rather than silently no-op'd, since a caller
+    reaching this with an inactive state is a caller bug, not a runtime
+    condition to tolerate.
+
+    Returns the number of agents found online (and so pushed to) at the
+    moment of the call — informational only, not a delivery guarantee (see
+    `publish_agent_control_frame`'s own docstring on that).
+    """
+    assert state.rotation_active
+    assert state.successor_pub is not None
+    assert state.overlap_expires_at is not None
+
+    active_agents = list_agents(db, status="active")
+    if not active_agents:
+        return 0
+    agent_ids = [agent.id for agent in active_agents]
+    presence = await bulk_presence(agent_ids)
+
+    payload = {
+        "kind": "server",
+        "successor_pk": state.successor_pub.hex(),
+        "expiry": state.overlap_expires_at.isoformat(),
+    }
+    pushed = 0
+    for agent_id in agent_ids:
+        if not presence[agent_id]["online"]:
+            continue
+        await publish_agent_control_frame(agent_id, {"type": TYPE_KEY_ROTATE, "payload": payload})
+        pushed += 1
+    return pushed
 
 
 def set_capability_grants(
