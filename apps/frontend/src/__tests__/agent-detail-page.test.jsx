@@ -131,4 +131,68 @@ describe('AgentDetailPage', () => {
 
     await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
   });
+
+  it('lets a fresher presence poll win over a stale cached live event (missed disconnected during a reconnect gap)', async () => {
+    const { getAgentsPresence } = await import('../api/agents');
+
+    // The live map is still pinned to a 'connected' entry captured before
+    // the presence poll below resolves — simulating a disconnected event
+    // that never arrived during a WS reconnect gap.
+    const staleConnectedTs = Date.now();
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[3, { event_type: 'connected', detail: null, ts: staleConnectedTs }]]),
+      connected: true,
+    });
+
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 3,
+          online: false,
+          connected_since: null,
+          last_seen_at: '2026-08-05T12:00:00Z',
+          capabilities: {},
+          hardware: null,
+        },
+      ],
+    });
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    expect(screen.queryByText('online')).not.toBeInTheDocument();
+  });
+
+  it('still applies a fresh live event ahead of the next poll (normal case)', async () => {
+    const { getAgentsPresence } = await import('../api/agents');
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 3,
+          online: false,
+          connected_since: null,
+          last_seen_at: null,
+          capabilities: {},
+          hardware: null,
+        },
+      ],
+    });
+
+    const { rerender } = renderDetail();
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[3, { event_type: 'connected', detail: null, ts: Date.now() }]]),
+      connected: true,
+    });
+    rerender(
+      <MemoryRouter initialEntries={['/agents/3']}>
+        <Routes>
+          <Route path="/agents/:id" element={<AgentDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+  });
 });

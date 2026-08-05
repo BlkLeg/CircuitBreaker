@@ -11,6 +11,7 @@ import {
   revokeAgent,
 } from '../api/agents';
 import { useAgentLive } from '../hooks/useAgentLive';
+import { isLivePushFresh } from '../utils/agentPresenceFreshness';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
@@ -40,6 +41,10 @@ export default function AgentsPage() {
   const [params, setParams] = useSearchParams();
   const [agents, setAgents] = useState([]);
   const [presenceById, setPresenceById] = useState(() => new Map());
+  // Client-side Date.now() from the most recent successful bulk-presence
+  // poll response — used by isLivePushFresh to decide whether a live WS
+  // event is fresher than, or predates (and so should lose to), the poll.
+  const [presenceFetchedAt, setPresenceFetchedAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [installCommand, setInstallCommand] = useState(null);
   const [pairingInput, setPairingInput] = useState('');
@@ -60,7 +65,10 @@ export default function AgentsPage() {
     // — the table just falls back to showing no online/capability data for
     // that refresh instead of an error.
     getAgentsPresence()
-      .then(({ data }) => setPresenceById(new Map(data.map((p) => [p.agent_id, p]))))
+      .then(({ data }) => {
+        setPresenceById(new Map(data.map((p) => [p.agent_id, p])));
+        setPresenceFetchedAt(Date.now());
+      })
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -119,17 +127,21 @@ export default function AgentsPage() {
 
       const push = statuses.get(a.id);
       if (push) {
-        if (push.event_type === 'connected') {
-          row = { ...row, online: true };
-        } else if (push.event_type === 'disconnected') {
-          row = { ...row, online: false };
+        if (push.event_type === 'connected' || push.event_type === 'disconnected') {
+          // Only let the live push win if it's not stale relative to the
+          // last presence poll — otherwise a disconnected event missed
+          // during a WS reconnect gap would leave `online: true` cached
+          // here forever, even after a fresher poll says otherwise.
+          if (isLivePushFresh(push, presenceFetchedAt)) {
+            row = { ...row, online: push.event_type === 'connected' };
+          }
         } else if (push.event_type === 'revoked' || push.event_type === 'rejected') {
           row = { ...row, status: push.event_type };
         }
       }
       return row;
     });
-  }, [agents, presenceById, statuses]);
+  }, [agents, presenceById, presenceFetchedAt, statuses]);
 
   const pending = merged.filter((a) => a.status === 'pending');
   const others = merged.filter((a) => a.status !== 'pending');

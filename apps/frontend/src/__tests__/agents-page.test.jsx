@@ -184,4 +184,80 @@ describe('AgentsPage', () => {
 
     await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
   });
+
+  it('lets a fresher presence poll win over a stale cached live event (missed disconnected during a reconnect gap)', async () => {
+    // Simulate the exact reported scenario: the agent connected, the WS
+    // dropped, and the disconnected event never made it through the
+    // reconnect gap — the live map is still pinned to a 'connected' entry
+    // captured before the presence poll below resolves.
+    const staleConnectedTs = Date.now();
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[2, { event_type: 'connected', detail: null, ts: staleConnectedTs }]]),
+      connected: true,
+    });
+
+    // The bulk presence poll (Task 12) lands after that stale event, and
+    // says the agent is actually offline with an updated last_seen_at.
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: false,
+          connected_since: null,
+          last_seen_at: '2026-08-05T12:00:00Z',
+          capabilities: {},
+          hardware: null,
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    // The fresher poll data must win — the stale cached 'connected' push
+    // must not permanently pin the row to 'online'.
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+    expect(screen.queryByText('online')).not.toBeInTheDocument();
+  });
+
+  it('still applies a fresh live event ahead of the next poll tick (normal case)', async () => {
+    getAgentsPresence.mockResolvedValue({
+      data: [
+        {
+          agent_id: 2,
+          online: false,
+          connected_since: null,
+          last_seen_at: null,
+          capabilities: {},
+          hardware: null,
+        },
+      ],
+    });
+    mockUseAgentLive.mockReturnValue({ statuses: new Map(), connected: true });
+
+    const { rerender } = render(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText('offline')).toBeInTheDocument());
+
+    // A live event arriving after the poll resolved must be applied
+    // immediately, without waiting for the next REFRESH_MS poll tick.
+    mockUseAgentLive.mockReturnValue({
+      statuses: new Map([[2, { event_type: 'connected', detail: null, ts: Date.now() }]]),
+      connected: true,
+    });
+    rerender(
+      <MemoryRouter initialEntries={['/agents']}>
+        <AgentsPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
+  });
 });

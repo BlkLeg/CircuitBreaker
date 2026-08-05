@@ -9,6 +9,7 @@ import {
   triggerAgentUpdate,
 } from '../api/agents';
 import { useAgentLive } from '../hooks/useAgentLive';
+import { isLivePushFresh } from '../utils/agentPresenceFreshness';
 import { useToast } from '../components/common/Toast';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 
@@ -26,6 +27,9 @@ export default function AgentDetailPage() {
   const [agent, setAgent] = useState(null);
   const [events, setEvents] = useState([]);
   const [presence, setPresence] = useState(null);
+  // Client-side Date.now() from the most recent successful presence poll
+  // response — see isLivePushFresh / AgentsPage for why this is needed.
+  const [presenceFetchedAt, setPresenceFetchedAt] = useState(null);
   const [loading, setLoading] = useState(true);
   const [revokeOpen, setRevokeOpen] = useState(false);
 
@@ -45,7 +49,10 @@ export default function AgentDetailPage() {
     // this is the only source for them. Kept off the critical load path
     // (own catch) so a presence hiccup doesn't block the rest of the page.
     getAgentsPresence({ ids: [id] })
-      .then(({ data }) => setPresence(data[0] ?? null))
+      .then(({ data }) => {
+        setPresence(data[0] ?? null);
+        setPresenceFetchedAt(Date.now());
+      })
       .catch(() => {});
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -54,13 +61,20 @@ export default function AgentDetailPage() {
   }, [load]);
 
   // Live connected/disconnected push for this agent overrides the last
-  // polled presence snapshot immediately, without waiting on a re-fetch.
+  // polled presence snapshot immediately, without waiting on a re-fetch —
+  // but only when the push isn't stale relative to that poll (see
+  // isLivePushFresh): a disconnected event missed during a WS reconnect gap
+  // must not permanently pin `online: true` once a fresher poll disagrees.
   const online = useMemo(() => {
     const push = statuses.get(Number(id));
-    if (push?.event_type === 'connected') return true;
-    if (push?.event_type === 'disconnected') return false;
+    if (
+      (push?.event_type === 'connected' || push?.event_type === 'disconnected') &&
+      isLivePushFresh(push, presenceFetchedAt)
+    ) {
+      return push.event_type === 'connected';
+    }
     return presence?.online ?? null;
-  }, [statuses, id, presence]);
+  }, [statuses, id, presence, presenceFetchedAt]);
 
   const handleToggleCapability = async (capability, enabled) => {
     try {
