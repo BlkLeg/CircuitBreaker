@@ -4,10 +4,11 @@ specs/2026-07-26-cb-agent-design.md §1's `agent_link.py` boundary note."""
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 FRAME_VERSION = 1
 
@@ -139,6 +140,9 @@ class UpdateStatusPayload(BaseModel):
     error: str | None = None
 
 
+_HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 class KeyRotatePayload(BaseModel):
     """A pending device-key or server-key rotation: the kind of key being rotated, the
     successor public key material, and when the rotation must complete by. Schema only —
@@ -148,3 +152,18 @@ class KeyRotatePayload(BaseModel):
     kind: str  # "device" | "server"
     successor_pk: str
     expiry: datetime
+
+    @field_validator("successor_pk")
+    @classmethod
+    def _successor_pk_must_be_hex_pubkey(cls, v: str) -> str:
+        """Reject at frame-decode time, before `successor_pk` ever reaches
+        `agent_registry.start_device_key_rotation`'s `bytes.fromhex(...)` /
+        `Agent.pending_device_pk` column: an X25519 public key is exactly 32
+        bytes, i.e. exactly 64 lowercase hex characters. Anything else — odd
+        length, uppercase, non-hex characters, or an unbounded-length string
+        — both crashes `bytes.fromhex` downstream and would otherwise let an
+        arbitrary-length value get stored in the indexed
+        `pending_device_pk` column."""
+        if not _HEX_PK_RE.fullmatch(v):
+            raise ValueError("successor_pk must be exactly 64 lowercase hex characters")
+        return v

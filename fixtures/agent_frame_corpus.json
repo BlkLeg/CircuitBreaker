@@ -143,7 +143,8 @@
     "json": {
       "v": 1, "type": "key.rotate", "seq": 0, "ts": "2026-07-27T12:35:00Z",
       "payload": {
-        "kind": "device", "successor_pk": "ef01ab23cd45",
+        "kind": "device",
+        "successor_pk": "ef01ab23cd45ef01ab23cd45ef01ab23cd45ef01ab23cd45ef01ab23cd45ef01",
         "expiry": "2026-08-03T12:35:00Z"
       }
     }
@@ -153,7 +154,8 @@
     "json": {
       "v": 1, "type": "key.rotate", "seq": 0, "ts": "2026-07-27T12:36:00Z",
       "payload": {
-        "kind": "server", "successor_pk": "1234567890ab",
+        "kind": "server",
+        "successor_pk": "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234",
         "expiry": "2026-08-10T00:00:00Z"
       }
     }

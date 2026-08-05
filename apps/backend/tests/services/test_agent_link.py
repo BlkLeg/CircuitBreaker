@@ -513,6 +513,44 @@ async def test_dispatch_key_rotate_malformed_payload_does_not_raise(db_session, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_successor_pk",
+    [
+        "zz" * 32,  # not hex
+        "ab" * 31,  # too short
+        "ab" * 5000,  # unbounded-length input (review finding I1)
+    ],
+)
+async def test_dispatch_key_rotate_malformed_successor_pk_does_not_raise(
+    db_session, factories, bad_successor_pk
+):
+    """C1 regression: `KeyRotatePayload.successor_pk` must reject a non-hex
+    or wrong-length value at frame-decode time (pydantic ValidationError,
+    caught in `_handle_key_rotate`) rather than reaching
+    `start_device_key_rotation`'s `bytes.fromhex(...)`, which would raise an
+    unhandled ValueError that — over the real /link socket — tears down the
+    agent's connection (see tests/api/test_ws_agents_link.py's live-socket
+    proof of the same finding)."""
+    from app.db.models import AgentEvent
+
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="key.rotate",
+        ts="2026-08-04T12:00:00Z",
+        payload={
+            "kind": "device",
+            "successor_pk": bad_successor_pk,
+            "expiry": "2026-09-01T12:00:00Z",
+        },
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)  # must not raise
+
+    assert agent.pending_device_pk is None
+    assert db_session.query(AgentEvent).filter_by(agent_id=agent.id).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_dispatch_key_rotate_rejects_successor_matching_current_key(db_session, factories):
     from app.db.models import AgentEvent
 

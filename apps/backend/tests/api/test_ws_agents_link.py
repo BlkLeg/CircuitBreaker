@@ -1504,3 +1504,114 @@ def test_link_clears_expired_pending_rotation_when_current_key_reconnects(
         for e in db_session.query(AgentEvent).filter_by(agent_id=agent.id).order_by(AgentEvent.id)
     ]
     assert "key_rotation_expired" in types
+
+
+# ── Fix round 1 (review finding C1): malformed successor_pk over the live,
+# already-authenticated /link socket must not tear down the connection ─────
+
+
+def test_link_survives_malformed_key_rotate_successor_pk(db_session, ws_client):
+    """Reviewer repro for C1: `{"kind":"device","successor_pk":"zz"*32,...}`
+    sent over an authenticated /link socket used to raise an unhandled
+    ValueError out of `bytes.fromhex(successor_pk)` deep in
+    `start_device_key_rotation`, which propagated out of `dispatch_frame`
+    and killed the connection from a single malformed frame. It must instead
+    be rejected at frame-decode time and leave the session alive — proven
+    here by sending a well-formed frame afterward on the same connection and
+    getting a normal response."""
+    from app.db.models import Agent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+
+        _send_frame(
+            initiator,
+            ws,
+            type="key.rotate",
+            seq=0,
+            payload={
+                "kind": "device",
+                "successor_pk": "zz" * 32,
+                "expiry": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            },
+        )
+        # The connection must still be alive: a subsequent well-formed frame
+        # is accepted and processed normally, and — critically — no
+        # exception propagates out of this `with` block from the frame sent
+        # above.
+        _send_frame(initiator, ws, type="heartbeat", seq=1)
+        time.sleep(0.3)
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.pending_device_pk is None
+
+
+def test_link_survives_key_rotate_successor_pk_wrong_length(db_session, ws_client):
+    """Same finding, a different malformed shape: valid hex but the wrong
+    length (not a 32-byte X25519 key) must also be rejected rather than
+    reaching `bytes.fromhex`/the `pending_device_pk` column unchecked."""
+    from app.db.models import Agent
+
+    agent, agent_priv = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        initiator = _connect_linked(ws, agent_priv, server_pub)
+
+        _send_frame(
+            initiator,
+            ws,
+            type="key.rotate",
+            seq=0,
+            payload={
+                "kind": "device",
+                "successor_pk": "ab" * 31,
+                "expiry": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            },
+        )
+        _send_frame(initiator, ws, type="heartbeat", seq=1)
+        time.sleep(0.3)
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent.id)
+    assert refreshed.pending_device_pk is None
+
+
+# ── Fix round 1 (review finding C2): duplicate pending-key collision must
+# not be able to reach a live handshake and raise MultipleResultsFound ─────
+
+
+def test_link_handshake_survives_duplicate_pending_device_pk(db_session, ws_client):
+    """Reviewer repro for C2: two different agents ending up with the same
+    `pending_device_pk` used to make `resolve_agent_for_handshake`'s
+    `.scalar_one_or_none()` raise `MultipleResultsFound` the next time either
+    device's successor key presented itself in a handshake. The primary fix
+    is that `start_device_key_rotation` now refuses to create that duplicate
+    in the first place (see tests/services/test_agent_registry_key_rotation.py);
+    this test proves the read-path backstop by writing the duplicate
+    directly and then performing a real handshake against it, which must
+    succeed (rather than raise) and resolve deterministically to one agent."""
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    agent_a, _ = _active_agent_with_key(db_session)
+    agent_b, _ = _active_agent_with_key(db_session)
+    _, server_pub = get_server_static_keypair()
+    successor_priv, successor_hex = _new_device_keypair()
+
+    with SessionLocal() as db:
+        row_a = db.get(Agent, agent_a.id)
+        row_a.pending_device_pk = successor_hex
+        row_a.pending_device_pk_expiry = datetime.now(UTC) + timedelta(minutes=15)
+        row_b = db.get(Agent, agent_b.id)
+        row_b.pending_device_pk = successor_hex
+        row_b.pending_device_pk_expiry = datetime.now(UTC) + timedelta(minutes=15)
+        db.commit()
+
+    # Must not raise MultipleResultsFound — the handshake completes normally.
+    with ws_client.websocket_connect("/api/v1/agents/link") as ws:
+        _connect_linked(ws, successor_priv, server_pub)

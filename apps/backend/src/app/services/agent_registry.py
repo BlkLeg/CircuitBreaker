@@ -11,12 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator, Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core import agent_crypto
@@ -44,6 +45,14 @@ MAX_CONCURRENT_PENDING_AGENTS = 100
 # this module attribute the same way tests monkeypatch
 # agent_crypto.REKEY_INTERVAL_SECONDS.
 DEVICE_KEY_ROTATION_WINDOW_SECONDS = 15 * 60
+
+# Task 27 fix round 1: a device public key is a 32-byte X25519 key, i.e.
+# exactly 64 lowercase hex characters. Mirrors
+# app.schemas.agent_frame.KeyRotatePayload's own validator — duplicated
+# rather than imported so this module's collision/format guard doesn't
+# raise on bad hex even if a future or direct caller reaches
+# `start_device_key_rotation` without going through that schema layer.
+_HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def create_pending_agent(db: Session, **fields: Any) -> Agent:
@@ -89,9 +98,16 @@ def resolve_agent_for_handshake(db: Session, device_pk_hex: str) -> Agent | None
     if agent is not None:
         return agent
 
-    candidate = db.execute(
-        select(Agent).where(Agent.pending_device_pk == device_pk_hex)
-    ).scalar_one_or_none()
+    # `.first()`, not `.scalar_one_or_none()`: `pending_device_pk` is a
+    # non-unique indexed column (unlike `device_pk`), so this must never be
+    # able to raise `MultipleResultsFound` on a duplicate — even though
+    # `start_device_key_rotation`'s collision check is what actually
+    # prevents that duplicate from being written in the first place, this
+    # read path is a defensive backstop against one somehow slipping through
+    # (Task 27 fix round 1).
+    candidate = (
+        db.execute(select(Agent).where(Agent.pending_device_pk == device_pk_hex)).scalars().first()
+    )
     if candidate is None:
         return None
     if agent_crypto.device_identity_matches(
@@ -259,17 +275,37 @@ def start_device_key_rotation(
     Rejects (records `key_rotation_rejected`, leaves the row untouched, and
     returns `False`) rather than storing a pending key that could never be
     safely promoted:
+      - `successor_pk` isn't exactly 64 lowercase hex characters (a 32-byte
+        X25519 public key) — defense in depth alongside
+        `KeyRotatePayload._successor_pk_must_be_hex_pubkey`'s frame-decode-time
+        validator: this function must never raise on a malformed value even
+        if some future/direct caller bypasses the schema layer, since
+        `hashlib.sha256(bytes.fromhex(successor_pk))` below would otherwise
+        raise an unhandled `ValueError` on bad hex.
       - `successor_pk` identical to the agent's current `device_pk` — a
         no-op rotation.
-      - `successor_pk` already claimed by a *different* Agent row — storing it
-        anyway would collide with `device_pk`'s uniqueness constraint the
-        moment `settle_device_key_rotation` tried to promote it.
+      - `successor_pk` already claimed by a *different* Agent row, either as
+        its current `device_pk` or as another agent's in-progress
+        `pending_device_pk` — storing it anyway would either collide with
+        `device_pk`'s uniqueness constraint the moment
+        `settle_device_key_rotation` tried to promote it, or leave two
+        agents with the same `pending_device_pk`, which makes
+        `resolve_agent_for_handshake`'s lookup on that column ambiguous.
 
     A second call while a prior pending rotation is still unexpired simply
     supersedes it (new successor key, restarted timer) — Task 27 places no
     "reject a second rotation while one is active" requirement on device-key
     rotation the way Task 28 does for the server's own key.
     """
+    if not _HEX_PK_RE.fullmatch(successor_pk):
+        record_event(
+            db,
+            agent.id,
+            "key_rotation_rejected",
+            detail={"reason": "successor_pk_malformed"},
+        )
+        return False
+
     if successor_pk == agent.device_pk:
         record_event(
             db,
@@ -279,9 +315,16 @@ def start_device_key_rotation(
         )
         return False
 
-    collision = db.execute(
-        select(Agent).where(Agent.device_pk == successor_pk, Agent.id != agent.id)
-    ).scalar_one_or_none()
+    collision = (
+        db.execute(
+            select(Agent).where(
+                or_(Agent.device_pk == successor_pk, Agent.pending_device_pk == successor_pk),
+                Agent.id != agent.id,
+            )
+        )
+        .scalars()
+        .first()
+    )
     if collision is not None:
         record_event(
             db,

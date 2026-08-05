@@ -5,6 +5,8 @@ tests/api/test_ws_agents_link.py for the end-to-end Noise-handshake proofs)."""
 import secrets
 from datetime import timedelta
 
+import pytest
+
 from app.core.time import utcnow
 from app.db.models import AgentEvent
 from app.services import agent_registry as svc
@@ -231,3 +233,77 @@ def test_resolve_agent_for_handshake_returns_none_for_unknown_key(db_session, fa
     resolved = svc.resolve_agent_for_handshake(db_session, _hexkey())
 
     assert resolved is None
+
+
+# ── Fix round 1 (review findings C1/C2): malformed input and duplicate ─────
+# pending-key rejection, at the service layer. See tests/services/
+# test_agent_link.py and tests/api/test_ws_agents_link.py for the same two
+# findings proven through the schema layer and the live /link socket.
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "zz" * 32,  # non-hex characters, right length
+        "ab" * 31,  # valid hex, wrong (too short) length
+        "ab" * 33,  # valid hex, wrong (too long) length
+        "AB" * 32,  # uppercase hex — schema/registry both require lowercase
+        "a" * 10_000,  # unbounded-length input (Important finding I1)
+        "",
+    ],
+)
+def test_start_device_key_rotation_rejects_malformed_successor_pk(
+    db_session, factories, malformed
+):
+    """C1 defense in depth: `start_device_key_rotation` must reject a
+    malformed `successor_pk` by returning False and recording
+    `key_rotation_rejected`, never by raising — `hashlib.sha256(bytes.fromhex(...))`
+    a few lines below would otherwise raise an unhandled ValueError on any of
+    these inputs."""
+    agent = factories.agent(status="active")
+
+    accepted = svc.start_device_key_rotation(db_session, agent, malformed)
+
+    assert accepted is False
+    assert agent.pending_device_pk is None
+    event = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type="key_rotation_rejected")
+        .one()
+    )
+    assert event.detail == {"reason": "successor_pk_malformed"}
+
+
+def test_start_device_key_rotation_rejects_successor_already_pending_for_another_agent(
+    db_session, factories
+):
+    """C2: a successor key already claimed as a *different* agent's
+    `pending_device_pk` (not just its `device_pk`) must be rejected too —
+    otherwise two agents can end up with the same `pending_device_pk`, and
+    `resolve_agent_for_handshake`'s lookup on that column raises
+    `MultipleResultsFound` the next time either device's successor key
+    presents itself in a handshake."""
+    agent_a = factories.agent(status="active")
+    agent_b = factories.agent(status="active")
+    shared_successor = _hexkey()
+
+    first_accept = svc.start_device_key_rotation(db_session, agent_a, shared_successor)
+    assert first_accept is True
+
+    second_accept = svc.start_device_key_rotation(db_session, agent_b, shared_successor)
+
+    assert second_accept is False
+    assert agent_b.pending_device_pk is None
+    event = (
+        db_session.query(AgentEvent)
+        .filter_by(agent_id=agent_b.id, event_type="key_rotation_rejected")
+        .one()
+    )
+    assert event.detail == {"reason": "successor_key_in_use"}
+
+    # The read path that used to raise MultipleResultsFound on this exact
+    # scenario (before this fix prevented the collision at write time) also
+    # must not raise, as a defensive backstop.
+    resolved = svc.resolve_agent_for_handshake(db_session, shared_successor)
+    assert resolved is not None
+    assert resolved.id == agent_a.id
