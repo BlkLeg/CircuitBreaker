@@ -430,7 +430,10 @@ func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion string) 
 // phasePendingConfirm, written by MarkSwapped) — callers must treat
 // swapped == false as "nothing to roll back", even though a stale .previous
 // from an earlier, already-confirmed update may still be sitting on disk
-// (see markerPhase's doc comment). present is false with a nil error when no
+// (see markerPhase's doc comment). The one exception is a legacy bare-format
+// marker (no phase prefix at all) — see the fallback branch below — which
+// reports swapped == true, since that format's only historical writer always
+// wrote it after a successful Swap. present is false with a nil error when no
 // marker exists at all.
 func ReadMarker(stateDir string) (version string, swapped bool, present bool, err error) {
 	data, err := os.ReadFile(filepath.Join(stateDir, markerFilename))
@@ -442,10 +445,22 @@ func ReadMarker(stateDir string) (version string, swapped bool, present bool, er
 	}
 	phase, rest, ok := strings.Cut(string(data), "\n")
 	if !ok {
-		// Not a format this package's own writers ever produce. Treat
-		// defensively as an unconfirmed swap rather than risking a rollback
-		// against a .previous this marker can't actually vouch for.
-		return string(data), false, true, nil
+		// A bare version string with no phase prefix: the legacy marker
+		// format from before this two-phase scheme existed, which this
+		// package's own writers (WriteMarker/MarkSwapped, via
+		// writeMarkerPhase) never produce anymore. Its one and only writer
+		// historically — the pre-Task-25 code shipped on every released
+		// build — always wrote it *after* Swap had already succeeded (the
+		// old swap-then-mark ordering this task deliberately reversed; see
+		// WriteMarker's doc comment). So every bare marker that can actually
+		// exist in the field names a version whose .previous is that same
+		// update's genuine, fresh backup: the historically correct reading is
+		// swapped == true, not a defensive false. Getting this wrong is not
+		// merely conservative — it silently disarms the rollback safety net
+		// for the one update that installs this two-phase scheme itself,
+		// which fails "safe" only in the sense of keeping the new binary
+		// running, not in the sense of preserving the rollback guarantee.
+		return string(data), true, true, nil
 	}
 	return rest, markerPhase(phase) == phasePendingConfirm, true, nil
 }

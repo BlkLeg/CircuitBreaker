@@ -118,6 +118,33 @@ func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
 	}
 }
 
+// TestMarker_LegacyBareFormatReadsAsSwapped covers ReadMarker's fallback path
+// for the legacy marker format: a bare version string with no
+// "<phase>\n"-prefix, written directly here (bypassing WriteMarker/
+// MarkSwapped entirely) to simulate a marker left behind by the pre-Task-25
+// code that shipped on every released build before this two-phase scheme
+// existed. That code's only marker-write call ran strictly after Swap had
+// already succeeded (the old swap-then-mark ordering; see WriteMarker's doc
+// comment), so every such marker that can exist in the field names a version
+// whose .previous is a genuine, fresh backup — ReadMarker must report
+// swapped == true for it, not false, or a restart into the two-phase build
+// loses the rollback safety net for that one upgrade.
+func TestMarker_LegacyBareFormatReadsAsSwapped(t *testing.T) {
+	dir := t.TempDir()
+
+	// Bypass WriteMarker/MarkSwapped (both always produce the new
+	// "<phase>\n<version>" format) to write exactly what legacy code wrote:
+	// a bare version string, nothing else.
+	if err := os.WriteFile(filepath.Join(dir, markerFilename), []byte("0.5.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.5.0" || !swapped {
+		t.Fatalf("ReadMarker() on legacy bare-format marker = (%q, %v, %v, %v), want (\"0.5.0\", true, true, nil)", version, swapped, present, err)
+	}
+}
+
 // TestRollbackReport_WriteReadClear mirrors TestMarker_WriteReadClear for the
 // rollback-report marker (Task 24): the version a rollback restored away
 // from, persisted across the re-exec back into the prior binary so the fresh
