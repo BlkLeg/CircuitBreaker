@@ -2,6 +2,16 @@ import client from './client.jsx';
 
 export const listAgents = (params = {}) => client.get('/agents', { params });
 export const listPendingAgents = () => client.get('/agents/pending');
+// Task 12 bulk lookup: online/connected_since/last_seen_at/capabilities/hardware
+// for the whole fleet in one request, or an explicit `ids` list (e.g. a single
+// agent's detail page). See AgentPresenceRead on the backend.
+export const getAgentsPresence = (params = {}) =>
+  client.get('/agents/presence', {
+    params,
+    // Same fix as getTargetSummary in monitor.js: FastAPI's `ids: list[int] =
+    // Query()` wants repeated keys (ids=1&ids=2), not axios' default "[]" suffix.
+    paramsSerializer: { indexes: null },
+  });
 export const getAgent = (id) => client.get(`/agents/${id}`);
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
