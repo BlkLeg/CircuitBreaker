@@ -601,7 +601,7 @@ func runUninstall() {
 		fmt.Println("Notified the server (agent record marked revoked).")
 	}
 
-	result := performUninstall(defaultUninstallPaths, runSystemctl)
+	result := performUninstall(resolveUninstallPaths(), runSystemctl)
 
 	if result.DisabledUnit {
 		fmt.Printf("Disabled systemd unit %q.\n", uninstallUnitName)
@@ -677,28 +677,87 @@ func requireRoot(euid int) error {
 const uninstallUnitName = "cb-agent"
 
 // uninstallPaths is the on-disk footprint `cb-agent uninstall` removes.
-// unitFile/binary/configDir mirror the install script's own write targets
-// (spec §"Files on disk": "/usr/local/bin/cb-agent" the binary,
-// "/etc/circuit-breaker/agent.toml" the config — configDir is that file's
-// parent directory, removed wholesale since nothing else is expected to live
-// there); stateDir is exactly config.StateDir(), the same directory Task 30's
+//
+// unitFile/binary mirror the install script's own write targets (spec
+// §"Files on disk": "/etc/systemd/system/cb-agent.service" the unit,
+// "/usr/local/bin/cb-agent" the binary). previousBinary is the update-swap
+// backup internal/update.Swap leaves at <binary>+".previous" (see
+// update.go's Swap/Rollback) — NOT under the state dir, despite an earlier
+// version of this comment and the Task 29 report claiming otherwise; it is
+// never removed on its own, so a self-update host that never uninstalls
+// would otherwise carry it forever.
+//
+// configFile ("/etc/circuit-breaker/agent.toml") and configDir
+// ("/etc/circuit-breaker", its parent) are deliberately two separate
+// entries, NOT "remove configDir wholesale" as an earlier version of this
+// type did: /etc/circuit-breaker is co-owned by the main CircuitBreaker
+// server, not agent-exclusive — packaging/postinstall.sh (the server's own
+// installer) creates that directory and writes config.toml and
+// circuit-breaker.env there, the latter holding a freshly generated
+// CB_VAULT_KEY, CB_DB_URL, and NATS_AUTH_TOKEN; the server reads
+// config.toml at runtime (apps/backend/src/app/core/config_toml.py), and
+// the server's own uninstall.sh requires an interactive confirmation before
+// ever touching that directory. On a host where cb-agent monitors the
+// CircuitBreaker server itself, blindly removing configDir would destroy
+// the server's config and leave its vault permanently undecryptable — see
+// performUninstall's handling of configDir for how this is enforced (only
+// configFile is ever removed directly; configDir is removed only if
+// agent.toml's removal left it empty).
+//
+// stateDir is exactly config.StateDir(), the same directory Task 30's
 // auditStateDir treats as this agent's identity/grant/status footprint
 // (device.key, grants.json, status.json all live directly under it, plus
-// spool/ and any update ".previous" backup) — removing it wholesale means
-// this list never needs to be kept in sync file-by-file with
-// sensitiveStateFiles as that set grows.
+// spool/) — removing it wholesale means this list never needs to be kept
+// in sync file-by-file with sensitiveStateFiles as that set grows. Unlike
+// configDir, stateDir is exclusively cb-agent's own — nothing else is ever
+// expected to write there — so removing it wholesale remains correct.
 type uninstallPaths struct {
-	unitFile  string
-	binary    string
-	configDir string
-	stateDir  string
+	unitFile       string
+	binary         string
+	previousBinary string
+	configFile     string
+	configDir      string
+	stateDir       string
 }
 
+// defaultUninstallPaths is the static fallback footprint. binary and
+// previousBinary are placeholders here — resolveUninstallPaths overrides
+// both with the actual running binary's path (via os.Executable()) before
+// this is ever passed to performUninstall in production; defaultUninstallPaths
+// itself is used directly only as resolveUninstallPaths' fallback base when
+// os.Executable() fails.
 var defaultUninstallPaths = uninstallPaths{
-	unitFile:  "/etc/systemd/system/cb-agent.service",
-	binary:    "/usr/local/bin/cb-agent",
-	configDir: "/etc/circuit-breaker",
-	stateDir:  config.StateDir(),
+	unitFile:   "/etc/systemd/system/cb-agent.service",
+	binary:     "/usr/local/bin/cb-agent",
+	configFile: "/etc/circuit-breaker/agent.toml",
+	configDir:  "/etc/circuit-breaker",
+	stateDir:   config.StateDir(),
+}
+
+// resolveUninstallPaths builds the on-disk footprint `cb-agent uninstall`
+// removes, resolving the actual running binary's path via os.Executable()
+// rather than trusting defaultUninstallPaths.binary's hardcoded
+// "/usr/local/bin/cb-agent" literal — if cb-agent was installed somewhere
+// else, the hardcoded literal would silently be skipped from removal with
+// no indication to the operator that it wasn't found where expected.
+// previousBinary (see uninstallPaths' doc comment) is derived from
+// whichever binary path was actually resolved, so a non-default install
+// location's ".previous" backup is found too.
+//
+// os.Executable() failing is rare enough in practice (its own doc comment:
+// "not guaranteed to be stable" only across certain exotic cases, e.g. the
+// binary being replaced/deleted while running) that it isn't worth aborting
+// the whole uninstall over — this falls back to the historical hardcoded
+// path instead, with a note printed so the operator knows to check.
+func resolveUninstallPaths() uninstallPaths {
+	paths := defaultUninstallPaths
+	if exe, err := os.Executable(); err != nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: could not resolve running binary path (%v) — falling back to %s\n", err, paths.binary)
+	} else {
+		paths.binary = exe
+	}
+	paths.previousBinary = paths.binary + ".previous"
+	return paths
 }
 
 // systemctlRunner invokes one systemctl subcommand — args exactly as passed
@@ -754,6 +813,18 @@ type uninstallResult struct {
 // removal of one path must not block the others or the final daemon-reload.
 // Every outcome is recorded on the returned uninstallResult rather than
 // stopping early, so the caller can report a complete, truthful summary.
+//
+// paths.configDir (/etc/circuit-breaker) is handled separately from every
+// other path in the list, and deliberately never passed through
+// os.RemoveAll: it is co-owned by the main CircuitBreaker server (see
+// uninstallPaths' doc comment), so only paths.configFile (this agent's own
+// agent.toml) is removed directly. configDir itself is removed with a
+// non-recursive os.Remove only once agent.toml's removal has left it empty
+// — on a co-located host where the server's own config.toml/
+// circuit-breaker.env are still present, that remove is skipped entirely,
+// silently, and is not reported as an error: an operator uninstalling
+// cb-agent from a host that also runs the CircuitBreaker server must never
+// see this as a failure, and must never have the server's files touched.
 func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstallResult {
 	var result uninstallResult
 
@@ -763,7 +834,7 @@ func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstall
 		result.DisabledUnit = true
 	}
 
-	for _, path := range []string{paths.unitFile, paths.binary, paths.configDir, paths.stateDir} {
+	for _, path := range []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir} {
 		if path == "" {
 			continue
 		}
@@ -779,6 +850,23 @@ func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstall
 			continue
 		}
 		result.Removed = append(result.Removed, path)
+	}
+
+	if paths.configDir != "" {
+		if entries, err := os.ReadDir(paths.configDir); err != nil {
+			if !os.IsNotExist(err) {
+				result.RemoveErrs = append(result.RemoveErrs, pathRemoveErr{path: paths.configDir, err: err})
+			}
+		} else if len(entries) == 0 {
+			if err := os.Remove(paths.configDir); err != nil {
+				result.RemoveErrs = append(result.RemoveErrs, pathRemoveErr{path: paths.configDir, err: err})
+			} else {
+				result.Removed = append(result.Removed, paths.configDir)
+			}
+		}
+		// else: other files remain (e.g. the main CircuitBreaker server's
+		// own config.toml/circuit-breaker.env on a co-located host) —
+		// expected, silent no-op; see this function's doc comment.
 	}
 
 	if err := systemctl("daemon-reload"); err != nil {
