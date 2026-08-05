@@ -8,8 +8,19 @@ A link session is established by one Noise IK handshake per connection, and
 its two transport ciphers are then rekeyed in place every REKEY_INTERVAL_SECONDS
 — independently per direction — via `transport.rekey` control frames (see
 `NoiseIKResponder.rekey_send`/`rekey_recv` and ws_agents.py's link_stream).
-Long-term key rotation (`key.rotate`) is a separate mechanism and is not
-handled here.
+Long-term key rotation (`key.rotate`) is mostly a separate mechanism, owned by
+`services/agent_registry.py`'s pending-key state machine (Task 27) — but
+`device_identity_matches` below lives here rather than there because it's the
+one piece of that mechanism that's actually about the Noise layer: Noise IK's
+responder never validates the initiator's static key against a known set at
+the crypto layer (unlike the *responder's own* static key, which Task 28's
+server-key rotation genuinely does have to try two of). Any key the initiator
+holds a matching private key for completes the handshake; `remote_static()`
+below just reports back whatever key that was. Deciding whether that reported
+key is one this server currently recognizes for a given agent — its current
+key, or an unexpired pending successor during a device-key rotation's
+transition window — is a post-handshake identity check, not a handshake
+mechanic, which is exactly what `device_identity_matches` is.
 
 SECURITY: this module handles the server's static private key. Never log key
 material (private key bytes/hex, shared secrets, or raw handshake payloads).
@@ -164,6 +175,48 @@ def check_clock_skew(ts: datetime, *, now: datetime | None = None) -> None:
         raise ClockSkewError(
             f"handshake timestamp skew {delta:.1f}s exceeds {_CLOCK_SKEW_SECONDS}s"
         )
+
+
+def device_identity_matches(
+    remote_static_hex: str,
+    *,
+    current_pk: str,
+    pending_pk: str | None,
+    pending_expiry: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    """True if `remote_static_hex` — a completed Noise IK handshake's
+    initiator static key, as returned by `NoiseIKResponder.remote_static().hex()`
+    — is a currently-valid identity given one Agent row's current device key
+    and (Task 27) its in-progress device-key rotation state, if any.
+
+    Called from `agent_registry.resolve_agent_for_handshake`, which is where
+    this replaces the old exact-match-only `device_pk` lookup for `/link`.
+    Two cases accept:
+      - `remote_static_hex == current_pk` — the ordinary, no-rotation-in-
+        progress case (and also the *first* case checked during an active
+        rotation, so an agent that hasn't switched to its successor key yet
+        keeps working throughout the window).
+      - `remote_static_hex == pending_pk`, provided `pending_expiry` hasn't
+        passed — the device-key transition window (15 minutes by default,
+        Global Constraints). A pending key presented after its expiry is
+        rejected exactly like a key this server has never seen: the caller
+        gets `False` back and treats it as an unrecognized handshake.
+    Naive datetimes (`pending_expiry` or `now`) are treated as UTC, matching
+    `check_clock_skew`'s convention.
+    """
+    if remote_static_hex == current_pk:
+        return True
+    if pending_pk is None or remote_static_hex != pending_pk or pending_expiry is None:
+        return False
+
+    reference = now if now is not None else utcnow()
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    expiry = pending_expiry
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return reference <= expiry
 
 
 def _keypair_from_private(priv_bytes: bytes) -> X25519KeyPair:

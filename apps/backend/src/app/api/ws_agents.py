@@ -424,11 +424,22 @@ async def link_stream(websocket: WebSocket) -> None:
 
     device_pk_hex = responder.remote_static().hex()
     with SessionLocal() as db:
-        agent = agent_registry.get_agent_by_device_pk(db, device_pk_hex)
+        # Task 27: resolves against `agent.device_pk` OR an unexpired
+        # `agent.pending_device_pk` — see agent_crypto.device_identity_matches
+        # for why a Noise IK handshake can never reject an unrecognized key on
+        # its own, and resolve_agent_for_handshake's own docstring for why
+        # this replaces get_agent_by_device_pk here specifically (not in
+        # enroll_stream, which has no rotation concept).
+        agent = agent_registry.resolve_agent_for_handshake(db, device_pk_hex)
         if agent is None or agent.status != "active":
             await websocket.close(code=1008)
             return
         agent_id = agent.id
+        # Promotes a first successful link under a rotation's pending key, or
+        # lazily clears an expired one reconnecting on the still-current key —
+        # see settle_device_key_rotation's docstring. A no-op when no
+        # rotation is in progress (the common case).
+        agent_registry.settle_device_key_rotation(db, agent, device_pk_hex)
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:

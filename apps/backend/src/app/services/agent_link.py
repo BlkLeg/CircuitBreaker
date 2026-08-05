@@ -26,12 +26,14 @@ from app.schemas.agent_frame import (
     FRAME_VERSION,
     TYPE_DISCOVERY_FINDING,
     TYPE_HEARTBEAT,
+    TYPE_KEY_ROTATE,
     TYPE_LOG,
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
     TYPE_UNINSTALL,
     TYPE_UPDATE_STATUS,
     AgentFrame,
+    KeyRotatePayload,
     UpdateStatusPayload,
 )
 from app.services import agent_registry
@@ -126,11 +128,73 @@ async def _handle_update_status(db: Session, agent: Agent, frame: AgentFrame) ->
         agent.pending_update_version = None
 
 
+async def _handle_key_rotate(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """agent -> server `key.rotate`, kind="device" (Task 27). Task 28 owns
+    this same frame *type*'s other direction and kind — server -> agent,
+    kind="server" — for the server's own static-key rotation; an agent never
+    sends that kind, and this handler ignores it if one somehow arrives.
+
+    Reusing `key.rotate` bidirectionally like this is deliberate, not an
+    accident of a shared payload shape: Noise IK's responder never validates
+    the initiator's static key against a known set at the crypto layer (see
+    `core/agent_crypto.py`'s module docstring), so nothing about *receiving*
+    this frame needs a distinct wire message to be secure — the fact that it
+    arrived at all (decrypted, sequence-checked by `receive_frame`, dispatched
+    here) over an already-established `/link` session for this exact `agent`
+    row is itself the authorization Global Constraints require ("the
+    authenticated old Noise channel authorizes device-key rotation"). No
+    signature scheme is layered on top, and `payload.successor_pk` — an
+    X25519 DH public key — is never treated as anything else.
+
+    On acceptance, commits the pending-key row before publishing the
+    `key.rotate` acknowledgment (kind="device") back to the agent over the
+    Task 8/9 control-frame path: the agent's own atomic device.key swap
+    happens only once it has that ack in hand, so it must never be sent
+    before the pending key it confirms is durably stored.
+    """
+    try:
+        payload = KeyRotatePayload.model_validate(frame.payload)
+    except ValidationError:
+        _logger.warning("agent %s: malformed key.rotate payload: %r", agent.id, frame.payload)
+        return
+
+    if payload.kind != "device":
+        _logger.warning(
+            "agent %s: unexpected inbound key.rotate kind %r (server-kind rotation is "
+            "server -> agent only)",
+            agent.id,
+            payload.kind,
+        )
+        return
+
+    accepted = agent_registry.start_device_key_rotation(db, agent, payload.successor_pk)
+    if not accepted:
+        return
+
+    # Durably stored before the ack claims as much — see docstring above.
+    db.commit()
+    fresh = agent_registry.get_agent(db, agent.id)
+    if fresh is None or fresh.pending_device_pk_expiry is None:  # pragma: no cover - defensive
+        return
+    await agent_registry.publish_agent_control_frame(
+        agent.id,
+        {
+            "type": TYPE_KEY_ROTATE,
+            "payload": {
+                "kind": "device",
+                "successor_pk": payload.successor_pk,
+                "expiry": fresh.pending_device_pk_expiry.isoformat(),
+            },
+        },
+    )
+
+
 _HANDLERS: dict[str, Handler] = {
     TYPE_HEARTBEAT: _handle_heartbeat,
     TYPE_LOG: _handle_log,
     TYPE_UNINSTALL: _handle_uninstall,
     TYPE_UPDATE_STATUS: _handle_update_status,
+    TYPE_KEY_ROTATE: _handle_key_rotate,
 }
 
 

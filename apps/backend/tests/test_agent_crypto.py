@@ -5,6 +5,7 @@ import pytest
 from app.core.agent_crypto import (
     ClockSkewError,
     check_clock_skew,
+    device_identity_matches,
     get_server_static_keypair,
     server_fingerprint,
 )
@@ -296,3 +297,102 @@ def test_check_clock_skew_defaults_now_to_the_real_current_time():
     # real wall-clock default.
     with pytest.raises(ClockSkewError):
         check_clock_skew(datetime(2000, 1, 1, tzinfo=UTC))
+
+
+# ── device_identity_matches (Task 27) ──────────────────────────────────────
+
+
+def test_device_identity_matches_current_key_with_no_pending_rotation():
+    assert device_identity_matches(
+        "aa", current_pk="aa", pending_pk=None, pending_expiry=None
+    )
+
+
+def test_device_identity_matches_rejects_unrecognized_key_with_no_pending_rotation():
+    assert not device_identity_matches(
+        "bb", current_pk="aa", pending_pk=None, pending_expiry=None
+    )
+
+
+def test_device_identity_matches_current_key_still_accepted_during_active_rotation():
+    # The old key must keep working throughout the transition window — an
+    # agent that hasn't switched to its successor yet is not locked out.
+    assert device_identity_matches(
+        "aa",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=_REF + timedelta(minutes=10),
+        now=_REF,
+    )
+
+
+def test_device_identity_matches_pending_key_accepted_within_window():
+    assert device_identity_matches(
+        "bb",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=_REF + timedelta(minutes=10),
+        now=_REF,
+    )
+
+
+def test_device_identity_matches_pending_key_accepted_exactly_at_expiry():
+    expiry = _REF + timedelta(minutes=15)
+    assert device_identity_matches(
+        "bb", current_pk="aa", pending_pk="bb", pending_expiry=expiry, now=expiry
+    )
+
+
+def test_device_identity_matches_rejects_pending_key_past_expiry():
+    assert not device_identity_matches(
+        "bb",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=_REF - timedelta(seconds=1),
+        now=_REF,
+    )
+
+
+def test_device_identity_matches_rejects_unrelated_key_even_with_active_rotation():
+    assert not device_identity_matches(
+        "cc",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=_REF + timedelta(minutes=10),
+        now=_REF,
+    )
+
+
+def test_device_identity_matches_pending_key_without_expiry_is_never_accepted():
+    # Defensive: pending_pk set with no expiry (shouldn't happen given
+    # start_device_key_rotation always sets both together) must not match.
+    assert not device_identity_matches(
+        "bb", current_pk="aa", pending_pk="bb", pending_expiry=None, now=_REF
+    )
+
+
+def test_device_identity_matches_naive_pending_expiry_is_treated_as_utc():
+    naive_expiry = (_REF + timedelta(minutes=10)).replace(tzinfo=None)
+    assert device_identity_matches(
+        "bb", current_pk="aa", pending_pk="bb", pending_expiry=naive_expiry, now=_REF
+    )
+
+
+def test_device_identity_matches_naive_now_is_treated_as_utc():
+    naive_now = _REF.replace(tzinfo=None)
+    assert device_identity_matches(
+        "bb",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=_REF + timedelta(minutes=10),
+        now=naive_now,
+    )
+
+
+def test_device_identity_matches_defaults_now_to_the_real_current_time():
+    assert device_identity_matches(
+        "bb",
+        current_pk="aa",
+        pending_pk="bb",
+        pending_expiry=datetime.now(UTC) + timedelta(minutes=10),
+    )
