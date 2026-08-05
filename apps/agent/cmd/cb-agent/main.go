@@ -7,9 +7,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -580,29 +582,210 @@ func runEnroll() {
 	}
 }
 
+// runUninstall is the `cb-agent uninstall` entry point (spec §4.7): it
+// requires root (disabling a systemd unit and removing root-owned files
+// under /etc and /usr/local/bin isn't possible otherwise), best-effort
+// notifies the server so the agent's row flips to revoked (see
+// notifyUninstallBestEffort), then actually disables/removes/reloads —
+// unlike this function's pre-Task-29 form, which only ever printed the
+// systemctl/rm commands for an operator to run by hand.
 func runUninstall() {
-	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
-		os.Exit(1)
-	}
-	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
-	if err != nil {
+	if err := requireRoot(os.Geteuid()); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := notifyUninstall(cfg, key); err != nil {
+	if err := notifyUninstallBestEffort(); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: could not notify server (continuing anyway): %v\n", err)
+	} else {
+		fmt.Println("Notified the server (agent record marked revoked).")
 	}
-	fmt.Println("Notified the server. Run as root to finish removal:")
-	fmt.Println("  systemctl disable --now cb-agent")
-	fmt.Println("  rm -f /etc/systemd/system/cb-agent.service /usr/local/bin/cb-agent")
-	fmt.Println("  rm -rf /var/lib/cb-agent /etc/circuit-breaker")
+
+	result := performUninstall(defaultUninstallPaths, runSystemctl)
+
+	if result.DisabledUnit {
+		fmt.Printf("Disabled systemd unit %q.\n", uninstallUnitName)
+	} else {
+		fmt.Fprintf(os.Stderr, "cb-agent: could not disable systemd unit %q: %v\n", uninstallUnitName, result.DisableErr)
+	}
+
+	if len(result.Removed) == 0 {
+		fmt.Println("Removed: nothing found on disk.")
+	} else {
+		fmt.Println("Removed:")
+		for _, path := range result.Removed {
+			fmt.Printf("  %s\n", path)
+		}
+	}
+	for _, path := range result.RemoveErrs {
+		fmt.Fprintf(os.Stderr, "cb-agent: could not remove %s: %v\n", path.path, path.err)
+	}
+
+	if result.ReloadedDaemon {
+		fmt.Println("Reloaded systemd.")
+	} else {
+		fmt.Fprintf(os.Stderr, "cb-agent: could not reload systemd: %v\n", result.ReloadErr)
+	}
+
+	if result.DisableErr != nil || len(result.RemoveErrs) > 0 || result.ReloadErr != nil {
+		os.Exit(1)
+	}
+}
+
+// notifyUninstallBestEffort loads whatever config/identity is still present
+// and sends the one-shot `uninstall` frame over link.Uninstall. Config or
+// identity that's already missing (e.g. a second uninstall attempt after a
+// first one partially completed) is reported as this function's error
+// rather than panicking or being treated as fatal to the caller — runUninstall
+// proceeds to remove files regardless, since notifying the server is
+// explicitly best-effort (Global Constraints / this task's brief).
+func notifyUninstallBestEffort() error {
+	cfg, err := config.Load("/etc/circuit-breaker/agent.toml")
+	if err != nil {
+		return err
+	}
+	key, err := enroll.LoadOrCreateDeviceKey(config.StateDir())
+	if err != nil {
+		return err
+	}
+	return notifyUninstall(cfg, key)
 }
 
 func notifyUninstall(cfg *config.Config, key *enroll.DeviceKey) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return link.Uninstall(ctx, link.Options{Config: cfg, Key: key})
+}
+
+// requireRoot fails loudly unless euid is 0. `cb-agent uninstall` disables a
+// systemd unit and removes root-owned files (the unit file under
+// /etc/systemd/system, the binary under /usr/local/bin, /etc/circuit-breaker,
+// and the state dir — see uninstallPaths), none of which an unprivileged
+// user can do; refusing up front beats a confusing pile of
+// permission-denied errors partway through removal.
+func requireRoot(euid int) error {
+	if euid != 0 {
+		return fmt.Errorf("cb-agent uninstall must be run as root (uid 0), got uid %d — re-run with sudo", euid)
+	}
+	return nil
+}
+
+// uninstallUnitName is the systemd unit `cb-agent uninstall` disables and
+// whose reload it triggers — the same unit name the install script
+// (plans/2026-07-27-cb-agent-slice1.md Task 17) registers at
+// defaultUninstallPaths.unitFile.
+const uninstallUnitName = "cb-agent"
+
+// uninstallPaths is the on-disk footprint `cb-agent uninstall` removes.
+// unitFile/binary/configDir mirror the install script's own write targets
+// (spec §"Files on disk": "/usr/local/bin/cb-agent" the binary,
+// "/etc/circuit-breaker/agent.toml" the config — configDir is that file's
+// parent directory, removed wholesale since nothing else is expected to live
+// there); stateDir is exactly config.StateDir(), the same directory Task 30's
+// auditStateDir treats as this agent's identity/grant/status footprint
+// (device.key, grants.json, status.json all live directly under it, plus
+// spool/ and any update ".previous" backup) — removing it wholesale means
+// this list never needs to be kept in sync file-by-file with
+// sensitiveStateFiles as that set grows.
+type uninstallPaths struct {
+	unitFile  string
+	binary    string
+	configDir string
+	stateDir  string
+}
+
+var defaultUninstallPaths = uninstallPaths{
+	unitFile:  "/etc/systemd/system/cb-agent.service",
+	binary:    "/usr/local/bin/cb-agent",
+	configDir: "/etc/circuit-breaker",
+	stateDir:  config.StateDir(),
+}
+
+// systemctlRunner invokes one systemctl subcommand — args exactly as passed
+// to exec.Command("systemctl", args...) in production. A function value
+// (not a direct exec.Command call inside performUninstall) so tests can
+// substitute a fake that records invocations and touches no real systemd —
+// mirrors this package's existing reExec-as-a-parameter pattern (see
+// watchForRollback).
+type systemctlRunner func(args ...string) error
+
+// runSystemctl is the production systemctlRunner. Combined output is folded
+// into the returned error so a failure (e.g. "Unit cb-agent.service not
+// loaded", which is not fatal to uninstall — see performUninstall) is at
+// least visible to the operator instead of a bare exit-status error.
+func runSystemctl(args ...string) error {
+	out, err := exec.Command("systemctl", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// pathRemoveErr pairs a path performUninstall failed to remove with the
+// error that removal hit, so runUninstall's summary can name exactly which
+// path failed rather than a single opaque combined error.
+type pathRemoveErr struct {
+	path string
+	err  error
+}
+
+// uninstallResult is performUninstall's report of exactly what happened,
+// precise enough for runUninstall to print a truthful summary rather than
+// assuming every step succeeded.
+type uninstallResult struct {
+	DisabledUnit   bool
+	DisableErr     error
+	Removed        []string
+	RemoveErrs     []pathRemoveErr
+	ReloadedDaemon bool
+	ReloadErr      error
+}
+
+// performUninstall disables the systemd unit, removes every path in paths
+// that exists, and reloads systemd, in that order — order matters:
+// disable-before-remove stops systemd from restarting the service mid-
+// removal (e.g. an active unit's Restart=on-failure racing the unit-file
+// deletion), and daemon-reload runs last so systemd's unit cache is
+// refreshed only once the unit file is actually gone.
+//
+// Each of the three phases is independent and best-effort with respect to
+// the others: a failed disable (unit never installed, systemd absent
+// entirely in a container, ...) must not block file removal, and a failed
+// removal of one path must not block the others or the final daemon-reload.
+// Every outcome is recorded on the returned uninstallResult rather than
+// stopping early, so the caller can report a complete, truthful summary.
+func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstallResult {
+	var result uninstallResult
+
+	if err := systemctl("disable", "--now", uninstallUnitName); err != nil {
+		result.DisableErr = err
+	} else {
+		result.DisabledUnit = true
+	}
+
+	for _, path := range []string{paths.unitFile, paths.binary, paths.configDir, paths.stateDir} {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			result.RemoveErrs = append(result.RemoveErrs, pathRemoveErr{path: path, err: err})
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			result.RemoveErrs = append(result.RemoveErrs, pathRemoveErr{path: path, err: err})
+			continue
+		}
+		result.Removed = append(result.Removed, path)
+	}
+
+	if err := systemctl("daemon-reload"); err != nil {
+		result.ReloadErr = err
+	} else {
+		result.ReloadedDaemon = true
+	}
+
+	return result
 }

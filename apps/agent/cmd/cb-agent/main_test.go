@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -695,5 +696,209 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	}
 	if reExecCalls != 0 {
 		t.Errorf("reExec called %d times, want 0 — a failed rollback must not re-exec into whatever partial state resulted", reExecCalls)
+	}
+}
+
+// --- Task 29: self-performing `cb-agent uninstall` -----------------------
+
+// TestRequireRoot covers the "non-root invocation refuses with a clear
+// error" requirement directly, without needing the test process to actually
+// run as either uid — euid is passed in rather than read from the real
+// process, exactly the same "inject the identity, don't rely on the real
+// one" approach TestAuditStateDir_OwnershipMismatchFailsLoudly next door
+// uses.
+func TestRequireRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		euid    int
+		wantErr bool
+	}{
+		{name: "root (euid 0) is permitted", euid: 0, wantErr: false},
+		{name: "non-root euid refuses", euid: 1000, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := requireRoot(tt.euid)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("requireRoot(%d) error = %v, want error presence = %v", tt.euid, err, tt.wantErr)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "root") {
+				t.Errorf("requireRoot(%d) error = %q, want it to mention root", tt.euid, err)
+			}
+		})
+	}
+}
+
+// fakeSystemctl builds a systemctlRunner test double that records every
+// invocation (in order) into calls, and fails invocations for which
+// shouldFail (nil means "never fail") returns true — the fake-systemctl
+// harness the brief asks for, standing in for a real systemd (which unit
+// tests must never touch).
+func fakeSystemctl(calls *[][]string, shouldFail func(args []string) bool) systemctlRunner {
+	return func(args ...string) error {
+		*calls = append(*calls, append([]string(nil), args...))
+		if shouldFail != nil && shouldFail(args) {
+			return errors.New("fake systemctl failure")
+		}
+		return nil
+	}
+}
+
+// seedUninstallFootprint builds a temp-directory stand-in for
+// defaultUninstallPaths — a unit file and binary (plain files) plus a config
+// dir and state dir (directories, the state dir populated the way Task 30's
+// auditStateDir expects: device.key/grants.json/status.json directly under
+// it, plus a spool/ subdirectory) — so performUninstall's "remove the whole
+// state dir" behavior is exercised against a realistic footprint, not just
+// an empty directory.
+func seedUninstallFootprint(t *testing.T) uninstallPaths {
+	t.Helper()
+	root := t.TempDir()
+
+	unitFile := filepath.Join(root, "cb-agent.service")
+	if err := os.WriteFile(unitFile, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatalf("seed unit file: %v", err)
+	}
+	binary := filepath.Join(root, "cb-agent")
+	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("seed binary: %v", err)
+	}
+	configDir := filepath.Join(root, "circuit-breaker")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("seed config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "agent.toml"), []byte("server_url = \"\"\n"), 0o644); err != nil {
+		t.Fatalf("seed agent.toml: %v", err)
+	}
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(filepath.Join(stateDir, "spool"), 0o755); err != nil {
+		t.Fatalf("seed state dir: %v", err)
+	}
+	for _, name := range sensitiveAuditFiles {
+		if err := os.WriteFile(filepath.Join(stateDir, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	return uninstallPaths{unitFile: unitFile, binary: binary, configDir: configDir, stateDir: stateDir}
+}
+
+// TestPerformUninstall_RemovesExpectedPathsAndReloadsSystemd is this task's
+// core requirement: "root invocation removes the expected unit/binary/
+// config/state paths and reloads systemd". Root itself is never exercised
+// here (requireRoot is the gate for that, tested separately) — this proves
+// the actual removal logic, temp-directory paths standing in for the real
+// root-owned /etc and /usr/local/bin locations.
+func TestPerformUninstall_RemovesExpectedPathsAndReloadsSystemd(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if !result.DisabledUnit {
+		t.Errorf("DisabledUnit = false (err=%v), want true", result.DisableErr)
+	}
+	if !result.ReloadedDaemon {
+		t.Errorf("ReloadedDaemon = false (err=%v), want true", result.ReloadErr)
+	}
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none", result.RemoveErrs)
+	}
+
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configDir, paths.stateDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v", result.Removed, wantRemoved)
+	}
+
+	for _, path := range wantRemoved {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("stat %s after performUninstall = %v, want IsNotExist", path, err)
+		}
+	}
+
+	wantCalls := [][]string{
+		{"disable", "--now", uninstallUnitName},
+		{"daemon-reload"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("systemctl calls = %v, want %v (disable-before-remove, reload last)", calls, wantCalls)
+	}
+}
+
+// TestPerformUninstall_MissingPathsSkippedWithoutError covers a second
+// uninstall attempt (or a partial/manual removal beforehand) where some or
+// all paths are already gone — that must not be reported as an error, and
+// systemd must still be disabled/reloaded.
+func TestPerformUninstall_MissingPathsSkippedWithoutError(t *testing.T) {
+	root := t.TempDir()
+	paths := uninstallPaths{
+		unitFile:  filepath.Join(root, "does-not-exist", "cb-agent.service"),
+		binary:    filepath.Join(root, "does-not-exist", "cb-agent"),
+		configDir: filepath.Join(root, "does-not-exist", "circuit-breaker"),
+		stateDir:  filepath.Join(root, "does-not-exist", "state"),
+	}
+
+	var calls [][]string
+	result := performUninstall(paths, fakeSystemctl(&calls, nil))
+
+	if len(result.Removed) != 0 {
+		t.Errorf("Removed = %v, want none — nothing existed on disk", result.Removed)
+	}
+	if len(result.RemoveErrs) != 0 {
+		t.Errorf("RemoveErrs = %v, want none — a missing path is not an error", result.RemoveErrs)
+	}
+	if !result.DisabledUnit || !result.ReloadedDaemon {
+		t.Errorf("DisabledUnit=%v ReloadedDaemon=%v, want both true even with nothing to remove", result.DisabledUnit, result.ReloadedDaemon)
+	}
+}
+
+// TestPerformUninstall_SystemctlDisableFailureDoesNotBlockFileRemoval
+// verifies the three phases are independent: a failed `systemctl disable`
+// (unit never installed, or systemd unavailable) must not prevent file
+// removal or the final daemon-reload attempt.
+func TestPerformUninstall_SystemctlDisableFailureDoesNotBlockFileRemoval(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	failDisable := func(args []string) bool { return len(args) > 0 && args[0] == "disable" }
+	result := performUninstall(paths, fakeSystemctl(&calls, failDisable))
+
+	if result.DisabledUnit {
+		t.Error("DisabledUnit = true, want false for a fake systemctl that fails disable")
+	}
+	if result.DisableErr == nil {
+		t.Error("DisableErr = nil, want the fake failure recorded")
+	}
+	if !result.ReloadedDaemon {
+		t.Errorf("ReloadedDaemon = false (err=%v), want true — a failed disable must not block daemon-reload", result.ReloadErr)
+	}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configDir, paths.stateDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v — a failed disable must not block file removal", result.Removed, wantRemoved)
+	}
+}
+
+// TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval mirrors the
+// previous test for the opposite ordering: a failed final daemon-reload must
+// not retroactively hide the fact that every file was actually removed.
+func TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval(t *testing.T) {
+	paths := seedUninstallFootprint(t)
+
+	var calls [][]string
+	failReload := func(args []string) bool { return len(args) > 0 && args[0] == "daemon-reload" }
+	result := performUninstall(paths, fakeSystemctl(&calls, failReload))
+
+	if !result.DisabledUnit {
+		t.Errorf("DisabledUnit = false (err=%v), want true", result.DisableErr)
+	}
+	if result.ReloadedDaemon {
+		t.Error("ReloadedDaemon = true, want false for a fake systemctl that fails daemon-reload")
+	}
+	if result.ReloadErr == nil {
+		t.Error("ReloadErr = nil, want the fake failure recorded")
+	}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configDir, paths.stateDir}
+	if !reflect.DeepEqual(result.Removed, wantRemoved) {
+		t.Errorf("Removed = %v, want %v — a failed daemon-reload must not hide successful file removal", result.Removed, wantRemoved)
 	}
 }

@@ -7,6 +7,36 @@ from app.services import agent_link
 
 
 @pytest.mark.asyncio
+async def test_dispatch_uninstall_revokes_agent_and_preserves_row(db_session, factories):
+    """Task 29 (`cb-agent uninstall`'s server-side counterpart): the
+    best-effort `uninstall` frame `link.Uninstall` sends must flip the
+    agent's server row to `status=revoked` for audit — not delete it, and
+    not merely mark it inactive some other way. _handle_uninstall already
+    calls agent_registry.revoke_agent for this; this test verifies that call
+    actually lands and is durable (dispatch_frame commits), not just that
+    the handler is wired up."""
+    from app.db.models import Agent
+
+    agent = factories.agent(status="active")
+    agent_id = agent.id
+
+    frame = AgentFrame(type="uninstall", ts="2026-07-27T12:00:00Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    db_session.expire_all()
+    refreshed = db_session.get(Agent, agent_id)
+    assert refreshed is not None, "agent row must still be present after uninstall — revoked, not deleted"
+    assert refreshed.status == "revoked"
+    assert refreshed.revoked_at is not None
+    assert refreshed.revoke_reason == "uninstalled by agent"
+    # actor_user_id=None (agent-initiated, not an operator action) must be
+    # preserved as None, not coerced into some sentinel — the audit trail
+    # should be able to tell "the agent uninstalled itself" apart from "an
+    # operator revoked it" by this field alone.
+    assert refreshed.revoked_by_user_id is None
+
+
+@pytest.mark.asyncio
 async def test_dispatch_heartbeat_refreshes_presence(db_session, factories, monkeypatch):
     from unittest.mock import AsyncMock
 
