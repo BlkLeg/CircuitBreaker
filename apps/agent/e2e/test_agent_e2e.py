@@ -75,6 +75,18 @@ AGENT_SERVER_URL = "https://circuitbreaker:8443"
 COMPOSE = ["docker", "compose", "-f", str(Path(__file__).parent / "docker-compose.yml")]
 E2E_DIR = Path(__file__).parent
 AGENT_SRC_DIR = E2E_DIR.parent
+# .env's CB_DATA_DIR=./e2e-data is interpolated into the *base* (repo-root)
+# docker-compose.yml's volumes: entry, which resolves relative paths against
+# its OWN file's directory (the repo root) — NOT against this .env file's
+# directory (see .env's own comment). So the actual bind-mounted Postgres/
+# vault/OOBE state for every run in this harness lives at
+# <repo-root>/e2e-data, not apps/agent/e2e/e2e-data. `docker compose down -v`
+# only removes named volumes (cb-agent-state) — it does NOT touch this bind
+# mount, so without explicitly removing it here, every test function in this
+# file would silently inherit the *previous* test's Postgres data, OOBE/
+# bootstrap state, and vault key across nominally-independent runs.
+REPO_ROOT = E2E_DIR.parents[2]
+_E2E_DATA_DIR = REPO_ROOT / "e2e-data"
 
 _ADMIN_EMAIL = "e2e@example.com"
 _ADMIN_PASSWORD = "E2eTest1234!"
@@ -139,6 +151,10 @@ def _up_server(env: dict | None = None) -> None:
 
 def _down(env: dict | None = None) -> None:
     subprocess.run([*COMPOSE, "down", "-v"], cwd=E2E_DIR, env=env)
+    # See _E2E_DATA_DIR's comment: `down -v` alone leaves this bind-mounted
+    # directory (and its Postgres data / OOBE marker / vault key) in place,
+    # which would otherwise leak into the next test function's "fresh" run.
+    shutil.rmtree(_E2E_DATA_DIR, ignore_errors=True)
 
 
 def _write_agent_toml(server_pk: str, tls_pin: str, path: Path | None = None) -> Path:
@@ -205,12 +221,6 @@ def _agent_status(env: dict | None = None) -> dict:
 def _agent_logs(env: dict | None = None) -> str:
     return subprocess.run(
         [*COMPOSE, "logs", "cb-agent"], capture_output=True, text=True, cwd=E2E_DIR, env=env
-    ).stdout
-
-
-def _server_logs(env: dict | None = None) -> str:
-    return subprocess.run(
-        [*COMPOSE, "logs", "circuitbreaker"], capture_output=True, text=True, cwd=E2E_DIR, env=env
     ).stdout
 
 
@@ -662,31 +672,49 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
                 timeout=20,
             )
 
-            # With a 6s interval, 30s of connected time should carry at
+            # With a 6s interval, ~30-40s of connected time should carry at
             # least two full rekey cycles in EACH independent direction
             # (agent->server and server->agent — see link.go's rekeyInterval
             # / ws_agents.py's REKEY_INTERVAL_SECONDS, both driven off this
             # same env override here).
+            #
+            # Both counts are read from `docker compose logs cb-agent` alone
+            # — NOT the server's own Python log. ws_agents.py's matching
+            # _logger.info call (added in the same commit as link.go's) is
+            # real and correctly gated on this same env override, but this
+            # app has no logging.basicConfig/dictConfig anywhere on the
+            # `uvicorn app.main:app` startup path actually used here, so the
+            # root logger stays at Python's default WARNING and every
+            # `_logger.info` call in this codebase (this one and pre-existing
+            # ones alike, e.g. ws_agents.py's "agent enroll: handshake
+            # failed") is silently dropped — confirmed empirically by
+            # grepping a real run's backend_api_err.log for zero hits on
+            # either. That is a pre-existing app-wide logging-configuration
+            # gap, out of scope to change here. Instead, the agent's OWN Go
+            # log (always visible — no supervisord indirection, no logging-
+            # level gate on the standard library `log` package) already
+            # proves the *server* rekeyed independently too: "applied inbound
+            # transport.rekey" only ever fires when the agent received and
+            # correctly applied a `transport.rekey` frame the SERVER sent on
+            # its own schedule (see applyInboundRekey in link.go) — a wrong/
+            # missing server-side rekey would desync the ciphers and break
+            # the connection outright, not merely fail to log.
             def _rekey_counts():
-                agent_rekeys = len(
-                    re.findall(r"performed outbound transport\.rekey", _agent_logs(rekey_env))
-                )
-                server_rekeys = len(
-                    re.findall(
-                        r"agent link: performed outbound transport\.rekey", _server_logs(rekey_env)
-                    )
-                )
+                logs = _agent_logs(rekey_env)
+                agent_rekeys = len(re.findall(r"performed outbound transport\.rekey", logs))
+                server_rekeys = len(re.findall(r"applied inbound transport\.rekey", logs))
                 return agent_rekeys, server_rekeys
 
             _wait_until(
                 lambda: all(n >= 2 for n in _rekey_counts()),
-                timeout=40,
+                timeout=50,
                 interval=2.0,
             )
             agent_rekeys, server_rekeys = _rekey_counts()
             assert agent_rekeys >= 2 and server_rekeys >= 2, (
                 f"expected >=2 rekeys in both directions with a 6s accelerated "
-                f"interval, got agent={agent_rekeys} server={server_rekeys}"
+                f"interval, got agent-initiated={agent_rekeys} "
+                f"server-initiated(applied by agent)={server_rekeys}"
             )
 
             # The connection must still be healthy afterward — heartbeats
