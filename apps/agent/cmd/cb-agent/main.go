@@ -27,6 +27,92 @@ import (
 // AgentVersion is overridden at build time via -ldflags "-X main.AgentVersion=1.2.3".
 var AgentVersion = "0.0.0-dev"
 
+// rollbackWindow is how long runDaemon, after resuming with a pending update
+// marker (internal/update.WriteMarker), waits for a successful hello.ack-
+// gated OnConnected (Task 4) to clear that marker before concluding the
+// update never confirmed and rolling back to the previous binary. A var, not
+// a const, so tests can shrink it rather than waiting out the production
+// value — mirrors internal/link's stabilityWindow/rekeyInterval pattern.
+var rollbackWindow = 2 * time.Minute
+
+// watchForRollback waits up to rollbackWindow for the update marker naming
+// pendingVersion to be cleared — which onConnected (wired in runDaemon)
+// does exactly once, the moment a post-update connection reaches an
+// accepted hello.ack (Task 4's OnConnected gating, not merely a completed
+// Noise handshake). If the marker is still present and still names
+// pendingVersion once the window elapses, the update never confirmed:
+// watchForRollback restores the previous binary, persists a rollback report
+// for the next connection to send (this process has no live link to report
+// over — that's exactly why it's rolling back), clears the marker, and
+// re-execs via reExec.
+//
+// If the marker is still present but was never confirmed to have reached
+// phasePendingConfirm (update.ReadMarker's swapped == false), then
+// update.Swap never actually ran for this attempt — most likely a crash
+// landed between WriteMarker and Swap in onUpdate. There is nothing to roll
+// back: the binary at binaryPath was never touched, and targetPath+
+// ".previous" (if it exists at all) belongs to some earlier,
+// already-confirmed update, not this one — using it here would silently
+// downgrade a healthy running binary to a stale, unrelated backup. The
+// marker is simply cleared and the abandoned attempt logged.
+//
+// reExec is a parameter rather than a direct syscall.Exec call so tests can
+// observe a rollback decision without actually replacing the test binary's
+// process image; runDaemon passes a closure that does call syscall.Exec.
+func watchForRollback(stateDir, binaryPath, pendingVersion string, reExec func() error) {
+	time.Sleep(rollbackWindow)
+
+	v, swapped, stillPresent, err := update.ReadMarker(stateDir)
+	if err != nil {
+		log.Printf("cb-agent: %v", err)
+		return
+	}
+	if !stillPresent || v != pendingVersion {
+		// Cleared by onConnected (confirmed) or superseded by a newer
+		// update's marker — either way, this window's job is done.
+		return
+	}
+	if !swapped {
+		log.Printf("cb-agent: update to %s never completed its binary swap (crashed before Swap ran) — nothing to roll back, clearing marker", pendingVersion)
+		if err := update.ClearMarker(stateDir); err != nil {
+			log.Printf("cb-agent: %v", err)
+		}
+		return
+	}
+
+	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, rollbackWindow)
+	if err := update.Rollback(binaryPath); err != nil {
+		// Rollback failed (no .previous, unreadable, cross-device error,
+		// ...): the marker must still be cleared here. Leaving it in place
+		// would re-arm this exact same doomed rollback attempt on every
+		// subsequent restart, forever, until some unrelated hello.ack
+		// eventually clears it via the normal success path — a permanently
+		// stuck retry loop for no benefit, since there is nothing further
+		// waiting on the marker either way: the currently-running binary is
+		// whatever it already is regardless of whether the marker is
+		// cleared now or later.
+		log.Printf("cb-agent: rollback failed: %v — clearing marker to avoid a permanently stuck retry loop", err)
+		if clearErr := update.ClearMarker(stateDir); clearErr != nil {
+			log.Printf("cb-agent: %v", clearErr)
+		}
+		return
+	}
+	// This process has no live /link connection to report the rollback over
+	// (that's precisely why it's rolling back) — persist it so the process
+	// re-exec'd below, once it reconnects, sends the
+	// update.status(rolled_back) frame (see
+	// internal/update.WriteRollbackReport's doc comment).
+	if err := update.WriteRollbackReport(stateDir, pendingVersion); err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+	if err := update.ClearMarker(stateDir); err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+	if err := reExec(); err != nil {
+		log.Printf("cb-agent: re-exec after rollback failed: %v", err)
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		runDaemon()
@@ -113,28 +199,19 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	if pendingVersion, present, _ := update.ReadMarker(config.StateDir()); present {
+	// swapped (whether Swap actually completed for this marker — see
+	// update.ReadMarker) is deliberately not consulted here to decide
+	// whether to spawn watchForRollback at all: it's still spawned either
+	// way, and watchForRollback itself makes that determination after its
+	// own ReadMarker call once rollbackWindow elapses. Keeping the decision
+	// in one place (rather than duplicating it here as a fast-path) is what
+	// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
+	// exercises directly.
+	if pendingVersion, _, present, _ := update.ReadMarker(config.StateDir()); present {
 		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
-		go func() {
-			time.Sleep(2 * time.Minute)
-			if v, stillPresent, _ := update.ReadMarker(config.StateDir()); stillPresent && v == pendingVersion {
-				log.Printf("cb-agent: update to %s did not confirm within 2 minutes — rolling back", pendingVersion)
-				if err := update.Rollback(binaryPath); err != nil {
-					log.Printf("cb-agent: rollback failed: %v", err)
-					return
-				}
-				// This process has no live /link connection to report the
-				// rollback over (that's precisely why it's rolling back) —
-				// persist it so the process re-exec'd below, once it
-				// reconnects, sends the update.status(rolled_back) frame
-				// (see internal/update.WriteRollbackReport's doc comment).
-				if err := update.WriteRollbackReport(config.StateDir(), pendingVersion); err != nil {
-					log.Printf("cb-agent: %v", err)
-				}
-				update.ClearMarker(config.StateDir())
-				syscall.Exec(binaryPath, os.Args, os.Environ()) //nolint:errcheck // best-effort re-exec after rollback
-			}
-		}()
+		go watchForRollback(config.StateDir(), binaryPath, pendingVersion, func() error {
+			return syscall.Exec(binaryPath, os.Args, os.Environ())
+		})
 	}
 
 	var confirmOnce sync.Once
@@ -191,17 +268,45 @@ func runDaemon() {
 			}
 			return err
 		}
-		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+		// Task 25: the rollback marker must be durably written *before* the
+		// binary is actually replaced, not after. If a crash lands between
+		// these two steps, the marker still correctly names the version
+		// that was about to be installed — a recoverable state, since the
+		// swap never ran and there's nothing to roll back. Writing the
+		// marker only after a successful Swap would instead let a crash in
+		// that window leave a replaced (and possibly broken) binary running
+		// with no marker at all — no rollback safety net.
+		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+			os.Remove(tmpPath)
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
 			}
 			return err
 		}
-		if err := update.WriteMarker(config.StateDir(), instr.Version); err != nil {
+		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+			// The swap never happened — clear the marker rather than
+			// leaving a stale one that would (harmlessly, but pointlessly)
+			// send a future restart into a rollback attempt against a
+			// backup that was never created.
+			if clearErr := update.ClearMarker(config.StateDir()); clearErr != nil {
+				log.Printf("cb-agent: %v", clearErr)
+			}
 			if sendErr := send(instr.Version, "failed", err.Error()); sendErr != nil {
 				log.Printf("cb-agent: send failed update.status: %v", sendErr)
 			}
 			return err
+		}
+		// Swap succeeded — durably transition the marker from
+		// phasePendingSwap to phasePendingConfirm (see
+		// update.MarkSwapped's doc comment) so a restart's watchForRollback
+		// can trust that targetPath+".previous" is genuinely this update's
+		// backup, not a stale one from some earlier, already-confirmed
+		// update. The swap itself has already happened and can't be undone
+		// from here, so a failure here is logged, not treated as a failed
+		// update: it only costs this particular update its rollback safety
+		// net (see MarkSwapped's doc comment), not correctness.
+		if err := update.MarkSwapped(config.StateDir(), instr.Version); err != nil {
+			log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
 		}
 		// Reported now, immediately before re-exec: a successful re-exec
 		// replaces this process's image and never returns here, so

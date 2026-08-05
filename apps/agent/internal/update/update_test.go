@@ -74,23 +74,74 @@ func TestSwapAndRollback(t *testing.T) {
 func TestMarker_WriteReadClear(t *testing.T) {
 	dir := t.TempDir()
 
-	if _, present, err := ReadMarker(dir); err != nil || present {
-		t.Fatalf("ReadMarker() on fresh dir = (_, %v, %v), want (_, false, nil)", present, err)
+	if _, _, present, err := ReadMarker(dir); err != nil || present {
+		t.Fatalf("ReadMarker() on fresh dir = (_, _, %v, %v), want (_, _, false, nil)", present, err)
 	}
 
 	if err := WriteMarker(dir, "0.2.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
-	version, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.2.0" {
-		t.Fatalf("ReadMarker() = (%q, %v, %v), want (\"0.2.0\", true, nil)", version, present, err)
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.2.0" || swapped {
+		t.Fatalf("ReadMarker() = (%q, %v, %v, %v), want (\"0.2.0\", false, true, nil) — WriteMarker alone must not report a completed swap", version, swapped, present, err)
 	}
 
 	if err := ClearMarker(dir); err != nil {
 		t.Fatalf("ClearMarker() error = %v", err)
 	}
-	if _, present, _ := ReadMarker(dir); present {
+	if _, _, present, _ := ReadMarker(dir); present {
 		t.Error("marker still present after ClearMarker()")
+	}
+}
+
+// TestMarker_MarkSwappedTransitionsPhase covers the two-phase marker
+// lifecycle Task 25's fix-round-1 introduced: WriteMarker alone must report
+// swapped == false (nothing to roll back to yet — see markerPhase's doc
+// comment), and only MarkSwapped (called after a real Swap succeeds) must
+// flip that to true.
+func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := WriteMarker(dir, "0.9.0"); err != nil {
+		t.Fatalf("WriteMarker() error = %v", err)
+	}
+	if _, swapped, present, err := ReadMarker(dir); err != nil || !present || swapped {
+		t.Fatalf("ReadMarker() after WriteMarker() = (_, %v, %v, %v), want (_, false, true, nil)", swapped, present, err)
+	}
+
+	if err := MarkSwapped(dir, "0.9.0"); err != nil {
+		t.Fatalf("MarkSwapped() error = %v", err)
+	}
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || !swapped || version != "0.9.0" {
+		t.Fatalf("ReadMarker() after MarkSwapped() = (%q, %v, %v, %v), want (\"0.9.0\", true, true, nil)", version, swapped, present, err)
+	}
+}
+
+// TestMarker_LegacyBareFormatReadsAsSwapped covers ReadMarker's fallback path
+// for the legacy marker format: a bare version string with no
+// "<phase>\n"-prefix, written directly here (bypassing WriteMarker/
+// MarkSwapped entirely) to simulate a marker left behind by the pre-Task-25
+// code that shipped on every released build before this two-phase scheme
+// existed. That code's only marker-write call ran strictly after Swap had
+// already succeeded (the old swap-then-mark ordering; see WriteMarker's doc
+// comment), so every such marker that can exist in the field names a version
+// whose .previous is a genuine, fresh backup — ReadMarker must report
+// swapped == true for it, not false, or a restart into the two-phase build
+// loses the rollback safety net for that one upgrade.
+func TestMarker_LegacyBareFormatReadsAsSwapped(t *testing.T) {
+	dir := t.TempDir()
+
+	// Bypass WriteMarker/MarkSwapped (both always produce the new
+	// "<phase>\n<version>" format) to write exactly what legacy code wrote:
+	// a bare version string, nothing else.
+	if err := os.WriteFile(filepath.Join(dir, markerFilename), []byte("0.5.0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	version, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.5.0" || !swapped {
+		t.Fatalf("ReadMarker() on legacy bare-format marker = (%q, %v, %v, %v), want (\"0.5.0\", true, true, nil)", version, swapped, present, err)
 	}
 }
 
