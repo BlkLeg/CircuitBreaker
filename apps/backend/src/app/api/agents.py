@@ -36,6 +36,10 @@ router = APIRouter(tags=["agents"])
 def _to_read(db: Session, agent: Agent) -> AgentRead:
     data = AgentRead.model_validate(agent)
     data.capabilities = agent_registry.grants_dict(db, agent.id)
+    proposed = agent_registry.propose_hardware_match(db, agent)
+    data.proposed_hardware_id = proposed.id if proposed else None
+    data.proposed_hardware_name = proposed.name if proposed else None
+    data.duplicate_machine_id = agent_registry.has_duplicate_machine_id(db, agent)
     return data
 
 
@@ -191,17 +195,7 @@ async def post_pairing_lookup(
         raise HTTPException(status_code=404, detail="Unknown or expired pairing code")
 
     proposed = agent_registry.propose_hardware_match(db, agent)
-    duplicate = False
-    if agent.machine_id_hash:
-        duplicate = (
-            db.execute(
-                select(Agent).where(
-                    Agent.machine_id_hash == agent.machine_id_hash,
-                    Agent.id != agent.id,
-                )
-            ).scalar_one_or_none()
-            is not None
-        )
+    duplicate = agent_registry.has_duplicate_machine_id(db, agent)
 
     return PairingLookupResponse(
         agent_id=agent.id,
