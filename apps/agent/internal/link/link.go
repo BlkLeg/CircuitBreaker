@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,12 +41,41 @@ var heartbeatInterval = 20 * time.Second
 // tests can shrink it.
 var stabilityWindow = 30 * time.Second
 
+// rekeyIntervalEnvOverride is a narrowly-scoped, test-only escape hatch: if
+// set to a positive integer number of seconds, it replaces the production
+// 15-minute rekeyInterval below. It exists solely so the Docker E2E harness
+// (apps/agent/e2e) can exercise a real Noise rekey cycle without waiting out
+// 15 real minutes. No production deployment path (the install script,
+// systemd unit, or any documented config) ever sets this variable, and when
+// it is unset — as in every real deployment — rekeyInterval is byte-for-byte
+// the same 15*time.Minute production default it has always been (see
+// resolveRekeyInterval's unit test, TestResolveRekeyInterval_UnsetIsInert).
+// Global Constraints mandates the 15-minute production default; this
+// override changes nothing about that default, it only lets a test ask for
+// something shorter.
+const rekeyIntervalEnvOverride = "CB_AGENT_TEST_REKEY_INTERVAL_SECONDS"
+
+// resolveRekeyInterval reads rekeyIntervalEnvOverride and returns the
+// interval rekeyInterval should start at. Split out from the var
+// initializer purely so a unit test can call it directly (via t.Setenv)
+// without depending on process-startup timing.
+func resolveRekeyInterval() time.Duration {
+	if v := os.Getenv(rekeyIntervalEnvOverride); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 15 * time.Minute
+}
+
 // rekeyInterval is how often each side rotates its *own* outbound Noise
 // cipher (spec §3.5). The two directions are independent: the agent times its
 // agent->server cipher here, the server times its server->agent cipher in
 // ws_agents.py's link_stream, and neither waits on the other. A var, not a
-// const, so tests can shrink it — production stays at 15 minutes.
-var rekeyInterval = 15 * time.Minute
+// const, so tests can shrink it (either directly, in-process, or — for the
+// Docker E2E harness, which runs the compiled binary as a separate process —
+// via rekeyIntervalEnvOverride) — production stays at 15 minutes.
+var rekeyInterval = resolveRekeyInterval()
 
 // rekeyDirectionOutbound is the only `transport.rekey` direction either side
 // ever sends. `direction` is sender-relative (see frame.TransportRekeyPayload),
@@ -443,6 +474,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			return fmt.Errorf("link: send transport.rekey: %w", err)
 		}
 		session.RekeySend()
+		// Diagnostic only — no key material, just a generation counter — but
+		// deliberately present (not gated behind a debug flag) since it is
+		// the only externally-observable signal that a rekey happened at
+		// all, which the Docker E2E harness (apps/agent/e2e) greps for.
+		log.Printf("link: performed outbound transport.rekey (generation %d)", outboundRekeyGen)
 		return nil
 	}
 
@@ -644,6 +680,8 @@ func applyInboundRekey(session *noiseconn.Session, f frame.Frame, gen *uint64) e
 	}
 	session.RekeyRecv()
 	*gen = payload.Generation
+	// Diagnostic only, mirrors sendRekey's own log line — no key material.
+	log.Printf("link: applied inbound transport.rekey (generation %d)", *gen)
 	return nil
 }
 
