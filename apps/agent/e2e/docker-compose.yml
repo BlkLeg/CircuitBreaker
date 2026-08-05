@@ -17,8 +17,8 @@ name: cb-agent-e2e
 # the "circuitbreaker" service name); nothing ever dials in. This is the
 # realistic "no extra setup, outbound-only HTTPS/WSS, never listen on a
 # remote-subnet port" shape the whole feature guarantees (see
-# test_agent_e2e.py's test_agent_outbound_only_topology_has_no_inbound_route
-# for the connectivity-probe proof).
+# test_agent_e2e.py's test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
+# step 11/isolation probe for the connectivity-probe proof).
 networks:
   default: {}
   agent-net:
