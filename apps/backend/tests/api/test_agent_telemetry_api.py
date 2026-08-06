@@ -24,10 +24,11 @@ _SUMMARY_KEYS = {
     "uptime_s",
 }
 
-# Bucket width per range, mirroring api/agents.py's `bucket_widths`. Task 7
-# widens these (D-2); the samples below are spaced far enough apart that every
-# sample still lands in its own bucket under either table.
 _RANGE_DURATION_S = {"1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000}
+# Bucket width and hard point cap per range (D-2, Task 7). Transcribed rather
+# than imported from api/agents.py so a change to the constants fails here.
+_BUCKET_SECONDS = {"1h": 30, "6h": 60, "24h": 300, "7d": 1800, "30d": 3600}
+_MAX_POINTS = {"1h": 120, "6h": 360, "24h": 288, "7d": 336, "30d": 720}
 
 
 @pytest.mark.asyncio
@@ -188,12 +189,13 @@ async def test_history_with_no_data_returns_empty_points(client, factories, view
 @pytest.mark.asyncio
 @pytest.mark.parametrize("range_name", ["1h", "6h", "24h", "7d", "30d"])
 async def test_history_is_bounded_for_every_range(client, factories, viewer_headers, range_name):
-    """Every range must stay bounded regardless of how many raw samples exist.
+    """Every range stays bounded by its own cap — not by a universal 120.
 
-    Task 7 (D-2) replaces the universal 120 cap with per-range caps
-    (1h:120, 6h:360, 24h:288, 7d:336, 30d:720) and rewrites this assertion to
-    the per-range table. Deliberately *not* "exactly 120 preserving endpoints":
-    that is the behavior Task 7 changes.
+    Task 7 (D-2) replaced the universal cap and its decimation with per-range
+    bucket widths and per-range `LIMIT`s. The 130 samples below are spaced
+    wider than the bucket width on every range except `1h`, so each one lands
+    in its own bucket and all 130 survive: under the old universal cap they
+    were thinned to exactly 120.
     """
     agent = factories.agent(status="active")
     now = utcnow()
@@ -212,7 +214,9 @@ async def test_history_is_bounded_for_every_range(client, factories, viewer_head
 
     assert resp.status_code == 200
     points = resp.json()["points"]
-    assert 2 <= len(points) <= 120
+    assert 2 <= len(points) <= _MAX_POINTS[range_name]
+    if spacing >= _BUCKET_SECONDS[range_name]:
+        assert len(points) == 130
     assert all(set(p["summary"]) == _SUMMARY_KEYS for p in points)
 
 

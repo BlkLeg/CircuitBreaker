@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from slowapi.util import get_remote_address
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import agent_crypto
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.core.time import utcnow
+from app.db.bucket import epoch_bucket
 from app.db.models import (
     Agent,
     AgentCapabilityReadiness,
@@ -67,50 +68,38 @@ def _sample_json(row: AgentHostSample) -> dict[str, Any]:
     }
 
 
-def _bucket_samples(rows: list[AgentHostSample], width: timedelta) -> list[dict[str, Any]]:
-    """Return stable, bounded chart points without hiding spikes in raw payloads.
+# History aggregation tables. Bucket width is the SQL grouping grain; the cap is
+# `range duration / bucket width` and is enforced as a SQL LIMIT, so a response
+# can never exceed it no matter how fast the agent's cadence is or how much
+# history retention has kept. Keep the two dicts in step.
+_HISTORY_DURATIONS = {
+    "1h": timedelta(hours=1),
+    "6h": timedelta(hours=6),
+    "24h": timedelta(days=1),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+_HISTORY_BUCKET_SECONDS = {"1h": 30, "6h": 60, "24h": 300, "7d": 1800, "30d": 3600}
+_HISTORY_MAX_POINTS = {"1h": 120, "6h": 360, "24h": 288, "7d": 336, "30d": 720}
+# Ranges long enough to outlive raw retention, which is what makes the hourly
+# rollup merge necessary rather than decorative.
+_HISTORY_HOURLY_RANGES = frozenset({"7d", "30d"})
+_HISTORY_SUMMARY_FIELDS = (
+    "cpu_pct",
+    "mem_pct",
+    "root_disk_pct",
+    "net_rx_bps",
+    "net_tx_bps",
+    "max_temp_c",
+    "load_1",
+    "uptime_s",
+)
 
-    History is a visualization API, so each numeric summary is averaged within
-    the documented range bucket. The latest raw sample remains available from
-    the unaggregated telemetry endpoint.
-    """
-    width_seconds = int(width.total_seconds())
-    buckets: dict[int, list[AgentHostSample]] = {}
-    for row in rows:
-        timestamp = row.collected_at
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=UTC)
-        key = int(timestamp.timestamp()) // width_seconds * width_seconds
-        buckets.setdefault(key, []).append(row)
 
-    fields = (
-        "cpu_pct",
-        "mem_pct",
-        "root_disk_pct",
-        "net_rx_bps",
-        "net_tx_bps",
-        "max_temp_c",
-        "load_1",
-        "uptime_s",
-    )
-    points: list[dict[str, Any]] = []
-    for key, samples in sorted(buckets.items()):
-        summary: dict[str, float | None] = {}
-        for field in fields:
-            values = []
-            for sample in samples:
-                value = getattr(sample, field)
-                if value is not None:
-                    values.append(value)
-            summary[field] = sum(values) / len(values) if values else None
-        points.append(
-            {
-                "collected_at": datetime.fromtimestamp(key, tz=UTC),
-                "summary": summary,
-                "sample_count": len(samples),
-            }
-        )
-    return points
+def _as_float(value: Any) -> float | None:
+    """`avg()` over a BigInteger column comes back as Decimal; the chart wants a
+    plain JSON number, and a NULL average stays None so a gap renders as a gap."""
+    return None if value is None else float(value)
 
 
 def _to_read(db: Session, agent: Agent) -> AgentRead:
@@ -311,61 +300,88 @@ def get_agent_telemetry_history(
     _user: Annotated[User, require_role("viewer")],
     range_name: str = Query(default="1h", alias="range", pattern="^(1h|6h|24h|7d|30d)$"),
 ) -> Any:
+    """Bucketed chart series for one agent, aggregated entirely in SQL.
+
+    Averaging happens in the database over an epoch-aligned grid, so the
+    endpoint never materializes raw samples (or the `raw` JSONB payload) and
+    never has to thin an oversized series after the fact. Long ranges also read
+    `agent_host_sample_hourly` for the span that raw retention has already
+    deleted, so `7d` and `30d` stay whole across the retention boundary.
+    """
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    durations = {
-        "1h": timedelta(hours=1),
-        "6h": timedelta(hours=6),
-        "24h": timedelta(days=1),
-        "7d": timedelta(days=7),
-        "30d": timedelta(days=30),
-    }
-    start = utcnow() - durations[range_name]
-    rows = list(
-        db.execute(
-            select(AgentHostSample)
-            .where(
+    start = utcnow() - _HISTORY_DURATIONS[range_name]
+    width = _HISTORY_BUCKET_SECONDS[range_name]
+    cap = _HISTORY_MAX_POINTS[range_name]
+
+    bucket = epoch_bucket(AgentHostSample.collected_at, width).label("bucket")
+    aggregate = (
+        select(
+            bucket,
+            func.count().label("sample_count"),
+            *(
+                func.avg(getattr(AgentHostSample, field)).label(field)
+                for field in _HISTORY_SUMMARY_FIELDS
+            ),
+        )
+        .where(
+            AgentHostSample.agent_id == agent_id,
+            AgentHostSample.collected_at >= start,
+        )
+        .group_by(bucket)
+        .order_by(bucket.desc())
+        .limit(cap)
+    )
+    points: list[dict[str, Any]] = [
+        {
+            "collected_at": row.bucket,
+            "summary": {field: _as_float(getattr(row, field)) for field in _HISTORY_SUMMARY_FIELDS},
+            "sample_count": row.sample_count,
+        }
+        # The LIMIT has to take the newest buckets, so the query sorts
+        # descending and the response is flipped back to ascending here.
+        for row in reversed(db.execute(aggregate).all())
+    ]
+
+    if range_name in _HISTORY_HOURLY_RANGES:
+        # Scalar, not `min()` over materialized rows: this is only a boundary.
+        raw_boundary = db.execute(
+            select(func.min(AgentHostSample.collected_at)).where(
                 AgentHostSample.agent_id == agent_id,
                 AgentHostSample.collected_at >= start,
             )
-            .order_by(AgentHostSample.collected_at)
-        ).scalars()
-    )
-    bucket_widths = {
-        "1h": timedelta(seconds=1),
-        "6h": timedelta(minutes=1),
-        "24h": timedelta(minutes=5),
-        "7d": timedelta(minutes=30),
-        "30d": timedelta(hours=1),
-    }
-    points = _bucket_samples(rows, bucket_widths[range_name])
-    if range_name == "30d":
-        raw_boundary = min((row.collected_at for row in rows), default=utcnow())
+        ).scalar()
         hourly = (
             db.execute(
-                select(AgentHostSampleHourly).where(
+                select(AgentHostSampleHourly)
+                .where(
                     AgentHostSampleHourly.agent_id == agent_id,
                     AgentHostSampleHourly.bucket_at >= start,
-                    AgentHostSampleHourly.bucket_at < raw_boundary,
+                    AgentHostSampleHourly.bucket_at
+                    < (raw_boundary if raw_boundary is not None else utcnow()),
                 )
+                .order_by(AgentHostSampleHourly.bucket_at)
+                .limit(cap)
             )
             .scalars()
             .all()
         )
+        # Hourly points are coarser than the 7d raw grain; they are emitted with
+        # their true sample_count and left for the chart to interpolate rather
+        # than being split into fabricated sub-hour points. `.get` normalizes to
+        # the same eight keys for rollup rows written before `uptime_s` joined
+        # the summary.
         points.extend(
             {
                 "collected_at": row.bucket_at,
-                "summary": row.summary,
+                "summary": {field: row.summary.get(field) for field in _HISTORY_SUMMARY_FIELDS},
                 "sample_count": row.sample_count,
             }
             for row in hourly
         )
-    points.sort(key=lambda point: point["collected_at"])
-    if len(points) > 120:
-        # Preserve both endpoints and evenly sample the interior. This keeps
-        # every range response bounded while avoiding a latest-point lag.
-        last = len(points) - 1
-        points = [points[round(i * last / 119)] for i in range(120)]
+        points.sort(key=lambda point: point["collected_at"])
+        points = points[-cap:]
+
     return {"range": range_name, "points": points}
 
 
