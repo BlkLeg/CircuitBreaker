@@ -3,15 +3,21 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"circuitbreaker.dev/cb-agent/internal/capability"
+	"circuitbreaker.dev/cb-agent/internal/collect"
+	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
@@ -113,7 +119,7 @@ func TestPrintStatus_ReflectsWriterState(t *testing.T) {
 				if err := w.SetGrants(map[string]bool{"host_telemetry": true, "remote_probe": false}); err != nil {
 					return err
 				}
-				if err := w.SetReadiness([]frame.Readiness{{Collector: "agent.identity", State: "ready"}}); err != nil {
+				if err := w.MergeReadiness([]frame.Readiness{{Collector: "agent.identity", State: "ready"}}); err != nil {
 					return err
 				}
 				return w.SetAccepted()
@@ -1055,5 +1061,398 @@ func TestResolveUninstallPaths_PinsToInstalledBinaryPath(t *testing.T) {
 	}
 	if paths.stateDir != defaultUninstallPaths.stateDir {
 		t.Errorf("resolveUninstallPaths().stateDir = %q, want %q", paths.stateDir, defaultUninstallPaths.stateDir)
+	}
+}
+
+// --- Task 10: daemon startup ordering ------------------------------------
+
+// fakeHostCollector stands in for internal/collect/host during the
+// startDaemonState tests. The real collector reads /proc and /sys, which no
+// test may touch (Global Constraints — test hygiene); this one returns a
+// fixed, deterministic readiness report and an empty payload instead, so the
+// tests assert on startup *ordering* rather than on host state.
+type fakeHostCollector struct {
+	readiness []frame.Readiness
+}
+
+func (f fakeHostCollector) Collect(context.Context) (collect.Result, error) {
+	return collect.Result{Readiness: f.readiness}, nil
+}
+
+// startDaemonStateTestDir prepares an isolated state directory with a device
+// key and, when grants is non-empty, a pre-seeded grants.json, points
+// config.StateDir() at it, and swaps in fakeHostCollector for the duration of
+// the test.
+func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Readiness) (string, *enroll.DeviceKey) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("CB_AGENT_STATE_DIR", dir)
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+	if grants != "" {
+		if err := os.WriteFile(filepath.Join(dir, "grants.json"), []byte(grants), 0o600); err != nil {
+			t.Fatalf("seed grants.json: %v", err)
+		}
+	}
+	prev := newHostCollector
+	newHostCollector = func(capability.HostConfig) collect.Collector {
+		return fakeHostCollector{readiness: readiness}
+	}
+	t.Cleanup(func() { newHostCollector = prev })
+	return dir, key
+}
+
+// awaitReadiness polls the persisted status file until every wanted collector
+// name appears in its readiness listing, or fails the test.
+func awaitReadiness(t *testing.T, dir string, want ...string) status.Status {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last status.Status
+	for time.Now().Before(deadline) {
+		st, ok, err := status.Read(dir)
+		if err != nil {
+			t.Fatalf("status.Read() error = %v", err)
+		}
+		if ok {
+			last = st
+			have := make(map[string]struct{}, len(st.Readiness))
+			for _, r := range st.Readiness {
+				have[r.Collector] = struct{}{}
+			}
+			missing := false
+			for _, name := range want {
+				if _, ok := have[name]; !ok {
+					missing = true
+				}
+			}
+			if !missing {
+				return st
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("status.json readiness = %+v after 5s, want entries for %v", last.Readiness, want)
+	return last
+}
+
+// TestStartDaemonState_NoRaceBetweenCollectorReadinessAndStatusWriter pins
+// the ordering defect this task exists to close: the collector goroutine's
+// OnReadiness callback must never observe a statusWriter the main startup
+// goroutine is still assigning. Run under -race (apps/agent/Makefile's `test`
+// target), this failed as a DATA RACE while applyHostConfig() ran before the
+// status.NewWriter assignment it captured.
+func TestStartDaemonState_NoRaceBetweenCollectorReadinessAndStatusWriter(t *testing.T) {
+	dir, key := startDaemonStateTestDir(t,
+		`{"host_telemetry":{"enabled":true,"config":{"interval_s":10}}}`,
+		[]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	awaitReadiness(t, dir, "host.core")
+}
+
+// TestStartDaemonState_CollectorReadinessIsNotErasedByIdentityReadiness
+// covers the second half of the same defect: even with the ordering fixed, a
+// whole-slice SetReadiness meant whichever of the two producers wrote last
+// erased the other. Both the startup identity report and the first host
+// collection must survive.
+func TestStartDaemonState_CollectorReadinessIsNotErasedByIdentityReadiness(t *testing.T) {
+	dir, key := startDaemonStateTestDir(t,
+		`{"host_telemetry":{"enabled":true,"config":{"interval_s":10}}}`,
+		[]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	st := awaitReadiness(t, dir, "agent.identity", "host.core")
+	for i := 1; i < len(st.Readiness); i++ {
+		if st.Readiness[i-1].Collector > st.Readiness[i].Collector {
+			t.Errorf("readiness = %+v, want it sorted by collector", st.Readiness)
+			break
+		}
+	}
+}
+
+// TestStartDaemonState_AuditRunsBeforeAnyStateWrite pins the narrowed
+// invariant stated in auditStateDir's doc comment: the audit precedes every
+// daemon-loop state write. A state directory owned by someone else must abort
+// startup with neither status.json nor the spool queue created. Requires root
+// to chown the directory to a foreign uid, so it skips otherwise — the
+// ownership check itself is covered without root by
+// TestAuditStateDir_OwnershipMismatchFailsLoudly.
+func TestStartDaemonState_AuditRunsBeforeAnyStateWrite(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to chown the state directory to a foreign uid")
+	}
+	dir, key := startDaemonStateTestDir(t,
+		`{"host_telemetry":{"enabled":true,"config":{"interval_s":10}}}`,
+		[]frame.Readiness{{Collector: "host.core", State: "ready"}})
+	if err := os.Chown(dir, 12345, 12345); err != nil {
+		t.Fatalf("chown %s: %v", dir, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err == nil {
+		if rt != nil && rt.sp != nil {
+			_ = rt.sp.Close()
+		}
+		t.Fatal("startDaemonState() error = nil for a foreign-owned state dir, want a startup abort")
+	}
+	for _, name := range []string{"status.json", filepath.Join("spool", "queue.jsonl")} {
+		if _, statErr := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s exists after a failed ownership audit, want the audit to precede every state write", name)
+		}
+	}
+}
+
+// readinessFrameStates decodes a capability.readiness frame's payload into a
+// collector -> state map, and returns the payload's collector order so a test
+// can also assert the sort the daemon promises.
+func readinessFrameStates(t *testing.T, f frame.Frame) (map[string]string, []string) {
+	t.Helper()
+	if f.Type != frame.TypeCapabilityReadiness {
+		t.Fatalf("frame type = %q, want %q", f.Type, frame.TypeCapabilityReadiness)
+	}
+	var payload frame.CapabilityReadinessPayload
+	if err := json.Unmarshal(f.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal readiness payload %s: %v", f.Payload, err)
+	}
+	states := make(map[string]string, len(payload.Readiness))
+	order := make([]string, 0, len(payload.Readiness))
+	for _, r := range payload.Readiness {
+		states[r.Collector] = r.State
+		order = append(order, r.Collector)
+	}
+	return states, order
+}
+
+// awaitReadinessFrame waits for the next capability.readiness frame on the
+// daemon's control channel.
+func awaitReadinessFrame(t *testing.T, ch <-chan frame.Frame) frame.Frame {
+	t.Helper()
+	select {
+	case f := <-ch:
+		return f
+	case <-time.After(5 * time.Second):
+		t.Fatal("no capability.readiness frame within 5s")
+	}
+	return frame.Frame{}
+}
+
+// drainFrames empties ch without blocking and reports how many frames it took.
+func drainFrames(ch <-chan frame.Frame) int {
+	n := 0
+	for {
+		select {
+		case <-ch:
+			n++
+		default:
+			return n
+		}
+	}
+}
+
+// shrinkReadinessTimers makes the reconciliation ticker and the per-frame
+// rate-limit floor test-scale for the duration of one test.
+func shrinkReadinessTimers(t *testing.T, tick, floor time.Duration) {
+	t.Helper()
+	prevTick, prevFloor := reconcileTickInterval, readinessReportInterval
+	reconcileTickInterval, readinessReportInterval = tick, floor
+	t.Cleanup(func() { reconcileTickInterval, readinessReportInterval = prevTick, prevFloor })
+}
+
+// TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector pins D-4: a
+// revoked host_telemetry grant must actively overwrite every host.* readiness
+// row with "disabled" rather than returning bare and leaving the server's rows
+// frozen at their last good value (the stale-"Live" defect). The agent's own
+// identity row must survive that overwrite.
+func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T) {
+	dir, key := startDaemonStateTestDir(t,
+		`{"host_telemetry":{"enabled":true,"config":{"interval_s":900}}}`,
+		[]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+
+	awaitReadiness(t, dir, "agent.identity", "host.core")
+	drainFrames(rt.controlFrames)
+
+	if err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":false}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyHostConfig()
+
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range hostcollect.CollectorNames {
+		if states[name] != "disabled" {
+			t.Errorf("readiness[%q] = %q, want %q", name, states[name], "disabled")
+		}
+	}
+	if states["agent.identity"] == "" {
+		t.Errorf("readiness = %v, want it to still carry agent.identity", states)
+	}
+}
+
+// TestApplyHostConfig_ReEnableFlipsDisabledBackToReady proves the other half of
+// D-4: nothing synthesizes an "enabling" report — the runner's first collection
+// fires immediately and Task 9's all-six-every-run guarantee is what overwrites
+// the disabled rows.
+func TestApplyHostConfig_ReEnableFlipsDisabledBackToReady(t *testing.T) {
+	allReady := make([]frame.Readiness, 0, len(hostcollect.CollectorNames))
+	for _, name := range hostcollect.CollectorNames {
+		allReady = append(allReady, frame.Readiness{Collector: name, State: "ready"})
+	}
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, allReady)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	// Mirror what OnConnected does: the disable report was published while
+	// unlinked, so the link coming up is what forces it out.
+	rt.linked.Store(true)
+	rt.queueReadiness(true)
+
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range hostcollect.CollectorNames {
+		if states[name] != "disabled" {
+			t.Fatalf("pre-condition: readiness[%q] = %q, want %q", name, states[name], "disabled")
+		}
+	}
+
+	if err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":true,"config":{"interval_s":900}}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyHostConfig()
+
+	states, _ = readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range hostcollect.CollectorNames {
+		if states[name] != "ready" {
+			t.Errorf("readiness[%q] = %q after re-enable, want %q", name, states[name], "ready")
+		}
+	}
+}
+
+// TestReadinessReconciliation_FiresWithoutAnyCollection pins the reconciliation
+// ticker: the slice-2 contract's "every 15 minutes" must hold when
+// host_telemetry is disabled and no collection ever happens, which is exactly
+// the state in which the server most needs to hear from the agent.
+func TestReadinessReconciliation_FiresWithoutAnyCollection(t *testing.T) {
+	shrinkReadinessTimers(t, 5*time.Millisecond, time.Millisecond)
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+
+	// Nothing here ever collects and nothing forces a send — the disable
+	// report was published while still unlinked — so every frame that arrives
+	// can only have come from the reconciliation ticker.
+	awaitReadinessFrame(t, rt.controlFrames)
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	if states["agent.identity"] == "" {
+		t.Errorf("reconciliation readiness = %v, want it to carry agent.identity", states)
+	}
+}
+
+// TestQueueReadiness_DoesNotConsumeBudgetWhileDisconnected pins the link-aware
+// rate limit: runOnce discards control frames until the link is up, so a state
+// change made mid-outage must not stamp the 15-minute budget — otherwise the
+// agent goes readiness-dark for up to 15 minutes after reconnecting.
+func TestQueueReadiness_DoesNotConsumeBudgetWhileDisconnected(t *testing.T) {
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	// startDaemonState's applyHostConfig already published the disable report
+	// while unlinked; nothing may have been queued.
+	if n := drainFrames(rt.controlFrames); n != 0 {
+		t.Fatalf("queued %d frames while disconnected, want 0", n)
+	}
+
+	rt.linked.Store(true)
+	// Unforced: this only sends if the disconnected attempt left
+	// readinessSentAt untouched.
+	rt.queueReadiness(false)
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	if states["agent.identity"] == "" {
+		t.Errorf("readiness = %v, want the newest payload including agent.identity", states)
+	}
+
+	// ...and the successful send *does* consume the budget, so the ticker
+	// cannot double-send behind a fresh connection's forced frame.
+	rt.queueReadiness(false)
+	if n := drainFrames(rt.controlFrames); n != 0 {
+		t.Errorf("queued %d further frames inside the rate-limit floor, want 0", n)
+	}
+}
+
+// TestPublishReadiness_MergesIdentityWithHostCollectors pins the single sink:
+// every capability.readiness frame carries the union of the startup identity
+// report and the host collectors, sorted by collector name.
+func TestPublishReadiness_MergesIdentityWithHostCollectors(t *testing.T) {
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	drainFrames(rt.controlFrames)
+
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	states, order := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	if states["agent.identity"] == "" {
+		t.Errorf("readiness = %v, want an agent.identity entry", states)
+	}
+	for _, name := range hostcollect.CollectorNames {
+		if states[name] == "" {
+			t.Errorf("readiness = %v, want an entry for %q", states, name)
+		}
+	}
+	if states["host.core"] != "ready" {
+		t.Errorf("readiness[host.core] = %q, want %q", states["host.core"], "ready")
+	}
+	if !sort.StringsAreSorted(order) {
+		t.Errorf("readiness order = %v, want it sorted by collector", order)
 	}
 }

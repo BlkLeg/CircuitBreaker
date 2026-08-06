@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"circuitbreaker.dev/cb-agent/internal/frame"
@@ -145,21 +146,45 @@ func TestWriter_SetGrants(t *testing.T) {
 	}
 }
 
-func TestWriter_SetReadiness(t *testing.T) {
+// TestWriter_MergeReadinessUpsertsByCollectorAndKeepsOthers replaces the old
+// TestWriter_SetReadiness. Readiness reaches this writer from two independent
+// producers — the identity report collected once at startup
+// (internal/hostinfo) and every host-collector report thereafter
+// (internal/collect) — so a whole-slice replacement lets either one erase the
+// other. Merging upserts by Readiness.Collector and re-sorts, so status.json
+// and `cb-agent status`'s listing stay deterministic no matter what order the
+// producers write in.
+func TestWriter_MergeReadinessUpsertsByCollectorAndKeepsOthers(t *testing.T) {
 	dir := t.TempDir()
 	w := NewWriter(dir, "1.0.0", "fp")
 
-	readiness := []frame.Readiness{{Collector: "agent.identity", State: "ready"}}
-	if err := w.SetReadiness(readiness); err != nil {
-		t.Fatalf("SetReadiness() error = %v", err)
+	// (1) the startup identity report, (2) the first host collection — which
+	// must not erase (1) — and (3) a later host collection reporting an
+	// outage, which must update host.core in place and leave the rest alone.
+	if err := w.MergeReadiness([]frame.Readiness{{Collector: "agent.identity", State: "ready"}}); err != nil {
+		t.Fatalf("MergeReadiness(identity) error = %v", err)
+	}
+	if err := w.MergeReadiness([]frame.Readiness{
+		{Collector: "host.core", State: "ready"},
+		{Collector: "host.docker", State: "disabled"},
+	}); err != nil {
+		t.Fatalf("MergeReadiness(host) error = %v", err)
+	}
+	if err := w.MergeReadiness([]frame.Readiness{{Collector: "host.core", State: "unavailable", Reason: "read /proc/stat: no such file"}}); err != nil {
+		t.Fatalf("MergeReadiness(host outage) error = %v", err)
 	}
 
 	st, ok, err := Read(dir)
 	if err != nil || !ok {
 		t.Fatalf("Read() = (%+v, %v, %v)", st, ok, err)
 	}
-	if len(st.Readiness) != 1 || st.Readiness[0].Collector != "agent.identity" {
-		t.Errorf("Readiness = %+v, want %+v", st.Readiness, readiness)
+	want := []frame.Readiness{
+		{Collector: "agent.identity", State: "ready"},
+		{Collector: "host.core", State: "unavailable", Reason: "read /proc/stat: no such file"},
+		{Collector: "host.docker", State: "disabled"},
+	}
+	if !reflect.DeepEqual(st.Readiness, want) {
+		t.Errorf("Readiness = %+v, want %+v (upserted by collector, sorted by collector)", st.Readiness, want)
 	}
 }
 

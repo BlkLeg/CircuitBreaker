@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,8 +64,10 @@ type Status struct {
 	// applied.
 	Grants map[string]bool `json:"grants,omitempty"`
 
-	// Readiness mirrors the most recent hello's collector-readiness report
-	// (see internal/hostinfo).
+	// Readiness is the merged collector-readiness view: the startup identity
+	// report (see internal/hostinfo) upserted with every host collection's
+	// report (see internal/collect), keyed by collector name and sorted by
+	// it — see Writer.MergeReadiness.
 	Readiness []frame.Readiness `json:"readiness,omitempty"`
 
 	// SpoolDepth/SpoolBytes report the outbound spool's backlog. Both stay at
@@ -154,11 +157,34 @@ func (w *Writer) SetGrants(grants map[string]bool) error {
 	return w.persistLocked()
 }
 
-// SetReadiness records the most recent hello's collector-readiness report.
-func (w *Writer) SetReadiness(readiness []frame.Readiness) error {
+// MergeReadiness upserts collector-readiness rows by Readiness.Collector and
+// re-sorts the result by collector name.
+//
+// It is an upsert, not a replacement, because two independent producers write
+// here: the identity report collected once at startup (internal/hostinfo,
+// "agent.identity") and every subsequent host collection (internal/collect,
+// "host.*"). A whole-slice replacement — what this method used to be — let
+// whichever producer wrote last erase the other's rows, so status.json
+// oscillated between the two views depending on startup timing. Sorting on
+// every merge is what keeps status.json and `cb-agent status`'s readiness
+// listing deterministic regardless of the order the producers happen to run
+// in. The persisted JSON field name is unchanged.
+func (w *Writer) MergeReadiness(items []frame.Readiness) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.cur.Readiness = readiness
+	byCollector := make(map[string]frame.Readiness, len(w.cur.Readiness)+len(items))
+	for _, r := range w.cur.Readiness {
+		byCollector[r.Collector] = r
+	}
+	for _, r := range items {
+		byCollector[r.Collector] = r
+	}
+	merged := make([]frame.Readiness, 0, len(byCollector))
+	for _, r := range byCollector {
+		merged = append(merged, r)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Collector < merged[j].Collector })
+	w.cur.Readiness = merged
 	return w.persistLocked()
 }
 
