@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +37,33 @@ var AgentVersion = "0.0.0-dev"
 // a const, so tests can shrink it rather than waiting out the production
 // value — mirrors internal/link's stabilityWindow/rekeyInterval pattern.
 var rollbackWindow = 2 * time.Minute
+
+// reExecDelayEnvOverride is a narrowly-scoped, test-only escape hatch,
+// mirroring internal/link's rekeyIntervalEnvOverride: if set to a positive
+// integer number of milliseconds, onUpdate sleeps that long immediately
+// before re-exec'ing into the newly-swapped binary. It exists solely so the
+// Docker E2E harness (apps/agent/e2e) can reliably win the race against a
+// freshly re-exec'd process reconnecting and self-confirming an update
+// before the test's own docker-network-disconnect trigger can land — on a
+// local Docker bridge network, re-exec-to-hello.ack routinely completes in
+// well under 100ms, faster than an external log-poll-then-subprocess-spawn
+// trigger can reliably beat. No production deployment path (the install
+// script, systemd unit, or any documented config) ever sets this variable;
+// when it is unset, as in every real deployment, onUpdate re-execs
+// immediately, exactly as it always has.
+const reExecDelayEnvOverride = "CB_AGENT_TEST_PRE_REEXEC_DELAY_MS"
+
+// resolveReExecDelay reads reExecDelayEnvOverride. Split out from inline use
+// purely so a unit test can call it directly without depending on process
+// env at the actual call site.
+func resolveReExecDelay() time.Duration {
+	if v := os.Getenv(reExecDelayEnvOverride); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 0
+}
 
 // installedBinaryPath is the stable, root-owned symlink systemd's
 // ExecStart and an operator's interactive shell use
@@ -341,6 +369,9 @@ func runDaemon() {
 			log.Printf("cb-agent: send succeeded update.status: %v", err)
 		}
 		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
+		if d := resolveReExecDelay(); d > 0 {
+			time.Sleep(d)
+		}
 		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 	}
 

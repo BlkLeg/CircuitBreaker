@@ -725,6 +725,40 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	}
 }
 
+// --- Bug 1 fix round 4: test-only pre-re-exec delay override -------------
+
+// TestResolveReExecDelay_UnsetIsInert pins the production-safety guarantee
+// for reExecDelayEnvOverride: with CB_AGENT_TEST_PRE_REEXEC_DELAY_MS unset
+// (the state of every real deployment), resolveReExecDelay must return
+// exactly 0 — onUpdate's re-exec must never be delayed in production.
+func TestResolveReExecDelay_UnsetIsInert(t *testing.T) {
+	t.Setenv(reExecDelayEnvOverride, "")
+	if got := resolveReExecDelay(); got != 0 {
+		t.Fatalf("resolveReExecDelay() with env unset = %v, want 0 (production must never delay re-exec)", got)
+	}
+}
+
+// TestResolveReExecDelay_HonorsOverride confirms the override actually takes
+// effect when explicitly set.
+func TestResolveReExecDelay_HonorsOverride(t *testing.T) {
+	t.Setenv(reExecDelayEnvOverride, "500")
+	if got := resolveReExecDelay(); got != 500*time.Millisecond {
+		t.Fatalf("resolveReExecDelay() with env=500 = %v, want 500ms", got)
+	}
+}
+
+// TestResolveReExecDelay_IgnoresGarbageAndNonPositive confirms malformed or
+// non-positive overrides are silently ignored rather than e.g. panicking or
+// producing a negative sleep duration — the fallback is always 0 (no delay).
+func TestResolveReExecDelay_IgnoresGarbageAndNonPositive(t *testing.T) {
+	for _, v := range []string{"not-a-number", "0", "-5"} {
+		t.Setenv(reExecDelayEnvOverride, v)
+		if got := resolveReExecDelay(); got != 0 {
+			t.Fatalf("resolveReExecDelay() with env=%q = %v, want 0", v, got)
+		}
+	}
+}
+
 // --- Task 29: self-performing `cb-agent uninstall` -----------------------
 
 // TestRequireRoot covers the "non-root invocation refuses with a clear
