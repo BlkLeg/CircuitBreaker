@@ -218,9 +218,10 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
-	capGate, statusWriter, sp := rt.capGate, rt.statusWriter, rt.sp
+	statusWriter, sp := rt.statusWriter, rt.sp
 	dataFrames, controlFrames := rt.dataFrames, rt.controlFrames
-	queueReadiness, applyHostConfig := rt.queueReadiness, rt.applyHostConfig
+	queueReadiness := rt.queueReadiness
+	onCapabilitiesSet := rt.onCapabilitiesSet
 
 	currentLink := update.CurrentLinkPath(config.StateDir())
 
@@ -285,17 +286,6 @@ func runDaemon() {
 		if err := statusWriter.SetDisconnected(cause); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
-	}
-
-	onCapabilitiesSet := func(payload json.RawMessage) error {
-		if err := capGate.ApplyGrants(payload); err != nil {
-			return err
-		}
-		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
-			log.Printf("cb-agent: status: %v", err)
-		}
-		applyHostConfig()
-		return nil
 	}
 
 	onUpdate := func(payload json.RawMessage, send link.SendUpdateStatus) error {
@@ -434,6 +424,13 @@ type daemonRuntime struct {
 	queueReadiness   func(force bool)
 	publishReadiness func(items []frame.Readiness)
 	applyHostConfig  func()
+
+	// onCapabilitiesSet is the capabilities.set handler internal/link fires.
+	// It lives here rather than in runDaemon because it is the thing that
+	// turns a server grant payload into installed state plus the readiness
+	// rows that report what could not be honored (D-6), and that is startup
+	// state, not link plumbing.
+	onCapabilitiesSet func(payload json.RawMessage) error
 }
 
 // newHostCollector constructs the host-telemetry collector applyHostConfig
@@ -486,7 +483,12 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	// grants. A corrupt or unreadable cache is logged and treated as "no
 	// grants", never as a startup failure.
 	capGate := capability.New(config.StateDir())
-	if err := capGate.LoadCached(); err != nil {
+	// Faults isolate per capability (D-6): one unreadable cached grant no
+	// longer costs the agent every capability it had. They are held here and
+	// published once publishReadiness exists, so the daemon re-reports them
+	// on its first connection instead of swallowing them.
+	cachedGrantFaults, err := capGate.LoadCached()
+	if err != nil {
 		log.Printf("cb-agent: %v", err)
 	}
 
@@ -620,6 +622,30 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		hostRunner.Reset(ctx, time.Duration(hostCfg.IntervalS)*time.Second)
 	}
 
+	// onCapabilitiesSet installs a server grant payload. Per-capability faults
+	// are not frame failures — returning nil for a fault-only outcome is what
+	// stops internal/link's runOnce from logging the whole capabilities.set as
+	// failed — they are reported as capability.<name> = degraded through the
+	// same publishReadiness sink every collector uses. Only a payload that is
+	// not a grant map at all is an error, and that leaves the gate untouched.
+	onCapabilitiesSet := func(payload json.RawMessage) error {
+		faults, err := capGate.ApplyGrants(payload)
+		if err != nil {
+			return err
+		}
+		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		publishReadiness(capabilityReadiness(capGate.Snapshot(), faults))
+		applyHostConfig()
+		return nil
+	}
+
+	// The cached grant's faults, now that there is somewhere to report them.
+	// Publishing "ready" for the capabilities that loaded cleanly is what lets
+	// a corrected config clear a previously degraded row.
+	publishReadiness(capabilityReadiness(capGate.Snapshot(), cachedGrantFaults))
+
 	// (6) Reconciliation. The 15-minute floor in queueReadiness needs
 	// something to push against: without this ticker the only caller is a
 	// successful collection, so a disabled or persistently failing collector
@@ -645,16 +671,50 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	applyHostConfig()
 
 	return &daemonRuntime{
-		capGate:          capGate,
-		statusWriter:     statusWriter,
-		sp:               sp,
-		dataFrames:       dataFrames,
-		controlFrames:    controlFrames,
-		linked:           &linked,
-		queueReadiness:   queueReadiness,
-		publishReadiness: publishReadiness,
-		applyHostConfig:  applyHostConfig,
+		capGate:           capGate,
+		statusWriter:      statusWriter,
+		sp:                sp,
+		dataFrames:        dataFrames,
+		controlFrames:     controlFrames,
+		linked:            &linked,
+		queueReadiness:    queueReadiness,
+		publishReadiness:  publishReadiness,
+		applyHostConfig:   applyHostConfig,
+		onCapabilitiesSet: onCapabilitiesSet,
 	}, nil
+}
+
+// capabilityFaultRemediation is the operator-facing instruction attached to
+// every capability.<name> = degraded readiness row.
+const capabilityFaultRemediation = "correct this capability's configuration in Agent Detail"
+
+// capabilityReadiness turns an installed grant snapshot plus the faults it was
+// installed with into one readiness row per capability: degraded (with the
+// reason) for a capability whose configuration could not be honored as sent,
+// ready for every capability that applied cleanly. Reporting the clean ones too
+// is what makes a corrected configuration clear its own degraded row —
+// ingest_readiness only ever upserts, so a row the UI should stop showing must
+// be actively overwritten.
+func capabilityReadiness(snapshot capability.Snapshot, faults []capability.GrantFault) []frame.Readiness {
+	reasons := make(map[string]string, len(faults))
+	for _, f := range faults {
+		reasons[f.Capability] = f.Reason
+	}
+	items := make([]frame.Readiness, 0, len(snapshot))
+	for name := range snapshot {
+		if reason, ok := reasons[name]; ok {
+			items = append(items, frame.Readiness{
+				Collector:   "capability." + name,
+				State:       "degraded",
+				Reason:      reason,
+				Remediation: capabilityFaultRemediation,
+			})
+			continue
+		}
+		items = append(items, frame.Readiness{Collector: "capability." + name, State: "ready"})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Collector < items[j].Collector })
+	return items
 }
 
 // openSpool opens the outbound data-frame spool at stateDir, defaulting its

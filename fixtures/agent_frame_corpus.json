@@ -335,5 +335,15 @@
         "local_discovery": true
       }
     }
+  },
+  {
+    "description": "capabilities.set — invalid host_telemetry interval alongside a valid remote_probe grant",
+    "json": {
+      "v": 1, "type": "capabilities.set", "seq": 5, "ts": "2026-08-06T12:04:00Z",
+      "payload": {
+        "host_telemetry": {"enabled": true, "config": {"interval_s": 5}},
+        "remote_probe": {"enabled": true, "config": {}}
+      }
+    }
   }
 ]

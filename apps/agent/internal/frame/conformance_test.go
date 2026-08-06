@@ -494,9 +494,12 @@ func TestCorpus_HostTelemetrySummaryHasNoNulls(t *testing.T) {
 
 // grantExpectation is the expected post-ApplyGrants state of a capability.Gate for one corpus
 // entry carrying a grant object. hostConfig is nil when Gate.HostConfig() must report !ok.
+// faults names the capabilities ApplyGrants must report as GrantFaults (D-6) — empty for a
+// payload the decoder can honor verbatim.
 type grantExpectation struct {
 	allowed    map[string]bool
 	hostConfig *capability.HostConfig
+	faults     []string
 }
 
 // corpusGrantExpectations is keyed by corpus entry description (the corpus is append-only, so
@@ -527,6 +530,16 @@ var corpusGrantExpectations = map[string]grantExpectation{
 	"capabilities.set — mixed legacy boolean and structured grants": {
 		allowed:    map[string]bool{"host_telemetry": true, "remote_probe": false, "local_discovery": true},
 		hostConfig: &capability.HostConfig{IntervalS: 120, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true, IncludeVirtual: false, IncludeDocker: true},
+	},
+	// D-6 on the wire: host_telemetry.interval_s is below capability.MinHostInterval, so that
+	// one capability faults — it keeps the server's enabled flag and falls back to the package
+	// default config (this gate has no prior valid config to retain) — while remote_probe in
+	// the same frame still applies. Before Task 12 the whole payload was rejected and neither
+	// capability landed.
+	"capabilities.set — invalid host_telemetry interval alongside a valid remote_probe grant": {
+		allowed:    map[string]bool{"host_telemetry": true, "remote_probe": true},
+		hostConfig: &capability.HostConfig{IntervalS: 30, IncludeFilesystems: true, IncludeDisks: true, IncludeNetwork: true, IncludeTemperatures: true},
+		faults:     []string{"host_telemetry"},
 	},
 }
 
@@ -568,8 +581,19 @@ func TestCorpus_GrantPayloadsApplyThroughTheCapabilityGate(t *testing.T) {
 			checked[entry.Description] = true
 
 			gate := capability.New(t.TempDir())
-			if err := gate.ApplyGrants(grants); err != nil {
+			faults, err := gate.ApplyGrants(grants)
+			if err != nil {
 				t.Fatalf("ApplyGrants() error = %v", err)
+			}
+			gotFaults := make([]string, 0, len(faults))
+			for _, f := range faults {
+				gotFaults = append(gotFaults, f.Capability)
+				if f.Reason == "" {
+					t.Errorf("GrantFault for %q has an empty Reason", f.Capability)
+				}
+			}
+			if !reflect.DeepEqual(gotFaults, want.faults) && !(len(gotFaults) == 0 && len(want.faults) == 0) {
+				t.Errorf("ApplyGrants() faults = %v, want %v", gotFaults, want.faults)
 			}
 			for name, allowed := range want.allowed {
 				if got := gate.Allowed(name); got != allowed {

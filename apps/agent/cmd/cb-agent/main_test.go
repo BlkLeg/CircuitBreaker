@@ -1298,7 +1298,7 @@ func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T)
 	awaitReadiness(t, dir, "agent.identity", "host.core")
 	drainFrames(rt.controlFrames)
 
-	if err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":false}}`)); err != nil {
+	if _, err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":false}}`)); err != nil {
 		t.Fatalf("ApplyGrants() error = %v", err)
 	}
 	rt.applyHostConfig()
@@ -1344,7 +1344,7 @@ func TestApplyHostConfig_ReEnableFlipsDisabledBackToReady(t *testing.T) {
 		}
 	}
 
-	if err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":true,"config":{"interval_s":900}}}`)); err != nil {
+	if _, err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":true,"config":{"interval_s":900}}}`)); err != nil {
 		t.Fatalf("ApplyGrants() error = %v", err)
 	}
 	rt.applyHostConfig()
@@ -1454,5 +1454,161 @@ func TestPublishReadiness_MergesIdentityWithHostCollectors(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(order) {
 		t.Errorf("readiness order = %v, want it sorted by collector", order)
+	}
+}
+
+// --- Task 12: capability grant faults report as readiness (D-6) -----------
+
+// awaitCapabilityReadinessItem reads capability.readiness frames until one
+// carries collector, and returns that entry. The host collector publishes on
+// its own goroutine, so a test cannot assume the very next frame is the one it
+// caused.
+func awaitCapabilityReadinessItem(t *testing.T, ch <-chan frame.Frame, collector string) frame.Readiness {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeCapabilityReadiness {
+				continue
+			}
+			var payload frame.CapabilityReadinessPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal readiness payload %s: %v", f.Payload, err)
+			}
+			for _, r := range payload.Readiness {
+				if r.Collector == collector {
+					return r
+				}
+			}
+		case <-deadline:
+			t.Fatalf("no capability.readiness frame carrying %q within 5s", collector)
+		}
+	}
+}
+
+// awaitCapabilityReadinessItems waits for a single capability.readiness frame
+// that carries every named collector, and returns them together.
+//
+// Deliberately not two awaitCapabilityReadinessItem calls: each call consumes
+// frames, so asserting on two collectors that way needs two frames. The daemon
+// coalesces readiness into one payload, so the second frame only ever shows up
+// if some other producer (the host collector's asynchronous first report) races
+// in — which makes the test pass or hang depending on goroutine scheduling.
+func awaitCapabilityReadinessItems(
+	t *testing.T, ch <-chan frame.Frame, collectors ...string,
+) map[string]frame.Readiness {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeCapabilityReadiness {
+				continue
+			}
+			var payload frame.CapabilityReadinessPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal readiness payload %s: %v", f.Payload, err)
+			}
+			got := make(map[string]frame.Readiness, len(collectors))
+			for _, r := range payload.Readiness {
+				for _, want := range collectors {
+					if r.Collector == want {
+						got[want] = r
+					}
+				}
+			}
+			if len(got) == len(collectors) {
+				return got
+			}
+		case <-deadline:
+			t.Fatalf("no single capability.readiness frame carrying all of %v within 5s", collectors)
+		}
+	}
+}
+
+// TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness pins D-6's
+// reporting half: a capability whose config fails normalization is not a frame
+// failure (onCapabilitiesSet returns nil, so internal/link stops logging it as
+// one) — it is a capability.<name> = degraded readiness row, carried on the
+// existing capability.readiness channel. A capability that applied cleanly in
+// the same payload reports "ready", which is also what clears a corrected
+// config's degraded row.
+func TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness(t *testing.T) {
+	_, key := startDaemonStateTestDir(t, "", nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	drainFrames(rt.controlFrames)
+
+	bad := json.RawMessage(`{"host_telemetry":{"enabled":true,"config":{"interval_s":9}},"remote_probe":{"enabled":true}}`)
+	if err := rt.onCapabilitiesSet(bad); err != nil {
+		t.Fatalf("onCapabilitiesSet() error = %v, want nil — a per-capability fault is not a frame failure", err)
+	}
+
+	got := awaitCapabilityReadinessItem(t, rt.controlFrames, "capability.host_telemetry")
+	if got.State != "degraded" {
+		t.Errorf("capability.host_telemetry state = %q, want %q", got.State, "degraded")
+	}
+	if got.Reason == "" {
+		t.Error("capability.host_telemetry reason is empty, want the normalization failure")
+	}
+	if got.Remediation == "" {
+		t.Error("capability.host_telemetry remediation is empty")
+	}
+	if probe := awaitCapabilityReadinessItem(t, rt.controlFrames, "capability.remote_probe"); probe.State != "ready" {
+		t.Errorf("capability.remote_probe state = %q, want %q — a clean capability in the same payload", probe.State, "ready")
+	}
+	if !rt.capGate.Allowed("remote_probe") {
+		t.Error("Allowed(remote_probe) = false, want true — the good grant in the payload was discarded")
+	}
+
+	good := json.RawMessage(`{"host_telemetry":{"enabled":true,"config":{"interval_s":60}},"remote_probe":{"enabled":true}}`)
+	if err := rt.onCapabilitiesSet(good); err != nil {
+		t.Fatalf("onCapabilitiesSet() error = %v", err)
+	}
+	if got := awaitCapabilityReadinessItem(t, rt.controlFrames, "capability.host_telemetry"); got.State != "ready" {
+		t.Errorf("capability.host_telemetry state = %q after a corrected config, want %q", got.State, "ready")
+	}
+}
+
+// TestStartDaemonState_CachedGrantFaultIsReportedAtStartup covers the other
+// entry point: LoadCached isolates faults the same way, and the daemon
+// re-reports them on its first connection rather than swallowing them.
+func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
+	_, key := startDaemonStateTestDir(t,
+		`{"remote_probe":{"enabled":true},"host_telemetry":{"enabled":true,"config":{"interval_s":0}}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	if !rt.capGate.Allowed("remote_probe") {
+		t.Error("Allowed(remote_probe) = false after a restart, want true — one bad cached grant dropped the rest")
+	}
+
+	// The startup report was published while unlinked; the link coming up is
+	// what forces it out, exactly as OnConnected does.
+	rt.linked.Store(true)
+	rt.queueReadiness(true)
+
+	got := awaitCapabilityReadinessItems(t, rt.controlFrames,
+		"capability.host_telemetry", "capability.remote_probe")
+	if got["capability.host_telemetry"].State != "degraded" {
+		t.Errorf("capability.host_telemetry state = %q at startup, want %q",
+			got["capability.host_telemetry"].State, "degraded")
+	}
+	if got["capability.remote_probe"].State != "ready" {
+		t.Errorf("capability.remote_probe state = %q at startup, want %q",
+			got["capability.remote_probe"].State, "ready")
 	}
 }
