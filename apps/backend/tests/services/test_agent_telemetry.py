@@ -1,16 +1,15 @@
 """`app.services.agent_telemetry` — payload validation, sample ingestion, the
 Hardware live projection, and capability readiness.
 
-Note on `AgentHostSample.projection_attempts`: the column
-(`app/db/models.py`) and the `ix_agent_host_samples_projection` index are dead
-— projection happens in the same transaction as the insert, so a
-persisted-but-unprojected row cannot exist and nothing ever counts attempts.
-They are removed by Task 8 of
-`plans/2026-08-06-cbi-agent-slice12-cohesion-hardening-tasks.md` (D-3), which
-also owns the `test_agent_host_sample_has_no_projection_attempts_column`
-regression test. Deliberately no assertion against the column here: it would
-break the moment Task 8 lands, and "covered" is exactly the wrong signal for a
-field that is on its way out.
+Note on `AgentHostSample.projection_attempts`: the column and the
+`ix_agent_host_samples_projection` index are **gone** (Task 8 / D-3). Projection
+happens in the same transaction as the insert, so a persisted-but-unprojected
+row cannot exist and nothing ever counted attempts; the index supported a scan
+no query performs. `projected_at` stays and is asserted throughout this file.
+The schema-level regression tests live in
+`tests/test_agent_telemetry_schema.py::test_agent_host_sample_has_no_projection_attempts_column`
+and its `..._has_no_dead_projection_index` sibling; the ingest path's own guard
+is `test_ingest_still_succeeds_after_column_drop` below.
 """
 
 from __future__ import annotations
@@ -797,3 +796,221 @@ async def test_uptime_float_persists_into_bigint_column(db_session, factories):
     metric = db_session.execute(select(HardwareLiveMetric)).scalar_one()
     assert sample.uptime_s == 123457
     assert metric.uptime_s == 123457
+
+
+@pytest.mark.asyncio
+async def test_ingest_still_succeeds_after_column_drop(db_session, factories):
+    """`projection_attempts` is gone from the model *and* nothing on the ingest
+    path still tries to write it (D-3, Task 8)."""
+    assert "projection_attempts" not in AgentHostSample.__table__.c
+
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+
+    row = await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), utcnow())
+
+    db_session.expire_all()
+    sample = db_session.execute(select(AgentHostSample)).scalar_one()
+    assert sample.id == row.id
+    assert sample.projected_at is not None
+    assert db_session.execute(select(HardwareLiveMetric)).scalar_one().agent_id == agent.id
+
+
+# ── Task 5: the live projection speaks platform key names ────────────────────
+#
+# `agent_summary_to_platform` + `live_metric_fields` (app/services/
+# telemetry_normalize.py) are the single mapping from a normalized platform
+# telemetry dict onto `hardware_live_metrics`. Everything below pins the
+# consumer-visible half of that: the *Hardware* surfaces (telemetry_data, the
+# live-metric row, the Redis cache/WebSocket envelope) carry platform names,
+# while the *Agent-detail* surfaces keep the agent's own names.
+
+
+_PLATFORM_KEYS = (
+    "cpu_pct",
+    "mem_pct",
+    "mem_used",
+    "mem_total",
+    "mem_used_mb",
+    "mem_total_mb",
+    "mem_used_gb",
+    "mem_total_gb",
+    "disk_pct",
+    "rootfs_used",
+    "rootfs_total",
+    "disk_used_gb",
+    "disk_total_gb",
+    "temp_c",
+    "cpu_temp",
+    "uptime_s",
+)
+
+
+@pytest.mark.asyncio
+async def test_linked_agent_hardware_telemetry_data_uses_platform_keys(db_session, factories):
+    """`hardware.telemetry_data` is spread into the entity response the map
+    reads, so it must not carry `root_disk_pct`/`max_temp_c`/`mem_used_bytes`."""
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+
+    await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), utcnow())
+
+    data = db_session.get(Hardware, hardware.id).telemetry_data
+    assert set(_PLATFORM_KEYS) <= set(data)
+    assert "root_disk_pct" not in data
+    assert "max_temp_c" not in data
+    assert "mem_used_bytes" not in data
+    assert data["disk_pct"] == 41.8
+    assert data["temp_c"] == 48.0
+    assert data["cpu_temp"] == 48.0
+    assert data["mem_used_gb"] == 5.0
+    assert data["mem_total_gb"] == 15.5
+    assert data["disk_used_gb"] == 194.7
+    assert data["disk_total_gb"] == 465.8
+    # Agent-detail parity fields ride along unchanged.
+    assert data["load_1"] == 0.42
+    assert data["logical_cpus"] == 8
+    # No power probe exists on the Linux collector.
+    assert "power_w" not in data
+
+
+@pytest.mark.asyncio
+async def test_agent_live_metric_raw_round_trips_through_row_to_payload(db_session, factories):
+    """`GET /api/v1/hardware/{id}/telemetry`'s DB-fallback branch serves
+    `HardwareLiveMetric.raw` verbatim, so storing the agent frame payload there
+    leaked agent key names straight into the hardware telemetry API."""
+    from app.services.telemetry_service import _row_to_payload
+
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+
+    await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), utcnow())
+
+    db_session.expire_all()
+    metric = db_session.execute(select(HardwareLiveMetric)).scalar_one()
+    payload = _row_to_payload(metric)
+    assert payload["disk_pct"] == 41.8
+    assert payload["temp_c"] == 48.0
+    assert "summary" not in payload
+    assert "schema" not in payload
+
+
+@pytest.mark.asyncio
+async def test_agent_projection_matches_ingest_worker_normalization(db_session, factories):
+    """One normalizer: the agent path and the poller ingest worker must produce
+    identical `hardware_live_metrics` columns for the same platform dict."""
+    from app.services.telemetry_normalize import agent_summary_to_platform
+    from app.workers.telemetry_ingest_worker import _build_metric_row
+
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+    # A non-integral MiB value: the pre-refactor projection divided by 1024**2
+    # without rounding, while `_bytes_to_mb` rounds to 2 dp.
+    summary = _summary(mem_used_bytes=5368709632)
+    collected_at = utcnow()
+
+    await agent_telemetry.ingest_host_sample(
+        db_session, agent, _payload(summary=summary), collected_at
+    )
+
+    db_session.expire_all()
+    metric = db_session.execute(select(HardwareLiveMetric)).scalar_one()
+    platform = agent_summary_to_platform(summary, _payload()["filesystems"])
+    expected = _build_metric_row(hardware.id, "agent", platform, "healthy", None, collected_at)
+    for column in ("cpu_pct", "mem_pct", "mem_used_mb", "mem_total_mb", "disk_pct", "temp_c"):
+        assert getattr(metric, column) == expected[column], column
+    assert metric.uptime_s == expected["uptime_s"]
+    assert metric.power_w is expected["power_w"] is None
+    assert metric.raw == expected["raw"]
+    assert metric.mem_used_mb == 5120.0
+
+
+@pytest.mark.asyncio
+async def test_agent_cache_and_publish_envelope_uses_platform_keys(
+    db_session, factories, telemetry_side_effects
+):
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+
+    await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), utcnow())
+
+    cache_args = telemetry_side_effects.cache_telemetry.await_args
+    publish_args = telemetry_side_effects.publish_telemetry.await_args
+    assert cache_args.args[0] == hardware.id
+    cached = cache_args.args[1]
+    published = publish_args.args[1]
+    for envelope in (cached, published):
+        assert envelope["source"] == "agent"
+        assert envelope["agent_id"] == agent.id
+        assert envelope["sample_id"] == _payload()["sample_id"]
+        data = envelope["data"]
+        assert data["disk_pct"] == 41.8
+        assert data["temp_c"] == 48.0
+        assert data["mem_used_gb"] == 5.0
+        assert "root_disk_pct" not in data
+        assert "max_temp_c" not in data
+        assert "mem_used_bytes" not in data
+    assert published["entity_type"] == "hardware"
+    assert published["hardware_id"] == hardware.id
+
+
+@pytest.mark.asyncio
+async def test_non_live_status_withholds_hardware_last_seen(db_session, factories, monkeypatch):
+    """Latent-divergence guard. Today `validate_host_payload` admits only
+    `healthy`/`degraded`, neither of which is in `_NON_LIVE_STATUSES`, so the
+    gate is unobservable in production — but the poller paths
+    (`telemetry_service.write_telemetry`, `telemetry_ingest_worker`) all gate
+    `last_seen` on it and the agent path must not be the odd one out when the
+    agent's status vocabulary grows."""
+    monkeypatch.setattr(agent_telemetry, "_NON_LIVE_STATUSES", frozenset({"degraded"}))
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+    collected_at = utcnow()
+
+    await agent_telemetry.ingest_host_sample(
+        db_session, agent, _payload(status="degraded"), collected_at
+    )
+
+    refreshed = db_session.get(Hardware, hardware.id)
+    assert refreshed.last_seen is None
+    assert refreshed.telemetry_status == "degraded"
+    assert refreshed.telemetry_last_polled == collected_at
+
+
+@pytest.mark.asyncio
+async def test_live_status_still_stamps_hardware_last_seen(db_session, factories):
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+    collected_at = utcnow()
+
+    await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), collected_at)
+
+    assert db_session.get(Hardware, hardware.id).last_seen == collected_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_agent_detail_sample_json_still_uses_agent_keys(db_session, factories):
+    """The Agent-detail page is keyed on the agent's own names; the platform
+    normalizer must not reach `agent_host_samples` or `_sample_json`."""
+    from app.api.agents import _sample_json
+
+    hardware = factories.hardware()
+    agent = factories.agent(status="active", hardware_id=hardware.id)
+    payload = _payload()
+
+    row = await agent_telemetry.ingest_host_sample(db_session, agent, payload, utcnow())
+
+    rendered = _sample_json(row)
+    assert set(rendered["summary"]) == {
+        "cpu_pct",
+        "mem_pct",
+        "root_disk_pct",
+        "net_rx_bps",
+        "net_tx_bps",
+        "max_temp_c",
+        "load_1",
+        "uptime_s",
+    }
+    assert rendered["summary"]["root_disk_pct"] == 41.8
+    assert rendered["summary"]["max_temp_c"] == 48.0
+    assert rendered["payload"] == payload

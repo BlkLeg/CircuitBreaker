@@ -24,6 +24,11 @@ from app.db.models import (
 )
 from app.schemas.agent_frame import CapabilityReadinessPayload, HostTelemetryPayload
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
+from app.services.telemetry_normalize import (
+    _NON_LIVE_STATUSES,
+    agent_summary_to_platform,
+    live_metric_fields,
+)
 
 _SAMPLE_ID = re.compile(r"^[0-9a-f]{32}$")
 _logger = logging.getLogger(__name__)
@@ -135,6 +140,11 @@ async def ingest_host_sample(
                 AgentHostSample.collected_at == collected_at,
             )
         ).scalar_one()
+    # One normalizer: the Hardware-facing surfaces (the live-metric row,
+    # `telemetry_data`, and the cache/WebSocket envelope below) all speak the
+    # platform vocabulary produced here, never the agent's own key names. The
+    # agent names stay on `agent_host_samples` and the Agent-detail API.
+    platform = agent_summary_to_platform(summary, sample.filesystems)
     project_live = False
     if row.hardware_id is not None:
         metric = HardwareLiveMetric(
@@ -142,20 +152,10 @@ async def ingest_host_sample(
             agent_id=agent.id,
             agent_sample_id=row.sample_id,
             collected_at=collected_at,
-            cpu_pct=row.cpu_pct,
-            mem_pct=row.mem_pct,
-            mem_used_mb=(
-                summary["mem_used_bytes"] / (1024 * 1024) if "mem_used_bytes" in summary else None
-            ),
-            mem_total_mb=(
-                summary["mem_total_bytes"] / (1024 * 1024) if "mem_total_bytes" in summary else None
-            ),
-            disk_pct=row.root_disk_pct,
-            temp_c=row.max_temp_c,
-            uptime_s=row.uptime_s,
+            **live_metric_fields(platform),
             status=sample.status,
             source="agent",
-            raw=payload,
+            raw=platform,
         )
         db.add(metric)
         row.projected_at = utcnow()
@@ -164,10 +164,14 @@ async def ingest_host_sample(
             hardware.telemetry_last_polled is None or collected_at >= hardware.telemetry_last_polled
         ):
             project_live = True
-            hardware.telemetry_data = dict(summary)
+            hardware.telemetry_data = platform
             hardware.telemetry_status = sample.status
             hardware.telemetry_last_polled = collected_at
-            hardware.last_seen = collected_at.isoformat()
+            # Matches the poller paths: a non-live status must not advance
+            # `last_seen`. Unobservable while the agent vocabulary is
+            # {healthy, degraded}; locked shut before that vocabulary grows.
+            if sample.status not in _NON_LIVE_STATUSES:
+                hardware.last_seen = collected_at.isoformat()
     db.commit()
     redis = await get_redis()
     if redis is not None:
@@ -187,7 +191,7 @@ async def ingest_host_sample(
             _logger.debug("agent telemetry publish failed: %s", exc)
     if row.hardware_id is not None and project_live:
         hardware_payload = {
-            "data": dict(summary),
+            "data": platform,
             "status": sample.status,
             "last_polled": collected_at.isoformat(),
             "source": "agent",

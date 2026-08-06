@@ -24,14 +24,10 @@ from app.core.time import utcnow
 from app.db.models import Hardware, HardwareLiveMetric
 from app.db.session import get_session_context
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
-from app.services.telemetry_service import (
+from app.services.telemetry_normalize import (
     _NON_LIVE_STATUSES,
-    _as_float,
-    _as_int,
-    _bytes_to_mb,
-    _derive_disk_pct,
-    _derive_mem_pct,
     _normalise_payload,
+    live_metric_fields,
 )
 
 _logger = logging.getLogger(__name__)
@@ -80,16 +76,7 @@ def _build_metric_row(
     return {
         "hardware_id": hw_id,
         "collected_at": ts,
-        "cpu_pct": _as_float(data.get("cpu_pct") or data.get("cpu")),
-        "mem_pct": _derive_mem_pct(data),
-        "mem_used_mb": _as_float(data.get("mem_used_mb")) or _bytes_to_mb(data.get("mem_used")),
-        "mem_total_mb": (
-            _as_float(data.get("mem_total_mb")) or _bytes_to_mb(data.get("mem_total"))
-        ),
-        "disk_pct": _derive_disk_pct(data),
-        "temp_c": _as_float(data.get("temp_c") or data.get("cpu_temp")),
-        "power_w": _as_float(data.get("power_w") or data.get("system_power_w")),
-        "uptime_s": _as_int(data.get("uptime_s") or data.get("uptime")),
+        **live_metric_fields(data),
         "status": status,
         "source": source,
         "raw": data,

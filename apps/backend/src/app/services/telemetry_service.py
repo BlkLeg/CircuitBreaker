@@ -11,63 +11,32 @@ from app.db.models import Hardware, HardwareLiveMetric
 from app.schemas.telemetry import TelemetryResponse
 from app.services.telemetry_cache import cache_telemetry, get_cached_telemetry, publish_telemetry
 
+# The normalization helpers moved to `app.services.telemetry_normalize`, which is
+# now the one home for the platform-dict -> HardwareLiveMetric mapping. They are
+# re-exported from here so importers that reference their historical home keep
+# working (`app/services/monitoring/proxmox_override.py` imports
+# `_NON_LIVE_STATUSES`). The `noqa` covers the names this module no longer uses
+# itself, which are re-exports rather than dead imports.
+from app.services.telemetry_normalize import (  # noqa: F401
+    _NON_LIVE_STATUSES,
+    _as_float,
+    _as_int,
+    _bytes_to_mb,
+    _derive_disk_pct,
+    _derive_mem_pct,
+    _normalise_payload,
+    live_metric_fields,
+)
+
 _logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 60
-_NON_LIVE_STATUSES = {"unknown", "unreachable", "error", "unconfigured"}
 
 
 def _safe_json(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
     return None
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _bytes_to_mb(value: Any) -> float | None:
-    f = _as_float(value)
-    if f is None:
-        return None
-    return round(f / (1024 * 1024), 2)
-
-
-def _derive_mem_pct(data: dict[str, Any]) -> float | None:
-    mem_pct = _as_float(data.get("mem_pct"))
-    if mem_pct is not None:
-        return mem_pct
-    used = _as_float(data.get("mem_used"))
-    total = _as_float(data.get("mem_total"))
-    if used is None or total is None or total == 0:
-        return None
-    return round((used / total) * 100.0, 2)
-
-
-def _derive_disk_pct(data: dict[str, Any]) -> float | None:
-    disk_pct = _as_float(data.get("disk_pct"))
-    if disk_pct is not None:
-        return disk_pct
-    used = _as_float(data.get("rootfs_used") or data.get("disk_used_bytes"))
-    total = _as_float(data.get("rootfs_total") or data.get("disk_total_bytes"))
-    if used is None or total is None or total == 0:
-        return None
-    return round((used / total) * 100.0, 2)
 
 
 def _safe_config(telemetry_config: Any) -> dict[str, Any] | None:
@@ -95,27 +64,6 @@ def _extract_profile(telemetry_config: Any) -> str | None:
         return None
     profile = cfg.get("profile")
     return str(profile) if isinstance(profile, str) and profile.strip() else None
-
-
-def _normalise_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], str, str | None]:
-    raw_data = payload.get("data")
-    data: dict[str, Any]
-    if isinstance(raw_data, dict):
-        data = raw_data
-    else:
-        data = {
-            k: v
-            for k, v in payload.items()
-            if k not in {"status", "error", "error_msg", "last_polled", "source", "entity_type"}
-        }
-
-    status = str(payload.get("status") or data.get("status") or "unknown")
-    error_msg = payload.get("error_msg") or payload.get("error")
-    if error_msg is not None:
-        error_msg = str(error_msg)
-    if error_msg and status == "unknown":
-        status = "unreachable"
-    return data, status, error_msg
 
 
 def _row_to_payload(row: HardwareLiveMetric) -> dict[str, Any]:
@@ -238,14 +186,7 @@ async def write_telemetry(
     row = HardwareLiveMetric(
         hardware_id=hardware_id,
         collected_at=now,
-        cpu_pct=_as_float(data.get("cpu_pct") or data.get("cpu")),
-        mem_pct=_derive_mem_pct(data),
-        mem_used_mb=_as_float(data.get("mem_used_mb")) or _bytes_to_mb(data.get("mem_used")),
-        mem_total_mb=_as_float(data.get("mem_total_mb")) or _bytes_to_mb(data.get("mem_total")),
-        disk_pct=_derive_disk_pct(data),
-        temp_c=_as_float(data.get("temp_c") or data.get("cpu_temp")),
-        power_w=_as_float(data.get("power_w") or data.get("system_power_w")),
-        uptime_s=_as_int(data.get("uptime_s") or data.get("uptime")),
+        **live_metric_fields(data),
         status=status,
         source=source,
         raw=data,
