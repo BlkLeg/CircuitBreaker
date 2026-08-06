@@ -30,26 +30,25 @@ const markerFilename = "update_pending"
 // markerPhase distinguishes the two states a still-present rollback marker
 // can be in when read back after an unplanned restart. Before this
 // distinction existed, a marker's mere presence was treated as proof that
-// targetPath+".previous" was *this* update's actual backup — true only
-// because, pre-Task-25, the marker was written after Swap succeeded. Task 25
-// correctly moved WriteMarker to run before Swap (so a crash between the two
-// leaves a recoverable "nothing happened yet" state instead of an unguarded
-// replaced binary), but that reordering broke the old proof: a marker
-// written just before a crash, with Swap never having run, would otherwise
-// be indistinguishable from one written after a real Swap — and
-// watchForRollback would "roll back" to whatever stale .previous happens to
-// be lying around from some earlier, already-confirmed update. Two versions
-// back. Silently.
+// the marker's recorded backup was *this* update's actual prior version —
+// true only because, pre-Task-25, the marker was written after Swap
+// succeeded. Task 25 correctly moved WriteMarker to run before Swap (so a
+// crash between the two leaves a recoverable "nothing happened yet" state
+// instead of an unguarded replaced binary), but that reordering broke the
+// old proof: a marker written just before a crash, with Swap never having
+// run, would otherwise be indistinguishable from one written after a real
+// Swap — and watchForRollback would "roll back" current to whatever stale
+// version directory happens to be lying around from some earlier,
+// already-confirmed update. Two versions back. Silently.
 //
 //   - phasePendingSwap: WriteMarker has run but Swap has not (yet) durably
-//     completed for this marker's version. The target binary on disk is
-//     untouched — there is nothing to roll back to, and .previous (if one
-//     exists at all) belongs to an earlier, already-confirmed update, not
-//     this one.
-//   - phasePendingConfirm: Swap completed and MarkSwapped recorded that
-//     fact — .previous is now guaranteed to be *this* update's actual
-//     backup, so a rollback (if the update never confirms) is safe and
-//     meaningful.
+//     completed for this marker's version. current is untouched and no
+//     prevVersionDir has been recorded yet — there is nothing to roll back
+//     to.
+//   - phasePendingConfirm: Swap completed and MarkSwapped recorded
+//     prevVersionDir — that directory is now guaranteed to be *this*
+//     update's actual prior version, so a rollback (if the update never
+//     confirms) is safe and meaningful.
 type markerPhase string
 
 const (
@@ -372,6 +371,16 @@ func resolveSymlinkAbs(linkPath string) (string, error) {
 // agent_install.py — but tolerated so tests can exercise a first-ever swap
 // without seeding one).
 func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err error) {
+	// version ultimately comes from a server-controlled update instruction
+	// (internal/update.Instruction) and is used directly as a path
+	// component below (versionDir). Reject anything that isn't a single
+	// path segment before it ever reaches a filesystem call — a version
+	// like "../../etc" must never let a compromised or malicious update
+	// source write outside stateDir/versions.
+	if version == "" || version == "." || version == ".." || version != filepath.Base(version) {
+		return "", fmt.Errorf("update: invalid version %q", version)
+	}
+
 	if err := fsyncFile(newBinaryPath); err != nil {
 		return "", fmt.Errorf("update: sync new binary: %w", err)
 	}
@@ -423,6 +432,18 @@ func PruneVersions(stateDir, currentLink, keepVersionDir string) error {
 	var liveDir string
 	if liveFile != "" {
 		liveDir = filepath.Dir(liveFile)
+	}
+	if liveDir == "" {
+		// current is missing or unreadable — refuse to prune rather than
+		// treating "nothing is live" as "nothing is protected": with
+		// liveDir == "", every entry below would fail the dir == liveDir
+		// check and (absent keepVersionDir matching it) get removed,
+		// including the version this process may currently be running
+		// through. This should never happen in practice (a connected
+		// daemon just re-exec'd through current), but the failure mode if
+		// it ever did — deleting the whole versions/ tree — is severe
+		// enough to guard against explicitly.
+		return nil
 	}
 
 	versionsRoot := filepath.Join(stateDir, "versions")

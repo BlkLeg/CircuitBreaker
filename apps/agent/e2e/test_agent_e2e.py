@@ -905,15 +905,23 @@ def test_agent_update_success_and_forced_rollback():
             # ---- Step 7b: forced rollback ----
             # Build+inject a genuinely newer version, trigger an update to
             # it, then sever outbound connectivity the instant the swap
-            # completes (watched via the daemon's own "re-executing" log
-            # line — see main.go's onUpdate) — so the freshly re-exec'd
-            # binary can never complete a post-update hello.ack, exactly the
-            # "update never confirms" case internal/update's rollbackWindow
-            # (2 real minutes) guards against. The 0.05s poll interval below
-            # (rather than _wait_until's 1s default) plus
-            # CB_AGENT_TEST_PRE_REEXEC_DELAY_MS (set above) together close
-            # the race this step used to lose against a same-host re-exec
-            # that can reconnect and self-confirm in well under 100ms.
+            # completes (watched via the daemon's own "updated to
+            # <rollback_version> — re-executing" log line — see main.go's
+            # onUpdate) — so the freshly re-exec'd binary can never complete
+            # a post-update hello.ack, exactly the "update never confirms"
+            # case internal/update's rollbackWindow (2 real minutes) guards
+            # against. The predicate below matches specifically on
+            # rollback_version, not the bare "re-executing" substring —
+            # _agent_logs() returns the container's whole accumulated
+            # stdout, and step 7a already logged its own "re-executing" line
+            # earlier in this same container, so a bare-substring match
+            # would return true on the very first poll here, long before
+            # this update's actual re-exec, and race the binary *download*
+            # instead. The 0.05s poll interval (rather than _wait_until's 1s
+            # default) plus CB_AGENT_TEST_PRE_REEXEC_DELAY_MS (set above)
+            # then close the race this step used to lose against a
+            # same-host re-exec that can reconnect and self-confirm in well
+            # under 100ms.
             with tempfile.TemporaryDirectory() as tmp:
                 rollback_version = "9.9.9-e2e-rollback"
                 binary = _build_test_agent_binary(rollback_version, Path(tmp))
@@ -927,7 +935,7 @@ def test_agent_update_success_and_forced_rollback():
             assert update2.status_code == 200, update2.text
 
             _wait_until(
-                lambda: "re-executing" in _agent_logs(),
+                lambda: f"updated to {rollback_version}" in _agent_logs(),
                 timeout=30,
                 interval=0.05,
             )

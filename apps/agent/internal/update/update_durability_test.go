@@ -342,3 +342,26 @@ func TestPruneVersions_EmptyKeepStillRetainsCurrent(t *testing.T) {
 		t.Errorf("stat stale dir after PruneVersions() = %v, want removed", err)
 	}
 }
+
+// TestPruneVersions_MissingCurrentSymlinkPrunesNothing covers the
+// final-review finding that a missing/unreadable current would otherwise
+// resolve to an empty liveDir, which would then match no versions/<v> entry
+// as "live" — deleting the entire versions/ tree, including whatever
+// version this process might currently be running through. PruneVersions
+// must refuse to prune at all rather than risk that.
+func TestPruneVersions_MissingCurrentSymlinkPrunesNothing(t *testing.T) {
+	dir := t.TempDir()
+	someVersionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(someVersionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir) // deliberately never created
+
+	if err := PruneVersions(dir, currentLink, ""); err != nil {
+		t.Fatalf("PruneVersions() with no current symlink error = %v, want nil (no-op, not an error)", err)
+	}
+
+	if _, err := os.Stat(someVersionDir); err != nil {
+		t.Errorf("stat %s after PruneVersions() = %v, want retained — pruning must refuse to run without a resolvable current", someVersionDir, err)
+	}
+}

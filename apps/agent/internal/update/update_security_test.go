@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,56 @@ func TestConstantTimeEqualHexFold_MismatchedCase(t *testing.T) {
 				t.Errorf("constantTimeEqualHexFold(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSwap_RejectsPathTraversalVersion covers the final-review finding that
+// version — which comes directly from a server-controlled update
+// instruction (Instruction.Version) — was used unvalidated as a filesystem
+// path component in versionDir(stateDir, version). filepath.Join cleans the
+// result, so an unvalidated "../../etc"-shaped version could let a
+// compromised or malicious update source write outside stateDir/versions
+// entirely. Swap must reject any version that isn't a single path segment
+// before touching the filesystem at all.
+func TestSwap_RejectsPathTraversalVersion(t *testing.T) {
+	dir := t.TempDir()
+	oldVersionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(oldVersionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldVersionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(filepath.Join(oldVersionDir, "cb-agent"), currentLink); err != nil {
+		t.Fatal(err)
+	}
+	newBinary := filepath.Join(dir, "new-download")
+	if err := os.WriteFile(newBinary, []byte("new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, badVersion := range []string{"../../etc", "..", ".", "", "a/b", "/etc/passwd"} {
+		t.Run(badVersion, func(t *testing.T) {
+			if _, err := Swap(newBinary, badVersion, dir); err == nil {
+				t.Fatalf("Swap() with version %q error = nil, want an error rejecting it", badVersion)
+			}
+		})
+	}
+
+	// Nothing must have escaped stateDir/versions regardless — the parent
+	// of dir must contain no new, unexpected entries.
+	entries, err := os.ReadDir(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("parent dir entries = %d, want exactly 1 (t.TempDir()'s own dir) — a rejected version must never create anything outside it", len(entries))
+	}
+
+	// A legitimate version must still work — the guard isn't overbroad.
+	if _, err := Swap(newBinary, "0.2.0", dir); err != nil {
+		t.Errorf("Swap() with a valid version = %v, want nil", err)
 	}
 }
 

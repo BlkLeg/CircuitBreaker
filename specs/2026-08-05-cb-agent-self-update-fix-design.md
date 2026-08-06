@@ -56,6 +56,27 @@ needs to make self-update work going forward, on hosts installed by the correcte
 - **Migrate existing installs in place.** Unnecessary — confirmed no host has ever completed a
   real self-update, so there is nothing on any real host to preserve or migrate.
 
+### Accepted risk: `/usr/local/bin/cb-agent` now resolves to a `cb-agent`-writable file
+
+"New privileged code paths: None" and "zero new privileged surface" (above) are accurate for the
+*daemon's own update path* — `cb-agent` never gains a capability it didn't already have. But the
+fix does move a trust boundary that predates this design: previously, invoking
+`/usr/local/bin/cb-agent` (as root — an admin's interactive shell, or `cb-agent uninstall`'s
+`requireRoot` path) executed a root-owned, root-written file. After this fix, that same stable path
+resolves through `current` to a file the unprivileged `cb-agent` user owns and rewrites on every
+update. A compromised `cb-agent` process can now plant code that a later root invocation of
+`/usr/local/bin/cb-agent` will execute.
+
+Accepted, not mitigated further, for two reasons: (1) the install script already runs `usermod -aG
+docker cb-agent`, and Docker-group membership is already root-equivalent on any host with Docker
+installed — this design changes nothing on such hosts, which is the common case; (2) the rejected
+"root-side update helper" alternative above was turned down specifically to avoid a new
+root-executes-unprivileged-supplied-data path, and this is the same shape of risk, just already
+implicit in "PATH-visible binary that gets replaced" rather than newly introduced by an explicit
+privileged code path. On a non-Docker host, this is a real (if narrow — it still requires a
+compromised agent process, not just network access) widening of what that compromise can reach.
+No further action taken; flagged here so it's a recorded decision, not a silent gap.
+
 ## 1. Directory / symlink layout
 
 Two levels of indirection, both new:

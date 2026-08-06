@@ -121,8 +121,8 @@ func watchForRollback(stateDir, currentLink, pendingVersion string, reExec func(
 
 	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, rollbackWindow)
 	if err := update.Rollback(currentLink, prevVersionDir); err != nil {
-		// Rollback failed (no .previous, unreadable, cross-device error,
-		// ...): the marker must still be cleared here. Leaving it in place
+		// Rollback failed (empty prevVersionDir, a symlink error, ...): the
+		// marker must still be cleared here. Leaving it in place
 		// would re-arm this exact same doomed rollback attempt on every
 		// subsequent restart, forever, until some unrelated hello.ack
 		// eventually clears it via the normal success path — a permanently
