@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
 
@@ -88,7 +89,7 @@ class AgentPresenceRead(BaseModel):
     online: bool
     connected_since: datetime | None
     last_seen_at: datetime | None
-    capabilities: dict[str, CapabilityValue] = {}
+    capabilities: Mapping[str, CapabilityValue] = {}
     hardware: HardwareSummary | None = None
 
 

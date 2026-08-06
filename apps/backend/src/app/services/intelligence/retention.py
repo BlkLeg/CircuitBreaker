@@ -146,10 +146,10 @@ def run_retention_executor(
         .all()
     )
     agent_buckets: dict[tuple[int, object], list[AgentHostSample]] = {}
-    for row in agent_rows:
-        bucket = row.collected_at.replace(minute=0, second=0, microsecond=0)
-        agent_buckets.setdefault((row.agent_id, bucket), []).append(row)
-    for (agent_id, bucket), rows in agent_buckets.items():
+    for sample in agent_rows:
+        bucket = sample.collected_at.replace(minute=0, second=0, microsecond=0)
+        agent_buckets.setdefault((sample.agent_id, bucket), []).append(sample)
+    for (agent_id, bucket_ts), rows in agent_buckets.items():
         summary = {
             name: _avg([getattr(row, name) for row in rows])
             for name in (
@@ -162,9 +162,9 @@ def run_retention_executor(
                 "load_1",
             )
         }
-        hourly = db.get(AgentHostSampleHourly, (agent_id, bucket))
+        hourly = db.get(AgentHostSampleHourly, (agent_id, bucket_ts))
         if hourly is None:
-            hourly = AgentHostSampleHourly(agent_id=agent_id, bucket_at=bucket)
+            hourly = AgentHostSampleHourly(agent_id=agent_id, bucket_at=bucket_ts)
             db.add(hourly)
         hourly.sample_count = len(rows)
         hourly.summary = summary
