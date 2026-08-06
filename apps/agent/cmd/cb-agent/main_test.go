@@ -468,20 +468,28 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 	defer func() { rollbackWindow = orig }()
 
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("new binary"), 0o755); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.5.0")
+	newVersionDir := filepath.Join(dir, "versions", "0.6.0")
+	for _, d := range []string{oldVersionDir, newVersionDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(newVersionDir, "cb-agent"), []byte("new binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
+	currentLink := update.CurrentLinkPath(dir)
+	if err := os.Symlink(newVersionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 	// MarkSwapped (not the plain WriteMarker) — this test simulates a
 	// restart *after* update.Swap actually completed, i.e. the marker is in
-	// its phasePendingConfirm phase and .previous is genuinely this update's
-	// backup. See TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
-	// for the phasePendingSwap (Swap never ran) case this must be told apart
+	// its phasePendingConfirm phase and prevVersionDir genuinely names
+	// this update's own backup. See
+	// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup for
+	// the phasePendingSwap (Swap never ran) case this must be told apart
 	// from.
-	if err := update.MarkSwapped(dir, "0.6.0"); err != nil {
+	if err := update.MarkSwapped(dir, "0.6.0", oldVersionDir); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
@@ -491,13 +499,13 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, target, "0.6.0", reExec)
+	watchForRollback(dir, currentLink, "0.6.0", reExec)
 
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "old binary" {
-		t.Errorf("target contents = (%q, %v), want rolled back to %q", got, err, "old binary")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != oldVersionDir {
+		t.Errorf("current symlink = (%q, %v), want rolled back to %q", target, err, oldVersionDir)
 	}
-	if _, _, present, _ := update.ReadMarker(dir); present {
+	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after rollback, want cleared")
 	}
 	version, present, err := update.ReadRollbackReport(dir)
@@ -521,18 +529,21 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	defer func() { rollbackWindow = orig }()
 
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("new binary"), 0o755); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.6.0")
+	newVersionDir := filepath.Join(dir, "versions", "0.7.0")
+	for _, d := range []string{oldVersionDir, newVersionDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(newVersionDir, "cb-agent"), []byte("new binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target+".previous", []byte("old binary"), 0o755); err != nil {
+	currentLink := update.CurrentLinkPath(dir)
+	if err := os.Symlink(newVersionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
-	// MarkSwapped, matching the real onUpdate ordering this simulates
-	// (WriteMarker, Swap, MarkSwapped) — see the sibling
-	// NoConfirmationTriggersRollback test's comment for why plain
-	// WriteMarker would not be equivalent here.
-	if err := update.MarkSwapped(dir, "0.7.0"); err != nil {
+	if err := update.MarkSwapped(dir, "0.7.0", oldVersionDir); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
@@ -553,14 +564,14 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, target, "0.7.0", reExec)
-	<-confirmed // watchForRollback already outlasted this by construction; just for cleanliness.
+	watchForRollback(dir, currentLink, "0.7.0", reExec)
+	<-confirmed
 
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "new binary" {
-		t.Errorf("target contents = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", got, err, "new binary")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != newVersionDir {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", target, err, newVersionDir)
 	}
-	if _, _, present, _ := update.ReadMarker(dir); present {
+	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present, want cleared by the simulated onConnected confirmation")
 	}
 	if _, present, _ := update.ReadRollbackReport(dir); present {
@@ -603,22 +614,26 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 	defer func() { rollbackWindow = orig }()
 
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	// target is the healthy, currently-running v1 binary from an earlier
-	// v0->v1 update that already completed and confirmed.
-	if err := os.WriteFile(target, []byte("v1 binary (healthy, running)"), 0o755); err != nil {
+	// v1Dir is the healthy, currently-running version from an earlier
+	// v0->v1 update that already completed and confirmed (and so, per
+	// PruneVersions, has no stale v0 directory left lying around).
+	v1Dir := filepath.Join(dir, "versions", "1.0.0")
+	if err := os.MkdirAll(v1Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The stale backup that confirmed update left behind — two versions
-	// behind whatever "2.0.0" would have been, and must never be used.
-	if err := os.WriteFile(target+".previous", []byte("v0 binary (stale, two versions back)"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(v1Dir, "cb-agent"), []byte("v1 binary (healthy, running)"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := update.CurrentLinkPath(dir)
+	if err := os.Symlink(v1Dir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 
 	// Reproduces the crash: a v2 update instruction's WriteMarker succeeded,
 	// but the process died before update.Swap ever ran (main.go's onUpdate
 	// calls these in that order). The marker therefore names "2.0.0" but
-	// carries phasePendingSwap, not phasePendingConfirm.
+	// carries phasePendingSwap, not phasePendingConfirm, and no
+	// prevVersionDir.
 	if err := update.WriteMarker(dir, "2.0.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
@@ -629,13 +644,13 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 		return nil
 	}
 
-	watchForRollback(dir, target, "2.0.0", reExec)
+	watchForRollback(dir, currentLink, "2.0.0", reExec)
 
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "v1 binary (healthy, running)" {
-		t.Errorf("target contents = (%q, %v), want unchanged %q — the healthy running v1 binary must never be silently replaced by a stale two-versions-back backup", got, err, "v1 binary (healthy, running)")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != v1Dir {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — the healthy running v1 must never be silently replaced", target, err, v1Dir)
 	}
-	if _, _, present, _ := update.ReadMarker(dir); present {
+	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after an abandoned (pre-swap) update attempt, want cleared")
 	}
 	if _, present, _ := update.ReadRollbackReport(dir); present {
@@ -670,12 +685,19 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 	defer func() { rollbackWindow = orig }()
 
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("current binary"), 0o755); err != nil {
+	currentDir := filepath.Join(dir, "versions", "0.8.0")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Deliberately no target+".previous" — Rollback must fail.
-	if err := update.MarkSwapped(dir, "0.8.0"); err != nil {
+	if err := os.WriteFile(filepath.Join(currentDir, "cb-agent"), []byte("current binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := update.CurrentLinkPath(dir)
+	if err := os.Symlink(currentDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no prevVersionDir recorded — Rollback must fail.
+	if err := update.MarkSwapped(dir, "0.8.0", ""); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 
@@ -685,14 +707,14 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 		return nil
 	}
 
-	watchForRollback(dir, target, "0.8.0", reExec)
+	watchForRollback(dir, currentLink, "0.8.0", reExec)
 
-	if _, _, present, _ := update.ReadMarker(dir); present {
+	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after a failed Rollback, want cleared to avoid a permanently stuck retry loop")
 	}
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "current binary" {
-		t.Errorf("target contents = (%q, %v), want unchanged %q — a failed rollback must not partially mutate the target", got, err, "current binary")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != currentDir {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — a failed rollback must not partially mutate current", target, err, currentDir)
 	}
 	if reExecCalls != 0 {
 		t.Errorf("reExec called %d times, want 0 — a failed rollback must not re-exec into whatever partial state resulted", reExecCalls)
@@ -766,10 +788,6 @@ func seedUninstallFootprint(t *testing.T) uninstallPaths {
 	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
 		t.Fatalf("seed binary: %v", err)
 	}
-	previousBinary := binary + ".previous"
-	if err := os.WriteFile(previousBinary, []byte("old binary"), 0o755); err != nil {
-		t.Fatalf("seed previous binary: %v", err)
-	}
 	configDir := filepath.Join(root, "circuit-breaker")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("seed config dir: %v", err)
@@ -789,12 +807,11 @@ func seedUninstallFootprint(t *testing.T) uninstallPaths {
 	}
 
 	return uninstallPaths{
-		unitFile:       unitFile,
-		binary:         binary,
-		previousBinary: previousBinary,
-		configFile:     configFile,
-		configDir:      configDir,
-		stateDir:       stateDir,
+		unitFile:   unitFile,
+		binary:     binary,
+		configFile: configFile,
+		configDir:  configDir,
+		stateDir:   stateDir,
 	}
 }
 
@@ -823,7 +840,7 @@ func TestPerformUninstall_RemovesExpectedPathsAndReloadsSystemd(t *testing.T) {
 		t.Errorf("RemoveErrs = %v, want none", result.RemoveErrs)
 	}
 
-	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configFile, paths.stateDir, paths.configDir}
 	if !reflect.DeepEqual(result.Removed, wantRemoved) {
 		t.Errorf("Removed = %v, want %v", result.Removed, wantRemoved)
 	}
@@ -895,43 +912,6 @@ func TestPerformUninstall_ConfigDirCoLocatedWithServerFilesLeftIntact(t *testing
 	}
 }
 
-// TestPerformUninstall_RemovesPreviousBinaryBackup is the regression test
-// for this round's ".previous" finding: internal/update.Swap leaves a
-// backup at <binary path>+".previous" (NOT under the state dir), and it
-// must be removed by uninstall when present, without affecting anything
-// else.
-func TestPerformUninstall_RemovesPreviousBinaryBackup(t *testing.T) {
-	root := t.TempDir()
-	binary := filepath.Join(root, "cb-agent")
-	if err := os.WriteFile(binary, []byte("binary"), 0o755); err != nil {
-		t.Fatalf("seed binary: %v", err)
-	}
-	previousBinary := binary + ".previous"
-	if err := os.WriteFile(previousBinary, []byte("old binary"), 0o755); err != nil {
-		t.Fatalf("seed previous binary: %v", err)
-	}
-	paths := uninstallPaths{binary: binary, previousBinary: previousBinary}
-
-	var calls [][]string
-	result := performUninstall(paths, fakeSystemctl(&calls, nil))
-
-	if len(result.RemoveErrs) != 0 {
-		t.Errorf("RemoveErrs = %v, want none", result.RemoveErrs)
-	}
-	if _, err := os.Stat(previousBinary); !os.IsNotExist(err) {
-		t.Errorf("stat .previous backup after performUninstall = %v, want IsNotExist", err)
-	}
-	found := false
-	for _, p := range result.Removed {
-		if p == previousBinary {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("Removed = %v, want it to include the .previous backup %s", result.Removed, previousBinary)
-	}
-}
-
 // TestPerformUninstall_MissingPathsSkippedWithoutError covers a second
 // uninstall attempt (or a partial/manual removal beforehand) where some or
 // all paths are already gone — that must not be reported as an error, and
@@ -939,12 +919,11 @@ func TestPerformUninstall_RemovesPreviousBinaryBackup(t *testing.T) {
 func TestPerformUninstall_MissingPathsSkippedWithoutError(t *testing.T) {
 	root := t.TempDir()
 	paths := uninstallPaths{
-		unitFile:       filepath.Join(root, "does-not-exist", "cb-agent.service"),
-		binary:         filepath.Join(root, "does-not-exist", "cb-agent"),
-		previousBinary: filepath.Join(root, "does-not-exist", "cb-agent.previous"),
-		configFile:     filepath.Join(root, "does-not-exist", "circuit-breaker", "agent.toml"),
-		configDir:      filepath.Join(root, "does-not-exist", "circuit-breaker"),
-		stateDir:       filepath.Join(root, "does-not-exist", "state"),
+		unitFile:   filepath.Join(root, "does-not-exist", "cb-agent.service"),
+		binary:     filepath.Join(root, "does-not-exist", "cb-agent"),
+		configFile: filepath.Join(root, "does-not-exist", "circuit-breaker", "agent.toml"),
+		configDir:  filepath.Join(root, "does-not-exist", "circuit-breaker"),
+		stateDir:   filepath.Join(root, "does-not-exist", "state"),
 	}
 
 	var calls [][]string
@@ -981,7 +960,7 @@ func TestPerformUninstall_SystemctlDisableFailureDoesNotBlockFileRemoval(t *test
 	if !result.ReloadedDaemon {
 		t.Errorf("ReloadedDaemon = false (err=%v), want true — a failed disable must not block daemon-reload", result.ReloadErr)
 	}
-	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configFile, paths.stateDir, paths.configDir}
 	if !reflect.DeepEqual(result.Removed, wantRemoved) {
 		t.Errorf("Removed = %v, want %v — a failed disable must not block file removal", result.Removed, wantRemoved)
 	}
@@ -1006,39 +985,27 @@ func TestPerformUninstall_SystemctlReloadFailureStillReportsRemoval(t *testing.T
 	if result.ReloadErr == nil {
 		t.Error("ReloadErr = nil, want the fake failure recorded")
 	}
-	wantRemoved := []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir, paths.configDir}
+	wantRemoved := []string{paths.unitFile, paths.binary, paths.configFile, paths.stateDir, paths.configDir}
 	if !reflect.DeepEqual(result.Removed, wantRemoved) {
 		t.Errorf("Removed = %v, want %v — a failed daemon-reload must not hide successful file removal", result.Removed, wantRemoved)
 	}
 }
 
-// TestResolveUninstallPaths_UsesRunningBinaryPathNotHardcodedLiteral is the
-// regression test for this round's "hardcoded literal instead of
-// os.Executable()" finding: resolveUninstallPaths must resolve the actual
-// running binary's path (here, the go test binary) rather than trusting
-// defaultUninstallPaths.binary's "/usr/local/bin/cb-agent" literal, and
-// previousBinary must be derived from that resolved path.
-func TestResolveUninstallPaths_UsesRunningBinaryPathNotHardcodedLiteral(t *testing.T) {
-	wantExe, err := os.Executable()
-	if err != nil {
-		t.Skipf("os.Executable() unavailable in this test environment: %v", err)
-	}
-
+// TestResolveUninstallPaths_PinsToInstalledBinaryPath is the regression
+// test for the self-update-fix design gap: resolveUninstallPaths must
+// always target the fixed /usr/local/bin/cb-agent entry point, not
+// os.Executable()'s resolved (symlink-followed) result. Under the
+// versioned-symlink layout (specs/2026-08-05-cb-agent-self-update-fix-
+// design.md), os.Executable() resolves straight through to whatever
+// {stateDir}/versions/<v>/cb-agent happens to be running, which would
+// leave the actual root-owned /usr/local/bin/cb-agent symlink behind after
+// an otherwise-complete uninstall.
+func TestResolveUninstallPaths_PinsToInstalledBinaryPath(t *testing.T) {
 	paths := resolveUninstallPaths()
 
-	if paths.binary != wantExe {
-		t.Errorf("resolveUninstallPaths().binary = %q, want os.Executable() result %q", paths.binary, wantExe)
+	if paths.binary != installedBinaryPath {
+		t.Errorf("resolveUninstallPaths().binary = %q, want the fixed %q", paths.binary, installedBinaryPath)
 	}
-	if paths.binary == defaultUninstallPaths.binary {
-		t.Errorf("resolveUninstallPaths().binary = %q, want it to differ from the hardcoded literal %q in this test environment", paths.binary, defaultUninstallPaths.binary)
-	}
-	wantPrevious := wantExe + ".previous"
-	if paths.previousBinary != wantPrevious {
-		t.Errorf("resolveUninstallPaths().previousBinary = %q, want %q (derived from the resolved binary path)", paths.previousBinary, wantPrevious)
-	}
-
-	// Every other field must still come through from defaultUninstallPaths
-	// untouched.
 	if paths.unitFile != defaultUninstallPaths.unitFile {
 		t.Errorf("resolveUninstallPaths().unitFile = %q, want %q", paths.unitFile, defaultUninstallPaths.unitFile)
 	}
