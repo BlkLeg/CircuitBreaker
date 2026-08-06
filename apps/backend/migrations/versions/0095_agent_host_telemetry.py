@@ -17,8 +17,28 @@ branch_labels = None
 depends_on = None
 
 
+def _has_timescaledb(bind) -> bool:
+    """Check if the timescaledb extension is available (not necessarily created)."""
+    result = bind.execute(
+        sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb' LIMIT 1")
+    )
+    return result.scalar() is not None
+
+
+def _is_hypertable(bind, table: str) -> bool:
+    """Check if a table is already a TimescaleDB hypertable."""
+    result = bind.execute(
+        sa.text(
+            "SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = :tbl LIMIT 1"
+        ),
+        {"tbl": table},
+    )
+    return result.scalar() is not None
+
+
 def upgrade() -> None:
     conn = op.get_bind()
+    is_postgres = conn.dialect.name == "postgresql"
     inspector = sa_inspect(conn)
     tables = set(inspector.get_table_names())
     hardware_columns = {column["name"] for column in inspector.get_columns("hardware_live_metrics")}
@@ -30,7 +50,7 @@ def upgrade() -> None:
         "agent_host_sample_hourly",
         "agent_capability_readiness",
     }.issubset(tables) and {"agent_id", "agent_sample_id"}.issubset(hardware_columns):
-        if conn.dialect.name == "postgresql":
+        if is_postgres and _has_timescaledb(conn):
             op.execute(
                 "SELECT create_hypertable('agent_host_samples', 'collected_at', "
                 "if_not_exists => TRUE, migrate_data => TRUE)"
@@ -55,7 +75,6 @@ def upgrade() -> None:
         sa.Column("uptime_s", sa.BigInteger()),
         sa.Column("raw", json_type, nullable=False),
         sa.Column("projected_at", sa.DateTime(timezone=True)),
-        sa.Column("projection_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.ForeignKeyConstraint(["agent_id"], ["agents.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["hardware_id"], ["hardware.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id", "collected_at"),
@@ -63,9 +82,6 @@ def upgrade() -> None:
     )
     op.create_index(
         "ix_agent_host_samples_agent_time", "agent_host_samples", ["agent_id", "collected_at"]
-    )
-    op.create_index(
-        "ix_agent_host_samples_projection", "agent_host_samples", ["projected_at", "collected_at"]
     )
     op.create_table(
         "agent_host_sample_hourly",
@@ -91,8 +107,13 @@ def upgrade() -> None:
     op.create_index(
         "ix_agent_readiness_agent_time", "agent_capability_readiness", ["agent_id", "updated_at"]
     )
-    is_postgres = conn.dialect.name == "postgresql"
-    if is_postgres:
+    # `SET (timescaledb.*)` is rejected outright on a server without the
+    # extension ("unrecognized parameter namespace") and on a plain table
+    # even when the extension is installed, so both checks are required.
+    compression_managed = (
+        is_postgres and _has_timescaledb(conn) and _is_hypertable(conn, "hardware_live_metrics")
+    )
+    if compression_managed:
         # Timescale rejects ALTER TABLE/constraint operations while native
         # compression is enabled. Preserve the existing policy around this
         # short schema change and restore it immediately afterwards.
@@ -109,12 +130,13 @@ def upgrade() -> None:
             ["agent_id", "agent_sample_id", "collected_at"],
             unique=True,
         )
-    if is_postgres:
+    if compression_managed:
         op.execute(
             "ALTER TABLE hardware_live_metrics SET (timescaledb.compress, "
             "timescaledb.compress_segmentby = 'hardware_id,agent_id', "
             "timescaledb.compress_orderby = 'collected_at DESC')"
         )
+    if is_postgres and _has_timescaledb(conn):
         op.execute(
             "SELECT create_hypertable('agent_host_samples', 'collected_at', "
             "if_not_exists => TRUE, migrate_data => TRUE)"
@@ -133,7 +155,10 @@ def downgrade() -> None:
         ),
         None,
     )
-    if is_postgres:
+    compression_managed = (
+        is_postgres and _has_timescaledb(conn) and _is_hypertable(conn, "hardware_live_metrics")
+    )
+    if compression_managed:
         op.execute("ALTER TABLE hardware_live_metrics SET (timescaledb.compress = false)")
     with op.batch_alter_table("hardware_live_metrics") as batch:
         batch.drop_index("uq_hardware_live_metrics_agent_sample")
@@ -142,7 +167,7 @@ def downgrade() -> None:
             batch.drop_constraint(agent_fk, type_="foreignkey")
         batch.drop_column("agent_sample_id")
         batch.drop_column("agent_id")
-    if is_postgres:
+    if compression_managed:
         op.execute(
             "ALTER TABLE hardware_live_metrics SET (timescaledb.compress, "
             "timescaledb.compress_segmentby = 'hardware_id', "
@@ -151,6 +176,5 @@ def downgrade() -> None:
     op.drop_index("ix_agent_readiness_agent_time", table_name="agent_capability_readiness")
     op.drop_table("agent_capability_readiness")
     op.drop_table("agent_host_sample_hourly")
-    op.drop_index("ix_agent_host_samples_projection", table_name="agent_host_samples")
     op.drop_index("ix_agent_host_samples_agent_time", table_name="agent_host_samples")
     op.drop_table("agent_host_samples")

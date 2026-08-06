@@ -438,12 +438,10 @@ class AgentHostSample(Base):
     uptime_s: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    projection_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     __table_args__ = (
         PrimaryKeyConstraint("id", "collected_at"),
         UniqueConstraint("agent_id", "sample_id", "collected_at", name="uq_agent_host_sample"),
         Index("ix_agent_host_samples_agent_time", "agent_id", "collected_at"),
-        Index("ix_agent_host_samples_projection", "projected_at", "collected_at"),
     )
 
 
