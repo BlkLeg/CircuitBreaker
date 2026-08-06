@@ -58,6 +58,13 @@ type Collector struct {
 	previous counters
 }
 
+// CollectorNames is every collector this package reports readiness for, in the
+// order Collect emits them. It is exported so the capability-disable path can
+// publish a "disabled" row for each one without re-deriving the list: a probe
+// added to Collect but not to CollectorNames would leave a row that is never
+// flipped, which is the stale-"Live" defect in a different coat.
+var CollectorNames = []string{"host.core", "host.filesystems", "host.disks", "host.network", "host.thermal", "host.docker"}
+
 func New(config capability.HostConfig) *Collector {
 	return &Collector{Root: "/", Config: config, Now: time.Now, Usage: statfsUsage}
 }
@@ -78,34 +85,80 @@ func (c *Collector) usage(path string) (FSUsage, error) {
 }
 func ptr[T any](v T) *T { return &v }
 
+// Collect gathers one host telemetry sample. Per the collect.Collector
+// contract it populates Result.Readiness for every name in CollectorNames even
+// when it returns an error, so an outage in one probe — or in core telemetry
+// itself — reaches the backend instead of leaving stale rows behind. The one
+// exception is a canceled context: an empty Readiness alongside an error means
+// "no information", and a shutdown must not be reported as an outage.
 func (c *Collector) Collect(ctx context.Context) (collect.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return collect.Result{}, err
 	}
+	// States are keyed by collector name and emitted in CollectorNames order.
+	// Nothing recorded is ever dropped: a name the exported list does not know
+	// about is appended after them, so drift is visible rather than silent.
+	states := make(map[string]frame.Readiness, len(CollectorNames))
+	record := func(r frame.Readiness) { states[r.Collector] = r }
+	readiness := func() []frame.Readiness {
+		out := make([]frame.Readiness, 0, len(states))
+		listed := make(map[string]struct{}, len(CollectorNames))
+		for _, name := range CollectorNames {
+			listed[name] = struct{}{}
+			if r, ok := states[name]; ok {
+				out = append(out, r)
+			}
+		}
+		// A collector recorded under a name absent from CollectorNames is
+		// drift: Task 11's disable path iterates CollectorNames, so that row
+		// would never be flipped to "disabled". Dropping it here would be
+		// worse — its readiness would never reach the backend at all, which is
+		// the stale-"Live" defect one layer down — so emit it, out of the
+		// declared order, where the coverage tests fail loudly on it.
+		if len(out) != len(states) {
+			extra := make([]string, 0, len(states)-len(out))
+			for name := range states {
+				if _, ok := listed[name]; !ok {
+					extra = append(extra, name)
+				}
+			}
+			sort.Strings(extra)
+			for _, name := range extra {
+				out = append(out, states[name])
+			}
+		}
+		return out
+	}
 	id, err := collect.SampleID()
 	if err != nil {
-		return collect.Result{}, err
+		record(frame.Readiness{Collector: "host.core", State: "unavailable", Reason: "could not generate sample id"})
+		return collect.Result{Readiness: readiness()}, err
 	}
 	now := c.now()
 	p := frame.HostTelemetryPayload{Schema: 1, SampleID: id, Status: "healthy", Filesystems: []map[string]any{}, Disks: []map[string]any{}, Interfaces: []map[string]any{}, Temperatures: []map[string]any{}}
-	readiness := []frame.Readiness{}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	next := counters{at: now, disk: map[string][2]uint64{}, net: map[string][2]uint64{}}
-	if err := c.core(&p, &next); err != nil {
-		return collect.Result{}, fmt.Errorf("host core: %w", err)
+	coreErr := c.core(&p, &next)
+	if coreErr != nil {
+		record(frame.Readiness{Collector: "host.core", State: "unavailable", Reason: coreErr.Error(), Remediation: "verify /proc is mounted and readable by the cb-agent user"})
+		p.Status = "unavailable"
+	} else {
+		record(frame.Readiness{Collector: "host.core", State: "ready"})
 	}
-	readiness = append(readiness, frame.Readiness{Collector: "host.core", State: "ready"})
+	// The optional probes read files independent of core telemetry, so they are
+	// evaluated even after a core failure: a few extra reads on a broken host
+	// buys honest per-probe rows instead of six frozen ones.
 	optional := func(name string, enabled bool, fn func(*frame.HostTelemetryPayload, *counters) error) {
 		if !enabled {
-			readiness = append(readiness, frame.Readiness{Collector: name, State: "disabled"})
+			record(frame.Readiness{Collector: name, State: "disabled"})
 			return
 		}
 		if err := fn(&p, &next); err != nil {
 			p.Status = "degraded"
-			readiness = append(readiness, frame.Readiness{Collector: name, State: "unavailable", Reason: err.Error()})
+			record(frame.Readiness{Collector: name, State: "unavailable", Reason: err.Error()})
 		} else {
-			readiness = append(readiness, frame.Readiness{Collector: name, State: "ready"})
+			record(frame.Readiness{Collector: name, State: "ready"})
 		}
 	}
 	optional("host.filesystems", c.Config.IncludeFilesystems, c.filesystems)
@@ -113,25 +166,31 @@ func (c *Collector) Collect(ctx context.Context) (collect.Result, error) {
 	optional("host.network", c.Config.IncludeNetwork, c.network)
 	if c.Config.IncludeTemperatures {
 		if err := c.thermal(&p, &next); err != nil {
-			readiness = append(readiness, frame.Readiness{Collector: "host.thermal", State: "unavailable", Reason: err.Error()})
+			record(frame.Readiness{Collector: "host.thermal", State: "unavailable", Reason: err.Error()})
 		} else {
-			readiness = append(readiness, frame.Readiness{Collector: "host.thermal", State: "ready"})
+			record(frame.Readiness{Collector: "host.thermal", State: "ready"})
 		}
 	} else {
-		readiness = append(readiness, frame.Readiness{Collector: "host.thermal", State: "disabled"})
+		record(frame.Readiness{Collector: "host.thermal", State: "disabled"})
 	}
 	if c.Config.IncludeDocker {
 		if err := c.docker(ctx, &p); err != nil {
-			readiness = append(readiness, frame.Readiness{Collector: "host.docker", State: "unavailable", Reason: err.Error(), Remediation: "rerun the installer and verify membership in the docker group"})
+			record(frame.Readiness{Collector: "host.docker", State: "unavailable", Reason: err.Error(), Remediation: "rerun the installer and verify membership in the docker group"})
 			p.Status = "degraded"
 		} else {
-			readiness = append(readiness, frame.Readiness{Collector: "host.docker", State: "ready"})
+			record(frame.Readiness{Collector: "host.docker", State: "ready"})
 		}
 	} else {
-		readiness = append(readiness, frame.Readiness{Collector: "host.docker", State: "disabled"})
+		record(frame.Readiness{Collector: "host.docker", State: "disabled"})
+	}
+	if coreErr != nil {
+		// The counter snapshot is partial, so it must not become the baseline
+		// the next run computes rates against; and there is no payload worth
+		// sending without core telemetry.
+		return collect.Result{Readiness: readiness()}, fmt.Errorf("host core: %w", coreErr)
 	}
 	c.previous = next
-	return collect.Result{Payload: p, Readiness: readiness}, nil
+	return collect.Result{Payload: p, Readiness: readiness()}, nil
 }
 
 func fields(path string) ([]string, error) {

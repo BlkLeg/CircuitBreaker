@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -13,6 +14,16 @@ type Result struct {
 	Readiness []frame.Readiness
 }
 
+// Collector produces one telemetry sample per call.
+//
+// Collect must populate Result.Readiness for every collector it owns **even
+// when it returns a non-nil error** — readiness is the only channel by which a
+// broken probe stops showing as healthy, and a caller that only reports on
+// success leaves the backend's rows frozen at their last good state. The one
+// exception is context cancellation: an empty Readiness alongside an error
+// means "no information" and is not reported, so a shutdown is never recorded
+// as an outage. Readiness states are exactly ready | degraded | unavailable |
+// disabled (apps/backend/src/app/services/agent_telemetry.py is authoritative).
 type Collector interface {
 	Collect(context.Context) (Result, error)
 }
@@ -59,21 +70,34 @@ func (r *Runner) run(ctx context.Context, interval time.Duration) {
 		case <-timer.C:
 			collectedAt := time.Now().UTC()
 			result, err := r.collector.Collect(ctx)
+			if ctx.Err() != nil {
+				// A stop is not an outage: nothing this collection produced
+				// may be reported.
+				return
+			}
+			var (
+				payload json.RawMessage
+				encErr  error
+			)
 			if err == nil {
 				originalStatus := result.Payload.Status
-				payload, marshalErr := EncodeBounded(&result.Payload)
-				if marshalErr == nil {
-					if originalStatus != "degraded" && result.Payload.Status == "degraded" {
-						result.Readiness = append(result.Readiness, frame.Readiness{Collector: "host.payload", State: "degraded", Reason: "telemetry exceeded the payload limit and optional detail was truncated"})
-					}
-					if r.OnReadiness != nil {
-						r.OnReadiness(result.Readiness)
-					}
-					select {
-					case r.out <- frame.Frame{Type: frame.TypeTelemetryHost, TS: collectedAt, Payload: payload}:
-					case <-ctx.Done():
-						return
-					}
+				payload, encErr = EncodeBounded(&result.Payload)
+				switch {
+				case encErr != nil:
+					result.Readiness = append(result.Readiness, frame.Readiness{Collector: "host.payload", State: "unavailable", Reason: encErr.Error()})
+				case originalStatus != "degraded" && result.Payload.Status == "degraded":
+					result.Readiness = append(result.Readiness, frame.Readiness{Collector: "host.payload", State: "degraded", Reason: "telemetry exceeded the payload limit and optional detail was truncated"})
+				}
+			}
+			// Readiness survives both failure paths; only the frame does not.
+			if len(result.Readiness) > 0 && r.OnReadiness != nil {
+				r.OnReadiness(result.Readiness)
+			}
+			if err == nil && encErr == nil {
+				select {
+				case r.out <- frame.Frame{Type: frame.TypeTelemetryHost, TS: collectedAt, Payload: payload}:
+				case <-ctx.Done():
+					return
 				}
 			}
 			timer.Reset(interval)

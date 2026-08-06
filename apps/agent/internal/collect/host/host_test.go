@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1098,5 +1099,170 @@ func TestCollector_NilNowAndUsageFallBackToRealImplementations(t *testing.T) {
 	}
 	if _, err := bare.usage(bare.Root); err != nil {
 		t.Errorf("usage() on a struct-literal Collector error = %v, want the statfs fallback to succeed", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CollectorNames: the collector and Task 11's disable path agree by
+// construction, so every readiness slice this package produces is exactly one
+// entry per name, in CollectorNames order, on every path that reports at all.
+// ---------------------------------------------------------------------------
+
+// readinessNames returns the collectors named in a result, in order.
+func readinessNames(res collect.Result) []string {
+	out := make([]string, 0, len(res.Readiness))
+	for _, r := range res.Readiness {
+		out = append(out, r.Collector)
+	}
+	return out
+}
+
+func wantCoversCollectorNames(t *testing.T, res collect.Result) {
+	t.Helper()
+	if got := readinessNames(res); strings.Join(got, ",") != strings.Join(CollectorNames, ",") {
+		t.Errorf("readiness collectors = %v, want exactly %v in order", got, CollectorNames)
+	}
+}
+
+func TestCollectorNames_MatchesTheSixCollectors(t *testing.T) {
+	want := []string{"host.core", "host.filesystems", "host.disks", "host.network", "host.thermal", "host.docker"}
+	if strings.Join(CollectorNames, ",") != strings.Join(want, ",") {
+		t.Errorf("CollectorNames = %v, want %v", CollectorNames, want)
+	}
+}
+
+func TestCollector_ReadinessCoversAllSixCollectorsOnASuccessfulRun(t *testing.T) {
+	cfg := fullConfig()
+	cfg.IncludeVirtual = true
+	cfg.IncludeDocker = true
+	tc := newTestCollector(t, cfg, baselineFiles())
+
+	res := tc.collect(t)
+
+	wantCoversCollectorNames(t, res)
+	for _, name := range []string{"host.core", "host.filesystems", "host.disks", "host.network", "host.thermal"} {
+		wantState(t, res, name, "ready")
+	}
+	// The fixture root has no docker socket, so the dial fails fast.
+	wantState(t, res, "host.docker", "unavailable")
+}
+
+func TestCollector_DisabledProbesReportDisabledNotMissing(t *testing.T) {
+	tc := newTestCollector(t, capability.HostConfig{IntervalS: 30}, baselineFiles())
+
+	res := tc.collect(t)
+
+	wantCoversCollectorNames(t, res)
+	wantState(t, res, "host.core", "ready")
+	for _, name := range CollectorNames[1:] {
+		wantState(t, res, name, "disabled")
+		if got := readinessFor(t, res, name); got.Reason != "" {
+			t.Errorf("readiness[%s].Reason = %q, want empty for a disabled collector", name, got.Reason)
+		}
+	}
+}
+
+// TestCollector_CoreFailureReportsUnavailableAndStillCoversEveryProbe is the
+// collector half of the stale-"Live" defect: /proc/stat going unreadable used
+// to discard the whole readiness slice, so the backend kept every row at its
+// last good state forever.
+func TestCollector_CoreFailureReportsUnavailableAndStillCoversEveryProbe(t *testing.T) {
+	files := baselineFiles()
+	delete(files, "/proc/stat")
+	cfg := fullConfig()
+	cfg.IncludeDocker = true
+	tc := newTestCollector(t, cfg, files)
+
+	res, err := tc.Collect(context.Background())
+
+	if err == nil {
+		t.Fatal("Collect() error = nil with /proc/stat absent, want a host core error")
+	}
+	if !strings.Contains(err.Error(), "host core") {
+		t.Errorf("Collect() error = %q, want it to wrap \"host core\"", err)
+	}
+	// The payload is deliberately zero: a run without core telemetry has
+	// nothing worth sending.
+	if !reflect.DeepEqual(res.Payload, frame.HostTelemetryPayload{}) {
+		t.Errorf("Payload = %+v, want the zero value on a core failure", res.Payload)
+	}
+	wantCoversCollectorNames(t, res)
+	core := readinessFor(t, res, "host.core")
+	if core.State != "unavailable" {
+		t.Errorf("readiness[host.core].State = %q, want %q", core.State, "unavailable")
+	}
+	if core.Reason == "" {
+		t.Error("readiness[host.core].Reason is empty, want the underlying file error")
+	}
+	if want := "verify /proc is mounted and readable by the cb-agent user"; core.Remediation != want {
+		t.Errorf("readiness[host.core].Remediation = %q, want %q", core.Remediation, want)
+	}
+	// The optional probes read independent files and are still evaluated, so
+	// the operator sees honest per-probe rows rather than six frozen ones.
+	for _, name := range []string{"host.filesystems", "host.disks", "host.network", "host.thermal"} {
+		wantState(t, res, name, "ready")
+	}
+	wantState(t, res, "host.docker", "unavailable")
+}
+
+// TestCollector_CoreFailureDoesNotPoisonTheNextRunsRateMath pins the skipped
+// c.previous assignment: a run that never produced core telemetry must not
+// become the baseline the following run computes rates against.
+func TestCollector_CoreFailureDoesNotPoisonTheNextRunsRateMath(t *testing.T) {
+	tc := newTestCollector(t, onlyConfig("disks"), baselineFiles())
+	tc.collect(t)
+
+	// A run with core broken, ten seconds in. Its counters must be discarded.
+	tc.remove(t, "/proc/stat")
+	tc.advance(10 * time.Second)
+	if _, err := tc.Collect(context.Background()); err == nil {
+		t.Fatal("Collect() error = nil with /proc/stat absent, want a host core error")
+	}
+
+	tc.write(t, map[string]string{"/proc/stat": baselineProcStat, "/proc/diskstats": busyDiskstats})
+	tc.advance(10 * time.Second)
+	res := tc.collect(t)
+
+	// +102400 bytes read over the *twenty* seconds since the last good sample.
+	sda := mustItem(t, res.Payload.Disks, "device", "sda")
+	if got := itemFloat(t, sda, "read_bps"); got != 5120 {
+		t.Errorf("sda read_bps = %v, want 5120 (102400 bytes over 20s); 10240 means the failed run became the baseline", got)
+	}
+}
+
+// TestCollector_ReadinessSurfacesCollectorsMissingFromCollectorNames pins the
+// other drift direction: a probe that exists in Collect but was never added to
+// CollectorNames. Filtering the readiness slice through CollectorNames would
+// discard that probe's row silently — the same stale-"Live" defect this file
+// exists to prevent, moved one layer down — so the row must still reach the
+// caller, and it must land out of the declared order so
+// wantCoversCollectorNames fails loudly instead of passing green.
+func TestCollector_ReadinessSurfacesCollectorsMissingFromCollectorNames(t *testing.T) {
+	original := CollectorNames
+	shortened := append([]string(nil), original[:len(original)-1]...) // drop host.docker
+	CollectorNames = shortened
+	t.Cleanup(func() { CollectorNames = original })
+
+	cfg := fullConfig()
+	cfg.IncludeDocker = true
+	tc := newTestCollector(t, cfg, baselineFiles())
+
+	res := tc.collect(t)
+
+	got := readinessNames(res)
+	if len(got) != len(original) {
+		t.Fatalf("readiness collectors = %v, want %d entries including the unlisted collector", got, len(original))
+	}
+	if last := got[len(got)-1]; last != "host.docker" {
+		t.Errorf("readiness collectors = %v, want the unlisted collector %q appended last", got, "host.docker")
+	}
+	// The fixture root has no docker socket, so the dial fails fast.
+	wantState(t, res, "host.docker", "unavailable")
+
+	// And the coverage guard must reject that slice rather than accept it.
+	fake := new(testing.T)
+	wantCoversCollectorNames(fake, res)
+	if !fake.Failed() {
+		t.Error("wantCoversCollectorNames accepted a readiness slice containing a collector absent from CollectorNames; the drift guard is inert")
 	}
 }

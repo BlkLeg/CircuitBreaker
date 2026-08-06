@@ -3,6 +3,8 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +109,39 @@ func startRunner(t *testing.T, collector Collector, interval time.Duration) (*Ru
 	t.Cleanup(runner.Stop)
 	runner.Reset(context.Background(), interval)
 	return runner, out
+}
+
+// startRunnerWithReadiness is startRunner plus a buffered OnReadiness sink, for
+// the tests that assert what the runner reports rather than what it sends.
+func startRunnerWithReadiness(t *testing.T, collector Collector, interval time.Duration) (*Runner, chan frame.Frame, chan []frame.Readiness) {
+	t.Helper()
+	out := make(chan frame.Frame, 64)
+	reported := make(chan []frame.Readiness, 64)
+	runner := NewRunner(collector, out)
+	runner.OnReadiness = func(r []frame.Readiness) { reported <- r }
+	t.Cleanup(runner.Stop)
+	runner.Reset(context.Background(), interval)
+	return runner, out, reported
+}
+
+func recvReadiness(t *testing.T, reported <-chan []frame.Readiness, within time.Duration) []frame.Readiness {
+	t.Helper()
+	select {
+	case r := <-reported:
+		return r
+	case <-time.After(within):
+		t.Fatalf("OnReadiness was not called within %s", within)
+		return nil
+	}
+}
+
+func wantNoReadiness(t *testing.T, reported <-chan []frame.Readiness, quiet time.Duration) {
+	t.Helper()
+	select {
+	case r := <-reported:
+		t.Fatalf("OnReadiness called with %+v, want no report at all", r)
+	case <-time.After(quiet):
+	}
 }
 
 func recvFrame(t *testing.T, out <-chan frame.Frame, within time.Duration) frame.Frame {
@@ -354,14 +389,13 @@ func TestRunner_HealthyPayloadReportsReadinessUnchanged(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Failure paths.
 //
-// Task 2 scope on both paths below is the frame channel only. The OnReadiness
-// behaviour on a Collect error and on an EncodeBounded failure is owned by
-// Task 9, which changes both to emit an "unavailable" readiness entry; do not
-// add OnReadiness assertions here.
+// A failed Collect or a failed EncodeBounded still has to report readiness:
+// that is the only channel by which a host whose /proc went unreadable stops
+// showing "Live" in the UI. The frame channel stays silent on both paths.
 // ---------------------------------------------------------------------------
 
 // TestRunner_SchemaZeroEncodeFailureEmitsNoFrame covers payload.go's schema
-// guard. Readiness on this path belongs to Task 9 and is deliberately unasserted.
+// guard on the frame channel; the readiness half is asserted below.
 func TestRunner_SchemaZeroEncodeFailureEmitsNoFrame(t *testing.T) {
 	result := okResult()
 	result.Payload.Schema = 0
@@ -374,4 +408,90 @@ func TestRunner_SchemaZeroEncodeFailureEmitsNoFrame(t *testing.T) {
 	if collector.calls.Load() < 2 {
 		t.Errorf("Collect calls = %d, want the runner to keep ticking after an encode failure", collector.calls.Load())
 	}
+}
+
+// TestRunner_EmitsReadinessWhenCollectFails is the collector half of the
+// stale-"Live" defect: a collector that fails still knows which of its probes
+// broke, and the runner must forward that even though there is no payload to
+// send.
+func TestRunner_EmitsReadinessWhenCollectFails(t *testing.T) {
+	collector := newFakeCollector()
+	collector.result = Result{Readiness: []frame.Readiness{{Collector: "host.core", State: "unavailable", Reason: "open /proc/stat: no such file or directory"}}}
+	collector.err = errors.New("boom")
+
+	_, out, reported := startRunnerWithReadiness(t, collector, 50*time.Millisecond)
+
+	got := recvReadiness(t, reported, 2*time.Second)
+	if len(got) != 1 || got[0].Collector != "host.core" || got[0].State != "unavailable" {
+		t.Errorf("readiness = %+v, want the collector's own host.core/unavailable entry", got)
+	}
+	if got[0].Reason == "" {
+		t.Error("readiness[host.core].Reason is empty, want the collector's reason preserved")
+	}
+	wantNoFrame(t, out, 300*time.Millisecond)
+}
+
+// TestRunner_EmptyReadinessOnAFailedCollectIsNotReported pins the other half of
+// the Collector contract: an empty Readiness alongside an error means "no
+// information" and must not overwrite server-side rows.
+func TestRunner_EmptyReadinessOnAFailedCollectIsNotReported(t *testing.T) {
+	collector := newFakeCollector()
+	collector.result = Result{}
+	collector.err = errors.New("boom")
+
+	_, out, reported := startRunnerWithReadiness(t, collector, 50*time.Millisecond)
+
+	wantNoReadiness(t, reported, 500*time.Millisecond)
+	wantNoFrame(t, out, 100*time.Millisecond)
+	if collector.calls.Load() < 2 {
+		t.Errorf("Collect calls = %d, want the runner to keep ticking after a failed collection", collector.calls.Load())
+	}
+}
+
+// TestRunner_EmitsReadinessWhenEncodeFails covers the second broken guard: a
+// payload that cannot be encoded (schema mismatch here, core telemetry over the
+// 256 KiB limit in production) is a host.payload outage, not silence.
+func TestRunner_EmitsReadinessWhenEncodeFails(t *testing.T) {
+	result := okResult()
+	result.Payload.Schema = 0
+	collector := newFakeCollector()
+	collector.result = result
+
+	_, out, reported := startRunnerWithReadiness(t, collector, 50*time.Millisecond)
+
+	got := recvReadiness(t, reported, 2*time.Second)
+	if len(got) != 2 || got[0].Collector != "host.core" {
+		t.Fatalf("readiness = %+v, want the collector's entries followed by a host.payload entry", got)
+	}
+	payloadEntry := got[1]
+	if payloadEntry.Collector != "host.payload" || payloadEntry.State != "unavailable" {
+		t.Errorf("readiness[1] = %+v, want host.payload/unavailable", payloadEntry)
+	}
+	if !strings.Contains(payloadEntry.Reason, "unsupported host telemetry schema") {
+		t.Errorf("readiness[host.payload].Reason = %q, want the encoder's error", payloadEntry.Reason)
+	}
+	wantNoFrame(t, out, 300*time.Millisecond)
+}
+
+// TestRunner_ContextCancellationEmitsNoReadiness guards the fix against the
+// opposite failure: a shutdown is not an outage. Even a collector that hands
+// back readiness on cancellation must not have it reported.
+func TestRunner_ContextCancellationEmitsNoReadiness(t *testing.T) {
+	collector := newFakeCollector()
+	collector.fn = func(ctx context.Context, _ int) (Result, error) {
+		<-ctx.Done()
+		return Result{Readiness: []frame.Readiness{{Collector: "host.core", State: "unavailable", Reason: "should never be reported"}}}, ctx.Err()
+	}
+
+	runner, out, reported := startRunnerWithReadiness(t, collector, time.Hour)
+
+	select {
+	case <-collector.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Collect was never entered")
+	}
+	runner.Stop()
+
+	wantNoReadiness(t, reported, 500*time.Millisecond)
+	wantNoFrame(t, out, 100*time.Millisecond)
 }

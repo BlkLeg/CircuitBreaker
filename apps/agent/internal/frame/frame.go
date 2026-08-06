@@ -145,11 +145,15 @@ func IsDataFrame(typ string) bool {
 // the typed form decode Frame.Payload into these structs themselves; the conformance corpus in
 // conformance_test.go pins their wire shape against apps/backend/src/app/schemas/agent_frame.py.
 
-// Readiness reports one collector's ability to run, carried in HelloPayload.Readiness — see
-// specs/2026-07-26-cb-agent-design.md §4.3.
+// Readiness reports one collector's ability to run, carried in HelloPayload.Readiness and in
+// CapabilityReadinessPayload.Readiness — see specs/2026-07-26-cb-agent-design.md §4.3.
+//
+// State is exactly one of ready | degraded | unavailable | disabled. That set is closed:
+// apps/backend/src/app/services/agent_telemetry.py's ingest_readiness is authoritative and rejects
+// anything else as a protocol violation.
 type Readiness struct {
 	Collector   string   `json:"collector"`
-	State       string   `json:"state"` // ready | degraded | unavailable
+	State       string   `json:"state"` // ready | degraded | unavailable | disabled
 	Reason      string   `json:"reason,omitempty"`
 	Remediation string   `json:"remediation,omitempty"`
 	Missing     []string `json:"missing,omitempty"`
