@@ -30,6 +30,9 @@ _logger = logging.getLogger(__name__)
 _MAX_PAYLOAD = 256 << 10
 _LIST_LIMITS = {"filesystems": 128, "disks": 128, "interfaces": 128, "temperatures": 256}
 _PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
+# The complete readiness vocabulary; anything else is a protocol violation.
+# Slice 3 probe collectors and slice 4 discovery collectors reuse these four.
+_READINESS_STATES = frozenset({"ready", "degraded", "unavailable", "disabled"})
 _violation_lock = threading.Lock()
 _violations: dict[int, tuple[float, int]] = {}
 
@@ -66,6 +69,12 @@ def validate_host_payload(payload: dict[str, Any], collected_at: datetime) -> Ho
         if len(getattr(sample, field)) > limit:
             raise InvalidHostTelemetry(f"{field} exceeds {limit} entries")
     for name, value in sample.summary.items():
+        # The `isinstance(value, bool)` half of this guard cannot fire:
+        # HostTelemetryPayload types summary as `dict[str, int | float]`
+        # (schemas/agent_frame.py), and pydantic coerces a JSON `true` to
+        # int 1 before this loop ever runs — so a boolean is accepted as 1.
+        # Pinned by test_boolean_summary_value_is_coerced_to_one_and_accepted.
+        # Rejecting booleans would need a field_validator on `summary`.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidHostTelemetry(f"summary.{name} is not numeric")
         if name in _PERCENT_FIELDS and not 0 <= value <= 100:
@@ -197,15 +206,28 @@ async def ingest_host_sample(
 
 
 async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -> bool:
+    """Upsert one `agent_capability_readiness` row per reported collector.
+
+    **All-or-nothing.** Every `state` in the report is validated against
+    `_READINESS_STATES` *before* the upsert loop performs any `db.get`,
+    `db.add`, or attribute write, so a report carrying one bad entry persists
+    nothing at all — not even the entries that preceded it. The pre-pass, not a
+    rollback in the caller, is what guarantees this: `_handle_readiness`
+    (services/agent_link.py) catches `InvalidHostTelemetry`, records a
+    `protocol_violation` event and then commits, which would otherwise make a
+    partial write durable. Direct callers get the same guarantee, and none of
+    the caller's other pending work is discarded.
+    """
     try:
         report = CapabilityReadinessPayload.model_validate(payload)
     except ValidationError as exc:
         raise InvalidHostTelemetry("invalid readiness payload") from exc
+    for item in report.readiness:
+        if item.state not in _READINESS_STATES:
+            raise InvalidHostTelemetry("invalid readiness state")
     changed = False
     now = utcnow()
     for item in report.readiness:
-        if item.state not in {"disabled", "ready", "degraded", "unavailable"}:
-            raise InvalidHostTelemetry("invalid readiness state")
         row = db.get(AgentCapabilityReadiness, (agent.id, item.collector))
         values = (item.state, item.reason, item.remediation, item.missing)
         if row is None:
