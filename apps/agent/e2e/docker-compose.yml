@@ -79,11 +79,28 @@ services:
       dockerfile: e2e/Dockerfile
     depends_on:
       - circuitbreaker
+    # Mirrors the real systemd unit's Restart=on-failure/RestartSec=5s
+    # (apps/backend/src/app/services/agent_install.py's unit template): a
+    # forced rollback re-execs the daemon while the network is deliberately
+    # cut (step 7b), and runDaemon()'s unconditional synchronous enroll.Run()
+    # at startup is fatal (os.Exit(1)) when that dial fails. In production,
+    # systemd just restarts the process every ~5s until enroll succeeds once
+    # network returns. Without an equivalent restart policy here, the
+    # container exits and stays dead, and the rolled-back binary never gets
+    # a chance to reconnect and confirm. See task-4-report.md round 2.
+    restart: on-failure
     volumes:
       - cb-agent-state:/var/lib/cb-agent
       - ./agent.toml:/etc/circuit-breaker/agent.toml:ro
     environment:
       - CB_AGENT_TEST_REKEY_INTERVAL_SECONDS=${CB_AGENT_TEST_REKEY_INTERVAL_SECONDS:-}
+      # Test-only re-exec delay override (Bug-1-fix step 7b) — read only if
+      # set; absent from every non-e2e deployment. On a local Docker bridge
+      # network a freshly re-exec'd daemon can reconnect and self-confirm an
+      # update in well under 100ms, faster than the test's own
+      # log-poll-then-disconnect trigger can reliably beat. See
+      # cmd/cb-agent/main.go's reExecDelayEnvOverride.
+      - CB_AGENT_TEST_PRE_REEXEC_DELAY_MS=${CB_AGENT_TEST_PRE_REEXEC_DELAY_MS:-}
     # ONLY agent-net — no `default`, no published/exposed ports anywhere in
     # this file for this service. See the top-of-file topology note.
     networks:

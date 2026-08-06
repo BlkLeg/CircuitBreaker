@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,34 +42,70 @@ var AgentVersion = "0.0.0-dev"
 // value — mirrors internal/link's stabilityWindow/rekeyInterval pattern.
 var rollbackWindow = 2 * time.Minute
 
+// reExecDelayEnvOverride is a narrowly-scoped, test-only escape hatch,
+// mirroring internal/link's rekeyIntervalEnvOverride: if set to a positive
+// integer number of milliseconds, onUpdate sleeps that long immediately
+// before re-exec'ing into the newly-swapped binary. It exists solely so the
+// Docker E2E harness (apps/agent/e2e) can reliably win the race against a
+// freshly re-exec'd process reconnecting and self-confirming an update
+// before the test's own docker-network-disconnect trigger can land — on a
+// local Docker bridge network, re-exec-to-hello.ack routinely completes in
+// well under 100ms, faster than an external log-poll-then-subprocess-spawn
+// trigger can reliably beat. No production deployment path (the install
+// script, systemd unit, or any documented config) ever sets this variable;
+// when it is unset, as in every real deployment, onUpdate re-execs
+// immediately, exactly as it always has.
+const reExecDelayEnvOverride = "CB_AGENT_TEST_PRE_REEXEC_DELAY_MS"
+
+// resolveReExecDelay reads reExecDelayEnvOverride. Split out from inline use
+// purely so a unit test can call it directly without depending on process
+// env at the actual call site.
+func resolveReExecDelay() time.Duration {
+	if v := os.Getenv(reExecDelayEnvOverride); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 0
+}
+
+// installedBinaryPath is the stable, root-owned symlink systemd's
+// ExecStart and an operator's interactive shell use
+// (/etc/systemd/system/cb-agent.service, agent_install.py's install
+// script) — see specs/2026-08-05-cb-agent-self-update-fix-design.md.
+// Self-update never touches this path directly; it only ever re-points
+// {stateDir}/current, the middle symlink this one points through.
+const installedBinaryPath = "/usr/local/bin/cb-agent"
+
 // watchForRollback waits up to rollbackWindow for the update marker naming
 // pendingVersion to be cleared — which onConnected (wired in runDaemon)
 // does exactly once, the moment a post-update connection reaches an
 // accepted hello.ack (Task 4's OnConnected gating, not merely a completed
 // Noise handshake). If the marker is still present and still names
 // pendingVersion once the window elapses, the update never confirmed:
-// watchForRollback restores the previous binary, persists a rollback report
-// for the next connection to send (this process has no live link to report
-// over — that's exactly why it's rolling back), clears the marker, and
-// re-execs via reExec.
+// watchForRollback re-points currentLink back to the marker's recorded
+// prevVersionDir (update.Rollback), persists a rollback report for the next
+// connection to send (this process has no live link to report over —
+// that's exactly why it's rolling back), clears the marker, and re-execs
+// via reExec.
 //
 // If the marker is still present but was never confirmed to have reached
 // phasePendingConfirm (update.ReadMarker's swapped == false), then
 // update.Swap never actually ran for this attempt — most likely a crash
 // landed between WriteMarker and Swap in onUpdate. There is nothing to roll
-// back: the binary at binaryPath was never touched, and targetPath+
-// ".previous" (if it exists at all) belongs to some earlier,
-// already-confirmed update, not this one — using it here would silently
-// downgrade a healthy running binary to a stale, unrelated backup. The
-// marker is simply cleared and the abandoned attempt logged.
+// back: currentLink was never re-pointed, and prevVersionDir (if the marker
+// even carries one) belongs to some earlier, already-confirmed update, not
+// this one — using it here would silently downgrade a healthy running
+// binary to a stale, unrelated version. The marker is simply cleared and
+// the abandoned attempt logged.
 //
 // reExec is a parameter rather than a direct syscall.Exec call so tests can
 // observe a rollback decision without actually replacing the test binary's
 // process image; runDaemon passes a closure that does call syscall.Exec.
-func watchForRollback(stateDir, binaryPath, pendingVersion string, reExec func() error) {
+func watchForRollback(stateDir, currentLink, pendingVersion string, reExec func() error) {
 	time.Sleep(rollbackWindow)
 
-	v, swapped, stillPresent, err := update.ReadMarker(stateDir)
+	v, prevVersionDir, swapped, stillPresent, err := update.ReadMarker(stateDir)
 	if err != nil {
 		log.Printf("cb-agent: %v", err)
 		return
@@ -87,9 +124,9 @@ func watchForRollback(stateDir, binaryPath, pendingVersion string, reExec func()
 	}
 
 	log.Printf("cb-agent: update to %s did not confirm within %s — rolling back", pendingVersion, rollbackWindow)
-	if err := update.Rollback(binaryPath); err != nil {
-		// Rollback failed (no .previous, unreadable, cross-device error,
-		// ...): the marker must still be cleared here. Leaving it in place
+	if err := update.Rollback(currentLink, prevVersionDir); err != nil {
+		// Rollback failed (empty prevVersionDir, a symlink error, ...): the
+		// marker must still be cleared here. Leaving it in place
 		// would re-arm this exact same doomed rollback attempt on every
 		// subsequent restart, forever, until some unrelated hello.ack
 		// eventually clears it via the normal success path — a permanently
@@ -252,11 +289,7 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	binaryPath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
-		os.Exit(1)
-	}
+	currentLink := update.CurrentLinkPath(config.StateDir())
 
 	// swapped (whether Swap actually completed for this marker — see
 	// update.ReadMarker) is deliberately not consulted here to decide
@@ -266,17 +299,33 @@ func runDaemon() {
 	// in one place (rather than duplicating it here as a fast-path) is what
 	// TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup
 	// exercises directly.
-	if pendingVersion, _, present, _ := update.ReadMarker(config.StateDir()); present {
+	if pendingVersion, _, _, present, _ := update.ReadMarker(config.StateDir()); present {
 		log.Printf("cb-agent: resuming after update to %s — watching for a successful link", pendingVersion)
-		go watchForRollback(config.StateDir(), binaryPath, pendingVersion, func() error {
-			return syscall.Exec(binaryPath, os.Args, os.Environ())
+		go watchForRollback(config.StateDir(), currentLink, pendingVersion, func() error {
+			return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 		})
 	}
 
 	var confirmOnce sync.Once
 	onConnected := func() {
 		confirmOnce.Do(func() {
-			update.ClearMarker(config.StateDir())
+			_, prevVersionDir, _, present, err := update.ReadMarker(config.StateDir())
+			if err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+			if err := update.ClearMarker(config.StateDir()); err != nil {
+				log.Printf("cb-agent: %v", err)
+			}
+			if present {
+				// The confirmed update's marker is gone — prune every
+				// stale version directory except the one still live and
+				// the one just confirmed away from, mirroring the old
+				// scheme's single-".previous"-backup retention (Section 5,
+				// specs/2026-08-05-cb-agent-self-update-fix-design.md).
+				if err := update.PruneVersions(config.StateDir(), currentLink, prevVersionDir); err != nil {
+					log.Printf("cb-agent: %v", err)
+				}
+			}
 		})
 		if err := statusWriter.SetAccepted(); err != nil {
 			log.Printf("cb-agent: status: %v", err)
@@ -344,11 +393,12 @@ func runDaemon() {
 			}
 			return err
 		}
-		if _, err := update.Swap(tmpPath, binaryPath); err != nil {
+		prevVersionDir, err := update.Swap(tmpPath, instr.Version, config.StateDir())
+		if err != nil {
 			// The swap never happened — clear the marker rather than
 			// leaving a stale one that would (harmlessly, but pointlessly)
 			// send a future restart into a rollback attempt against a
-			// backup that was never created.
+			// version that was never installed.
 			if clearErr := update.ClearMarker(config.StateDir()); clearErr != nil {
 				log.Printf("cb-agent: %v", clearErr)
 			}
@@ -358,15 +408,16 @@ func runDaemon() {
 			return err
 		}
 		// Swap succeeded — durably transition the marker from
-		// phasePendingSwap to phasePendingConfirm (see
-		// update.MarkSwapped's doc comment) so a restart's watchForRollback
-		// can trust that targetPath+".previous" is genuinely this update's
-		// backup, not a stale one from some earlier, already-confirmed
-		// update. The swap itself has already happened and can't be undone
-		// from here, so a failure here is logged, not treated as a failed
-		// update: it only costs this particular update its rollback safety
-		// net (see MarkSwapped's doc comment), not correctness.
-		if err := update.MarkSwapped(config.StateDir(), instr.Version); err != nil {
+		// phasePendingSwap to phasePendingConfirm and record prevVersionDir
+		// (see update.MarkSwapped's doc comment) so a restart's
+		// watchForRollback can trust which version directory is genuinely
+		// this update's own backup, not a stale one from some earlier,
+		// already-confirmed update. The swap itself has already happened
+		// and can't be undone from here, so a failure here is logged, not
+		// treated as a failed update: it only costs this particular update
+		// its rollback safety net (see MarkSwapped's doc comment), not
+		// correctness.
+		if err := update.MarkSwapped(config.StateDir(), instr.Version, prevVersionDir); err != nil {
 			log.Printf("cb-agent: %v — update to %s already installed but will not be protected by the rollback window", err, instr.Version)
 		}
 		// Reported now, immediately before re-exec: a successful re-exec
@@ -377,7 +428,10 @@ func runDaemon() {
 			log.Printf("cb-agent: send succeeded update.status: %v", err)
 		}
 		log.Printf("cb-agent: updated to %s — re-executing", instr.Version)
-		return syscall.Exec(binaryPath, os.Args, os.Environ())
+		if d := resolveReExecDelay(); d > 0 {
+			time.Sleep(d)
+		}
+		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 	}
 
 	onSpoolStats := func(depth int, bytes int64) {
@@ -736,12 +790,13 @@ const uninstallUnitName = "cb-agent"
 //
 // unitFile/binary mirror the install script's own write targets (spec
 // §"Files on disk": "/etc/systemd/system/cb-agent.service" the unit,
-// "/usr/local/bin/cb-agent" the binary). previousBinary is the update-swap
-// backup internal/update.Swap leaves at <binary>+".previous" (see
-// update.go's Swap/Rollback) — NOT under the state dir, despite an earlier
-// version of this comment and the Task 29 report claiming otherwise; it is
-// never removed on its own, so a self-update host that never uninstalls
-// would otherwise carry it forever.
+// "/usr/local/bin/cb-agent" the binary). There is no separate backup file
+// to track anymore: under the two-level symlink layout
+// (specs/2026-08-05-cb-agent-self-update-fix-design.md), every versioned
+// binary self-update ever installs lives under {stateDir}/versions/, which
+// stateDir's own wholesale removal below already covers — unlike the old
+// scheme's single <binary>+".previous" backup, sitting outside stateDir and
+// needing its own explicit removal entry here.
 //
 // configFile ("/etc/circuit-breaker/agent.toml") and configDir
 // ("/etc/circuit-breaker", its parent) are deliberately two separate
@@ -768,51 +823,41 @@ const uninstallUnitName = "cb-agent"
 // configDir, stateDir is exclusively cb-agent's own — nothing else is ever
 // expected to write there — so removing it wholesale remains correct.
 type uninstallPaths struct {
-	unitFile       string
-	binary         string
-	previousBinary string
-	configFile     string
-	configDir      string
-	stateDir       string
+	unitFile   string
+	binary     string
+	configFile string
+	configDir  string
+	stateDir   string
 }
 
-// defaultUninstallPaths is the static fallback footprint. binary and
-// previousBinary are placeholders here — resolveUninstallPaths overrides
-// both with the actual running binary's path (via os.Executable()) before
-// this is ever passed to performUninstall in production; defaultUninstallPaths
-// itself is used directly only as resolveUninstallPaths' fallback base when
-// os.Executable() fails.
+// defaultUninstallPaths is the static fallback footprint. binary is a
+// placeholder here — resolveUninstallPaths always overrides it with
+// installedBinaryPath before this is ever passed to performUninstall in
+// production; defaultUninstallPaths itself is used directly only as
+// resolveUninstallPaths' fallback base for every other field.
 var defaultUninstallPaths = uninstallPaths{
 	unitFile:   "/etc/systemd/system/cb-agent.service",
-	binary:     "/usr/local/bin/cb-agent",
+	binary:     installedBinaryPath,
 	configFile: "/etc/circuit-breaker/agent.toml",
 	configDir:  "/etc/circuit-breaker",
 	stateDir:   config.StateDir(),
 }
 
-// resolveUninstallPaths builds the on-disk footprint `cb-agent uninstall`
-// removes, resolving the actual running binary's path via os.Executable()
-// rather than trusting defaultUninstallPaths.binary's hardcoded
-// "/usr/local/bin/cb-agent" literal — if cb-agent was installed somewhere
-// else, the hardcoded literal would silently be skipped from removal with
-// no indication to the operator that it wasn't found where expected.
-// previousBinary (see uninstallPaths' doc comment) is derived from
-// whichever binary path was actually resolved, so a non-default install
-// location's ".previous" backup is found too.
-//
-// os.Executable() failing is rare enough in practice (its own doc comment:
-// "not guaranteed to be stable" only across certain exotic cases, e.g. the
-// binary being replaced/deleted while running) that it isn't worth aborting
-// the whole uninstall over — this falls back to the historical hardcoded
-// path instead, with a note printed so the operator knows to check.
+// resolveUninstallPaths returns the on-disk footprint `cb-agent uninstall`
+// removes. binary is always the fixed installedBinaryPath — NOT
+// os.Executable()'s result, unlike before the self-update fix (see
+// specs/2026-08-05-cb-agent-self-update-fix-design.md). Under the
+// two-level symlink layout, os.Executable() resolves straight through to
+// whatever {stateDir}/versions/<v>/cb-agent the running process happens to
+// be, not the stable /usr/local/bin/cb-agent entry point — using it here
+// would leave that root-owned top-level symlink behind after an
+// otherwise-complete uninstall. There is no separate ".previous"-backup
+// path to resolve either: every versioned binary lives under stateDir,
+// already covered by paths.stateDir's wholesale removal in
+// performUninstall.
 func resolveUninstallPaths() uninstallPaths {
 	paths := defaultUninstallPaths
-	if exe, err := os.Executable(); err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: could not resolve running binary path (%v) — falling back to %s\n", err, paths.binary)
-	} else {
-		paths.binary = exe
-	}
-	paths.previousBinary = paths.binary + ".previous"
+	paths.binary = installedBinaryPath
 	return paths
 }
 
@@ -890,7 +935,7 @@ func performUninstall(paths uninstallPaths, systemctl systemctlRunner) uninstall
 		result.DisabledUnit = true
 	}
 
-	for _, path := range []string{paths.unitFile, paths.binary, paths.previousBinary, paths.configFile, paths.stateDir} {
+	for _, path := range []string{paths.unitFile, paths.binary, paths.configFile, paths.stateDir} {
 		if path == "" {
 			continue
 		}

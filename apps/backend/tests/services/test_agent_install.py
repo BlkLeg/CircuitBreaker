@@ -72,6 +72,29 @@ def test_render_install_script_is_valid_bash_syntax(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+def test_render_install_script_creates_versioned_symlink_layout():
+    """Bug 1 fix (specs/2026-08-05-cb-agent-self-update-fix-design.md): the
+    binary must land in a per-version directory under /var/lib/cb-agent,
+    never directly at /usr/local/bin/cb-agent, with both symlinks
+    (current -> versions/<v>, /usr/local/bin/cb-agent -> current) created
+    and correctly owned — this is what lets the unprivileged cb-agent user
+    perform a self-update entirely within permissions it already has.
+    """
+    script = agent_install.render_install_script(
+        server_url="https://cb.example.com",
+        server_static_pk_hex="ab" * 32,
+        tls_pin="c" * 44,
+        manifest={"0.5.0": {"linux-amd64": "deadbeef"}},
+    )
+    assert 'install -d -m 0755 -o cb-agent -g cb-agent "/var/lib/cb-agent/versions/0.5.0"' in script
+    assert '"/var/lib/cb-agent/versions/0.5.0/cb-agent"' in script
+    assert 'ln -sfn "versions/0.5.0/cb-agent" /var/lib/cb-agent/current' in script
+    assert "chown -h cb-agent:cb-agent /var/lib/cb-agent/current" in script
+    assert "ln -sfn /var/lib/cb-agent/current /usr/local/bin/cb-agent" in script
+    # Never installed directly at the top-level path anymore.
+    assert 'install -m 0755 "$TMP_BIN" /usr/local/bin/cb-agent' not in script
+
+
 def test_build_install_command_self_signed_includes_hash_verification(db_session, app_cfg, monkeypatch):
     from app.services.certificate_service import generate_selfsigned
 
