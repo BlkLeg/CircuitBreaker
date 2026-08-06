@@ -23,9 +23,12 @@ import (
 // reports stale values on reconnect. agentVersion is passed in rather than read here since it's
 // build-time state (main.AgentVersion), not host state.
 //
-// SpoolDepth is left at its zero value: no caller today threads live spool state through to this
-// collector, so reporting anything else would be a guess. Task 20's runtime status file is the
-// intended real source once it exists.
+// SpoolDepth is left at its zero value here by design: the outbound spool is owned by
+// internal/link (Options.Spool), not by host collection, so stamping an at-connect depth onto the
+// hello belongs there — this collector has no access to it and would only be guessing. What is
+// *not* true any more is that the spool sits idle: the daemon's host telemetry collector is a
+// live data-frame producer, a failed live send durably spools the frame, and the link drains the
+// backlog with a paced per-connection catch-up burst (internal/link/outbound.go).
 func Collect(agentVersion string) frame.HelloPayload {
 	hostname, _ := os.Hostname()
 	distroID, distroVersion := osRelease()

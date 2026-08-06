@@ -70,10 +70,12 @@ type Status struct {
 	// it — see Writer.MergeReadiness.
 	Readiness []frame.Readiness `json:"readiness,omitempty"`
 
-	// SpoolDepth/SpoolBytes report the outbound spool's backlog. Both stay at
-	// their zero value until the daemon actually spools data frames — true
-	// today (spec: the spool "stays idle in heartbeat-only Slice 1
-	// operation"; see internal/spool's daemon wiring).
+	// SpoolDepth/SpoolBytes report the outbound spool's *undelivered*
+	// backlog — frames whose live send failed and that have not yet been
+	// re-sent. Both move in real operation: the host telemetry collector is a
+	// live data-frame producer, so a backend outage grows the backlog and the
+	// link's paced catch-up burst (internal/link/outbound.go) drains it back
+	// to zero once the connection is healthy again.
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
 
@@ -188,13 +190,14 @@ func (w *Writer) MergeReadiness(items []frame.Readiness) error {
 	return w.persistLocked()
 }
 
-// SetSpoolStats records the outbound spool's current backlog depth (frame
-// count) and size in bytes. Called at daemon startup (after spool.Open's
-// unclean-shutdown recovery) and on every subsequent spool mutation via
-// internal/link's Options.OnSpoolStats — see cmd/cb-agent's openSpool and
-// dataFrameSender. Both fields stay at zero in practice today: Slice 1 has
-// no data frame producer, so nothing ever enqueues (Global Constraints —
-// "the spool ... stays idle in heartbeat-only Slice 1 operation").
+// SetSpoolStats records the outbound spool's current undelivered backlog
+// depth (frame count) and size in bytes. Called at daemon startup (after
+// spool.Open's unclean-shutdown recovery) and on every subsequent spool
+// mutation via internal/link's Options.OnSpoolStats — see cmd/cb-agent's
+// openSpool and dataFrameSender. These are live values, not always-zero
+// placeholders: host telemetry produces data frames continuously, a failed
+// live send enqueues one, and each committed catch-up burst reports the
+// shrinking remainder back through here.
 func (w *Writer) SetSpoolStats(depth int, bytes int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

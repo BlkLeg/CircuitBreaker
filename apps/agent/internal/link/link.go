@@ -28,6 +28,24 @@ import (
 
 var heartbeatInterval = 20 * time.Second
 
+// The paced catch-up budget for spooled data frames (D-5). runOnce drains at
+// most drainFramesPerTick frames — and at most drainBytesPerTick of them —
+// once every drainTickInterval, from the head of the spool, while the
+// connection is up and accepted. That is <=40 frames/s and <=2.5 MiB/s: a
+// one-hour outage at the default 30s cadence (120 samples) clears in ~3s, a
+// 24-hour outage (2,880 samples) in ~72s, and a completely full 64 MiB spool
+// in under three minutes — bounded, which is the property draining on
+// connect or draining until empty does not have (a fleet reconnecting after
+// a backend outage would otherwise deliver up to 64 MiB per agent at once).
+//
+// Vars, not consts, so tests can shrink the interval; production never
+// changes them.
+var (
+	drainTickInterval        = 100 * time.Millisecond
+	drainFramesPerTick       = 4
+	drainBytesPerTick  int64 = 256 << 10
+)
+
 // stabilityWindow is how long a connection must stay up after an accepted
 // hello.ack before Run treats the run as "stable" and resets reconnect
 // backoff to its floor. Gating on hello.ack alone isn't enough: a link that
@@ -139,20 +157,23 @@ type Options struct {
 
 	// Spool durably buffers outbound *data* frames (never heartbeat/control
 	// traffic — frame.IsDataFrame draws that line) when a live send fails,
-	// and is drained back into the live stream at
-	// spool.DrainInterleaveRatio (see dataFrameSender in outbound.go). Nil
-	// disables spooling entirely — e.g. Uninstall's one-shot connection has
-	// no ongoing data-frame flow to buffer, and today's daemon has no real
-	// data frame producer yet either (Global Constraints: "the spool ...
-	// stays idle in heartbeat-only Slice 1 operation").
+	// and is drained back out by runOnce's paced catch-up burst — at most
+	// drainFramesPerTick frames per drainTickInterval, oldest first (see
+	// dataFrameSender in outbound.go). The daemon has a real data-frame
+	// producer today (the host telemetry collector), so this is a live path,
+	// not a dormant one. Nil disables spooling entirely — e.g. Uninstall's
+	// one-shot connection has no ongoing data-frame flow to buffer — and
+	// every drain path is nil-safe for exactly that case.
 	Spool *spool.Spool
 
-	// DataFrames is where a producer outside this package — a Slice 2+
-	// telemetry/probe/discovery collector — sends outbound data frames for
-	// this link to transmit. runOnce assigns V/Seq/TS itself before sending,
-	// same as it does for heartbeat/rekey frames. A nil channel (Slice 1's
-	// default: nothing produces data frames yet) simply never selects, so
-	// the whole mechanism stays inert until a real producer exists.
+	// DataFrames is where a producer outside this package — the host
+	// telemetry collector today, probe and discovery collectors later —
+	// sends outbound data frames for this link to transmit. runOnce assigns
+	// V/Seq/TS itself before sending, same as it does for heartbeat/rekey
+	// frames (spooled frames included: a resend is re-stamped with this
+	// connection's seq). A nil channel simply never selects, which is what
+	// the one-shot Uninstall connection and this package's non-data-frame
+	// tests rely on.
 	DataFrames <-chan frame.Frame
 	// ControlFrames carries ephemeral producer control reports such as
 	// capability.readiness. They are sent only while connected and never spooled.
@@ -470,6 +491,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	defer ticker.Stop()
 	rekeyTicker := time.NewTicker(rekeyInterval)
 	defer rekeyTicker.Stop()
+	// drainTicker paces spool catch-up. It runs on every connection, spool
+	// or no spool — the select arm below is what decides there is nothing to
+	// do — so the timing is identical whether or not a backlog exists.
+	drainTicker := time.NewTicker(drainTickInterval)
+	defer drainTicker.Stop()
 	var seq uint64
 	// outboundRekeyGen counts the agent->server cipher rekeys announced on
 	// this connection. It resets per connection because each reconnect
@@ -562,9 +588,11 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 
 	// sender wires the spool into this connection's outbound data-frame
 	// flow (never heartbeat/control traffic — see Options.Spool/DataFrames
-	// and dataFrameSender's doc comment). opts.Spool/OnSpoolStats are nil in
-	// today's daemon config (no producer exists yet), which newDataFrameSender
-	// and dataFrameSender both handle as "spooling disabled".
+	// and dataFrameSender's doc comment). The daemon sets both opts.Spool
+	// and opts.OnSpoolStats; callers that leave them nil — Uninstall's
+	// one-shot connection, and this package's tests — get "spooling
+	// disabled", which newDataFrameSender and every drain path handle
+	// explicitly.
 	sendDataFrame := func(f frame.Frame) error {
 		seq++
 		f.V = frame.FrameVersion
@@ -588,6 +616,21 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			return stable, fmt.Errorf("link: connection lost: %w", err)
 		case f := <-opts.DataFrames:
 			if err := sender.sendLive(f); err != nil {
+				return stable, err
+			}
+		case <-drainTicker.C:
+			// Paced catch-up for frames spooled during an outage. This is an
+			// arm of *this* select and never a side goroutine: gorilla's
+			// websocket forbids concurrent writers and seq above is owned by
+			// this loop. Gated on connectedFired because a session the
+			// server has not accepted yet must not have frames committed
+			// against it. A send error ends the connection exactly as the
+			// DataFrames case does; the uncommitted remainder stays at the
+			// head of the spool for the next connection.
+			if !connectedFired || !sender.hasBacklog() {
+				continue
+			}
+			if err := sender.drainBurst(drainFramesPerTick, drainBytesPerTick); err != nil {
 				return stable, err
 			}
 		case f := <-opts.ControlFrames:
