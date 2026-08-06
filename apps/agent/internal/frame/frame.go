@@ -75,6 +75,35 @@ const (
 	TypeTransportRekey = "transport.rekey"
 )
 
+// allFrameTypes lists every frame type constant declared above. Go cannot
+// enumerate untyped string constants at runtime, so this slice is the manual
+// mirror that TestCorpus_CoversEveryDeclaredFrameType iterates: adding a
+// constant above without adding it here is the one way to escape the Go half
+// of the corpus coverage gate. That is why the Go half is only a fast local
+// signal — apps/backend/tests/test_agent_frame_conformance.py enumerates its
+// module's TYPE_* attributes reflectively and is the authoritative gate.
+var allFrameTypes = []string{
+	TypeHello,
+	TypeHeartbeat,
+	TypeTelemetryHost,
+	TypeProbeResult,
+	TypeDiscoveryFinding,
+	TypeCapabilityViolation,
+	TypeCapabilityReadiness,
+	TypeLog,
+	TypeUninstall,
+	TypeUpdateStatus,
+	TypeHelloAck,
+	TypeCapabilitiesSet,
+	TypeProbeAssign,
+	TypeDiscoveryRequest,
+	TypeKeyRotate,
+	TypeUpdate,
+	TypeDisconnect,
+	TypePing,
+	TypeTransportRekey,
+}
+
 // controlFrameTypes are the frame types that must never reach the outbound
 // spool (internal/spool): link-protocol control traffic, plus the heartbeat
 // liveness signal, none of which is host data the spool exists to buffer

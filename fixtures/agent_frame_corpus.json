@@ -159,5 +159,181 @@
         "expiry": "2026-08-10T00:00:00Z"
       }
     }
+  },
+  {
+    "description": "telemetry.host — full sample, schema 1, healthy",
+    "json": {
+      "v": 1, "type": "telemetry.host", "seq": 7, "ts": "2026-08-06T12:00:00Z",
+      "payload": {
+        "schema": 1, "sample_id": "9f2c4b7e1a0d8365fe47b2c90a1d6e35", "status": "healthy",
+        "summary": {
+          "cpu_pct": 12.5, "load_1": 0.42, "load_5": 0.37, "load_15": 0.29,
+          "logical_cpus": 8,
+          "mem_total_bytes": 16637792256, "mem_used_bytes": 5368709120,
+          "mem_available_bytes": 10737418240, "mem_pct": 32.27,
+          "swap_total_bytes": 2147483648, "swap_used_bytes": 268435456, "swap_pct": 12.5,
+          "root_disk_pct": 41.8, "net_rx_bps": 15234.75, "net_tx_bps": 8321.5,
+          "max_temp_c": 48.0, "uptime_s": 864000.25, "boot_time_unix_s": 1753617600
+        },
+        "filesystems": [
+          {
+            "device": "/dev/nvme0n1p2", "mountpoint": "/", "fs_type": "ext4",
+            "total_bytes": 500107862016, "used_bytes": 209045065728,
+            "available_bytes": 265527754752, "read_only": false, "used_pct": 41.8
+          }
+        ],
+        "disks": [
+          {
+            "device": "nvme0n1", "read_bytes": 187904819200, "write_bytes": 95563939840,
+            "read_bps": 20480.0, "write_bps": 10240.5
+          }
+        ],
+        "interfaces": [
+          {
+            "name": "eth0", "state": "up", "rx_bytes": 9812734512, "tx_bytes": 4123456789,
+            "rx_errors": 0, "tx_errors": 0, "speed_mbps": 1000,
+            "rx_bps": 15234.75, "tx_bps": 8321.5
+          }
+        ],
+        "temperatures": [
+          {"name": "hwmon0/temp1", "temp_c": 48.0, "warning_c": 90.0, "critical_c": 100.0}
+        ],
+        "docker": {
+          "containers": [
+            {
+              "id": "c0ffee1234ab", "name": "/cb-backend", "image": "circuitbreaker/backend:1.2.3",
+              "state": "running", "status": "Up 3 days",
+              "memory_used_bytes": 268435456, "memory_limit_bytes": 2147483648,
+              "memory_pct": 12.5, "cpu_pct": 3.75,
+              "network_rx_bytes": 10485760, "network_tx_bytes": 5242880
+            }
+          ],
+          "total": 1, "running": 1, "truncated": false
+        }
+      }
+    }
+  },
+  {
+    "description": "telemetry.host — core-only degraded sample",
+    "json": {
+      "v": 1, "type": "telemetry.host", "seq": 8, "ts": "2026-08-06T12:00:30Z",
+      "payload": {
+        "schema": 1, "sample_id": "0123456789abcdef0123456789abcdef", "status": "degraded",
+        "summary": {"cpu_pct": 3.0, "mem_pct": 61.25},
+        "filesystems": [], "disks": [], "interfaces": [], "temperatures": [], "docker": null
+      }
+    }
+  },
+  {
+    "description": "telemetry.host — truncated docker list",
+    "json": {
+      "v": 1, "type": "telemetry.host", "seq": 9, "ts": "2026-08-06T12:01:00Z",
+      "payload": {
+        "schema": 1, "sample_id": "fedcba9876543210fedcba9876543210", "status": "degraded",
+        "summary": {"cpu_pct": 88.5, "mem_pct": 74.0, "root_disk_pct": 92.1},
+        "filesystems": [], "disks": [], "interfaces": [], "temperatures": [],
+        "docker": {
+          "containers": [
+            {
+              "id": "aa11bb22cc33", "name": "/worker-000", "image": "busybox:latest",
+              "state": "exited", "status": "Exited (0) 2 hours ago"
+            }
+          ],
+          "total": 100, "running": 97, "truncated": true
+        }
+      }
+    }
+  },
+  {
+    "description": "capability.readiness — all four states",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 12, "ts": "2026-08-06T12:01:30Z",
+      "payload": {
+        "readiness": [
+          {"collector": "host.core", "state": "ready"},
+          {"collector": "host.network", "state": "degraded", "reason": "link speed unavailable for eth0"},
+          {
+            "collector": "host.docker", "state": "unavailable",
+            "reason": "dial unix /var/run/docker.sock: permission denied",
+            "remediation": "rerun the installer and verify membership in the docker group",
+            "missing": ["/var/run/docker.sock"]
+          },
+          {"collector": "host.thermal", "state": "disabled"}
+        ]
+      }
+    }
+  },
+  {
+    "description": "capability.readiness — empty readiness list",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 13, "ts": "2026-08-06T12:02:00Z",
+      "payload": {"readiness": []}
+    }
+  },
+  {
+    "description": "hello — schema-2 negotiation with a spool backlog",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-08-06T12:02:30Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "box2.local", "machine_id_hash": "cafebabe",
+        "os": "linux", "os_version": "6.9", "arch": "arm64", "agent_version": "0.3.0",
+        "primary_macs": ["11:22:33:44:55:66"],
+        "readiness": [
+          {"collector": "host.core", "state": "ready"},
+          {"collector": "host.docker", "state": "disabled"}
+        ],
+        "spool_depth": 137, "capability_schema": 2
+      }
+    }
+  },
+  {
+    "description": "hello.ack — structured {enabled, config} grants for a schema-2 agent",
+    "json": {
+      "v": 1, "type": "hello.ack", "seq": 0, "ts": "2026-08-06T12:02:31Z",
+      "payload": {
+        "accepted": true, "server_time": "2026-08-06T12:02:31Z", "agent_id": 9,
+        "capabilities": {
+          "host_telemetry": {
+            "enabled": true,
+            "config": {
+              "interval_s": 60, "include_filesystems": true, "include_disks": true,
+              "include_network": true, "include_temperatures": false,
+              "include_virtual": false, "include_docker": true
+            }
+          },
+          "remote_probe": {"enabled": false, "config": {}},
+          "local_discovery": {"enabled": false, "config": {}}
+        }
+      }
+    }
+  },
+  {
+    "description": "capabilities.set — structured grants with host_telemetry config",
+    "json": {
+      "v": 1, "type": "capabilities.set", "seq": 3, "ts": "2026-08-06T12:03:00Z",
+      "payload": {
+        "host_telemetry": {
+          "enabled": true,
+          "config": {
+            "interval_s": 15, "include_filesystems": true, "include_disks": false,
+            "include_network": true, "include_temperatures": true,
+            "include_virtual": true, "include_docker": true
+          }
+        },
+        "remote_probe": {"enabled": true, "config": {}},
+        "local_discovery": {"enabled": false, "config": {}}
+      }
+    }
+  },
+  {
+    "description": "capabilities.set — mixed legacy boolean and structured grants",
+    "json": {
+      "v": 1, "type": "capabilities.set", "seq": 4, "ts": "2026-08-06T12:03:30Z",
+      "payload": {
+        "host_telemetry": {"enabled": true, "config": {"interval_s": 120, "include_docker": true}},
+        "remote_probe": false,
+        "local_discovery": true
+      }
+    }
   }
 ]

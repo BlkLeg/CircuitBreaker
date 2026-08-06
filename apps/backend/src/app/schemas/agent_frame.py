@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 FRAME_VERSION = 1
 
@@ -113,6 +113,18 @@ class CapabilityReadinessPayload(BaseModel):
 
 
 class HostTelemetryPayload(BaseModel):
+    """agent -> server `telemetry.host` payload, mirroring
+    apps/agent/internal/frame/frame.go's HostTelemetryPayload field-for-field.
+
+    ``populate_by_name`` is load-bearing, not cosmetic: ``schema_version`` is aliased to the
+    wire key ``schema`` (``schema`` shadows pydantic's own BaseModel attribute), so
+    ``model_dump()``/``model_dump_json()`` emit ``schema_version`` unless the caller passes
+    ``by_alias=True``. Without ``populate_by_name`` the model cannot re-validate its own dump —
+    pinned by test_corpus_typed_payloads_decode_and_round_trip.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
     schema_version: int = Field(alias="schema")
     sample_id: str
     status: str
