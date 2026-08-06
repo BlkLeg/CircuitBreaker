@@ -479,7 +479,7 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := update.CurrentLinkPath(dir)
-	if err := os.Symlink(newVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(newVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	// MarkSwapped (not the plain WriteMarker) — this test simulates a
@@ -502,8 +502,9 @@ func TestWatchForRollback_NoConfirmationTriggersRollback(t *testing.T) {
 	watchForRollback(dir, currentLink, "0.6.0", reExec)
 
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != oldVersionDir {
-		t.Errorf("current symlink = (%q, %v), want rolled back to %q", target, err, oldVersionDir)
+	wantTarget := filepath.Join(oldVersionDir, "cb-agent")
+	if err != nil || target != wantTarget {
+		t.Errorf("current symlink = (%q, %v), want rolled back to %q", target, err, wantTarget)
 	}
 	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after rollback, want cleared")
@@ -540,7 +541,7 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := update.CurrentLinkPath(dir)
-	if err := os.Symlink(newVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(newVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	if err := update.MarkSwapped(dir, "0.7.0", oldVersionDir); err != nil {
@@ -568,8 +569,9 @@ func TestWatchForRollback_ConfirmedWithinWindowRetainsNewBinary(t *testing.T) {
 	<-confirmed
 
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != newVersionDir {
-		t.Errorf("current symlink = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", target, err, newVersionDir)
+	wantTarget := filepath.Join(newVersionDir, "cb-agent")
+	if err != nil || target != wantTarget {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — a confirmed update must not be rolled back", target, err, wantTarget)
 	}
 	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present, want cleared by the simulated onConnected confirmation")
@@ -625,7 +627,7 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 		t.Fatal(err)
 	}
 	currentLink := update.CurrentLinkPath(dir)
-	if err := os.Symlink(v1Dir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(v1Dir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -647,8 +649,9 @@ func TestWatchForRollback_CrashBeforeSwapDoesNotRollBackToStaleBackup(t *testing
 	watchForRollback(dir, currentLink, "2.0.0", reExec)
 
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != v1Dir {
-		t.Errorf("current symlink = (%q, %v), want unchanged %q — the healthy running v1 must never be silently replaced", target, err, v1Dir)
+	wantTarget := filepath.Join(v1Dir, "cb-agent")
+	if err != nil || target != wantTarget {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — the healthy running v1 must never be silently replaced", target, err, wantTarget)
 	}
 	if _, _, _, present, _ := update.ReadMarker(dir); present {
 		t.Error("marker still present after an abandoned (pre-swap) update attempt, want cleared")
@@ -693,7 +696,7 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := update.CurrentLinkPath(dir)
-	if err := os.Symlink(currentDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(currentDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	// Deliberately no prevVersionDir recorded — Rollback must fail.
@@ -713,8 +716,9 @@ func TestWatchForRollback_FailedRollbackStillClearsMarker(t *testing.T) {
 		t.Error("marker still present after a failed Rollback, want cleared to avoid a permanently stuck retry loop")
 	}
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != currentDir {
-		t.Errorf("current symlink = (%q, %v), want unchanged %q — a failed rollback must not partially mutate current", target, err, currentDir)
+	wantTarget := filepath.Join(currentDir, "cb-agent")
+	if err != nil || target != wantTarget {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q — a failed rollback must not partially mutate current", target, err, wantTarget)
 	}
 	if reExecCalls != 0 {
 		t.Errorf("reExec called %d times, want 0 — a failed rollback must not re-exec into whatever partial state resulted", reExecCalls)
