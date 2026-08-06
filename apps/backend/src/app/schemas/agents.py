@@ -3,7 +3,25 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+HOST_TELEMETRY_DEFAULTS = {
+    "interval_s": 30,
+    "include_filesystems": True,
+    "include_disks": True,
+    "include_network": True,
+    "include_temperatures": True,
+    "include_virtual": False,
+    "include_docker": False,
+}
+
+
+class CapabilityGrant(BaseModel):
+    enabled: bool
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+CapabilityValue = bool | CapabilityGrant
 
 
 class AgentSummary(BaseModel):
@@ -30,7 +48,7 @@ class AgentRead(AgentSummary):
     enrolled_at: datetime
     approved_at: datetime | None
     connected_since: datetime | None
-    capabilities: dict[str, bool] = {}
+    capabilities: dict[str, CapabilityGrant] = {}
     # Populated by api/agents.py's `_to_read` (not ORM attributes) from
     # `agent_registry.propose_hardware_match`/`has_duplicate_machine_id` —
     # the same host-linkage proposal and duplicate-machine warning the
@@ -70,7 +88,7 @@ class AgentPresenceRead(BaseModel):
     online: bool
     connected_since: datetime | None
     last_seen_at: datetime | None
-    capabilities: dict[str, bool] = {}
+    capabilities: dict[str, CapabilityValue] = {}
     hardware: HardwareSummary | None = None
 
 
@@ -116,7 +134,7 @@ class ApproveRequest(BaseModel):
     # actually drives linkage. Optional/omittable so existing untyped
     # callers (and tests predating Task 18) keep working.
     host_link_action: Literal["accept", "select", "create", "unlinked"] | None = None
-    capabilities: dict[str, bool] | None = None
+    capabilities: dict[str, CapabilityValue] | None = None
 
 
 class RevokeRequest(BaseModel):
@@ -124,7 +142,27 @@ class RevokeRequest(BaseModel):
 
 
 class CapabilitiesUpdateRequest(BaseModel):
-    capabilities: dict[str, bool]
+    capabilities: dict[str, CapabilityValue]
+
+    @field_validator("capabilities")
+    @classmethod
+    def validate_host_config(cls, values: dict[str, CapabilityValue]) -> dict[str, CapabilityValue]:
+        host = values.get("host_telemetry")
+        if isinstance(host, CapabilityGrant):
+            unknown = set(host.config) - set(HOST_TELEMETRY_DEFAULTS)
+            if unknown:
+                raise ValueError(f"unknown host_telemetry settings: {', '.join(sorted(unknown))}")
+            interval = host.config.get("interval_s", 30)
+            if (
+                isinstance(interval, bool)
+                or not isinstance(interval, int)
+                or not 10 <= interval <= 900
+            ):
+                raise ValueError("host_telemetry.interval_s must be between 10 and 900")
+            for name in set(HOST_TELEMETRY_DEFAULTS) - {"interval_s"}:
+                if name in host.config and not isinstance(host.config[name], bool):
+                    raise ValueError(f"host_telemetry.{name} must be a boolean")
+        return values
 
 
 class UpdateRequest(BaseModel):

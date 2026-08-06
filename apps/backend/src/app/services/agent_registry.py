@@ -33,6 +33,42 @@ DEFAULT_CAPABILITY_GRANTS: dict[str, bool] = {
     "remote_probe": False,
     "local_discovery": False,
 }
+HOST_TELEMETRY_DEFAULT_CONFIG: dict[str, Any] = {
+    "interval_s": 30,
+    "include_filesystems": True,
+    "include_disks": True,
+    "include_network": True,
+    "include_temperatures": True,
+    "include_virtual": False,
+    "include_docker": False,
+}
+
+
+def _grant_parts(value: Any) -> tuple[bool, dict[str, Any]]:
+    if isinstance(value, bool):
+        return value, {}
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if not isinstance(value, dict) or not isinstance(value.get("enabled"), bool):
+        raise ValueError("capability grant must be a boolean or {enabled, config} object")
+    config = value.get("config") or {}
+    if not isinstance(config, dict):
+        raise ValueError("capability grant config must be an object")
+    return value["enabled"], config
+
+
+def _normalize_host_config(config: dict[str, Any]) -> dict[str, Any]:
+    unknown = set(config) - set(HOST_TELEMETRY_DEFAULT_CONFIG)
+    if unknown:
+        raise ValueError(f"unknown host telemetry settings: {', '.join(sorted(unknown))}")
+    normalized = HOST_TELEMETRY_DEFAULT_CONFIG | config
+    interval = normalized["interval_s"]
+    if isinstance(interval, bool) or not isinstance(interval, int) or not 10 <= interval <= 900:
+        raise ValueError("host telemetry interval must be between 10 and 900 seconds")
+    if any(not isinstance(normalized[name], bool) for name in normalized if name != "interval_s"):
+        raise ValueError("host telemetry include settings must be booleans")
+    return normalized
+
 
 # Task 21: cap on agents simultaneously awaiting approval. An anonymous
 # /enroll flood using a fresh device keypair per connection creates a new
@@ -265,7 +301,7 @@ def approve_agent(
     approving_user_id: int,
     hardware_id: int | None = None,
     host_link_action: str | None = None,
-    capability_overrides: dict[str, bool] | None = None,
+    capability_overrides: dict[str, Any] | None = None,
 ) -> Agent:
     agent = db.get(Agent, agent_id)
     if agent is None:
@@ -279,12 +315,16 @@ def approve_agent(
 
     grants = dict(DEFAULT_CAPABILITY_GRANTS)
     grants.update(capability_overrides or {})
-    for capability, enabled in grants.items():
+    for capability, value in grants.items():
+        enabled, config = _grant_parts(value)
+        if capability == "host_telemetry":
+            config = _normalize_host_config(config)
         db.add(
             AgentCapabilityGrant(
                 agent_id=agent.id,
                 capability=capability,
                 enabled=enabled,
+                config=config,
                 granted_by_user_id=approving_user_id,
             )
         )
@@ -613,7 +653,10 @@ async def broadcast_server_key_rotate(
     }
     pushed = 0
     for agent_id in agent_ids:
-        if not presence[agent_id]["online"]:
+        # A presence backend may legitimately omit an agent that disappeared
+        # between the database query and the bulk lookup. Treat that race as
+        # offline instead of aborting broadcasts for the remaining agents.
+        if not presence.get(agent_id, {}).get("online", False):
             continue
         await publish_agent_control_frame(agent_id, {"type": TYPE_KEY_ROTATE, "payload": payload})
         pushed += 1
@@ -621,7 +664,7 @@ async def broadcast_server_key_rotate(
 
 
 def set_capability_grants(
-    db: Session, agent_id: int, grants: dict[str, bool], *, actor_user_id: int
+    db: Session, agent_id: int, grants: dict[str, Any], *, actor_user_id: int
 ) -> list[AgentCapabilityGrant]:
     existing = {
         g.capability: g
@@ -630,16 +673,29 @@ def set_capability_grants(
         ).scalars()
     }
     result = []
-    for capability, enabled in grants.items():
+    event_detail: dict[str, Any] = {}
+    for capability, value in grants.items():
+        enabled, config = _grant_parts(value)
+        if capability == "host_telemetry":
+            current = existing.get(capability)
+            config = _normalize_host_config((current.config if current else {}) | config)
         grant = existing.get(capability)
         if grant is None:
             grant = AgentCapabilityGrant(agent_id=agent_id, capability=capability)
             db.add(grant)
         grant.enabled = enabled
+        grant.config = config
         grant.granted_by_user_id = actor_user_id
         grant.granted_at = utcnow()
         result.append(grant)
-    record_event(db, agent_id, "capability_changed", actor_user_id=actor_user_id, detail=grants)
+        event_detail[capability] = {"enabled": enabled, "config": config}
+    record_event(
+        db,
+        agent_id,
+        "capability_changed",
+        actor_user_id=actor_user_id,
+        detail=event_detail,
+    )
     db.flush()
     return result
 
@@ -656,6 +712,23 @@ def grants_dict(db: Session, agent_id: int) -> dict[str, bool]:
     """
     return {
         g.capability: g.enabled
+        for g in db.execute(
+            select(AgentCapabilityGrant).where(AgentCapabilityGrant.agent_id == agent_id)
+        ).scalars()
+    }
+
+
+def structured_grants_dict(db: Session, agent_id: int) -> dict[str, dict[str, Any]]:
+    """Normalized schema-2 grants, including centrally managed configuration."""
+    return {
+        g.capability: {
+            "enabled": g.enabled,
+            "config": (
+                HOST_TELEMETRY_DEFAULT_CONFIG | dict(g.config or {})
+                if g.capability == "host_telemetry"
+                else dict(g.config or {})
+            ),
+        }
         for g in db.execute(
             select(AgentCapabilityGrant).where(AgentCapabilityGrant.agent_id == agent_id)
         ).scalars()

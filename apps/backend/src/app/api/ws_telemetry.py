@@ -232,11 +232,17 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                 if isinstance(msg, dict) and "subscribe" in msg:
                     entity_ids = msg["subscribe"]
                     if isinstance(entity_ids, list):
-                        new_channels = {
-                            f"telemetry:{eid}"
-                            for eid in entity_ids[:_MAX_SUBSCRIPTIONS]
-                            if isinstance(eid, int)
-                        }
+                        new_channels = set()
+                        for entity in entity_ids[:_MAX_SUBSCRIPTIONS]:
+                            if isinstance(entity, int):
+                                new_channels.add(f"telemetry:{entity}")
+                            elif isinstance(entity, dict):
+                                entity_type = entity.get("entity_type")
+                                entity_id = entity.get("entity_id")
+                                if entity_type == "agent" and isinstance(entity_id, int):
+                                    new_channels.add(f"telemetry:agent:{entity_id}")
+                                elif entity_type == "hardware" and isinstance(entity_id, int):
+                                    new_channels.add(f"telemetry:{entity_id}")
                         subscribed_channels.update(new_channels)
                         if listener_task:
                             stop_event.set()
@@ -253,8 +259,18 @@ async def telemetry_stream(websocket: WebSocket) -> None:
                 if isinstance(msg, dict) and "unsubscribe" in msg:
                     entity_ids = msg["unsubscribe"]
                     if isinstance(entity_ids, list):
-                        for eid in entity_ids:
-                            subscribed_channels.discard(f"telemetry:{eid}")
+                        for entity in entity_ids:
+                            if isinstance(entity, int):
+                                subscribed_channels.discard(f"telemetry:{entity}")
+                            elif isinstance(entity, dict):
+                                entity_type, entity_id = (
+                                    entity.get("entity_type"),
+                                    entity.get("entity_id"),
+                                )
+                                if entity_type == "agent" and isinstance(entity_id, int):
+                                    subscribed_channels.discard(f"telemetry:agent:{entity_id}")
+                                elif entity_type == "hardware" and isinstance(entity_id, int):
+                                    subscribed_channels.discard(f"telemetry:{entity_id}")
                         if listener_task:
                             stop_event.set()
                             listener_task.cancel()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,8 +18,11 @@ import (
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/capability"
+	"circuitbreaker.dev/cb-agent/internal/collect"
+	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
+	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/link"
 	"circuitbreaker.dev/cb-agent/internal/spool"
@@ -156,6 +160,59 @@ func runDaemon() {
 	if err := capGate.LoadCached(); err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	dataFrames := make(chan frame.Frame, 8)
+	controlFrames := make(chan frame.Frame, 8)
+	var statusWriter *status.Writer
+	var readinessMu sync.Mutex
+	var readinessPayload json.RawMessage
+	var readinessSentAt time.Time
+	queueReadiness := func(force bool) {
+		readinessMu.Lock()
+		defer readinessMu.Unlock()
+		if len(readinessPayload) == 0 || (!force && time.Since(readinessSentAt) < 15*time.Minute) {
+			return
+		}
+		select {
+		case controlFrames <- frame.Frame{Type: frame.TypeCapabilityReadiness, TS: time.Now().UTC(), Payload: append(json.RawMessage(nil), readinessPayload...)}:
+			readinessSentAt = time.Now()
+		default:
+		}
+	}
+	var collectorMu sync.Mutex
+	var hostRunner *collect.Runner
+	applyHostConfig := func() {
+		collectorMu.Lock()
+		defer collectorMu.Unlock()
+		if hostRunner != nil {
+			hostRunner.Stop()
+			hostRunner = nil
+		}
+		cfg, enabled := capGate.HostConfig()
+		if !enabled {
+			return
+		}
+		hostRunner = collect.NewRunner(hostcollect.New(cfg), dataFrames)
+		hostRunner.OnReadiness = func(readiness []frame.Readiness) {
+			if statusWriter != nil {
+				if err := statusWriter.SetReadiness(readiness); err != nil {
+					log.Printf("cb-agent: status: %v", err)
+				}
+			}
+			payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: readiness})
+			if err != nil {
+				return
+			}
+			readinessMu.Lock()
+			changed := !bytes.Equal(readinessPayload, payload)
+			readinessPayload = append(readinessPayload[:0], payload...)
+			readinessMu.Unlock()
+			queueReadiness(changed)
+		}
+		hostRunner.Reset(ctx, time.Duration(cfg.IntervalS)*time.Second)
+	}
+	applyHostConfig()
 
 	// statusWriter is the source `cb-agent status` reads from — see
 	// internal/status. It starts from whatever the capability gate already
@@ -163,7 +220,7 @@ func runDaemon() {
 	// the last-known grants) and the readiness this host can report before
 	// any link attempt (readiness has no network dependency — see
 	// hostinfo.Collect).
-	statusWriter := status.NewWriter(config.StateDir(), AgentVersion, key.FingerprintGrouped())
+	statusWriter = status.NewWriter(config.StateDir(), AgentVersion, key.FingerprintGrouped())
 	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
 		log.Printf("cb-agent: status: %v", err)
 	}
@@ -224,6 +281,7 @@ func runDaemon() {
 		if err := statusWriter.SetAccepted(); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
+		queueReadiness(true)
 	}
 
 	onRejected := func(reason string) {
@@ -245,6 +303,7 @@ func runDaemon() {
 		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
+		applyHostConfig()
 		return nil
 	}
 
@@ -327,8 +386,6 @@ func runDaemon() {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if err := link.Run(ctx, link.Options{
 		Config: cfg, Key: key, AgentVersion: AgentVersion,
 		StateDir:          config.StateDir(),
@@ -346,11 +403,10 @@ func runDaemon() {
 				log.Printf("cb-agent: %v", err)
 			}
 		},
-		Spool:        sp,
-		OnSpoolStats: onSpoolStats,
-		// DataFrames is left unset: no producer exists yet in Slice 1 (Global
-		// Constraints — the spool stays idle end-to-end until Slice 2+ wires
-		// a real telemetry/probe/discovery collector into it).
+		Spool:         sp,
+		DataFrames:    dataFrames,
+		ControlFrames: controlFrames,
+		OnSpoolStats:  onSpoolStats,
 	}); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)

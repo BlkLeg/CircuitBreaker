@@ -416,6 +416,61 @@ class AgentEvent(Base):
     __table_args__ = (Index("ix_agent_events_agent_time", "agent_id", "created_at"),)
 
 
+class AgentHostSample(Base):
+    __tablename__ = "agent_host_samples"
+    id: Mapped[int] = mapped_column(BigInteger, autoincrement=True, nullable=False)
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    hardware_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey(_FK_HARDWARE_ID, ondelete="SET NULL"), nullable=True
+    )
+    sample_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    cpu_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    root_disk_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_rx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_tx_bps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_temp_c: Mapped[float | None] = mapped_column(Float, nullable=True)
+    load_1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uptime_s: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    projection_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    __table_args__ = (
+        PrimaryKeyConstraint("id", "collected_at"),
+        UniqueConstraint("agent_id", "sample_id", "collected_at", name="uq_agent_host_sample"),
+        Index("ix_agent_host_samples_agent_time", "agent_id", "collected_at"),
+        Index("ix_agent_host_samples_projection", "projected_at", "collected_at"),
+    )
+
+
+class AgentHostSampleHourly(Base):
+    __tablename__ = "agent_host_sample_hourly"
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+    )
+    bucket_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class AgentCapabilityReadiness(Base):
+    __tablename__ = "agent_capability_readiness"
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True
+    )
+    collector: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    remediation: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    missing: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    __table_args__ = (Index("ix_agent_readiness_agent_time", "agent_id", "updated_at"),)
+
+
 class UptimeEvent(Base):
     """Rolling history of probe results for a monitored hardware device."""
 
@@ -1784,12 +1839,26 @@ class LiveMetric(Base):
 class HardwareLiveMetric(Base):
     __tablename__ = "hardware_live_metrics"
     # TimescaleDB requires the partitioning (time) column to be part of the PK.
-    __table_args__ = (PrimaryKeyConstraint("id", "collected_at"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("id", "collected_at"),
+        Index("ix_hardware_live_metrics_agent_time", "agent_id", "collected_at"),
+        Index(
+            "uq_hardware_live_metrics_agent_sample",
+            "agent_id",
+            "agent_sample_id",
+            "collected_at",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, autoincrement=True, nullable=False)
     hardware_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("hardware.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    agent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
+    )
+    agent_sample_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     collected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True
     )

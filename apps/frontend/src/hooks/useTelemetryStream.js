@@ -55,7 +55,7 @@ export function getTelemetryWsUrl(locationLike = globalThis.location) {
   return `${proto}://${host}/api/v1/telemetry/stream`;
 }
 
-export function useTelemetryStream({ entityIds = [] } = {}) {
+export function useTelemetryStream({ entityIds = [], entities = [] } = {}) {
   const { user, token } = useAuth();
   const [connected, setConnected] = useState(false);
   const [data, setData] = useState(() => new Map());
@@ -65,8 +65,9 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
   const retryTimerRef = useRef(null);
   const intentionalRef = useRef(false);
   const handshakeCompleteRef = useRef(false);
-  const entityIdsRef = useRef(entityIds);
-  entityIdsRef.current = entityIds;
+  const subscriptions = entities.length > 0 ? entities : entityIds;
+  const entityIdsRef = useRef(subscriptions);
+  entityIdsRef.current = subscriptions;
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) {
@@ -150,13 +151,14 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
 
       if (msg.type === 'pong') return;
 
-      if (msg.type === 'telemetry' && msg.entity_id != null) {
+      const key = msg.entity_id ?? (msg.agent_id != null ? `agent:${msg.agent_id}` : null);
+      if ((msg.type === 'telemetry' || msg.type === 'telemetry.host') && key != null) {
         setData((prev) => {
           const next = new Map(prev);
-          next.set(msg.entity_id, msg);
+          next.set(key, msg);
           return next;
         });
-        telemetryEmitter.emit(`telemetry:${msg.entity_id}`, msg);
+        telemetryEmitter.emit(`telemetry:${key}`, msg);
         telemetryEmitter.emit('telemetry:any', msg);
       }
     };
@@ -213,10 +215,10 @@ export function useTelemetryStream({ entityIds = [] } = {}) {
   // Re-subscribe when entityIds change
   useEffect(() => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN && entityIds.length > 0) {
-      ws.send(JSON.stringify({ subscribe: entityIds }));
+    if (ws?.readyState === WebSocket.OPEN && subscriptions.length > 0) {
+      ws.send(JSON.stringify({ subscribe: subscriptions }));
     }
-  }, [entityIds.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(subscriptions)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { data, connected };
 }

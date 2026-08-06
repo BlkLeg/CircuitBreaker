@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Agent
 from app.schemas.agent_frame import (
     FRAME_VERSION,
+    TYPE_CAPABILITY_READINESS,
     TYPE_DISCOVERY_FINDING,
     TYPE_HEARTBEAT,
     TYPE_KEY_ROTATE,
@@ -36,7 +37,7 @@ from app.schemas.agent_frame import (
     KeyRotatePayload,
     UpdateStatusPayload,
 )
-from app.services import agent_registry
+from app.services import agent_registry, agent_telemetry
 
 _logger = logging.getLogger(__name__)
 
@@ -90,6 +91,26 @@ async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:
 
 async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> None:
     agent_registry.revoke_agent(db, agent.id, actor_user_id=None, reason="uninstalled by agent")
+
+
+async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    try:
+        await agent_telemetry.ingest_host_sample(db, agent, frame.payload, frame.ts)
+    except agent_telemetry.InvalidHostTelemetry as exc:
+        record, count = agent_telemetry.recordable_violation(agent.id)
+        if record:
+            agent_registry.record_event(
+                db, agent.id, "protocol_violation", detail={"reason": str(exc), "repeated": count}
+            )
+            db.commit()
+
+
+async def _handle_readiness(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    try:
+        await agent_telemetry.ingest_readiness(db, agent, frame.payload)
+    except agent_telemetry.InvalidHostTelemetry as exc:
+        agent_registry.record_event(db, agent.id, "protocol_violation", detail={"reason": str(exc)})
+        db.commit()
 
 
 # Task 24: maps an `update.status` frame's `phase` to the distinct
@@ -202,6 +223,8 @@ _HANDLERS: dict[str, Handler] = {
     TYPE_UNINSTALL: _handle_uninstall,
     TYPE_UPDATE_STATUS: _handle_update_status,
     TYPE_KEY_ROTATE: _handle_key_rotate,
+    TYPE_TELEMETRY_HOST: _handle_host_telemetry,
+    TYPE_CAPABILITY_READINESS: _handle_readiness,
 }
 
 

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from app.core.time import utcnow
-from app.db.models import AppSettings, HardwareLiveMetric
+from app.db.models import AgentHostSample, AgentHostSampleHourly, AppSettings, HardwareLiveMetric
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -131,6 +131,48 @@ def run_retention_executor(
         db.query(HardwareLiveMetric)
         .filter(HardwareLiveMetric.collected_at < warm_cutoff)
         .delete(synchronize_session=False)
+    )
+
+    # Canonical agent telemetry uses its own portable hourly table so the
+    # 7-30 day window behaves identically with and without TimescaleDB jobs.
+    agent_rows = (
+        db.execute(
+            select(AgentHostSample).where(
+                AgentHostSample.collected_at >= warm_cutoff,
+                AgentHostSample.collected_at < hot_cutoff,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    agent_buckets: dict[tuple[int, object], list[AgentHostSample]] = {}
+    for row in agent_rows:
+        bucket = row.collected_at.replace(minute=0, second=0, microsecond=0)
+        agent_buckets.setdefault((row.agent_id, bucket), []).append(row)
+    for (agent_id, bucket), rows in agent_buckets.items():
+        summary = {
+            name: _avg([getattr(row, name) for row in rows])
+            for name in (
+                "cpu_pct",
+                "mem_pct",
+                "root_disk_pct",
+                "net_rx_bps",
+                "net_tx_bps",
+                "max_temp_c",
+                "load_1",
+            )
+        }
+        hourly = db.get(AgentHostSampleHourly, (agent_id, bucket))
+        if hourly is None:
+            hourly = AgentHostSampleHourly(agent_id=agent_id, bucket_at=bucket)
+            db.add(hourly)
+        hourly.sample_count = len(rows)
+        hourly.summary = summary
+    db.query(AgentHostSample).filter(AgentHostSample.collected_at < hot_cutoff).delete(
+        synchronize_session=False
+    )
+    db.query(AgentHostSampleHourly).filter(AgentHostSampleHourly.bucket_at < warm_cutoff).delete(
+        synchronize_session=False
     )
 
     return {"downsampled": downsampled, "deleted": deleted}

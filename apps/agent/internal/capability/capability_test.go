@@ -82,3 +82,22 @@ func TestGate_LoadCached_NoOpWhenFileMissing(t *testing.T) {
 		t.Error("Allowed() = true with no cached grants, want false")
 	}
 }
+
+func TestGateStructuredHostConfigDefaultsAndRejectsInvalidWithoutReplacing(t *testing.T) {
+	g := New(t.TempDir())
+	valid := json.RawMessage(`{"host_telemetry":{"enabled":true,"config":{"interval_s":45,"include_docker":true}}}`)
+	if err := g.ApplyGrants(valid); err != nil {
+		t.Fatal(err)
+	}
+	cfg, enabled := g.HostConfig()
+	if !enabled || cfg.IntervalS != 45 || !cfg.IncludeDocker || !cfg.IncludeNetwork {
+		t.Fatalf("HostConfig() = %+v, %v", cfg, enabled)
+	}
+	if err := g.ApplyGrants(json.RawMessage(`{"host_telemetry":{"enabled":true,"config":{"interval_s":9}}}`)); err == nil {
+		t.Fatal("invalid interval accepted")
+	}
+	cfg, _ = g.HostConfig()
+	if cfg.IntervalS != 45 {
+		t.Fatalf("invalid update replaced last valid config: %+v", cfg)
+	}
+}

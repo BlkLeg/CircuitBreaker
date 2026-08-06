@@ -15,6 +15,7 @@ import logging
 import socket
 import uuid
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -287,13 +288,24 @@ async def enroll_stream(websocket: WebSocket) -> None:
             break
 
 
-def _capabilities_bytes(responder: NoiseIKResponder, grants: dict[str, bool], seq: int) -> bytes:
+def _wire_grants(grants: dict[str, Any], capability_schema: int) -> dict[str, Any]:
+    if capability_schema >= 2:
+        return grants
+    return {
+        name: value if isinstance(value, bool) else bool(value.get("enabled"))
+        for name, value in grants.items()
+    }
+
+
+def _capabilities_bytes(
+    responder: NoiseIKResponder, grants: dict[str, Any], seq: int, capability_schema: int = 1
+) -> bytes:
     frame = {
         "v": 1,
         "type": TYPE_CAPABILITIES_SET,
         "seq": seq,
         "ts": utcnow().isoformat(),
-        "payload": grants,
+        "payload": _wire_grants(grants, capability_schema),
     }
     return responder.encrypt(json.dumps(frame).encode())
 
@@ -530,6 +542,7 @@ async def link_stream(websocket: WebSocket) -> None:
         # rotation's key.rotate frame, the durability fallback for
         # agent_registry.broadcast_server_key_rotate's live push.
         rotation_state = agent_crypto.load_server_key_rotation_state(db)
+        capability_schema = 1
         try:
             hello_payload = HelloPayload.model_validate(hello.get("payload", {}))
         except ValidationError as exc:
@@ -540,8 +553,9 @@ async def link_stream(websocket: WebSocket) -> None:
             # tearing down the connection over metadata alone.
             _logger.warning("agent %s: malformed hello payload: %s", agent_id, exc)
         else:
+            capability_schema = hello_payload.capability_schema
             agent_registry.update_hello_metadata(db, agent, hello_payload)
-        grants = agent_registry.grants_dict(db, agent_id)
+        grants = agent_registry.structured_grants_dict(db, agent_id)
         agent_registry.record_event(db, agent_id, "connected")
         db.commit()
 
@@ -596,12 +610,14 @@ async def link_stream(websocket: WebSocket) -> None:
                 "accepted": True,
                 "agent_id": agent_id,
                 "server_time": utcnow().isoformat(),
-                "capabilities": grants,
+                "capabilities": _wire_grants(grants, capability_schema),
             },
             outbound_seq.next(),
         )
     )
-    await websocket.send_bytes(_capabilities_bytes(responder, grants, outbound_seq.next()))
+    await websocket.send_bytes(
+        _capabilities_bytes(responder, grants, outbound_seq.next(), capability_schema)
+    )
     # Task 28: resend the active rotation's key.rotate (kind="server") frame
     # on every accepted hello.ack, exactly like capabilities.set above —
     # the durability fallback for agent_registry.broadcast_server_key_rotate's
@@ -701,6 +717,11 @@ async def link_stream(websocket: WebSocket) -> None:
 
             if control_get_task in done:
                 claimed = control_get_task.result()
+                if claimed.get("type") == TYPE_CAPABILITIES_SET:
+                    claimed = {
+                        **claimed,
+                        "payload": _wire_grants(claimed.get("payload") or {}, capability_schema),
+                    }
                 frame_bytes = _control_frame_bytes(responder, claimed, outbound_seq.next())
                 if frame_bytes is not None:
                     try:

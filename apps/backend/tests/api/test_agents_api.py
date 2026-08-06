@@ -53,7 +53,20 @@ async def test_get_agent_detail_includes_capabilities(client, factories, viewer_
 
     resp = await client.get(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
     assert resp.status_code == 200
-    assert resp.json()["capabilities"] == {"host_telemetry": True}
+    assert resp.json()["capabilities"] == {
+        "host_telemetry": {
+            "enabled": True,
+            "config": {
+                "interval_s": 30,
+                "include_filesystems": True,
+                "include_disks": True,
+                "include_network": True,
+                "include_temperatures": True,
+                "include_virtual": False,
+                "include_docker": False,
+            },
+        }
+    }
 
 
 @pytest.mark.asyncio
@@ -265,9 +278,20 @@ async def test_approve_applies_default_grants_and_sets_active(client, factories,
     body = resp.json()
     assert body["status"] == "active"
     assert body["capabilities"] == {
-        "host_telemetry": True,
-        "remote_probe": False,
-        "local_discovery": False,
+        "host_telemetry": {
+            "enabled": True,
+            "config": {
+                "interval_s": 30,
+                "include_filesystems": True,
+                "include_disks": True,
+                "include_network": True,
+                "include_temperatures": True,
+                "include_virtual": False,
+                "include_docker": False,
+            },
+        },
+        "remote_probe": {"enabled": False, "config": {}},
+        "local_discovery": {"enabled": False, "config": {}},
     }
 
 
@@ -279,7 +303,7 @@ async def test_approve_honors_capability_overrides(client, factories, auth_heade
         json={"capabilities": {"remote_probe": True}},
         headers=auth_headers,
     )
-    assert resp.json()["capabilities"]["remote_probe"] is True
+    assert resp.json()["capabilities"]["remote_probe"]["enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -372,7 +396,7 @@ async def test_capabilities_put_updates_grants(client, factories, auth_headers):
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["capabilities"]["remote_probe"] is True
+    assert resp.json()["capabilities"]["remote_probe"]["enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -411,7 +435,21 @@ async def test_capabilities_put_publishes_control_frame_for_immediate_delivery(
     assert frame["type"] == "capabilities.set"
     # The full, authoritative grants set — not just the one capability this
     # request changed — same as the connect-time capabilities.set send.
-    assert frame["payload"] == {"remote_probe": True, "host_telemetry": True}
+    assert frame["payload"] == {
+        "remote_probe": {"enabled": True, "config": {}},
+        "host_telemetry": {
+            "enabled": True,
+            "config": {
+                "interval_s": 30,
+                "include_filesystems": True,
+                "include_disks": True,
+                "include_network": True,
+                "include_temperatures": True,
+                "include_virtual": False,
+                "include_docker": False,
+            },
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -439,7 +477,7 @@ async def test_capabilities_put_succeeds_even_when_control_frame_publish_fails(
         headers=auth_headers,
     )
     assert resp.status_code == 200
-    assert resp.json()["capabilities"]["remote_probe"] is True
+    assert resp.json()["capabilities"]["remote_probe"]["enabled"] is True
 
 
 @pytest.mark.asyncio

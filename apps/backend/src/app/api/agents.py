@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -12,7 +13,16 @@ from sqlalchemy.orm import Session
 from app.core import agent_crypto
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
-from app.db.models import Agent, AgentEvent, Hardware, User
+from app.core.time import utcnow
+from app.db.models import (
+    Agent,
+    AgentCapabilityReadiness,
+    AgentEvent,
+    AgentHostSample,
+    AgentHostSampleHourly,
+    Hardware,
+    User,
+)
 from app.db.session import get_db
 from app.schemas.agent_frame import TYPE_CAPABILITIES_SET, TYPE_DISCONNECT, TYPE_UPDATE
 from app.schemas.agents import (
@@ -23,6 +33,7 @@ from app.schemas.agents import (
     AgentSummary,
     ApproveRequest,
     CapabilitiesUpdateRequest,
+    CapabilityGrant,
     HardwareSummary,
     InstallCommandResponse,
     PairingLookupRequest,
@@ -36,9 +47,78 @@ from app.services import agent_enrollment, agent_registry, agent_update
 router = APIRouter(tags=["agents"])
 
 
+def _sample_json(row: AgentHostSample) -> dict[str, Any]:
+    return {
+        "sample_id": row.sample_id,
+        "collected_at": row.collected_at,
+        "status": row.status,
+        "summary": {
+            "cpu_pct": row.cpu_pct,
+            "mem_pct": row.mem_pct,
+            "root_disk_pct": row.root_disk_pct,
+            "net_rx_bps": row.net_rx_bps,
+            "net_tx_bps": row.net_tx_bps,
+            "max_temp_c": row.max_temp_c,
+            "load_1": row.load_1,
+            "uptime_s": row.uptime_s,
+        },
+        "payload": row.raw,
+        "projected": row.projected_at is not None,
+    }
+
+
+def _bucket_samples(rows: list[AgentHostSample], width: timedelta) -> list[dict[str, Any]]:
+    """Return stable, bounded chart points without hiding spikes in raw payloads.
+
+    History is a visualization API, so each numeric summary is averaged within
+    the documented range bucket. The latest raw sample remains available from
+    the unaggregated telemetry endpoint.
+    """
+    width_seconds = int(width.total_seconds())
+    buckets: dict[int, list[AgentHostSample]] = {}
+    for row in rows:
+        timestamp = row.collected_at
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        key = int(timestamp.timestamp()) // width_seconds * width_seconds
+        buckets.setdefault(key, []).append(row)
+
+    fields = (
+        "cpu_pct",
+        "mem_pct",
+        "root_disk_pct",
+        "net_rx_bps",
+        "net_tx_bps",
+        "max_temp_c",
+        "load_1",
+        "uptime_s",
+    )
+    points: list[dict[str, Any]] = []
+    for key, samples in sorted(buckets.items()):
+        summary: dict[str, float | None] = {}
+        for field in fields:
+            values = []
+            for sample in samples:
+                value = getattr(sample, field)
+                if value is not None:
+                    values.append(value)
+            summary[field] = sum(values) / len(values) if values else None
+        points.append(
+            {
+                "collected_at": datetime.fromtimestamp(key, tz=UTC),
+                "summary": summary,
+                "sample_count": len(samples),
+            }
+        )
+    return points
+
+
 def _to_read(db: Session, agent: Agent) -> AgentRead:
     data = AgentRead.model_validate(agent)
-    data.capabilities = agent_registry.grants_dict(db, agent.id)
+    data.capabilities = {
+        name: CapabilityGrant.model_validate(grant)
+        for name, grant in agent_registry.structured_grants_dict(db, agent.id).items()
+    }
     proposed = agent_registry.propose_hardware_match(db, agent)
     data.proposed_hardware_id = proposed.id if proposed else None
     data.proposed_hardware_name = proposed.name if proposed else None
@@ -177,6 +257,116 @@ async def get_agents_presence(
         )
         for agent in agents
     ]
+
+
+@router.get("/{agent_id}/telemetry")
+def get_agent_telemetry(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+) -> Any:
+    agent = agent_registry.get_agent(db, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    latest = db.execute(
+        select(AgentHostSample)
+        .where(AgentHostSample.agent_id == agent_id)
+        .order_by(AgentHostSample.collected_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    readiness = (
+        db.execute(
+            select(AgentCapabilityReadiness)
+            .where(AgentCapabilityReadiness.agent_id == agent_id)
+            .order_by(AgentCapabilityReadiness.collector)
+        )
+        .scalars()
+        .all()
+    )
+    grant = agent_registry.structured_grants_dict(db, agent_id).get(
+        "host_telemetry", {"enabled": False, "config": {}}
+    )
+    return {
+        "latest": _sample_json(latest) if latest else None,
+        "readiness": [
+            {
+                "collector": r.collector,
+                "state": r.state,
+                "reason": r.reason,
+                "remediation": r.remediation,
+                "missing": r.missing,
+                "updated_at": r.updated_at,
+            }
+            for r in readiness
+        ],
+        "capability": grant,
+        "hardware_id": agent.hardware_id,
+    }
+
+
+@router.get("/{agent_id}/telemetry/history")
+def get_agent_telemetry_history(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+    range_name: str = Query(default="1h", alias="range", pattern="^(1h|6h|24h|7d|30d)$"),
+) -> Any:
+    if agent_registry.get_agent(db, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    durations = {
+        "1h": timedelta(hours=1),
+        "6h": timedelta(hours=6),
+        "24h": timedelta(days=1),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+    }
+    start = utcnow() - durations[range_name]
+    rows = list(
+        db.execute(
+            select(AgentHostSample)
+            .where(
+                AgentHostSample.agent_id == agent_id,
+                AgentHostSample.collected_at >= start,
+            )
+            .order_by(AgentHostSample.collected_at)
+        ).scalars()
+    )
+    bucket_widths = {
+        "1h": timedelta(seconds=1),
+        "6h": timedelta(minutes=1),
+        "24h": timedelta(minutes=5),
+        "7d": timedelta(minutes=30),
+        "30d": timedelta(hours=1),
+    }
+    points = _bucket_samples(rows, bucket_widths[range_name])
+    if range_name == "30d":
+        raw_boundary = min((row.collected_at for row in rows), default=utcnow())
+        hourly = (
+            db.execute(
+                select(AgentHostSampleHourly).where(
+                    AgentHostSampleHourly.agent_id == agent_id,
+                    AgentHostSampleHourly.bucket_at >= start,
+                    AgentHostSampleHourly.bucket_at < raw_boundary,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        points.extend(
+            {
+                "collected_at": row.bucket_at,
+                "summary": row.summary,
+                "sample_count": row.sample_count,
+            }
+            for row in hourly
+        )
+    points.sort(key=lambda point: point["collected_at"])
+    if len(points) > 120:
+        # Preserve both endpoints and evenly sample the interior. This keeps
+        # every range response bounded while avoiding a latest-point lag.
+        last = len(points) - 1
+        points = [points[round(i * last / 119)] for i in range(120)]
+    return {"range": range_name, "points": points}
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
@@ -376,7 +566,10 @@ async def put_capabilities(
     # (re)connects or via its own periodic status poll.
     await agent_registry.publish_agent_control_frame(
         agent_id,
-        {"type": TYPE_CAPABILITIES_SET, "payload": agent_registry.grants_dict(db, agent_id)},
+        {
+            "type": TYPE_CAPABILITIES_SET,
+            "payload": agent_registry.structured_grants_dict(db, agent_id),
+        },
     )
     return _to_read(db, agent)
 

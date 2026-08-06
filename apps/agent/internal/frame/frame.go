@@ -47,6 +47,7 @@ const (
 	TypeProbeResult         = "probe.result"
 	TypeDiscoveryFinding    = "discovery.finding"
 	TypeCapabilityViolation = "capability.violation"
+	TypeCapabilityReadiness = "capability.readiness"
 	TypeLog                 = "log"
 	TypeUninstall           = "uninstall"
 	// TypeUpdateStatus reports one self-update transition point the server
@@ -85,18 +86,19 @@ const (
 // Constraints: "wire the mechanism ... so it activates automatically once
 // Slice 2+ introduces data frames").
 var controlFrameTypes = map[string]bool{
-	TypeHello:            true,
-	TypeHeartbeat:        true,
-	TypeUninstall:        true,
-	TypeHelloAck:         true,
-	TypeCapabilitiesSet:  true,
-	TypeProbeAssign:      true,
-	TypeDiscoveryRequest: true,
-	TypeKeyRotate:        true,
-	TypeUpdate:           true,
-	TypeDisconnect:       true,
-	TypePing:             true,
-	TypeTransportRekey:   true,
+	TypeHello:               true,
+	TypeHeartbeat:           true,
+	TypeCapabilityReadiness: true,
+	TypeUninstall:           true,
+	TypeHelloAck:            true,
+	TypeCapabilitiesSet:     true,
+	TypeProbeAssign:         true,
+	TypeDiscoveryRequest:    true,
+	TypeKeyRotate:           true,
+	TypeUpdate:              true,
+	TypeDisconnect:          true,
+	TypePing:                true,
+	TypeTransportRekey:      true,
 }
 
 // IsDataFrame reports whether typ is a data frame eligible for the outbound
@@ -124,21 +126,27 @@ type Readiness struct {
 	Missing     []string `json:"missing,omitempty"`
 }
 
+type CapabilityGrant struct {
+	Enabled bool            `json:"enabled"`
+	Config  json.RawMessage `json:"config,omitempty"`
+}
+
 // HelloPayload is the agent -> server `hello` payload's structured shape
 // (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). Every field is optional so an
 // old-shaped hello — including today's empty `{}` payload — still decodes: absent fields take
 // their Go zero value rather than failing decode.
 type HelloPayload struct {
-	DevicePK      string      `json:"device_pk,omitempty"`
-	Hostname      string      `json:"hostname,omitempty"`
-	MachineIDHash string      `json:"machine_id_hash,omitempty"`
-	OS            string      `json:"os,omitempty"`
-	OSVersion     string      `json:"os_version,omitempty"`
-	Arch          string      `json:"arch,omitempty"`
-	AgentVersion  string      `json:"agent_version,omitempty"`
-	PrimaryMACs   []string    `json:"primary_macs,omitempty"`
-	Readiness     []Readiness `json:"readiness,omitempty"`
-	SpoolDepth    int         `json:"spool_depth,omitempty"`
+	DevicePK         string      `json:"device_pk,omitempty"`
+	Hostname         string      `json:"hostname,omitempty"`
+	MachineIDHash    string      `json:"machine_id_hash,omitempty"`
+	OS               string      `json:"os,omitempty"`
+	OSVersion        string      `json:"os_version,omitempty"`
+	Arch             string      `json:"arch,omitempty"`
+	AgentVersion     string      `json:"agent_version,omitempty"`
+	PrimaryMACs      []string    `json:"primary_macs,omitempty"`
+	Readiness        []Readiness `json:"readiness,omitempty"`
+	SpoolDepth       int         `json:"spool_depth,omitempty"`
+	CapabilitySchema int         `json:"capability_schema,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
@@ -148,11 +156,48 @@ type HelloPayload struct {
 // different, untyped payload shape (see ws_agents.py's `_ack_bytes`); this struct models only
 // the link ack. All fields are optional/zero-valued when absent.
 type HelloAckPayload struct {
-	Accepted     bool            `json:"accepted,omitempty"`
-	Reason       string          `json:"reason,omitempty"`
-	ServerTime   *time.Time      `json:"server_time,omitempty"`
-	Capabilities map[string]bool `json:"capabilities,omitempty"`
-	AgentID      int64           `json:"agent_id,omitempty"`
+	Accepted     bool                       `json:"accepted,omitempty"`
+	Reason       string                     `json:"reason,omitempty"`
+	ServerTime   *time.Time                 `json:"server_time,omitempty"`
+	Capabilities map[string]json.RawMessage `json:"capabilities,omitempty"`
+	AgentID      int64                      `json:"agent_id,omitempty"`
+}
+
+type CapabilityReadinessPayload struct {
+	Readiness []Readiness `json:"readiness"`
+}
+
+type HostSummary struct {
+	CPUPct            *float64 `json:"cpu_pct,omitempty"`
+	Load1             *float64 `json:"load_1,omitempty"`
+	Load5             *float64 `json:"load_5,omitempty"`
+	Load15            *float64 `json:"load_15,omitempty"`
+	LogicalCPUs       *int     `json:"logical_cpus,omitempty"`
+	MemTotalBytes     *uint64  `json:"mem_total_bytes,omitempty"`
+	MemUsedBytes      *uint64  `json:"mem_used_bytes,omitempty"`
+	MemAvailableBytes *uint64  `json:"mem_available_bytes,omitempty"`
+	MemPct            *float64 `json:"mem_pct,omitempty"`
+	SwapTotalBytes    *uint64  `json:"swap_total_bytes,omitempty"`
+	SwapUsedBytes     *uint64  `json:"swap_used_bytes,omitempty"`
+	SwapPct           *float64 `json:"swap_pct,omitempty"`
+	RootDiskPct       *float64 `json:"root_disk_pct,omitempty"`
+	NetRXBPS          *float64 `json:"net_rx_bps,omitempty"`
+	NetTXBPS          *float64 `json:"net_tx_bps,omitempty"`
+	MaxTempC          *float64 `json:"max_temp_c,omitempty"`
+	UptimeS           *float64 `json:"uptime_s,omitempty"`
+	BootTimeUnixS     *uint64  `json:"boot_time_unix_s,omitempty"`
+}
+
+type HostTelemetryPayload struct {
+	Schema       int              `json:"schema"`
+	SampleID     string           `json:"sample_id"`
+	Status       string           `json:"status"`
+	Summary      HostSummary      `json:"summary"`
+	Filesystems  []map[string]any `json:"filesystems"`
+	Disks        []map[string]any `json:"disks"`
+	Interfaces   []map[string]any `json:"interfaces"`
+	Temperatures []map[string]any `json:"temperatures"`
+	Docker       any              `json:"docker"`
 }
 
 // TransportRekeyPayload announces a Noise cipher rekey for one direction of the link.

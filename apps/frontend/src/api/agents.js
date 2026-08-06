@@ -15,6 +15,14 @@ export const getAgentsPresence = (params = {}) =>
 export const getAgent = (id) => client.get(`/agents/${id}`);
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
+export const getAgentTelemetry = (id) => client.get(`/agents/${id}/telemetry`);
+export const getAgentTelemetryHistory = (id, range = '1h') =>
+  client.get(`/agents/${id}/telemetry/history`, { params: { range } });
+
+export const normalizeCapability = (value) => {
+  if (typeof value === 'boolean') return { enabled: value, config: {} };
+  return { enabled: Boolean(value?.enabled), config: value?.config ?? {} };
+};
 export const patchAgent = (id, data) => client.patch(`/agents/${id}`, data);
 export const lookupPairingCode = (code) => client.post('/agents/pairing/lookup', { code });
 export const approveAgent = (id, data = {}) => client.post(`/agents/${id}/approve`, data);

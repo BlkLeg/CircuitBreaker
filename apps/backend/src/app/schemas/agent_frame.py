@@ -19,6 +19,7 @@ TYPE_TELEMETRY_HOST = "telemetry.host"
 TYPE_PROBE_RESULT = "probe.result"
 TYPE_DISCOVERY_FINDING = "discovery.finding"
 TYPE_CAPABILITY_VIOLATION = "capability.violation"
+TYPE_CAPABILITY_READINESS = "capability.readiness"
 TYPE_LOG = "log"
 TYPE_UNINSTALL = "uninstall"
 # Task 24: explicit self-update progress signal — the agent reports the
@@ -88,6 +89,7 @@ class HelloPayload(BaseModel):
     primary_macs: list[str] = Field(default_factory=list)
     readiness: list[Readiness] = Field(default_factory=list)
     spool_depth: int = 0
+    capability_schema: int = 1
 
 
 class HelloAckPayload(BaseModel):
@@ -102,8 +104,24 @@ class HelloAckPayload(BaseModel):
     accepted: bool = False
     reason: str | None = None
     server_time: datetime | None = None
-    capabilities: dict[str, bool] = Field(default_factory=dict)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
     agent_id: int | None = None
+
+
+class CapabilityReadinessPayload(BaseModel):
+    readiness: list[Readiness] = Field(default_factory=list)
+
+
+class HostTelemetryPayload(BaseModel):
+    schema_version: int = Field(alias="schema")
+    sample_id: str
+    status: str
+    summary: dict[str, int | float]
+    filesystems: list[dict[str, Any]] = Field(default_factory=list)
+    disks: list[dict[str, Any]] = Field(default_factory=list)
+    interfaces: list[dict[str, Any]] = Field(default_factory=list)
+    temperatures: list[dict[str, Any]] = Field(default_factory=list)
+    docker: dict[str, Any] | None = None
 
 
 class TransportRekeyPayload(BaseModel):

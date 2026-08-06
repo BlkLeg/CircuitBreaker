@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -153,6 +154,9 @@ type Options struct {
 	// default: nothing produces data frames yet) simply never selects, so
 	// the whole mechanism stays inert until a real producer exists.
 	DataFrames <-chan frame.Frame
+	// ControlFrames carries ephemeral producer control reports such as
+	// capability.readiness. They are sent only while connected and never spooled.
+	ControlFrames <-chan frame.Frame
 
 	// OnSpoolStats fires after every spool mutation (a live-send failure
 	// enqueues, or a drain succeeds or fails-and-re-enqueues) with the
@@ -199,12 +203,56 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.OnDisconnected == nil {
 		opts.OnDisconnected = func(error) {}
 	}
+	originalData := opts.DataFrames
+	routedData := make(chan frame.Frame, 1)
+	var live atomic.Bool
+	originalConnected := opts.OnConnected
+	opts.OnConnected = func() { live.Store(true); originalConnected() }
+	if originalData != nil && opts.Spool != nil {
+		opts.DataFrames = routedData
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case f := <-originalData:
+					routed := false
+					for live.Load() {
+						select {
+						case routedData <- f:
+							routed = true
+						case <-ctx.Done():
+							return
+						case <-time.After(10 * time.Millisecond):
+						}
+						if routed {
+							break
+						}
+					}
+					if routed {
+						continue
+					}
+					if opts.Spool != nil && frame.IsDataFrame(f.Type) {
+						if err := opts.Spool.Enqueue(f); err != nil {
+							log.Printf("link: spool during disconnect: %v", err)
+						}
+						if opts.OnSpoolStats != nil {
+							size, _ := opts.Spool.SizeBytes()
+							opts.OnSpoolStats(opts.Spool.Len(), size)
+						}
+					}
+				}
+			}
+		}()
+	}
 	var backoff backoffState
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		live.Store(false)
 		stable, err := runOnce(ctx, opts)
+		live.Store(false)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -518,6 +566,12 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// today's daemon config (no producer exists yet), which newDataFrameSender
 	// and dataFrameSender both handle as "spooling disabled".
 	sendDataFrame := func(f frame.Frame) error {
+		seq++
+		f.V = frame.FrameVersion
+		f.Seq = seq
+		if f.TS.IsZero() {
+			f.TS = time.Now().UTC()
+		}
 		data, err := frame.Encode(f)
 		if err != nil {
 			return err
@@ -533,12 +587,26 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		case err := <-readErrCh:
 			return stable, fmt.Errorf("link: connection lost: %w", err)
 		case f := <-opts.DataFrames:
+			if err := sender.sendLive(f); err != nil {
+				return stable, err
+			}
+		case f := <-opts.ControlFrames:
+			if !connectedFired {
+				continue
+			}
 			seq++
 			f.V = frame.FrameVersion
 			f.Seq = seq
-			f.TS = time.Now().UTC()
-			if err := sender.sendLive(f); err != nil {
-				return stable, err
+			if f.TS.IsZero() {
+				f.TS = time.Now().UTC()
+			}
+			data, encodeErr := frame.Encode(f)
+			if encodeErr != nil {
+				log.Printf("link: encode control frame: %v", encodeErr)
+				continue
+			}
+			if writeErr := conn.WriteMessage(websocket.BinaryMessage, session.Encrypt(data)); writeErr != nil {
+				return stable, writeErr
 			}
 		case f := <-incoming:
 			switch f.Type {
@@ -552,6 +620,14 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 					log.Printf("link: hello.ack rejected: %s", ack.Reason)
 					opts.OnRejected(ack.Reason)
 					continue
+				}
+				if len(ack.Capabilities) > 0 {
+					payload, marshalErr := json.Marshal(ack.Capabilities)
+					if marshalErr != nil {
+						log.Printf("link: encode hello.ack capabilities: %v", marshalErr)
+					} else if applyErr := opts.OnCapabilitiesSet(payload); applyErr != nil {
+						log.Printf("link: applying hello.ack capabilities: %v", applyErr)
+					}
 				}
 				// The server accepted this session — fire OnConnected and
 				// start the stability-window timer exactly once per

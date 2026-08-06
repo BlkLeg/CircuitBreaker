@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import json
+import logging
+import re
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.redis import get_redis
+from app.core.time import utcnow
+from app.db.models import (
+    Agent,
+    AgentCapabilityReadiness,
+    AgentHostSample,
+    Hardware,
+    HardwareLiveMetric,
+)
+from app.schemas.agent_frame import CapabilityReadinessPayload, HostTelemetryPayload
+from app.services.telemetry_cache import cache_telemetry, publish_telemetry
+
+_SAMPLE_ID = re.compile(r"^[0-9a-f]{32}$")
+_logger = logging.getLogger(__name__)
+_MAX_PAYLOAD = 256 << 10
+_LIST_LIMITS = {"filesystems": 128, "disks": 128, "interfaces": 128, "temperatures": 256}
+_PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
+_violation_lock = threading.Lock()
+_violations: dict[int, tuple[float, int]] = {}
+
+
+class InvalidHostTelemetry(ValueError):
+    pass
+
+
+def recordable_violation(agent_id: int) -> tuple[bool, int]:
+    """Rate-limit payload-free audit events while retaining repeat counts."""
+    now = time.monotonic()
+    with _violation_lock:
+        last, count = _violations.get(agent_id, (0.0, 0))
+        count += 1
+        if now - last >= 60:
+            _violations[agent_id] = (now, 0)
+            return True, count
+        _violations[agent_id] = (last, count)
+        return False, count
+
+
+def validate_host_payload(payload: dict[str, Any], collected_at: datetime) -> HostTelemetryPayload:
+    if len(json.dumps(payload, separators=(",", ":")).encode()) > _MAX_PAYLOAD:
+        raise InvalidHostTelemetry("payload exceeds 256 KiB")
+    try:
+        sample = HostTelemetryPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise InvalidHostTelemetry("payload schema is invalid") from exc
+    if sample.schema_version != 1 or sample.status not in {"healthy", "degraded"}:
+        raise InvalidHostTelemetry("unsupported schema or status")
+    if not _SAMPLE_ID.fullmatch(sample.sample_id):
+        raise InvalidHostTelemetry("sample_id must be 128-bit lowercase hex")
+    for field, limit in _LIST_LIMITS.items():
+        if len(getattr(sample, field)) > limit:
+            raise InvalidHostTelemetry(f"{field} exceeds {limit} entries")
+    for name, value in sample.summary.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise InvalidHostTelemetry(f"summary.{name} is not numeric")
+        if name in _PERCENT_FIELDS and not 0 <= value <= 100:
+            raise InvalidHostTelemetry(f"summary.{name} is outside 0..100")
+        if name not in _PERCENT_FIELDS and value < 0:
+            raise InvalidHostTelemetry(f"summary.{name} is negative")
+    now = utcnow()
+    if collected_at.tzinfo is None:
+        collected_at = collected_at.replace(tzinfo=UTC)
+    if collected_at > now + timedelta(seconds=60):
+        raise InvalidHostTelemetry("collection timestamp is in the future")
+    if collected_at < now - timedelta(days=30):
+        raise InvalidHostTelemetry("collection timestamp is outside retention")
+    return sample
+
+
+async def ingest_host_sample(
+    db: Session, agent: Agent, payload: dict[str, Any], collected_at: datetime
+) -> AgentHostSample:
+    if agent.status != "active":
+        raise InvalidHostTelemetry("agent is not active")
+    sample = validate_host_payload(payload, collected_at)
+    existing = db.execute(
+        select(AgentHostSample).where(
+            AgentHostSample.agent_id == agent.id,
+            AgentHostSample.sample_id == sample.sample_id,
+            AgentHostSample.collected_at == collected_at,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    summary = sample.summary
+    row = AgentHostSample(
+        agent_id=agent.id,
+        hardware_id=agent.hardware_id,
+        sample_id=sample.sample_id,
+        collected_at=collected_at,
+        status=sample.status,
+        raw=payload,
+        cpu_pct=summary.get("cpu_pct"),
+        mem_pct=summary.get("mem_pct"),
+        root_disk_pct=summary.get("root_disk_pct"),
+        net_rx_bps=summary.get("net_rx_bps"),
+        net_tx_bps=summary.get("net_tx_bps"),
+        max_temp_c=summary.get("max_temp_c"),
+        load_1=summary.get("load_1"),
+        uptime_s=summary.get("uptime_s"),
+    )
+    db.add(row)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return db.execute(
+            select(AgentHostSample).where(
+                AgentHostSample.agent_id == agent.id,
+                AgentHostSample.sample_id == sample.sample_id,
+                AgentHostSample.collected_at == collected_at,
+            )
+        ).scalar_one()
+    project_live = False
+    if row.hardware_id is not None:
+        metric = HardwareLiveMetric(
+            hardware_id=row.hardware_id,
+            agent_id=agent.id,
+            agent_sample_id=row.sample_id,
+            collected_at=collected_at,
+            cpu_pct=row.cpu_pct,
+            mem_pct=row.mem_pct,
+            mem_used_mb=(
+                summary["mem_used_bytes"] / (1024 * 1024) if "mem_used_bytes" in summary else None
+            ),
+            mem_total_mb=(
+                summary["mem_total_bytes"] / (1024 * 1024) if "mem_total_bytes" in summary else None
+            ),
+            disk_pct=row.root_disk_pct,
+            temp_c=row.max_temp_c,
+            uptime_s=row.uptime_s,
+            status=sample.status,
+            source="agent",
+            raw=payload,
+        )
+        db.add(metric)
+        row.projected_at = utcnow()
+        hardware = db.get(Hardware, row.hardware_id)
+        if hardware is not None and (
+            hardware.telemetry_last_polled is None or collected_at >= hardware.telemetry_last_polled
+        ):
+            project_live = True
+            hardware.telemetry_data = dict(summary)
+            hardware.telemetry_status = sample.status
+            hardware.telemetry_last_polled = collected_at
+            hardware.last_seen = collected_at.isoformat()
+    db.commit()
+    redis = await get_redis()
+    if redis is not None:
+        try:
+            await redis.publish(
+                f"telemetry:agent:{agent.id}",
+                json.dumps(
+                    {
+                        "type": "telemetry.host",
+                        "agent_id": agent.id,
+                        "collected_at": collected_at.isoformat(),
+                        "payload": payload,
+                    }
+                ),
+            )
+        except Exception as exc:
+            _logger.debug("agent telemetry publish failed: %s", exc)
+    if row.hardware_id is not None and project_live:
+        hardware_payload = {
+            "data": dict(summary),
+            "status": sample.status,
+            "last_polled": collected_at.isoformat(),
+            "source": "agent",
+            "agent_id": agent.id,
+            "sample_id": sample.sample_id,
+        }
+        try:
+            await cache_telemetry(row.hardware_id, hardware_payload, ttl=60)
+            await publish_telemetry(
+                row.hardware_id,
+                {"entity_type": "hardware", "hardware_id": row.hardware_id, **hardware_payload},
+            )
+        except Exception as exc:
+            _logger.debug("agent Hardware telemetry publish failed: %s", exc)
+    return row
+
+
+async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -> bool:
+    try:
+        report = CapabilityReadinessPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise InvalidHostTelemetry("invalid readiness payload") from exc
+    changed = False
+    now = utcnow()
+    for item in report.readiness:
+        if item.state not in {"disabled", "ready", "degraded", "unavailable"}:
+            raise InvalidHostTelemetry("invalid readiness state")
+        row = db.get(AgentCapabilityReadiness, (agent.id, item.collector))
+        values = (item.state, item.reason, item.remediation, item.missing)
+        if row is None:
+            row = AgentCapabilityReadiness(agent_id=agent.id, collector=item.collector)
+            db.add(row)
+            changed = True
+        elif (row.state, row.reason, row.remediation, row.missing) != values:
+            changed = True
+        row.state, row.reason, row.remediation, row.missing, row.updated_at = (*values, now)
+    db.commit()
+    if changed:
+        redis = await get_redis()
+        if redis is not None:
+            await redis.publish(
+                f"telemetry:agent:{agent.id}",
+                json.dumps(
+                    {
+                        "type": "capability.readiness",
+                        "agent_id": agent.id,
+                        "readiness": [x.model_dump() for x in report.readiness],
+                    },
+                    default=str,
+                ),
+            )
+    return changed

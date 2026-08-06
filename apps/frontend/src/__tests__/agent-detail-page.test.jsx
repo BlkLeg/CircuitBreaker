@@ -4,6 +4,10 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
 vi.mock('../api/agents', () => ({
+  normalizeCapability: (value) =>
+    typeof value === 'boolean'
+      ? { enabled: value, config: {} }
+      : { enabled: Boolean(value?.enabled), config: value?.config ?? {} },
   getAgent: vi.fn(() =>
     Promise.resolve({
       data: {
@@ -22,6 +26,8 @@ vi.mock('../api/agents', () => ({
       data: [{ id: 1, event_type: 'approved', created_at: '2026-07-27T12:00:00Z', detail: null }],
     })
   ),
+  getAgentTelemetry: vi.fn(() => Promise.resolve({ data: { latest: null, readiness: [] } })),
+  getAgentTelemetryHistory: vi.fn(() => Promise.resolve({ data: { points: [] } })),
   getAgentsPresence: vi.fn(() =>
     Promise.resolve({
       data: [

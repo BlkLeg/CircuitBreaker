@@ -32,14 +32,15 @@ func Collect(agentVersion string) frame.HelloPayload {
 	machineIDHash := machineIDHash()
 
 	return frame.HelloPayload{
-		Hostname:      hostname,
-		MachineIDHash: machineIDHash,
-		OS:            runtime.GOOS,
-		OSVersion:     formatOSVersion(distroID, distroVersion),
-		Arch:          goArch(),
-		AgentVersion:  agentVersion,
-		PrimaryMACs:   primaryMACs(),
-		Readiness:     identityReadiness(machineIDHash),
+		Hostname:         hostname,
+		MachineIDHash:    machineIDHash,
+		OS:               runtime.GOOS,
+		OSVersion:        formatOSVersion(distroID, distroVersion),
+		Arch:             goArch(),
+		AgentVersion:     agentVersion,
+		PrimaryMACs:      primaryMACs(),
+		Readiness:        identityReadiness(machineIDHash),
+		CapabilitySchema: 2,
 	}
 }
 
