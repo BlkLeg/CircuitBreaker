@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-HOST_TELEMETRY_DEFAULTS = {
-    "interval_s": 30,
-    "include_filesystems": True,
-    "include_disks": True,
-    "include_network": True,
-    "include_temperatures": True,
-    "include_virtual": False,
-    "include_docker": False,
-}
+# The one capability registry (Task 14 / D-14). Imported at module scope: it is
+# dependency-free (typing/stdlib only), so the schema layer does not pull in a
+# DB-touching service and there is no cycle to work around.
+from app.services.agent_capabilities import normalize_grant
 
 
 class CapabilityGrant(BaseModel):
@@ -22,7 +16,34 @@ class CapabilityGrant(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+# **Input-only.** Referenced solely by `ApproveRequest.capabilities` and
+# `CapabilitiesUpdateRequest.capabilities`: every REST *request* keeps
+# accepting a bare boolean or an `{enabled, config}` object per capability,
+# indefinitely. It is never emitted on a response — every response carrying
+# grants uses `CapabilityGrant` with server-normalized config (Task 15,
+# **D-11**). The agent wire protocol is separate and unaffected:
+# `api/ws_agents._wire_grants` still downgrades to booleans for
+# `capability_schema < 2`.
 CapabilityValue = bool | CapabilityGrant
+
+
+def _validate_capability_map(values: dict[str, CapabilityValue]) -> dict[str, CapabilityValue]:
+    """Run every requested grant through the server capability registry so an
+    unknown capability name or an invalid config is a 422 at the edge rather
+    than a `ValueError` escaping the service layer as a 500.
+
+    Validation only — the persisted value is produced by `normalize_grant`
+    again inside `agent_registry`, there against the grant's currently stored
+    config. Merging the registry default here (with no `current_config`) is
+    strictly the weaker check of the two, so nothing that passes here can be
+    rejected there for a reason this pass would have caught.
+    """
+    for capability, value in values.items():
+        try:
+            normalize_grant(capability, value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+    return values
 
 
 class AgentSummary(BaseModel):
@@ -83,13 +104,20 @@ class HardwareSummary(BaseModel):
 class AgentPresenceRead(BaseModel):
     """One fleet table row's worth of presence + grant + hardware data —
     the bulk lookup Task 12 adds so `AgentsPage` (Task 14) can render the
-    whole fleet from a single request instead of one per-agent call."""
+    whole fleet from a single request instead of one per-agent call.
+
+    `capabilities` is the canonical `{name: {enabled, config}}` shape,
+    unconditionally and with no `?capability_shape` escape hatch (Task 15,
+    **D-11**) — byte-identical to `AgentRead.capabilities` for the same grant
+    rows, both projected by `agent_registry._structured_grant`. Consumers must
+    read `.enabled`; the object itself is always truthy.
+    """
 
     agent_id: int
     online: bool
     connected_since: datetime | None
     last_seen_at: datetime | None
-    capabilities: Mapping[str, CapabilityValue] = {}
+    capabilities: dict[str, CapabilityGrant] = {}
     hardware: HardwareSummary | None = None
 
 
@@ -137,6 +165,13 @@ class ApproveRequest(BaseModel):
     host_link_action: Literal["accept", "select", "create", "unlinked"] | None = None
     capabilities: dict[str, CapabilityValue] | None = None
 
+    @field_validator("capabilities")
+    @classmethod
+    def validate_capabilities(
+        cls, values: dict[str, CapabilityValue] | None
+    ) -> dict[str, CapabilityValue] | None:
+        return None if values is None else _validate_capability_map(values)
+
 
 class RevokeRequest(BaseModel):
     reason: str | None = None
@@ -147,23 +182,10 @@ class CapabilitiesUpdateRequest(BaseModel):
 
     @field_validator("capabilities")
     @classmethod
-    def validate_host_config(cls, values: dict[str, CapabilityValue]) -> dict[str, CapabilityValue]:
-        host = values.get("host_telemetry")
-        if isinstance(host, CapabilityGrant):
-            unknown = set(host.config) - set(HOST_TELEMETRY_DEFAULTS)
-            if unknown:
-                raise ValueError(f"unknown host_telemetry settings: {', '.join(sorted(unknown))}")
-            interval = host.config.get("interval_s", 30)
-            if (
-                isinstance(interval, bool)
-                or not isinstance(interval, int)
-                or not 10 <= interval <= 900
-            ):
-                raise ValueError("host_telemetry.interval_s must be between 10 and 900")
-            for name in set(HOST_TELEMETRY_DEFAULTS) - {"interval_s"}:
-                if name in host.config and not isinstance(host.config[name], bool):
-                    raise ValueError(f"host_telemetry.{name} must be a boolean")
-        return values
+    def validate_capabilities(
+        cls, values: dict[str, CapabilityValue]
+    ) -> dict[str, CapabilityValue]:
+        return _validate_capability_map(values)
 
 
 class UpdateRequest(BaseModel):

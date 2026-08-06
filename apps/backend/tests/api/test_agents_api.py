@@ -1,7 +1,38 @@
+import contextlib
 import json
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import event
+
+# The host_telemetry registry defaults (`CAPABILITY_DEFINITIONS`), spelled out
+# so a silent change to the server-side defaults fails these tests loudly.
+HOST_TELEMETRY_DEFAULT_CONFIG = {
+    "interval_s": 30,
+    "include_filesystems": True,
+    "include_disks": True,
+    "include_network": True,
+    "include_temperatures": True,
+    "include_virtual": False,
+    "include_docker": False,
+}
+
+
+@contextlib.contextmanager
+def _capture_sql():
+    """Record every statement the engine executes while the block is open."""
+    from app.db.session import engine
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "after_cursor_execute", _record)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "after_cursor_execute", _record)
 
 
 def _redis_with_presence(presence_by_key: dict[str, dict]):
@@ -271,7 +302,11 @@ async def test_approve_requires_admin(client, factories, viewer_headers):
 
 
 @pytest.mark.asyncio
-async def test_approve_applies_default_grants_and_sets_active(client, factories, auth_headers):
+async def test_approve_with_omitted_capabilities_grants_the_full_normal_preset(
+    client, factories, auth_headers
+):
+    """Task 14 / D-10: an approve body with no `capabilities` grants all three
+    capabilities enabled, each carrying the server registry's default config."""
     agent = factories.agent(status="pending")
     resp = await client.post(f"/api/v1/agents/{agent.id}/approve", json={}, headers=auth_headers)
     assert resp.status_code == 200
@@ -290,9 +325,62 @@ async def test_approve_applies_default_grants_and_sets_active(client, factories,
                 "include_docker": False,
             },
         },
-        "remote_probe": {"enabled": False, "config": {}},
-        "local_discovery": {"enabled": False, "config": {}},
+        "remote_probe": {"enabled": True, "config": {}},
+        "local_discovery": {"enabled": True, "config": {}},
     }
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_invalid_host_telemetry_config_with_422(
+    client, factories, auth_headers
+):
+    """Task 14: `ApproveRequest` validates capability config the same way
+    `CapabilitiesUpdateRequest` does, so a bad cadence is a 422 — not the 500
+    the un-validated approve body used to produce via a bare `ValueError`."""
+    agent = factories.agent(status="pending")
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"capabilities": {"host_telemetry": {"enabled": True, "config": {"interval_s": 5}}}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_unknown_capability_name(client, factories, auth_headers):
+    """Task 14: the registry is the closed set of capability names; approving
+    with anything else is a 422, not a grant row for an arbitrary string."""
+    agent = factories.agent(status="pending")
+    resp = await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"capabilities": {"not_a_capability": True}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_capability_defaults_endpoint_matches_what_an_omitted_approve_grants(
+    client, factories, auth_headers
+):
+    """Structural lock (Task 14): the frontend's approval preset is fetched from
+    this endpoint, so it can never drift from what the server actually grants."""
+    defaults = await client.get("/api/v1/agents/capability-defaults", headers=auth_headers)
+    assert defaults.status_code == 200
+
+    agent = factories.agent(status="pending")
+    approve = await client.post(f"/api/v1/agents/{agent.id}/approve", json={}, headers=auth_headers)
+    assert approve.status_code == 200
+    assert approve.json()["capabilities"] == defaults.json()
+
+
+@pytest.mark.asyncio
+async def test_capability_defaults_is_readable_by_a_viewer(client, viewer_headers):
+    """Declared above "/{agent_id}" so "capability-defaults" is never parsed as
+    an agent id (which would 422 on the int path param for a viewer)."""
+    resp = await client.get("/api/v1/agents/capability-defaults", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert set(resp.json()) == {"host_telemetry", "remote_probe", "local_discovery"}
 
 
 @pytest.mark.asyncio
@@ -834,7 +922,89 @@ async def test_presence_includes_capability_grants(client, factories, viewer_hea
 
     assert resp.status_code == 200
     row = next(r for r in resp.json() if r["agent_id"] == agent.id)
-    assert row["capabilities"] == {"host_telemetry": True, "remote_probe": False}
+    # Task 15 / D-11: presence emits the canonical {enabled, config} shape
+    # unconditionally — never a bare boolean, and with no compatibility flag.
+    assert row["capabilities"] == {
+        "host_telemetry": {"enabled": True, "config": HOST_TELEMETRY_DEFAULT_CONFIG},
+        "remote_probe": {"enabled": False, "config": {}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_presence_and_agent_detail_report_identical_capability_grants(
+    client, factories, viewer_headers, monkeypatch
+):
+    """The contract lock: `/agents/presence` and `/agents/{id}` must project the
+    same grant rows into byte-identical JSON, so slice 3 adding probe scope
+    config cannot make the two endpoints drift."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(
+        agent, capability="host_telemetry", enabled=True, config={"interval_s": 90}
+    )
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    presence = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+    detail = await client.get(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
+
+    assert presence.status_code == 200
+    assert detail.status_code == 200
+    row = next(r for r in presence.json() if r["agent_id"] == agent.id)
+    assert row["capabilities"] == detail.json()["capabilities"]
+    assert row["capabilities"]["host_telemetry"]["config"]["interval_s"] == 90
+
+
+@pytest.mark.asyncio
+async def test_unknown_legacy_capability_row_is_returned_verbatim_not_500(
+    client, factories, viewer_headers, monkeypatch
+):
+    """A grant row naming a capability this build no longer declares must
+    render, not 500 the whole fleet. `approve_agent` wrote rows for arbitrary
+    keys before Task 14's 422 validator, and no migration cleans them up."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(
+        agent, capability="legacy_thing", enabled=True, config={"whatever": 1}
+    )
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    presence = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+    detail = await client.get(f"/api/v1/agents/{agent.id}", headers=viewer_headers)
+
+    assert presence.status_code == 200
+    assert detail.status_code == 200
+    expected = {"enabled": True, "config": {"whatever": 1}}
+    row = next(r for r in presence.json() if r["agent_id"] == agent.id)
+    assert row["capabilities"]["legacy_thing"] == expected
+    assert detail.json()["capabilities"]["legacy_thing"] == expected
+
+
+@pytest.mark.asyncio
+async def test_approve_and_capabilities_put_still_accept_legacy_boolean_input(
+    client, factories, auth_headers
+):
+    """D-11: every REST *request* keeps accepting `bool | CapabilityGrant` per
+    capability indefinitely — only responses are canonicalized."""
+    agent = factories.agent(status="pending")
+
+    approve = await client.post(
+        f"/api/v1/agents/{agent.id}/approve",
+        json={"capabilities": {"host_telemetry": True, "remote_probe": False}},
+        headers=auth_headers,
+    )
+    assert approve.status_code == 200
+    assert approve.json()["capabilities"]["host_telemetry"] == {
+        "enabled": True,
+        "config": HOST_TELEMETRY_DEFAULT_CONFIG,
+    }
+    assert approve.json()["capabilities"]["remote_probe"] == {"enabled": False, "config": {}}
+
+    put = await client.put(
+        f"/api/v1/agents/{agent.id}/capabilities",
+        json={"capabilities": {"remote_probe": True}},
+        headers=auth_headers,
+    )
+    assert put.status_code == 200
+    assert put.json()["capabilities"]["remote_probe"] == {"enabled": True, "config": {}}
 
 
 @pytest.mark.asyncio
@@ -894,6 +1064,30 @@ async def test_presence_issues_single_mget_regardless_of_fleet_size(
     redis_client.mget.assert_called_once()
     redis_client.get.assert_not_called()
     redis_client.exists.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_presence_issues_single_query_regardless_of_fleet_size(
+    client, factories, viewer_headers, monkeypatch
+):
+    """Task 15: canonicalizing the grant shape must not reintroduce an N+1 —
+    a 20-agent fleet still costs exactly one `agent_capability_grants` SELECT."""
+    for _ in range(20):
+        agent = factories.agent(status="active")
+        factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+    monkeypatch.setattr("app.core.redis.get_redis", AsyncMock(return_value=None))
+
+    with _capture_sql() as statements:
+        resp = await client.get("/api/v1/agents/presence", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    assert len(resp.json()) >= 20
+    grant_queries = [
+        s
+        for s in statements
+        if "agent_capability_grants" in s and s.lstrip().upper().startswith("SELECT")
+    ]
+    assert len(grant_queries) == 1, grant_queries
 
 
 # ── server-key rotation admin endpoints (Task 28) ──────────────────────────

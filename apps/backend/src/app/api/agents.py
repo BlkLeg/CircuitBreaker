@@ -43,7 +43,7 @@ from app.schemas.agents import (
     ServerKeyRotationStatus,
     UpdateRequest,
 )
-from app.services import agent_enrollment, agent_registry, agent_update
+from app.services import agent_capabilities, agent_enrollment, agent_registry, agent_update
 
 router = APIRouter(tags=["agents"])
 
@@ -129,6 +129,33 @@ def get_pending_agents(
     _user: Annotated[User, require_role("viewer")],
 ) -> Any:
     return agent_registry.list_agents(db, status="pending")
+
+
+@router.get("/capability-defaults", response_model=dict[str, CapabilityGrant])
+def get_capability_defaults(
+    _user: Annotated[User, require_role("viewer")],
+) -> Any:
+    """The server capability registry's approval defaults (Task 14 / D-14).
+
+    The single source the approval modal and the agent-detail capability editor
+    read their preset and config fallbacks from, so a frontend constant can
+    never drift from what an approve with `capabilities` omitted actually
+    grants — pinned by
+    `test_capability_defaults_endpoint_matches_what_an_omitted_approve_grants`.
+
+    Declared before "/{agent_id}" so "capability-defaults" isn't parsed as an
+    agent id, same as "/pending", "/install-command" and "/presence".
+
+    These are *approval-time* defaults only: they say nothing about what any
+    already-approved agent is granted, which is exactly the grant rows written
+    at its approval and nothing else.
+    """
+    return {
+        name: CapabilityGrant(
+            enabled=definition.default_enabled, config=dict(definition.default_config)
+        )
+        for name, definition in agent_capabilities.CAPABILITY_DEFINITIONS.items()
+    }
 
 
 @router.get("/install-command", response_model=InstallCommandResponse)
@@ -221,7 +248,7 @@ async def get_agents_presence(
     agent_ids = [agent.id for agent in agents]
 
     presence = await agent_registry.bulk_presence(agent_ids)
-    grants = agent_registry.bulk_grants_dict(db, agent_ids)
+    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
 
     hardware_ids = {agent.hardware_id for agent in agents if agent.hardware_id is not None}
     hardware_by_id: dict[int, Hardware] = {}
@@ -237,7 +264,10 @@ async def get_agents_presence(
             online=presence[agent.id]["online"],
             connected_since=presence[agent.id]["connected_since"],
             last_seen_at=agent.last_seen_at,
-            capabilities=grants[agent.id],
+            capabilities={
+                name: CapabilityGrant.model_validate(grant)
+                for name, grant in grants[agent.id].items()
+            },
             hardware=(
                 HardwareSummary.model_validate(hardware_by_id[agent.hardware_id])
                 if agent.hardware_id in hardware_by_id

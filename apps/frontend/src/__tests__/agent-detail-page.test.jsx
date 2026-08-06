@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import AgentDetailPage from '../pages/AgentDetailPage';
 
@@ -51,6 +51,32 @@ vi.mock('../api/agents', () => ({
   setAgentCapabilities: vi.fn(),
   revokeAgent: vi.fn(),
   triggerAgentUpdate: vi.fn(),
+  // Task 14: HOST_DEFAULTS is gone from the page; the host-telemetry config
+  // key list and every fallback value come from the server registry. This
+  // fixture deliberately carries a key the frontend has never heard of
+  // (`include_gpu`) so the test proves the page renders whatever the server
+  // declares rather than a hardcoded copy.
+  getCapabilityDefaults: vi.fn(() =>
+    Promise.resolve({
+      data: {
+        host_telemetry: {
+          enabled: true,
+          config: {
+            interval_s: 45,
+            include_filesystems: true,
+            include_disks: true,
+            include_network: true,
+            include_temperatures: true,
+            include_virtual: false,
+            include_docker: false,
+            include_gpu: true,
+          },
+        },
+        remote_probe: { enabled: true, config: {} },
+        local_discovery: { enabled: true, config: {} },
+      },
+    })
+  ),
 }));
 
 // See agents-page.test.jsx for why useAgentLive needs vi.hoisted() here.
@@ -82,6 +108,49 @@ describe('AgentDetailPage', () => {
     await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
     expect(screen.getByText('Host telemetry')).toBeInTheDocument();
     expect(screen.getByText('approved')).toBeInTheDocument();
+  });
+
+  it('renders host-telemetry config toggles the server registry declares but the frontend has no copy of', async () => {
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    // Only in the server registry — proves HOST_DEFAULTS is really gone.
+    const gpu = await screen.findByLabelText(/^gpu$/i);
+    expect(gpu).toBeChecked();
+    expect(screen.getByLabelText(/^docker$/i)).not.toBeChecked();
+  });
+
+  it('falls back to the fetched registry defaults for cadence and unset toggles', async () => {
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    // The grant is a bare `true` (no config), so every value shown must come
+    // from the fetched defaults — 45, not a hardcoded 30.
+    const cadence = await screen.findByLabelText(/cadence/i);
+    expect(cadence).toHaveValue(45);
+    expect(screen.getByLabelText(/^filesystems$/i)).toBeChecked();
+    expect(screen.getByLabelText(/^virtual$/i)).not.toBeChecked();
+  });
+
+  it('sends the full registry-derived config when a host-telemetry toggle changes', async () => {
+    const { setAgentCapabilities } = await import('../api/agents');
+    setAgentCapabilities.mockResolvedValue({ data: { id: 3, capabilities: {} } });
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText('box1')).toBeInTheDocument());
+    fireEvent.click(await screen.findByLabelText(/^virtual$/i));
+
+    await waitFor(() => expect(setAgentCapabilities).toHaveBeenCalled());
+    expect(setAgentCapabilities.mock.calls[0][1].host_telemetry.config).toEqual({
+      interval_s: 45,
+      include_filesystems: true,
+      include_disks: true,
+      include_network: true,
+      include_temperatures: true,
+      include_virtual: true,
+      include_docker: false,
+      include_gpu: true,
+    });
   });
 
   it('renders online state and linked-hardware summary from the bulk presence endpoint', async () => {

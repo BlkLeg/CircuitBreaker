@@ -6,6 +6,7 @@ import {
   getAgentTelemetry,
   getAgentTelemetryHistory,
   getAgentsPresence,
+  getCapabilityDefaults,
   revokeAgent,
   setAgentCapabilities,
   triggerAgentUpdate,
@@ -23,15 +24,13 @@ const CAPABILITY_LABELS = {
   local_discovery: 'Local discovery',
 };
 
-const HOST_DEFAULTS = {
-  interval_s: 30,
-  include_filesystems: true,
-  include_disks: true,
-  include_network: true,
-  include_temperatures: true,
-  include_virtual: false,
-  include_docker: false,
-};
+// Task 14: there is no local copy of the host-telemetry defaults any more.
+// `capabilityDefaults` below is fetched from
+// GET /api/v1/agents/capability-defaults — the server's single
+// CAPABILITY_DEFINITIONS registry — and drives which settings render, what
+// each unset one falls back to, and what config gets sent on an edit. A key
+// that only exists server-side therefore shows up here with no frontend
+// change, which is the whole point: the two can no longer drift.
 
 const SUMMARY_LABELS = {
   cpu_pct: 'CPU',
@@ -122,6 +121,10 @@ export default function AgentDetailPage() {
   const [telemetry, setTelemetry] = useState(null);
   const [historyRange, setHistoryRange] = useState('1h');
   const [history, setHistory] = useState([]);
+  // null until the server capability registry resolves; the capability editor
+  // stays in a loading state until then rather than rendering a guessed set of
+  // settings that a subsequent edit would then persist.
+  const [capabilityDefaults, setCapabilityDefaults] = useState(null);
 
   const { statuses } = useAgentLive();
   const telemetryEntities = useMemo(() => [{ entity_type: 'agent', entity_id: Number(id) }], [id]);
@@ -147,6 +150,25 @@ export default function AgentDetailPage() {
       })
       .catch(() => {});
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetched once (it is server configuration, not per-agent state) and kept
+  // off the critical load path so a hiccup here can't blank the whole page.
+  useEffect(() => {
+    let cancelled = false;
+    getCapabilityDefaults()
+      .then(({ data }) => {
+        if (!cancelled) setCapabilityDefaults(data ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) toast.error('Could not load capability defaults');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const hostDefaults = capabilityDefaults?.host_telemetry?.config ?? {};
 
   useEffect(() => {
     load();
@@ -231,7 +253,7 @@ export default function AgentDetailPage() {
       return;
     }
     const current = normalizeCapability(agent.capabilities?.host_telemetry);
-    const config = { ...HOST_DEFAULTS, ...current.config, ...patch };
+    const config = { ...hostDefaults, ...current.config, ...patch };
     if (
       patch.include_docker &&
       !window.confirm('Docker telemetry requires access to the Docker socket. Enable it?')
@@ -323,39 +345,43 @@ export default function AgentDetailPage() {
             {label}
           </label>
         ))}
-        {normalizeCapability(agent.capabilities?.host_telemetry).enabled && (
-          <fieldset>
-            <legend>Host telemetry settings</legend>
-            <label>
-              Cadence{' '}
-              <input
-                type="number"
-                min="10"
-                max="900"
-                value={
-                  normalizeCapability(agent.capabilities.host_telemetry).config.interval_s ?? 30
-                }
-                onChange={(event) => updateHostConfig({ interval_s: Number(event.target.value) })}
-              />{' '}
-              seconds
-            </label>
-            {Object.keys(HOST_DEFAULTS)
-              .filter((key) => key.startsWith('include_'))
-              .map((key) => (
-                <label key={key}>
-                  <input
-                    type="checkbox"
-                    checked={
-                      normalizeCapability(agent.capabilities.host_telemetry).config[key] ??
-                      HOST_DEFAULTS[key]
-                    }
-                    onChange={(event) => updateHostConfig({ [key]: event.target.checked })}
-                  />
-                  {key.replace('include_', '').replaceAll('_', ' ')}
-                </label>
-              ))}
-          </fieldset>
-        )}
+        {normalizeCapability(agent.capabilities?.host_telemetry).enabled &&
+          (capabilityDefaults === null ? (
+            <p>Loading capability settings…</p>
+          ) : (
+            <fieldset>
+              <legend>Host telemetry settings</legend>
+              <label>
+                Cadence{' '}
+                <input
+                  type="number"
+                  min="10"
+                  max="900"
+                  value={
+                    normalizeCapability(agent.capabilities.host_telemetry).config.interval_s ??
+                    hostDefaults.interval_s
+                  }
+                  onChange={(event) => updateHostConfig({ interval_s: Number(event.target.value) })}
+                />{' '}
+                seconds
+              </label>
+              {Object.keys(hostDefaults)
+                .filter((key) => key.startsWith('include_'))
+                .map((key) => (
+                  <label key={key}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        normalizeCapability(agent.capabilities.host_telemetry).config[key] ??
+                        hostDefaults[key]
+                      }
+                      onChange={(event) => updateHostConfig({ [key]: event.target.checked })}
+                    />
+                    {key.replace('include_', '').replaceAll('_', ' ')}
+                  </label>
+                ))}
+            </fieldset>
+          ))}
       </section>
 
       <section aria-label="Host telemetry" className="agent-telemetry">
@@ -363,7 +389,10 @@ export default function AgentDetailPage() {
         {telemetry?.latest ? (
           <>
             {(() => {
-              const interval = telemetry.capability?.config?.interval_s ?? 30;
+              // hostDefaults, not a literal: the registry owns the cadence
+              // default, and a second copy here is exactly the drift issue 8
+              // exists to remove.
+              const interval = telemetry.capability?.config?.interval_s ?? hostDefaults.interval_s;
               const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
               const stale = age > Math.max(interval * 3000, 90000);
               return (

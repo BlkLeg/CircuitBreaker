@@ -13,6 +13,11 @@ export const getAgentsPresence = (params = {}) =>
     paramsSerializer: { indexes: null },
   });
 export const getAgent = (id) => client.get(`/agents/${id}`);
+// Task 14: the server capability registry's approval defaults, as
+// {name: {enabled, config}}. The single source of the approval preset and of
+// the host-telemetry config key list / fallback values — the frontend keeps no
+// copy of either, so it can never drift from CAPABILITY_DEFINITIONS.
+export const getCapabilityDefaults = () => client.get('/agents/capability-defaults');
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
 export const getAgentTelemetry = (id) => client.get(`/agents/${id}/telemetry`);

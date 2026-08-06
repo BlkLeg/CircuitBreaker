@@ -345,20 +345,35 @@ def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = Non
     # to it live — never by polling GET /agents or /agents/pending.
     _wait_until(lambda: stream.has_event(agent_id, "enrolled"), timeout=15)
 
-    # Step 4: approve with default grants (no capability_overrides — the
-    # server applies agent_registry.DEFAULT_CAPABILITY_GRANTS) and an
-    # explicit host-link selection ("unlinked" is a real, UI-supported
-    # selection — Task 18's AgentApprovalModal — not a null/omitted value).
+    # Step 4: approve with default grants (no `capabilities` in the body — the
+    # server applies its own CAPABILITY_DEFINITIONS registry, D-10: all three
+    # enabled) and an explicit host-link selection ("unlinked" is a real,
+    # UI-supported selection — Task 18's AgentApprovalModal — not a
+    # null/omitted value).
     approve = client.post(
         f"/api/v1/agents/{agent_id}/approve",
         json={"host_link_action": "unlinked"},
         headers=headers,
     )
     assert approve.status_code == 200, approve.text
+    # `AgentRead.capabilities` is the canonical structured wire shape
+    # (`{name: {enabled, config}}` with server-normalized config), never a bare
+    # boolean — see the "Canonical capability wire shape" Global Constraint.
     assert approve.json()["capabilities"] == {
-        "host_telemetry": True,
-        "remote_probe": False,
-        "local_discovery": False,
+        "host_telemetry": {
+            "enabled": True,
+            "config": {
+                "interval_s": 30,
+                "include_filesystems": True,
+                "include_disks": True,
+                "include_network": True,
+                "include_temperatures": True,
+                "include_virtual": False,
+                "include_docker": False,
+            },
+        },
+        "remote_probe": {"enabled": True, "config": {}},
+        "local_discovery": {"enabled": True, "config": {}},
     }, "approve did not apply the server's default capability grants"
 
     assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"

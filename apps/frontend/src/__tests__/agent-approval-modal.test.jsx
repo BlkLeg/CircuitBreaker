@@ -5,11 +5,31 @@ import AgentApprovalModal from '../components/agents/AgentApprovalModal.jsx';
 
 const mockGetAgent = vi.fn();
 const mockApproveAgent = vi.fn();
+const mockGetCapabilityDefaults = vi.fn();
 
 vi.mock('../api/agents', () => ({
   getAgent: (...args) => mockGetAgent(...args),
   approveAgent: (...args) => mockApproveAgent(...args),
+  getCapabilityDefaults: (...args) => mockGetCapabilityDefaults(...args),
 }));
+
+// Task 14: the modal has no capability preset of its own any more — this is
+// what GET /api/v1/agents/capability-defaults returns, i.e. the server
+// registry's CAPABILITY_DEFINITIONS rendered as {enabled, config}.
+const HOST_DEFAULT_CONFIG = {
+  interval_s: 30,
+  include_filesystems: true,
+  include_disks: true,
+  include_network: true,
+  include_temperatures: true,
+  include_virtual: false,
+  include_docker: false,
+};
+const SERVER_DEFAULTS = {
+  host_telemetry: { enabled: true, config: HOST_DEFAULT_CONFIG },
+  local_discovery: { enabled: true, config: {} },
+  remote_probe: { enabled: true, config: {} },
+};
 
 const mockHardwareList = vi.fn();
 const mockHardwareCreate = vi.fn();
@@ -50,14 +70,38 @@ describe('AgentApprovalModal', () => {
     vi.clearAllMocks();
     mockApproveAgent.mockResolvedValue({ data: {} });
     mockHardwareList.mockResolvedValue({ data: [] });
+    mockGetCapabilityDefaults.mockResolvedValue({ data: SERVER_DEFAULTS });
   });
 
-  it('defaults to the normal preset with all three capabilities enabled', async () => {
+  it('defaults every capability from the server capability registry, not a local preset', async () => {
     await renderModal();
 
+    expect(mockGetCapabilityDefaults).toHaveBeenCalled();
     expect(screen.getByLabelText(/host telemetry/i)).toBeChecked();
     expect(screen.getByLabelText(/local discovery/i)).toBeChecked();
     expect(screen.getByLabelText(/remote probe/i)).toBeChecked();
+  });
+
+  it('follows the server when a capability default is disabled', async () => {
+    mockGetCapabilityDefaults.mockResolvedValue({
+      data: { ...SERVER_DEFAULTS, remote_probe: { enabled: false, config: {} } },
+    });
+    await renderModal();
+
+    expect(screen.getByLabelText(/host telemetry/i)).toBeChecked();
+    expect(screen.getByLabelText(/remote probe/i)).not.toBeChecked();
+  });
+
+  it('sends the server default config for capabilities left enabled', async () => {
+    await renderModal();
+
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+
+    await waitFor(() => expect(mockApproveAgent).toHaveBeenCalled());
+    expect(mockApproveAgent).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ capabilities: SERVER_DEFAULTS })
+    );
   });
 
   it('renders the duplicate-machine warning when the agent-detail flags one', async () => {
@@ -83,7 +127,7 @@ describe('AgentApprovalModal', () => {
     expect(mockApproveAgent).toHaveBeenCalledWith(7, {
       hardware_id: 42,
       host_link_action: 'accept',
-      capabilities: { host_telemetry: true, local_discovery: true, remote_probe: true },
+      capabilities: SERVER_DEFAULTS,
     });
   });
 
@@ -155,10 +199,17 @@ describe('AgentApprovalModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve/i }));
 
     await waitFor(() => expect(mockApproveAgent).toHaveBeenCalled());
+    // The opt-out flips `enabled` only: the capabilities left on keep the
+    // server's default config, and the opted-out one keeps its config too, so
+    // toggling never downgrades a structured grant back to a bare boolean.
     expect(mockApproveAgent).toHaveBeenCalledWith(
       7,
       expect.objectContaining({
-        capabilities: { host_telemetry: true, local_discovery: true, remote_probe: false },
+        capabilities: {
+          host_telemetry: { enabled: true, config: HOST_DEFAULT_CONFIG },
+          local_discovery: { enabled: true, config: {} },
+          remote_probe: { enabled: false, config: {} },
+        },
       })
     );
   });
