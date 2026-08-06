@@ -8,61 +8,74 @@ import (
 	"testing"
 )
 
-// TestSwap_PreservesTargetModeAcrossSwap covers the "preserve executable
-// ownership/mode across the swap" requirement: Download always chmods its
-// temp file to a fixed 0o755, so without Swap explicitly carrying the
-// *target's* own mode forward, a deployment that deliberately hardened the
-// installed binary's permissions (e.g. group-execute only) would have that
-// silently widened back to 0o755 on every self-update.
-func TestSwap_PreservesTargetModeAcrossSwap(t *testing.T) {
+// TestSwap_NewVersionAlwaysInstalledAt0755 covers the "fixed 0755, no mode
+// preservation" property that replaces the old preserveModeAndOwnership
+// step (specs/2026-08-05-cb-agent-self-update-fix-design.md): every version
+// directory and binary is created directly by cb-agent, as cb-agent, at a
+// fixed mode — there is no "restore the original owner/mode" step because
+// nothing is ever renamed over an existing root-owned file anymore.
+func TestSwap_NewVersionAlwaysInstalledAt0755(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("old binary"), 0o750); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(oldVersionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldVersionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 	newBinary := filepath.Join(dir, "new-download")
-	if err := os.WriteFile(newBinary, []byte("new binary"), 0o755); err != nil {
+	// Deliberately a narrower mode than 0755 — Swap must still land the
+	// installed copy at 0755, not preserve this.
+	if err := os.WriteFile(newBinary, []byte("new binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := Swap(newBinary, target); err != nil {
+	if _, err := Swap(newBinary, "0.2.0", dir); err != nil {
 		t.Fatalf("Swap() error = %v", err)
 	}
 
-	info, err := os.Stat(target)
+	info, err := os.Stat(filepath.Join(dir, "versions", "0.2.0", "cb-agent"))
 	if err != nil {
-		t.Fatalf("stat %s: %v", target, err)
+		t.Fatalf("stat new version binary: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o750 {
-		t.Errorf("target mode after swap = %04o, want preserved 0750 (the target's original mode, not the downloaded temp file's 0755)", got)
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("new version binary mode = %04o, want 0755", got)
 	}
 }
 
 // TestSwap_SyncFailureLeavesTargetUntouched covers "sync the downloaded file
-// before replacement": Swap fsyncs newPath before it does anything at all to
-// targetPath, so a failure syncing the new binary must never leave a
-// half-applied swap (a renamed-away backup with no replacement, or any
-// mutation of targetPath). Using a newPath that doesn't exist makes the
-// fsync step fail deterministically and cheaply, without needing to
-// fabricate a real disk I/O error.
+// before replacement": Swap fsyncs newBinaryPath before it does anything at
+// all to current or the versions directory, so a failure syncing the new
+// binary must never leave a half-applied swap.
 func TestSwap_SyncFailureLeavesTargetUntouched(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(oldVersionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldVersionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 	missingNewBinary := filepath.Join(dir, "does-not-exist")
 
-	if _, err := Swap(missingNewBinary, target); err == nil {
+	if _, err := Swap(missingNewBinary, "0.2.0", dir); err == nil {
 		t.Fatal("Swap() error = nil, want an error when the new binary can't be opened/synced")
 	}
 
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "old binary" {
-		t.Errorf("target contents = (%q, %v), want unchanged %q — a failed sync must happen before any rename touches the target", got, err, "old binary")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != oldVersionDir {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q", target, err, oldVersionDir)
 	}
-	if _, err := os.Stat(target + ".previous"); !os.IsNotExist(err) {
-		t.Error("backup file created despite a failed sync, want none")
+	if _, err := os.Stat(filepath.Join(dir, "versions", "0.2.0")); !os.IsNotExist(err) {
+		t.Error("new version dir created despite a failed sync, want none")
 	}
 }
 
@@ -103,24 +116,23 @@ func TestWriteMarker_OverwritesExistingMarkerAtomically(t *testing.T) {
 		t.Fatalf("WriteMarker(0.2.0) error = %v", err)
 	}
 
-	version, _, present, err := ReadMarker(dir)
+	version, _, _, present, err := ReadMarker(dir)
 	if err != nil || !present || version != "0.2.0" {
-		t.Fatalf("ReadMarker() = (%q, _, %v, %v), want (\"0.2.0\", _, true, nil)", version, present, err)
+		t.Fatalf("ReadMarker() = (%q, _, _, %v, %v), want (\"0.2.0\", _, _, true, nil)", version, present, err)
 	}
 }
 
-// TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement
-// simulates the exact crash window Task 25 closes: a marker is durably
-// written, and then the process "crashes" before the binary swap that
-// marker guards ever runs (main.go's onUpdate now performs these two steps
-// in that order — see WriteMarker's doc comment). On "restart" (a fresh
-// ReadMarker call, exactly what runDaemon does at startup), the marker must
-// still be present and correct — a recoverable state — even though no swap
-// ever happened and so there is nothing to roll back.
 func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+	versionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(versionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,35 +141,34 @@ func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *test
 	}
 	// Simulated crash: Swap is deliberately never called.
 
-	version, swapped, present, err := ReadMarker(dir)
+	version, prevVersionDir, swapped, present, err := ReadMarker(dir)
 	if err != nil || !present || version != "0.3.0" {
-		t.Fatalf("ReadMarker() after simulated crash = (%q, _, %v, %v), want (\"0.3.0\", _, true, nil) — recoverable state", version, present, err)
+		t.Fatalf("ReadMarker() after simulated crash = (%q, _, _, %v, %v), want (\"0.3.0\", _, _, true, nil) — recoverable state", version, present, err)
 	}
 	if swapped {
 		t.Error("ReadMarker() reports swapped = true, want false — Swap was never called, there is nothing to roll back to")
 	}
-
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "old binary" {
-		t.Errorf("target contents after simulated crash = (%q, %v), want unchanged %q", got, err, "old binary")
+	if prevVersionDir != "" {
+		t.Errorf("ReadMarker() prevVersionDir = %q, want empty — Swap never ran, nothing was recorded", prevVersionDir)
 	}
-	if _, err := os.Stat(target + ".previous"); !os.IsNotExist(err) {
-		t.Error("backup file exists after a crash before Swap ran, want none")
+
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != versionDir {
+		t.Errorf("current symlink after simulated crash = (%q, %v), want unchanged %q", target, err, versionDir)
 	}
 }
 
-// TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable mirrors
-// main.go's onUpdate ordering end to end (WriteMarker, then Swap, then
-// MarkSwapped), then simulates a crash immediately after — before re-exec,
-// before any hello.ack. It asserts the on-disk state a fresh restart would
-// find is fully recoverable: the marker names the installed version and
-// reports the swap as completed, the backup exists for Rollback, and the
-// swap itself durably completed. It then exercises both outcomes a real
-// restart's rollback timer could reach from that recovered state.
 func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.3.0")
+	if err := os.MkdirAll(oldVersionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldVersionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
 		t.Fatal(err)
 	}
 	newBinary := filepath.Join(dir, "new-download")
@@ -168,35 +179,33 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	if err := WriteMarker(dir, "0.4.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
-	backupPath, err := Swap(newBinary, target)
+	prevVersionDir, err := Swap(newBinary, "0.4.0", dir)
 	if err != nil {
 		t.Fatalf("Swap() error = %v", err)
 	}
-	if err := MarkSwapped(dir, "0.4.0"); err != nil {
+	if err := MarkSwapped(dir, "0.4.0", prevVersionDir); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
 	// Simulated crash: no re-exec, no hello.ack, nothing else runs.
 
-	version, swapped, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.4.0" || !swapped {
-		t.Fatalf("ReadMarker() after simulated crash = (%q, %v, %v, %v), want (\"0.4.0\", true, true, nil)", version, swapped, present, err)
+	version, gotPrev, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.4.0" || !swapped || gotPrev != oldVersionDir {
+		t.Fatalf("ReadMarker() after simulated crash = (%q, %q, %v, %v, %v), want (\"0.4.0\", %q, true, true, nil)", version, gotPrev, swapped, present, err, oldVersionDir)
 	}
-	if _, err := os.Stat(backupPath); err != nil {
-		t.Errorf("backup %s missing after simulated crash, want it retained until confirmation", backupPath)
-	}
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "new binary" {
-		t.Errorf("target contents = (%q, %v), want %q — the swap itself completed durably", got, err, "new binary")
+	newVersionDir := filepath.Join(dir, "versions", "0.4.0")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != newVersionDir {
+		t.Errorf("current symlink = (%q, %v), want %q — the swap itself completed durably", target, err, newVersionDir)
 	}
 
 	// A fresh process's rollback timer can act on this recovered state
-	// either way: Rollback(target) if hello.ack never confirms in time.
-	if err := Rollback(target); err != nil {
+	// either way: Rollback if hello.ack never confirms in time.
+	if err := Rollback(currentLink, gotPrev); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
-	got, err = os.ReadFile(target)
-	if err != nil || string(got) != "old binary" {
-		t.Errorf("target contents after recovered rollback = (%q, %v), want %q", got, err, "old binary")
+	target, err = os.Readlink(currentLink)
+	if err != nil || target != oldVersionDir {
+		t.Errorf("current symlink after recovered rollback = (%q, %v), want %q", target, err, oldVersionDir)
 	}
 }
 
@@ -267,5 +276,69 @@ func TestMoveFile_CrossDeviceCopyFallbackSyncsDestination(t *testing.T) {
 	}
 	if gotMode := info.Mode().Perm(); gotMode != 0o755 {
 		t.Errorf("destination mode = %04o, want 0755 (source's mode preserved)", gotMode)
+	}
+}
+
+// TestPruneVersions_KeepsCurrentAndNamedVersionRemovesRest covers the
+// retention rule Section 5 of specs/2026-08-05-cb-agent-self-update-fix-
+// design.md specifies: after an update confirms, only current's target and
+// the version just confirmed-away-from survive.
+func TestPruneVersions_KeepsCurrentAndNamedVersionRemovesRest(t *testing.T) {
+	dir := t.TempDir()
+	for _, v := range []string{"0.1.0", "0.2.0", "0.3.0"} {
+		if err := os.MkdirAll(filepath.Join(dir, "versions", v), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	currentDir := filepath.Join(dir, "versions", "0.3.0")
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(currentDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+	keepDir := filepath.Join(dir, "versions", "0.2.0")
+
+	if err := PruneVersions(dir, currentLink, keepDir); err != nil {
+		t.Fatalf("PruneVersions() error = %v", err)
+	}
+
+	for _, want := range []string{currentDir, keepDir} {
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("stat %s after PruneVersions() = %v, want it retained", want, err)
+		}
+	}
+	pruned := filepath.Join(dir, "versions", "0.1.0")
+	if _, err := os.Stat(pruned); !os.IsNotExist(err) {
+		t.Errorf("stat %s after PruneVersions() = %v, want removed", pruned, err)
+	}
+}
+
+// TestPruneVersions_EmptyKeepStillRetainsCurrent covers the first-ever-
+// update case: keepVersionDir is "" (no marker was present — see
+// cmd/cb-agent/main.go's onConnected), but current's own target must never
+// be pruned.
+func TestPruneVersions_EmptyKeepStillRetainsCurrent(t *testing.T) {
+	dir := t.TempDir()
+	currentDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(currentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleDir := filepath.Join(dir, "versions", "0.0.9")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(currentDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PruneVersions(dir, currentLink, ""); err != nil {
+		t.Fatalf("PruneVersions() error = %v", err)
+	}
+
+	if _, err := os.Stat(currentDir); err != nil {
+		t.Errorf("stat current dir after PruneVersions() = %v, want retained", err)
+	}
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Errorf("stat stale dir after PruneVersions() = %v, want removed", err)
 	}
 }

@@ -5,13 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/config"
@@ -303,71 +303,155 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-// Swap fsyncs newPath (see fsyncFile), backs up targetPath to
-// targetPath+".previous", moves newPath into targetPath, then restores
-// targetPath's original file mode and ownership — so an in-place
-// self-update doesn't silently widen or reassign permissions a deployment
-// set deliberately, since Download's temp file always lands at a fixed
-// 0o755 owned by whichever user this process runs as. Returns the backup
-// path for Rollback. The backup is left in place for the caller to retain
-// until the update is confirmed (a successful post-update hello.ack, per
-// Task 4's OnConnected — see cmd/cb-agent/main.go's onConnected/
-// watchForRollback) — Swap itself never removes it.
-//
-// Mode/ownership restoration happens after the file is already installed at
-// targetPath and is deliberately best-effort (see preserveModeAndOwnership):
-// by that point the swap itself has already durably succeeded (moveFile
-// returned nil), and failing Swap's own return here would tell the caller
-// the swap didn't happen when it did — leaving them to, e.g., clear a
-// rollback marker for a binary that in fact now needs one.
-func Swap(newPath, targetPath string) (string, error) {
-	if err := fsyncFile(newPath); err != nil {
+// CurrentLinkPath returns the path of the "current" symlink under stateDir
+// that Swap/Rollback re-point — the middle link in the two-level indirection
+// /usr/local/bin/cb-agent -> {stateDir}/current ->
+// {stateDir}/versions/<version>/cb-agent (see
+// specs/2026-08-05-cb-agent-self-update-fix-design.md). Exported so
+// cmd/cb-agent/main.go builds the same path without duplicating the
+// "current" literal.
+func CurrentLinkPath(stateDir string) string {
+	return filepath.Join(stateDir, "current")
+}
+
+// versionDir returns the path of a specific version's install directory
+// under stateDir: {stateDir}/versions/<version>/.
+func versionDir(stateDir, version string) string {
+	return filepath.Join(stateDir, "versions", version)
+}
+
+// atomicSymlink re-points linkPath to target: create a new symlink at a
+// temp name alongside linkPath, then os.Rename it over linkPath — an atomic
+// same-filesystem rename (mirrors atomicWriteFile's temp-then-rename
+// idiom), so a reader (including a process that crashes and restarts) only
+// ever observes linkPath as either its old target or its new one, never
+// briefly absent.
+func atomicSymlink(linkPath, target string) error {
+	dir := filepath.Dir(linkPath)
+	tmp := filepath.Join(dir, fmt.Sprintf(".tmp-%s-%d", filepath.Base(linkPath), time.Now().UnixNano()))
+	if err := os.Symlink(target, tmp); err != nil {
+		return fmt.Errorf("atomic symlink %s: create temp symlink: %w", linkPath, err)
+	}
+	if err := os.Rename(tmp, linkPath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("atomic symlink %s: rename into place: %w", linkPath, err)
+	}
+	fsyncDir(linkPath)
+	return nil
+}
+
+// resolveSymlinkAbs reads linkPath's target and, if it's relative, resolves
+// it against linkPath's own directory (matching how the kernel resolves a
+// relative symlink target) so callers always get an absolute path back.
+// Returns ("", nil) if linkPath does not exist.
+func resolveSymlinkAbs(linkPath string) (string, error) {
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	if filepath.IsAbs(target) {
+		return target, nil
+	}
+	return filepath.Join(filepath.Dir(linkPath), target), nil
+}
+
+// Swap fsyncs newBinaryPath (see fsyncFile), moves it into
+// {stateDir}/versions/<version>/cb-agent (immutable once written), then
+// atomically re-points {stateDir}/current to that new version directory —
+// so self-update never touches anything outside stateDir, which is already
+// writable by the unprivileged cb-agent user running this process (see
+// specs/2026-08-05-cb-agent-self-update-fix-design.md — this replaces the
+// old in-place rename at a root-owned /usr/local/bin/cb-agent, which that
+// user could never actually perform). Returns the version directory
+// current pointed to *before* the swap, so a later Rollback knows where to
+// point back to; empty if current did not exist yet (never happens against
+// a real install, whose install script always creates it — see
+// agent_install.py — but tolerated so tests can exercise a first-ever swap
+// without seeding one).
+func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err error) {
+	if err := fsyncFile(newBinaryPath); err != nil {
 		return "", fmt.Errorf("update: sync new binary: %w", err)
 	}
 
-	origInfo, err := os.Stat(targetPath)
-	if err != nil {
-		return "", fmt.Errorf("update: stat current binary: %w", err)
+	newVersionDir := versionDir(stateDir, version)
+	if err := os.MkdirAll(newVersionDir, 0o755); err != nil {
+		return "", fmt.Errorf("update: create version dir %s: %w", newVersionDir, err)
 	}
-
-	backupPath := targetPath + ".previous"
-	if err := os.Rename(targetPath, backupPath); err != nil {
-		return "", fmt.Errorf("update: back up current binary: %w", err)
-	}
-	if err := moveFile(newPath, targetPath); err != nil {
-		os.Rename(backupPath, targetPath) // best-effort restore
+	newBinaryTarget := filepath.Join(newVersionDir, "cb-agent")
+	if err := moveFile(newBinaryPath, newBinaryTarget); err != nil {
 		return "", fmt.Errorf("update: install new binary: %w", err)
 	}
-	preserveModeAndOwnership(targetPath, origInfo)
-	fsyncDir(targetPath)
-	return backupPath, nil
-}
-
-// preserveModeAndOwnership best-effort restores path's mode and owning
-// uid/gid to match origInfo (the pre-swap target binary's own stat, captured
-// by Swap before it renamed anything). Both are applied on a fresh-off-
-// moveFile file already installed at path, in the ordinary case as the same
-// user that owned it before — chmod to that same user's own file, and chown
-// to the uid/gid it's already running as, both routinely succeed. A failure
-// here (e.g. a chown genuinely requiring root when running unprivileged
-// against a binary owned by a different user) does not fail Swap, whose
-// caller cannot un-happen an install that has, in fact, already happened.
-func preserveModeAndOwnership(path string, origInfo os.FileInfo) {
-	_ = os.Chmod(path, origInfo.Mode().Perm())
-
-	stat, ok := origInfo.Sys().(*syscall.Stat_t)
-	if !ok {
-		// Not a platform where ownership is statable this way — this daemon
-		// targets linux amd64/arm64 only, so in practice this never
-		// triggers outside a non-Unix test build.
-		return
+	if err := os.Chmod(newBinaryTarget, 0o755); err != nil {
+		return "", fmt.Errorf("update: chmod new binary: %w", err)
 	}
-	_ = os.Chown(path, int(stat.Uid), int(stat.Gid))
+	fsyncDir(newBinaryTarget)
+
+	currentLink := CurrentLinkPath(stateDir)
+	prevVersionDir, err = resolveSymlinkAbs(currentLink)
+	if err != nil {
+		return "", fmt.Errorf("update: read current symlink: %w", err)
+	}
+
+	if err := atomicSymlink(currentLink, newVersionDir); err != nil {
+		return "", fmt.Errorf("update: re-point current: %w", err)
+	}
+	return prevVersionDir, nil
 }
 
-func Rollback(targetPath string) error {
-	backupPath := targetPath + ".previous"
-	if err := os.Rename(backupPath, targetPath); err != nil {
+// PruneVersions removes every {stateDir}/versions/<v> directory except
+// currentLink's live target and keepVersionDir (the version an update was
+// just confirmed away from) — called once an update confirms (a
+// post-update hello.ack arrives; see cmd/cb-agent/main.go's onConnected),
+// mirroring the single-".previous"-backup retention the old scheme kept.
+// keepVersionDir may be "" (nothing to additionally retain beyond
+// current). Best-effort: a failure removing one stale version directory is
+// collected and returned, but does not stop pruning from attempting the
+// rest.
+func PruneVersions(stateDir, currentLink, keepVersionDir string) error {
+	live, err := resolveSymlinkAbs(currentLink)
+	if err != nil {
+		return fmt.Errorf("update: prune versions: read current symlink: %w", err)
+	}
+
+	versionsRoot := filepath.Join(stateDir, "versions")
+	entries, err := os.ReadDir(versionsRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("update: prune versions: read %s: %w", versionsRoot, err)
+	}
+
+	var errs []error
+	for _, entry := range entries {
+		dir := filepath.Join(versionsRoot, entry.Name())
+		if dir == live || dir == keepVersionDir {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s: %w", dir, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("update: prune versions: %d failure(s): %w", len(errs), errors.Join(errs...))
+	}
+	return nil
+}
+
+// Rollback re-points currentLink back to prevVersionDir — the inverse of
+// Swap, used when a post-update hello.ack never arrives within
+// rollbackWindow (see cmd/cb-agent/main.go's watchForRollback).
+// prevVersionDir must be non-empty (the caller's ReadMarker/Swap call
+// recorded it) — an empty value means there is nothing to roll back to,
+// which is a caller bug, not a recoverable runtime condition.
+func Rollback(currentLink, prevVersionDir string) error {
+	if prevVersionDir == "" {
+		return fmt.Errorf("update: rollback: no previous version recorded")
+	}
+	if err := atomicSymlink(currentLink, prevVersionDir); err != nil {
 		return fmt.Errorf("update: rollback: %w", err)
 	}
 	return nil
@@ -378,46 +462,39 @@ func Rollback(targetPath string) error {
 // whole point of the marker is that it's trustworthy after an unplanned
 // restart. Callers (cmd/cb-agent/main.go's onUpdate) must call this *before*
 // executing the binary swap it guards, not after: if a crash lands between
-// WriteMarker and the swap, the marker still correctly names the version
-// that was *about to be* installed, and ReadMarker on restart finds a
-// consistent, recoverable state (no swap happened, so there's nothing to
-// roll back — the target binary is simply still the old one). The reverse
-// ordering (swap first, marker after) would instead let a crash in that
-// window leave a replaced binary running with no marker at all — no
-// rollback safety net for an update that never got a chance to confirm.
+// WriteMarker and Swap, the marker still correctly names the version that
+// was *about to be* installed, and ReadMarker on restart finds a
+// consistent, recoverable state (Swap never ran, so current is untouched —
+// there's nothing to roll back).
 //
-// The marker written here starts in phasePendingSwap — see MarkSwapped,
-// which callers must invoke once Swap actually succeeds, and markerPhase's
-// doc comment for why that second write matters.
+// The marker written here starts in phasePendingSwap with no previous
+// version recorded yet (Swap hasn't run, so there's nothing to record) —
+// see MarkSwapped, which callers must invoke once Swap actually succeeds.
 func WriteMarker(stateDir, targetVersion string) error {
-	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion)
+	return writeMarkerPhase(stateDir, phasePendingSwap, targetVersion, "")
 }
 
 // MarkSwapped durably transitions an already-written marker from
-// phasePendingSwap to phasePendingConfirm. Callers (cmd/cb-agent/main.go's
-// onUpdate) must call this immediately after Swap returns successfully,
-// before re-exec — it is what lets a subsequent restart's ReadMarker tell a
-// genuinely fresh backup (this update's own .previous, safe to roll back to)
-// apart from a stale one left over from some earlier, already-confirmed
-// update (unsafe — see markerPhase's doc comment for the downgrade this
-// prevents).
+// phasePendingSwap to phasePendingConfirm, recording prevVersionDir (Swap's
+// return value) so a later Rollback or PruneVersions knows which version
+// directory to act on. Callers (cmd/cb-agent/main.go's onUpdate) must call
+// this immediately after Swap returns successfully, before re-exec.
 //
-// If this write itself fails, the swap has already durably happened
-// (Swap returned nil) and cannot be undone from here; the marker is simply
-// left in phasePendingSwap, which means a restart before confirmation will
-// treat this update as abandoned rather than arming a rollback for it. That
-// forfeits this particular update's rollback safety net but is not a
-// correctness violation — the currently-running binary is, in fact, the new
-// one — so callers should log the failure and proceed rather than trying to
-// fail the update outright.
-func MarkSwapped(stateDir, targetVersion string) error {
-	return writeMarkerPhase(stateDir, phasePendingConfirm, targetVersion)
+// If this write itself fails, the swap has already durably happened and
+// cannot be undone from here; the marker is simply left in
+// phasePendingSwap, which forfeits this update's rollback safety net (a
+// restart before confirmation will treat it as abandoned) but is not a
+// correctness violation — callers should log the failure and proceed
+// rather than failing the update outright.
+func MarkSwapped(stateDir, targetVersion, prevVersionDir string) error {
+	return writeMarkerPhase(stateDir, phasePendingConfirm, targetVersion, prevVersionDir)
 }
 
-// writeMarkerPhase encodes phase and targetVersion into the marker file as
-// "<phase>\n<targetVersion>" and writes it via atomicWriteFile.
-func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion string) error {
-	data := []byte(string(phase) + "\n" + targetVersion)
+// writeMarkerPhase encodes phase, targetVersion, and prevVersionDir into the
+// marker file as "<phase>\n<targetVersion>\n<prevVersionDir>" and writes it
+// via atomicWriteFile. prevVersionDir is "" for phasePendingSwap.
+func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion, prevVersionDir string) error {
+	data := []byte(string(phase) + "\n" + targetVersion + "\n" + prevVersionDir)
 	if err := atomicWriteFile(filepath.Join(stateDir, markerFilename), data, 0o600); err != nil {
 		return fmt.Errorf("update: write marker: %w", err)
 	}
@@ -425,44 +502,27 @@ func writeMarkerPhase(stateDir string, phase markerPhase, targetVersion string) 
 }
 
 // ReadMarker reads back a marker written by WriteMarker/MarkSwapped.
-// version is the target version the marker names. swapped reports whether
-// Swap has durably completed for that version (i.e. the marker is in
-// phasePendingConfirm, written by MarkSwapped) — callers must treat
-// swapped == false as "nothing to roll back", even though a stale .previous
-// from an earlier, already-confirmed update may still be sitting on disk
-// (see markerPhase's doc comment). The one exception is a legacy bare-format
-// marker (no phase prefix at all) — see the fallback branch below — which
-// reports swapped == true, since that format's only historical writer always
-// wrote it after a successful Swap. present is false with a nil error when no
-// marker exists at all.
-func ReadMarker(stateDir string) (version string, swapped bool, present bool, err error) {
+// version is the target version the marker names; prevVersionDir is the
+// version directory current pointed to before this update's Swap ran,
+// meaningful only when swapped == true — it's Rollback's second argument.
+// swapped reports whether Swap has durably completed for that version
+// (i.e. the marker is in phasePendingConfirm, written by MarkSwapped) —
+// callers must treat swapped == false as "nothing to roll back". present is
+// false with a nil error when no marker exists at all.
+func ReadMarker(stateDir string) (version, prevVersionDir string, swapped, present bool, err error) {
 	data, err := os.ReadFile(filepath.Join(stateDir, markerFilename))
 	if os.IsNotExist(err) {
-		return "", false, false, nil
+		return "", "", false, false, nil
 	}
 	if err != nil {
-		return "", false, false, fmt.Errorf("update: read marker: %w", err)
+		return "", "", false, false, fmt.Errorf("update: read marker: %w", err)
 	}
 	phase, rest, ok := strings.Cut(string(data), "\n")
 	if !ok {
-		// A bare version string with no phase prefix: the legacy marker
-		// format from before this two-phase scheme existed, which this
-		// package's own writers (WriteMarker/MarkSwapped, via
-		// writeMarkerPhase) never produce anymore. Its one and only writer
-		// historically — the pre-Task-25 code shipped on every released
-		// build — always wrote it *after* Swap had already succeeded (the
-		// old swap-then-mark ordering this task deliberately reversed; see
-		// WriteMarker's doc comment). So every bare marker that can actually
-		// exist in the field names a version whose .previous is that same
-		// update's genuine, fresh backup: the historically correct reading is
-		// swapped == true, not a defensive false. Getting this wrong is not
-		// merely conservative — it silently disarms the rollback safety net
-		// for the one update that installs this two-phase scheme itself,
-		// which fails "safe" only in the sense of keeping the new binary
-		// running, not in the sense of preserving the rollback guarantee.
-		return string(data), true, true, nil
+		return "", "", false, false, fmt.Errorf("update: malformed marker: missing phase separator")
 	}
-	return rest, markerPhase(phase) == phasePendingConfirm, true, nil
+	version, prevVersionDir, _ = strings.Cut(rest, "\n")
+	return version, prevVersionDir, markerPhase(phase) == phasePendingConfirm, true, nil
 }
 
 func ClearMarker(stateDir string) error {

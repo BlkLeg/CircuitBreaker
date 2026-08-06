@@ -41,107 +41,90 @@ func TestDownloadAndVerify_RoundTrips(t *testing.T) {
 
 func TestSwapAndRollback(t *testing.T) {
 	dir := t.TempDir()
-	target := filepath.Join(dir, "cb-agent")
-	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+	oldVersionDir := filepath.Join(dir, "versions", "0.1.0")
+	if err := os.MkdirAll(oldVersionDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(oldVersionDir, "cb-agent"), []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentLink := CurrentLinkPath(dir)
+	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
+		t.Fatal(err)
+	}
+
 	newBinary := filepath.Join(dir, "new-download")
 	if err := os.WriteFile(newBinary, []byte("new binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	backupPath, err := Swap(newBinary, target)
+	prevVersionDir, err := Swap(newBinary, "0.2.0", dir)
 	if err != nil {
 		t.Fatalf("Swap() error = %v", err)
 	}
-	got, _ := os.ReadFile(target)
-	if string(got) != "new binary" {
-		t.Errorf("target contents = %q, want %q", got, "new binary")
+	if prevVersionDir != oldVersionDir {
+		t.Errorf("Swap() prevVersionDir = %q, want %q", prevVersionDir, oldVersionDir)
 	}
 
-	if err := Rollback(target); err != nil {
+	newVersionDir := filepath.Join(dir, "versions", "0.2.0")
+	target, err := os.Readlink(currentLink)
+	if err != nil || target != newVersionDir {
+		t.Errorf("current symlink = (%q, %v), want %q", target, err, newVersionDir)
+	}
+	got, err := os.ReadFile(filepath.Join(newVersionDir, "cb-agent"))
+	if err != nil || string(got) != "new binary" {
+		t.Errorf("new version contents = (%q, %v), want %q", got, err, "new binary")
+	}
+
+	if err := Rollback(currentLink, prevVersionDir); err != nil {
 		t.Fatalf("Rollback() error = %v", err)
 	}
-	got, _ = os.ReadFile(target)
-	if string(got) != "old binary" {
-		t.Errorf("target contents after rollback = %q, want %q", got, "old binary")
-	}
-	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-		t.Errorf("backup file %s still exists after rollback, want removed", backupPath)
+	target, err = os.Readlink(currentLink)
+	if err != nil || target != oldVersionDir {
+		t.Errorf("current symlink after rollback = (%q, %v), want %q", target, err, oldVersionDir)
 	}
 }
 
 func TestMarker_WriteReadClear(t *testing.T) {
 	dir := t.TempDir()
 
-	if _, _, present, err := ReadMarker(dir); err != nil || present {
-		t.Fatalf("ReadMarker() on fresh dir = (_, _, %v, %v), want (_, _, false, nil)", present, err)
+	if _, _, _, present, err := ReadMarker(dir); err != nil || present {
+		t.Fatalf("ReadMarker() on fresh dir = (_, _, _, %v, %v), want (_, _, _, false, nil)", present, err)
 	}
 
 	if err := WriteMarker(dir, "0.2.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
-	version, swapped, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.2.0" || swapped {
-		t.Fatalf("ReadMarker() = (%q, %v, %v, %v), want (\"0.2.0\", false, true, nil) — WriteMarker alone must not report a completed swap", version, swapped, present, err)
+	version, prevVersionDir, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || version != "0.2.0" || swapped || prevVersionDir != "" {
+		t.Fatalf("ReadMarker() = (%q, %q, %v, %v, %v), want (\"0.2.0\", \"\", false, true, nil) — WriteMarker alone must not report a completed swap or a previous version", version, prevVersionDir, swapped, present, err)
 	}
 
 	if err := ClearMarker(dir); err != nil {
 		t.Fatalf("ClearMarker() error = %v", err)
 	}
-	if _, _, present, _ := ReadMarker(dir); present {
+	if _, _, _, present, _ := ReadMarker(dir); present {
 		t.Error("marker still present after ClearMarker()")
 	}
 }
 
-// TestMarker_MarkSwappedTransitionsPhase covers the two-phase marker
-// lifecycle Task 25's fix-round-1 introduced: WriteMarker alone must report
-// swapped == false (nothing to roll back to yet — see markerPhase's doc
-// comment), and only MarkSwapped (called after a real Swap succeeds) must
-// flip that to true.
 func TestMarker_MarkSwappedTransitionsPhase(t *testing.T) {
 	dir := t.TempDir()
 
 	if err := WriteMarker(dir, "0.9.0"); err != nil {
 		t.Fatalf("WriteMarker() error = %v", err)
 	}
-	if _, swapped, present, err := ReadMarker(dir); err != nil || !present || swapped {
-		t.Fatalf("ReadMarker() after WriteMarker() = (_, %v, %v, %v), want (_, false, true, nil)", swapped, present, err)
+	if _, _, swapped, present, err := ReadMarker(dir); err != nil || !present || swapped {
+		t.Fatalf("ReadMarker() after WriteMarker() = (_, _, %v, %v, %v), want (_, _, false, true, nil)", swapped, present, err)
 	}
 
-	if err := MarkSwapped(dir, "0.9.0"); err != nil {
+	prevVersionDir := filepath.Join(dir, "versions", "0.8.0")
+	if err := MarkSwapped(dir, "0.9.0", prevVersionDir); err != nil {
 		t.Fatalf("MarkSwapped() error = %v", err)
 	}
-	version, swapped, present, err := ReadMarker(dir)
-	if err != nil || !present || !swapped || version != "0.9.0" {
-		t.Fatalf("ReadMarker() after MarkSwapped() = (%q, %v, %v, %v), want (\"0.9.0\", true, true, nil)", version, swapped, present, err)
-	}
-}
-
-// TestMarker_LegacyBareFormatReadsAsSwapped covers ReadMarker's fallback path
-// for the legacy marker format: a bare version string with no
-// "<phase>\n"-prefix, written directly here (bypassing WriteMarker/
-// MarkSwapped entirely) to simulate a marker left behind by the pre-Task-25
-// code that shipped on every released build before this two-phase scheme
-// existed. That code's only marker-write call ran strictly after Swap had
-// already succeeded (the old swap-then-mark ordering; see WriteMarker's doc
-// comment), so every such marker that can exist in the field names a version
-// whose .previous is a genuine, fresh backup — ReadMarker must report
-// swapped == true for it, not false, or a restart into the two-phase build
-// loses the rollback safety net for that one upgrade.
-func TestMarker_LegacyBareFormatReadsAsSwapped(t *testing.T) {
-	dir := t.TempDir()
-
-	// Bypass WriteMarker/MarkSwapped (both always produce the new
-	// "<phase>\n<version>" format) to write exactly what legacy code wrote:
-	// a bare version string, nothing else.
-	if err := os.WriteFile(filepath.Join(dir, markerFilename), []byte("0.5.0"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	version, swapped, present, err := ReadMarker(dir)
-	if err != nil || !present || version != "0.5.0" || !swapped {
-		t.Fatalf("ReadMarker() on legacy bare-format marker = (%q, %v, %v, %v), want (\"0.5.0\", true, true, nil)", version, swapped, present, err)
+	version, gotPrev, swapped, present, err := ReadMarker(dir)
+	if err != nil || !present || !swapped || version != "0.9.0" || gotPrev != prevVersionDir {
+		t.Fatalf("ReadMarker() after MarkSwapped() = (%q, %q, %v, %v, %v), want (\"0.9.0\", %q, true, true, nil)", version, gotPrev, swapped, present, err, prevVersionDir)
 	}
 }
 
