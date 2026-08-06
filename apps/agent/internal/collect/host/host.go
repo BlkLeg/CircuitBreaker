@@ -25,19 +25,56 @@ type counters struct {
 	net               map[string][2]uint64
 }
 
+// FSUsage is a filesystem-space snapshot in bytes. It is the injectable form of
+// the syscall.Statfs_t fields the filesystems probe consumes, so tests can pin
+// byte math without depending on whatever backs the test's temp directory.
+type FSUsage struct {
+	TotalBytes uint64
+	FreeBytes  uint64
+	AvailBytes uint64
+}
+
+// statfsUsage is the production Usage implementation.
+func statfsUsage(path string) (FSUsage, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return FSUsage{}, err
+	}
+	blockSize := uint64(st.Bsize)
+	return FSUsage{TotalBytes: st.Blocks * blockSize, FreeBytes: st.Bfree * blockSize, AvailBytes: st.Bavail * blockSize}, nil
+}
+
+// Collector reads host telemetry out of /proc and /sys. Root, Now and Usage are
+// the only three seams into the outside world: every file read is rooted at
+// Root, the sample clock comes from Now, and filesystem space comes from Usage.
+// All three fall back to the real implementations when left nil, so a struct
+// literal is usable without wiring.
 type Collector struct {
 	Root     string
 	Config   capability.HostConfig
 	Now      func() time.Time
+	Usage    func(path string) (FSUsage, error)
 	mu       sync.Mutex
 	previous counters
 }
 
 func New(config capability.HostConfig) *Collector {
-	return &Collector{Root: "/", Config: config, Now: time.Now}
+	return &Collector{Root: "/", Config: config, Now: time.Now, Usage: statfsUsage}
 }
 func (c *Collector) path(name string) string {
 	return filepath.Join(c.Root, strings.TrimPrefix(name, "/"))
+}
+func (c *Collector) now() time.Time {
+	if c.Now == nil {
+		return time.Now()
+	}
+	return c.Now()
+}
+func (c *Collector) usage(path string) (FSUsage, error) {
+	if c.Usage == nil {
+		return statfsUsage(path)
+	}
+	return c.Usage(path)
 }
 func ptr[T any](v T) *T { return &v }
 
@@ -49,7 +86,7 @@ func (c *Collector) Collect(ctx context.Context) (collect.Result, error) {
 	if err != nil {
 		return collect.Result{}, err
 	}
-	now := c.Now()
+	now := c.now()
 	p := frame.HostTelemetryPayload{Schema: 1, SampleID: id, Status: "healthy", Filesystems: []map[string]any{}, Disks: []map[string]any{}, Interfaces: []map[string]any{}, Temperatures: []map[string]any{}}
 	readiness := []frame.Readiness{}
 	c.mu.Lock()
@@ -215,13 +252,13 @@ func (c *Collector) filesystems(p *frame.HostTelemetryPayload, _ *counters) erro
 		if len(x) < 4 || pseudoFS[x[2]] {
 			continue
 		}
-		var st syscall.Statfs_t
-		if err := syscall.Statfs(c.path(x[1]), &st); err != nil {
+		u, usageErr := c.usage(c.path(x[1]))
+		if usageErr != nil {
 			continue
 		}
-		total := st.Blocks * uint64(st.Bsize)
-		avail := st.Bavail * uint64(st.Bsize)
-		used := total - st.Bfree*uint64(st.Bsize)
+		total := u.TotalBytes
+		avail := u.AvailBytes
+		used := total - u.FreeBytes
 		item := map[string]any{"device": x[0], "mountpoint": x[1], "fs_type": x[2], "total_bytes": total, "used_bytes": used, "available_bytes": avail, "read_only": strings.Contains(","+x[3]+",", ",ro,")}
 		if pct := percent(used, total); pct != nil {
 			item["used_pct"] = *pct
