@@ -49,7 +49,7 @@ func TestSwapAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(oldVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -68,8 +68,8 @@ func TestSwapAndRollback(t *testing.T) {
 
 	newVersionDir := filepath.Join(dir, "versions", "0.2.0")
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != newVersionDir {
-		t.Errorf("current symlink = (%q, %v), want %q", target, err, newVersionDir)
+	if err != nil || target != filepath.Join(newVersionDir, "cb-agent") {
+		t.Errorf("current symlink = (%q, %v), want %q", target, err, filepath.Join(newVersionDir, "cb-agent"))
 	}
 	got, err := os.ReadFile(filepath.Join(newVersionDir, "cb-agent"))
 	if err != nil || string(got) != "new binary" {
@@ -80,8 +80,8 @@ func TestSwapAndRollback(t *testing.T) {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 	target, err = os.Readlink(currentLink)
-	if err != nil || target != oldVersionDir {
-		t.Errorf("current symlink after rollback = (%q, %v), want %q", target, err, oldVersionDir)
+	if err != nil || target != filepath.Join(oldVersionDir, "cb-agent") {
+		t.Errorf("current symlink after rollback = (%q, %v), want %q", target, err, filepath.Join(oldVersionDir, "cb-agent"))
 	}
 }
 

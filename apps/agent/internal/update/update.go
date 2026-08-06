@@ -390,12 +390,16 @@ func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err e
 	fsyncDir(newBinaryTarget)
 
 	currentLink := CurrentLinkPath(stateDir)
-	prevVersionDir, err = resolveSymlinkAbs(currentLink)
+	prevTarget, err := resolveSymlinkAbs(currentLink)
 	if err != nil {
 		return "", fmt.Errorf("update: read current symlink: %w", err)
 	}
+	// prevTarget is a file path (or empty if current didn't exist); extract its directory
+	if prevTarget != "" {
+		prevVersionDir = filepath.Dir(prevTarget)
+	}
 
-	if err := atomicSymlink(currentLink, newVersionDir); err != nil {
+	if err := atomicSymlink(currentLink, newBinaryTarget); err != nil {
 		return "", fmt.Errorf("update: re-point current: %w", err)
 	}
 	return prevVersionDir, nil
@@ -411,9 +415,14 @@ func Swap(newBinaryPath, version, stateDir string) (prevVersionDir string, err e
 // collected and returned, but does not stop pruning from attempting the
 // rest.
 func PruneVersions(stateDir, currentLink, keepVersionDir string) error {
-	live, err := resolveSymlinkAbs(currentLink)
+	liveFile, err := resolveSymlinkAbs(currentLink)
 	if err != nil {
 		return fmt.Errorf("update: prune versions: read current symlink: %w", err)
+	}
+	// liveFile is a file path (or empty if current didn't exist); extract its directory
+	var liveDir string
+	if liveFile != "" {
+		liveDir = filepath.Dir(liveFile)
 	}
 
 	versionsRoot := filepath.Join(stateDir, "versions")
@@ -428,7 +437,7 @@ func PruneVersions(stateDir, currentLink, keepVersionDir string) error {
 	var errs []error
 	for _, entry := range entries {
 		dir := filepath.Join(versionsRoot, entry.Name())
-		if dir == live || dir == keepVersionDir {
+		if dir == liveDir || dir == keepVersionDir {
 			continue
 		}
 		if err := os.RemoveAll(dir); err != nil {
@@ -451,7 +460,8 @@ func Rollback(currentLink, prevVersionDir string) error {
 	if prevVersionDir == "" {
 		return fmt.Errorf("update: rollback: no previous version recorded")
 	}
-	if err := atomicSymlink(currentLink, prevVersionDir); err != nil {
+	prevBinaryPath := filepath.Join(prevVersionDir, "cb-agent")
+	if err := atomicSymlink(currentLink, prevBinaryPath); err != nil {
 		return fmt.Errorf("update: rollback: %w", err)
 	}
 	return nil

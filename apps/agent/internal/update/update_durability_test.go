@@ -24,7 +24,7 @@ func TestSwap_NewVersionAlwaysInstalledAt0755(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(oldVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	newBinary := filepath.Join(dir, "new-download")
@@ -61,7 +61,7 @@ func TestSwap_SyncFailureLeavesTargetUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(oldVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	missingNewBinary := filepath.Join(dir, "does-not-exist")
@@ -71,8 +71,8 @@ func TestSwap_SyncFailureLeavesTargetUntouched(t *testing.T) {
 	}
 
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != oldVersionDir {
-		t.Errorf("current symlink = (%q, %v), want unchanged %q", target, err, oldVersionDir)
+	if err != nil || target != filepath.Join(oldVersionDir, "cb-agent") {
+		t.Errorf("current symlink = (%q, %v), want unchanged %q", target, err, filepath.Join(oldVersionDir, "cb-agent"))
 	}
 	if _, err := os.Stat(filepath.Join(dir, "versions", "0.2.0")); !os.IsNotExist(err) {
 		t.Error("new version dir created despite a failed sync, want none")
@@ -132,7 +132,7 @@ func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *test
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(versionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(versionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,8 +153,8 @@ func TestMarkerWrittenBeforeSwap_SurvivesSimulatedCrashBeforeReplacement(t *test
 	}
 
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != versionDir {
-		t.Errorf("current symlink after simulated crash = (%q, %v), want unchanged %q", target, err, versionDir)
+	if err != nil || target != filepath.Join(versionDir, "cb-agent") {
+		t.Errorf("current symlink after simulated crash = (%q, %v), want unchanged %q", target, err, filepath.Join(versionDir, "cb-agent"))
 	}
 }
 
@@ -168,7 +168,7 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(oldVersionDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(oldVersionDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	newBinary := filepath.Join(dir, "new-download")
@@ -194,8 +194,8 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 	}
 	newVersionDir := filepath.Join(dir, "versions", "0.4.0")
 	target, err := os.Readlink(currentLink)
-	if err != nil || target != newVersionDir {
-		t.Errorf("current symlink = (%q, %v), want %q — the swap itself completed durably", target, err, newVersionDir)
+	if err != nil || target != filepath.Join(newVersionDir, "cb-agent") {
+		t.Errorf("current symlink = (%q, %v), want %q — the swap itself completed durably", target, err, filepath.Join(newVersionDir, "cb-agent"))
 	}
 
 	// A fresh process's rollback timer can act on this recovered state
@@ -204,8 +204,8 @@ func TestUpdateThenCrashBeforeRestart_MarkerAndBackupRecoverable(t *testing.T) {
 		t.Fatalf("Rollback() error = %v", err)
 	}
 	target, err = os.Readlink(currentLink)
-	if err != nil || target != oldVersionDir {
-		t.Errorf("current symlink after recovered rollback = (%q, %v), want %q", target, err, oldVersionDir)
+	if err != nil || target != filepath.Join(oldVersionDir, "cb-agent") {
+		t.Errorf("current symlink after recovered rollback = (%q, %v), want %q", target, err, filepath.Join(oldVersionDir, "cb-agent"))
 	}
 }
 
@@ -292,7 +292,7 @@ func TestPruneVersions_KeepsCurrentAndNamedVersionRemovesRest(t *testing.T) {
 	}
 	currentDir := filepath.Join(dir, "versions", "0.3.0")
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(currentDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(currentDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 	keepDir := filepath.Join(dir, "versions", "0.2.0")
@@ -327,7 +327,7 @@ func TestPruneVersions_EmptyKeepStillRetainsCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentLink := CurrentLinkPath(dir)
-	if err := os.Symlink(currentDir, currentLink); err != nil {
+	if err := os.Symlink(filepath.Join(currentDir, "cb-agent"), currentLink); err != nil {
 		t.Fatal(err)
 	}
 
