@@ -88,7 +88,7 @@ def test_render_install_script_creates_versioned_symlink_layout():
     )
     assert 'install -d -m 0755 -o cb-agent -g cb-agent "/var/lib/cb-agent/versions/0.5.0"' in script
     assert '"/var/lib/cb-agent/versions/0.5.0/cb-agent"' in script
-    assert 'ln -sfn "versions/0.5.0" /var/lib/cb-agent/current' in script
+    assert 'ln -sfn "versions/0.5.0/cb-agent" /var/lib/cb-agent/current' in script
     assert "chown -h cb-agent:cb-agent /var/lib/cb-agent/current" in script
     assert "ln -sfn /var/lib/cb-agent/current /usr/local/bin/cb-agent" in script
     # Never installed directly at the top-level path anymore.

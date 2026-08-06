@@ -47,7 +47,7 @@ chown cb-agent:cb-agent /var/lib/cb-agent
 install -d -m 0755 -o cb-agent -g cb-agent "/var/lib/cb-agent/versions/{latest_version}"
 install -m 0755 -o cb-agent -g cb-agent "$TMP_BIN" "/var/lib/cb-agent/versions/{latest_version}/cb-agent"
 rm -f "$TMP_BIN"
-ln -sfn "versions/{latest_version}" /var/lib/cb-agent/current
+ln -sfn "versions/{latest_version}/cb-agent" /var/lib/cb-agent/current
 chown -h cb-agent:cb-agent /var/lib/cb-agent/current
 ln -sfn /var/lib/cb-agent/current /usr/local/bin/cb-agent
 cat > /etc/circuit-breaker/agent.toml <<EOF
