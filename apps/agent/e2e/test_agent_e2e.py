@@ -14,7 +14,7 @@ proves rather than merely asserts (see docker-compose.yml's top-of-file
 comment, and test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's
 step 11/isolation probe below).
 
-Structure — five test functions, each bringing up (and tearing down) its own
+Structure — six test functions, each bringing up (and tearing down) its own
 full stack, so failures/timing in one scenario can't leak into another:
 
   * test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
@@ -45,10 +45,22 @@ full stack, so failures/timing in one scenario can't leak into another:
   * test_agent_independent_restarts_recover_without_new_setup
       Step 12: `docker compose restart` on the backend and the agent
       independently (not `down`/`up`, which would lose volumes/state).
+
+  * test_agent_host_telemetry_first_sample_catchup_and_disable
+      Task 20: the host-telemetry outbound path end to end — collector ->
+      spool -> Noise -> dispatch_frame -> AgentHostSample -> REST. Proves
+      first-sample acceptance, unlinked retention + collector readiness,
+      bounded outage catch-up with original collected_at values and no
+      duplicate rows, a live cadence change with no reconnect, and that
+      revoking host_telemetry both stops collection and actively rewrites
+      every host.* readiness row to "disabled" (D-4). Driven at
+      interval_s: 10 (the production minimum, internal/capability) per D-13,
+      restoring 30 before it exits.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -59,6 +71,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -408,6 +421,119 @@ def _agent_network_name(env: dict | None = None) -> tuple[str, str]:
         f"only — see docker-compose.yml's topology comment), got {list(networks)}"
     )
     return container, next(iter(networks))
+
+
+@contextlib.contextmanager
+def _cut_agent_network(env: dict | None = None):
+    """Severs cb-agent's only route to the server for the duration of the
+    block, and restores it on the way out (including on failure).
+
+    cb-agent is attached to exactly one network (see _agent_network_name's
+    assertion), so detaching it makes every *new* dial fail immediately —
+    which is precisely what the forced-rollback scenario needs: a re-exec'd
+    daemon that can never complete its post-update hello.ack.
+
+    It is deliberately NOT what an outbound-spool test should use. A detached
+    interface is a black hole, not a closed socket: an already-established
+    connection stays open from the agent's side and its writes keep
+    succeeding into the kernel send buffer, so nothing is spooled and the
+    frames written into the void are simply lost when the socket finally
+    errors. `_backend_outage` exists for that case and documents the measured
+    behavior.
+
+    Factored into a context manager because the disconnect/reconnect pair
+    MUST be try/finally-balanced: a test that fails inside the block while
+    the network is still cut leaves a wedged container behind for `docker
+    compose down` to clean up the hard way.
+    """
+    container, network = _agent_network_name(env)
+    subprocess.run(["docker", "network", "disconnect", network, container], check=True)
+    try:
+        yield container, network
+    finally:
+        subprocess.run(["docker", "network", "connect", network, container], check=True)
+
+
+@contextlib.contextmanager
+def _backend_outage(client: httpx.Client, env: dict | None = None):
+    """Takes the *server* away for the duration of the block and waits for it
+    to answer again on the way out.
+
+    This — not `_cut_agent_network` — is what an outbound-spool/catch-up test
+    has to use, and the difference is not cosmetic. `docker network
+    disconnect` produces a black hole: the container loses its route, but its
+    established TCP socket stays open and every `WriteMessage` keeps
+    succeeding into the kernel send buffer, so internal/link never sees a
+    send error, `live` stays true, and NOTHING is enqueued to the spool. That
+    was measured on this harness — a 60s network detach at a 10s cadence
+    produced zero spooled frames, no disconnect until the network came back,
+    and six samples that simply never arrived. A network detach is still
+    exactly right for the forced-rollback test (which only needs "the
+    re-exec'd agent cannot complete a hello.ack"), which is why both helpers
+    exist.
+
+    Stopping the container instead closes the socket, so the agent's next
+    write fails immediately, the link goes down, and every sample collected
+    from then on is spooled — which is the scenario Task 13's paced catch-up
+    burst was built for and names in its own doc comment ("a backend outage
+    grows the backlog"). `stop`/`start`, not `down`/`up`: the Postgres data,
+    the vault key and the agent's approval all have to survive.
+    """
+    subprocess.run([*COMPOSE, "stop", "circuitbreaker"], check=True, cwd=E2E_DIR, env=env)
+    try:
+        yield
+    finally:
+        subprocess.run([*COMPOSE, "start", "circuitbreaker"], check=True, cwd=E2E_DIR, env=env)
+        _wait_until(
+            lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=180
+        )
+
+
+def _agent_telemetry(client: httpx.Client, agent_id: int) -> dict:
+    """GET /agents/{id}/telemetry — latest sample, collector readiness, the
+    live capability grant, the agent's last-reported spool backlog, and the
+    linked hardware id."""
+    resp = client.get(f"/api/v1/agents/{agent_id}/telemetry")
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _readiness_states(telemetry: dict) -> dict[str, str]:
+    return {row["collector"]: row["state"] for row in telemetry["readiness"]}
+
+
+def _history_points(client: httpx.Client, agent_id: int, range_name: str = "1h") -> list[dict]:
+    resp = client.get(
+        f"/api/v1/agents/{agent_id}/telemetry/history", params={"range": range_name}
+    )
+    resp.raise_for_status()
+    return resp.json()["points"]
+
+
+def _parse_ts(value: str) -> datetime:
+    """Parses one of this API's timestamps into an aware datetime.
+
+    Every timestamp on these endpoints is a timezone-aware UTC column
+    (`DateTime(timezone=True)` on AgentHostSample.collected_at), serialized
+    by FastAPI's jsonable_encoder, so these compare directly against this
+    test process's own `datetime.now(timezone.utc)` — the agent, the server
+    and this test all share one kernel clock here.
+    """
+    return datetime.fromisoformat(value)
+
+
+def _put_host_telemetry(
+    client: httpx.Client, headers: dict, agent_id: int, grant: dict | bool
+) -> dict:
+    """PUT one host_telemetry grant. set_capability_grants merges against the
+    stored config, so a partial `config` keeps every setting it omits."""
+    resp = client.put(
+        f"/api/v1/agents/{agent_id}/capabilities",
+        json={"capabilities": {"host_telemetry": grant}},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -955,16 +1081,12 @@ def test_agent_update_success_and_forced_rollback():
                 interval=0.05,
             )
 
-            container, network = _agent_network_name()
-            subprocess.run(["docker", "network", "disconnect", network, container], check=True)
-            try:
+            with _cut_agent_network():
                 # rollbackWindow is a real 2 minutes (internal/update, via
                 # main.go) with no test-only override — Global Constraints
                 # doesn't govern this value the way it governs the rekey
                 # interval, so this test just pays the real cost once.
                 time.sleep(150)
-            finally:
-                subprocess.run(["docker", "network", "connect", network, container], check=True)
 
             _wait_until(lambda: _agent_status().get("version") == baked_version, timeout=60)
             _wait_until(
@@ -1061,6 +1183,386 @@ def test_agent_independent_restarts_recover_without_new_setup():
             )
             detail = client.get(f"/api/v1/agents/{agent_id}", headers=headers).json()
             assert detail["status"] == "active"
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Task 20: host telemetry acceptance, bounded catch-up, live cadence change,
+# and disable
+# ─────────────────────────────────────────────────────────────────────────
+
+# D-13: the daemon is driven at the real production minimum
+# (internal/capability/capability.go's 10s floor), not the 30s default, so
+# the outage-catch-up step costs a minute rather than four. Cadence is pure
+# configuration and its default path stays covered by the Go and backend
+# suites. interval_s is restored to 30 before this test exits.
+_TELEMETRY_INTERVAL_S = 10
+# Floor on how many collection intervals the outage swallows. Six (60s)
+# rather than the minimum four because the 1h history grain is 30s buckets:
+# a 60s window contains at least one whole bucket regardless of where the
+# outage starts inside one, so "samples landed with their original
+# collected_at" is assertable on bucket boundaries. The real outage is
+# longer than this — _backend_outage also has to wait out the container's
+# own restart — which is why every assertion below is a floor, never an
+# exact count.
+_MISSED_INTERVALS = 6
+_OUTAGE_SECONDS = _TELEMETRY_INTERVAL_S * _MISSED_INTERVALS
+# The slower cadence the live grant change switches to (step 4).
+_SLOW_INTERVAL_S = 60
+# api/agents.py's _HISTORY_BUCKET_SECONDS["1h"].
+_HISTORY_BUCKET_S = 30
+# At a 10s cadence a 30s bucket holds 3 samples. 4 allows for ticker drift
+# across a bucket boundary; 6 would mean every outage sample was ingested
+# twice, which is exactly what this bound exists to catch. Delivery out of
+# the spool is at-least-once by construction (frames are peeked, sent, and
+# only then committed — see internal/link/outbound.go), so "no duplicate
+# rows" is a property of the backend's (agent_id, sample_id, collected_at)
+# dedupe, and this is the end-to-end check that it actually holds.
+_MAX_SAMPLES_PER_BUCKET = 4
+# Wall-clock budget for the whole backlog to land, measured from the moment
+# the link is observably back up (not from the moment the server starts
+# answering again, which the agent's reconnect backoff — 1s doubling to a 5m
+# cap, internal/link/backoff.go — sits behind for up to a minute after an
+# outage this long). Task 13's pacing is drainFramesPerTick=4 frames per
+# drainTickInterval=100ms, bounded by drainBytesPerTick=256KiB — ~40
+# frames/s, so a 6-frame backlog drains in well under a second. Those are
+# unexported package vars in Go's internal/link and deliberately are NOT
+# read from here; 30s is a bound generous enough to survive scheduling noise
+# while still failing loudly if catch-up regressed to the old live-traffic-
+# gated 1:4 interleave.
+_CATCHUP_BUDGET_S = 30
+
+_HOST_TELEMETRY_FAST_CONFIG = {
+    "interval_s": _TELEMETRY_INTERVAL_S,
+    "include_filesystems": True,
+    "include_disks": True,
+    "include_network": True,
+    "include_temperatures": True,
+    "include_docker": False,
+}
+
+
+@pytest.mark.e2e
+def test_agent_host_telemetry_first_sample_catchup_and_disable():
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=20,
+            )
+
+            try:
+                # ---- 1. Approval -> first accepted sample ----------------
+                # The approval already granted host_telemetry at the 30s
+                # default; this PUT only changes the cadence (and pins the
+                # include_* flags this test asserts on) and is delivered over
+                # the live link as a capabilities.set control frame.
+                grant_applied_at = datetime.now(timezone.utc)
+                _put_host_telemetry(
+                    client,
+                    headers,
+                    agent_id,
+                    {"enabled": True, "config": _HOST_TELEMETRY_FAST_CONFIG},
+                )
+
+                # cpu_pct (and every rate-derived field) is a delta between
+                # two /proc/stat snapshots, so the very first collection of
+                # any freshly constructed collector — and applying a config
+                # constructs one, see main.go's applyHostConfig — carries a
+                # null cpu_pct. Requiring BOTH "collected after the grant
+                # landed" and "carries a rate" therefore waits for the second
+                # sample produced under the new cadence, which is what proves
+                # the whole outbound path is running steadily rather than
+                # having delivered exactly one frame.
+                #
+                # The whole response is captured by the predicate rather than
+                # re-fetched afterwards: at a 10s cadence the next sample can
+                # land between the two calls, and the config change's own
+                # first (rate-less) sample would then be what the assertions
+                # below ran against.
+                def _rate_bearing_telemetry() -> dict | None:
+                    current = _agent_telemetry(client, agent_id)
+                    sample = current["latest"]
+                    if sample is None or sample["summary"]["cpu_pct"] is None:
+                        return None
+                    if _parse_ts(sample["collected_at"]) <= grant_applied_at:
+                        return None
+                    return current
+
+                telemetry = _wait_until_and_return(_rate_bearing_telemetry, timeout=45)
+                latest = telemetry["latest"]
+                summary = latest["summary"]
+                assert summary["cpu_pct"] is not None, summary
+                assert summary["mem_pct"] is not None, summary
+                assert summary["uptime_s"] is not None, summary
+                # root_disk_pct is deliberately NOT asserted non-null here.
+                # host.Collector only sets it from a /proc/self/mounts entry
+                # whose mountpoint is exactly "/" and whose fs type is not in
+                # its pseudoFS deny-list — and "overlay" is in that list, so
+                # in ANY container (this harness included) the root mount is
+                # skipped by design. That is a property of running the
+                # collector inside a container, not of the collector: on a
+                # real host "/" is ext4/xfs and the field is populated. What
+                # is assertable here is the capability behind it — real
+                # statfs numbers for real mounts — so the filesystems list is
+                # checked for a usable used_pct below instead.
+                #
+                # host.Collector stamps "healthy" and only downgrades to
+                # "degraded"/"unavailable" on a real probe failure (see
+                # internal/collect/host/host.go). "unavailable" would mean
+                # core /proc telemetry itself failed.
+                assert latest["status"] in ("healthy", "degraded"), latest["status"]
+                payload = latest["payload"]
+                assert payload["filesystems"], "no filesystem entries in the sample payload"
+                assert payload["disks"], "no disk entries in the sample payload"
+                assert payload["interfaces"], "no network interface entries in the sample payload"
+                assert any(
+                    isinstance(fs.get("used_pct"), (int, float)) for fs in payload["filesystems"]
+                ), f"no filesystem carried a computed used_pct: {payload['filesystems']}"
+
+                # ---- 2. Unlinked retention + collector readiness ---------
+                states = _readiness_states(telemetry)
+                assert states.get("host.core") == "ready", states
+                # No Docker socket is mounted into cb-agent (see
+                # docker-compose.yml's cb-agent volumes) and include_docker is
+                # false in the grant above, so this collector must report
+                # itself off rather than broken or healthy.
+                assert states.get("host.docker") == "disabled", states
+                # _enroll_agent approves with host_link_action "unlinked", so
+                # there is no hardware row to project onto: the sample is
+                # still persisted and served (retention is unconditional),
+                # and projected_at stays null.
+                assert telemetry["hardware_id"] is None, telemetry["hardware_id"]
+                assert latest["projected"] is False, latest
+
+                # ---- 3. Bounded catch-up without duplicates --------------
+                def _history_sample_total() -> int:
+                    return sum(p["sample_count"] for p in _history_points(client, agent_id))
+
+                samples_before_outage = _history_sample_total()
+
+                outage_start = datetime.now(timezone.utc)
+                with _backend_outage(client):
+                    # The daemon keeps collecting throughout: internal/link's
+                    # Run routes data frames to the spool whenever the link
+                    # is not live, so every sample produced in here is
+                    # durably queued rather than dropped.
+                    time.sleep(_OUTAGE_SECONDS)
+                # The window closes only once the API answers again, so it
+                # covers the backend's own restart too — the agent was
+                # collecting into the spool for all of it.
+                outage_end = datetime.now(timezone.utc)
+
+                # Spool depth first, and immediately: the value the server
+                # holds during catch-up comes from hello.spool_depth (D-12) —
+                # it CANNOT have moved during the outage, because no frame
+                # reached the server while the agent was disconnected — and
+                # the very next heartbeat (20s) overwrites it with the
+                # by-then-drained 0. Polling fast from here is what makes the
+                # non-zero window observable at all.
+                observed_depth = 0
+                # Generous because reconnect backoff, not catch-up, dominates
+                # this wait: see _CATCHUP_BUDGET_S's comment. A ~2 minute
+                # outage leaves internal/link/backoff.go partway up its
+                # 1s-doubling progression, so the first post-outage dial can
+                # be up to a minute after the server is answering again.
+                depth_deadline = time.monotonic() + 240
+                while time.monotonic() < depth_deadline:
+                    spool = _agent_telemetry(client, agent_id)["spool"]
+                    if spool["depth"]:
+                        observed_depth = spool["depth"]
+                        break
+                    time.sleep(0.5)
+                assert observed_depth > 0, (
+                    "never observed a non-zero spool depth after a "
+                    f"{_OUTAGE_SECONDS}s outage — either the outage samples "
+                    "were dropped instead of spooled, or hello.spool_depth "
+                    "is not being recorded"
+                )
+                link_restored = time.monotonic()
+
+                bucket_width = timedelta(seconds=_HISTORY_BUCKET_S)
+
+                def _outage_points() -> list[dict]:
+                    """1h history buckets lying ENTIRELY inside the outage.
+
+                    Every sample in them was collected while the server was
+                    down, so their existence is proof the backlog was
+                    delivered with its ORIGINAL collected_at rather than
+                    restamped to reconnect time — a restamped backlog would
+                    leave this window empty and pile up in the reconnect
+                    bucket instead.
+
+                    Whole buckets only, because a bucket straddling either
+                    edge is still open: the one the outage ends in keeps
+                    collecting live samples afterwards, so it would differ
+                    between two reads for an entirely innocent reason and
+                    make the duplicate check below meaningless.
+                    """
+                    return [
+                        p
+                        for p in _history_points(client, agent_id)
+                        if outage_start <= _parse_ts(p["collected_at"])
+                        and _parse_ts(p["collected_at"]) + bucket_width <= outage_end
+                    ]
+
+                # A window of at least 60s always contains at least one whole
+                # 30s bucket wherever it starts, and a whole bucket holds 3
+                # samples at a 10s cadence. A floor, not an equality — see
+                # _MISSED_INTERVALS.
+                min_outage_samples = 3
+
+                def _caught_up() -> bool:
+                    return (
+                        sum(p["sample_count"] for p in _outage_points()) >= min_outage_samples
+                        and _history_sample_total() >= samples_before_outage + _MISSED_INTERVALS
+                    )
+
+                _wait_until(_caught_up, timeout=_CATCHUP_BUDGET_S, interval=1.0)
+                catchup_elapsed = time.monotonic() - link_restored
+                assert catchup_elapsed <= _CATCHUP_BUDGET_S, catchup_elapsed
+
+                # The indicator has to clear on its own, from the heartbeat
+                # (D-12) — hello alone could never lower it. Two heartbeat
+                # intervals (20s each, internal/link) plus margin. This also
+                # establishes that the backlog is fully drained, which is what
+                # makes the duplicate check below a comparison of settled data
+                # rather than a race against the tail of the burst.
+                _wait_until(
+                    lambda: _agent_telemetry(client, agent_id)["spool"]["depth"] == 0,
+                    timeout=50,
+                )
+
+                # Duplicate check, two ways. (a) No outage bucket may hold
+                # more samples than the cadence can physically produce.
+                # (b) Re-issuing the same window must return byte-identical
+                # buckets: they are closed and fully drained, so any change
+                # between two reads would mean a row was ingested twice.
+                first_read = _outage_points()
+                for point in first_read:
+                    assert point["sample_count"] <= _MAX_SAMPLES_PER_BUCKET, (
+                        f"bucket {point['collected_at']} holds {point['sample_count']} samples "
+                        f"at a {_TELEMETRY_INTERVAL_S}s cadence in a {_HISTORY_BUCKET_S}s bucket "
+                        "— the spool's at-least-once redelivery was not deduped"
+                    )
+                time.sleep(3)
+                second_read = _outage_points()
+                assert second_read == first_read, (
+                    "the same closed history window returned different buckets on a "
+                    f"second read — outage samples are being re-ingested as new rows.\n"
+                    f"first:  {first_read}\nsecond: {second_read}"
+                )
+
+                # ---- 4. Cadence change without a reconnect ---------------
+                connected_since_before = client.get(f"/api/v1/agents/{agent_id}").json()[
+                    "connected_since"
+                ]
+                _put_host_telemetry(
+                    client,
+                    headers,
+                    agent_id,
+                    {"enabled": True, "config": {"interval_s": _SLOW_INTERVAL_S}},
+                )
+                # Let the switch settle past one *old* interval so the
+                # baseline below is a sample the new runner produced, not the
+                # last straggler from the 10s one.
+                time.sleep(_TELEMETRY_INTERVAL_S * 2)
+
+                def _latest_collected_at() -> datetime:
+                    return _parse_ts(_agent_telemetry(client, agent_id)["latest"]["collected_at"])
+
+                gap_base = _latest_collected_at()
+                _wait_until(
+                    lambda: _latest_collected_at() > gap_base,
+                    timeout=_SLOW_INTERVAL_S + 30,
+                    interval=2.0,
+                )
+                observed_gap = _latest_collected_at() - gap_base
+                assert observed_gap >= timedelta(seconds=_SLOW_INTERVAL_S * 0.75), (
+                    f"sample gap {observed_gap} does not reflect the new "
+                    f"{_SLOW_INTERVAL_S}s cadence"
+                )
+                # Same proof shape as step 6 of the lifecycle test: the new
+                # cadence arrived over the live control-frame push, so the
+                # daemon's link never dropped and the server's
+                # connected_since never moved. status.json carries grants as
+                # bare booleans (see internal/status.Status.Grants), which is
+                # why the cadence itself is verified from the observed sample
+                # gap above rather than from the status file.
+                status = _agent_status()
+                assert status["link_state"] == "accepted", status
+                assert status.get("grants", {}).get("host_telemetry") is True, status
+                assert (
+                    client.get(f"/api/v1/agents/{agent_id}").json()["connected_since"]
+                    == connected_since_before
+                )
+
+                # ---- 5. Disable stops collection and reports it ----------
+                _put_host_telemetry(client, headers, agent_id, {"enabled": False})
+
+                # D-4: ingest_readiness only ever upserts, so the ONLY way
+                # these rows stop claiming the collectors are live is the
+                # agent actively republishing every name in
+                # host.CollectorNames as "disabled" (Task 11).
+                host_collectors = (
+                    "host.core",
+                    "host.filesystems",
+                    "host.disks",
+                    "host.network",
+                    "host.thermal",
+                    "host.docker",
+                )
+
+                def _all_host_collectors_disabled() -> bool:
+                    states_now = _readiness_states(_agent_telemetry(client, agent_id))
+                    return all(states_now.get(name) == "disabled" for name in host_collectors)
+
+                _wait_until(_all_host_collectors_disabled, timeout=30)
+
+                # Give any sample already in flight when the grant was
+                # revoked time to land, then freeze the baseline.
+                time.sleep(5)
+                collected_at_at_disable = _latest_collected_at()
+                assert _agent_status().get("grants", {}).get("host_telemetry") is False
+
+                # Past two of the intervals that were in force before the
+                # disable — if collection were still running, this window
+                # would contain two more samples.
+                time.sleep(_SLOW_INTERVAL_S * 2 + 5)
+                assert _latest_collected_at() == collected_at_at_disable, (
+                    "a new host sample arrived after host_telemetry was revoked"
+                )
+                assert _all_host_collectors_disabled(), _readiness_states(
+                    _agent_telemetry(client, agent_id)
+                )
+            finally:
+                # D-13: restore the production default cadence before
+                # exiting, so nothing this test did to the grant outlives it.
+                # Best-effort — the stack is torn down below regardless, and
+                # a failure here must not mask the real assertion failure.
+                with contextlib.suppress(Exception):
+                    _put_host_telemetry(
+                        client,
+                        headers,
+                        agent_id,
+                        {"enabled": True, "config": {"interval_s": 30}},
+                    )
         finally:
             stream.close()
     finally:
