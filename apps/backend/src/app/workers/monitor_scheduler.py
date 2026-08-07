@@ -58,6 +58,7 @@ async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
     await nats_client.ensure_monitor_poll_stream()
+    await nats_client.ensure_monitor_probe_stream()
 
     lock_id = _lock_id_for(_LOCK_NAME)
     lock_db = SessionLocal()

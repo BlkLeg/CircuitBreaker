@@ -64,6 +64,10 @@ TOPOLOGY_NODE_STATUS_CHANGED = "topology.node.status_changed"
 # The "mon." root avoids colliding with the shared CB_EVENTS stream's monitor.> subjects.
 MONITOR_POLL_ITEM = "mon.poll.item"
 
+# Agent-executed probe dispatch. Carried by its own MONITOR_PROBE work-queue stream
+# (never added to MONITOR_POLL's subject list) so a blocked agent cannot delay server checks.
+MONITOR_PROBE_REMOTE = "mon.probe.remote"
+
 
 # ── Payload helpers ──────────────────────────────────────────────────────────
 

@@ -13,6 +13,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.core.subjects import MONITOR_PROBE_REMOTE
+
 _logger = logging.getLogger(__name__)
 
 NATS_URL = os.getenv("CB_NATS_URL", os.getenv("NATS_URL", "nats://localhost:4222"))
@@ -66,6 +68,7 @@ class NATSClient:
                 await self._ensure_kv_bucket()
                 await self._ensure_events_stream()
                 await self.ensure_monitor_poll_stream()
+                await self.ensure_monitor_probe_stream()
                 await self._flush_publish_buffer()
 
             async def _on_error(exc: Exception) -> None:
@@ -107,6 +110,7 @@ class NATSClient:
             await self._ensure_kv_bucket()
             await self._ensure_events_stream()
             await self.ensure_monitor_poll_stream()
+            await self.ensure_monitor_probe_stream()
             _logger.info("NATS connected to %s", self._url)
         except Exception as exc:
             self._connected = False
@@ -256,6 +260,37 @@ class NATSClient:
                 _logger.debug("NATS MONITOR_POLL stream already exists")
             else:
                 _logger.warning("NATS MONITOR_POLL stream ensure failed: %s", exc)
+
+    async def ensure_monitor_probe_stream(self) -> None:
+        """Create the MONITOR_PROBE work-queue stream if absent.
+
+        Agent-executed probe dispatch gets its own stream rather than a second subject
+        on MONITOR_POLL: the "already in use" branch above is swallowed at debug level,
+        so widening an existing stream's subject list silently never applies to a
+        deployed server. A separate stream also keeps the remote-dispatch consumer's
+        subject filter from overlapping MONITOR_POLL's (JetStream forbids that on a
+        work queue) and gives "a blocked agent cannot delay server checks" by
+        construction. max_age is short — an assignment past its deadline must not
+        surface minutes late.
+        """
+        if not self._connected or not self._js:
+            return
+        try:
+            from nats.js.api import RetentionPolicy
+
+            await self._js.add_stream(
+                name="MONITOR_PROBE",
+                subjects=[MONITOR_PROBE_REMOTE],
+                retention=RetentionPolicy.WORK_QUEUE,
+                max_age=int(os.getenv("CB_MONITOR_PROBE_MAX_AGE_S", "60")),
+            )
+            _logger.info("NATS MONITOR_PROBE stream created")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already in use" in msg or "already exists" in msg or "name already in use" in msg:
+                _logger.debug("NATS MONITOR_PROBE stream already exists")
+            else:
+                _logger.warning("NATS MONITOR_PROBE stream ensure failed: %s", exc)
 
     async def js_publish(self, subject: str, payload: dict | str | bytes) -> bool:
         """Publish to JetStream. Returns True on success, False if unavailable or on error."""
