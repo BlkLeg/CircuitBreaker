@@ -1,0 +1,289 @@
+[
+  {
+    "description": "derived — an address inside a directly connected IPv4 prefix",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"scope_mode": "direct_private"},
+    "destination": {"host": "10.0.0.9"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "derived — an address inside a directly connected IPv6 ULA prefix",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/64"]}],
+    "config": {"scope_mode": "direct_private"},
+    "destination": {"host": "fd00:a::99"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "derived — the agent's own interface address is in scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["192.168.8.2/24"]}],
+    "config": {},
+    "destination": {"host": "192.168.8.2"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "derived — a public lease on the interface never enters scope",
+    "facts": [
+      {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24", "203.0.113.7/24"]}
+    ],
+    "config": {"scope_mode": "direct_private"},
+    "destination": {"host": "203.0.113.9"},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "derived — a global-unicast IPv6 prefix is not ULA and never enters scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["2001:db8::5/64"]}],
+    "config": {},
+    "destination": {"host": "2001:db8::9"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "derived — a loopback interface's own network is never reachable",
+    "facts": [{"name": "lo", "flags": ["loopback", "up"], "addrs": ["127.0.0.1/8"]}],
+    "config": {},
+    "destination": {"host": "127.0.0.9"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "derived — a point-to-point tunnel prefix is a route, not a directly connected subnet",
+    "facts": [
+      {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]},
+      {"name": "wg0", "flags": ["pointtopoint", "up"], "addrs": ["10.9.0.2/24"]}
+    ],
+    "config": {},
+    "destination": {"host": "10.9.0.7"},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "derived — a prefix too wide to be wholly private is dropped",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["192.168.8.2/8"]}],
+    "config": {},
+    "destination": {"host": "192.168.8.9"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "derived — a prefix whose network address alone looks private is still dropped",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/7"]}],
+    "config": {},
+    "destination": {"host": "11.0.0.1"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "derived — a /15 straddling the RFC1918 boundary does not carry the public half in",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["192.168.0.5/15"]}],
+    "config": {},
+    "destination": {"host": "192.169.0.1"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "derived — an IPv6 prefix wider than ULA does not carry the space above it in",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/6"]}],
+    "config": {},
+    "destination": {"host": "fec0::1"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "derived — an unparseable reported address is ignored, not fatal",
+    "facts": [
+      {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["<nil>", "10.0.0.5/24"]}
+    ],
+    "config": {},
+    "destination": {"host": "10.0.0.9"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "empty scope — an agent reporting no usable network may probe nothing",
+    "facts": [],
+    "config": {},
+    "destination": {"host": "10.0.0.9"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "narrowing — an excluded CIDR carves a hole in the derived scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"excluded_cidrs": ["10.0.0.128/25"]},
+    "destination": {"host": "10.0.0.200"},
+    "expected": "deny",
+    "reason": "excluded_cidr"
+  },
+  {
+    "description": "narrowing — the rest of the derived scope survives the exclusion",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"excluded_cidrs": ["10.0.0.128/25"]},
+    "destination": {"host": "10.0.0.9"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "widening — an approved routed CIDR is in scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["10.40.0.0/16"]},
+    "destination": {"host": "10.40.7.1"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "widening — an exclusion outranks an overlapping approved CIDR",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["10.40.0.0/16"], "excluded_cidrs": ["10.40.7.0/24"]},
+    "destination": {"host": "10.40.7.1"},
+    "expected": "deny",
+    "reason": "excluded_cidr"
+  },
+  {
+    "description": "special use — loopback stays blocked after being explicitly added",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["127.0.0.0/8"]},
+    "destination": {"host": "127.0.0.1"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — the cloud metadata address stays blocked after being explicitly added",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["169.254.169.254/32"]},
+    "destination": {"host": "169.254.169.254"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — the IPv6 cloud metadata address sits inside ULA and stays blocked",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:ec2::5/64"]}],
+    "config": {},
+    "destination": {"host": "fd00:ec2::254"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — IPv6 link-local stays blocked after being explicitly added",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["fe80::/10"]},
+    "destination": {"host": "fe80::1"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — multicast is blocked",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "224.0.0.251"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — the unspecified address is blocked",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "0.0.0.0"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — the limited broadcast address is blocked",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "255.255.255.255"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "special use — the subnet-directed broadcast of an in-scope network is blocked",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "10.0.0.255"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "IPv4-mapped IPv6 — an in-scope IPv4 destination in v6 form is allowed",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "::ffff:10.0.0.9"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "IPv4-mapped IPv6 — a blocked IPv4 destination cannot escape down the v6 path",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "::ffff:169.254.169.254"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "hostname — every resolved address in scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24", "fd00:a::5/64"]}],
+    "config": {},
+    "destination": {"host": "nas.lan", "resolved": ["10.0.0.9", "fd00:a::9"]},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "hostname — one out-of-scope answer rejects the whole name (DNS rebinding)",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "nas.lan", "resolved": ["10.0.0.9", "203.0.113.7"]},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "hostname — one special-use answer rejects the whole name",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "nas.lan", "resolved": ["10.0.0.9", "127.0.0.1"]},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "hostname — an approved routed hostname still needs its addresses in scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_hostnames": ["*.branch.example.com"]},
+    "destination": {"host": "db.branch.example.com", "resolved": ["203.0.113.7"]},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "hostname — a name with no resolved addresses is refused, not assumed",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "nas.lan", "resolved": []},
+    "expected": "deny",
+    "reason": "unresolved_hostname"
+  },
+  {
+    "description": "hostname — an unparseable resolved answer is refused, not skipped",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": "nas.lan", "resolved": ["10.0.0.9", "not-an-ip"]},
+    "expected": "deny",
+    "reason": "invalid_destination"
+  },
+  {
+    "description": "destination — an empty host is refused",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"host": ""},
+    "expected": "deny",
+    "reason": "invalid_destination"
+  },
+  {
+    "description": "scope mode — an unrecognized mode derives nothing rather than everything",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"scope_mode": "all_the_things"},
+    "destination": {"host": "10.0.0.9"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  }
+]

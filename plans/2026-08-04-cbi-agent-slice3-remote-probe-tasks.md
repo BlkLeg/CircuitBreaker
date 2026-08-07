@@ -1648,6 +1648,23 @@ Recorded where this plan does not follow the design document literally.
    "when did the agent last say so". Liveness is `agents.last_seen_at`, and refreshing the row on
    every reconnect would be a write carrying no new information — the same reasoning
    `record_spool_stats` already documents for `spool_reported_at`.
+8. **Task 3's `test_normalize_remote_probe_config_rejects_default_routes` drives the CIDR
+   validator, not a config normalizer.** The named test appears in both Task 3 and Task 5; the
+   `remote_probe` normalizer itself belongs to Task 5 by the "one capability registry" constraint
+   (bounds live in `CAPABILITY_DEFINITIONS`), and Task 5 says CIDR validation delegates to Task 3's
+   module. `core/agent_scope.normalize_scope_cidr`/`normalize_scope_cidrs` are that delegate and are
+   what the Task 3 copy of the test pins.
+9. **The scope corpus's `destination` is an object, not a bare string.** The declared entry shape
+   names `"destination"` without a type. Hostname cases need the resolved answer set, and the
+   evaluator deliberately resolves nothing itself (the same address list is checked at dispatch and
+   re-checked at the agent), so entries carry `{"host", "resolved"?}`. Task 4's Go mirror reads the
+   same shape.
+10. **`EffectiveScope` also carries `additional_hostnames` and the directly-connected subset.**
+   Task 3's named tests cover neither, but the `remote_probe` config carries `additional_hostnames`
+   and §3 gives the agent an extra directly-connected requirement "unless covered by an explicit
+   centrally approved override" — Tasks 4 and 16 need both, and the "one scope evaluator" constraint
+   forbids them from inventing wildcard-matching or a second notion of "directly connected". Hostname
+   approval never bypasses the per-address check; that is pinned by a test here.
 
 ## Open decisions requiring confirmation
 
