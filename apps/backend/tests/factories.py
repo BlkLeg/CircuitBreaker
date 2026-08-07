@@ -309,3 +309,53 @@ class Factories:
         self.session.add(row)
         self.session.flush()
         return row
+
+    # ── Monitors ──────────────────────────────────────────────────────────────
+
+    def monitor_item(self, **kwargs):
+        """One `monitor_items` row — a standalone ICMP monitor by default.
+
+        Pass `probe_agent_id=` to give it a remote vantage; leaving it unset is
+        server execution, which is what every pre-Slice-3 monitor is.
+        """
+        from app.core.time import utcnow
+        from app.db.models import MonitorItem
+
+        defaults = {
+            "name": fake.unique.slug(),
+            "host": fake.ipv4_private(),
+            "check_type": "icmp",
+            "params": {},
+            "interval_secs": 60,
+            "next_due_at": utcnow(),
+        }
+        defaults.update(kwargs)
+        item = MonitorItem(**defaults)
+        self.session.add(item)
+        self.session.flush()
+        return item
+
+    def monitor_probe_run(self, monitor, agent, status: str = "queued", **kwargs):
+        """One `monitor_probe_runs` lease.
+
+        Not flushed: the partial unique index on the in-flight statuses is a
+        thing callers deliberately provoke, so the flush stays with the test.
+        `run_id` defaults to a fresh 128-bit hex token, as
+        `monitor_service` mints them.
+        """
+        import secrets
+
+        from app.core.time import utcnow
+        from app.db.models import MonitorProbeRun
+
+        defaults = {
+            "monitor_id": monitor.id,
+            "agent_id": agent.id,
+            "run_id": secrets.token_hex(16),
+            "status": status,
+            "scheduled_at": utcnow(),
+        }
+        defaults.update(kwargs)
+        run = MonitorProbeRun(**defaults)
+        self.session.add(run)
+        return run
