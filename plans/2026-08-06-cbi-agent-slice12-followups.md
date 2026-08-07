@@ -150,3 +150,33 @@ as an unrelated `NoResultFound` that took the `/link` socket down.
 `Base.metadata.create_all`, which uses the *model* metadata. Only a real Alembic
 run — a fresh install, or the Docker e2e stack — goes through
 `_build_bootstrap_metadata`. The e2e is what found it.
+
+---
+
+## F-8. `test_agent_update_success_and_forced_rollback` is broken on `dev`
+
+**Found by:** Task 21 release-gate verification.
+
+The e2e self-update/rollback test fails on **both** `dev` and this branch, so it
+is pre-existing — but the two failure modes differ, and neither has been
+diagnosed:
+
+| | where it dies | how |
+|---|---|---|
+| `dev` | ~88 s, before the `cb-agent` container starts at all | `AssertionError` |
+| this branch | ~212 s, after the agent is up, inside `_cut_agent_network` | `Error response from daemon: network sandbox for container … not found` |
+
+The branch gets *further* than `dev` does. `apps/agent/internal/update/` is
+untouched by the slice 1-2 hardening work, and the rollback logic's unit test
+(`TestWatchForRollback_NoConfirmationTriggersRollback`) passes under `-race`.
+
+The branch-side failure is a harness/daemon race, not a product assertion:
+`docker network disconnect` is being issued before the container's network
+sandbox exists. It is the same mechanism [[F-5]] rules out for the catch-up
+test, which is more evidence for fixing that properly: give the link a
+steady-state read deadline so a partition is detectable, then the e2e can stop
+depending on `docker network disconnect` at all.
+
+**Both failures need diagnosing before the e2e suite can be a trustworthy gate.**
+The other five lifecycle tests pass (one xfailed), including Task 20's new
+telemetry/catch-up/disable test.
