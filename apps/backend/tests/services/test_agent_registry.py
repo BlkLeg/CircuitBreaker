@@ -7,6 +7,16 @@ from sqlalchemy import event
 
 from app.services import agent_registry as svc
 
+# The registry default (`CAPABILITY_DEFINITIONS["remote_probe"]`), spelled out
+# so a silent change to the server-side defaults fails this test loudly.
+REMOTE_PROBE_DEFAULT_CONFIG = {
+    "max_concurrent": 20,
+    "scope_mode": "direct_private",
+    "excluded_cidrs": [],
+    "additional_cidrs": [],
+    "additional_hostnames": [],
+}
+
 
 def test_create_pending_agent_defaults_to_pending_status(db_session):
     agent = svc.create_pending_agent(
@@ -419,7 +429,12 @@ def test_bulk_structured_grants_dict_maps_capability_grants_per_agent(db_session
         agent_b.id: svc.structured_grants_dict(db_session, agent_b.id),
     }
     assert result[agent_a.id]["host_telemetry"]["config"]["interval_s"] == 90
-    assert result[agent_a.id]["remote_probe"] == {"enabled": False, "config": {}}
+    # A grant row stored with no config still reads back the registry defaults,
+    # which is why `remote_probe` gaining a real schema needed no migration.
+    assert result[agent_a.id]["remote_probe"] == {
+        "enabled": False,
+        "config": REMOTE_PROBE_DEFAULT_CONFIG,
+    }
     assert result[agent_b.id]["local_discovery"] == {"enabled": True, "config": {}}
 
 

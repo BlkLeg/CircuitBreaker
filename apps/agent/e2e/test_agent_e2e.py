@@ -393,7 +393,16 @@ def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = Non
                 "include_docker": False,
             },
         },
-        "remote_probe": {"enabled": True, "config": {}},
+        "remote_probe": {
+            "enabled": True,
+            "config": {
+                "max_concurrent": 20,
+                "scope_mode": "direct_private",
+                "excluded_cidrs": [],
+                "additional_cidrs": [],
+                "additional_hostnames": [],
+            },
+        },
         "local_discovery": {"enabled": True, "config": {}},
     }, "approve did not apply the server's default capability grants"
 

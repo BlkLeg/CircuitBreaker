@@ -1,10 +1,15 @@
 package capability
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
 func TestGate_DefaultDenyForUnknownCapability(t *testing.T) {
@@ -274,5 +279,131 @@ func TestApplyGrants_PersistsEffectiveNotRejectedConfig(t *testing.T) {
 	cfg, enabled := second.HostConfig()
 	if !enabled || cfg.IntervalS != 45 {
 		t.Errorf("HostConfig() after restart = %+v, %v, want the retained interval 45", cfg, enabled)
+	}
+}
+
+// --- Task 5: the remote_probe configuration schema (design §3) -------------
+
+// TestNormalizeRemoteProbeConfig_DefaultsAndBounds mirrors the backend's
+// test_defaults_match_the_design_document and test_max_concurrent_out_of_range_raises.
+// The bounds are a cross-language constant: an agent that accepted a limit the
+// server rejects (or vice versa) would run a concurrency the operator never
+// approved and could not see.
+func TestNormalizeRemoteProbeConfig_DefaultsAndBounds(t *testing.T) {
+	g := New(t.TempDir())
+	if _, err := g.ApplyGrants(json.RawMessage(`{"remote_probe":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, enabled := g.RemoteProbeConfig()
+	if !enabled {
+		t.Fatal("RemoteProbeConfig() enabled = false, want true")
+	}
+	if !reflect.DeepEqual(cfg, DefaultRemoteProbeConfig()) {
+		t.Fatalf("bare-boolean grant config = %+v, want the package default %+v", cfg, DefaultRemoteProbeConfig())
+	}
+	if cfg.MaxConcurrent != 20 || cfg.ScopeMode != netscope.ScopeModeDirectPrivate {
+		t.Errorf("DefaultRemoteProbeConfig() = %+v, want max_concurrent 20 and the direct_private policy", cfg)
+	}
+
+	for _, limit := range []int{MinProbeConcurrent, 20, MaxProbeConcurrent} {
+		payload := json.RawMessage(fmt.Sprintf(`{"remote_probe":{"enabled":true,"config":{"max_concurrent":%d}}}`, limit))
+		faults, err := g.ApplyGrants(payload)
+		if err != nil || len(faults) != 0 {
+			t.Fatalf("ApplyGrants(max_concurrent=%d) = %v, %v, want accepted", limit, faults, err)
+		}
+		if cfg, _ := g.RemoteProbeConfig(); cfg.MaxConcurrent != limit {
+			t.Errorf("RemoteProbeConfig().MaxConcurrent = %d, want %d", cfg.MaxConcurrent, limit)
+		}
+	}
+	for _, limit := range []int{0, -1, 101} {
+		payload := json.RawMessage(fmt.Sprintf(`{"remote_probe":{"enabled":true,"config":{"max_concurrent":%d}}}`, limit))
+		faults, err := g.ApplyGrants(payload)
+		if err != nil {
+			t.Fatalf("ApplyGrants() error = %v, want nil (a per-capability fault is not a frame failure)", err)
+		}
+		if got := faultNames(faults); len(got) != 1 || got[0] != "remote_probe" {
+			t.Fatalf("ApplyGrants(max_concurrent=%d) faults = %v, want exactly one naming remote_probe", limit, faults)
+		}
+	}
+
+	// An unknown policy is the server telling this build about a mode it cannot
+	// evaluate. Faulting is the only outcome that reaches an operator; running
+	// on with a mode netscope would derive nothing from is a silent dark probe.
+	faults, err := g.ApplyGrants(json.RawMessage(`{"remote_probe":{"enabled":true,"config":{"scope_mode":"anything_routable"}}}`))
+	if err != nil {
+		t.Fatalf("ApplyGrants() error = %v, want nil", err)
+	}
+	if got := faultNames(faults); len(got) != 1 || got[0] != "remote_probe" {
+		t.Fatalf("ApplyGrants(unknown scope_mode) faults = %v, want exactly one naming remote_probe", faults)
+	}
+}
+
+// TestNormalizeRemoteProbeConfig_InvalidConfigKeepsEnabledAndPreviousConfig is
+// the per-capability isolation contract (D-6) applied to the new normalizer:
+// registering one must not need decode() to learn anything about it.
+func TestNormalizeRemoteProbeConfig_InvalidConfigKeepsEnabledAndPreviousConfig(t *testing.T) {
+	g := New(t.TempDir())
+	valid := json.RawMessage(`{"remote_probe":{"enabled":true,"config":{"max_concurrent":50,"additional_cidrs":["10.9.0.0/24"]}},"host_telemetry":true}`)
+	if _, err := g.ApplyGrants(valid); err != nil {
+		t.Fatal(err)
+	}
+
+	faults, err := g.ApplyGrants(json.RawMessage(`{"remote_probe":{"enabled":true,"config":{"max_concurrent":0}},"host_telemetry":true}`))
+	if err != nil {
+		t.Fatalf("ApplyGrants() error = %v, want nil", err)
+	}
+	if got := faultNames(faults); len(got) != 1 || got[0] != "remote_probe" {
+		t.Fatalf("ApplyGrants() faults = %v, want exactly one naming remote_probe", faults)
+	}
+	if !g.Allowed("host_telemetry") {
+		t.Error("Allowed(host_telemetry) = false, want true — an unrelated capability was discarded")
+	}
+	cfg, enabled := g.RemoteProbeConfig()
+	if !enabled {
+		t.Error("RemoteProbeConfig() enabled = false, want the server's enabled flag honored despite the bad config")
+	}
+	if cfg.MaxConcurrent != 50 || !reflect.DeepEqual(cfg.AdditionalCIDRs, []string{"10.9.0.0/24"}) {
+		t.Fatalf("invalid update replaced the last valid config: %+v", cfg)
+	}
+}
+
+// TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant pins §3's "scope
+// and grant configuration are never host-editable". grants.json is a cache, not
+// a control surface: a host-side edit widening the scope survives only until the
+// next capabilities.set, and leaves nothing behind on disk when it does.
+func TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant(t *testing.T) {
+	dir := t.TempDir()
+	edited := `{"remote_probe":{"enabled":true,"config":{"max_concurrent":100,"additional_cidrs":["203.0.113.0/24"],"additional_hostnames":["*.example.com"]}}}`
+	if err := os.WriteFile(filepath.Join(dir, grantsFilename), []byte(edited), 0o600); err != nil {
+		t.Fatalf("seed grants.json: %v", err)
+	}
+
+	g := New(dir)
+	if _, err := g.LoadCached(); err != nil {
+		t.Fatalf("LoadCached() error = %v", err)
+	}
+
+	server := json.RawMessage(`{"remote_probe":{"enabled":true,"config":{"max_concurrent":20,"additional_cidrs":["10.9.0.0/24"]}}}`)
+	if _, err := g.ApplyGrants(server); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+
+	cfg, _ := g.RemoteProbeConfig()
+	if cfg.MaxConcurrent != 20 {
+		t.Errorf("RemoteProbeConfig().MaxConcurrent = %d, want 20 — a local edit outlived the server grant", cfg.MaxConcurrent)
+	}
+	if !reflect.DeepEqual(cfg.AdditionalCIDRs, []string{"10.9.0.0/24"}) {
+		t.Errorf("RemoteProbeConfig().AdditionalCIDRs = %v, want only the server's entry", cfg.AdditionalCIDRs)
+	}
+	if len(cfg.AdditionalHostnames) != 0 {
+		t.Errorf("RemoteProbeConfig().AdditionalHostnames = %v, want none — the server's grant named none", cfg.AdditionalHostnames)
+	}
+
+	onDisk, err := os.ReadFile(filepath.Join(dir, grantsFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(onDisk, []byte("203.0.113.0/24")) || bytes.Contains(onDisk, []byte("example.com")) {
+		t.Errorf("grants.json still carries the host-side edit: %s", onDisk)
 	}
 }

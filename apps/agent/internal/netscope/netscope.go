@@ -6,8 +6,8 @@
 // property only while both enforce the *same* scope, so every decision here is pinned against
 // fixtures/agent_scope_corpus.json, the corpus the backend evaluator is driven through too.
 //
-// The package deliberately depends on nothing but the standard library: Slice 4's local discovery
-// imports it, and capability's `remote_probe` normalizer will delegate its CIDR validation here,
+// The package deliberately depends on nothing but the standard library: internal/capability
+// embeds Config in its `remote_probe` grant config and Slice 4's local discovery imports it too,
 // so a dependency on internal/frame, internal/link or internal/collect would either be an import
 // cycle or a reason for somebody to grow a second rule set instead.
 //

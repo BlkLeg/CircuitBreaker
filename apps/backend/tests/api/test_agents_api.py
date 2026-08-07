@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import event
 
-# The host_telemetry registry defaults (`CAPABILITY_DEFINITIONS`), spelled out
-# so a silent change to the server-side defaults fails these tests loudly.
+# The registry defaults (`CAPABILITY_DEFINITIONS`), spelled out so a silent
+# change to the server-side defaults fails these tests loudly.
 HOST_TELEMETRY_DEFAULT_CONFIG = {
     "interval_s": 30,
     "include_filesystems": True,
@@ -15,6 +15,14 @@ HOST_TELEMETRY_DEFAULT_CONFIG = {
     "include_temperatures": True,
     "include_virtual": False,
     "include_docker": False,
+}
+
+REMOTE_PROBE_DEFAULT_CONFIG = {
+    "max_concurrent": 20,
+    "scope_mode": "direct_private",
+    "excluded_cidrs": [],
+    "additional_cidrs": [],
+    "additional_hostnames": [],
 }
 
 
@@ -325,7 +333,7 @@ async def test_approve_with_omitted_capabilities_grants_the_full_normal_preset(
                 "include_docker": False,
             },
         },
-        "remote_probe": {"enabled": True, "config": {}},
+        "remote_probe": {"enabled": True, "config": REMOTE_PROBE_DEFAULT_CONFIG},
         "local_discovery": {"enabled": True, "config": {}},
     }
 
@@ -357,6 +365,26 @@ async def test_approve_rejects_unknown_capability_name(client, factories, auth_h
         headers=auth_headers,
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_capabilities_update_rejects_malformed_remote_probe_scope_with_422(
+    client, factories, auth_headers
+):
+    """Slice 3 Task 5: a scope field of the wrong *type* is administrator error,
+    so it has to surface as a 422 like every other bad config. Only `ValueError`
+    reaches `_validate_capability_map`'s handler — a `TypeError` raised while
+    iterating a non-list would escape as a 500 from an admin route instead."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=True, config={})
+
+    for config in ({"additional_cidrs": 5}, {"excluded_cidrs": None}, {"scope_mode": []}):
+        resp = await client.put(
+            f"/api/v1/agents/{agent.id}/capabilities",
+            json={"capabilities": {"remote_probe": {"enabled": True, "config": config}}},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 422, config
 
 
 @pytest.mark.asyncio
@@ -524,7 +552,7 @@ async def test_capabilities_put_publishes_control_frame_for_immediate_delivery(
     # The full, authoritative grants set — not just the one capability this
     # request changed — same as the connect-time capabilities.set send.
     assert frame["payload"] == {
-        "remote_probe": {"enabled": True, "config": {}},
+        "remote_probe": {"enabled": True, "config": REMOTE_PROBE_DEFAULT_CONFIG},
         "host_telemetry": {
             "enabled": True,
             "config": {
@@ -926,7 +954,7 @@ async def test_presence_includes_capability_grants(client, factories, viewer_hea
     # unconditionally — never a bare boolean, and with no compatibility flag.
     assert row["capabilities"] == {
         "host_telemetry": {"enabled": True, "config": HOST_TELEMETRY_DEFAULT_CONFIG},
-        "remote_probe": {"enabled": False, "config": {}},
+        "remote_probe": {"enabled": False, "config": REMOTE_PROBE_DEFAULT_CONFIG},
     }
 
 
@@ -996,7 +1024,10 @@ async def test_approve_and_capabilities_put_still_accept_legacy_boolean_input(
         "enabled": True,
         "config": HOST_TELEMETRY_DEFAULT_CONFIG,
     }
-    assert approve.json()["capabilities"]["remote_probe"] == {"enabled": False, "config": {}}
+    assert approve.json()["capabilities"]["remote_probe"] == {
+        "enabled": False,
+        "config": REMOTE_PROBE_DEFAULT_CONFIG,
+    }
 
     put = await client.put(
         f"/api/v1/agents/{agent.id}/capabilities",
@@ -1004,7 +1035,10 @@ async def test_approve_and_capabilities_put_still_accept_legacy_boolean_input(
         headers=auth_headers,
     )
     assert put.status_code == 200
-    assert put.json()["capabilities"]["remote_probe"] == {"enabled": True, "config": {}}
+    assert put.json()["capabilities"]["remote_probe"] == {
+        "enabled": True,
+        "config": REMOTE_PROBE_DEFAULT_CONFIG,
+    }
 
 
 @pytest.mark.asyncio

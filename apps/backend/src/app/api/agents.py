@@ -152,7 +152,8 @@ def get_capability_defaults(
     """
     return {
         name: CapabilityGrant(
-            enabled=definition.default_enabled, config=dict(definition.default_config)
+            enabled=definition.default_enabled,
+            config=agent_capabilities.default_config_for(name),
         )
         for name, definition in agent_capabilities.CAPABILITY_DEFINITIONS.items()
     }
