@@ -182,6 +182,11 @@ type spoolTestServer struct {
 	mu     sync.Mutex
 	ackAt  time.Time
 	frames []recordedFrame
+	// hello is the raw `hello` payload this connection opened with. It is
+	// captured separately from `frames` because the hello is read inline,
+	// before the recording goroutine starts (that goroutine exists so
+	// arrival *times* are meaningful, which the hello does not need).
+	hello json.RawMessage
 }
 
 func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
@@ -212,8 +217,17 @@ func newSpoolTestServer(t *testing.T, ackDelay time.Duration) *spoolTestServer {
 		if err != nil {
 			return
 		}
-		if _, err := responder.Decrypt(helloCt); err != nil {
+		helloPT, err := responder.Decrypt(helloCt)
+		if err != nil {
 			return
+		}
+		var helloFrame struct {
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(helloPT, &helloFrame); err == nil {
+			s.mu.Lock()
+			s.hello = helloFrame.Payload
+			s.mu.Unlock()
 		}
 
 		// Read continuously from here on, on its own goroutine, so anything
@@ -288,6 +302,28 @@ func (s *spoolTestServer) dataPayloadOrder(t *testing.T) []int {
 			t.Fatalf("unmarshal data frame payload %s: %v", f.payload, err)
 		}
 		out = append(out, p.N)
+	}
+	return out
+}
+
+// helloPayload returns the raw `hello` payload the agent opened with, or nil
+// if no hello has been read yet.
+func (s *spoolTestServer) helloPayload() json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hello
+}
+
+// payloadsOfType returns every recorded payload of the given frame type, in
+// arrival order.
+func (s *spoolTestServer) payloadsOfType(typ string) []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []json.RawMessage
+	for _, f := range s.frames {
+		if f.typ == typ {
+			out = append(out, f.payload)
+		}
 	}
 	return out
 }
@@ -488,5 +524,148 @@ func TestRunOnce_DrainTickerIsInertWithoutASpool(t *testing.T) {
 	})
 	if got := srv.countOfType(fakeDataFrameType); got != 0 {
 		t.Errorf("server saw %d data frames with no spool configured, want 0", got)
+	}
+}
+
+// freezeDrain stops the paced catch-up burst for the duration of a test by
+// pushing drainTickInterval out of reach. The spool-state reporting tests
+// below care about what the *link* says the depth is, so the backlog has to
+// hold still while they look at it.
+func freezeDrain(t *testing.T) {
+	t.Helper()
+	original := drainTickInterval
+	drainTickInterval = time.Hour
+	t.Cleanup(func() { drainTickInterval = original })
+}
+
+// TestHelloCarriesSpoolDepthAtConnect pins the at-connect half of D-12: the
+// `hello` frame reports how many frames were still spooled when the
+// connection came up. internal/hostinfo stays spool-agnostic (the spool is
+// owned by the link, not by host collection), so internal/link is what
+// stamps HelloPayload.SpoolDepth from Options.Spool.
+func TestHelloCarriesSpoolDepthAtConnect(t *testing.T) {
+	freezeDrain(t)
+
+	srv := newSpoolTestServer(t, 0)
+	sp, err := spool.Open(t.TempDir(), spool.DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("spool.Open() error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := sp.Enqueue(numberedDataFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	connected, stop := srv.runAgainst(t, sp)
+	defer stop()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never reached an accepted session")
+	}
+
+	raw := srv.helloPayload()
+	if raw == nil {
+		t.Fatal("server recorded no hello payload")
+	}
+	var hello frame.HelloPayload
+	if err := json.Unmarshal(raw, &hello); err != nil {
+		t.Fatalf("unmarshal hello payload %s: %v", raw, err)
+	}
+	if hello.SpoolDepth != 2 {
+		t.Errorf("hello spool_depth = %d, want 2 (payload was %s)", hello.SpoolDepth, raw)
+	}
+}
+
+// TestHeartbeatCarriesSpoolStats pins the live half of D-12: every heartbeat
+// carries the current spool depth and size, which is what lets the Agent
+// Detail catch-up indicator both appear *and* clear while a single
+// connection stays up. The payload used to be a hardcoded `{}`.
+func TestHeartbeatCarriesSpoolStats(t *testing.T) {
+	freezeDrain(t)
+	originalHeartbeat := heartbeatInterval
+	heartbeatInterval = 25 * time.Millisecond
+	defer func() { heartbeatInterval = originalHeartbeat }()
+
+	srv := newSpoolTestServer(t, 0)
+	sp, err := spool.Open(t.TempDir(), spool.DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("spool.Open() error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := sp.Enqueue(numberedDataFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+	wantBytes, err := sp.SizeBytes()
+	if err != nil {
+		t.Fatalf("SizeBytes() error = %v", err)
+	}
+	if wantBytes <= 0 {
+		t.Fatalf("SizeBytes() = %d, want > 0 — the fixture must have real bytes on disk", wantBytes)
+	}
+
+	connected, stop := srv.runAgainst(t, sp)
+	defer stop()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never reached an accepted session")
+	}
+	waitFor(t, 5*time.Second, "a heartbeat frame", func() bool {
+		return srv.countOfType(frame.TypeHeartbeat) > 0
+	})
+
+	payloads := srv.payloadsOfType(frame.TypeHeartbeat)
+	var hb frame.HeartbeatPayload
+	if err := json.Unmarshal(payloads[0], &hb); err != nil {
+		t.Fatalf("unmarshal heartbeat payload %s: %v", payloads[0], err)
+	}
+	if hb.SpoolDepth != 2 {
+		t.Errorf("heartbeat spool_depth = %d, want 2 (payload was %s)", hb.SpoolDepth, payloads[0])
+	}
+	if hb.SpoolBytes != wantBytes {
+		t.Errorf("heartbeat spool_bytes = %d, want %d (payload was %s)", hb.SpoolBytes, wantBytes, payloads[0])
+	}
+
+	// The wire bytes themselves must carry both keys explicitly, even at
+	// zero — D-12: an empty `{}` heartbeat is reserved to mean "this agent
+	// predates spool reporting", which is what lets the backend keep its
+	// columns NULL for such an agent instead of writing a fake 0.
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(payloads[0], &keys); err != nil {
+		t.Fatalf("unmarshal heartbeat payload as a map: %v", err)
+	}
+	for _, key := range []string{"spool_depth", "spool_bytes"} {
+		if _, ok := keys[key]; !ok {
+			t.Errorf("heartbeat payload %s is missing %q — the field must not carry omitempty", payloads[0], key)
+		}
+	}
+}
+
+// TestHeartbeatReportsAnEmptySpoolAsExplicitZeros is the other half of the
+// no-omitempty rule: a connection with no spool at all still emits both
+// keys as 0, so the backend can tell "empty" from "not reported".
+func TestHeartbeatReportsAnEmptySpoolAsExplicitZeros(t *testing.T) {
+	originalHeartbeat := heartbeatInterval
+	heartbeatInterval = 25 * time.Millisecond
+	defer func() { heartbeatInterval = originalHeartbeat }()
+
+	srv := newSpoolTestServer(t, 0)
+	connected, stop := srv.runAgainst(t, nil) // Options.Spool left nil
+	defer stop()
+	select {
+	case <-connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent never reached an accepted session")
+	}
+	waitFor(t, 5*time.Second, "a heartbeat frame", func() bool {
+		return srv.countOfType(frame.TypeHeartbeat) > 0
+	})
+
+	payload := srv.payloadsOfType(frame.TypeHeartbeat)[0]
+	if got := string(payload); got != `{"spool_depth":0,"spool_bytes":0}` {
+		t.Errorf("heartbeat payload = %s, want {\"spool_depth\":0,\"spool_bytes\":0}", got)
 	}
 }

@@ -162,6 +162,40 @@ async def test_telemetry_capability_reports_the_granted_structured_shape(
     assert capability["config"]["interval_s"] == 30
 
 
+@pytest.mark.asyncio
+async def test_telemetry_endpoint_exposes_spool_state(client, factories, viewer_headers):
+    """The catch-up indicator rides this endpoint, which the Agent Detail page
+    already polls every 30s — so a draining backlog shows up without a second
+    poll (Task 16, D-12)."""
+    agent = factories.agent(status="active")
+    reported_at = utcnow()
+    agent.spool_depth = 120
+    agent.spool_bytes = 240000
+    agent.spool_reported_at = reported_at
+    factories.session.commit()
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
+
+    assert resp.status_code == 200
+    spool = resp.json()["spool"]
+    assert spool["depth"] == 120
+    assert spool["bytes"] == 240000
+    assert spool["reported_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_telemetry_spool_is_null_for_an_agent_that_never_reported(
+    client, factories, viewer_headers
+):
+    """NULL means "never reported" — an agent predating spool reporting — and
+    the frontend renders nothing for it, exactly as for a drained spool."""
+    agent = factories.agent(status="active")
+
+    resp = await client.get(f"/api/v1/agents/{agent.id}/telemetry", headers=viewer_headers)
+
+    assert resp.json()["spool"] == {"depth": None, "bytes": None, "reported_at": None}
+
+
 # ── history ──────────────────────────────────────────────────────────────────
 
 

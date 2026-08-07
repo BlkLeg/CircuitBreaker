@@ -67,7 +67,9 @@ func TestCollect(t *testing.T) {
 		t.Errorf("Collect().Readiness[0].State = %q, want %q (MachineIDHash = %q)", got.Readiness[0].State, wantState, got.MachineIDHash)
 	}
 	if got.SpoolDepth != 0 {
-		t.Errorf("Collect().SpoolDepth = %d, want 0 (no spool wired in yet)", got.SpoolDepth)
+		t.Errorf("Collect().SpoolDepth = %d, want 0 — hostinfo is deliberately spool-agnostic; "+
+			"internal/link owns Options.Spool and stamps the real at-connect depth onto the "+
+			"payload after calling Collect (D-12)", got.SpoolDepth)
 	}
 
 	// Sanity: the result must actually satisfy the Task 1 schema type, not just structurally

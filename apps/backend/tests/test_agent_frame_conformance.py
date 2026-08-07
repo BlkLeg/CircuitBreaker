@@ -10,6 +10,7 @@ from app.schemas.agent_frame import (
     TYPE_CAPABILITY_READINESS,
     TYPE_DISCOVERY_FINDING,
     TYPE_DISCOVERY_REQUEST,
+    TYPE_HEARTBEAT,
     TYPE_HELLO,
     TYPE_HELLO_ACK,
     TYPE_KEY_ROTATE,
@@ -22,6 +23,7 @@ from app.schemas.agent_frame import (
     TYPE_UPDATE_STATUS,
     AgentFrame,
     CapabilityReadinessPayload,
+    HeartbeatPayload,
     HelloAckPayload,
     HelloPayload,
     HostTelemetryPayload,
@@ -43,6 +45,7 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_UPDATE_STATUS: UpdateStatusPayload,
     TYPE_TELEMETRY_HOST: HostTelemetryPayload,
     TYPE_CAPABILITY_READINESS: CapabilityReadinessPayload,
+    TYPE_HEARTBEAT: HeartbeatPayload,
 }
 
 
@@ -189,3 +192,35 @@ def test_hello_absent_capability_schema_defaults_to_legacy():
         if entry["json"]["payload"].get("capability_schema") == 2
     ]
     assert schema_2_entries, "corpus must cover a schema-2 hello negotiation"
+
+
+def test_heartbeat_empty_payload_is_distinguishable_from_an_explicit_zero_backlog():
+    """D-12's whole point, pinned on the Python side.
+
+    The Go struct carries no ``omitempty``, so a current agent always emits
+    both keys — ``{"spool_depth": 0, "spool_bytes": 0}`` once its backlog
+    clears. That makes an empty ``{}`` payload an exact test for "this agent
+    predates spool reporting", which is what
+    ``agent_registry.record_spool_stats``'s callers gate on via
+    ``model_fields_set``. Both shapes must validate; only the explicit one
+    may report presence.
+    """
+    old_agent = HeartbeatPayload.model_validate({})
+    assert old_agent.spool_depth == 0
+    assert old_agent.spool_bytes == 0
+    assert "spool_depth" not in old_agent.model_fields_set
+
+    drained = HeartbeatPayload.model_validate({"spool_depth": 0, "spool_bytes": 0})
+    assert "spool_depth" in drained.model_fields_set
+    assert drained == old_agent  # equal by value, distinguishable by fields_set
+
+    backlog = HeartbeatPayload.model_validate({"spool_depth": 137, "spool_bytes": 262144})
+    assert (backlog.spool_depth, backlog.spool_bytes) == (137, 262144)
+
+    corpus_payloads = [
+        entry["json"]["payload"] for entry in _corpus_entries_of_type(TYPE_HEARTBEAT)
+    ]
+    assert {} in corpus_payloads, "corpus must keep the old-shaped empty heartbeat"
+    assert any(p.get("spool_depth") for p in corpus_payloads), (
+        "corpus must cover a heartbeat carrying a real backlog"
+    )

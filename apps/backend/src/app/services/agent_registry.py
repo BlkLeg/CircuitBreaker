@@ -264,6 +264,47 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
             agent.pending_update_version = None
     if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
+    if "spool_depth" in fields_set:
+        # The at-connect backlog snapshot (D-12). `hello` has no
+        # `spool_bytes` field, so the size is genuinely unknown here — None,
+        # not 0 — and the heartbeat that follows within 20s fills it in.
+        record_spool_stats(agent, payload.spool_depth, None)
+
+
+def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) -> bool:
+    """Record the agent's reported outbound-spool backlog, returning whether
+    anything actually changed.
+
+    `depth` is the number of frames still buffered; `size_bytes` is their
+    on-disk size, or None when the reporting frame doesn't carry one (`hello`
+    reports depth only — see `update_hello_metadata`), in which case the
+    stored byte count is left untouched rather than blanked.
+
+    The no-op return is load-bearing, not an optimization detail. Heartbeats
+    arrive every 20 seconds per connected agent and the steady state is
+    "depth 0, unchanged", so writing unconditionally would issue one row
+    UPDATE per agent per 20s forever — a fleet-wide write storm carrying no
+    new information. `spool_reported_at` is therefore "when the reported
+    backlog last *changed*", not "when an agent last mentioned its spool";
+    liveness already has `last_seen_at` and Redis presence.
+
+    Callers gate this on `"spool_depth" in payload.model_fields_set`, never
+    on the value: an agent that predates spool reporting sends an empty
+    heartbeat payload and must leave all three columns NULL ("never
+    reported"), while a current agent with a drained spool sends an explicit
+    0 that must be persisted ("reported, empty") — that write is what clears
+    the Agent Detail catch-up indicator. Caller owns the commit.
+    """
+    changed = agent.spool_depth != depth
+    if size_bytes is not None and agent.spool_bytes != size_bytes:
+        changed = True
+    if not changed:
+        return False
+    agent.spool_depth = depth
+    if size_bytes is not None:
+        agent.spool_bytes = size_bytes
+    agent.spool_reported_at = utcnow()
+    return True
 
 
 def list_agents(db: Session, *, status: str | None = None) -> list[Agent]:

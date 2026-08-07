@@ -92,6 +92,8 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripHostTelemetryPayload(t, decoded.Payload)
 			case TypeCapabilityReadiness:
 				roundTripCapabilityReadinessPayload(t, decoded.Payload)
+			case TypeHeartbeat:
+				roundTripHeartbeatPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -215,6 +217,39 @@ func roundTripUpdateStatusPayload(t *testing.T, raw json.RawMessage) {
 	}
 	if first != second {
 		t.Errorf("UpdateStatusPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+// roundTripHeartbeatPayload pins D-12's wire shape. Both the old-shaped `{}`
+// heartbeat and the spool-reporting one must decode; re-encoding must always
+// emit both keys, zeros included, because an empty payload is reserved to
+// mean "this agent does not report spool state" (see HeartbeatPayload's doc
+// comment and agent_registry.record_spool_stats' presence gate).
+func roundTripHeartbeatPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first HeartbeatPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("HeartbeatPayload decode error = %v", err)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("HeartbeatPayload encode error = %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(reencoded, &keys); err != nil {
+		t.Fatalf("HeartbeatPayload re-decode as map error = %v", err)
+	}
+	for _, key := range []string{"spool_depth", "spool_bytes"} {
+		if _, ok := keys[key]; !ok {
+			t.Errorf("re-encoded HeartbeatPayload %s omits %q — neither field may carry omitempty", reencoded, key)
+		}
+	}
+	var second HeartbeatPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("HeartbeatPayload re-decode error = %v", err)
+	}
+	if first != second {
+		t.Errorf("HeartbeatPayload round-trip mismatch: got %+v, want %+v", second, first)
 	}
 }
 

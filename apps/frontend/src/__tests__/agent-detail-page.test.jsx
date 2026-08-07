@@ -270,4 +270,54 @@ describe('AgentDetailPage', () => {
 
     await waitFor(() => expect(screen.getByText('online')).toBeInTheDocument());
   });
+  // ── Task 16 / D-12: the spool catch-up indicator ──────────────────────────
+
+  function telemetryWithSpool(spool) {
+    return {
+      data: {
+        latest: {
+          collected_at: new Date().toISOString(),
+          projected: false,
+          summary: { cpu_pct: 12.5 },
+        },
+        readiness: [],
+        capability: { enabled: true, config: { interval_s: 30 } },
+        spool,
+      },
+    };
+  }
+
+  it('shows a catch-up indicator while the agent has a spool backlog', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 120, bytes: 240000 }));
+
+    renderDetail();
+
+    const indicator = await screen.findByText(/Catching up/);
+    expect(indicator).toHaveTextContent('120 samples buffered');
+    expect(indicator).toHaveTextContent('234.4 KB');
+    expect(indicator).toHaveAccessibleName(/backlog/i);
+  });
+
+  it('renders no catch-up indicator once the backlog has drained', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue(telemetryWithSpool({ depth: 0, bytes: 0 }));
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText(/Last sample/)).toBeInTheDocument());
+    expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
+  });
+
+  it('renders no catch-up indicator for an agent that never reported a spool', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue(
+      telemetryWithSpool({ depth: null, bytes: null, reported_at: null })
+    );
+
+    renderDetail();
+
+    await waitFor(() => expect(screen.getByText(/Last sample/)).toBeInTheDocument());
+    expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
+  });
 });

@@ -409,7 +409,30 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	}
 	defer conn.Close()
 
+	// spoolStats reads the outbound spool's current backlog. It is defined
+	// here rather than in internal/hostinfo because the spool is owned by
+	// the link (Options.Spool) — hostinfo collects *host* state and has no
+	// access to it. Nil-safe: callers that leave Options.Spool nil
+	// (Uninstall's one-shot connection, most of this package's tests) have
+	// no backlog by definition, and report an explicit 0/0 rather than
+	// nothing at all — see frame.HeartbeatPayload's doc comment for why the
+	// zeros must be explicit.
+	spoolStats := func() (int, int64) {
+		if opts.Spool == nil {
+			return 0, 0
+		}
+		size, err := opts.Spool.SizeBytes()
+		if err != nil {
+			size = 0
+		}
+		return opts.Spool.Len(), size
+	}
+
 	helloPayload := hostinfo.Collect(opts.AgentVersion)
+	// The at-connect backlog snapshot (D-12). The heartbeat below reports
+	// the same numbers live, which is what lets a server-side catch-up
+	// indicator clear without waiting for a reconnect.
+	helloPayload.SpoolDepth, _ = spoolStats()
 	helloFrame := frame.Frame{V: 1, Type: frame.TypeHello, Seq: 0, TS: time.Now().UTC()}
 	helloFrame.Payload, err = json.Marshal(helloPayload)
 	if err != nil {
@@ -508,9 +531,19 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 	// is safe and never selects.
 	var stableC <-chan time.Time
 
+	// sendHeartbeat emits the 20s liveness frame, carrying the live spool
+	// backlog (D-12). The payload used to be a hardcoded `{}`; it now always
+	// carries both keys, zeros included, because the backend reserves an
+	// empty payload to mean "this agent predates spool reporting" and keeps
+	// its columns NULL for it. See frame.HeartbeatPayload.
 	sendHeartbeat := func() error {
+		depth, bytes := spoolStats()
+		payload, err := json.Marshal(frame.HeartbeatPayload{SpoolDepth: depth, SpoolBytes: bytes})
+		if err != nil {
+			return fmt.Errorf("link: encode heartbeat payload: %w", err)
+		}
 		seq++
-		hb := frame.Frame{V: 1, Type: frame.TypeHeartbeat, Seq: seq, TS: time.Now().UTC(), Payload: json.RawMessage("{}")}
+		hb := frame.Frame{V: 1, Type: frame.TypeHeartbeat, Seq: seq, TS: time.Now().UTC(), Payload: payload}
 		data, err := frame.Encode(hb)
 		if err != nil {
 			return err

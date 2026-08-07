@@ -34,6 +34,7 @@ from app.schemas.agent_frame import (
     TYPE_UNINSTALL,
     TYPE_UPDATE_STATUS,
     AgentFrame,
+    HeartbeatPayload,
     KeyRotatePayload,
     UpdateStatusPayload,
 )
@@ -69,9 +70,42 @@ Handler = Callable[[Session, Agent, AgentFrame], Awaitable[None]]
 
 
 async def _handle_heartbeat(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """Refresh presence, and record the agent's reported spool backlog (D-12).
+
+    The spool numbers ride the heartbeat rather than a frame type of their
+    own because the backlog exists precisely *while* the link is up and
+    draining: a hello-only value would pin a stale depth on screen for the
+    whole catch-up window on a connection that may not reconnect for days.
+
+    Persistence is gated on `"spool_depth" in payload.model_fields_set` —
+    presence, not truthiness. The Go heartbeat carries no `omitempty`, so a
+    current agent always sends both keys (explicit zeros once its backlog
+    clears, which is the write that clears the UI indicator) while an agent
+    that predates the field sends `{}` and must leave the columns NULL. See
+    `agent_registry.record_spool_stats`.
+
+    A malformed payload is logged and dropped rather than raised: it must not
+    tear the link down or block presence, matching `ws_agents.py`'s posture
+    for a malformed hello. `dispatch_frame` owns the commit.
+    """
     import socket
 
     await agent_registry.refresh_presence_heartbeat(db, agent.id, worker=socket.gethostname())
+
+    try:
+        payload = HeartbeatPayload.model_validate(frame.payload)
+    except ValidationError:
+        _logger.debug("agent %s: malformed heartbeat payload: %r", agent.id, frame.payload)
+        return
+    if "spool_depth" in payload.model_fields_set:
+        # `spool_bytes` is gated on presence too, not just `spool_depth`.
+        # `record_spool_stats` reads `None` as "unknown, leave the column
+        # alone" — passing `payload.spool_bytes` unconditionally would write a
+        # fabricated 0 for a payload that carried only the depth. Unreachable
+        # from a current agent (HeartbeatPayload has no omitempty, so both keys
+        # always ship) but the semantics have to hold regardless of sender.
+        size_bytes = payload.spool_bytes if "spool_bytes" in payload.model_fields_set else None
+        agent_registry.record_spool_stats(agent, payload.spool_depth, size_bytes)
     # The connection-ownership registry (Task 8) is *not* refreshed here.
     # It used to be, via agent_registry.refresh_agent_connection(agent.id)
     # — but that call only ever has access to agent_registry's default,

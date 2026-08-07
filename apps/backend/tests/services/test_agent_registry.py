@@ -473,3 +473,88 @@ def test_bulk_structured_grants_dict_issues_one_query_for_the_whole_fleet(db_ses
 
     assert set(result) == set(agent_ids)
     assert len(statements) == 1, statements
+
+
+def test_record_spool_stats_writes_the_three_columns_on_first_report(db_session, factories):
+    """NULL means "never reported" (an agent predating spool reporting); a
+    recorded 0 means "reported, empty". The first report is what crosses that
+    boundary."""
+    agent = factories.agent(status="active")
+    assert agent.spool_depth is None
+    assert agent.spool_bytes is None
+    assert agent.spool_reported_at is None
+
+    wrote = svc.record_spool_stats(agent, 7, 8192)
+
+    assert wrote is True
+    assert agent.spool_depth == 7
+    assert agent.spool_bytes == 8192
+    assert agent.spool_reported_at is not None
+
+
+def test_record_spool_stats_records_an_explicit_zero_backlog(db_session, factories):
+    """A drained spool must be persisted as 0, not left NULL — that write is
+    what clears the Agent Detail catch-up indicator."""
+    agent = factories.agent(status="active")
+    svc.record_spool_stats(agent, 7, 8192)
+
+    wrote = svc.record_spool_stats(agent, 0, 0)
+
+    assert wrote is True
+    assert agent.spool_depth == 0
+    assert agent.spool_bytes == 0
+
+
+def test_unchanged_spool_stats_do_not_rewrite_the_row(db_session, factories):
+    """Heartbeats arrive every 20s per agent, and the steady state is
+    "depth 0, unchanged". Re-stamping the row on every one of them would be
+    a fleet-wide UPDATE storm for no new information."""
+    agent = factories.agent(status="active")
+    assert svc.record_spool_stats(agent, 0, 0) is True
+    db_session.commit()
+    first_reported_at = agent.spool_reported_at
+
+    wrote = svc.record_spool_stats(agent, 0, 0)
+
+    assert wrote is False
+    assert agent.spool_reported_at == first_reported_at
+    assert agent.spool_depth == 0
+    assert agent.spool_bytes == 0
+
+
+def test_record_spool_stats_with_unknown_size_leaves_the_byte_column_alone(db_session, factories):
+    """`hello` reports `spool_depth` but has no `spool_bytes` field, so its
+    caller passes None — "unknown", not "zero"."""
+    agent = factories.agent(status="active")
+    svc.record_spool_stats(agent, 7, 8192)
+
+    wrote = svc.record_spool_stats(agent, 3, None)
+
+    assert wrote is True
+    assert agent.spool_depth == 3
+    assert agent.spool_bytes == 8192
+
+
+def test_update_hello_metadata_persists_a_reported_spool_depth(db_session, factories):
+    from app.schemas.agent_frame import HelloPayload
+
+    agent = factories.agent(status="active")
+
+    svc.update_hello_metadata(db_session, agent, HelloPayload.model_validate({"spool_depth": 3}))
+
+    assert agent.spool_depth == 3
+    assert agent.spool_reported_at is not None
+
+
+def test_update_hello_metadata_leaves_spool_columns_null_when_omitted(db_session, factories):
+    """Presence, not truthiness: an old-shaped hello omits `spool_depth`
+    entirely and must not have a 0 invented for it."""
+    from app.schemas.agent_frame import HelloPayload
+
+    agent = factories.agent(status="active")
+
+    svc.update_hello_metadata(db_session, agent, HelloPayload.model_validate({"os": "linux"}))
+
+    assert agent.spool_depth is None
+    assert agent.spool_bytes is None
+    assert agent.spool_reported_at is None

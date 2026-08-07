@@ -112,6 +112,33 @@ class CapabilityReadinessPayload(BaseModel):
     readiness: list[Readiness] = Field(default_factory=list)
 
 
+class HeartbeatPayload(BaseModel):
+    """agent -> server `heartbeat` payload (D-12), mirroring
+    apps/agent/internal/frame/frame.go's HeartbeatPayload field-for-field.
+
+    Carries the agent's live outbound-spool backlog so the server can watch a
+    catch-up drain start *and finish* without waiting for a reconnect to
+    refresh hello's at-connect snapshot.
+
+    Both fields are optional-with-default — the same backward-compatibility
+    convention ``HelloPayload`` documents above — so today's empty ``{}``
+    heartbeat from an agent that predates this model still validates instead
+    of tearing down the link.
+
+    That default is why callers must gate persistence on
+    ``"spool_depth" in payload.model_fields_set`` rather than on the value:
+    the Go side deliberately carries no ``omitempty``, so a current agent
+    emits ``{"spool_depth": 0, "spool_bytes": 0}`` once its backlog clears,
+    while an agent that predates the field emits ``{}``. Presence is
+    therefore an exact "this agent reports spool state" test, and it is what
+    keeps ``agents.spool_depth`` NULL ("never reported") for an old agent
+    instead of writing a fabricated 0 ("reported, empty").
+    """
+
+    spool_depth: int = 0
+    spool_bytes: int = 0
+
+
 class HostTelemetryPayload(BaseModel):
     """agent -> server `telemetry.host` payload, mirroring
     apps/agent/internal/frame/frame.go's HostTelemetryPayload field-for-field.

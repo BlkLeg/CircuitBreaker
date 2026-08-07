@@ -319,6 +319,17 @@ def get_agent_telemetry(
             for r in readiness
         ],
         "capability": grant,
+        # The agent's last-reported outbound-spool backlog (Task 16, D-12).
+        # It rides this endpoint rather than one of its own because the Agent
+        # Detail page already polls it every 30s, so the catch-up indicator is
+        # live with no second poll. `None` means the agent has never reported
+        # (a build predating HeartbeatPayload) and renders the same as a
+        # drained spool: nothing.
+        "spool": {
+            "depth": agent.spool_depth,
+            "bytes": agent.spool_bytes,
+            "reported_at": agent.spool_reported_at,
+        },
         "hardware_id": agent.hardware_id,
     }
 

@@ -200,6 +200,33 @@ type CapabilityReadinessPayload struct {
 	Readiness []Readiness `json:"readiness"`
 }
 
+// HeartbeatPayload is the agent -> server `heartbeat` payload (D-12),
+// mirroring apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload.
+// It reports the live outbound-spool backlog so the server — and the Agent
+// Detail catch-up indicator — can see a drain in progress and see it finish,
+// without waiting for a reconnect to refresh hello's at-connect snapshot.
+//
+// Additive by design: an older server ignores the unknown keys, and an older
+// agent sends `{}`, which still validates on the server side (both fields
+// are optional-with-default there).
+//
+// Neither field carries `omitempty`, and that is load-bearing rather than an
+// oversight. A current agent must emit `{"spool_depth":0,"spool_bytes":0}`
+// once its backlog clears, or the server's columns stay pinned at the last
+// non-zero value and the indicator never clears. With `omitempty`, an empty
+// spool and an agent that predates this struct would both send `{}` — making
+// "clear the indicator" and "never invent a 0 for an old agent" mutually
+// exclusive. The empty payload is therefore reserved to mean exactly one
+// thing: this agent does not report spool state.
+//
+// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason:
+// hello is the at-connect snapshot, and the heartbeat is what clears the
+// indicator.
+type HeartbeatPayload struct {
+	SpoolDepth int   `json:"spool_depth"`
+	SpoolBytes int64 `json:"spool_bytes"`
+}
+
 type HostSummary struct {
 	CPUPct            *float64 `json:"cpu_pct,omitempty"`
 	Load1             *float64 `json:"load_1,omitempty"`

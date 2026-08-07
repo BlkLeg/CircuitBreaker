@@ -52,6 +52,22 @@ function formatMetric(key, value) {
   return Number(value).toFixed(2);
 }
 
+// Task 16 / D-12: byte size for the spool catch-up indicator. Base-1024, one
+// decimal — the spool's cap is expressed in MiB (internal/spool's
+// DefaultCapBytes is 64 << 20), so a base-1000 rendering would never line up
+// with it.
+function formatBytes(bytes) {
+  if (bytes == null) return null;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
+}
+
 function DeviceTable({ title, rows }) {
   if (!rows?.length) return null;
   const columns = Object.keys(rows[0]);
@@ -395,11 +411,34 @@ export default function AgentDetailPage() {
               const interval = telemetry.capability?.config?.interval_s ?? hostDefaults.interval_s;
               const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
               const stale = age > Math.max(interval * 3000, 90000);
+              // Task 16 / D-12: the catch-up indicator, and the only
+              // user-visible evidence that the agent's paced spool drain is
+              // making progress. Rendered only for a real backlog: depth 0
+              // ("reported, drained") and a null spool ("this agent predates
+              // spool reporting") both render nothing.
+              const spoolDepth = telemetry.spool?.depth ?? 0;
+              const catchUpLabel =
+                'The agent is replaying host samples it buffered while it could not reach ' +
+                'the server. Displayed samples may lag until the backlog drains.';
               return (
                 <p>
                   {stale ? 'Stale' : 'Live'} · Last sample{' '}
                   {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
                   {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
+                  {spoolDepth > 0 && (
+                    <>
+                      {' · '}
+                      <span
+                        className="agent-telemetry__catchup"
+                        title={catchUpLabel}
+                        aria-label={catchUpLabel}
+                      >
+                        Catching up · {spoolDepth} samples buffered
+                        {telemetry.spool?.bytes != null &&
+                          ` (${formatBytes(telemetry.spool.bytes)})`}
+                      </span>
+                    </>
+                  )}
                 </p>
               );
             })()}

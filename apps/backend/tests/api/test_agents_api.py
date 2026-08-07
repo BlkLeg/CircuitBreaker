@@ -1149,3 +1149,31 @@ async def test_server_key_rotate_rejects_second_call_while_overlap_active(client
     # The first rotation's successor is untouched by the rejected attempt.
     status = await client.get("/api/v1/agents/server-key/status", headers=auth_headers)
     assert status.json()["successor_key_fingerprint"] == first.json()["successor_key_fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_exposes_spool_state(client, factories, viewer_headers):
+    """`AgentRead` carries the reported spool backlog (Task 16, D-12). NULL
+    means "never reported" — an agent predating `HeartbeatPayload` — and must
+    survive serialization as null rather than being coerced to 0."""
+    from app.core.time import utcnow
+
+    never_reported = factories.agent(status="active")
+    reporting = factories.agent(status="active")
+    reporting.spool_depth = 12
+    reporting.spool_bytes = 4096
+    reporting.spool_reported_at = utcnow()
+    factories.session.commit()
+
+    resp = await client.get(f"/api/v1/agents/{reporting.id}", headers=viewer_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["spool_depth"] == 12
+    assert body["spool_bytes"] == 4096
+    assert body["spool_reported_at"] is not None
+
+    resp = await client.get(f"/api/v1/agents/{never_reported.id}", headers=viewer_headers)
+    body = resp.json()
+    assert body["spool_depth"] is None
+    assert body["spool_bytes"] is None
+    assert body["spool_reported_at"] is None

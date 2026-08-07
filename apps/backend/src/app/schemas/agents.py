@@ -70,6 +70,12 @@ class AgentRead(AgentSummary):
     enrolled_at: datetime
     approved_at: datetime | None
     connected_since: datetime | None
+    # Last-reported outbound-spool backlog (Task 16, D-12). NULL means the
+    # agent has never reported one — a build predating `HeartbeatPayload` —
+    # which is deliberately distinct from 0 ("reported, and drained").
+    spool_depth: int | None = None
+    spool_bytes: int | None = None
+    spool_reported_at: datetime | None = None
     capabilities: dict[str, CapabilityGrant] = {}
     # Populated by api/agents.py's `_to_read` (not ORM attributes) from
     # `agent_registry.propose_hardware_match`/`has_duplicate_machine_id` —

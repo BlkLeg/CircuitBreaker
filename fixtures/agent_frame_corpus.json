@@ -345,5 +345,32 @@
         "remote_probe": {"enabled": true, "config": {}}
       }
     }
+  },
+  {
+    "description": "heartbeat \u2014 with spool state",
+    "json": {
+      "v": 1, "type": "heartbeat", "seq": 43, "ts": "2026-08-06T12:05:00Z",
+      "payload": {"spool_depth": 137, "spool_bytes": 262144}
+    }
+  },
+  {
+    "description": "heartbeat \u2014 spool drained, explicit zeros (clears the catch-up indicator)",
+    "json": {
+      "v": 1, "type": "heartbeat", "seq": 44, "ts": "2026-08-06T12:05:20Z",
+      "payload": {"spool_depth": 0, "spool_bytes": 0}
+    }
+  },
+  {
+    "description": "hello \u2014 with non-zero spool_depth",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-08-06T12:05:40Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "box3.local", "machine_id_hash": "f00dcafe",
+        "os": "linux", "os_version": "6.9", "arch": "amd64", "agent_version": "0.3.0",
+        "primary_macs": ["aa:bb:cc:00:11:22"],
+        "readiness": [{"collector": "host.core", "state": "ready"}],
+        "spool_depth": 137, "capability_schema": 2
+      }
+    }
   }
 ]
