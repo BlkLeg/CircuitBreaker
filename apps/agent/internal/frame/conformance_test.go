@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/capability"
 )
@@ -94,6 +95,12 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripCapabilityReadinessPayload(t, decoded.Payload)
 			case TypeHeartbeat:
 				roundTripHeartbeatPayload(t, decoded.Payload)
+			case TypeProbeAssign:
+				roundTripProbeAssignPayload(t, decoded.Payload)
+			case TypeProbeCancel:
+				roundTripProbeCancelPayload(t, decoded.Payload)
+			case TypeProbeResult:
+				roundTripProbeResultPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -334,20 +341,215 @@ func roundTripKeyRotatePayload(t *testing.T, raw json.RawMessage) {
 	}
 }
 
+// roundTripProbeAssignPayload pins the §4 assignment shape. As in compareNetworkFacts above,
+// every json tag is re-declared literally in a reference struct and asserted against what
+// ProbeAssignPayload actually decoded, because a mistyped tag leaves the field zero on *both*
+// sides of a first-vs-second comparison and reads as a clean round trip. `config` is the field
+// that makes this worth the duplication: silently losing it turns an authenticated HTTPS check
+// with a keyword assertion into an unauthenticated bare GET, which no round-trip comparison and
+// no pydantic model on the far side (extra keys are dropped without complaint) would notice.
+func roundTripProbeAssignPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	// The tags here are the assertion; do not replace them with ProbeAssignPayload.
+	var wire struct {
+		RunID       string          `json:"run_id"`
+		MonitorID   int64           `json:"monitor_id"`
+		CheckType   string          `json:"check_type"`
+		Host        string          `json:"host"`
+		Config      json.RawMessage `json:"config"`
+		ScheduledAt time.Time       `json:"scheduled_at"`
+		DeadlineAt  time.Time       `json:"deadline_at"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("probe.assign reference decode error = %v", err)
+	}
+
+	var first ProbeAssignPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("ProbeAssignPayload decode error = %v", err)
+	}
+	if first.RunID != wire.RunID || first.MonitorID != wire.MonitorID ||
+		first.CheckType != wire.CheckType || first.Host != wire.Host {
+		t.Errorf("ProbeAssignPayload = %+v, fixture carries %+v — check the json tags", first, wire)
+	}
+	if !first.ScheduledAt.Equal(wire.ScheduledAt) || !first.DeadlineAt.Equal(wire.DeadlineAt) {
+		t.Errorf("ProbeAssignPayload timestamps = %v/%v, fixture carries %v/%v — check the json tags",
+			first.ScheduledAt, first.DeadlineAt, wire.ScheduledAt, wire.DeadlineAt)
+	}
+	if !jsonValuesEqual(t, first.Config, wire.Config) {
+		t.Errorf("ProbeAssignPayload.Config = %s, fixture carries %s — check the json tag", first.Config, wire.Config)
+	}
+	if first.Host == "" {
+		t.Error("Host is empty — an assignment with no destination is not dispatchable")
+	}
+
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("ProbeAssignPayload encode error = %v", err)
+	}
+	var second ProbeAssignPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("ProbeAssignPayload re-decode error = %v", err)
+	}
+	if first.RunID != second.RunID || first.MonitorID != second.MonitorID ||
+		first.CheckType != second.CheckType || first.Host != second.Host {
+		t.Errorf("ProbeAssignPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	if !first.ScheduledAt.Equal(second.ScheduledAt) || !first.DeadlineAt.Equal(second.DeadlineAt) {
+		t.Errorf("ProbeAssignPayload timestamp round-trip mismatch: got %v/%v, want %v/%v",
+			second.ScheduledAt, second.DeadlineAt, first.ScheduledAt, first.DeadlineAt)
+	}
+	if !jsonValuesEqual(t, first.Config, second.Config) {
+		t.Errorf("ProbeAssignPayload.Config round-trip mismatch: got %s, want %s", second.Config, first.Config)
+	}
+}
+
+func roundTripProbeCancelPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first ProbeCancelPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("ProbeCancelPayload decode error = %v", err)
+	}
+	if first.RunID == "" {
+		t.Error("RunID is empty — a cancellation names exactly one run")
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("ProbeCancelPayload encode error = %v", err)
+	}
+	var second ProbeCancelPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("ProbeCancelPayload re-decode error = %v", err)
+	}
+	if first != second {
+		t.Errorf("ProbeCancelPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+// probeOutcomes is the closed outcome vocabulary from §4, mirroring monitor_probe_runs.outcome.
+// Anything else is a protocol violation the server rejects rather than a new kind of result.
+var probeOutcomes = map[string]bool{
+	"completed": true, "execution_error": true, "cancelled": true, "rejected": true,
+}
+
+// roundTripProbeResultPayload pins the §4 result shape, including the two properties this frame
+// cannot be trusted without: `samples` must survive by name (same silent-drop hazard as
+// probe.assign's config — losing them would feed the monitor state machine an empty result while
+// every round-trip comparison stays green), and `up` must be re-encoded even when false, since
+// false is what a DOWN target reports and an omitted key on the server side reads as "no
+// opinion" rather than "down".
+func roundTripProbeResultPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	// The tags here are the assertion; do not replace them with ProbeResultPayload/ProbeSample.
+	var wire struct {
+		RunID     string `json:"run_id"`
+		MonitorID int64  `json:"monitor_id"`
+		Outcome   string `json:"outcome"`
+		Up        bool   `json:"up"`
+		Samples   []struct {
+			Metric      string  `json:"metric"`
+			Value       float64 `json:"value"`
+			ErrorReason string  `json:"error_reason"`
+		} `json:"samples"`
+		Msg     string          `json:"msg"`
+		Details json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("probe.result reference decode error = %v", err)
+	}
+
+	var first ProbeResultPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("ProbeResultPayload decode error = %v", err)
+	}
+	if !probeOutcomes[first.Outcome] {
+		t.Errorf("Outcome = %q, want one of completed/execution_error/cancelled/rejected", first.Outcome)
+	}
+	if first.RunID != wire.RunID || first.MonitorID != wire.MonitorID ||
+		first.Outcome != wire.Outcome || first.Up != wire.Up || first.Msg != wire.Msg {
+		t.Errorf("ProbeResultPayload = %+v, fixture carries %+v — check the json tags", first, wire)
+	}
+	if len(first.Samples) != len(wire.Samples) {
+		t.Fatalf("ProbeResultPayload.Samples decoded %d entries from a fixture carrying %d — check the json tag",
+			len(first.Samples), len(wire.Samples))
+	}
+	for i := range wire.Samples {
+		if first.Samples[i].Metric != wire.Samples[i].Metric ||
+			first.Samples[i].Value != wire.Samples[i].Value ||
+			first.Samples[i].ErrorReason != wire.Samples[i].ErrorReason {
+			t.Errorf("ProbeResultPayload.Samples[%d] = %+v, fixture carries %+v — check the json tags",
+				i, first.Samples[i], wire.Samples[i])
+		}
+	}
+	if (len(first.Details) == 0) != (len(wire.Details) == 0) {
+		t.Errorf("ProbeResultPayload.Details presence = %v, fixture carries %v — check the json tag",
+			len(first.Details) > 0, len(wire.Details) > 0)
+	}
+
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("ProbeResultPayload encode error = %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(reencoded, &keys); err != nil {
+		t.Fatalf("ProbeResultPayload re-decode as map error = %v", err)
+	}
+	if _, ok := keys["up"]; !ok {
+		t.Errorf("re-encoded ProbeResultPayload %s omits \"up\" — the field may not carry omitempty", reencoded)
+	}
+
+	var second ProbeResultPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("ProbeResultPayload re-decode error = %v", err)
+	}
+	if first.RunID != second.RunID || first.MonitorID != second.MonitorID ||
+		first.Outcome != second.Outcome || first.Up != second.Up || first.Msg != second.Msg {
+		t.Errorf("ProbeResultPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	if !first.StartedAt.Equal(second.StartedAt) || !first.FinishedAt.Equal(second.FinishedAt) {
+		t.Errorf("ProbeResultPayload timestamp round-trip mismatch: got %v/%v, want %v/%v",
+			second.StartedAt, second.FinishedAt, first.StartedAt, first.FinishedAt)
+	}
+	if !reflect.DeepEqual(first.Samples, second.Samples) {
+		t.Errorf("ProbeResultPayload.Samples round-trip mismatch: got %+v, want %+v", second.Samples, first.Samples)
+	}
+	if !reflect.DeepEqual(first.Details, second.Details) {
+		t.Errorf("ProbeResultPayload.Details round-trip mismatch: got %#v, want %#v", second.Details, first.Details)
+	}
+}
+
+// jsonValuesEqual compares two raw JSON documents by decoded value rather than by bytes: the
+// corpus is hand-formatted, so re-marshalling reflows whitespace and a byte comparison would
+// report a spurious mismatch for any non-scalar value.
+func jsonValuesEqual(t *testing.T, a, b json.RawMessage) bool {
+	t.Helper()
+	var ad, bd any
+	if len(a) > 0 {
+		if err := json.Unmarshal(a, &ad); err != nil {
+			t.Fatalf("decode %s = %v", a, err)
+		}
+	}
+	if len(b) > 0 {
+		if err := json.Unmarshal(b, &bd); err != nil {
+			t.Fatalf("decode %s = %v", b, err)
+		}
+	}
+	return reflect.DeepEqual(ad, bd)
+}
+
 // pendingCorpusTypes are the declared frame types that legitimately have no wire fixture in
 // fixtures/agent_frame_corpus.json yet. It is an explicitly shrinking allow-list: every entry
 // is a visible, reviewable exemption, and the slice that introduces a type's wire traffic must
 // delete its entry in the same commit that adds the fixture.
 //
-//   - probe.assign / probe.result      — removed by slice 3 (remote probe).
-//     Slice 3 also introduces `probe.cancel`, which is deliberately NOT pre-exempted here: a
-//     new constant must ship with a fixture or fail this gate.
 //   - discovery.request / discovery.finding — removed by slice 4 (local discovery).
 //   - update / uninstall               — server->agent command frames with no structured
 //     payload of their own yet; whichever task gives them one adds the fixture.
+//
+// probe.assign / probe.cancel / probe.result left this list in slice 3, in the same commit that
+// added their fixtures. probe.cancel was never on it: a constant declared without a fixture must
+// fail this gate on arrival, which is the property the list exists to preserve.
 var pendingCorpusTypes = []string{
-	TypeProbeAssign,
-	TypeProbeResult,
 	TypeDiscoveryRequest,
 	TypeDiscoveryFinding,
 	TypeUpdate,

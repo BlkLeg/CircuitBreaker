@@ -15,6 +15,7 @@ from app.schemas.agent_frame import (
     TYPE_HELLO_ACK,
     TYPE_KEY_ROTATE,
     TYPE_PROBE_ASSIGN,
+    TYPE_PROBE_CANCEL,
     TYPE_PROBE_RESULT,
     TYPE_TELEMETRY_HOST,
     TYPE_TRANSPORT_REKEY,
@@ -28,6 +29,9 @@ from app.schemas.agent_frame import (
     HelloPayload,
     HostTelemetryPayload,
     KeyRotatePayload,
+    ProbeAssignPayload,
+    ProbeCancelPayload,
+    ProbeResultPayload,
     TransportRekeyPayload,
     UpdateStatusPayload,
 )
@@ -46,6 +50,9 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_TELEMETRY_HOST: HostTelemetryPayload,
     TYPE_CAPABILITY_READINESS: CapabilityReadinessPayload,
     TYPE_HEARTBEAT: HeartbeatPayload,
+    TYPE_PROBE_ASSIGN: ProbeAssignPayload,
+    TYPE_PROBE_CANCEL: ProbeCancelPayload,
+    TYPE_PROBE_RESULT: ProbeResultPayload,
 }
 
 
@@ -93,15 +100,14 @@ def test_corpus_typed_payloads_decode_and_round_trip(entry):
 # slice that introduces a type's wire traffic must delete its entry in the same commit that
 # adds the fixture. Mirrors apps/agent/internal/frame/conformance_test.go's pendingCorpusTypes.
 #
-#   * probe.assign / probe.result           -- removed by slice 3 (remote probe). Slice 3 also
-#     introduces ``probe.cancel``, deliberately NOT pre-exempted here: a new constant must ship
-#     with a fixture or fail this gate.
 #   * discovery.request / discovery.finding -- removed by slice 4 (local discovery).
 #   * update / uninstall                    -- server->agent command frames with no structured
 #     payload of their own yet; whichever task gives them one adds the fixture.
+#
+# probe.assign / probe.cancel / probe.result left this list in slice 3, in the same commit that
+# added their fixtures. ``probe.cancel`` was never on it: a constant declared without a fixture
+# must fail this gate on arrival, which is the property the list exists to preserve.
 PENDING_CORPUS_TYPES = {
-    TYPE_PROBE_ASSIGN,
-    TYPE_PROBE_RESULT,
     TYPE_DISCOVERY_REQUEST,
     TYPE_DISCOVERY_FINDING,
     TYPE_UPDATE,
@@ -251,4 +257,52 @@ def test_heartbeat_empty_payload_is_distinguishable_from_an_explicit_zero_backlo
     assert {} in corpus_payloads, "corpus must keep the old-shaped empty heartbeat"
     assert any(p.get("spool_depth") for p in corpus_payloads), (
         "corpus must cover a heartbeat carrying a real backlog"
+    )
+
+
+def test_probe_payloads_survive_the_typed_models_by_name():
+    """The probe payloads' collection fields have to be asserted by name, not just round-tripped.
+
+    Pydantic drops unknown keys, so a model that misspelled ``samples`` validates a real result
+    into an empty one and ``test_corpus_typed_payloads_decode_and_round_trip`` above still
+    passes — both sides of its comparison are equally empty. For ``probe.result`` that silently
+    feeds the monitor state machine a check with no observations; for ``probe.assign`` it
+    silently strips the credentials and assertions the check is supposed to run with. Same
+    hazard, and same guard, as ``test_hello_networks_survive_the_typed_payload_by_name``; the Go
+    half is roundTripProbeAssignPayload/roundTripProbeResultPayload against the same fixtures.
+    """
+    assignments = _corpus_entries_of_type(TYPE_PROBE_ASSIGN)
+    assert assignments, "corpus must cover probe.assign"
+    for entry in assignments:
+        wire = entry["json"]["payload"]
+        payload = ProbeAssignPayload.model_validate(wire)
+        assert payload.config == wire["config"]
+        assert (payload.run_id, payload.monitor_id, payload.check_type, payload.host) == (
+            wire["run_id"],
+            wire["monitor_id"],
+            wire["check_type"],
+            wire["host"],
+        )
+
+    results = _corpus_entries_of_type(TYPE_PROBE_RESULT)
+    assert results, "corpus must cover probe.result"
+    for entry in results:
+        wire = entry["json"]["payload"]
+        payload = ProbeResultPayload.model_validate(wire)
+        assert [sample.model_dump(exclude_none=True) for sample in payload.samples] == wire.get(
+            "samples", []
+        )
+        assert payload.details == wire.get("details")
+        assert payload.up is wire["up"]
+
+    # Every §4 outcome is exercised, so a model that narrowed the vocabulary fails here rather
+    # than in whichever slice-3 task first emits the outcome it dropped.
+    assert {entry["json"]["payload"]["outcome"] for entry in results} == {
+        "completed",
+        "execution_error",
+        "cancelled",
+        "rejected",
+    }
+    assert any(entry["json"]["payload"]["up"] is False for entry in results), (
+        "corpus must cover a result reporting a DOWN target"
     )

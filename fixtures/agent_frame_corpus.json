@@ -403,5 +403,150 @@
         "spool_depth": 0, "capability_schema": 2
       }
     }
+  },
+  {
+    "description": "probe.assign — http check carrying the monitor's full validated config",
+    "json": {
+      "v": 1, "type": "probe.assign", "seq": 0, "ts": "2026-08-07T18:00:00Z",
+      "payload": {
+        "run_id": "3f9c1a7be04d42a1b8e6c05d7f1a2b3c",
+        "monitor_id": 42,
+        "check_type": "http",
+        "host": "app.internal.example.com",
+        "config": {
+          "url": "https://app.internal.example.com/healthz",
+          "method": "GET",
+          "timeout": 10.0,
+          "auth_type": "basic",
+          "username": "probe",
+          "password": "not-a-real-password",
+          "accepted_statuses": ["200-299"],
+          "keyword": "ok",
+          "verify_tls": true,
+          "follow_redirects": true
+        },
+        "scheduled_at": "2026-08-07T18:00:00Z",
+        "deadline_at": "2026-08-07T18:00:20Z"
+      }
+    }
+  },
+  {
+    "description": "probe.assign — icmp check with an empty config (the collector defaults apply)",
+    "json": {
+      "v": 1, "type": "probe.assign", "seq": 0, "ts": "2026-08-07T18:00:05Z",
+      "payload": {
+        "run_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "monitor_id": 7,
+        "check_type": "icmp",
+        "host": "10.20.0.9",
+        "config": {},
+        "scheduled_at": "2026-08-07T18:00:05Z",
+        "deadline_at": "2026-08-07T18:00:25Z"
+      }
+    }
+  },
+  {
+    "description": "probe.cancel — monitor paused",
+    "json": {
+      "v": 1, "type": "probe.cancel", "seq": 0, "ts": "2026-08-07T18:00:10Z",
+      "payload": {"run_id": "3f9c1a7be04d42a1b8e6c05d7f1a2b3c", "reason": "monitor_paused"}
+    }
+  },
+  {
+    "description": "probe.cancel — run id only, no reason given",
+    "json": {
+      "v": 1, "type": "probe.cancel", "seq": 0, "ts": "2026-08-07T18:00:11Z",
+      "payload": {"run_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"}
+    }
+  },
+  {
+    "description": "probe.result — completed, http target up with tls details",
+    "json": {
+      "v": 1, "type": "probe.result", "seq": 91, "ts": "2026-08-07T18:00:01Z",
+      "payload": {
+        "run_id": "3f9c1a7be04d42a1b8e6c05d7f1a2b3c",
+        "monitor_id": 42,
+        "outcome": "completed",
+        "up": true,
+        "started_at": "2026-08-07T18:00:01Z",
+        "finished_at": "2026-08-07T18:00:01.124Z",
+        "samples": [
+          {"metric": "avail", "value": 1},
+          {"metric": "latency_ms", "value": 124.0},
+          {"metric": "http_status", "value": 200},
+          {"metric": "cert_days_remaining", "value": 61}
+        ],
+        "msg": "200 in 124.0ms",
+        "details": {
+          "tls": {
+            "subject_cn": "app.internal.example.com",
+            "issuer_cn": "Internal CA",
+            "expires_at": "2026-10-07T00:00:00Z",
+            "days_remaining": 61
+          }
+        }
+      }
+    }
+  },
+  {
+    "description": "probe.result — completed, target down with a per-sample error_reason",
+    "json": {
+      "v": 1, "type": "probe.result", "seq": 92, "ts": "2026-08-07T18:00:12Z",
+      "payload": {
+        "run_id": "b2c3d4e5f60718293a4b5c6d7e8f9012",
+        "monitor_id": 42,
+        "outcome": "completed",
+        "up": false,
+        "started_at": "2026-08-07T18:00:11Z",
+        "finished_at": "2026-08-07T18:00:12.008Z",
+        "samples": [{"metric": "avail", "value": 0, "error_reason": "http_error"}],
+        "msg": "request failed: ConnectTimeout"
+      }
+    }
+  },
+  {
+    "description": "probe.result — execution_error, the agent could not run the check",
+    "json": {
+      "v": 1, "type": "probe.result", "seq": 93, "ts": "2026-08-07T18:00:13Z",
+      "payload": {
+        "run_id": "c3d4e5f60718293a4b5c6d7e8f901234",
+        "monitor_id": 7,
+        "outcome": "execution_error",
+        "up": false,
+        "started_at": "2026-08-07T18:00:13Z",
+        "finished_at": "2026-08-07T18:00:13Z",
+        "msg": "icmp socket unavailable: operation not permitted"
+      }
+    }
+  },
+  {
+    "description": "probe.result — cancelled before execution",
+    "json": {
+      "v": 1, "type": "probe.result", "seq": 94, "ts": "2026-08-07T18:00:14Z",
+      "payload": {
+        "run_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "monitor_id": 7,
+        "outcome": "cancelled",
+        "up": false,
+        "started_at": "2026-08-07T18:00:14Z",
+        "finished_at": "2026-08-07T18:00:14Z",
+        "msg": "cancelled: monitor_paused"
+      }
+    }
+  },
+  {
+    "description": "probe.result — rejected, destination outside the agent's derived scope",
+    "json": {
+      "v": 1, "type": "probe.result", "seq": 95, "ts": "2026-08-07T18:00:15Z",
+      "payload": {
+        "run_id": "d4e5f60718293a4b5c6d7e8f90123456",
+        "monitor_id": 51,
+        "outcome": "rejected",
+        "up": false,
+        "started_at": "2026-08-07T18:00:15Z",
+        "finished_at": "2026-08-07T18:00:15Z",
+        "msg": "destination 8.8.8.8 is outside the agent's approved scope"
+      }
+    }
   }
 ]

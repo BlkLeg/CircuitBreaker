@@ -63,6 +63,7 @@ const (
 	TypeHelloAck         = "hello.ack"
 	TypeCapabilitiesSet  = "capabilities.set"
 	TypeProbeAssign      = "probe.assign"
+	TypeProbeCancel      = "probe.cancel"
 	TypeDiscoveryRequest = "discovery.request"
 	TypeKeyRotate        = "key.rotate"
 	TypeUpdate           = "update"
@@ -96,6 +97,7 @@ var allFrameTypes = []string{
 	TypeHelloAck,
 	TypeCapabilitiesSet,
 	TypeProbeAssign,
+	TypeProbeCancel,
 	TypeDiscoveryRequest,
 	TypeKeyRotate,
 	TypeUpdate,
@@ -122,6 +124,7 @@ var controlFrameTypes = map[string]bool{
 	TypeHelloAck:            true,
 	TypeCapabilitiesSet:     true,
 	TypeProbeAssign:         true,
+	TypeProbeCancel:         true,
 	TypeDiscoveryRequest:    true,
 	TypeKeyRotate:           true,
 	TypeUpdate:              true,
@@ -306,4 +309,73 @@ type KeyRotatePayload struct {
 	Kind        string    `json:"kind"` // "device" | "server"
 	SuccessorPK string    `json:"successor_pk"`
 	Expiry      time.Time `json:"expiry"`
+}
+
+// ProbeAssignPayload is the server -> agent `probe.assign` payload (§4): exactly one remote check,
+// fully specified, mirroring apps/backend/src/app/schemas/agent_frame.py's ProbeAssignPayload.
+//
+// RunID is the server-minted 32-hex token that is the *only* identifier a result may be posted
+// against — a leaked monitor id buys nothing. Config is the monitor's complete validated
+// configuration and therefore carries HTTP credentials when the monitor has them (D-10), which is
+// why it is left as raw JSON rather than a typed struct: this package must not become somewhere
+// a secret can accidentally be logged, compared or persisted. The runtime holds it for the life
+// of the run and nothing else.
+//
+// ScheduledAt/DeadlineAt are RFC3339 and non-pointer: an assignment without a deadline is not
+// dispatchable, and the backend always stamps both with .isoformat().
+type ProbeAssignPayload struct {
+	RunID       string          `json:"run_id"`
+	MonitorID   int64           `json:"monitor_id"`
+	CheckType   string          `json:"check_type"` // icmp | tcp | http | dns
+	Host        string          `json:"host"`
+	Config      json.RawMessage `json:"config,omitempty"`
+	ScheduledAt time.Time       `json:"scheduled_at"`
+	DeadlineAt  time.Time       `json:"deadline_at"`
+}
+
+// ProbeCancelPayload is the server -> agent `probe.cancel` payload (§4), sent when a monitor is
+// paused, deleted, reassigned, has its capability disabled, or the agent is revoked. Reason is
+// advisory: cancellation is best-effort and the backend stays authoritative, rejecting any result
+// that arrives for a run it has already closed.
+type ProbeCancelPayload struct {
+	RunID  string `json:"run_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// ProbeSample is one observation from a completed check, mirroring
+// apps/backend/src/app/services/monitoring/collectors.Sample so a remote result reaches the
+// shared result service in the same shape a server-executed one does. ErrorReason is the
+// collectors' own per-sample annotation ("http_error", "dns_error"); it is audit metadata
+// persisted only in monitor_probe_runs.result_metadata (D-8), never in telemetry_timeseries.
+type ProbeSample struct {
+	Metric      string  `json:"metric"`
+	Value       float64 `json:"value"`
+	ErrorReason string  `json:"error_reason,omitempty"`
+}
+
+// ProbeResultPayload is the agent -> server `probe.result` payload (§4), mirroring
+// apps/backend/src/app/schemas/agent_frame.py's ProbeResultPayload.
+//
+// Outcome is closed: "completed" (a real target result, feed the state machine),
+// "execution_error" (the agent could not perform the probe), "cancelled", or "rejected"
+// (invalid, unauthorized, out-of-scope or capacity-limited assignment). Only "completed" says
+// anything about the target — the other three must preserve its last known state, which is why
+// Up is meaningless outside "completed" rather than a fallback DOWN.
+//
+// Up carries no `omitempty`, for the same reason HeartbeatPayload's spool fields do not: false
+// is the observation a DOWN target produces, and Go would drop it, leaving the server to read an
+// absent key as its own default. The empty value must stay reserved for "field not sent at all".
+//
+// Details is bounded at 64 KiB and Msg at 2000 characters by the server-side handler, and neither
+// may ever carry a response body, an Authorization header, a token or a password.
+type ProbeResultPayload struct {
+	RunID      string         `json:"run_id"`
+	MonitorID  int64          `json:"monitor_id"`
+	Outcome    string         `json:"outcome"` // completed | execution_error | cancelled | rejected
+	Up         bool           `json:"up"`
+	StartedAt  time.Time      `json:"started_at"`
+	FinishedAt time.Time      `json:"finished_at"`
+	Samples    []ProbeSample  `json:"samples,omitempty"`
+	Msg        string         `json:"msg,omitempty"`
+	Details    map[string]any `json:"details,omitempty"`
 }
