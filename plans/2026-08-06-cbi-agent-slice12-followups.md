@@ -71,3 +71,82 @@ gap rather than a plan violation. Add a case with a 500 + well-formed body.
 uncovered statement in `run` (94.4%). `fakeCollector.err` exists and is wired
 into `Collect` but no test sets it. Task 9 owns the `OnReadiness` assertion on
 that path; the frame-channel half is untested by anyone.
+
+---
+
+## F-5. The agent cannot detect a black-hole network partition
+
+**Found by:** Task 20, while choosing an outage mechanism for the catch-up test.
+
+`internal/link` sets a read deadline only on the handshake path
+(`link.go:944`); there is no steady-state read deadline on an established
+connection. So if the network is severed in a way that drops packets silently —
+`docker network disconnect`, a firewall DROP rule, a dead NAT entry — the agent
+does not notice. It keeps believing the link is up, `runOnce`'s select loop
+keeps writing into a socket that will never deliver, and nothing spools.
+
+This is why the Task 20 e2e uses `docker compose stop circuitbreaker` (which
+sends a TCP FIN the agent *does* see) rather than the plan's specified
+`docker network disconnect`. The consequence is that **the plan's actual
+network-partition scenario is covered by no test**, and neither is the silent
+frame loss it causes.
+
+**Fix direction:** set a read deadline on the established connection, sized off
+the 20 s heartbeat interval (e.g. 3 missed heartbeats), and treat expiry as a
+disconnect so the spool takes over. Then restore the e2e to the plan's
+`docker network disconnect` mechanism and add a regression test for the
+black-hole case.
+
+---
+
+## F-6. Task 20's catch-up assertions are weaker than the plan specifies
+
+**Found by:** Task 20 verification. Recorded rather than fixed because the
+product defect F-7 blocked the test from running at all until late.
+
+Three assertions in `test_agent_host_telemetry_first_sample_catchup_and_disable`
+are weaker than the plan's step 3 requires:
+
+1. **Per-sample uniqueness is inferred, not asserted.** The plan wants "every
+   `sample_id` appears once (re-issue the same window twice and compare)". The
+   test compares aggregated 1 h history buckets, because the history endpoint
+   returns bucket aggregates only. Uniqueness is inferred from
+   `sample_count <= 4` per 30 s bucket plus bucket-equality across two reads.
+   A per-sample assertion needs a different endpoint or a direct DB read.
+2. **The catch-up budget is measured from the wrong instant.** The test allows
+   240 s to first observe `spool_depth > 0` and only then starts the 30 s
+   catch-up clock, so it can no longer distinguish "catch-up was bounded" from
+   "reconnect backoff was long" — which is the property D-5 exists to pin.
+3. **`outage_start` is stamped before `docker compose stop` returns**, so
+   `_outage_points()` can include buckets collected and delivered live while the
+   server was still up. If the stop takes longer than one bucket width, the
+   `min_outage_samples = 3` floor can be met entirely by pre-outage buckets and
+   the "`collected_at` preserved rather than rewritten to reconnect time" proof
+   degrades to a tautology.
+
+---
+
+## F-7. RESOLVED — fresh installs could not persist a single host sample
+
+Kept for the record because it is the reason F-5/F-6 were deferred, and because
+the failure mode is worth recognising again.
+
+`0001_init._copy_column` rebuilt every column without carrying `autoincrement`.
+`agent_host_samples.id` and `hardware_live_metrics.id` are
+`BigInteger, autoincrement=True` but only *part* of a composite `(id, <time>)`
+primary key (so TimescaleDB can partition on time), and SQLAlchemy's default
+`autoincrement="auto"` declines to emit `SERIAL` in that shape. Both therefore
+became plain `BIGINT NOT NULL` with no sequence, and every INSERT omitting `id`
+failed. `0095` could not save it: on a fresh install the tables already exist
+(0001 builds the whole of `Base.metadata` up front), so 0095 short-circuits and
+its own correct `create_table` never runs.
+
+`ingest_host_sample`'s blanket `except IntegrityError:` then made it
+unrecognisable — it assumed the only possible failure was the
+`uq_agent_host_sample` dedupe, re-SELECTed, and surfaced the `NotNullViolation`
+as an unrelated `NoResultFound` that took the `/link` socket down.
+
+**Why no unit test caught it:** `tests/conftest.py` builds the schema with
+`Base.metadata.create_all`, which uses the *model* metadata. Only a real Alembic
+run — a fresh install, or the Docker e2e stack — goes through
+`_build_bootstrap_metadata`. The e2e is what found it.
