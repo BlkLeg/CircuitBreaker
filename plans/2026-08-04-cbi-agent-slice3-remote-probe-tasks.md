@@ -61,7 +61,7 @@ Everything else in Slice 3 is additive on top of a working four-stage monitor pi
 authoritative `next_due_at`, no wedged items, `source="monitor"` availability, one alert shape —
 must survive unchanged.
 
-**25 ordered, test-first tasks**, one focused commit each, each ending with the affected Go,
+**23 ordered, test-first tasks**, one focused commit each, each ending with the affected Go,
 backend, or frontend suites green.
 
 ---
@@ -1390,19 +1390,44 @@ Green = `go test -race ./...` across the whole module. Re-run once if
 
 ---
 
-### Task 21: Frontend — "Run from" selection and eligibility
+### Task 21: Frontend — vantage selection, execution condition, and Agent Detail probes
 
-**Scope:** §7's create/edit form half.
+**Scope:** All of §7's UI in one task. It was originally split three ways; the split bought nothing
+because the three halves share `MonitorsPage.jsx`'s live fold and the same API client module, and
+splitting them meant landing a "Run from" selector that nothing yet renders.
+
+The load-bearing rule for the whole task: **the UP/DOWN pill shows target state only.** Execution
+condition is always a secondary indicator. D-13 is why — the live push for an execution change
+carries no `status` key, and the fold must not invent one.
 
 **Files touched:**
 - `apps/frontend/src/api/monitor.js` — `getMonitorProbeRuns`
 - `apps/frontend/src/api/agents.js` — `getAgentProbes` + the eligible-agent listing call
 - `apps/frontend/src/components/monitors/MonitorForm.jsx` — `probe_agent_id: null` in `DEFAULTS`
   plus a "Run from" `<select id="mf-probe-agent">` following the existing `mf-type` field shape
-- **new** `apps/frontend/src/components/monitors/RunFromSelect.jsx` — extracted, because
-  `MonitorForm.jsx` is already over the 150-line quality cap
+- **new** `apps/frontend/src/components/monitors/RunFromSelect.jsx`
+- `apps/frontend/src/components/monitors/MonitorCard.jsx` — "via Server" / "via <agent>" in the
+  `mon-target` span. **Do not touch the exported `groupStatusOf` or `headlineOf`** —
+  `MonitorsPage.jsx` imports `groupStatusOf` for the summary counts, the group buckets and the
+  status filter, so folding execution state into it would silently rewrite the dashboard
+- `apps/frontend/src/components/monitors/MonitorCardDetail.jsx` — a fifth `mon-stats` tile for last
+  result; an agent link in `mon-actions`
+- `apps/frontend/src/pages/MonitorDetailPage.jsx` — "Run from" and "Execution status" rows in the
+  `<dl>`; a **separate** probe-runs table cloning the events `<table className="data-table">`, per
+  §7's "separately from target state transitions"
+- `apps/frontend/src/pages/MonitorsPage.jsx` — the live fold merges execution fields without
+  overwriting `status` (D-13)
+- **new** `apps/frontend/src/components/agents/AssignedProbesSection.jsx` and
+  **new** `apps/frontend/src/components/agents/RemoteProbeConfigEditor.jsx` — extracted, because
+  `AgentDetailPage.jsx` is already ~647 lines against a 150-line cap
+- `apps/frontend/src/pages/AgentDetailPage.jsx` — mount both as
+  `<section aria-label="Assigned probes">` (tests select by aria-label) and hook the
+  disable-confirmation into `handleToggleCapability` using the already-imported `ConfirmDialog`
+- `apps/frontend/src/styles/monitors.css`
 
-**Tests first — new `apps/frontend/src/__tests__/monitor-run-from.test.jsx`:**
+**Tests first.**
+
+New `apps/frontend/src/__tests__/monitor-run-from.test.jsx`:
 - `renders Circuit Breaker server as the default option`
 - `lists only eligible agents with online, readiness and scope indicators`
 - `warns when the selected agent is offline`
@@ -1414,71 +1439,21 @@ Green = `go test -race ./...` across the whole module. Re-run once if
 - `strips read-only probe_* fields before submitting` — `MonitorsPage.jsx` sends the form verbatim
   and seeds edit state with `{...DEFAULTS, ...initial}`
 
-**Verify:**
-```
-(cd apps/frontend && npx vitest run src/__tests__/monitor-run-from.test.jsx src/__tests__/monitors-dashboard.test.jsx)
-(cd apps/frontend && npm run lint)
-```
-Green = new tests pass, existing dashboard tests unaffected, 0 lint errors. Dynamic object indexing
-needs the file-top `/* eslint-disable security/detect-object-injection -- <reason> */` used elsewhere.
+Extend `apps/frontend/src/__tests__/monitor-card.test.jsx`:
+- `shows via Server for an unassigned monitor`
+- `shows via <agent name> for an assigned monitor`
+- `renders probe unavailable as a secondary condition without changing the status pill`
+- `groupStatusOf is unchanged by probe_execution_status`
 
-**Depends on:** Task 15.
+Extend `apps/frontend/src/__tests__/monitor-detail-page.test.jsx`:
+- `renders probe runs in a table separate from target events`
+- `execution errors do not appear in the target event list`
 
----
+New `apps/frontend/src/__tests__/monitor-live-execution.test.jsx`:
+- `a push carrying only probe_execution_status leaves the status pill untouched`
+- `a push carrying status still updates the pill`
 
-### Task 22: Frontend — execution condition, probe-run history, live updates
-
-**Scope:** §7's display half. The load-bearing rule: the UP/DOWN pill must retain the last **target**
-state when execution is unavailable.
-
-**Files touched:**
-- `apps/frontend/src/components/monitors/MonitorCard.jsx` — "via Server" / "via <agent>" in the
-  `mon-target` span. **Do not touch the exported `groupStatusOf` or `headlineOf`** — `MonitorsPage.jsx`
-  imports `groupStatusOf` for the summary counts, the group buckets and the status filter
-- `apps/frontend/src/components/monitors/MonitorCardDetail.jsx` — a fifth `mon-stats` tile for last
-  result; an agent link in `mon-actions`
-- `apps/frontend/src/pages/MonitorDetailPage.jsx` — "Run from" and "Execution status" rows in the
-  `<dl>`; a **separate** Probe-runs table cloning the events `<table className="data-table">`, per
-  §7's "separately from target state transitions"
-- `apps/frontend/src/pages/MonitorsPage.jsx` — the live fold must merge execution fields without
-  overwriting `status` (D-13)
-- `apps/frontend/src/styles/monitors.css`
-
-**Tests first:**
-- `apps/frontend/src/__tests__/monitor-card.test.jsx` (extend):
-  `shows via Server for an unassigned monitor`, `shows via <agent name> for an assigned monitor`,
-  `renders probe unavailable as a secondary condition without changing the status pill`,
-  `groupStatusOf is unchanged by probe_execution_status`
-- `apps/frontend/src/__tests__/monitor-detail-page.test.jsx` (extend):
-  `renders probe runs in a table separate from target events`,
-  `execution errors do not appear in the target event list`
-- **new** `apps/frontend/src/__tests__/monitor-live-execution.test.jsx`:
-  `a push carrying only probe_execution_status leaves the status pill untouched`,
-  `a push carrying status still updates the pill`
-
-**Verify:**
-```
-(cd apps/frontend && npx vitest run src/__tests__/monitor-card.test.jsx src/__tests__/monitor-detail-page.test.jsx src/__tests__/monitor-live-execution.test.jsx src/__tests__/monitors-dashboard.test.jsx)
-```
-Green = the pill-retention invariant is asserted directly.
-
-**Depends on:** Task 21.
-
----
-
-### Task 23: Frontend — Agent Detail Assigned Probes, config editor, disable confirmation
-
-**Scope:** §7's Agent UI.
-
-**Files touched:**
-- **new** `apps/frontend/src/components/agents/AssignedProbesSection.jsx` and
-  **new** `apps/frontend/src/components/agents/RemoteProbeConfigEditor.jsx` — extracted, because
-  `AgentDetailPage.jsx` is already ~647 lines against a 150-line cap
-- `apps/frontend/src/pages/AgentDetailPage.jsx` — mount both as
-  `<section aria-label="Assigned probes">` (tests select by aria-label) and hook the
-  disable-confirmation into `handleToggleCapability` using the already-imported `ConfirmDialog`
-
-**Tests first — new `apps/frontend/src/__tests__/agent-assigned-probes.test.jsx`:**
+New `apps/frontend/src/__tests__/agent-assigned-probes.test.jsx`:
 - `lists assigned monitors with type, target, interval, target state and execution condition`
 - `shows concurrency used against the configured limit`
 - `offers open, check now, reassign and return-to-server actions`
@@ -1494,18 +1469,20 @@ land there unchanged.
 
 **Verify:**
 ```
-(cd apps/frontend && npx vitest run src/__tests__/agent-assigned-probes.test.jsx src/__tests__/agent-detail-page.test.jsx)
-(cd apps/frontend && npm run lint && npx vitest run)
+(cd apps/frontend && npx vitest run)
+(cd apps/frontend && npm run lint)
 ```
-Green = the whole frontend suite passes. Any newly mocked API function must be added to the
-`vi.hoisted` `apiDefaults` object **and re-applied in `beforeEach`** — `vi.clearAllMocks` does not
-restore implementations.
+Green = the whole frontend suite passes, 0 lint errors. Two traps: any newly mocked API function
+must be added to the `vi.hoisted` `apiDefaults` object **and re-applied in `beforeEach`**, because
+`vi.clearAllMocks` does not restore implementations; and dynamic object indexing needs the file-top
+`/* eslint-disable security/detect-object-injection -- <reason> */` used elsewhere.
 
-**Depends on:** Task 22.
+**Depends on:** Task 15.
 
 ---
 
-### Task 24: Docker E2E — remote probe acceptance
+
+### Task 22: Docker E2E — remote probe acceptance
 
 **Scope:** §9's end-to-end list, against a target the backend genuinely cannot reach.
 
@@ -1539,11 +1516,11 @@ in one stack lifetime (the suite is already ~25-45 min; do not add seven more st
 Green = the new test passes and the other six are unaffected.
 `test_agent_update_success_and_forced_rollback` is **expected red** (F-8).
 
-**Depends on:** Tasks 1-23.
+**Depends on:** Tasks 1-21.
 
 ---
 
-### Task 25: Release gate verification
+### Task 23: Release gate verification
 
 **Scope:** Verification only. Run every command in the Release Gate below.
 
@@ -1551,7 +1528,7 @@ Green = the new test passes and the other six are unaffected.
 specific failure; it routes back to the task whose area regressed, as a small dedicated follow-up.
 Check every failure against **Known-red baseline** first.
 
-**Depends on:** Tasks 1-24.
+**Depends on:** Tasks 1-22.
 
 ---
 
