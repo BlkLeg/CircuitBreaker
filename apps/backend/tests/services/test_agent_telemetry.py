@@ -684,6 +684,45 @@ async def test_flush_integrity_error_returns_existing_row(db_session, factories)
 
 
 @pytest.mark.asyncio
+async def test_flush_integrity_error_that_is_not_the_dedupe_propagates(db_session, factories):
+    """An integrity failure the dedupe cannot explain must surface as itself.
+
+    The handler above exists for one recoverable case: `uq_agent_host_sample`
+    already holds this (agent_id, sample_id, collected_at). A blanket
+    `except IntegrityError` swallowed *every* integrity failure and then died
+    inside the re-SELECT with an unrelated `NoResultFound`, which is what a
+    fresh install hit while `agent_host_samples.id` was being created without
+    its sequence (see
+    `tests/test_agent_telemetry_schema.py::test_bootstrap_metadata_preserves_autoincrement`):
+    the real NotNullViolation never reached the logs and the /link socket
+    dropped on a misleading error instead.
+    """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session as OrmSession
+
+    agent = factories.agent(status="active")
+    db_session.commit()
+
+    original_flush = OrmSession.flush
+    not_null = Exception('null value in column "id" violates not-null constraint')
+
+    def fake_flush(self, *args, **kwargs):
+        if any(isinstance(o, AgentHostSample) for o in self.new):
+            raise IntegrityError("INSERT INTO agent_host_samples", {}, not_null)
+        return original_flush(self, *args, **kwargs)
+
+    OrmSession.flush = fake_flush
+    try:
+        with pytest.raises(IntegrityError) as excinfo:
+            await agent_telemetry.ingest_host_sample(db_session, agent, _payload(), utcnow())
+    finally:
+        OrmSession.flush = original_flush
+
+    assert excinfo.value.orig is not_null
+    assert _count(db_session, AgentHostSample) == 0
+
+
+@pytest.mark.asyncio
 async def test_different_sample_id_at_same_timestamp_persists_a_second_row(db_session, factories):
     agent = factories.agent(status="active")
     collected_at = utcnow()

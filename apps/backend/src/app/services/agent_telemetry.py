@@ -132,14 +132,26 @@ async def ingest_host_sample(
     try:
         db.flush()
     except IntegrityError:
+        # Exactly one integrity failure is recoverable here: another writer
+        # committed this (agent_id, sample_id, collected_at) between our SELECT
+        # and our INSERT, so `uq_agent_host_sample` rejected the duplicate and
+        # the winner's row is what the caller wants.  Confirming the row is
+        # actually there is what distinguishes that case -- driver-agnostically,
+        # without decoding a SQLSTATE -- from a genuine schema/constraint fault
+        # (a NotNullViolation from a missing id sequence, an FK violation).
+        # Swallowing those and then failing in this SELECT reported them as an
+        # unrelated `NoResultFound` and took the /link socket down with it.
         db.rollback()
-        return db.execute(
+        existing = db.execute(
             select(AgentHostSample).where(
                 AgentHostSample.agent_id == agent.id,
                 AgentHostSample.sample_id == sample.sample_id,
                 AgentHostSample.collected_at == collected_at,
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing
     # One normalizer: the Hardware-facing surfaces (the live-metric row,
     # `telemetry_data`, and the cache/WebSocket envelope below) all speak the
     # platform vocabulary produced here, never the agent's own key names. The

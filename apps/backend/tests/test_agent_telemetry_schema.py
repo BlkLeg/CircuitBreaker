@@ -27,9 +27,11 @@ import pytest
 import sqlalchemy as sa
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 
 from app.api.agents import _sample_json
-from app.db.models import AgentHostSample
+from app.db.models import AgentHostSample, Base
 
 _VERSIONS_DIR = Path(__file__).resolve().parents[1] / "migrations" / "versions"
 _GUARD_NAMES = ("_has_timescaledb", "_is_hypertable")
@@ -255,3 +257,60 @@ def test_migration_0096_is_idempotent(db_session, run):
     columns = {c["name"] for c in sa.inspect(connection).get_columns("agent_host_samples")}
     assert "projection_attempts" not in columns
     assert "projected_at" in columns
+
+
+# ── 4. Migration 0001 hands the tables a working id sequence ────────────────
+
+
+def _column_ddl(table: sa.Table, column_name: str) -> str:
+    """The single rendered `CREATE TABLE` line for one column."""
+    rendered = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+    prefix = f"{column_name} "
+    for line in rendered.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped.rstrip(", ")
+    raise AssertionError(f"{table.name} has no rendered column {column_name!r}")
+
+
+def test_bootstrap_metadata_preserves_autoincrement():
+    """`0001_init._copy_column` must carry `autoincrement` across.
+
+    Fresh installs do not replay 0043/0095's `create_table` calls: 0001 builds
+    the whole current `Base.metadata` up front and 0095 then short-circuits
+    because its tables already exist. So 0001's *rebuilt* columns are the only
+    definition a fresh database ever gets.
+
+    `agent_host_samples.id` and `hardware_live_metrics.id` are the columns this
+    breaks: both are `BigInteger, autoincrement=True` and neither is a
+    single-column primary key (both tables carry a composite `(id, <time>)` PK
+    so TimescaleDB can partition on time). SQLAlchemy's default
+    `autoincrement="auto"` declines to emit `SERIAL` for a composite PK, so
+    dropping the explicit flag yields a plain `BIGINT NOT NULL` with no
+    sequence and every INSERT that omits `id` fails with a NotNullViolation —
+    i.e. host telemetry could not persist a single sample on a fresh install.
+
+    The unit suite cannot catch this on its own: `tests/conftest.py` builds the
+    schema with `Base.metadata.create_all`, so only a real Alembic run (a fresh
+    install, or the Docker e2e stack) goes through `_build_bootstrap_metadata`.
+    """
+    init = _load_migration("0001_init")
+    bootstrap = init._build_bootstrap_metadata()
+
+    mismatched: dict[str, tuple[str, str]] = {}
+    for name, bootstrap_table in bootstrap.tables.items():
+        model_table = Base.metadata.tables[name]
+        for column in model_table.columns:
+            # Only columns that *ask* for a sequence explicitly; "auto" is
+            # recomputed from the copied table and legitimately differs.
+            if column.autoincrement is not True or column.name not in bootstrap_table.c:
+                continue
+            expected = _column_ddl(model_table, column.name)
+            actual = _column_ddl(bootstrap_table, column.name)
+            if expected != actual:
+                mismatched[f"{name}.{column.name}"] = (expected, actual)
+
+    assert mismatched == {}, (
+        "0001_init rebuilt these columns without their sequence "
+        f"(model DDL, bootstrap DDL): {mismatched}"
+    )
