@@ -63,11 +63,24 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: apps/agent/go.sum
+
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
       - name: Frontend tests
         run: cd apps/frontend && npm test
+
+      # -race is mandatory: the agent's daemon-startup ordering guarantees are
+      # only observable under the race detector (see apps/agent/Makefile).
+      - name: Agent tests
+        run: cd apps/agent && make test
+
+      - name: Agent vet
+        run: cd apps/agent && go vet ./...
 
   # ── Security Gate ─────────────────────────────────────────────────────────────
   security-gate:

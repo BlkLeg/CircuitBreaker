@@ -23,9 +23,13 @@ import (
 // reports stale values on reconnect. agentVersion is passed in rather than read here since it's
 // build-time state (main.AgentVersion), not host state.
 //
-// SpoolDepth is left at its zero value: no caller today threads live spool state through to this
-// collector, so reporting anything else would be a guess. Task 20's runtime status file is the
-// intended real source once it exists.
+// SpoolDepth is left at its zero value here by design: the outbound spool is owned by
+// internal/link (Options.Spool), not by host collection, so this collector has no access to it
+// and would only be guessing. internal/link's runOnce stamps the real at-connect depth onto the
+// returned payload immediately after calling Collect (D-12), and reports it live thereafter on
+// every heartbeat (frame.HeartbeatPayload) — the heartbeat, not the hello, is what lets the
+// server see a backlog drain to zero without waiting for a reconnect. Callers other than
+// internal/link get a zero here and should not read it.
 func Collect(agentVersion string) frame.HelloPayload {
 	hostname, _ := os.Hostname()
 	distroID, distroVersion := osRelease()

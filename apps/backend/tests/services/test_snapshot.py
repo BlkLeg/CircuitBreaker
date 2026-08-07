@@ -7,6 +7,7 @@ CB_VAULT_KEY is already set to a valid Fernet key in conftest.pytest_configure.
 import hashlib
 import json
 import os
+import shutil
 import tarfile
 from pathlib import Path
 
@@ -14,6 +15,23 @@ import pytest
 
 from app.db.session import db_url
 from app.services.backup.snapshot import BackupError, build_snapshot
+
+# `build_snapshot` shells out to the real `pg_dump` binary (it dumps the
+# testcontainers Postgres over the wire). The binary ships in the
+# postgresql-client OS package, which is NOT a Python dependency and is not
+# installed by `poetry install` — so on a workstation without it these tests
+# fail with BackupError("[Errno 2] ... 'pg_dump'"), which says nothing about
+# the code under test. Skip rather than xfail: this is a missing tool, not a
+# known-broken behaviour, and an xfail would silently swallow a genuine
+# regression on machines that *do* have pg_dump.
+#
+# Note this only covers the tests that invoke pg_dump for real.
+# `test_build_snapshot_raises_on_pg_dump_failure` monkeypatches
+# `subprocess.run` and therefore still runs everywhere.
+requires_pg_dump = pytest.mark.skipif(
+    shutil.which("pg_dump") is None,
+    reason="pg_dump binary not installed (postgresql-client); required to build a real snapshot",
+)
 
 
 @pytest.fixture()
@@ -26,6 +44,7 @@ def uploads_dir(tmp_path: Path) -> Path:
     return d
 
 
+@requires_pg_dump
 @pytest.mark.asyncio
 async def test_build_snapshot_creates_tarball(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -49,6 +68,7 @@ async def test_build_snapshot_creates_tarball(
     assert oct(path.stat().st_mode & 0o777) == oct(0o600)
 
 
+@requires_pg_dump
 @pytest.mark.asyncio
 async def test_build_snapshot_tarball_contents(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -75,6 +95,7 @@ async def test_build_snapshot_tarball_contents(
     assert any("uploads/icon.png" in n for n in names)
 
 
+@requires_pg_dump
 @pytest.mark.asyncio
 async def test_build_snapshot_vault_key_stored(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -99,6 +120,7 @@ async def test_build_snapshot_vault_key_stored(
         assert content.read().decode().strip() == expected_key
 
 
+@requires_pg_dump
 @pytest.mark.asyncio
 async def test_build_snapshot_manifest_checksum(
     setup_db: None, tmp_path: Path, uploads_dir: Path

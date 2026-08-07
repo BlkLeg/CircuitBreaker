@@ -58,3 +58,15 @@ def test_old_data_downsampled_not_deleted(db_session, factories):
         .count()
     )
     assert agg_count == 48  # 2 days × 24 hours
+
+
+def test_hardware_counters_unchanged(db_session, factories):
+    """The hardware branch keeps its own counter after the agent branch is added."""
+    hw = factories.hardware(name="ret-hw-3", ip_address="10.9.9.3")
+    _seed_dense(db_session, hw.id, days_ago_start=12, days_ago_end=10)
+
+    result = run_retention_executor(db_session, hot_days=7, warm_days=30)
+
+    assert result["hardware_downsampled"] == 48
+    assert result["downsampled"] == 48
+    assert result["hardware_deleted"] == 0

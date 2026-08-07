@@ -4,18 +4,35 @@ from __future__ import annotations
 
 from datetime import timedelta
 from statistics import mean
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import extract, func, select
+from sqlalchemy.dialects import postgresql
 
 from app.core.time import utcnow
 from app.db.models import AgentHostSample, AgentHostSampleHourly, AppSettings, HardwareLiveMetric
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.orm import Session
 
 _DEFAULT_HOT_DAYS = 7
 _DEFAULT_WARM_DAYS = 30
+_BUCKET_SECONDS = 3600
+
+# The eight series `GET /agents/{id}/history` emits, in the order it emits them.
+# Any field added here must also be added to the history projection, and vice
+# versa, or a 7 d/30 d point will carry a `None` series.
+_AGENT_SUMMARY_FIELDS = (
+    "cpu_pct",
+    "mem_pct",
+    "root_disk_pct",
+    "net_rx_bps",
+    "net_tx_bps",
+    "max_temp_c",
+    "load_1",
+    "uptime_s",
+)
 
 
 def _avg(vals: list[float | None]) -> float | None:
@@ -28,15 +45,32 @@ def run_retention_executor(
     hot_days: int | None = None,
     warm_days: int | None = None,
 ) -> dict[str, int]:
-    """Run retention/downsampling for HardwareLiveMetric rows.
+    """Run retention/downsampling for hardware **and** agent telemetry.
 
     Hot window  (0 → hot_days ago):     keep all rows as-is.
-    Warm window (hot_days → warm_days): replace raw rows with hourly averages
-                                        (source="hourly_agg").
+    Warm window (hot_days → warm_days): replace raw rows with hourly averages.
     Cold        (beyond warm_days):     delete entirely.
 
+    Two independent branches share the same window arithmetic:
+
+    * ``hardware_live_metrics`` — warm rows are collapsed in place into
+      ``source="hourly_agg"`` rows.
+    * ``agent_host_samples`` — warm rows are collapsed into the portable
+      ``agent_host_sample_hourly`` table by a single set-based upsert, so the
+      7-30 day window behaves identically with and without TimescaleDB jobs.
+      The bucket expression is deliberately ``to_timestamp(floor(...))`` rather
+      than ``time_bucket()``/``date_bin()``: the backend is PostgreSQL-only but
+      TimescaleDB-optional.
+
+    Neither branch commits — the caller (``workers/analytics_worker.py``) owns
+    the transaction.
+
     Reads hot_days/warm_days from AppSettings when not supplied (defaults: 7/30).
-    Returns {"downsampled": N, "deleted": N}.
+    Returns grand totals plus a per-branch breakdown::
+
+        {"downsampled": N, "deleted": N,
+         "hardware_downsampled": N, "hardware_deleted": N,
+         "agent_downsampled": N, "agent_deleted": N, "agent_hourly_deleted": N}
     """
     # Resolve settings
     if hot_days is None or warm_days is None:
@@ -133,46 +167,68 @@ def run_retention_executor(
         .delete(synchronize_session=False)
     )
 
-    # Canonical agent telemetry uses its own portable hourly table so the
-    # 7-30 day window behaves identically with and without TimescaleDB jobs.
-    agent_rows = (
-        db.execute(
-            select(AgentHostSample).where(
-                AgentHostSample.collected_at >= warm_cutoff,
-                AgentHostSample.collected_at < hot_cutoff,
-            )
+    # --- Agent host samples ---------------------------------------------------
+    # Fleet-wide maintenance pass: this is the named exemption to the "filter on
+    # both agent_id and collected_at" rule — the aggregate groups *by* agent_id
+    # across every agent and both DELETEs are fleet-wide by design. All three
+    # statements still carry a collected_at/bucket_at predicate, so hypertable
+    # chunk exclusion applies.
+    bucket_at = func.to_timestamp(
+        func.floor(extract("epoch", AgentHostSample.collected_at) / _BUCKET_SECONDS)
+        * _BUCKET_SECONDS
+    )
+    agg_select = (
+        select(
+            AgentHostSample.agent_id,
+            bucket_at,
+            func.count(),
+            func.jsonb_build_object(
+                *[
+                    part
+                    for name in _AGENT_SUMMARY_FIELDS
+                    for part in (name, func.avg(getattr(AgentHostSample, name)))
+                ]
+            ),
         )
-        .scalars()
-        .all()
+        .where(
+            AgentHostSample.collected_at >= warm_cutoff,
+            AgentHostSample.collected_at < hot_cutoff,
+        )
+        .group_by(AgentHostSample.agent_id, bucket_at)
     )
-    agent_buckets: dict[tuple[int, object], list[AgentHostSample]] = {}
-    for sample in agent_rows:
-        bucket = sample.collected_at.replace(minute=0, second=0, microsecond=0)
-        agent_buckets.setdefault((sample.agent_id, bucket), []).append(sample)
-    for (agent_id, bucket_ts), rows in agent_buckets.items():
-        summary = {
-            name: _avg([getattr(row, name) for row in rows])
-            for name in (
-                "cpu_pct",
-                "mem_pct",
-                "root_disk_pct",
-                "net_rx_bps",
-                "net_tx_bps",
-                "max_temp_c",
-                "load_1",
-            )
-        }
-        hourly = db.get(AgentHostSampleHourly, (agent_id, bucket_ts))
-        if hourly is None:
-            hourly = AgentHostSampleHourly(agent_id=agent_id, bucket_at=bucket_ts)
-            db.add(hourly)
-        hourly.sample_count = len(rows)
-        hourly.summary = summary
-    db.query(AgentHostSample).filter(AgentHostSample.collected_at < hot_cutoff).delete(
-        synchronize_session=False
+    upsert = postgresql.insert(AgentHostSampleHourly).from_select(
+        ["agent_id", "bucket_at", "sample_count", "summary"], agg_select
     )
-    db.query(AgentHostSampleHourly).filter(AgentHostSampleHourly.bucket_at < warm_cutoff).delete(
-        synchronize_session=False
+    upsert = upsert.on_conflict_do_update(
+        index_elements=["agent_id", "bucket_at"],
+        set_={
+            "sample_count": upsert.excluded.sample_count,
+            "summary": upsert.excluded.summary,
+        },
+    )
+    agent_downsampled = cast("CursorResult[Any]", db.execute(upsert)).rowcount
+
+    # Aggregate first, then purge: everything below hot_cutoff goes, which
+    # includes rows older than warm_cutoff that the aggregate deliberately
+    # skipped — they are already cold and have no hourly bucket to feed.
+    # Kept as a portable bulk DELETE; drop_chunks() is Timescale-only.
+    agent_deleted = (
+        db.query(AgentHostSample)
+        .filter(AgentHostSample.collected_at < hot_cutoff)
+        .delete(synchronize_session=False)
+    )
+    agent_hourly_deleted = (
+        db.query(AgentHostSampleHourly)
+        .filter(AgentHostSampleHourly.bucket_at < warm_cutoff)
+        .delete(synchronize_session=False)
     )
 
-    return {"downsampled": downsampled, "deleted": deleted}
+    return {
+        "downsampled": downsampled + agent_downsampled,
+        "deleted": deleted + agent_deleted + agent_hourly_deleted,
+        "hardware_downsampled": downsampled,
+        "hardware_deleted": deleted,
+        "agent_downsampled": agent_downsampled,
+        "agent_deleted": agent_deleted,
+        "agent_hourly_deleted": agent_hourly_deleted,
+    }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -41,6 +42,22 @@ var AgentVersion = "0.0.0-dev"
 // a const, so tests can shrink it rather than waiting out the production
 // value — mirrors internal/link's stabilityWindow/rekeyInterval pattern.
 var rollbackWindow = 2 * time.Minute
+
+// readinessReportInterval is the floor between two capability.readiness
+// frames: unless a report is forced (its content changed, or a fresh link came
+// up), queueReadiness drops it. reconcileTickInterval is how often the daemon
+// re-offers the current report to that floor, so the server hears from an
+// agent at least once every readiness interval *even when host_telemetry is
+// disabled and no collection ever runs* — the slice-2 contract's "every 15
+// minutes as reconciliation", which used to be a side effect of a successful
+// collection and therefore stopped exactly when it mattered most.
+//
+// Vars, not consts, so tests can shrink them rather than waiting out the
+// production values — same pattern as rollbackWindow above.
+var (
+	readinessReportInterval = 15 * time.Minute
+	reconcileTickInterval   = time.Minute
+)
 
 // reExecDelayEnvOverride is a narrowly-scoped, test-only escape hatch,
 // mirroring internal/link's rekeyIntervalEnvOverride: if set to a positive
@@ -193,101 +210,18 @@ func runDaemon() {
 		os.Exit(1)
 	}
 
-	capGate := capability.New(config.StateDir())
-	if err := capGate.LoadCached(); err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	dataFrames := make(chan frame.Frame, 8)
-	controlFrames := make(chan frame.Frame, 8)
-	var statusWriter *status.Writer
-	var readinessMu sync.Mutex
-	var readinessPayload json.RawMessage
-	var readinessSentAt time.Time
-	queueReadiness := func(force bool) {
-		readinessMu.Lock()
-		defer readinessMu.Unlock()
-		if len(readinessPayload) == 0 || (!force && time.Since(readinessSentAt) < 15*time.Minute) {
-			return
-		}
-		select {
-		case controlFrames <- frame.Frame{Type: frame.TypeCapabilityReadiness, TS: time.Now().UTC(), Payload: append(json.RawMessage(nil), readinessPayload...)}:
-			readinessSentAt = time.Now()
-		default:
-		}
-	}
-	var collectorMu sync.Mutex
-	var hostRunner *collect.Runner
-	applyHostConfig := func() {
-		collectorMu.Lock()
-		defer collectorMu.Unlock()
-		if hostRunner != nil {
-			hostRunner.Stop()
-			hostRunner = nil
-		}
-		cfg, enabled := capGate.HostConfig()
-		if !enabled {
-			return
-		}
-		hostRunner = collect.NewRunner(hostcollect.New(cfg), dataFrames)
-		hostRunner.OnReadiness = func(readiness []frame.Readiness) {
-			if statusWriter != nil {
-				if err := statusWriter.SetReadiness(readiness); err != nil {
-					log.Printf("cb-agent: status: %v", err)
-				}
-			}
-			payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: readiness})
-			if err != nil {
-				return
-			}
-			readinessMu.Lock()
-			changed := !bytes.Equal(readinessPayload, payload)
-			readinessPayload = append(readinessPayload[:0], payload...)
-			readinessMu.Unlock()
-			queueReadiness(changed)
-		}
-		hostRunner.Reset(ctx, time.Duration(cfg.IntervalS)*time.Second)
-	}
-	applyHostConfig()
 
-	// statusWriter is the source `cb-agent status` reads from — see
-	// internal/status. It starts from whatever the capability gate already
-	// has cached (a restart while disconnected shouldn't make status forget
-	// the last-known grants) and the readiness this host can report before
-	// any link attempt (readiness has no network dependency — see
-	// hostinfo.Collect).
-	statusWriter = status.NewWriter(config.StateDir(), AgentVersion, key.FingerprintGrouped())
-	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
-		log.Printf("cb-agent: status: %v", err)
-	}
-	if err := statusWriter.SetReadiness(hostinfo.Collect(AgentVersion).Readiness); err != nil {
-		log.Printf("cb-agent: status: %v", err)
-	}
-
-	// Audit the dedicated-user file-permission model (specs/2026-07-26-cb-
-	// agent-design.md §4.1) before touching anything else in the state
-	// directory: identity (device.key), cached grant (grants.json), and
-	// runtime status (status.json) must all be owned by the user this
-	// process is actually running as, and mode 0600. Ownership drift aborts
-	// startup outright (see auditStateDir's doc comment); mode drift is
-	// corrected in place.
-	if err := auditStateDir(config.StateDir(), os.Geteuid(), os.Getegid()); err != nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
-		os.Exit(1)
-	}
-
-	// sp is the outbound *data* frame spool (internal/spool) — never
-	// heartbeat/control traffic, see frame.IsDataFrame. Opening it here, at
-	// daemon startup and before the link ever connects, is what makes an
-	// unclean shutdown's persisted backlog recover (spool.Open's load()) and
-	// become visible in `cb-agent status` before this run's first connection
-	// attempt even completes.
-	sp, err := openSpool(cfg, config.StateDir(), statusWriter)
+	rt, err := startDaemonState(cfg, key, AgentVersion, ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
+	statusWriter, sp := rt.statusWriter, rt.sp
+	dataFrames, controlFrames := rt.dataFrames, rt.controlFrames
+	queueReadiness := rt.queueReadiness
+	onCapabilitiesSet := rt.onCapabilitiesSet
 
 	currentLink := update.CurrentLinkPath(config.StateDir())
 
@@ -330,6 +264,12 @@ func runDaemon() {
 		if err := statusWriter.SetAccepted(); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
+		// Order matters: the link is up before the forced report, otherwise
+		// queueReadiness drops it as unlinked. This is the one forced send
+		// per connection — it delivers whatever state changed during the
+		// outage, and it stamps the rate-limit budget, so the reconciliation
+		// ticker cannot immediately double-send behind it.
+		rt.linked.Store(true)
 		queueReadiness(true)
 	}
 
@@ -340,20 +280,12 @@ func runDaemon() {
 	}
 
 	onDisconnected := func(cause error) {
+		// Stop spending the readiness budget on frames runOnce would discard;
+		// the next OnConnected re-arms the send with the newest payload.
+		rt.linked.Store(false)
 		if err := statusWriter.SetDisconnected(cause); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
-	}
-
-	onCapabilitiesSet := func(payload json.RawMessage) error {
-		if err := capGate.ApplyGrants(payload); err != nil {
-			return err
-		}
-		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
-			log.Printf("cb-agent: status: %v", err)
-		}
-		applyHostConfig()
-		return nil
 	}
 
 	onUpdate := func(payload json.RawMessage, send link.SendUpdateStatus) error {
@@ -467,6 +399,324 @@ func runDaemon() {
 	}
 }
 
+// daemonRuntime is everything startDaemonState builds and runDaemon needs
+// afterwards: the capability gate, the runtime status writer, the outbound
+// data-frame spool, the two frame channels link.Run drains, and the two
+// closures (queueReadiness, publishReadiness, applyHostConfig) that the
+// link's callbacks fire, and the linked flag those callbacks flip.
+// Bundling them in a struct is what lets the startup sequence be exercised by
+// a test without executing the full daemon (link.Run, signal handling, the
+// update-rollback watcher).
+type daemonRuntime struct {
+	capGate       *capability.Gate
+	statusWriter  *status.Writer
+	sp            *spool.Spool
+	dataFrames    chan frame.Frame
+	controlFrames chan frame.Frame
+
+	// linked mirrors the link's connected state. runOnce discards control
+	// frames until the connection is established (internal/link), so
+	// queueReadiness consults it before spending the readiness budget on a
+	// frame that would be thrown away. runDaemon's OnConnected/OnDisconnected
+	// own the writes.
+	linked *atomic.Bool
+
+	queueReadiness   func(force bool)
+	publishReadiness func(items []frame.Readiness)
+	applyHostConfig  func()
+
+	// onCapabilitiesSet is the capabilities.set handler internal/link fires.
+	// It lives here rather than in runDaemon because it is the thing that
+	// turns a server grant payload into installed state plus the readiness
+	// rows that report what could not be honored (D-6), and that is startup
+	// state, not link plumbing.
+	onCapabilitiesSet func(payload json.RawMessage) error
+}
+
+// newHostCollector constructs the host-telemetry collector applyHostConfig
+// installs. It is a var rather than a direct call purely as a test seam —
+// startDaemonState's defining property is that it starts the collector
+// goroutine, and no test may read the real /proc or /sys. Production never
+// reassigns it. (Same pattern as rollbackWindow above.)
+var newHostCollector = func(cfg capability.HostConfig) collect.Collector {
+	return hostcollect.New(cfg)
+}
+
+// startDaemonState performs the daemon's startup sequence in the one order
+// that is actually safe, and hands runDaemon back everything that sequence
+// produced. The order is load-bearing, top to bottom:
+//
+//  1. auditStateDir — before any daemon-loop state write (see its doc
+//     comment). Nothing below may run against a state directory this process
+//     does not own.
+//  2. the capability gate, restored from its cached grant, so step 5 knows
+//     whether host telemetry is granted at all.
+//  3. the status writer, fully constructed and seeded with the cached grants
+//     and the startup identity readiness, *before* step 5 captures it. This
+//     is what removes the data race: the collector goroutine step 6 starts
+//     reads statusWriter, and a nil-then-assign ordering made that read
+//     unsynchronized (and silently swallowed the first readiness report).
+//  4. the spool — spool.Open's unclean-shutdown recovery must be reflected in
+//     status.json before the first connection attempt.
+//  5. the readiness/collector closures, which capture 2, 3 and 4.
+//  6. the readiness reconciliation ticker, which only offers the report
+//     built by 5 to the link.
+//  7. applyHostConfig() last, because it is the step that starts the
+//     collector goroutine, whose very first collection fires immediately.
+//
+// ctx is the daemon's lifetime context; the collector goroutine is a child of
+// it, so canceling ctx stops collection.
+func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion string, ctx context.Context) (*daemonRuntime, error) {
+	// (1) Audit the dedicated-user file-permission model
+	// (specs/2026-07-26-cb-agent-design.md §4.1) before this daemon writes
+	// any state: identity (device.key), cached grant (grants.json), and
+	// runtime status (status.json) must all be owned by the user this
+	// process is actually running as, and mode 0600. Ownership drift aborts
+	// startup outright (see auditStateDir's doc comment); mode drift is
+	// corrected in place.
+	if err := auditStateDir(config.StateDir(), os.Geteuid(), os.Getegid()); err != nil {
+		return nil, err
+	}
+
+	// (2) The capability gate, restored from its on-disk cache — a restart
+	// while disconnected must not make the agent forget its last-known
+	// grants. A corrupt or unreadable cache is logged and treated as "no
+	// grants", never as a startup failure.
+	capGate := capability.New(config.StateDir())
+	// Faults isolate per capability (D-6): one unreadable cached grant no
+	// longer costs the agent every capability it had. They are held here and
+	// published once publishReadiness exists, so the daemon re-reports them
+	// on its first connection instead of swallowing them.
+	cachedGrantFaults, err := capGate.LoadCached()
+	if err != nil {
+		log.Printf("cb-agent: %v", err)
+	}
+
+	// (3) statusWriter is the source `cb-agent status` reads from — see
+	// internal/status. It is constructed here, before anything captures it,
+	// and seeded with the cached grants and the readiness this host can
+	// report before any link attempt (readiness has no network dependency —
+	// see hostinfo.Collect). MergeReadiness, not a whole-slice replacement,
+	// so the collector's own host.* rows and this identity row coexist.
+	identityReadiness := hostinfo.Collect(agentVersion).Readiness
+	statusWriter := status.NewWriter(config.StateDir(), agentVersion, key.FingerprintGrouped())
+	if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+	if err := statusWriter.MergeReadiness(identityReadiness); err != nil {
+		log.Printf("cb-agent: status: %v", err)
+	}
+
+	// (4) sp is the outbound *data* frame spool (internal/spool) — never
+	// heartbeat/control traffic, see frame.IsDataFrame. Opening it here, at
+	// daemon startup and before the link ever connects, is what makes an
+	// unclean shutdown's persisted backlog recover (spool.Open's load()) and
+	// become visible in `cb-agent status` before this run's first connection
+	// attempt even completes.
+	sp, err := openSpool(cfg, config.StateDir(), statusWriter)
+	if err != nil {
+		return nil, err
+	}
+
+	// (5) The closures. readinessState is the daemon's single source of
+	// truth for collector readiness: publishReadiness upserts into it and is
+	// the *only* producer of readinessPayload, so the collector, the
+	// capability-disable path and any future collector all report through
+	// one sink and every frame carries the full merged set. It is seeded
+	// with the startup identity report because the backend never persists
+	// hello.readiness — capability.readiness is the only ingest path, so an
+	// entry that travels only in hello never reaches the server at all.
+	// queueReadiness rate-limits those frames to one per
+	// readinessReportInterval unless forced (a changed report, or a fresh
+	// connection); applyHostConfig (re)installs the host collector to match
+	// the gate's current grant.
+	dataFrames := make(chan frame.Frame, 8)
+	controlFrames := make(chan frame.Frame, 8)
+	var linked atomic.Bool
+	var readinessMu sync.Mutex
+	readinessState := make(map[string]frame.Readiness, len(identityReadiness)+len(hostcollect.CollectorNames))
+	for _, r := range identityReadiness {
+		readinessState[r.Collector] = r
+	}
+	var readinessPayload json.RawMessage
+	var readinessSentAt time.Time
+	queueReadiness := func(force bool) {
+		// Unlinked: runOnce drops control frames until the connection is
+		// established (internal/link), so sending here would consume the
+		// rate-limit budget for a frame nobody receives — and leave the
+		// agent readiness-dark for up to readinessReportInterval after it
+		// reconnects. Returning *without* stamping readinessSentAt is the
+		// point; OnConnected's queueReadiness(true) re-arms the send.
+		if !linked.Load() {
+			return
+		}
+		readinessMu.Lock()
+		defer readinessMu.Unlock()
+		if len(readinessPayload) == 0 || (!force && time.Since(readinessSentAt) < readinessReportInterval) {
+			return
+		}
+		select {
+		case controlFrames <- frame.Frame{Type: frame.TypeCapabilityReadiness, TS: time.Now().UTC(), Payload: append(json.RawMessage(nil), readinessPayload...)}:
+			readinessSentAt = time.Now()
+		default:
+		}
+	}
+	publishReadiness := func(items []frame.Readiness) {
+		readinessMu.Lock()
+		for _, r := range items {
+			readinessState[r.Collector] = r
+		}
+		merged := make([]frame.Readiness, 0, len(readinessState))
+		for _, r := range readinessState {
+			merged = append(merged, r)
+		}
+		sort.Slice(merged, func(i, j int) bool { return merged[i].Collector < merged[j].Collector })
+		// No nil guard on statusWriter: it is assigned above, before this
+		// closure can exist, and the compiler enforces that via :=.
+		if err := statusWriter.MergeReadiness(merged); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: merged})
+		if err != nil {
+			readinessMu.Unlock()
+			return
+		}
+		changed := !bytes.Equal(readinessPayload, payload)
+		readinessPayload = payload
+		readinessMu.Unlock()
+		queueReadiness(changed)
+	}
+	var collectorMu sync.Mutex
+	var hostRunner *collect.Runner
+	applyHostConfig := func() {
+		collectorMu.Lock()
+		defer collectorMu.Unlock()
+		if hostRunner != nil {
+			hostRunner.Stop()
+			hostRunner = nil
+		}
+		hostCfg, enabled := capGate.HostConfig()
+		if !enabled {
+			// The grant is gone, so nothing will ever report these
+			// collectors again — and ingest_readiness only upserts, it never
+			// deletes. Actively overwriting every host collector with
+			// "disabled" is therefore the only way the server's rows stop
+			// saying "Live" (D-4). Driving it off hostcollect.CollectorNames
+			// rather than a local list is what keeps a newly added probe
+			// from being left behind at a stale state.
+			items := make([]frame.Readiness, 0, len(hostcollect.CollectorNames))
+			for _, name := range hostcollect.CollectorNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// Re-enabling needs no symmetric "enabling" report: the runner's very
+		// first collection fires immediately (internal/collect's Runner.run)
+		// and hostcollect.Collect populates readiness for every name in
+		// CollectorNames on every run, error or not — so the disabled rows
+		// above are overwritten by that first report. That coupling is the
+		// reason neither list may drift from the other.
+		hostRunner = collect.NewRunner(newHostCollector(hostCfg), dataFrames)
+		hostRunner.OnReadiness = publishReadiness
+		hostRunner.Reset(ctx, time.Duration(hostCfg.IntervalS)*time.Second)
+	}
+
+	// onCapabilitiesSet installs a server grant payload. Per-capability faults
+	// are not frame failures — returning nil for a fault-only outcome is what
+	// stops internal/link's runOnce from logging the whole capabilities.set as
+	// failed — they are reported as capability.<name> = degraded through the
+	// same publishReadiness sink every collector uses. Only a payload that is
+	// not a grant map at all is an error, and that leaves the gate untouched.
+	onCapabilitiesSet := func(payload json.RawMessage) error {
+		faults, err := capGate.ApplyGrants(payload)
+		if err != nil {
+			return err
+		}
+		if err := statusWriter.SetGrants(capGate.Grants()); err != nil {
+			log.Printf("cb-agent: status: %v", err)
+		}
+		publishReadiness(capabilityReadiness(capGate.Snapshot(), faults))
+		applyHostConfig()
+		return nil
+	}
+
+	// The cached grant's faults, now that there is somewhere to report them.
+	// Publishing "ready" for the capabilities that loaded cleanly is what lets
+	// a corrected config clear a previously degraded row.
+	publishReadiness(capabilityReadiness(capGate.Snapshot(), cachedGrantFaults))
+
+	// (6) Reconciliation. The 15-minute floor in queueReadiness needs
+	// something to push against: without this ticker the only caller is a
+	// successful collection, so a disabled or persistently failing collector
+	// silently stops reporting altogether — precisely the state the server
+	// most needs to hear about. It queues rather than sends: queueReadiness
+	// is the single funnel, and controlFrames is drained by the one
+	// websocket writer in internal/link's runOnce select loop.
+	go func() {
+		ticker := time.NewTicker(reconcileTickInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				queueReadiness(false)
+			}
+		}
+	}()
+
+	// (7) Last: this starts the collector goroutine, and its first
+	// collection fires immediately (internal/collect's Runner.run).
+	applyHostConfig()
+
+	return &daemonRuntime{
+		capGate:           capGate,
+		statusWriter:      statusWriter,
+		sp:                sp,
+		dataFrames:        dataFrames,
+		controlFrames:     controlFrames,
+		linked:            &linked,
+		queueReadiness:    queueReadiness,
+		publishReadiness:  publishReadiness,
+		applyHostConfig:   applyHostConfig,
+		onCapabilitiesSet: onCapabilitiesSet,
+	}, nil
+}
+
+// capabilityFaultRemediation is the operator-facing instruction attached to
+// every capability.<name> = degraded readiness row.
+const capabilityFaultRemediation = "correct this capability's configuration in Agent Detail"
+
+// capabilityReadiness turns an installed grant snapshot plus the faults it was
+// installed with into one readiness row per capability: degraded (with the
+// reason) for a capability whose configuration could not be honored as sent,
+// ready for every capability that applied cleanly. Reporting the clean ones too
+// is what makes a corrected configuration clear its own degraded row —
+// ingest_readiness only ever upserts, so a row the UI should stop showing must
+// be actively overwritten.
+func capabilityReadiness(snapshot capability.Snapshot, faults []capability.GrantFault) []frame.Readiness {
+	reasons := make(map[string]string, len(faults))
+	for _, f := range faults {
+		reasons[f.Capability] = f.Reason
+	}
+	items := make([]frame.Readiness, 0, len(snapshot))
+	for name := range snapshot {
+		if reason, ok := reasons[name]; ok {
+			items = append(items, frame.Readiness{
+				Collector:   "capability." + name,
+				State:       "degraded",
+				Reason:      reason,
+				Remediation: capabilityFaultRemediation,
+			})
+			continue
+		}
+		items = append(items, frame.Readiness{Collector: "capability." + name, State: "ready"})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Collector < items[j].Collector })
+	return items
+}
+
 // openSpool opens the outbound data-frame spool at stateDir, defaulting its
 // capacity to spool.DefaultCapBytes when cfg leaves SpoolCapBytes at its
 // zero value (no spool_cap_bytes configured in agent.toml), and reports the
@@ -505,6 +755,16 @@ var sensitiveStateFiles = []string{"device.key", "grants.json", "status.json"}
 // (specs/2026-07-26-cb-agent-design.md §4.1: a dedicated `cb-agent` user,
 // device.key "mode 0600, owned by `cb-agent`") at every daemon startup, not
 // only at the moment each file happens to be created.
+//
+// ORDERING INVARIANT: this must run before every daemon-loop state write —
+// grants.json (internal/capability), status.json (internal/status), and
+// spool/queue.jsonl (internal/spool). It is deliberately step (1) of
+// startDaemonState for exactly that reason; do not move it later. It is *not*
+// "before anything at all touches the state directory": device.key is written
+// earlier still, by enroll.LoadOrCreateDeviceKey and enroll.Run in runDaemon,
+// and that is fine — identity has to exist before there is a daemon to audit
+// for. The narrow, real invariant is the one this comment states, and
+// TestStartDaemonState_AuditRunsBeforeAnyStateWrite pins it.
 //
 // Ownership drift on stateDir itself or on any of sensitiveStateFiles fails
 // loudly: it returns a non-nil error, which runDaemon turns into a startup

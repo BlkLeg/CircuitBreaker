@@ -14,8 +14,9 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, cast
 
 from sqlalchemy import func, or_, select
@@ -25,49 +26,27 @@ from app.core import agent_crypto
 from app.core.time import utcnow
 from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, Hardware
 from app.schemas.agent_frame import TYPE_KEY_ROTATE, HelloPayload
+from app.services.agent_capabilities import (
+    CAPABILITY_DEFINITIONS,
+    default_config_for,
+    normalize_grant,
+)
 
 _logger = logging.getLogger(__name__)
 
-DEFAULT_CAPABILITY_GRANTS: dict[str, bool] = {
-    "host_telemetry": True,
-    "remote_probe": False,
-    "local_discovery": False,
-}
-HOST_TELEMETRY_DEFAULT_CONFIG: dict[str, Any] = {
-    "interval_s": 30,
-    "include_filesystems": True,
-    "include_disks": True,
-    "include_network": True,
-    "include_temperatures": True,
-    "include_virtual": False,
-    "include_docker": False,
-}
-
-
-def _grant_parts(value: Any) -> tuple[bool, dict[str, Any]]:
-    if isinstance(value, bool):
-        return value, {}
-    if hasattr(value, "model_dump"):
-        value = value.model_dump()
-    if not isinstance(value, dict) or not isinstance(value.get("enabled"), bool):
-        raise ValueError("capability grant must be a boolean or {enabled, config} object")
-    config = value.get("config") or {}
-    if not isinstance(config, dict):
-        raise ValueError("capability grant config must be an object")
-    return value["enabled"], config
-
-
-def _normalize_host_config(config: dict[str, Any]) -> dict[str, Any]:
-    unknown = set(config) - set(HOST_TELEMETRY_DEFAULT_CONFIG)
-    if unknown:
-        raise ValueError(f"unknown host telemetry settings: {', '.join(sorted(unknown))}")
-    normalized = HOST_TELEMETRY_DEFAULT_CONFIG | config
-    interval = normalized["interval_s"]
-    if isinstance(interval, bool) or not isinstance(interval, int) or not 10 <= interval <= 900:
-        raise ValueError("host telemetry interval must be between 10 and 900 seconds")
-    if any(not isinstance(normalized[name], bool) for name in normalized if name != "interval_s"):
-        raise ValueError("host telemetry include settings must be booleans")
-    return normalized
+# Derived, read-only views of the one capability registry
+# (`app.services.agent_capabilities`, Task 14 / D-14) — kept only so existing
+# importers keep working. They are snapshots taken at import time: anything
+# that must honor a monkeypatched or future registry reads
+# `CAPABILITY_DEFINITIONS` / `normalize_grant` / `default_config_for` directly,
+# as `approve_agent`, `set_capability_grants` and `structured_grants_dict`
+# below all do. Do not mutate them and do not add a fourth copy of either.
+DEFAULT_CAPABILITY_GRANTS: Mapping[str, bool] = MappingProxyType(
+    {name: definition.default_enabled for name, definition in CAPABILITY_DEFINITIONS.items()}
+)
+HOST_TELEMETRY_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
+    dict(CAPABILITY_DEFINITIONS["host_telemetry"].default_config)
+)
 
 
 # Task 21: cap on agents simultaneously awaiting approval. An anonymous
@@ -285,6 +264,47 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
             agent.pending_update_version = None
     if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
+    if "spool_depth" in fields_set:
+        # The at-connect backlog snapshot (D-12). `hello` has no
+        # `spool_bytes` field, so the size is genuinely unknown here — None,
+        # not 0 — and the heartbeat that follows within 20s fills it in.
+        record_spool_stats(agent, payload.spool_depth, None)
+
+
+def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) -> bool:
+    """Record the agent's reported outbound-spool backlog, returning whether
+    anything actually changed.
+
+    `depth` is the number of frames still buffered; `size_bytes` is their
+    on-disk size, or None when the reporting frame doesn't carry one (`hello`
+    reports depth only — see `update_hello_metadata`), in which case the
+    stored byte count is left untouched rather than blanked.
+
+    The no-op return is load-bearing, not an optimization detail. Heartbeats
+    arrive every 20 seconds per connected agent and the steady state is
+    "depth 0, unchanged", so writing unconditionally would issue one row
+    UPDATE per agent per 20s forever — a fleet-wide write storm carrying no
+    new information. `spool_reported_at` is therefore "when the reported
+    backlog last *changed*", not "when an agent last mentioned its spool";
+    liveness already has `last_seen_at` and Redis presence.
+
+    Callers gate this on `"spool_depth" in payload.model_fields_set`, never
+    on the value: an agent that predates spool reporting sends an empty
+    heartbeat payload and must leave all three columns NULL ("never
+    reported"), while a current agent with a drained spool sends an explicit
+    0 that must be persisted ("reported, empty") — that write is what clears
+    the Agent Detail catch-up indicator. Caller owns the commit.
+    """
+    changed = agent.spool_depth != depth
+    if size_bytes is not None and agent.spool_bytes != size_bytes:
+        changed = True
+    if not changed:
+        return False
+    agent.spool_depth = depth
+    if size_bytes is not None:
+        agent.spool_bytes = size_bytes
+    agent.spool_reported_at = utcnow()
+    return True
 
 
 def list_agents(db: Session, *, status: str | None = None) -> list[Agent]:
@@ -313,12 +333,16 @@ def approve_agent(
     if hardware_id is not None:
         agent.hardware_id = hardware_id
 
-    grants = dict(DEFAULT_CAPABILITY_GRANTS)
+    # The ONE place `default_enabled` is ever consulted (Global Constraints:
+    # "Upgrades never silently enable a new capability on an already-approved
+    # agent"). Read live off CAPABILITY_DEFINITIONS, not the derived snapshot
+    # above, so the registry stays the single source of truth.
+    grants: dict[str, Any] = {
+        name: definition.default_enabled for name, definition in CAPABILITY_DEFINITIONS.items()
+    }
     grants.update(capability_overrides or {})
     for capability, value in grants.items():
-        enabled, config = _grant_parts(value)
-        if capability == "host_telemetry":
-            config = _normalize_host_config(config)
+        enabled, config = normalize_grant(capability, value)
         db.add(
             AgentCapabilityGrant(
                 agent_id=agent.id,
@@ -675,11 +699,14 @@ def set_capability_grants(
     result = []
     event_detail: dict[str, Any] = {}
     for capability, value in grants.items():
-        enabled, config = _grant_parts(value)
-        if capability == "host_telemetry":
-            current = existing.get(capability)
-            config = _normalize_host_config((current.config if current else {}) | config)
         grant = existing.get(capability)
+        # The existing row's config is the merge base, so a partial update
+        # ({"host_telemetry": {"enabled": true, "config": {"interval_s": 60}}})
+        # keeps every setting it didn't mention instead of resetting it to the
+        # registry default.
+        enabled, config = normalize_grant(
+            capability, value, current_config=dict(grant.config or {}) if grant else None
+        )
         if grant is None:
             grant = AgentCapabilityGrant(agent_id=agent_id, capability=capability)
             db.add(grant)
@@ -718,39 +745,60 @@ def grants_dict(db: Session, agent_id: int) -> dict[str, bool]:
     }
 
 
+def _structured_grant(grant: AgentCapabilityGrant) -> dict[str, Any]:
+    """One grant row -> the canonical `{enabled, config}` wire shape (Task 15,
+    **D-11**).
+
+    Shared by `structured_grants_dict` and `bulk_structured_grants_dict` so
+    `GET /agents/{id}` and `GET /agents/presence` can never project the same
+    row differently.
+
+    The registry lookup goes through `default_config_for`, which is `.get`-based
+    on purpose: `approve_agent` wrote an `AgentCapabilityGrant` row for any
+    string key before Task 14's 422 validator landed, and nothing cleans those
+    rows up, so a single legacy row naming an unregistered capability must
+    render verbatim rather than turn both endpoints into 500s for the whole
+    fleet.
+    """
+    return {
+        "enabled": grant.enabled,
+        "config": default_config_for(grant.capability) | dict(grant.config or {}),
+    }
+
+
 def structured_grants_dict(db: Session, agent_id: int) -> dict[str, dict[str, Any]]:
     """Normalized schema-2 grants, including centrally managed configuration."""
     return {
-        g.capability: {
-            "enabled": g.enabled,
-            "config": (
-                HOST_TELEMETRY_DEFAULT_CONFIG | dict(g.config or {})
-                if g.capability == "host_telemetry"
-                else dict(g.config or {})
-            ),
-        }
+        g.capability: _structured_grant(g)
         for g in db.execute(
             select(AgentCapabilityGrant).where(AgentCapabilityGrant.agent_id == agent_id)
         ).scalars()
     }
 
 
-def bulk_grants_dict(db: Session, agent_ids: list[int]) -> dict[int, dict[str, bool]]:
-    """`grants_dict`, but for many agents in one query.
+def bulk_structured_grants_dict(
+    db: Session, agent_ids: list[int]
+) -> dict[int, dict[str, dict[str, Any]]]:
+    """`structured_grants_dict`, but for many agents in one query.
 
     The bulk presence endpoint (Task 12) needs per-agent capability grants for
     a whole fleet without issuing one `AgentCapabilityGrant` SELECT per agent.
     Every id in `agent_ids` is present in the result (mapped to `{}` if it has
     no grant rows) so callers can index it unconditionally rather than
     special-casing a missing key.
+
+    Emits the same canonical `{enabled, config}` shape as its single-agent
+    twin — never a bare boolean (Task 15, **D-11**). The bool-valued
+    `grants_dict` above stays, but only as the internal enforcement lookup in
+    `services/agent_link.py`; it is not a wire shape.
     """
-    result: dict[int, dict[str, bool]] = {agent_id: {} for agent_id in agent_ids}
+    result: dict[int, dict[str, dict[str, Any]]] = {agent_id: {} for agent_id in agent_ids}
     if not agent_ids:
         return result
     for g in db.execute(
         select(AgentCapabilityGrant).where(AgentCapabilityGrant.agent_id.in_(agent_ids))
     ).scalars():
-        result.setdefault(g.agent_id, {})[g.capability] = g.enabled
+        result.setdefault(g.agent_id, {})[g.capability] = _structured_grant(g)
     return result
 
 

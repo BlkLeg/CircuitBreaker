@@ -188,3 +188,99 @@ class Factories:
         event = AgentEvent(**defaults)
         self.session.add(event)
         return event
+
+    # ── Agent telemetry ───────────────────────────────────────────────────────
+
+    def agent_host_sample(self, agent, hardware=None, **kwargs):
+        """One `agent_host_samples` row.
+
+        `hardware` (or an explicit `hardware_id=`) overrides the agent's own
+        link; omitting both mirrors production, where `ingest_host_sample`
+        stamps `agent.hardware_id`. `sample_id` defaults to a fresh 32-char
+        lowercase hex string so repeated calls never collide on
+        `uq_agent_host_sample` (agent_id, sample_id, collected_at).
+        """
+        import secrets
+
+        from app.core.time import utcnow
+        from app.db.models import AgentHostSample
+
+        defaults = {
+            "agent_id": agent.id,
+            "hardware_id": hardware.id if hardware is not None else agent.hardware_id,
+            "sample_id": secrets.token_hex(16),
+            "collected_at": utcnow(),
+            "status": "healthy",
+        }
+        defaults.update(kwargs)
+        defaults.setdefault(
+            "raw",
+            {
+                "schema": 1,
+                "sample_id": defaults["sample_id"],
+                "status": defaults["status"],
+                "summary": {},
+            },
+        )
+        row = AgentHostSample(**defaults)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def agent_capability_readiness(
+        self,
+        agent,
+        collector: str = "host.core",
+        state: str = "ready",
+        **kwargs,
+    ):
+        """One `agent_capability_readiness` row — the composite PK is
+        (agent_id, collector), so vary `collector` for multiple rows."""
+        from app.core.time import utcnow
+        from app.db.models import AgentCapabilityReadiness
+
+        defaults = {
+            "agent_id": agent.id,
+            "collector": collector,
+            "state": state,
+            "reason": None,
+            "remediation": None,
+            "missing": [],
+            "updated_at": utcnow(),
+        }
+        defaults.update(kwargs)
+        row = AgentCapabilityReadiness(**defaults)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def agent_host_sample_hourly(self, agent, bucket_at, sample_count: int = 1, summary=None):
+        """One `agent_host_sample_hourly` rollup row (PK: agent_id, bucket_at)."""
+        from app.db.models import AgentHostSampleHourly
+
+        row = AgentHostSampleHourly(
+            agent_id=agent.id,
+            bucket_at=bucket_at,
+            sample_count=sample_count,
+            summary=summary if summary is not None else {},
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def hardware_live_metric(self, hardware, **kwargs):
+        """One `hardware_live_metrics` row — the agent projection target."""
+        from app.core.time import utcnow
+        from app.db.models import HardwareLiveMetric
+
+        defaults = {
+            "hardware_id": hardware.id,
+            "collected_at": utcnow(),
+            "status": "healthy",
+            "source": "agent",
+        }
+        defaults.update(kwargs)
+        row = HardwareLiveMetric(**defaults)
+        self.session.add(row)
+        self.session.flush()
+        return row

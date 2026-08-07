@@ -3,40 +3,52 @@ import { render, screen, waitFor, fireEvent, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import AgentsPage from '../pages/AgentsPage';
 
-vi.mock('../api/agents', () => ({
-  listAgents: vi.fn(() =>
-    Promise.resolve({
-      data: [
-        {
-          id: 1,
-          status: 'pending',
-          hostname: 'box1',
-          fingerprint: 'a'.repeat(32),
-          os: 'linux',
-          arch: 'amd64',
-        },
-        {
-          id: 2,
-          status: 'active',
-          hostname: 'box2',
-          fingerprint: 'b'.repeat(32),
-          os: 'linux',
-          arch: 'amd64',
-          agent_version: '0.1.0',
-        },
-      ],
-    })
-  ),
-  getAgentsPresence: vi.fn(() => Promise.resolve({ data: [] })),
-  getInstallCommand: vi.fn(() =>
-    Promise.resolve({ data: { tls_mode: 'self_signed', command: 'curl ...', script_sha256: 'x' } })
-  ),
-  lookupPairingCode: vi.fn(),
-  revokeAgent: vi.fn(),
-  deleteAgent: vi.fn(),
-  getAgent: vi.fn(),
-  approveAgent: vi.fn(),
-}));
+vi.mock('../api/agents', async () => {
+  const actual = await vi.importActual('../api/agents');
+  return {
+    listAgents: vi.fn(() =>
+      Promise.resolve({
+        data: [
+          {
+            id: 1,
+            status: 'pending',
+            hostname: 'box1',
+            fingerprint: 'a'.repeat(32),
+            os: 'linux',
+            arch: 'amd64',
+          },
+          {
+            id: 2,
+            status: 'active',
+            hostname: 'box2',
+            fingerprint: 'b'.repeat(32),
+            os: 'linux',
+            arch: 'amd64',
+            agent_version: '0.1.0',
+          },
+        ],
+      })
+    ),
+    getAgentsPresence: vi.fn(() => Promise.resolve({ data: [] })),
+    getInstallCommand: vi.fn(() =>
+      Promise.resolve({
+        data: { tls_mode: 'self_signed', command: 'curl ...', script_sha256: 'x' },
+      })
+    ),
+    lookupPairingCode: vi.fn(),
+    revokeAgent: vi.fn(),
+    deleteAgent: vi.fn(),
+    getAgent: vi.fn(),
+    approveAgent: vi.fn(),
+    // The REAL implementation, pulled through importActual rather than
+    // re-implemented here: Task 15 makes every REST response emit
+    // {enabled, config}, and normalizeCapability is what keeps AgentsPage from
+    // reading an always-truthy grant object as "granted". A hand-written copy
+    // would keep passing after the real normalizer's semantics changed, which
+    // is precisely the drift this test exists to catch.
+    normalizeCapability: actual.normalizeCapability,
+  };
+});
 
 // Vitest requires vi.hoisted() for values referenced from inside a vi.mock
 // factory. useAgentLive is backed by a plain vi.fn() so each test can drive
@@ -77,7 +89,11 @@ describe('AgentsPage', () => {
           online: true,
           connected_since: '2026-08-04T10:00:00Z',
           last_seen_at: '2026-08-04T10:05:00Z',
-          capabilities: { host_telemetry: true, remote_probe: false, local_discovery: false },
+          capabilities: {
+            host_telemetry: { enabled: true, config: { interval_s: 30 } },
+            remote_probe: { enabled: false, config: {} },
+            local_discovery: { enabled: false, config: {} },
+          },
           hardware: {
             id: 9,
             name: 'rack-a-switch',
@@ -101,6 +117,9 @@ describe('AgentsPage', () => {
     // both.
     const table = screen.getByRole('table');
     expect(within(table).getByText('Host telemetry')).toBeInTheDocument();
+    // Task 15 / D-11: a disabled grant arrives as {enabled: false, config: {}},
+    // which is truthy — the row must still report it as not granted.
+    expect(within(table).queryByText('Remote probe')).not.toBeInTheDocument();
     expect(within(table).getByText('rack-a-switch')).toBeInTheDocument();
   });
 
@@ -326,7 +345,11 @@ describe('AgentsPage fleet filters', () => {
       online: true,
       connected_since: '2026-08-05T10:00:00Z',
       last_seen_at: '2026-08-05T10:00:00Z',
-      capabilities: { host_telemetry: true, remote_probe: false, local_discovery: false },
+      capabilities: {
+        host_telemetry: { enabled: true, config: { interval_s: 30 } },
+        remote_probe: { enabled: false, config: {} },
+        local_discovery: { enabled: false, config: {} },
+      },
       hardware: null,
     },
     {
@@ -334,7 +357,11 @@ describe('AgentsPage fleet filters', () => {
       online: false,
       connected_since: null,
       last_seen_at: '2026-08-04T10:00:00Z',
-      capabilities: { host_telemetry: false, remote_probe: true, local_discovery: false },
+      capabilities: {
+        host_telemetry: { enabled: false, config: {} },
+        remote_probe: { enabled: true, config: {} },
+        local_discovery: { enabled: false, config: {} },
+      },
       hardware: null,
     },
     // agent 4 (revoked) and agent 5 (rejected) have no presence entry, so

@@ -75,6 +75,35 @@ const (
 	TypeTransportRekey = "transport.rekey"
 )
 
+// allFrameTypes lists every frame type constant declared above. Go cannot
+// enumerate untyped string constants at runtime, so this slice is the manual
+// mirror that TestCorpus_CoversEveryDeclaredFrameType iterates: adding a
+// constant above without adding it here is the one way to escape the Go half
+// of the corpus coverage gate. That is why the Go half is only a fast local
+// signal — apps/backend/tests/test_agent_frame_conformance.py enumerates its
+// module's TYPE_* attributes reflectively and is the authoritative gate.
+var allFrameTypes = []string{
+	TypeHello,
+	TypeHeartbeat,
+	TypeTelemetryHost,
+	TypeProbeResult,
+	TypeDiscoveryFinding,
+	TypeCapabilityViolation,
+	TypeCapabilityReadiness,
+	TypeLog,
+	TypeUninstall,
+	TypeUpdateStatus,
+	TypeHelloAck,
+	TypeCapabilitiesSet,
+	TypeProbeAssign,
+	TypeDiscoveryRequest,
+	TypeKeyRotate,
+	TypeUpdate,
+	TypeDisconnect,
+	TypePing,
+	TypeTransportRekey,
+}
+
 // controlFrameTypes are the frame types that must never reach the outbound
 // spool (internal/spool): link-protocol control traffic, plus the heartbeat
 // liveness signal, none of which is host data the spool exists to buffer
@@ -116,11 +145,15 @@ func IsDataFrame(typ string) bool {
 // the typed form decode Frame.Payload into these structs themselves; the conformance corpus in
 // conformance_test.go pins their wire shape against apps/backend/src/app/schemas/agent_frame.py.
 
-// Readiness reports one collector's ability to run, carried in HelloPayload.Readiness — see
-// specs/2026-07-26-cb-agent-design.md §4.3.
+// Readiness reports one collector's ability to run, carried in HelloPayload.Readiness and in
+// CapabilityReadinessPayload.Readiness — see specs/2026-07-26-cb-agent-design.md §4.3.
+//
+// State is exactly one of ready | degraded | unavailable | disabled. That set is closed:
+// apps/backend/src/app/services/agent_telemetry.py's ingest_readiness is authoritative and rejects
+// anything else as a protocol violation.
 type Readiness struct {
 	Collector   string   `json:"collector"`
-	State       string   `json:"state"` // ready | degraded | unavailable
+	State       string   `json:"state"` // ready | degraded | unavailable | disabled
 	Reason      string   `json:"reason,omitempty"`
 	Remediation string   `json:"remediation,omitempty"`
 	Missing     []string `json:"missing,omitempty"`
@@ -165,6 +198,33 @@ type HelloAckPayload struct {
 
 type CapabilityReadinessPayload struct {
 	Readiness []Readiness `json:"readiness"`
+}
+
+// HeartbeatPayload is the agent -> server `heartbeat` payload (D-12),
+// mirroring apps/backend/src/app/schemas/agent_frame.py's HeartbeatPayload.
+// It reports the live outbound-spool backlog so the server — and the Agent
+// Detail catch-up indicator — can see a drain in progress and see it finish,
+// without waiting for a reconnect to refresh hello's at-connect snapshot.
+//
+// Additive by design: an older server ignores the unknown keys, and an older
+// agent sends `{}`, which still validates on the server side (both fields
+// are optional-with-default there).
+//
+// Neither field carries `omitempty`, and that is load-bearing rather than an
+// oversight. A current agent must emit `{"spool_depth":0,"spool_bytes":0}`
+// once its backlog clears, or the server's columns stay pinned at the last
+// non-zero value and the indicator never clears. With `omitempty`, an empty
+// spool and an agent that predates this struct would both send `{}` — making
+// "clear the indicator" and "never invent a 0 for an old agent" mutually
+// exclusive. The empty payload is therefore reserved to mean exactly one
+// thing: this agent does not report spool state.
+//
+// HelloPayload.SpoolDepth keeps its `omitempty` for the opposite reason:
+// hello is the at-connect snapshot, and the heartbeat is what clears the
+// indicator.
+type HeartbeatPayload struct {
+	SpoolDepth int   `json:"spool_depth"`
+	SpoolBytes int64 `json:"spool_bytes"`
 }
 
 type HostSummary struct {

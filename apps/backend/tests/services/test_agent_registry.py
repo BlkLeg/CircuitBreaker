@@ -3,6 +3,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import event
 
 from app.services import agent_registry as svc
 
@@ -62,6 +63,95 @@ def test_approve_agent_honors_capability_overrides(db_session, factories):
         .one()
     )
     assert grant.enabled is True
+
+
+def test_boolean_override_still_receives_the_capability_default_config(
+    db_session, factories, monkeypatch
+):
+    """Task 14: a bare-boolean grant is where `normalize_grant` injects the
+    registry's default config. Before Task 14 only `host_telemetry` had that
+    branch, so the moment any other capability grew defaults, approving with
+    `{"remote_probe": True}` would have persisted `{}` — the exact defect
+    slice 3 would otherwise inherit."""
+    from app.db.models import AgentCapabilityGrant
+    from app.services import agent_capabilities
+
+    agent = factories.agent(status="pending")
+    admin = factories.user(role="admin")
+    svc.approve_agent(
+        db_session,
+        agent.id,
+        approving_user_id=admin.id,
+        capability_overrides={"host_telemetry": True},
+    )
+    host = (
+        db_session.query(AgentCapabilityGrant)
+        .filter_by(agent_id=agent.id, capability="host_telemetry")
+        .one()
+    )
+    assert host.config == dict(
+        agent_capabilities.CAPABILITY_DEFINITIONS["host_telemetry"].default_config
+    )
+    assert len(host.config) == 7
+
+    probe_default = {"max_concurrent": 4, "scope_mode": "direct_private"}
+    monkeypatch.setitem(
+        agent_capabilities.CAPABILITY_DEFINITIONS,
+        "remote_probe",
+        agent_capabilities.CapabilityDefinition(
+            name="remote_probe",
+            default_enabled=True,
+            default_config=probe_default,
+            normalize=lambda config: dict(config),
+        ),
+    )
+    other = factories.agent(status="pending")
+    svc.approve_agent(
+        db_session,
+        other.id,
+        approving_user_id=admin.id,
+        capability_overrides={"remote_probe": True},
+    )
+    probe = (
+        db_session.query(AgentCapabilityGrant)
+        .filter_by(agent_id=other.id, capability="remote_probe")
+        .one()
+    )
+    assert probe.config == probe_default
+
+
+def test_new_registry_entry_is_not_backfilled_onto_already_approved_agents(
+    db_session, factories, monkeypatch
+):
+    """Global Constraint: "Upgrades never silently enable a new capability on an
+    already-approved agent." `default_enabled` is consulted ONLY by
+    `approve_agent`; a capability with no `agent_capability_grants` row is
+    denied everywhere and no read path falls back to the registry default.
+
+    THIS TEST MUST NEVER BE DELETED.
+    """
+    from app.services import agent_capabilities
+
+    agent = factories.agent(status="pending")
+    admin = factories.user(role="admin")
+    svc.approve_agent(db_session, agent.id, approving_user_id=admin.id)
+
+    monkeypatch.setitem(
+        agent_capabilities.CAPABILITY_DEFINITIONS,
+        "fourth",
+        agent_capabilities.CapabilityDefinition(
+            name="fourth",
+            default_enabled=True,
+            default_config={},
+            normalize=lambda config: dict(config),
+        ),
+    )
+
+    structured = svc.structured_grants_dict(db_session, agent.id)
+    assert set(structured) == {"host_telemetry", "remote_probe", "local_discovery"}
+    assert "fourth" not in structured
+    assert svc.grants_dict(db_session, agent.id).get("fourth", False) is False
+    assert "fourth" not in svc.bulk_structured_grants_dict(db_session, [agent.id])[agent.id]
 
 
 def test_revoke_agent_records_reason_and_actor(db_session, factories):
@@ -310,26 +400,161 @@ async def test_bulk_presence_empty_input_returns_empty_dict_without_calling_redi
     get_redis.assert_not_called()
 
 
-def test_bulk_grants_dict_maps_capability_grants_per_agent(db_session, factories):
+def test_bulk_structured_grants_dict_maps_capability_grants_per_agent(db_session, factories):
+    """Task 15 / D-11: the bulk read emits the canonical {enabled, config} shape,
+    identical to `structured_grants_dict`, so `/agents/presence` and
+    `/agents/{id}` cannot drift."""
     agent_a = factories.agent(status="active")
     agent_b = factories.agent(status="active")
-    factories.agent_capability_grant(agent_a, capability="host_telemetry", enabled=True)
+    factories.agent_capability_grant(
+        agent_a, capability="host_telemetry", enabled=True, config={"interval_s": 90}
+    )
     factories.agent_capability_grant(agent_a, capability="remote_probe", enabled=False)
     factories.agent_capability_grant(agent_b, capability="local_discovery", enabled=True)
 
-    result = svc.bulk_grants_dict(db_session, [agent_a.id, agent_b.id])
+    result = svc.bulk_structured_grants_dict(db_session, [agent_a.id, agent_b.id])
 
     assert result == {
-        agent_a.id: {"host_telemetry": True, "remote_probe": False},
-        agent_b.id: {"local_discovery": True},
+        agent_a.id: svc.structured_grants_dict(db_session, agent_a.id),
+        agent_b.id: svc.structured_grants_dict(db_session, agent_b.id),
     }
+    assert result[agent_a.id]["host_telemetry"]["config"]["interval_s"] == 90
+    assert result[agent_a.id]["remote_probe"] == {"enabled": False, "config": {}}
+    assert result[agent_b.id]["local_discovery"] == {"enabled": True, "config": {}}
 
 
-def test_bulk_grants_dict_empty_for_agent_with_no_grants(db_session, factories):
+def test_bulk_structured_grants_dict_empty_for_agent_with_no_grants(db_session, factories):
     agent = factories.agent(status="pending")
 
-    assert svc.bulk_grants_dict(db_session, [agent.id]) == {agent.id: {}}
+    assert svc.bulk_structured_grants_dict(db_session, [agent.id]) == {agent.id: {}}
 
 
-def test_bulk_grants_dict_empty_list_returns_empty_dict(db_session):
-    assert svc.bulk_grants_dict(db_session, []) == {}
+def test_bulk_structured_grants_dict_empty_list_returns_empty_dict(db_session):
+    assert svc.bulk_structured_grants_dict(db_session, []) == {}
+
+
+def test_bulk_structured_grants_dict_renders_unregistered_capability_verbatim(
+    db_session, factories
+):
+    """A grant row naming a capability this build's registry does not declare
+    must render with its own config, not raise a KeyError that 500s the fleet."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(
+        agent, capability="legacy_thing", enabled=True, config={"whatever": 1}
+    )
+
+    result = svc.bulk_structured_grants_dict(db_session, [agent.id])
+
+    assert result[agent.id]["legacy_thing"] == {"enabled": True, "config": {"whatever": 1}}
+    single = svc.structured_grants_dict(db_session, agent.id)
+    assert single["legacy_thing"] == result[agent.id]["legacy_thing"]
+
+
+def test_bulk_structured_grants_dict_issues_one_query_for_the_whole_fleet(db_session, factories):
+    """Task 15: canonicalizing the shape must not reintroduce an N+1."""
+    agent_ids = []
+    for _ in range(20):
+        agent = factories.agent(status="active")
+        factories.agent_capability_grant(agent, capability="host_telemetry", enabled=True)
+        agent_ids.append(agent.id)
+    db_session.flush()
+
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if "agent_capability_grants" in statement:
+            statements.append(statement)
+
+    event.listen(db_session.get_bind(), "after_cursor_execute", _record)
+    try:
+        result = svc.bulk_structured_grants_dict(db_session, agent_ids)
+    finally:
+        event.remove(db_session.get_bind(), "after_cursor_execute", _record)
+
+    assert set(result) == set(agent_ids)
+    assert len(statements) == 1, statements
+
+
+def test_record_spool_stats_writes_the_three_columns_on_first_report(db_session, factories):
+    """NULL means "never reported" (an agent predating spool reporting); a
+    recorded 0 means "reported, empty". The first report is what crosses that
+    boundary."""
+    agent = factories.agent(status="active")
+    assert agent.spool_depth is None
+    assert agent.spool_bytes is None
+    assert agent.spool_reported_at is None
+
+    wrote = svc.record_spool_stats(agent, 7, 8192)
+
+    assert wrote is True
+    assert agent.spool_depth == 7
+    assert agent.spool_bytes == 8192
+    assert agent.spool_reported_at is not None
+
+
+def test_record_spool_stats_records_an_explicit_zero_backlog(db_session, factories):
+    """A drained spool must be persisted as 0, not left NULL — that write is
+    what clears the Agent Detail catch-up indicator."""
+    agent = factories.agent(status="active")
+    svc.record_spool_stats(agent, 7, 8192)
+
+    wrote = svc.record_spool_stats(agent, 0, 0)
+
+    assert wrote is True
+    assert agent.spool_depth == 0
+    assert agent.spool_bytes == 0
+
+
+def test_unchanged_spool_stats_do_not_rewrite_the_row(db_session, factories):
+    """Heartbeats arrive every 20s per agent, and the steady state is
+    "depth 0, unchanged". Re-stamping the row on every one of them would be
+    a fleet-wide UPDATE storm for no new information."""
+    agent = factories.agent(status="active")
+    assert svc.record_spool_stats(agent, 0, 0) is True
+    db_session.commit()
+    first_reported_at = agent.spool_reported_at
+
+    wrote = svc.record_spool_stats(agent, 0, 0)
+
+    assert wrote is False
+    assert agent.spool_reported_at == first_reported_at
+    assert agent.spool_depth == 0
+    assert agent.spool_bytes == 0
+
+
+def test_record_spool_stats_with_unknown_size_leaves_the_byte_column_alone(db_session, factories):
+    """`hello` reports `spool_depth` but has no `spool_bytes` field, so its
+    caller passes None — "unknown", not "zero"."""
+    agent = factories.agent(status="active")
+    svc.record_spool_stats(agent, 7, 8192)
+
+    wrote = svc.record_spool_stats(agent, 3, None)
+
+    assert wrote is True
+    assert agent.spool_depth == 3
+    assert agent.spool_bytes == 8192
+
+
+def test_update_hello_metadata_persists_a_reported_spool_depth(db_session, factories):
+    from app.schemas.agent_frame import HelloPayload
+
+    agent = factories.agent(status="active")
+
+    svc.update_hello_metadata(db_session, agent, HelloPayload.model_validate({"spool_depth": 3}))
+
+    assert agent.spool_depth == 3
+    assert agent.spool_reported_at is not None
+
+
+def test_update_hello_metadata_leaves_spool_columns_null_when_omitted(db_session, factories):
+    """Presence, not truthiness: an old-shaped hello omits `spool_depth`
+    entirely and must not have a 0 invented for it."""
+    from app.schemas.agent_frame import HelloPayload
+
+    agent = factories.agent(status="active")
+
+    svc.update_hello_metadata(db_session, agent, HelloPayload.model_validate({"os": "linux"}))
+
+    assert agent.spool_depth is None
+    assert agent.spool_bytes is None
+    assert agent.spool_reported_at is None

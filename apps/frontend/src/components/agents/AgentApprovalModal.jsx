@@ -1,18 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { approveAgent, getAgent } from '../../api/agents';
+import { approveAgent, getAgent, getCapabilityDefaults } from '../../api/agents';
 import { hardwareApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 
-// Product-ready "normal" approval preset (gap-closure Task 18). All three
-// capabilities start enabled — host_telemetry with Slice 2's collector
-// defaults, local_discovery with Slice 4's direct_private policy, and
-// remote_probe with the same derived safe scope, idle until a user assigns
-// a monitor. The approver can opt out of any of these before activation;
-// nothing here is ever silently forced on — `capabilities` below is always
-// sent explicitly to the approve endpoint, never omitted.
-const NORMAL_PRESET = { host_telemetry: true, local_discovery: true, remote_probe: true };
-
+// Task 14: this modal owns NO capability preset. The defaults come from
+// GET /api/v1/agents/capability-defaults, i.e. the server's single
+// CAPABILITY_DEFINITIONS registry, so the checkbox states and the config each
+// grant carries can never drift from what an approve with `capabilities`
+// omitted would grant (pinned server-side by
+// test_capability_defaults_endpoint_matches_what_an_omitted_approve_grants).
+// The approver can opt out of any capability before activation; opting out
+// flips only `enabled`, leaving the server's config intact, and the full
+// structured map is always sent explicitly, never omitted.
+//
+// CAPABILITY_INFO below is presentation only — labels and copy for the
+// capabilities this UI knows how to describe. It is never a source of
+// defaults.
 const CAPABILITY_INFO = [
   {
     key: 'host_telemetry',
@@ -42,7 +46,7 @@ const HOST_LINK_UNLINKED = 'unlinked';
 export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
   const toast = useToast();
   const [agent, setAgent] = useState(null);
-  const [capabilities, setCapabilities] = useState(NORMAL_PRESET);
+  const [capabilities, setCapabilities] = useState({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -55,10 +59,13 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getAgent(agentId)
-      .then(({ data }) => {
+    // Both must resolve before the modal is usable: without the server
+    // defaults there is no preset to render or submit.
+    Promise.all([getAgent(agentId), getCapabilityDefaults()])
+      .then(([{ data }, { data: defaults }]) => {
         if (cancelled) return;
         setAgent(data);
+        setCapabilities(defaults ?? {});
         setHostLinkAction(data.proposed_hardware_id ? HOST_LINK_ACCEPT : HOST_LINK_UNLINKED);
         setNewHardwareName(data.hostname ?? '');
       })
@@ -236,9 +243,12 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
                 <label key={key} className="agent-approval-modal__capability">
                   <input
                     type="checkbox"
-                    checked={capabilities[key]}
+                    checked={capabilities[key]?.enabled ?? false}
                     onChange={(e) =>
-                      setCapabilities((prev) => ({ ...prev, [key]: e.target.checked }))
+                      setCapabilities((prev) => ({
+                        ...prev,
+                        [key]: { ...prev[key], enabled: e.target.checked },
+                      }))
                     }
                   />
                   {label}

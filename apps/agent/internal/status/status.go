@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,14 +64,18 @@ type Status struct {
 	// applied.
 	Grants map[string]bool `json:"grants,omitempty"`
 
-	// Readiness mirrors the most recent hello's collector-readiness report
-	// (see internal/hostinfo).
+	// Readiness is the merged collector-readiness view: the startup identity
+	// report (see internal/hostinfo) upserted with every host collection's
+	// report (see internal/collect), keyed by collector name and sorted by
+	// it — see Writer.MergeReadiness.
 	Readiness []frame.Readiness `json:"readiness,omitempty"`
 
-	// SpoolDepth/SpoolBytes report the outbound spool's backlog. Both stay at
-	// their zero value until the daemon actually spools data frames — true
-	// today (spec: the spool "stays idle in heartbeat-only Slice 1
-	// operation"; see internal/spool's daemon wiring).
+	// SpoolDepth/SpoolBytes report the outbound spool's *undelivered*
+	// backlog — frames whose live send failed and that have not yet been
+	// re-sent. Both move in real operation: the host telemetry collector is a
+	// live data-frame producer, so a backend outage grows the backlog and the
+	// link's paced catch-up burst (internal/link/outbound.go) drains it back
+	// to zero once the connection is healthy again.
 	SpoolDepth int   `json:"spool_depth"`
 	SpoolBytes int64 `json:"spool_bytes"`
 
@@ -154,21 +159,45 @@ func (w *Writer) SetGrants(grants map[string]bool) error {
 	return w.persistLocked()
 }
 
-// SetReadiness records the most recent hello's collector-readiness report.
-func (w *Writer) SetReadiness(readiness []frame.Readiness) error {
+// MergeReadiness upserts collector-readiness rows by Readiness.Collector and
+// re-sorts the result by collector name.
+//
+// It is an upsert, not a replacement, because two independent producers write
+// here: the identity report collected once at startup (internal/hostinfo,
+// "agent.identity") and every subsequent host collection (internal/collect,
+// "host.*"). A whole-slice replacement — what this method used to be — let
+// whichever producer wrote last erase the other's rows, so status.json
+// oscillated between the two views depending on startup timing. Sorting on
+// every merge is what keeps status.json and `cb-agent status`'s readiness
+// listing deterministic regardless of the order the producers happen to run
+// in. The persisted JSON field name is unchanged.
+func (w *Writer) MergeReadiness(items []frame.Readiness) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.cur.Readiness = readiness
+	byCollector := make(map[string]frame.Readiness, len(w.cur.Readiness)+len(items))
+	for _, r := range w.cur.Readiness {
+		byCollector[r.Collector] = r
+	}
+	for _, r := range items {
+		byCollector[r.Collector] = r
+	}
+	merged := make([]frame.Readiness, 0, len(byCollector))
+	for _, r := range byCollector {
+		merged = append(merged, r)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Collector < merged[j].Collector })
+	w.cur.Readiness = merged
 	return w.persistLocked()
 }
 
-// SetSpoolStats records the outbound spool's current backlog depth (frame
-// count) and size in bytes. Called at daemon startup (after spool.Open's
-// unclean-shutdown recovery) and on every subsequent spool mutation via
-// internal/link's Options.OnSpoolStats — see cmd/cb-agent's openSpool and
-// dataFrameSender. Both fields stay at zero in practice today: Slice 1 has
-// no data frame producer, so nothing ever enqueues (Global Constraints —
-// "the spool ... stays idle in heartbeat-only Slice 1 operation").
+// SetSpoolStats records the outbound spool's current undelivered backlog
+// depth (frame count) and size in bytes. Called at daemon startup (after
+// spool.Open's unclean-shutdown recovery) and on every subsequent spool
+// mutation via internal/link's Options.OnSpoolStats — see cmd/cb-agent's
+// openSpool and dataFrameSender. These are live values, not always-zero
+// placeholders: host telemetry produces data frames continuously, a failed
+// live send enqueues one, and each committed catch-up burst reports the
+// shrinking remainder back through here.
 func (w *Writer) SetSpoolStats(depth int, bytes int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

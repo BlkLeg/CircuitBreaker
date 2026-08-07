@@ -8,6 +8,7 @@ import {
   getInstallCommand,
   listAgents,
   lookupPairingCode,
+  normalizeCapability,
   revokeAgent,
 } from '../api/agents';
 import { useAgentLive } from '../hooks/useAgentLive';
@@ -28,10 +29,15 @@ const CAPABILITY_LABELS = {
   local_discovery: 'Local discovery',
 };
 
+// Task 15 / D-11: /agents/presence emits the canonical
+// {name: {enabled, config}} shape, and `{enabled: false, config: {}}` is
+// truthy — so every capability read goes through normalizeCapability and
+// tests `.enabled`. (normalizeCapability still accepts a bare boolean, which
+// is what REST *requests* may carry.)
 function formatCapabilities(capabilities) {
   if (!capabilities) return '—';
   const granted = Object.entries(capabilities)
-    .filter(([, enabled]) => enabled)
+    .filter(([, value]) => normalizeCapability(value).enabled)
     .map(([key]) => CAPABILITY_LABELS[key] ?? key);
   return granted.length > 0 ? granted.join(', ') : '—';
 }
@@ -186,7 +192,11 @@ export default function AgentsPage() {
   // pinned in the banner above regardless of which filters are active.
   const filteredOthers = others.filter((a) => {
     if (statusFilter !== 'all' && a.status !== statusFilter) return false;
-    if (capabilityFilter !== 'all' && !a.capabilities?.[capabilityFilter]) return false;
+    if (
+      capabilityFilter !== 'all' &&
+      !normalizeCapability(a.capabilities?.[capabilityFilter]).enabled
+    )
+      return false;
     if (onlineFilter === 'online' && a.online !== true) return false;
     if (onlineFilter === 'offline' && a.online !== false) return false;
     return true;

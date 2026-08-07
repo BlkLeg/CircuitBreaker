@@ -24,12 +24,20 @@ from app.db.models import (
 )
 from app.schemas.agent_frame import CapabilityReadinessPayload, HostTelemetryPayload
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
+from app.services.telemetry_normalize import (
+    _NON_LIVE_STATUSES,
+    agent_summary_to_platform,
+    live_metric_fields,
+)
 
 _SAMPLE_ID = re.compile(r"^[0-9a-f]{32}$")
 _logger = logging.getLogger(__name__)
 _MAX_PAYLOAD = 256 << 10
 _LIST_LIMITS = {"filesystems": 128, "disks": 128, "interfaces": 128, "temperatures": 256}
 _PERCENT_FIELDS = {"cpu_pct", "mem_pct", "swap_pct", "root_disk_pct"}
+# The complete readiness vocabulary; anything else is a protocol violation.
+# Slice 3 probe collectors and slice 4 discovery collectors reuse these four.
+_READINESS_STATES = frozenset({"ready", "degraded", "unavailable", "disabled"})
 _violation_lock = threading.Lock()
 _violations: dict[int, tuple[float, int]] = {}
 
@@ -66,6 +74,12 @@ def validate_host_payload(payload: dict[str, Any], collected_at: datetime) -> Ho
         if len(getattr(sample, field)) > limit:
             raise InvalidHostTelemetry(f"{field} exceeds {limit} entries")
     for name, value in sample.summary.items():
+        # The `isinstance(value, bool)` half of this guard cannot fire:
+        # HostTelemetryPayload types summary as `dict[str, int | float]`
+        # (schemas/agent_frame.py), and pydantic coerces a JSON `true` to
+        # int 1 before this loop ever runs — so a boolean is accepted as 1.
+        # Pinned by test_boolean_summary_value_is_coerced_to_one_and_accepted.
+        # Rejecting booleans would need a field_validator on `summary`.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidHostTelemetry(f"summary.{name} is not numeric")
         if name in _PERCENT_FIELDS and not 0 <= value <= 100:
@@ -118,14 +132,31 @@ async def ingest_host_sample(
     try:
         db.flush()
     except IntegrityError:
+        # Exactly one integrity failure is recoverable here: another writer
+        # committed this (agent_id, sample_id, collected_at) between our SELECT
+        # and our INSERT, so `uq_agent_host_sample` rejected the duplicate and
+        # the winner's row is what the caller wants.  Confirming the row is
+        # actually there is what distinguishes that case -- driver-agnostically,
+        # without decoding a SQLSTATE -- from a genuine schema/constraint fault
+        # (a NotNullViolation from a missing id sequence, an FK violation).
+        # Swallowing those and then failing in this SELECT reported them as an
+        # unrelated `NoResultFound` and took the /link socket down with it.
         db.rollback()
-        return db.execute(
+        existing = db.execute(
             select(AgentHostSample).where(
                 AgentHostSample.agent_id == agent.id,
                 AgentHostSample.sample_id == sample.sample_id,
                 AgentHostSample.collected_at == collected_at,
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing
+    # One normalizer: the Hardware-facing surfaces (the live-metric row,
+    # `telemetry_data`, and the cache/WebSocket envelope below) all speak the
+    # platform vocabulary produced here, never the agent's own key names. The
+    # agent names stay on `agent_host_samples` and the Agent-detail API.
+    platform = agent_summary_to_platform(summary, sample.filesystems)
     project_live = False
     if row.hardware_id is not None:
         metric = HardwareLiveMetric(
@@ -133,20 +164,10 @@ async def ingest_host_sample(
             agent_id=agent.id,
             agent_sample_id=row.sample_id,
             collected_at=collected_at,
-            cpu_pct=row.cpu_pct,
-            mem_pct=row.mem_pct,
-            mem_used_mb=(
-                summary["mem_used_bytes"] / (1024 * 1024) if "mem_used_bytes" in summary else None
-            ),
-            mem_total_mb=(
-                summary["mem_total_bytes"] / (1024 * 1024) if "mem_total_bytes" in summary else None
-            ),
-            disk_pct=row.root_disk_pct,
-            temp_c=row.max_temp_c,
-            uptime_s=row.uptime_s,
+            **live_metric_fields(platform),
             status=sample.status,
             source="agent",
-            raw=payload,
+            raw=platform,
         )
         db.add(metric)
         row.projected_at = utcnow()
@@ -155,10 +176,14 @@ async def ingest_host_sample(
             hardware.telemetry_last_polled is None or collected_at >= hardware.telemetry_last_polled
         ):
             project_live = True
-            hardware.telemetry_data = dict(summary)
+            hardware.telemetry_data = platform
             hardware.telemetry_status = sample.status
             hardware.telemetry_last_polled = collected_at
-            hardware.last_seen = collected_at.isoformat()
+            # Matches the poller paths: a non-live status must not advance
+            # `last_seen`. Unobservable while the agent vocabulary is
+            # {healthy, degraded}; locked shut before that vocabulary grows.
+            if sample.status not in _NON_LIVE_STATUSES:
+                hardware.last_seen = collected_at.isoformat()
     db.commit()
     redis = await get_redis()
     if redis is not None:
@@ -178,7 +203,7 @@ async def ingest_host_sample(
             _logger.debug("agent telemetry publish failed: %s", exc)
     if row.hardware_id is not None and project_live:
         hardware_payload = {
-            "data": dict(summary),
+            "data": platform,
             "status": sample.status,
             "last_polled": collected_at.isoformat(),
             "source": "agent",
@@ -197,15 +222,28 @@ async def ingest_host_sample(
 
 
 async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -> bool:
+    """Upsert one `agent_capability_readiness` row per reported collector.
+
+    **All-or-nothing.** Every `state` in the report is validated against
+    `_READINESS_STATES` *before* the upsert loop performs any `db.get`,
+    `db.add`, or attribute write, so a report carrying one bad entry persists
+    nothing at all — not even the entries that preceded it. The pre-pass, not a
+    rollback in the caller, is what guarantees this: `_handle_readiness`
+    (services/agent_link.py) catches `InvalidHostTelemetry`, records a
+    `protocol_violation` event and then commits, which would otherwise make a
+    partial write durable. Direct callers get the same guarantee, and none of
+    the caller's other pending work is discarded.
+    """
     try:
         report = CapabilityReadinessPayload.model_validate(payload)
     except ValidationError as exc:
         raise InvalidHostTelemetry("invalid readiness payload") from exc
+    for item in report.readiness:
+        if item.state not in _READINESS_STATES:
+            raise InvalidHostTelemetry("invalid readiness state")
     changed = False
     now = utcnow()
     for item in report.readiness:
-        if item.state not in {"disabled", "ready", "degraded", "unavailable"}:
-            raise InvalidHostTelemetry("invalid readiness state")
         row = db.get(AgentCapabilityReadiness, (agent.id, item.collector))
         values = (item.state, item.reason, item.remediation, item.missing)
         if row is None:

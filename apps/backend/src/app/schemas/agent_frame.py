@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 FRAME_VERSION = 1
 
@@ -112,7 +112,46 @@ class CapabilityReadinessPayload(BaseModel):
     readiness: list[Readiness] = Field(default_factory=list)
 
 
+class HeartbeatPayload(BaseModel):
+    """agent -> server `heartbeat` payload (D-12), mirroring
+    apps/agent/internal/frame/frame.go's HeartbeatPayload field-for-field.
+
+    Carries the agent's live outbound-spool backlog so the server can watch a
+    catch-up drain start *and finish* without waiting for a reconnect to
+    refresh hello's at-connect snapshot.
+
+    Both fields are optional-with-default — the same backward-compatibility
+    convention ``HelloPayload`` documents above — so today's empty ``{}``
+    heartbeat from an agent that predates this model still validates instead
+    of tearing down the link.
+
+    That default is why callers must gate persistence on
+    ``"spool_depth" in payload.model_fields_set`` rather than on the value:
+    the Go side deliberately carries no ``omitempty``, so a current agent
+    emits ``{"spool_depth": 0, "spool_bytes": 0}`` once its backlog clears,
+    while an agent that predates the field emits ``{}``. Presence is
+    therefore an exact "this agent reports spool state" test, and it is what
+    keeps ``agents.spool_depth`` NULL ("never reported") for an old agent
+    instead of writing a fabricated 0 ("reported, empty").
+    """
+
+    spool_depth: int = 0
+    spool_bytes: int = 0
+
+
 class HostTelemetryPayload(BaseModel):
+    """agent -> server `telemetry.host` payload, mirroring
+    apps/agent/internal/frame/frame.go's HostTelemetryPayload field-for-field.
+
+    ``populate_by_name`` is load-bearing, not cosmetic: ``schema_version`` is aliased to the
+    wire key ``schema`` (``schema`` shadows pydantic's own BaseModel attribute), so
+    ``model_dump()``/``model_dump_json()`` emit ``schema_version`` unless the caller passes
+    ``by_alias=True``. Without ``populate_by_name`` the model cannot re-validate its own dump —
+    pinned by test_corpus_typed_payloads_decode_and_round_trip.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
     schema_version: int = Field(alias="schema")
     sample_id: str
     status: str

@@ -4,6 +4,7 @@ package link
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,14 @@ const fakeDataFrameType = "test.fakedata"
 
 func fakeDataFrame(seq uint64) frame.Frame {
 	return frame.Frame{V: frame.FrameVersion, Type: fakeDataFrameType, Seq: seq, TS: time.Now().UTC(), Payload: json.RawMessage(`{}`)}
+}
+
+// fatDataFrame is a fake data frame with a ~size-byte payload, so a byte
+// budget can be exercised without a megabyte fixture.
+func fatDataFrame(seq uint64, size int) frame.Frame {
+	f := fakeDataFrame(seq)
+	f.Payload = json.RawMessage(`{"blob":"` + strings.Repeat("x", size) + `"}`)
+	return f
 }
 
 // TestDataFrameSender_SendLive_SuccessNeverTouchesSpool verifies a live data
@@ -64,12 +73,12 @@ func TestDataFrameSender_SendLive_FailureSpoolsFrame(t *testing.T) {
 	if got := sp.Len(); got != 1 {
 		t.Fatalf("spool Len() = %d, want 1 after a failed live send", got)
 	}
-	got, ok, err := sp.Drain()
-	if err != nil || !ok {
-		t.Fatalf("Drain() = (%v, %v, %v), want the spooled frame", got, ok, err)
+	peeked := sp.Peek(1, spool.DefaultCapBytes)
+	if len(peeked) != 1 {
+		t.Fatalf("Peek(1) returned %d frames, want the spooled frame", len(peeked))
 	}
-	if got.Seq != f.Seq || got.Type != f.Type {
-		t.Errorf("spooled frame = %+v, want %+v", got, f)
+	if peeked[0].Seq != f.Seq || peeked[0].Type != f.Type {
+		t.Errorf("spooled frame = %+v, want %+v", peeked[0], f)
 	}
 }
 
@@ -104,18 +113,17 @@ func TestDataFrameSender_SendLive_PanicsOnNonDataFrame(t *testing.T) {
 	}
 }
 
-// TestDataFrameSender_DrainRatio_OneDrainPerFourLiveSends verifies the
-// required 1:4 interleave: with live data frames flowing (all sending
-// successfully) and a backlog already sitting in the spool, exactly one
-// spooled frame drains for every four successful live sends —
-// spool.DrainInterleaveRatio.
-func TestDataFrameSender_DrainRatio_OneDrainPerFourLiveSends(t *testing.T) {
+// TestDataFrameSender_LiveSendNoLongerDrains replaces the old
+// TestDataFrameSender_DrainRatio_OneDrainPerFourLiveSends: catch-up is no
+// longer a side effect of live production (D-5). A live send that succeeds
+// does exactly one thing — send — so a backlog sitting in the spool is
+// untouched by live traffic and is instead flushed by runOnce's paced
+// drainTicker arm.
+func TestDataFrameSender_LiveSendNoLongerDrains(t *testing.T) {
 	sp, err := spool.Open(t.TempDir(), spool.DefaultCapBytes)
 	if err != nil {
 		t.Fatalf("spool.Open() error = %v", err)
 	}
-	// Preload a backlog bigger than what this test will ever drain, so a
-	// drain always has something available to pull.
 	for i := uint64(100); i < 110; i++ {
 		if err := sp.Enqueue(fakeDataFrame(i)); err != nil {
 			t.Fatalf("Enqueue() error = %v", err)
@@ -123,57 +131,138 @@ func TestDataFrameSender_DrainRatio_OneDrainPerFourLiveSends(t *testing.T) {
 	}
 	preloaded := sp.Len()
 
-	var sentTypes []frame.Frame
-	send := func(f frame.Frame) error {
-		sentTypes = append(sentTypes, f)
-		return nil
-	}
+	var sent int
+	send := func(frame.Frame) error { sent++; return nil }
 	sender := newDataFrameSender(sp, send, nil)
 
-	const liveSends = 12 // three full 4-live cycles
+	const liveSends = 8 // twice the old 1:4 ratio, so the old code drained twice
 	for i := uint64(0); i < liveSends; i++ {
 		if err := sender.sendLive(fakeDataFrame(i)); err != nil {
 			t.Fatalf("sendLive(%d) error = %v", i, err)
 		}
 	}
 
-	wantDrains := liveSends / spool.DrainInterleaveRatio
-	wantTotalSends := liveSends + wantDrains
-	if len(sentTypes) != wantTotalSends {
-		t.Errorf("total send() calls = %d, want %d (%d live + %d drained)",
-			len(sentTypes), wantTotalSends, liveSends, wantDrains)
+	if sent != liveSends {
+		t.Errorf("send() calls = %d, want %d — a live send must not also drain", sent, liveSends)
 	}
-	if got := sp.Len(); got != preloaded-wantDrains {
-		t.Errorf("spool Len() after = %d, want %d (%d preloaded - %d drained)",
-			got, preloaded-wantDrains, preloaded, wantDrains)
+	if got := sp.Len(); got != preloaded {
+		t.Errorf("spool Len() after %d live sends = %d, want %d (backlog untouched by live traffic)",
+			liveSends, got, preloaded)
 	}
 }
 
-// TestDataFrameSender_DrainOne_ResendFailureReEnqueues verifies a drained
-// frame whose resend fails is put back into the spool rather than lost.
-func TestDataFrameSender_DrainOne_ResendFailureReEnqueues(t *testing.T) {
+// TestDataFrameSender_DrainBurstRespectsFrameAndByteBudget pins the paced
+// catch-up budget: one tick sends at most maxFrames frames and at most
+// maxBytes of them, leaving the rest of the backlog for the next tick. This
+// is what makes catch-up after a long outage bounded rather than a
+// reconnect-time flood.
+func TestDataFrameSender_DrainBurstRespectsFrameAndByteBudget(t *testing.T) {
 	sp, err := spool.Open(t.TempDir(), spool.DefaultCapBytes)
 	if err != nil {
 		t.Fatalf("spool.Open() error = %v", err)
 	}
-	backlog := fakeDataFrame(7)
-	if err := sp.Enqueue(backlog); err != nil {
-		t.Fatalf("Enqueue() error = %v", err)
+	for i := uint64(1); i <= 10; i++ {
+		if err := sp.Enqueue(fatDataFrame(i, 1000)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
 	}
 
-	sendErr := errors.New("boom")
-	send := func(frame.Frame) error { return sendErr }
+	var sent []frame.Frame
+	send := func(f frame.Frame) error { sent = append(sent, f); return nil }
 	sender := newDataFrameSender(sp, send, nil)
 
-	if err := sender.drainOne(); !errors.Is(err, sendErr) {
-		t.Fatalf("drainOne() error = %v, want it to wrap %v", err, sendErr)
+	if err := sender.drainBurst(4, spool.DefaultCapBytes); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
 	}
-	if got := sp.Len(); got != 1 {
-		t.Fatalf("spool Len() = %d, want 1 — resend failure must re-enqueue, not drop", got)
+	if len(sent) != 4 {
+		t.Fatalf("sent %d frames, want 4 (frame budget)", len(sent))
 	}
-	got, ok, err := sp.Drain()
-	if err != nil || !ok || got.Seq != backlog.Seq {
-		t.Errorf("re-enqueued frame = (%+v, %v, %v), want the original backlog frame", got, ok, err)
+	if got := sp.Len(); got != 6 {
+		t.Errorf("spool Len() = %d, want 6 after one 4-frame burst", got)
+	}
+
+	// A byte budget that fits only two ~1KiB frames caps the burst below the
+	// frame budget.
+	sent = nil
+	if err := sender.drainBurst(4, 2500); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("sent %d frames, want 2 (byte budget)", len(sent))
+	}
+	if got := sp.Len(); got != 4 {
+		t.Errorf("spool Len() = %d, want 4", got)
+	}
+	for i, f := range sent {
+		if want := uint64(5 + i); f.Seq != want {
+			t.Errorf("burst frame %d seq = %d, want %d (FIFO)", i, f.Seq, want)
+		}
+	}
+}
+
+// TestDataFrameSender_DrainBurstCommitsOnlySuccessesAndKeepsOrder replaces
+// TestDataFrameSender_DrainOne_ResendFailureReEnqueues. The old drain
+// re-enqueued a failed frame at the *tail*, so the oldest frame became the
+// newest and its neighbours were evicted before it. Commit-after-send makes
+// that impossible: only the frames that reached the wire are discarded and
+// the failing frame is still at the head, in the original order.
+func TestDataFrameSender_DrainBurstCommitsOnlySuccessesAndKeepsOrder(t *testing.T) {
+	sp, err := spool.Open(t.TempDir(), spool.DefaultCapBytes)
+	if err != nil {
+		t.Fatalf("spool.Open() error = %v", err)
+	}
+	for i := uint64(1); i <= 5; i++ {
+		if err := sp.Enqueue(fakeDataFrame(i)); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", i, err)
+		}
+	}
+
+	sendErr := errors.New("boom: connection dead mid-burst")
+	var attempts int
+	send := func(frame.Frame) error {
+		attempts++
+		if attempts == 3 {
+			return sendErr
+		}
+		return nil
+	}
+	sender := newDataFrameSender(sp, send, nil)
+
+	if err := sender.drainBurst(5, spool.DefaultCapBytes); !errors.Is(err, sendErr) {
+		t.Fatalf("drainBurst() error = %v, want it to wrap %v", err, sendErr)
+	}
+	if attempts != 3 {
+		t.Errorf("send() calls = %d, want 3 — the burst must stop at the first failure", attempts)
+	}
+	if got := sp.Len(); got != 3 {
+		t.Fatalf("spool Len() = %d, want 3 (only the 2 successes committed)", got)
+	}
+	remaining := sp.Peek(5, spool.DefaultCapBytes)
+	if len(remaining) != 3 {
+		t.Fatalf("Peek() returned %d frames, want 3", len(remaining))
+	}
+	for i, f := range remaining {
+		if want := uint64(3 + i); f.Seq != want {
+			t.Errorf("remaining frame %d seq = %d, want %d — order must be preserved, failing frame first", i, f.Seq, want)
+		}
+	}
+}
+
+// TestDataFrameSender_HasBacklogAndDrainBurstAreNilSpoolSafe covers the
+// normal case for most callers: every link.Options in this package except
+// link_spool_test.go's leaves Spool nil, and runOnce's drain ticker fires
+// against all of them.
+func TestDataFrameSender_HasBacklogAndDrainBurstAreNilSpoolSafe(t *testing.T) {
+	sender := newDataFrameSender(nil, func(frame.Frame) error {
+		t.Fatal("send() called with no spool configured")
+		return nil
+	}, nil)
+
+	if sender.hasBacklog() {
+		t.Error("hasBacklog() = true with a nil spool, want false")
+	}
+	if err := sender.drainBurst(4, 256<<10); err != nil {
+		t.Errorf("drainBurst() with a nil spool error = %v, want nil", err)
 	}
 }
 
@@ -205,12 +294,12 @@ func TestDataFrameSender_CapEviction_ReachableFromSendLive(t *testing.T) {
 	if size > tinyCap {
 		t.Errorf("SizeBytes() = %d, want <= %d after cap eviction", size, tinyCap)
 	}
-	got, ok, err := sp.Drain()
-	if err != nil || !ok {
-		t.Fatalf("Drain() = (%v, %v, %v), want a frame present", got, ok, err)
+	oldest := sp.Peek(1, spool.DefaultCapBytes)
+	if len(oldest) != 1 {
+		t.Fatalf("Peek(1) returned %d frames, want a frame present", len(oldest))
 	}
-	if got.Seq == 0 {
-		t.Error("Drain() returned seq=0 — oldest frame should have been evicted via the live send path")
+	if oldest[0].Seq == 0 {
+		t.Error("Peek() returned seq=0 — oldest frame should have been evicted via the live send path")
 	}
 }
 
@@ -261,10 +350,10 @@ func TestDataFrameSender_ReportsSpoolStats(t *testing.T) {
 	}
 
 	failing = false
-	if err := sender.drainOne(); err != nil {
-		t.Fatalf("drainOne() error = %v", err)
+	if err := sender.drainBurst(4, 256<<10); err != nil {
+		t.Fatalf("drainBurst() error = %v", err)
 	}
 	if len(reportedDepth) != 2 || reportedDepth[1] != 0 {
-		t.Fatalf("reportedDepth after drain = %v, want [1 0]", reportedDepth)
+		t.Fatalf("reportedDepth after drain = %v, want [1 0] (one report per burst, not per frame)", reportedDepth)
 	}
 }

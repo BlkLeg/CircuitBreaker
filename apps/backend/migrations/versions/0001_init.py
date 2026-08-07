@@ -161,6 +161,17 @@ def _copy_column(table_name: str, column: sa.Column) -> sa.Column:
         primary_key=column.primary_key,
         nullable=_NULLABLE_OVERRIDES.get(table_name, {}).get(column.name, column.nullable),
         unique=column.unique,
+        # Carry the sequence across.  The Timescale-partitioned tables
+        # (agent_host_samples, hardware_live_metrics) declare
+        # `BigInteger, autoincrement=True` on an id that is only *part* of a
+        # composite `(id, <time>)` primary key; SQLAlchemy's default
+        # autoincrement="auto" declines to emit SERIAL in that shape, so
+        # dropping the flag here created a bare BIGINT NOT NULL with no
+        # sequence and every INSERT that omits `id` failed.  Fresh installs
+        # get their entire schema from this function -- 0043/0095 see the
+        # tables already present and skip their own create_table -- so this is
+        # the only definition those columns ever get.
+        autoincrement=column.autoincrement,
         # Re-create indexes from table.indexes below so index=True columns do not
         # produce duplicate named indexes during metadata.create_all().
         index=False,

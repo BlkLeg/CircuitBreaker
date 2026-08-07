@@ -361,6 +361,24 @@ class Agent(Base):
     revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Live outbound-spool backlog as last reported by the agent (D-12): the
+    # `hello` frame stamps the at-connect depth, and every 20s `heartbeat`
+    # refreshes both numbers thereafter, which is what lets the Agent Detail
+    # catch-up indicator clear mid-connection instead of waiting for a
+    # reconnect.
+    #
+    # NULL means "never reported" — an agent whose build predates
+    # HeartbeatPayload — and is deliberately distinct from 0, which means
+    # "reported, and the spool is empty". Nothing may backfill these to 0:
+    # the agent's heartbeat payload carries no `omitempty`, so an explicit
+    # 0 is exactly what a current agent sends once its backlog drains, and
+    # `agent_registry.record_spool_stats`'s callers gate on field *presence*
+    # to keep the two apart.
+    spool_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    spool_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    spool_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -438,12 +456,10 @@ class AgentHostSample(Base):
     uptime_s: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    projection_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     __table_args__ = (
         PrimaryKeyConstraint("id", "collected_at"),
         UniqueConstraint("agent_id", "sample_id", "collected_at", name="uq_agent_host_sample"),
         Index("ix_agent_host_samples_agent_time", "agent_id", "collected_at"),
-        Index("ix_agent_host_samples_projection", "projected_at", "collected_at"),
     )
 
 
