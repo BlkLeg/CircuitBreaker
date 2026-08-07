@@ -402,46 +402,82 @@ export default function AgentDetailPage() {
 
       <section aria-label="Host telemetry" className="agent-telemetry">
         <h2>System metrics</h2>
-        {telemetry?.latest ? (
+        {(() => {
+          // hostDefaults, not a literal: the registry owns the cadence
+          // default, and a second copy here is exactly the drift issue 8
+          // exists to remove.
+          const interval = telemetry?.capability?.config?.interval_s ?? hostDefaults.interval_s;
+          // Task 16 / D-12: the catch-up indicator, and the only user-visible
+          // evidence that the agent's paced spool drain is making progress.
+          // Rendered only for a real backlog: depth 0 ("reported, drained")
+          // and a null spool ("this agent predates spool reporting") both
+          // render nothing. Task 17 lifts it out of the `latest` branch — an
+          // agent that buffered samples but has never delivered one is
+          // exactly when the backlog is worth showing, since nothing else on
+          // this section would explain the empty page.
+          const spoolDepth = telemetry?.spool?.depth ?? 0;
+          const catchUpLabel =
+            'The agent is replaying host samples it buffered while it could not reach ' +
+            'the server. Displayed samples may lag until the backlog drains.';
+          const catchUp = spoolDepth > 0 && (
+            <span
+              className="agent-telemetry__catchup"
+              title={catchUpLabel}
+              aria-label={catchUpLabel}
+            >
+              Catching up · {spoolDepth} samples buffered
+              {telemetry.spool?.bytes != null && ` (${formatBytes(telemetry.spool.bytes)})`}
+            </span>
+          );
+          if (!telemetry?.latest) {
+            return (
+              <>
+                <p>No host samples received yet.</p>
+                {catchUp && <p>{catchUp}</p>}
+              </>
+            );
+          }
+          const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
+          // `interval` is undefined until GET /agents/capability-defaults
+          // resolves, so the staleness window falls back to the 90 s floor and
+          // the cadence segment is omitted entirely rather than rendering a
+          // bare "Cadence s".
+          const stale = age > Math.max((interval ?? 0) * 3000, 90000);
+          return (
+            <p>
+              {stale ? 'Stale' : 'Live'} · Last sample{' '}
+              {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
+              {interval != null && <>Cadence {interval}s · </>}
+              {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
+              {catchUp && (
+                <>
+                  {' · '}
+                  {catchUp}
+                </>
+              )}
+            </p>
+          );
+        })()}
+        {/* Task 17: deliberately outside the `latest` branch. `capability.readiness`
+            is its own frame and is ingested independently of `telemetry.host`, so
+            the case that matters most — a collector that cannot read /proc and
+            therefore never produces a sample — has readiness rows and no sample at
+            all. `disabled` stays excluded: a switched-off collector is not a fault.
+            Slice 3 and 4 collectors land in this same readiness table and
+            render here unchanged. */}
+        {telemetry?.readiness
+          ?.filter((item) => item.state === 'degraded' || item.state === 'unavailable')
+          .map((item) => (
+            <aside role="alert" key={item.collector}>
+              <strong>
+                {item.collector}: {item.state}
+              </strong>{' '}
+              {item.reason}
+              {item.remediation ? ` — ${item.remediation}` : ''}
+            </aside>
+          ))}
+        {telemetry?.latest && (
           <>
-            {(() => {
-              // hostDefaults, not a literal: the registry owns the cadence
-              // default, and a second copy here is exactly the drift issue 8
-              // exists to remove.
-              const interval = telemetry.capability?.config?.interval_s ?? hostDefaults.interval_s;
-              const age = Date.now() - new Date(telemetry.latest.collected_at).getTime();
-              const stale = age > Math.max(interval * 3000, 90000);
-              // Task 16 / D-12: the catch-up indicator, and the only
-              // user-visible evidence that the agent's paced spool drain is
-              // making progress. Rendered only for a real backlog: depth 0
-              // ("reported, drained") and a null spool ("this agent predates
-              // spool reporting") both render nothing.
-              const spoolDepth = telemetry.spool?.depth ?? 0;
-              const catchUpLabel =
-                'The agent is replaying host samples it buffered while it could not reach ' +
-                'the server. Displayed samples may lag until the backlog drains.';
-              return (
-                <p>
-                  {stale ? 'Stale' : 'Live'} · Last sample{' '}
-                  {new Date(telemetry.latest.collected_at).toLocaleString()} ·{' '}
-                  {telemetry.latest.projected ? 'Projected to linked hardware' : 'Agent only'}
-                  {spoolDepth > 0 && (
-                    <>
-                      {' · '}
-                      <span
-                        className="agent-telemetry__catchup"
-                        title={catchUpLabel}
-                        aria-label={catchUpLabel}
-                      >
-                        Catching up · {spoolDepth} samples buffered
-                        {telemetry.spool?.bytes != null &&
-                          ` (${formatBytes(telemetry.spool.bytes)})`}
-                      </span>
-                    </>
-                  )}
-                </p>
-              );
-            })()}
             <div className="agent-telemetry__cards">
               {Object.entries(SUMMARY_LABELS).map(([key, label]) => (
                 <article key={key}>
@@ -469,24 +505,41 @@ export default function AgentDetailPage() {
               <HistoryChart label="Network receive" metric="net_rx_bps" points={history} />
               <HistoryChart label="Temperature" metric="max_temp_c" points={history} />
             </div>
-            {telemetry.readiness
-              ?.filter((item) => item.state === 'degraded' || item.state === 'unavailable')
-              .map((item) => (
-                <aside role="alert" key={item.collector}>
-                  <strong>
-                    {item.collector}: {item.state}
-                  </strong>{' '}
-                  {item.reason}
-                  {item.remediation ? ` — ${item.remediation}` : ''}
-                </aside>
-              ))}
             <DeviceTable title="Filesystems" rows={telemetry.latest.payload?.filesystems} />
             <DeviceTable title="Disks" rows={telemetry.latest.payload?.disks} />
             <DeviceTable title="Interfaces" rows={telemetry.latest.payload?.interfaces} />
             <DeviceTable title="Temperatures" rows={telemetry.latest.payload?.temperatures} />
+            {/* Docker is absent from the payload in the normal case — the
+                capability's include_docker default is false — so the whole
+                section disappears rather than rendering an empty table. Note
+                the payload's `docker` is a dict ({containers, total, running,
+                truncated}, internal/collect/host/docker.go:124), never a row
+                array, so only `.containers` may reach DeviceTable; handing it
+                the dict would make Object.keys(rows[0]) a nonsense header. */}
+            {telemetry.latest.payload?.docker && (
+              <div className="agent-telemetry__docker">
+                <h3>Docker</h3>
+                <p>
+                  {telemetry.latest.payload.docker.running} of{' '}
+                  {telemetry.latest.payload.docker.total} containers running
+                </p>
+                {telemetry.latest.payload.docker.truncated && (
+                  <aside role="alert">
+                    This host reports more than 100 containers; only the first 100 are collected and
+                    the sample is marked degraded.
+                  </aside>
+                )}
+                {/* Container rows are collector-shaped: id / name / image / state /
+                    status, plus cpu_pct, memory_used_bytes, memory_limit_bytes,
+                    memory_pct and network_rx_bytes / network_tx_bytes from
+                    dockerStatsSummary (docker.go:47-78) — collected for running
+                    containers only. DeviceTable derives its columns from the first
+                    row, so a stats-less first container yields a narrower table.
+                    That is acceptable and identical to the four tables above. */}
+                <DeviceTable title="Containers" rows={telemetry.latest.payload.docker.containers} />
+              </div>
+            )}
           </>
-        ) : (
-          <p>No host samples received yet.</p>
         )}
         {!presence?.hardware && (
           <p>

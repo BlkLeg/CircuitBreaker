@@ -320,4 +320,150 @@ describe('AgentDetailPage', () => {
     await waitFor(() => expect(screen.getByText(/Last sample/)).toBeInTheDocument());
     expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
   });
+
+  // ── Task 17: gaps that only show up when there is no sample ───────────────
+
+  it('renders readiness warnings for an agent that has never produced a sample', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    // The issue-4 case: /proc is unreadable, so the collector reports
+    // readiness and never produces a sample. Nesting the warning inside the
+    // `latest` ternary made this exact failure invisible.
+    getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: null,
+        readiness: [
+          {
+            collector: 'host.core',
+            state: 'unavailable',
+            reason: '/proc unreadable',
+            remediation: 'check agent permissions',
+          },
+          // `disabled` is not a fault and must stay filtered out.
+          { collector: 'host.docker', state: 'disabled', reason: 'not enabled', remediation: null },
+        ],
+      },
+    });
+
+    renderDetail();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('host.core: unavailable');
+    expect(alert).toHaveTextContent('/proc unreadable');
+    expect(alert).toHaveTextContent('check agent permissions');
+    expect(screen.getByText(/No host samples received yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/host\.docker/)).not.toBeInTheDocument();
+  });
+
+  it('shows the catch-up indicator for an agent with a backlog but no sample yet', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue({
+      data: { latest: null, readiness: [], spool: { depth: 42, bytes: 1024 } },
+    });
+
+    renderDetail();
+
+    const indicator = await screen.findByText(/Catching up/);
+    expect(indicator).toHaveTextContent('42 samples buffered');
+    expect(indicator).toHaveTextContent('1.0 KB');
+    expect(screen.getByText(/No host samples received yet/)).toBeInTheDocument();
+  });
+
+  it('shows the effective cadence alongside the live/stale state', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: { collected_at: new Date().toISOString(), projected: false, summary: {} },
+        readiness: [],
+        capability: { enabled: true, config: { interval_s: 60 } },
+      },
+    });
+
+    renderDetail();
+
+    const status = await screen.findByText(/Last sample/);
+    expect(status).toHaveTextContent('Live');
+    expect(status).toHaveTextContent('Cadence 60s');
+  });
+
+  it('omits the cadence segment while the capability registry is still loading', async () => {
+    // `interval` comes from the fetched registry (Task 14), so before
+    // GET /agents/capability-defaults resolves there is no cadence to show.
+    // Rendering the label anyway produced a bare "Cadence s".
+    const { getAgentTelemetry, getCapabilityDefaults } = await import('../api/agents');
+    getCapabilityDefaults.mockReturnValue(new Promise(() => {}));
+    getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: { collected_at: new Date().toISOString(), projected: false, summary: {} },
+        readiness: [],
+        capability: { enabled: true, config: {} },
+      },
+    });
+
+    renderDetail();
+
+    const status = await screen.findByText(/Last sample/);
+    expect(status).toHaveTextContent('Live');
+    expect(status).not.toHaveTextContent('Cadence');
+  });
+
+  it('renders the Docker container table and truncation warning', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: {
+          collected_at: new Date().toISOString(),
+          projected: false,
+          summary: {},
+          payload: {
+            docker: {
+              containers: [
+                {
+                  id: 'abc',
+                  name: '/web',
+                  image: 'nginx',
+                  state: 'running',
+                  status: 'Up 2 days',
+                },
+              ],
+              total: 101,
+              running: 1,
+              truncated: true,
+            },
+          },
+        },
+        readiness: [],
+        capability: { enabled: true, config: { interval_s: 30, include_docker: true } },
+      },
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText('Containers')).toBeInTheDocument();
+    expect(screen.getByText(/1 of 101 containers running/)).toBeInTheDocument();
+    expect(screen.getByText('/web')).toBeInTheDocument();
+    expect(screen.getByText('nginx')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/100 containers/);
+  });
+
+  it('does not render a Docker section when the collector is disabled', async () => {
+    const { getAgentTelemetry } = await import('../api/agents');
+    getAgentTelemetry.mockResolvedValue({
+      data: {
+        latest: {
+          collected_at: new Date().toISOString(),
+          projected: false,
+          summary: {},
+          payload: { filesystems: [{ mountpoint: '/', used_pct: 41.2 }] },
+        },
+        readiness: [],
+        capability: { enabled: true, config: { interval_s: 30, include_docker: false } },
+      },
+    });
+
+    renderDetail();
+
+    expect(await screen.findByText('Filesystems')).toBeInTheDocument();
+    expect(screen.queryByText('Docker')).not.toBeInTheDocument();
+    expect(screen.queryByText('Containers')).not.toBeInTheDocument();
+  });
 });
