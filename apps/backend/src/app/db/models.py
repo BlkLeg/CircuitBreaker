@@ -487,6 +487,35 @@ class AgentCapabilityReadiness(Base):
     __table_args__ = (Index("ix_agent_readiness_agent_time", "agent_id", "updated_at"),)
 
 
+class AgentNetwork(Base):
+    """The agent's current directly connected networks, as reported on `hello` (D-1).
+
+    One row per agent — this is the *latest* report, not a history — holding the
+    normalized `HelloPayload.networks` list (see
+    `agent_registry.record_network_facts`). It is the sole input to the derived
+    half of an agent's probe scope, so the scheduler, the UI and the audit trail
+    can all point at one generation and agree on what produced that scope.
+
+    `generation` advances only when the normalized facts actually differ, which
+    is what makes "the agent's scope changed" a decidable question; `observed_at`
+    is correspondingly when *these* facts were first seen, not when the agent
+    last mentioned them (liveness is `agents.last_seen_at`).
+    """
+
+    __tablename__ = "agent_networks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}, ...]
+    facts: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    __table_args__ = (UniqueConstraint("agent_id", name="uq_agent_networks_agent_id"),)
+
+
 class UptimeEvent(Base):
     """Rolling history of probe results for a monitored hardware device."""
 

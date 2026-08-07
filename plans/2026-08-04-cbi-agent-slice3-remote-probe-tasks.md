@@ -1638,7 +1638,16 @@ Recorded where this plan does not follow the design document literally.
    Such an entry names no directly connected network and so cannot change §3's derived scope, but
    it would give Task 2's generation comparison something to churn on. **Slice 4 must not read the
    report as a complete list of up interfaces** — if it needs interface-type facts for
-   address-less interfaces, that is a new field, not an assumption about this one.
+   address-less interfaces, that is a new field, not an assumption about this one. The Go field is
+   also tagged `json:"networks,omitempty"`, so a host with nothing directly connected omits the key
+   rather than sending `[]`: Task 2's backend rule accepts an explicit empty report and clears the
+   stored one, but no shipping agent build produces that frame today.
+7. **`agent_networks.observed_at` is not a freshness timestamp.** Slice 4's storage note asks for
+   "the latest normalized report with a generation and timestamp"; Task 2 moves `observed_at` only
+   when `generation` moves, so it answers "since when have these been the agent's networks", not
+   "when did the agent last say so". Liveness is `agents.last_seen_at`, and refreshing the row on
+   every reconnect would be a write carrying no new information — the same reasoning
+   `record_spool_stats` already documents for `spool_reported_at`.
 
 ## Open decisions requiring confirmation
 

@@ -20,12 +20,13 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core import agent_crypto
 from app.core.time import utcnow
-from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, Hardware
-from app.schemas.agent_frame import TYPE_KEY_ROTATE, HelloPayload
+from app.db.models import Agent, AgentCapabilityGrant, AgentEvent, AgentNetwork, Hardware
+from app.schemas.agent_frame import TYPE_KEY_ROTATE, HelloPayload, NetworkFacts
 from app.services.agent_capabilities import (
     CAPABILITY_DEFINITIONS,
     default_config_for,
@@ -264,6 +265,8 @@ def update_hello_metadata(db: Session, agent: Agent, payload: HelloPayload) -> N
             agent.pending_update_version = None
     if "primary_macs" in fields_set:
         agent.primary_macs = payload.primary_macs
+    if "networks" in fields_set:
+        record_network_facts(db, agent, payload.networks)
     if "spool_depth" in fields_set:
         # The at-connect backlog snapshot (D-12). `hello` has no
         # `spool_bytes` field, so the size is genuinely unknown here — None,
@@ -304,6 +307,77 @@ def record_spool_stats(agent: Agent, depth: int, size_bytes: int | None = None) 
     if size_bytes is not None:
         agent.spool_bytes = size_bytes
     agent.spool_reported_at = utcnow()
+    return True
+
+
+def _normalized_network_facts(networks: list[NetworkFacts]) -> list[dict[str, Any]]:
+    """Canonical form of a reported `hello.networks` list.
+
+    Every list is sorted — interfaces by name, and each interface's flags and
+    addresses among themselves — so that "did the agent's networks change?" is
+    a plain equality test against what is already stored. The agent sorts too
+    (`internal/hostinfo/netfacts.go`), but that ordering is one agent build's
+    behavior, not a wire contract; the generation counter is a scope version
+    Slice 4 cancels in-flight work on, and it must not tick because an older
+    or differently-ordered build enumerated the same interfaces in another
+    sequence.
+    """
+    return sorted(
+        ({"name": n.name, "flags": sorted(n.flags), "addrs": sorted(n.addrs)} for n in networks),
+        key=lambda entry: cast(str, entry["name"]),
+    )
+
+
+def record_network_facts(db: Session, agent: Agent, networks: list[NetworkFacts]) -> bool:
+    """Store the agent's directly connected networks, returning whether the
+    report actually changed (D-1).
+
+    `agent_networks` holds one current row per agent, and `generation`
+    advances only on a real change: it is the scope version the scheduler, the
+    UI and the audit trail all cite, so a counter that moved on every
+    reconnect would say "this agent's scope changed" about nothing.
+    `observed_at` follows the same rule and is therefore when *these* facts
+    were first seen, not when the agent last mentioned them — liveness is
+    already `agents.last_seen_at`, mirroring `record_spool_stats`.
+
+    The caller gates this on presence in `payload.model_fields_set`, never on
+    truthiness, which is the idiom `update_hello_metadata` applies to every
+    other field: a build predating network reporting omits the key entirely
+    and must leave the last known report standing, while an explicit `[]` is
+    a real report of "nothing directly connected" and must replace it — an
+    agent that has lost every usable interface must not keep a stale,
+    wider-than-reality scope. Today's Go build tags `networks` `omitempty` and
+    so cannot yet send that `[]`; the rule belongs to the backend, not to one
+    client's encoding. Caller owns the commit.
+    """
+    facts = _normalized_network_facts(networks)
+    row = (
+        db.execute(select(AgentNetwork).where(AgentNetwork.agent_id == agent.id)).scalars().first()
+    )
+    if row is None:
+        # One agent can hold two live /link connections at once — cb-agent's
+        # uninstall notifier deliberately opens a second one alongside the
+        # daemon's (see `register_agent_connection`'s call site) — so two
+        # first-ever hellos can race between the select above and the caller's
+        # commit. ON CONFLICT makes the loser a no-op instead of an
+        # IntegrityError that would tear down an otherwise healthy link; its
+        # facts, if they somehow differ, land on its next hello. The suppressed
+        # insert reports no change, because the racing winner is the call that
+        # created generation 1 and already reported it.
+        return (
+            db.execute(
+                pg_insert(AgentNetwork)
+                .values(agent_id=agent.id, generation=1, observed_at=utcnow(), facts=facts)
+                .on_conflict_do_nothing(index_elements=["agent_id"])
+                .returning(AgentNetwork.id)
+            ).scalar_one_or_none()
+            is not None
+        )
+    if row.facts == facts:
+        return False
+    row.generation += 1
+    row.observed_at = utcnow()
+    row.facts = facts
     return True
 
 
