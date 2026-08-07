@@ -331,7 +331,7 @@ class TestM17CIDRSizeEnforcement:
     """M-17: /8 CIDRs must be rejected; /24 must be accepted."""
 
     @pytest.mark.asyncio
-    async def test_slash8_cidr_returns_422(self, client, auth_headers):
+    async def test_slash8_cidr_returns_422(self, client, auth_headers, nmap_enabled):
         resp = await client.post(
             "/api/v1/discovery/scan",
             headers=auth_headers,
@@ -342,7 +342,7 @@ class TestM17CIDRSizeEnforcement:
         )
 
     @pytest.mark.asyncio
-    async def test_slash24_cidr_accepted(self, client, auth_headers):
+    async def test_slash24_cidr_accepted(self, client, auth_headers, nmap_enabled):
         resp = await client.post(
             "/api/v1/discovery/scan",
             headers=auth_headers,

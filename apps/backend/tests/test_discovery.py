@@ -61,7 +61,7 @@ def _make_scan_job_with_results(db_session):
 
 
 @pytest.mark.asyncio
-async def test_create_scan_valid_cidr(client, auth_headers):
+async def test_create_scan_valid_cidr(client, auth_headers, nmap_enabled):
     """Valid CIDR → 200/201/202 with a status field in the response."""
     payload = {"cidr": "192.168.1.0/24", "scan_types": ["nmap"]}
     resp = await client.post(SCAN_URL, json=payload, headers=auth_headers)
@@ -84,7 +84,7 @@ async def test_create_scan_valid_cidr(client, auth_headers):
         "",
     ],
 )
-async def test_create_scan_invalid_cidr_returns_422(client, auth_headers, bad_cidr):
+async def test_create_scan_invalid_cidr_returns_422(client, auth_headers, bad_cidr, nmap_enabled):
     """Malformed CIDR values should be rejected with 422."""
     payload = {"cidr": bad_cidr, "scan_types": ["nmap"]}
     resp = await client.post(SCAN_URL, json=payload, headers=auth_headers)
@@ -102,7 +102,7 @@ async def test_create_scan_invalid_cidr_returns_422(client, auth_headers, bad_ci
         "-sV $(whoami)",
     ],
 )
-async def test_nmap_shell_metacharacter_rejected(client, auth_headers, bad_args):
+async def test_nmap_shell_metacharacter_rejected(client, auth_headers, bad_args, nmap_enabled):
     """nmap_arguments containing shell metacharacters should be rejected with 422."""
     payload = {
         "cidr": "10.0.0.0/24",
@@ -114,7 +114,7 @@ async def test_nmap_shell_metacharacter_rejected(client, auth_headers, bad_args)
 
 
 @pytest.mark.asyncio
-async def test_valid_nmap_arguments_accepted(client, auth_headers):
+async def test_valid_nmap_arguments_accepted(client, auth_headers, nmap_enabled):
     """Safe nmap arguments like '-sV -T4' should be accepted."""
     payload = {
         "cidr": "10.0.0.0/24",

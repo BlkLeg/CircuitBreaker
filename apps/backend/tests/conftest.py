@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, select
 
 # ── Testcontainers: start Postgres BEFORE any app import ──────────────────────
 _PG_CONTAINER = None
@@ -111,6 +112,53 @@ def app_cfg(setup_db):
 # ── Per-test DB session (rolled back after each test) ─────────────────────────
 
 
+def _agent_ids_committed() -> set[int]:
+    """Agent ids visible to a *fresh* connection, i.e. genuinely committed."""
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as probe:
+        return {row[0] for row in probe.execute(select(Agent.id)).all()}
+
+
+def _reap_agents_committed_outside_the_test(known_agent_ids: set[int]) -> None:
+    """Delete `agents` rows that this test committed on some *other* connection.
+
+    Several agent suites must commit for real rather than write through
+    `db_session`: `test_ws_agents_link.py::_active_agent_with_key` exists
+    because `link_stream` opens its own `SessionLocal()` and therefore cannot
+    see `db_session`'s uncommitted SAVEPOINT, and the enrollment-cap tests
+    genuinely race independent sessions. Those rows are outside the outer
+    transaction, so the rollback below cannot undo them, and they survive into
+    every later test in the session — which is what made
+    `tests/api/test_agents_api.py::test_list_agents_returns_summaries` (it
+    asserts the agent list equals exactly the two rows it created) fail
+    whenever a ws suite ran first.
+
+    This *must* run after `outer_tx.rollback()`, which is why it lives in
+    `db_session` and not in `ws_client`. A route handler running under the
+    dependency override updates those committed rows through `db_session`,
+    taking row locks inside the still-open outer transaction. `ws_client`
+    depends on `db_session`, so it is torn down *first* — deleting from there
+    blocks forever on a lock held by a connection that is `idle in
+    transaction` and will not be rolled back until the fixture below finishes.
+    (Observed exactly that: `DELETE FROM agents WHERE agents.id IN (25)`
+    waiting on `Lock/transactionid` for over an hour.)
+    """
+    from app.db.models import Agent
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as reaper:
+        leaked = [
+            row[0]
+            for row in reaper.execute(select(Agent.id)).all()
+            if row[0] not in known_agent_ids
+        ]
+        if leaked:
+            reaper.execute(delete(Agent).where(Agent.id.in_(leaked)))
+            reaper.commit()
+
+
 @pytest.fixture
 def db_session(setup_db):
     """
@@ -120,11 +168,16 @@ def db_session(setup_db):
     handlers call session.commit(), SQLAlchemy redirects that to a SAVEPOINT.
     The fixture rolls back the outer transaction on teardown, giving each test
     a clean slate without recreating the schema.
+
+    Rows committed on *other* connections escape that rollback; agent rows are
+    the case tests actually hit, so they are reaped explicitly on teardown —
+    see _reap_agents_committed_outside_the_test.
     """
     from sqlalchemy.orm import Session
 
     from app.db.session import engine
 
+    known_agent_ids = _agent_ids_committed()
     connection = engine.connect()
     outer_tx = connection.begin()
     session = Session(bind=connection, join_transaction_mode="create_savepoint")
@@ -134,6 +187,7 @@ def db_session(setup_db):
         session.close()
         outer_tx.rollback()
         connection.close()
+        _reap_agents_committed_outside_the_test(known_agent_ids)
 
 
 @pytest_asyncio.fixture
@@ -226,6 +280,10 @@ def ws_client(db_session):
             app.dependency_overrides[get_db] = override_get_db
             nats_client.connect = AsyncMock(return_value=None)
             os.environ["CB_DATA_DIR"] = tmp_data_dir
+            # NB: agent rows a ws test commits outside the savepoint are
+            # reaped by the db_session fixture, not here — see the comment on
+            # _reap_agents_committed_outside_the_test for why the cleanup
+            # cannot live in this fixture.
             with TestClient(app) as tc:
                 yield tc
         finally:
@@ -361,3 +419,34 @@ def redis_mock():
     redis_client.delete.side_effect = _delete
 
     return _get_redis, redis_client, store
+
+
+@pytest.fixture
+def nmap_enabled(db_session):
+    """Turn on the ``nmap_enabled`` opt-in for tests that exercise nmap scan paths.
+
+    ``discovery_service.create_scan_job`` refuses any scan whose ``scan_types``
+    require nmap unless ``AppSettings.nmap_enabled`` is set — an opt-in gate
+    added in 11dcb910 (migration 0079) that defaults to False. The scan API
+    flattens that refusal into ``422 Invalid scan request parameters``, the
+    same status the CIDR/argument validators produce.
+
+    That collision is why this fixture exists rather than the tests simply
+    asserting 422: the discovery/security tests predate the gate, and with the
+    flag off they no longer reach validation at all. Some then *failed*
+    (``test_create_scan_valid_cidr``), but the more dangerous ones *passed
+    vacuously* — ``test_slash8_cidr_returns_422`` and
+    ``test_nmap_shell_metacharacter_rejected`` were getting their 422 from the
+    disabled flag, so neither the M-17 CIDR-size limit nor the shell-injection
+    rejection was actually being verified. Enabling the flag restores what
+    those tests were written to check.
+
+    The write lands on ``db_session``'s SAVEPOINT and is rolled back with the
+    rest of the test, so it cannot leak into the session.
+    """
+    from app.services.settings_service import get_or_create_settings
+
+    cfg = get_or_create_settings(db_session)
+    cfg.nmap_enabled = True
+    db_session.flush()
+    return cfg

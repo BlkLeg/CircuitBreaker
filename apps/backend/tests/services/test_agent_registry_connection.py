@@ -542,13 +542,29 @@ async def test_concurrent_pending_enrollment_attempts_cannot_overshoot_cap_when_
                 svc.release_pending_enrollment_lock(token), loop
             ).result()
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        results = await asyncio.gather(
-            *(loop.run_in_executor(executor, _attempt_new_pending_agent) for _ in range(3))
-        )
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            results = await asyncio.gather(
+                *(loop.run_in_executor(executor, _attempt_new_pending_agent) for _ in range(3))
+            )
 
-    assert sum(results) == 1  # exactly one new row — never overshoots the cap
-    assert db_session.query(Agent).filter_by(hostname="race-test-locked").count() == 1
+        assert sum(results) == 1  # exactly one new row — never overshoots the cap
+        assert db_session.query(Agent).filter_by(hostname="race-test-locked").count() == 1
+    finally:
+        # The rows above are committed on their own SessionLocal() connections
+        # — deliberately, since that is the only way to make the cross-session
+        # race real — so `db_session`'s per-test SAVEPOINT rollback cannot undo
+        # them. Left behind, they leak a permanently-`pending` agent into every
+        # later test in the session (this is what broke
+        # tests/api/test_agents_api.py::test_list_agents_returns_summaries).
+        # Clean up on the same kind of connection that created them.
+        with SessionLocal() as cleanup:
+            cleanup.query(Agent).filter_by(hostname="race-test-locked").delete(
+                synchronize_session=False
+            )
+            cleanup.commit()
+        # db_session holds a snapshot that still contains the deleted rows.
+        db_session.expire_all()
     # Sanity-checked by hand (not shipped as its own test — asserting a raw
     # race condition reliably reproduces is inherently timing-dependent and
     # flaky against a fast local test DB): removing the lock from

@@ -12,6 +12,48 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+def _assert_endpoint_not_exposed(resp, path: str) -> None:
+    """Assert `path` is not served by the API, independently of the frontend build.
+
+    Both of the endpoint families below (magic link, invite resend) were
+    specified but never wired into a router — `magic_link_service.py` exists
+    with no caller, and nothing in apps/frontend/src requests either path.
+    These tests therefore pin "not exposed", and used to do it by asserting an
+    exact `404`.
+
+    That assertion is not environment-independent. main.py registers the SPA
+    fallback `@app.get("/{full_path:path}")` *only* when a frontend build
+    directory exists. When it does (any dev box that has run `npm run build`,
+    and every production image), a POST to an unrouted path partially matches
+    that GET catch-all, so Starlette answers `405 Method Not Allowed`; when it
+    does not, nothing matches and the answer is `404`. Identical request, two
+    status codes, decided by whether apps/frontend/dist happens to be present
+    — which is exactly why these tests failed locally and not in CI.
+
+    So assert the real contract directly against the route table (fully
+    deterministic) and accept either "absent" status code at the HTTP layer.
+    """
+    from app.main import app
+
+    # Match the way Starlette itself resolves a path, so a parameterised route
+    # (e.g. "/api/v1/admin/invites/{invite_id}/resend") is detected too — a
+    # plain string comparison would miss it. The SPA fallback is excluded
+    # because its "{full_path:path}" pattern matches literally everything;
+    # it is the artefact being controlled for, not a real handler.
+    matching = [
+        route.path
+        for route in app.routes
+        if getattr(route, "path_regex", None) is not None
+        and "{full_path" not in getattr(route, "path", "")
+        and route.path_regex.match(path)
+    ]
+    assert not matching, f"{path} is now served by {matching} — update this test"
+    assert resp.status_code in {404, 405}, (
+        f"expected an 'endpoint absent' status for {path}, got {resp.status_code}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Forgot Password
 # ---------------------------------------------------------------------------
@@ -104,49 +146,49 @@ class TestResetPassword:
 
 
 class TestMagicLink:
+    """The magic-link endpoints are not exposed. `magic_link_service.py` is
+    implemented but no router ever mounts it, and no frontend code calls it.
+    See `_assert_endpoint_not_exposed` for why these assert absence rather
+    than a literal status code."""
+
+    REQUEST_URL = "/api/v1/auth/magic-link/request"
+    VERIFY_URL = "/api/v1/auth/magic-link/verify"
+
     @pytest.mark.asyncio
-    async def test_magic_link_request_returns_200(self, client, factories, db_session, redis_mock):
+    async def test_magic_link_request_is_not_exposed(
+        self, client, factories, db_session, redis_mock
+    ):
         user = factories.user(role="viewer")
-        resp = await client.post(
-            "/api/v1/auth/magic-link/request",
-            json={"email": user.email},
-        )
-        assert resp.status_code == 404
+        resp = await client.post(self.REQUEST_URL, json={"email": user.email})
+        _assert_endpoint_not_exposed(resp, self.REQUEST_URL)
 
     @pytest.mark.asyncio
     async def test_magic_link_request_no_enumeration(
         self, client, factories, db_session, redis_mock
     ):
+        """Known and unknown addresses must be indistinguishable. While the
+        endpoint is unrouted that holds trivially, but the assertion still
+        pins it the day the route is wired up."""
         user = factories.user(role="viewer")
-        real = await client.post(
-            "/api/v1/auth/magic-link/request",
-            json={"email": user.email},
-        )
-        fake = await client.post(
-            "/api/v1/auth/magic-link/request",
-            json={"email": "ghost@nowhere.invalid"},
-        )
-        assert real.status_code == fake.status_code == 404
+        real = await client.post(self.REQUEST_URL, json={"email": user.email})
+        fake = await client.post(self.REQUEST_URL, json={"email": "ghost@nowhere.invalid"})
+
+        assert real.status_code == fake.status_code
+        assert real.text == fake.text
+        _assert_endpoint_not_exposed(real, self.REQUEST_URL)
 
     @pytest.mark.asyncio
-    async def test_magic_link_verify_with_valid_token(
+    async def test_magic_link_verify_is_not_exposed(
         self, client, factories, db_session, redis_mock
     ):
         factories.user(role="viewer")
-
-        resp = await client.post(
-            "/api/v1/auth/magic-link/verify",
-            json={"token": "ml-valid-tok"},
-        )
-        assert resp.status_code == 404
+        resp = await client.post(self.VERIFY_URL, json={"token": "ml-valid-tok"})
+        _assert_endpoint_not_exposed(resp, self.VERIFY_URL)
 
     @pytest.mark.asyncio
     async def test_magic_link_verify_invalid_token(self, client, redis_mock):
-        resp = await client.post(
-            "/api/v1/auth/magic-link/verify",
-            json={"token": "bogus-token"},
-        )
-        assert resp.status_code == 404
+        resp = await client.post(self.VERIFY_URL, json={"token": "bogus-token"})
+        _assert_endpoint_not_exposed(resp, self.VERIFY_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +237,7 @@ class TestAdminResetPassword:
 
 class TestResendInvite:
     @pytest.mark.asyncio
-    async def test_resend_invite_without_smtp_returns_400(
-        self, client, factories, auth_headers, db_session
-    ):
+    async def test_resend_invite_is_not_exposed(self, client, factories, auth_headers, db_session):
         from app.core.time import utcnow
         from app.db.models import UserInvite
 
@@ -212,19 +252,15 @@ class TestResendInvite:
         db_session.add(invite)
         db_session.flush()
 
-        resp = await client.post(
-            f"/api/v1/admin/invites/{invite.id}/resend",
-            headers=auth_headers,
-        )
-        assert resp.status_code == 404
+        url = f"/api/v1/admin/invites/{invite.id}/resend"
+        resp = await client.post(url, headers=auth_headers)
+        _assert_endpoint_not_exposed(resp, url)
 
     @pytest.mark.asyncio
-    async def test_resend_invite_404_for_missing(self, client, auth_headers):
-        resp = await client.post(
-            "/api/v1/admin/invites/99999/resend",
-            headers=auth_headers,
-        )
-        assert resp.status_code == 404
+    async def test_resend_invite_not_exposed_for_missing_invite(self, client, auth_headers):
+        url = "/api/v1/admin/invites/99999/resend"
+        resp = await client.post(url, headers=auth_headers)
+        _assert_endpoint_not_exposed(resp, url)
 
 
 # ---------------------------------------------------------------------------
