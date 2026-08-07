@@ -372,5 +372,36 @@
         "spool_depth": 137, "capability_schema": 2
       }
     }
+  },
+  {
+    "description": "hello — with directly connected network facts",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-08-07T09:00:00Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "branch-gw.local", "machine_id_hash": "beeff00d",
+        "os": "linux", "os_version": "6.9", "arch": "amd64", "agent_version": "0.4.0",
+        "primary_macs": ["aa:bb:cc:11:22:33", "aa:bb:cc:11:22:34"],
+        "readiness": [{"collector": "agent.identity", "state": "ready"}],
+        "networks": [
+          {"name": "eth0", "flags": ["up", "broadcast", "multicast"], "addrs": ["10.20.0.5/24", "fd00:20::5/64"]},
+          {"name": "eth1", "flags": ["up", "broadcast", "multicast"], "addrs": ["192.168.50.2/23"]}
+        ],
+        "spool_depth": 0, "capability_schema": 2
+      }
+    }
+  },
+  {
+    "description": "hello — networks reported as an empty list (nothing directly connected)",
+    "json": {
+      "v": 1, "type": "hello", "seq": 0, "ts": "2026-08-07T09:00:20Z",
+      "payload": {
+        "device_pk": "ab12cd34", "hostname": "sealed.local", "machine_id_hash": "beeff00e",
+        "os": "linux", "os_version": "6.9", "arch": "arm64", "agent_version": "0.4.0",
+        "primary_macs": [],
+        "readiness": [{"collector": "agent.identity", "state": "ready"}],
+        "networks": [],
+        "spool_depth": 0, "capability_schema": 2
+      }
+    }
   }
 ]

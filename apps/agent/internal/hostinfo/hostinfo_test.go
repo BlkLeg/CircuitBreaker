@@ -1,6 +1,7 @@
 package hostinfo
 
 import (
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -75,4 +76,20 @@ func TestCollect(t *testing.T) {
 	// Sanity: the result must actually satisfy the Task 1 schema type, not just structurally
 	// resemble it.
 	var _ frame.HelloPayload = got
+}
+
+// TestCollect_NetworksAreWiredFromNetFacts pins the single join between the hello assembler and
+// the netfacts collector — nothing else asserts that Collect assigns the field at all. It has to
+// compare against a second netfacts read rather than against the host's real interfaces, and that
+// only witnesses the wiring where the host reports something: inside a network namespace with no
+// usable interface both sides are nil and a Collect that never touched Networks would pass. Skip
+// loudly there rather than bank a green the environment cannot support.
+func TestCollect_NetworksAreWiredFromNetFacts(t *testing.T) {
+	want := networkFacts()
+	if len(want) == 0 {
+		t.Skip("host reports no usable interfaces; the comparison would degenerate to nil == nil")
+	}
+	if got := Collect("1.2.3").Networks; !reflect.DeepEqual(got, want) {
+		t.Errorf("Collect().Networks = %+v, want the netfacts report %+v", got, want)
+	}
 }

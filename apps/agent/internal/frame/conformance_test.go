@@ -128,6 +128,59 @@ func roundTripHelloPayload(t *testing.T, raw json.RawMessage) {
 	if len(first.Readiness) != len(second.Readiness) || (len(first.Readiness) > 0 && !reflect.DeepEqual(first.Readiness, second.Readiness)) {
 		t.Errorf("HelloPayload.Readiness round-trip mismatch: got %+v, want %+v", second.Readiness, first.Readiness)
 	}
+	compareNetworkFacts(t, raw, first.Networks, second.Networks)
+}
+
+// compareNetworkFacts pins the Task 1 `networks` field. Every json tag it depends on — the outer
+// `networks` and each inner one — is spelled literally in wireNetworks below and asserted against
+// what NetworkFacts decoded, so the check is against the fixture and not against Go's own
+// re-encode: a mistyped tag at any level leaves the field zero on *both* sides, which a
+// first-vs-second comparison alone would call a clean round trip. That is not a theoretical
+// hazard — the Python half drops unknown keys silently (pydantic's default extra="ignore"), so a
+// tag only Go agrees with is exactly how `addrs`, the one field the rest of Slice 3 consumes,
+// would arrive empty on the backend with this cross-language gate green.
+func compareNetworkFacts(t *testing.T, raw json.RawMessage, first, second []NetworkFacts) {
+	t.Helper()
+	// The tags here are the assertion; do not replace them with NetworkFacts.
+	type wireNetworks struct {
+		Name  string   `json:"name"`
+		Flags []string `json:"flags"`
+		Addrs []string `json:"addrs"`
+	}
+	var wire struct {
+		Networks []wireNetworks `json:"networks"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("hello payload networks decode error = %v", err)
+	}
+	if len(wire.Networks) != len(first) {
+		t.Fatalf("HelloPayload.Networks decoded %d entries from a fixture carrying %d — check the json tag", len(first), len(wire.Networks))
+	}
+	if len(first) != len(second) {
+		t.Fatalf("HelloPayload.Networks length round-trip mismatch: got %d, want %d", len(second), len(first))
+	}
+	for i := range first {
+		if first[i].Name != wire.Networks[i].Name {
+			t.Errorf("HelloPayload.Networks[%d].Name = %q, fixture carries %q — check the json tag", i, first[i].Name, wire.Networks[i].Name)
+		}
+		if !slicesEqualIgnoringNil(first[i].Flags, wire.Networks[i].Flags) {
+			t.Errorf("HelloPayload.Networks[%d].Flags = %v, fixture carries %v — check the json tag", i, first[i].Flags, wire.Networks[i].Flags)
+		}
+		if !slicesEqualIgnoringNil(first[i].Addrs, wire.Networks[i].Addrs) {
+			t.Errorf("HelloPayload.Networks[%d].Addrs = %v, fixture carries %v — check the json tag", i, first[i].Addrs, wire.Networks[i].Addrs)
+		}
+		if first[i].Name != second[i].Name {
+			t.Errorf("HelloPayload.Networks[%d].Name round-trip mismatch: got %q, want %q", i, second[i].Name, first[i].Name)
+		}
+		// Same nil-vs-empty tolerance as PrimaryMACs above: omitempty drops a present-but-empty
+		// array on re-encode.
+		if !slicesEqualIgnoringNil(first[i].Flags, second[i].Flags) {
+			t.Errorf("HelloPayload.Networks[%d].Flags round-trip mismatch: got %v, want %v", i, second[i].Flags, first[i].Flags)
+		}
+		if !slicesEqualIgnoringNil(first[i].Addrs, second[i].Addrs) {
+			t.Errorf("HelloPayload.Networks[%d].Addrs round-trip mismatch: got %v, want %v", i, second[i].Addrs, first[i].Addrs)
+		}
+	}
 }
 
 func slicesEqualIgnoringNil(a, b []string) bool {

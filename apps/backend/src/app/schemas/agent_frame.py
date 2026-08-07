@@ -72,6 +72,22 @@ class Readiness(BaseModel):
     missing: list[str] = Field(default_factory=list)
 
 
+class NetworkFacts(BaseModel):
+    """One of the agent host's directly connected networks, carried in HelloPayload.networks
+    (D-1), mirroring apps/agent/internal/frame/frame.go's NetworkFacts.
+
+    ``addrs`` are CIDR strings holding the interface's own address *with* its prefix length
+    ("10.0.0.5/24", "fd00::1/64") — the prefix is what makes the network directly connected and
+    is the whole input to the slice-3 scope evaluator. ``flags`` uses Go's net.Flags vocabulary
+    ("up", "broadcast", "pointtopoint", ...). These are reported facts, not policy: the agent
+    reports every usable address it has and the server decides which fall inside scope.
+    """
+
+    name: str
+    flags: list[str] = Field(default_factory=list)
+    addrs: list[str] = Field(default_factory=list)
+
+
 class HelloPayload(BaseModel):
     """agent -> server `hello` payload (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6).
 
@@ -88,6 +104,7 @@ class HelloPayload(BaseModel):
     agent_version: str | None = None
     primary_macs: list[str] = Field(default_factory=list)
     readiness: list[Readiness] = Field(default_factory=list)
+    networks: list[NetworkFacts] = Field(default_factory=list)
     spool_depth: int = 0
     capability_schema: int = 1
 

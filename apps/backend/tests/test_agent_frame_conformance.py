@@ -194,6 +194,34 @@ def test_hello_absent_capability_schema_defaults_to_legacy():
     assert schema_2_entries, "corpus must cover a schema-2 hello negotiation"
 
 
+def test_hello_networks_survive_the_typed_payload_by_name():
+    """The `networks` field has to be asserted by name, not just round-tripped.
+
+    Pydantic ignores unknown keys, so a model that never declared ``networks`` drops the
+    agent's whole network report in silence and ``test_corpus_typed_payloads_decode_and_round_trip``
+    above still passes — both sides of its comparison are equally empty. This is the Python half
+    of the Task 1 wire contract; the Go half is compareNetworkFacts in
+    apps/agent/internal/frame/conformance_test.go, against the same fixture.
+    """
+    carrying = [
+        entry
+        for entry in _corpus_entries_of_type(TYPE_HELLO)
+        if entry["json"]["payload"].get("networks")
+    ]
+    assert carrying, "corpus must cover a hello carrying directly connected network facts"
+
+    for entry in carrying:
+        wire = entry["json"]["payload"]["networks"]
+        payload = HelloPayload.model_validate(entry["json"]["payload"])
+        assert [facts.model_dump() for facts in payload.networks] == wire
+        assert HelloPayload.model_validate_json(payload.model_dump_json()) == payload
+
+    # Optional on both sides: an agent predating the field and one with nothing directly
+    # connected are both valid, and neither is distinguishable from the other by value.
+    assert HelloPayload.model_validate({}).networks == []
+    assert HelloPayload.model_validate({"networks": []}).networks == []
+
+
 def test_heartbeat_empty_payload_is_distinguishable_from_an_explicit_zero_backlog():
     """D-12's whole point, pinned on the Python side.
 

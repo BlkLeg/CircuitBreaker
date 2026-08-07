@@ -1632,6 +1632,13 @@ Recorded where this plan does not follow the design document literally.
 5. **§7's "editor-level monitor permission" is satisfied by the existing dependency** (D-15).
    `require_write_auth` already requires `{admin, editor}` or a `write:*` scope. Monitor **read**
    routes remain unauthenticated, as they are today; tightening them is a separate change.
+6. **Task 1's `networks` report is not an exhaustive interface inventory.** D-1 says "one entry per
+   non-loopback, up interface"; `hostinfo.netFactsCollector.collect` additionally drops an up,
+   non-loopback interface whose addresses all filter out, so a flags-only interface never appears.
+   Such an entry names no directly connected network and so cannot change §3's derived scope, but
+   it would give Task 2's generation comparison something to churn on. **Slice 4 must not read the
+   report as a complete list of up interfaces** — if it needs interface-type facts for
+   address-less interfaces, that is a new field, not an assumption about this one.
 
 ## Open decisions requiring confirmation
 

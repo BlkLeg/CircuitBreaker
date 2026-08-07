@@ -164,22 +164,39 @@ type CapabilityGrant struct {
 	Config  json.RawMessage `json:"config,omitempty"`
 }
 
+// NetworkFacts is one of the agent host's directly connected networks, carried in
+// HelloPayload.Networks (D-1). Addrs are CIDR strings taken straight from the interface's own
+// addresses ("10.0.0.5/24", "fd00::1/64"), i.e. the host address *with* its prefix length —
+// that prefix is what makes the network "directly connected" and is the only input the slice-3
+// scope evaluator needs. Flags carries net.Flags' own vocabulary ("up", "broadcast",
+// "pointtopoint", ...) as a list rather than net.Flags.String()'s "|"-joined form, so a consumer
+// tests membership instead of substring-matching.
+//
+// These are facts, not policy: which of them end up in an agent's effective probe scope is
+// decided server-side. Reporting an address the evaluator will exclude is correct.
+type NetworkFacts struct {
+	Name  string   `json:"name"`
+	Flags []string `json:"flags,omitempty"`
+	Addrs []string `json:"addrs,omitempty"`
+}
+
 // HelloPayload is the agent -> server `hello` payload's structured shape
 // (specs/2026-07-26-cb-agent-design.md §3.4, §4.3, §4.6). Every field is optional so an
 // old-shaped hello — including today's empty `{}` payload — still decodes: absent fields take
 // their Go zero value rather than failing decode.
 type HelloPayload struct {
-	DevicePK         string      `json:"device_pk,omitempty"`
-	Hostname         string      `json:"hostname,omitempty"`
-	MachineIDHash    string      `json:"machine_id_hash,omitempty"`
-	OS               string      `json:"os,omitempty"`
-	OSVersion        string      `json:"os_version,omitempty"`
-	Arch             string      `json:"arch,omitempty"`
-	AgentVersion     string      `json:"agent_version,omitempty"`
-	PrimaryMACs      []string    `json:"primary_macs,omitempty"`
-	Readiness        []Readiness `json:"readiness,omitempty"`
-	SpoolDepth       int         `json:"spool_depth,omitempty"`
-	CapabilitySchema int         `json:"capability_schema,omitempty"`
+	DevicePK         string         `json:"device_pk,omitempty"`
+	Hostname         string         `json:"hostname,omitempty"`
+	MachineIDHash    string         `json:"machine_id_hash,omitempty"`
+	OS               string         `json:"os,omitempty"`
+	OSVersion        string         `json:"os_version,omitempty"`
+	Arch             string         `json:"arch,omitempty"`
+	AgentVersion     string         `json:"agent_version,omitempty"`
+	PrimaryMACs      []string       `json:"primary_macs,omitempty"`
+	Readiness        []Readiness    `json:"readiness,omitempty"`
+	SpoolDepth       int            `json:"spool_depth,omitempty"`
+	CapabilitySchema int            `json:"capability_schema,omitempty"`
+	Networks         []NetworkFacts `json:"networks,omitempty"`
 }
 
 // HelloAckPayload is the server -> agent `hello.ack` payload's structured shape for the
