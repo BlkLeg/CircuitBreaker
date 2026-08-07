@@ -1881,3 +1881,267 @@ func TestRunOnce_AcceptsSuccessorServerKeyOncePreviousKeyIsNoLongerValid(t *test
 		t.Error("agent never connected using the persisted successor server key")
 	}
 }
+
+// TestRun_DeliversProbeAssignToTheCallback drives one `probe.assign` and one `probe.cancel`
+// control frame through a live link and asserts both reach their callbacks with the payload
+// bytes untouched. The run id is the only identifier a result may be posted against, so anything
+// this path normalizes or re-encodes makes the result unmatchable server-side.
+func TestRun_DeliversProbeAssignToTheCallback(t *testing.T) {
+	const runID = "3f9c1a7be04d42a1b8e6c05d7f1a2b3c"
+
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+		// The hello has to be *decrypted*, not merely read: the responder's receive cipher
+		// carries a nonce counter, and skipping one message desynchronizes it from the agent's
+		// send cipher, failing every subsequent decrypt.
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		for seq, f := range []map[string]any{
+			{"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+				"payload": map[string]any{"accepted": true, "agent_id": 1}},
+			{"v": 1, "type": "probe.assign", "seq": 1, "ts": time.Now().UTC(),
+				"payload": map[string]any{
+					"run_id": runID, "monitor_id": 42, "check_type": "http",
+					"host": "app.internal.example.com", "config": map[string]any{},
+					"scheduled_at": "2026-08-07T18:00:00Z", "deadline_at": "2026-08-07T18:00:20Z",
+				}},
+			{"v": 1, "type": "probe.cancel", "seq": 2, "ts": time.Now().UTC(),
+				"payload": map[string]any{"run_id": runID, "reason": "monitor_paused"}},
+		} {
+			_ = seq
+			data, _ := json.Marshal(f)
+			conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(data))
+		}
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	assigned := make(chan frame.ProbeAssignPayload, 4)
+	cancelled := make(chan frame.ProbeCancelPayload, 4)
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnProbeAssign: func(payload json.RawMessage) error {
+			var assign frame.ProbeAssignPayload
+			if err := json.Unmarshal(payload, &assign); err != nil {
+				return err
+			}
+			assigned <- assign
+			return nil
+		},
+		OnProbeCancel: func(payload json.RawMessage) error {
+			var cancel frame.ProbeCancelPayload
+			if err := json.Unmarshal(payload, &cancel); err != nil {
+				return err
+			}
+			cancelled <- cancel
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() { _ = Run(ctx, opts) }()
+
+	select {
+	case assign := <-assigned:
+		if assign.RunID != runID {
+			t.Errorf("run_id = %q, want %q", assign.RunID, runID)
+		}
+		if assign.MonitorID != 42 || assign.CheckType != "http" || assign.Host != "app.internal.example.com" {
+			t.Errorf("assignment = %+v", assign)
+		}
+		if assign.DeadlineAt.IsZero() {
+			t.Error("deadline_at did not decode")
+		}
+	case <-ctx.Done():
+		t.Fatal("OnProbeAssign was never called")
+	}
+
+	select {
+	case cancellation := <-cancelled:
+		if cancellation.RunID != runID || cancellation.Reason != "monitor_paused" {
+			t.Errorf("cancellation = %+v", cancellation)
+		}
+	case <-ctx.Done():
+		t.Fatal("OnProbeCancel was never called")
+	}
+}
+
+// TestRun_ProbeAssignHandlerDoesNotDelayHeartbeats pins the constraint the whole
+// internal/collect/probe runtime exists to satisfy. The inbound switch that dispatches
+// probe.assign runs on the same goroutine as the websocket writer and the heartbeat ticker, and
+// `incoming` is unbuffered — so a burst of assignments must flow straight through an
+// enqueue-only handler while heartbeats keep leaving on schedule. If either the switch arm or
+// the handler ever blocks, the gap between heartbeats grows past the server's 60s dead-link
+// deadline (_LINK_DEAD_SECONDS) and the link is torn down mid-check.
+func TestRun_ProbeAssignHandlerDoesNotDelayHeartbeats(t *testing.T) {
+	originalInterval := heartbeatInterval
+	heartbeatInterval = 100 * time.Millisecond
+	defer func() { heartbeatInterval = originalInterval }()
+
+	const assignments = 50
+
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	var (
+		beatMu sync.Mutex
+		beats  []time.Time
+	)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+		// The hello has to be *decrypted*, not merely read: the responder's receive cipher
+		// carries a nonce counter, and skipping one message desynchronizes it from the agent's
+		// send cipher, failing every subsequent decrypt.
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		ack, _ := json.Marshal(map[string]any{
+			"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+			"payload": map[string]any{"accepted": true, "agent_id": 1},
+		})
+		conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(ack))
+
+		for i := 0; i < assignments; i++ {
+			assign, _ := json.Marshal(map[string]any{
+				"v": 1, "type": "probe.assign", "seq": i + 1, "ts": time.Now().UTC(),
+				"payload": map[string]any{
+					"run_id": fmt.Sprintf("%032x", i), "monitor_id": i, "check_type": "tcp",
+					"host": "10.20.0.9", "config": map[string]any{},
+					"scheduled_at": "2026-08-07T18:00:00Z", "deadline_at": "2026-08-07T18:00:20Z",
+				},
+			})
+			if err := conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(assign)); err != nil {
+				return
+			}
+		}
+
+		for {
+			_, ct, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			pt, err := responder.Decrypt(ct)
+			if err != nil {
+				return
+			}
+			var f map[string]any
+			json.Unmarshal(pt, &f)
+			if f["type"] == "heartbeat" {
+				beatMu.Lock()
+				beats = append(beats, time.Now())
+				beatMu.Unlock()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	// An enqueue-only handler, exactly as probe.Runtime.Assign is: it writes into a bounded
+	// buffer and returns, and nothing in this test ever drains it.
+	delivered := make(chan struct{}, assignments)
+	var received int32
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: hex.EncodeToString(serverPub[:])},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnProbeAssign: func(json.RawMessage) error {
+			atomic.AddInt32(&received, 1)
+			select {
+			case delivered <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = Run(ctx, opts)
+
+	if got := atomic.LoadInt32(&received); got != assignments {
+		t.Errorf("delivered %d of %d assignments", got, assignments)
+	}
+
+	beatMu.Lock()
+	observed := append([]time.Time(nil), beats...)
+	beatMu.Unlock()
+	if len(observed) < 3 {
+		t.Fatalf("saw %d heartbeats in 2s at a %s interval — the assignment burst stalled the connection loop",
+			len(observed), heartbeatInterval)
+	}
+	for i := 1; i < len(observed); i++ {
+		if gap := observed[i].Sub(observed[i-1]); gap > 5*heartbeatInterval {
+			t.Fatalf("heartbeat %d arrived %s after its predecessor, at a %s interval", i, gap, heartbeatInterval)
+		}
+	}
+}

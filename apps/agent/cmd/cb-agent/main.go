@@ -22,11 +22,13 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/collect"
 	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
+	probecollect "circuitbreaker.dev/cb-agent/internal/collect/probe"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
 	"circuitbreaker.dev/cb-agent/internal/hostinfo"
 	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/netscope"
 	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
 	"circuitbreaker.dev/cb-agent/internal/update"
@@ -376,10 +378,17 @@ func runDaemon() {
 		Config: cfg, Key: key, AgentVersion: AgentVersion,
 		StateDir:          config.StateDir(),
 		OnCapabilitiesSet: onCapabilitiesSet,
-		OnUpdate:          onUpdate,
-		OnConnected:       onConnected,
-		OnRejected:        onRejected,
-		OnDisconnected:    onDisconnected,
+		// Both are the probe runtime's own methods rather than wrappers: they
+		// run on link's inbound goroutine, and internal/collect/probe's
+		// contract is precisely that neither dials, resolves nor blocks on a
+		// consumer there. Anything wrapped around them would be a place for
+		// that property to be lost.
+		OnProbeAssign:  rt.probeRuntime.Assign,
+		OnProbeCancel:  rt.probeRuntime.Cancel,
+		OnUpdate:       onUpdate,
+		OnConnected:    onConnected,
+		OnRejected:     onRejected,
+		OnDisconnected: onDisconnected,
 		ReportPendingUpdateOutcome: func() (string, bool) {
 			version, ok, _ := update.ReadRollbackReport(config.StateDir())
 			return version, ok
@@ -401,9 +410,10 @@ func runDaemon() {
 
 // daemonRuntime is everything startDaemonState builds and runDaemon needs
 // afterwards: the capability gate, the runtime status writer, the outbound
-// data-frame spool, the two frame channels link.Run drains, and the two
-// closures (queueReadiness, publishReadiness, applyHostConfig) that the
-// link's callbacks fire, and the linked flag those callbacks flip.
+// data-frame spool, the two frame channels link.Run drains, the probe runtime
+// link's probe.assign/probe.cancel callbacks are bound to, the closures
+// (queueReadiness, publishReadiness, applyHostConfig, applyProbeConfig) that
+// the link's callbacks fire, and the linked flag those callbacks flip.
 // Bundling them in a struct is what lets the startup sequence be exercised by
 // a test without executing the full daemon (link.Run, signal handling, the
 // update-rollback watcher).
@@ -421,9 +431,23 @@ type daemonRuntime struct {
 	// own the writes.
 	linked *atomic.Bool
 
+	// probeRuntime executes server-assigned monitor checks. It exists whether
+	// or not `remote_probe` is granted — applyProbeConfig is what enables or
+	// disables it — so runDaemon can bind link's callbacks to it
+	// unconditionally and an assignment sent to an ungranted agent is refused
+	// with a `rejected` result instead of being silently swallowed.
+	probeRuntime *probecollect.Runtime
+
 	queueReadiness   func(force bool)
 	publishReadiness func(items []frame.Readiness)
 	applyHostConfig  func()
+	// applyProbeConfig re-reads the gate's `remote_probe` grant and pushes the
+	// scope and concurrency it names into probeRuntime, or disables it. It is
+	// called from onCapabilitiesSet directly rather than from a
+	// capability.Gate.Changes() subscription: that channel delivers at most
+	// one coalesced signal, nothing consumes it, and a consumer would race the
+	// direct call applyHostConfig already makes.
+	applyProbeConfig func()
 
 	// onCapabilitiesSet is the capabilities.set handler internal/link fires.
 	// It lives here rather than in runDaemon because it is the thing that
@@ -440,6 +464,40 @@ type daemonRuntime struct {
 // reassigns it. (Same pattern as rollbackWindow above.)
 var newHostCollector = func(cfg capability.HostConfig) collect.Collector {
 	return hostcollect.New(cfg)
+}
+
+// newProbeRuntime, probeReadiness and probeNetworkFacts are the probe half of
+// the same seam, and exist for the same reason: the production checkers open
+// real sockets, readiness opens an unprivileged ICMP socket, and the scope
+// evaluator's input is whatever interfaces the machine happens to have. No
+// test may depend on any of the three. Production never reassigns them.
+var newProbeRuntime = func(out chan<- frame.Frame) *probecollect.Runtime {
+	return probecollect.New(out, probecollect.Options{})
+}
+
+var probeReadiness = probecollect.Readiness
+
+// probeNetworkFacts reports this host's directly connected networks — the only
+// input netscope.Derive needs to turn the server's grant config into the scope
+// this agent enforces for itself (§3). It is re-read on every applyProbeConfig
+// rather than captured once at startup, so an interface that comes up after
+// the daemon started is reflected at the next grant push instead of at the
+// next restart.
+var probeNetworkFacts = func() []frame.NetworkFacts {
+	return hostinfo.Collect(AgentVersion).Networks
+}
+
+// probeInterfaceFacts re-labels the hello report as the scope evaluator's
+// input. The two structs carry identical JSON, but internal/netscope must not
+// import internal/frame (the backend decodes the same facts out of
+// agent_networks.facts), so the copy lives here rather than becoming a
+// dependency edge.
+func probeInterfaceFacts(networks []frame.NetworkFacts) []netscope.InterfaceFacts {
+	facts := make([]netscope.InterfaceFacts, 0, len(networks))
+	for _, n := range networks {
+		facts = append(facts, netscope.InterfaceFacts{Name: n.Name, Flags: n.Flags, Addrs: n.Addrs})
+	}
+	return facts
 }
 
 // startDaemonState performs the daemon's startup sequence in the one order
@@ -459,13 +517,19 @@ var newHostCollector = func(cfg capability.HostConfig) collect.Collector {
 //  4. the spool — spool.Open's unclean-shutdown recovery must be reflected in
 //     status.json before the first connection attempt.
 //  5. the readiness/collector closures, which capture 2, 3 and 4.
-//  6. the readiness reconciliation ticker, which only offers the report
+//  6. the probe runtime and applyProbeConfig, which capture 5. The runtime is
+//     constructed and started here, before the gate's grant is pushed into it,
+//     so runDaemon can bind link's probe callbacks to it unconditionally —
+//     an assignment for an ungranted agent is then refused with a `rejected`
+//     result rather than dropped on a nil handler.
+//  7. the readiness reconciliation ticker, which only offers the report
 //     built by 5 to the link.
-//  7. applyHostConfig() last, because it is the step that starts the
-//     collector goroutine, whose very first collection fires immediately.
+//  8. applyHostConfig() and applyProbeConfig() last, because they are the
+//     steps that start the collector goroutine — whose very first collection
+//     fires immediately — and open this agent's probe scope.
 //
-// ctx is the daemon's lifetime context; the collector goroutine is a child of
-// it, so canceling ctx stops collection.
+// ctx is the daemon's lifetime context; the collector goroutine and the probe
+// runtime's workers are children of it, so canceling ctx stops both.
 func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion string, ctx context.Context) (*daemonRuntime, error) {
 	// (1) Audit the dedicated-user file-permission model
 	// (specs/2026-07-26-cb-agent-design.md §4.1) before this daemon writes
@@ -622,6 +686,46 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		hostRunner.Reset(ctx, time.Duration(hostCfg.IntervalS)*time.Second)
 	}
 
+	// (6) The probe runtime. Results are data frames, so they go to
+	// dataFrames — never controlFrames: probe.result spools through an outage
+	// instead of being dropped while disconnected, and link's assertDataFrame
+	// panics the other way round. Started before applyProbeConfig runs so
+	// there is a dispatcher and a result pump waiting for the first
+	// assignment; ctx is the daemon's, so a shutdown cancels every open run.
+	probeRuntime := newProbeRuntime(dataFrames)
+	probeRuntime.Start(ctx)
+	applyProbeConfig := func() {
+		cfg, granted := capGate.RemoteProbeConfig()
+		if !granted {
+			// Disable, not just "stop accepting": a revoked grant must stop
+			// probing now rather than at the end of the current deadline, and
+			// every run still open is closed out with a `cancelled` result so
+			// the backend is not left waiting one out.
+			probeRuntime.Disable("remote_probe is not granted on this agent")
+			// The same D-4 reasoning as applyHostConfig's disable branch:
+			// ingest_readiness only ever upserts, so a row nothing will report
+			// again has to be actively overwritten or Agent Detail shows this
+			// vantage as probe-ready forever. Driving it off
+			// probecollect.ProbeNames rather than a local list is what keeps a
+			// newly added check type from being left behind at a stale state.
+			items := make([]frame.Readiness, 0, len(probecollect.ProbeNames))
+			for _, name := range probecollect.ProbeNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// The scope this agent enforces is derived here, from *this host's*
+		// own interfaces plus the server's normalized grant config — never
+		// from anything host-editable (§3, and see Gate.RemoteProbeConfig).
+		// Configure needs no restart: an in-flight check keeps running, and a
+		// raised concurrency limit is picked up by the dispatcher within one
+		// poll.
+		scope := netscope.Derive(probeInterfaceFacts(probeNetworkFacts()), cfg.Config)
+		probeRuntime.Configure(scope, cfg.MaxConcurrent)
+		publishReadiness(probeReadiness())
+	}
+
 	// onCapabilitiesSet installs a server grant payload. Per-capability faults
 	// are not frame failures — returning nil for a fault-only outcome is what
 	// stops internal/link's runOnce from logging the whole capabilities.set as
@@ -638,6 +742,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		}
 		publishReadiness(capabilityReadiness(capGate.Snapshot(), faults))
 		applyHostConfig()
+		applyProbeConfig()
 		return nil
 	}
 
@@ -646,7 +751,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	// a corrected config clear a previously degraded row.
 	publishReadiness(capabilityReadiness(capGate.Snapshot(), cachedGrantFaults))
 
-	// (6) Reconciliation. The 15-minute floor in queueReadiness needs
+	// (7) Reconciliation. The 15-minute floor in queueReadiness needs
 	// something to push against: without this ticker the only caller is a
 	// successful collection, so a disabled or persistently failing collector
 	// silently stops reporting altogether — precisely the state the server
@@ -666,9 +771,11 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		}
 	}()
 
-	// (7) Last: this starts the collector goroutine, and its first
-	// collection fires immediately (internal/collect's Runner.run).
+	// (8) Last: this starts the collector goroutine, whose first collection
+	// fires immediately (internal/collect's Runner.run), and opens (or, for an
+	// ungranted capability, actively closes) this agent's probe scope.
 	applyHostConfig()
+	applyProbeConfig()
 
 	return &daemonRuntime{
 		capGate:           capGate,
@@ -677,9 +784,11 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		dataFrames:        dataFrames,
 		controlFrames:     controlFrames,
 		linked:            &linked,
+		probeRuntime:      probeRuntime,
 		queueReadiness:    queueReadiness,
 		publishReadiness:  publishReadiness,
 		applyHostConfig:   applyHostConfig,
+		applyProbeConfig:  applyProbeConfig,
 		onCapabilitiesSet: onCapabilitiesSet,
 	}, nil
 }

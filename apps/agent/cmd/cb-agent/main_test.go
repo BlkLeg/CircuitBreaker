@@ -18,6 +18,7 @@ import (
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/collect"
 	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
+	probecollect "circuitbreaker.dev/cb-agent/internal/collect/probe"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
@@ -1081,8 +1082,15 @@ func (f fakeHostCollector) Collect(context.Context) (collect.Result, error) {
 
 // startDaemonStateTestDir prepares an isolated state directory with a device
 // key and, when grants is non-empty, a pre-seeded grants.json, points
-// config.StateDir() at it, and swaps in fakeHostCollector for the duration of
-// the test.
+// config.StateDir() at it, and swaps in fakeHostCollector plus the two probe
+// host seams for the duration of the test.
+//
+// The probe seams are swapped for every startDaemonState test, not only the
+// probe ones: applyProbeConfig runs as part of the startup sequence, and its
+// production path opens an unprivileged ICMP socket and enumerates the running
+// machine's interfaces. Neither belongs in a unit test, and the derived scope
+// has to be the same fixed /24 everywhere or an assertion would pass or fail
+// on what the test host happens to have plugged in.
 func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Readiness) (string, *enroll.DeviceKey) {
 	t.Helper()
 	dir := t.TempDir()
@@ -1101,6 +1109,23 @@ func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Read
 		return fakeHostCollector{readiness: readiness}
 	}
 	t.Cleanup(func() { newHostCollector = prev })
+
+	prevReadiness, prevFacts := probeReadiness, probeNetworkFacts
+	probeReadiness = func() []frame.Readiness {
+		items := make([]frame.Readiness, 0, len(probecollect.ProbeNames))
+		for _, name := range probecollect.ProbeNames {
+			items = append(items, frame.Readiness{Collector: name, State: "ready"})
+		}
+		return items
+	}
+	probeNetworkFacts = func() []frame.NetworkFacts {
+		return []frame.NetworkFacts{{
+			Name:  "eth0",
+			Flags: []string{"up", "broadcast"},
+			Addrs: []string{"10.20.0.5/24"},
+		}}
+	}
+	t.Cleanup(func() { probeReadiness, probeNetworkFacts = prevReadiness, prevFacts })
 	return dir, key
 }
 
@@ -1527,6 +1552,45 @@ func awaitCapabilityReadinessItems(
 	}
 }
 
+// awaitCapabilityReadinessState reads capability.readiness frames until one
+// reports collector in state want.
+//
+// Deliberately not "read one frame and assert on it": one capabilities.set
+// fans out into several publishes — the capability rows, applyProbeConfig's
+// probe.* rows, and the host collector's first report on its own goroutine —
+// so "the frame my call caused" is not something a test can name. Every frame
+// is a full merged snapshot the server applies in order, so what the contract
+// actually promises is that the corrected state *reaches* the server, which is
+// what this waits for. A state that never clears fails on the deadline.
+func awaitCapabilityReadinessState(t *testing.T, ch <-chan frame.Frame, collector, want string) frame.Readiness {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	var last string
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeCapabilityReadiness {
+				continue
+			}
+			var payload frame.CapabilityReadinessPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal readiness payload %s: %v", f.Payload, err)
+			}
+			for _, r := range payload.Readiness {
+				if r.Collector != collector {
+					continue
+				}
+				if r.State == want {
+					return r
+				}
+				last = r.State
+			}
+		case <-deadline:
+			t.Fatalf("%s state = %q after 5s, want %q", collector, last, want)
+		}
+	}
+}
+
 // TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness pins D-6's
 // reporting half: a capability whose config fails normalization is not a frame
 // failure (onCapabilitiesSet returns nil, so internal/link stops logging it as
@@ -1573,9 +1637,7 @@ func TestOnCapabilitiesSet_ReportsCapabilityFaultAsDegradedReadiness(t *testing.
 	if err := rt.onCapabilitiesSet(good); err != nil {
 		t.Fatalf("onCapabilitiesSet() error = %v", err)
 	}
-	if got := awaitCapabilityReadinessItem(t, rt.controlFrames, "capability.host_telemetry"); got.State != "ready" {
-		t.Errorf("capability.host_telemetry state = %q after a corrected config, want %q", got.State, "ready")
-	}
+	awaitCapabilityReadinessState(t, rt.controlFrames, "capability.host_telemetry", "ready")
 }
 
 // TestStartDaemonState_CachedGrantFaultIsReportedAtStartup covers the other
@@ -1611,4 +1673,320 @@ func TestStartDaemonState_CachedGrantFaultIsReportedAtStartup(t *testing.T) {
 		t.Errorf("capability.remote_probe state = %q at startup, want %q",
 			got["capability.remote_probe"].State, "ready")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Probe wiring (Task 20). The seams below exist so that not one assertion in
+// this section can reach a socket, a resolver, or the interface list of the
+// machine the test happens to run on.
+// ---------------------------------------------------------------------------
+
+// probeStubChecker stands in for the four real checkers. It reports every check
+// it was asked to start and then holds until the test releases it or the run's
+// context ends, which is what makes "still in flight" and "never started" both
+// observable without any timing assumption inside the runtime.
+type probeStubChecker struct {
+	started chan string
+	block   chan struct{}
+}
+
+func newProbeStubChecker() *probeStubChecker {
+	return &probeStubChecker{started: make(chan string, 16), block: make(chan struct{})}
+}
+
+func (c *probeStubChecker) Check(ctx context.Context, host string, _ json.RawMessage) (probecollect.Outcome, error) {
+	select {
+	case c.started <- host:
+	default:
+	}
+	select {
+	case <-c.block:
+	case <-ctx.Done():
+		return probecollect.Outcome{}, ctx.Err()
+	}
+	return probecollect.Outcome{Up: true, Msg: "stub ok"}, nil
+}
+
+// awaitCheckStart waits for the next check the stub was asked to run.
+func (c *probeStubChecker) awaitCheckStart(t *testing.T) string {
+	t.Helper()
+	select {
+	case host := <-c.started:
+		return host
+	case <-time.After(5 * time.Second):
+		t.Fatal("no check started within 5s")
+	}
+	return ""
+}
+
+// assertNoCheckStart fails if a check starts inside window.
+func (c *probeStubChecker) assertNoCheckStart(t *testing.T, window time.Duration) {
+	t.Helper()
+	select {
+	case host := <-c.started:
+		t.Fatalf("a check for %q started, want the concurrency limit to hold it back", host)
+	case <-time.After(window):
+	}
+}
+
+// useProbeStubChecker swaps newProbeRuntime for one whose only checker is the
+// returned stub, for the duration of the test. It must be called before
+// startDaemonState, which is what constructs the runtime.
+func useProbeStubChecker(t *testing.T) *probeStubChecker {
+	t.Helper()
+	stub := newProbeStubChecker()
+	prev := newProbeRuntime
+	newProbeRuntime = func(out chan<- frame.Frame) *probecollect.Runtime {
+		return probecollect.New(out, probecollect.Options{
+			Checkers: map[string]probecollect.Checker{
+				probecollect.CheckTypeICMP: stub,
+				probecollect.CheckTypeTCP:  stub,
+				probecollect.CheckTypeHTTP: stub,
+				probecollect.CheckTypeDNS:  stub,
+			},
+			Resolve: func(context.Context, string) ([]string, error) {
+				return nil, errors.New("cb-agent test: no test may reach the real resolver")
+			},
+		})
+	}
+	t.Cleanup(func() { newProbeRuntime = prev })
+	return stub
+}
+
+// The scope every probe test below runs under: one directly connected /24, so
+// probeInScopeHost is reachable and probeOutOfScopeHost is not, whatever the
+// host running the test actually has plugged in.
+const (
+	probeInScopeHost      = "10.20.0.9"
+	probeOtherInScopeHost = "10.20.0.10"
+	probeOutOfScopeHost   = "8.8.8.8"
+)
+
+// probeAssign builds one probe.assign payload for an immediate TCP check.
+func probeAssign(t *testing.T, runID, host string) json.RawMessage {
+	t.Helper()
+	now := time.Now().UTC()
+	data, err := json.Marshal(frame.ProbeAssignPayload{
+		RunID:       runID,
+		MonitorID:   7,
+		CheckType:   probecollect.CheckTypeTCP,
+		Host:        host,
+		Config:      json.RawMessage(`{}`),
+		ScheduledAt: now,
+		DeadlineAt:  now.Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("marshal probe.assign: %v", err)
+	}
+	return data
+}
+
+// awaitProbeResult reads the next probe.result off the daemon's outbound data
+// channel.
+func awaitProbeResult(t *testing.T, ch <-chan frame.Frame) frame.ProbeResultPayload {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeProbeResult {
+				continue
+			}
+			var payload frame.ProbeResultPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("decode probe.result payload %s: %v", f.Payload, err)
+			}
+			return payload
+		case <-deadline:
+			t.Fatal("no probe.result frame within 5s")
+		}
+	}
+}
+
+// TestApplyProbeConfig_DisablePublishesDisabledForEveryProbeName pins the
+// probe half of D-4. ingest_readiness only ever upserts — it never deletes —
+// so a revoked remote_probe grant that merely returned bare would leave Agent
+// Detail showing this vantage as probe-ready for good. Every name in
+// probecollect.ProbeNames must be actively overwritten with "disabled", and
+// the agent's own identity row must survive that overwrite.
+func TestApplyProbeConfig_DisablePublishesDisabledForEveryProbeName(t *testing.T) {
+	_, key := startDaemonStateTestDir(t,
+		`{"remote_probe":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	rt.queueReadiness(true)
+
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range probecollect.ProbeNames {
+		if states[name] != "ready" {
+			t.Fatalf("pre-condition: readiness[%q] = %q, want %q", name, states[name], "ready")
+		}
+	}
+	drainFrames(rt.controlFrames)
+
+	if _, err := rt.capGate.ApplyGrants([]byte(`{"remote_probe":{"enabled":false}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyProbeConfig()
+
+	states, _ = readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range probecollect.ProbeNames {
+		if states[name] != "disabled" {
+			t.Errorf("readiness[%q] = %q after the grant was revoked, want %q", name, states[name], "disabled")
+		}
+	}
+	if states["agent.identity"] == "" {
+		t.Errorf("readiness = %v, want it to still carry agent.identity", states)
+	}
+}
+
+// TestApplyProbeConfig_DisableCancelsInFlightRuns pins the other half of the
+// revoke path: a revoked agent must stop probing immediately, not at the end of
+// the current deadline, and the backend must be told so rather than left to
+// expire the run. Cancellation outranks whatever the checker was doing, so the
+// result is `cancelled` — never a target observation nobody made.
+func TestApplyProbeConfig_DisableCancelsInFlightRuns(t *testing.T) {
+	stub := useProbeStubChecker(t)
+	_, key := startDaemonStateTestDir(t,
+		`{"remote_probe":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	if err := rt.probeRuntime.Assign(probeAssign(t, "run-cancel", probeInScopeHost)); err != nil {
+		t.Fatalf("Assign() error = %v", err)
+	}
+	if host := stub.awaitCheckStart(t); host != probeInScopeHost {
+		t.Fatalf("check host = %q, want %q", host, probeInScopeHost)
+	}
+
+	if _, err := rt.capGate.ApplyGrants([]byte(`{"remote_probe":{"enabled":false}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyProbeConfig()
+
+	result := awaitProbeResult(t, rt.dataFrames)
+	if result.RunID != "run-cancel" {
+		t.Errorf("probe.result run_id = %q, want %q", result.RunID, "run-cancel")
+	}
+	if result.Outcome != probecollect.OutcomeCancelled {
+		t.Errorf("probe.result outcome = %q, want %q", result.Outcome, probecollect.OutcomeCancelled)
+	}
+	if len(result.Samples) != 0 {
+		t.Errorf("probe.result samples = %+v, want none — a cancelled run observed nothing", result.Samples)
+	}
+	if rt.probeRuntime.OpenRuns() != 0 {
+		t.Errorf("OpenRuns() = %d after the grant was revoked, want 0", rt.probeRuntime.OpenRuns())
+	}
+}
+
+// TestApplyProbeConfig_ConcurrencyChangeTakesEffectWithoutRestart pins the
+// grant-change path §2 asks for: raising max_concurrent must be picked up by
+// the running dispatcher. Rebuilding the runtime instead would abandon every
+// in-flight run and hand the backend a batch of timeouts for a change that is
+// supposed to be transparent, so the test also asserts the runtime is the same
+// object afterwards.
+func TestApplyProbeConfig_ConcurrencyChangeTakesEffectWithoutRestart(t *testing.T) {
+	stub := useProbeStubChecker(t)
+	_, key := startDaemonStateTestDir(t,
+		`{"remote_probe":{"enabled":true,"config":{"max_concurrent":1}},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	before := rt.probeRuntime
+
+	for _, assignment := range []struct{ runID, host string }{
+		{"run-first", probeInScopeHost},
+		{"run-second", probeOtherInScopeHost},
+	} {
+		if err := rt.probeRuntime.Assign(probeAssign(t, assignment.runID, assignment.host)); err != nil {
+			t.Fatalf("Assign(%s) error = %v", assignment.runID, err)
+		}
+	}
+	if host := stub.awaitCheckStart(t); host != probeInScopeHost {
+		t.Fatalf("first check host = %q, want %q", host, probeInScopeHost)
+	}
+	stub.assertNoCheckStart(t, 200*time.Millisecond)
+
+	if _, err := rt.capGate.ApplyGrants([]byte(
+		`{"remote_probe":{"enabled":true,"config":{"max_concurrent":2}}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyProbeConfig()
+
+	if host := stub.awaitCheckStart(t); host != probeOtherInScopeHost {
+		t.Errorf("second check host = %q, want %q", host, probeOtherInScopeHost)
+	}
+	if rt.probeRuntime != before {
+		t.Error("applyProbeConfig replaced the probe runtime, want the running one reconfigured in place")
+	}
+}
+
+// TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate pins the startup
+// ordering the probe runtime depends on: the capability gate is restored from
+// its on-disk cache *before* the runtime is configured, so a restart while
+// disconnected comes back up already enforcing the last scope the server sent.
+// A runtime configured before the gate loaded would carry an empty scope and
+// refuse every assignment until the first capabilities.set arrived — an
+// agent-shaped outage no monitor would explain. Run under -race
+// (apps/agent/Makefile's `test` target): the configure path and the runtime's
+// own dispatcher are different goroutines.
+func TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate(t *testing.T) {
+	stub := useProbeStubChecker(t)
+	dir, key := startDaemonStateTestDir(t,
+		`{"remote_probe":{"enabled":true,"config":{"max_concurrent":3}},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	if rt.probeRuntime == nil {
+		t.Fatal("daemonRuntime.probeRuntime is nil, want a runtime link's probe callbacks can bind to")
+	}
+
+	// Readiness for all four check types is reported from startup, without
+	// waiting for a connection or a grant push.
+	awaitReadiness(t, dir, probecollect.ProbeNames...)
+
+	// The cached grant's scope is already being enforced: a destination on the
+	// agent's own directly connected network reaches the checker...
+	if err := rt.probeRuntime.Assign(probeAssign(t, "run-in-scope", probeInScopeHost)); err != nil {
+		t.Fatalf("Assign(in scope) error = %v", err)
+	}
+	if host := stub.awaitCheckStart(t); host != probeInScopeHost {
+		t.Fatalf("check host = %q, want %q", host, probeInScopeHost)
+	}
+
+	// ...and one outside it is refused before anything is dialed.
+	if err := rt.probeRuntime.Assign(probeAssign(t, "run-out-of-scope", probeOutOfScopeHost)); err != nil {
+		t.Fatalf("Assign(out of scope) error = %v", err)
+	}
+	result := awaitProbeResult(t, rt.dataFrames)
+	if result.RunID != "run-out-of-scope" {
+		t.Fatalf("probe.result run_id = %q, want %q", result.RunID, "run-out-of-scope")
+	}
+	if result.Outcome != probecollect.OutcomeRejected {
+		t.Errorf("probe.result outcome = %q, want %q", result.Outcome, probecollect.OutcomeRejected)
+	}
+	stub.assertNoCheckStart(t, 200*time.Millisecond)
 }

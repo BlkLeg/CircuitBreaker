@@ -163,6 +163,20 @@ type Options struct {
 	Key               *enroll.DeviceKey
 	AgentVersion      string
 	OnCapabilitiesSet func(json.RawMessage) error
+	// OnProbeAssign and OnProbeCancel receive one server -> agent
+	// `probe.assign` / `probe.cancel` payload each (Slice 3 §4), raw. Both are
+	// called from runOnce's inbound switch, which shares this connection's one
+	// goroutine with the websocket writer, the heartbeat ticker, the rekey
+	// ticker and the spool-drain ticker — so both handlers must validate and
+	// enqueue only. A handler that performed the probe inline would stall
+	// heartbeats (20s interval) past the server's 60s dead-link deadline and
+	// tear down the very link the result has to travel back over.
+	// internal/collect/probe's Runtime.Assign/Runtime.Cancel are that
+	// enqueue-only implementation; the returned error is logged and never
+	// ends the connection, since a refused assignment is reported to the
+	// server as a `probe.result` by the runtime itself.
+	OnProbeAssign func(json.RawMessage) error
+	OnProbeCancel func(json.RawMessage) error
 	// OnUpdate applies one `update` instruction (download, verify, swap,
 	// re-exec). send lets it report its own progress — "started" right after
 	// unmarshalling the instruction, "failed" with a message on any
@@ -249,6 +263,12 @@ type Options struct {
 func Run(ctx context.Context, opts Options) error {
 	if opts.OnCapabilitiesSet == nil {
 		opts.OnCapabilitiesSet = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnProbeAssign == nil {
+		opts.OnProbeAssign = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnProbeCancel == nil {
+		opts.OnProbeCancel = func(json.RawMessage) error { return nil }
 	}
 	if opts.OnUpdate == nil {
 		opts.OnUpdate = func(json.RawMessage, SendUpdateStatus) error { return nil }
@@ -798,6 +818,21 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 			case frame.TypeCapabilitiesSet:
 				if err := opts.OnCapabilitiesSet(f.Payload); err != nil {
 					log.Printf("link: applying capabilities.set: %v", err)
+				}
+			case frame.TypeProbeAssign:
+				// Nil-guarded rather than relying solely on Run's defaulting:
+				// several tests drive runOnce directly, same as the
+				// ReportPendingUpdateOutcome call above.
+				if opts.OnProbeAssign != nil {
+					if err := opts.OnProbeAssign(f.Payload); err != nil {
+						log.Printf("link: probe.assign refused: %v", err)
+					}
+				}
+			case frame.TypeProbeCancel:
+				if opts.OnProbeCancel != nil {
+					if err := opts.OnProbeCancel(f.Payload); err != nil {
+						log.Printf("link: probe.cancel: %v", err)
+					}
 				}
 			case frame.TypeUpdate:
 				if err := opts.OnUpdate(f.Payload, sendUpdateStatus); err != nil {
