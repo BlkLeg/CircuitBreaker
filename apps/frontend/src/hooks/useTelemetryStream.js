@@ -13,7 +13,18 @@
  *
  * Usage:
  *   const { data, connected } = useTelemetryStream({ entityIds: [5, 12] });
- *   // data is Map<entityId, latestTelemetryPayload>
+ *   // data.get(entity)               -> latest `telemetry`/`telemetry.host` message
+ *   // data.get(`readiness:${entity}`) -> latest `capability.readiness` message
+ *
+ * `entity` is `msg.entity_id` for hardware channels and `agent:<id>` for the
+ * agent channel.  Keys are namespaced by message kind, never shared: a
+ * `telemetry:agent:{id}` channel carries several unrelated message types and
+ * a shared slot would let one overwrite another.  **Any new message type
+ * added to this channel gets its own `<kind>:<entity>` key** — that is the
+ * rule slice 3's probe statuses and slice 4's discovery statuses follow.
+ *
+ * Consumers that *index* `data` are unaffected when a new kind appears;
+ * consumers that *iterate* it must filter on the key prefix.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -152,7 +163,9 @@ export function useTelemetryStream({ entityIds = [], entities = [] } = {}) {
       if (msg.type === 'pong') return;
 
       const key = msg.entity_id ?? (msg.agent_id != null ? `agent:${msg.agent_id}` : null);
-      if ((msg.type === 'telemetry' || msg.type === 'telemetry.host') && key != null) {
+      if (key == null) return;
+
+      if (msg.type === 'telemetry' || msg.type === 'telemetry.host') {
         setData((prev) => {
           const next = new Map(prev);
           next.set(key, msg);
@@ -160,6 +173,21 @@ export function useTelemetryStream({ entityIds = [], entities = [] } = {}) {
         });
         telemetryEmitter.emit(`telemetry:${key}`, msg);
         telemetryEmitter.emit('telemetry:any', msg);
+        return;
+      }
+
+      // Task 18: `capability.readiness` is broadcast on the same
+      // telemetry:agent:{id} channel as the samples but is a *different*
+      // shape, so it gets its own namespaced slot. Storing it under the bare
+      // `key` would overwrite the latest sample and blank AgentDetailPage's
+      // metric cards, which read `update.payload` from that slot.
+      if (msg.type === 'capability.readiness') {
+        setData((prev) => {
+          const next = new Map(prev);
+          next.set(`readiness:${key}`, msg);
+          return next;
+        });
+        telemetryEmitter.emit(`readiness:${key}`, msg);
       }
     };
 

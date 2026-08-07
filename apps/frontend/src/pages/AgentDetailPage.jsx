@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   getAgent,
@@ -99,7 +99,19 @@ function DeviceTable({ title, rows }) {
 }
 
 function HistoryChart({ label, metric, points }) {
-  const values = points.map((point) => Number(point.summary?.[metric])).filter(Number.isFinite);
+  // `null` is how the history endpoint reports "this collector produced no
+  // value for that bucket" (no thermal zones, no root filesystem, ...), and
+  // `Number(null)` is 0 — a finite number. Coercing first therefore charted a
+  // missing metric as a real 0-valued datapoint and defeated the
+  // fewer-than-two-values guard below. Missing is mapped to NaN explicitly so
+  // only values that are actually present survive the filter; the Number()
+  // coercion is kept for numeric strings.
+  const values = points
+    .map((point) => {
+      const raw = point.summary?.[metric];
+      return raw == null ? NaN : Number(raw);
+    })
+    .filter(Number.isFinite);
   if (values.length < 2) return null;
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -135,6 +147,11 @@ export default function AgentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [telemetry, setTelemetry] = useState(null);
+  // When the request behind the currently-applied `telemetry` was issued —
+  // the readiness effect's freshness comparison, mirroring presenceFetchedAt.
+  const [telemetryRequestedAt, setTelemetryRequestedAt] = useState(null);
+  // Identity + client receipt time of the last capability.readiness push.
+  const readinessPushRef = useRef({ array: null, receivedAt: 0 });
   const [historyRange, setHistoryRange] = useState('1h');
   const [history, setHistory] = useState([]);
   // null until the server capability registry resolves; the capability editor
@@ -191,8 +208,15 @@ export default function AgentDetailPage() {
   }, [load]);
 
   const loadTelemetry = useCallback(() => {
+    // The request time, not the response time: a readiness push that arrived
+    // while this poll was in flight carries information the response may
+    // predate, so it must still win. See the readiness effect below.
+    const requestedAt = Date.now();
     getAgentTelemetry(id)
-      .then(({ data }) => setTelemetry(data))
+      .then(({ data }) => {
+        setTelemetry(data);
+        setTelemetryRequestedAt(requestedAt);
+      })
       .catch(() => {});
   }, [id]);
 
@@ -222,6 +246,46 @@ export default function AgentDetailPage() {
         },
       }));
   }, [liveTelemetry, id]);
+
+  // Task 18: `capability.readiness` is broadcast on the same
+  // telemetry:agent:{id} channel as the samples, but useTelemetryStream files
+  // it under its own `readiness:` key rather than the sample slot — reading it
+  // from the shared slot would clobber `update.payload` above and blank every
+  // metric card. Without this the page only learns about a collector fault on
+  // the next 30 s poll.
+  //
+  // The broadcast carries the *full* readiness list, so a whole-array replace
+  // is correct; there is no per-collector merge to do.
+  const liveReadiness = liveTelemetry.get(`readiness:agent:${Number(id)}`)?.readiness;
+  useEffect(() => {
+    // Only a real array is applied. A malformed push must not replace a polled
+    // list with `undefined`, and a push landing before the first
+    // getAgentTelemetry resolves must not fabricate a half-built object —
+    // `{readiness: [...]}` with no `latest` is a valid renderable state after
+    // Task 17 (the no-sample branch still renders the warnings), `{readiness:
+    // undefined}` is not.
+    if (!Array.isArray(liveReadiness)) return;
+    if (readinessPushRef.current.array !== liveReadiness) {
+      readinessPushRef.current = { array: liveReadiness, receivedAt: Date.now() };
+    }
+    // `telemetry` is a real dependency, not incidental: the 30 s poll replaces
+    // the whole object, so the push has to be re-applied on top of each poll
+    // or it would survive only until the next one. The equality check makes
+    // the re-apply a fixed point, so this cannot loop.
+    //
+    // But re-applying unconditionally pins a stale warning forever: the
+    // backend only publishes readiness when it *changes* (D-4) and
+    // useTelemetryStream never clears its `data` map on a socket drop, so a
+    // change that happens while the browser is disconnected is never pushed —
+    // and the cached array would keep overwriting every fresher poll for the
+    // life of the page. A push therefore only outranks a poll whose request
+    // was issued *before* the push arrived. This is the same hazard, and the
+    // same resolution, as isLivePushFresh applies to presence.
+    if (telemetryRequestedAt != null && readinessPushRef.current.receivedAt < telemetryRequestedAt)
+      return;
+    if (telemetry?.readiness === liveReadiness) return;
+    setTelemetry((current) => ({ ...current, readiness: liveReadiness }));
+  }, [liveReadiness, telemetry, telemetryRequestedAt]);
 
   // Live connected/disconnected push for this agent overrides the last
   // polled presence snapshot immediately, without waiting on a re-fetch —
