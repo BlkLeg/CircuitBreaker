@@ -14,7 +14,7 @@ proves rather than merely asserts (see docker-compose.yml's top-of-file
 comment, and test_agent_full_lifecycle_enroll_through_revoke_and_reconnect's
 step 11/isolation probe below).
 
-Structure — six test functions, each bringing up (and tearing down) its own
+Structure — seven test functions, each bringing up (and tearing down) its own
 full stack, so failures/timing in one scenario can't leak into another:
 
   * test_agent_full_lifecycle_enroll_through_revoke_and_reconnect
@@ -56,6 +56,14 @@ full stack, so failures/timing in one scenario can't leak into another:
       every host.* readiness row to "disabled" (D-4). Driven at
       interval_s: 10 (the production minimum, internal/capability) per D-13,
       restoring 30 before it exits.
+
+  * test_agent_black_hole_partition_is_detected_and_spools
+      F-5: a severed route rather than a stopped server — `docker network
+      disconnect`, which closes no socket and produces silence instead of a
+      write error. Proves internal/link's steady-state read deadline takes
+      the link down on that silence and diverts collection into the spool,
+      which is the one outage shape nothing exercised before. Pays the real
+      60s deadline; no test-only override.
 """
 
 from __future__ import annotations
@@ -433,13 +441,22 @@ def _cut_agent_network(env: dict | None = None):
     which is precisely what the forced-rollback scenario needs: a re-exec'd
     daemon that can never complete its post-update hello.ack.
 
-    It is deliberately NOT what an outbound-spool test should use. A detached
-    interface is a black hole, not a closed socket: an already-established
-    connection stays open from the agent's side and its writes keep
-    succeeding into the kernel send buffer, so nothing is spooled and the
-    frames written into the void are simply lost when the socket finally
-    errors. `_backend_outage` exists for that case and documents the measured
-    behavior.
+    A detached interface is a black hole, not a closed socket: no FIN or RST
+    ever arrives, the already-established connection stays open from the
+    agent's side, and its writes keep succeeding into the kernel send
+    buffer. internal/link therefore cannot learn about this partition from a
+    write error — it only learns from SILENCE, via the steady-state read
+    deadline (readTimeout, 60s = three missed server pings). Until that
+    deadline was added the agent never noticed at all: nothing spooled and
+    every frame written into the void was lost, which is why this helper
+    used to carry a warning against using it for outbound-spool tests.
+
+    That warning no longer holds, but the ~60s detection lag it was really
+    describing does. Any test using this helper must budget for it — see
+    test_agent_black_hole_partition_is_detected_and_spools, which asserts
+    the detection itself. `_backend_outage` remains the right stimulus when
+    a test only wants a backlog quickly, since a closed socket fails the
+    very next write.
 
     Factored into a context manager because the disconnect/reconnect pair
     MUST be try/finally-balanced: a test that fails inside the block while
@@ -459,18 +476,22 @@ def _backend_outage(client: httpx.Client, env: dict | None = None):
     """Takes the *server* away for the duration of the block and waits for it
     to answer again on the way out.
 
-    This — not `_cut_agent_network` — is what an outbound-spool/catch-up test
-    has to use, and the difference is not cosmetic. `docker network
-    disconnect` produces a black hole: the container loses its route, but its
-    established TCP socket stays open and every `WriteMessage` keeps
-    succeeding into the kernel send buffer, so internal/link never sees a
-    send error, `live` stays true, and NOTHING is enqueued to the spool. That
-    was measured on this harness — a 60s network detach at a 10s cadence
-    produced zero spooled frames, no disconnect until the network came back,
-    and six samples that simply never arrived. A network detach is still
-    exactly right for the forced-rollback test (which only needs "the
-    re-exec'd agent cannot complete a hello.ack"), which is why both helpers
-    exist.
+    This is what a *catch-up* test should use, and the difference from
+    `_cut_agent_network` is not cosmetic — it is the difference between a
+    closed socket and a black hole. Stopping the container sends a FIN, so
+    the agent's very next write fails and spooling starts within one
+    collection interval. A network detach sends nothing, so the agent can
+    only infer the partition from silence and takes a full readTimeout (60s)
+    to do it. Both are now detected — that is F-5's fix — but only this one
+    produces a backlog promptly, which is what makes it the cheaper stimulus
+    for a test whose subject is bounded catch-up rather than detection.
+
+    Historically the choice was not about cost: before internal/link had a
+    steady-state read deadline, a detach produced NO spooled frames at all
+    (measured on this harness: a 60s detach at a 10s cadence gave zero
+    spooled frames, no disconnect until the network came back, and six
+    samples that simply never arrived). That is fixed; the cost argument is
+    what survives it.
 
     Stopping the container instead closes the socket, so the agent's next
     write fails immediately, the link goes down, and every sample collected
@@ -1556,6 +1577,175 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
                 # exiting, so nothing this test did to the grant outlives it.
                 # Best-effort — the stack is torn down below regardless, and
                 # a failure here must not mask the real assertion failure.
+                with contextlib.suppress(Exception):
+                    _put_host_telemetry(
+                        client,
+                        headers,
+                        agent_id,
+                        {"enabled": True, "config": {"interval_s": 30}},
+                    )
+        finally:
+            stream.close()
+    finally:
+        _down()
+        (E2E_DIR / "agent.toml").unlink(missing_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# F-5: black-hole network partition detection
+# ─────────────────────────────────────────────────────────────────────────
+
+# internal/link's readTimeout: 3 * the 20s heartbeatInterval, matching the
+# backend's own _LINK_DEAD_SECONDS. Deliberately NOT overridden for this test.
+# There is a precedent for shrinking a production interval from the harness
+# (CB_AGENT_TEST_REKEY_INTERVAL_SECONDS) but it exists because 15 minutes is
+# impractical to wait out; 60s is not, and paying the real value keeps this
+# test an assertion about production behavior rather than about a test-only
+# code path.
+_PARTITION_DETECT_S = 60
+# Slack on top of the deadline: the agent's reader is only released at the
+# deadline itself, and status.json is written from the disconnect handler
+# after that.
+_PARTITION_DETECT_BUDGET_S = _PARTITION_DETECT_S + 30
+# How long to keep collecting *after* detection, so there is a backlog whose
+# delivery can be checked. Four intervals at the 10s cadence.
+_PARTITION_SPOOL_S = 40
+
+
+@pytest.mark.e2e
+def test_agent_black_hole_partition_is_detected_and_spools():
+    """A severed route — no FIN, no RST, just silence — must take the link
+    down and divert collection into the spool.
+
+    This is the scenario F-5 records as covered by no test. It is distinct
+    from `test_agent_host_telemetry_first_sample_catchup_and_disable`'s
+    outage in the one way that matters: `docker compose stop` closes the
+    socket, so the agent's next write fails and the existing write-error
+    path handles it. `docker network disconnect` closes nothing. Every
+    write keeps succeeding into a kernel buffer that will never drain, so
+    the ONLY evidence available to the agent is that nothing is coming back
+    — which is what internal/link's steady-state read deadline exists to
+    notice, and what nothing exercised before this test.
+
+    Asserted from inside the partition, against the agent's own status.json
+    (`docker compose exec` needs no container network, so this stays
+    readable while the agent is unreachable over TCP):
+
+      1. link_state flips to "disconnected" within the read deadline;
+      2. last_error names the read deadline, not some incidental error —
+         without this the test would still pass if the link dropped for an
+         unrelated reason;
+      3. spool_depth climbs above zero, i.e. samples collected during the
+         partition are being kept rather than written into the void.
+
+    And after the route is restored, that backlog is delivered.
+    """
+    _up_server()
+    try:
+        client = _new_client()
+        _wait_until(lambda: client.get("/api/v1/bootstrap/status").status_code == 200, timeout=60)
+        token = _bootstrap_admin(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        client.headers.update(headers)
+
+        material = _fetch_install_material(client, headers)
+        _write_agent_toml(material["server_pk"], material["tls_pin"])
+
+        agent_id, stream = _enroll_agent(client, headers)
+        try:
+            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _wait_until(
+                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
+                timeout=20,
+            )
+            _put_host_telemetry(
+                client,
+                headers,
+                agent_id,
+                {"enabled": True, "config": _HOST_TELEMETRY_FAST_CONFIG},
+            )
+
+            try:
+                # Steady state first: the link is accepted, samples are
+                # arriving, and the spool is empty. Without this the
+                # assertions below could not tell "the partition diverted
+                # traffic to the spool" from "the link was never up".
+                _wait_until(
+                    lambda: _agent_telemetry(client, agent_id)["latest"] is not None,
+                    timeout=60,
+                )
+                _wait_until(
+                    lambda: _agent_status()["link_state"] == "accepted", timeout=30
+                )
+                assert _agent_status()["spool_depth"] == 0, (
+                    "spool was already non-empty before the partition — the "
+                    "backlog asserted below would not be attributable to it"
+                )
+                samples_before = sum(
+                    p["sample_count"] for p in _history_points(client, agent_id)
+                )
+
+                with _cut_agent_network():
+                    partition_start = time.monotonic()
+
+                    def _link_down() -> bool:
+                        return _agent_status()["link_state"] == "disconnected"
+
+                    _wait_until(_link_down, timeout=_PARTITION_DETECT_BUDGET_S)
+                    detected_after = time.monotonic() - partition_start
+
+                    status = _agent_status()
+                    # The link went down for the RIGHT reason. A partition
+                    # detected via some other error would mean the read
+                    # deadline is still not doing its job, and this test
+                    # would be passing for the wrong reason.
+                    assert "read deadline" in status.get("last_error", ""), (
+                        "link dropped during the partition, but not on the "
+                        f"read deadline: last_error={status.get('last_error')!r}"
+                    )
+                    # A floor as well as a ceiling: dropping the link far
+                    # sooner than the deadline would mean something other
+                    # than silence tore it down, which is a different
+                    # behavior than the one under test.
+                    assert detected_after >= _PARTITION_DETECT_S * 0.5, (
+                        f"link dropped after only {detected_after:.0f}s of a "
+                        f"{_PARTITION_DETECT_S}s read deadline — the drop "
+                        "cannot have come from the deadline expiring"
+                    )
+
+                    # Now that the agent knows it is offline, everything it
+                    # collects must be queued rather than written into the
+                    # void — the actual product consequence of F-5.
+                    time.sleep(_PARTITION_SPOOL_S)
+                    spooled = _agent_status()["spool_depth"]
+                    assert spooled > 0, (
+                        f"spool_depth is still 0 after {_PARTITION_SPOOL_S}s of "
+                        "collecting during a detected partition — samples are "
+                        "being dropped instead of queued"
+                    )
+
+                # Route restored: the backlog drains and the history gains
+                # the samples collected while the agent was cut off. The
+                # budget covers reconnect backoff (1s doubling — a partition
+                # this long leaves it partway up the progression) on top of
+                # catch-up itself.
+                _wait_until(
+                    lambda: _agent_status()["link_state"] == "accepted",
+                    timeout=180,
+                )
+                _wait_until(
+                    lambda: _agent_status()["spool_depth"] == 0,
+                    timeout=_CATCHUP_BUDGET_S,
+                )
+                samples_after = sum(
+                    p["sample_count"] for p in _history_points(client, agent_id)
+                )
+                assert samples_after > samples_before, (
+                    "no new samples reached the server after the partition "
+                    f"healed ({samples_before} -> {samples_after}) — the "
+                    "spooled backlog was not delivered"
+                )
+            finally:
                 with contextlib.suppress(Exception):
                     _put_host_telemetry(
                         client,

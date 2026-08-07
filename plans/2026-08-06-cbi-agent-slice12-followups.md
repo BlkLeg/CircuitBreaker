@@ -74,28 +74,67 @@ that path; the frame-channel half is untested by anyone.
 
 ---
 
-## F-5. The agent cannot detect a black-hole network partition
+## F-5. RESOLVED — the agent could not detect a black-hole network partition
 
-**Found by:** Task 20, while choosing an outage mechanism for the catch-up test.
+**Found by:** Task 20, while choosing an outage mechanism for the catch-up
+test. **Fixed:** 2026-08-07.
 
-`internal/link` sets a read deadline only on the handshake path
-(`link.go:944`); there is no steady-state read deadline on an established
-connection. So if the network is severed in a way that drops packets silently —
-`docker network disconnect`, a firewall DROP rule, a dead NAT entry — the agent
-does not notice. It keeps believing the link is up, `runOnce`'s select loop
-keeps writing into a socket that will never deliver, and nothing spools.
+`internal/link` set a read deadline only on `Uninstall`'s close-handshake
+drain (`link.go`'s `drainPending`); there was no steady-state read deadline on
+an established connection, and none on the handshake read either. So if the
+network was severed in a way that dropped packets silently — `docker network
+disconnect`, a firewall DROP rule, a dead NAT entry — the agent did not
+notice. It kept believing the link was up, `runOnce`'s select loop kept
+writing into a socket that would never deliver, `Run`'s `live` flag stayed
+true so data frames were routed into the dead socket instead of the spool,
+and an entire outage's samples were lost rather than queued.
 
-This is why the Task 20 e2e uses `docker compose stop circuitbreaker` (which
-sends a TCP FIN the agent *does* see) rather than the plan's specified
-`docker network disconnect`. The consequence is that **the plan's actual
-network-partition scenario is covered by no test**, and neither is the silent
-frame loss it causes.
+**Fix:** `readTimeout` (`3 * heartbeatInterval` = 60s, deliberately the same
+number as the backend's `_LINK_DEAD_SECONDS`) is now applied *before every
+read* in `runOnce`'s reader goroutine, so it measures silence rather than
+connection age and any inbound frame refreshes it. This is safe to make
+strict because the backend already sends an application `ping` every 20s
+(`_LINK_PING_INTERVAL_SECONDS`) whether or not the agent is talking. Expiry
+surfaces as the `errReadTimeout` sentinel — a sentinel because gorilla hides
+timeout errors behind its own unexported `*netError`, which does not unwrap
+to `os.ErrDeadlineExceeded` — and flows through the existing connection-lost
+path, so the spool takes over with no other wiring changes.
 
-**Fix direction:** set a read deadline on the established connection, sized off
-the 20 s heartbeat interval (e.g. 3 missed heartbeats), and treat expiry as a
-disconnect so the spool takes over. Then restore the e2e to the plan's
-`docker network disconnect` mechanism and add a regression test for the
-black-hole case.
+`dialAndHandshake`'s handshake read got the same treatment
+(`handshakeTimeout`, 10s, mirroring the server's
+`_HANDSHAKE_TIMEOUT_SECONDS`). It was unbounded and, because its `ctx`
+reaches the dialer but not gorilla's blocking `ReadMessage`, a partition
+landing between TCP connect and the handshake response wedged `Run`'s entire
+reconnect loop permanently — not recoverable by backoff, ctx cancellation, or
+shutdown.
+
+**Coverage:** four Go tests in `internal/link/link_readdeadline_test.go` (each
+verified to fail against the unfixed code, including a mutation check that
+the deadline is per-read rather than set once at connect), plus
+`test_agent_black_hole_partition_is_detected_and_spools` — a new e2e that
+uses the plan's original `docker network disconnect` mechanism and asserts,
+from inside the partition against the agent's own `status.json`, that the
+link drops *on the read deadline* and that collection diverts to the spool.
+It pays the real 60s deadline rather than adding a test-only override.
+
+**What did NOT change:** the catch-up test
+(`test_agent_host_telemetry_first_sample_catchup_and_disable`) still uses
+`_backend_outage`. Restoring it to `docker network disconnect` as this
+follow-up originally suggested would make it strictly worse: the agent now
+detects a black hole, but only after a full 60s, so the outage would have to
+roughly double in length and the first ~6 samples would still be genuinely
+lost (written into the void before the deadline trips). That test's subject
+is bounded catch-up of a backlog, and a closed socket produces one within a
+single collection interval. Both helpers' docstrings were rewritten — they
+asserted the old "a detach spools nothing" behavior as settled fact, which is
+now wrong and would mislead the next reader.
+
+**Known residual exposure:** frames written into the void before the deadline
+trips are lost, not spooled — the agent retains a data frame only when its
+*send* fails, and during a black hole every send succeeds. Closing that would
+require ack-based retention (hold each frame until the server acknowledges
+it), which is a protocol change, not a timeout change. The exposure is
+bounded by `readTimeout`: up to 60s of samples per partition.
 
 ---
 
@@ -172,10 +211,16 @@ untouched by the slice 1-2 hardening work, and the rollback logic's unit test
 
 The branch-side failure is a harness/daemon race, not a product assertion:
 `docker network disconnect` is being issued before the container's network
-sandbox exists. It is the same mechanism [[F-5]] rules out for the catch-up
-test, which is more evidence for fixing that properly: give the link a
-steady-state read deadline so a partition is detectable, then the e2e can stop
-depending on `docker network disconnect` at all.
+sandbox exists.
+
+Note that [[F-5]] is now fixed, but that does **not** fix this: F-5 was about
+the agent failing to *notice* a partition, whereas this is `docker network
+disconnect` failing to *create* one because the freshly re-exec'd container
+has no sandbox yet. The rollback test still needs the detach (it only needs
+"the re-exec'd agent cannot complete a hello.ack"), so the fix here is to
+wait for the sandbox to exist before detaching, not to change mechanism.
+`test_agent_black_hole_partition_is_detected_and_spools` uses the same helper
+against a long-running container and does not hit this race.
 
 **Both failures need diagnosing before the e2e suite can be a trustworthy gate.**
 The other five lifecycle tests pass (one xfailed), including Task 20's new

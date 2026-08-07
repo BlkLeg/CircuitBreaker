@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -27,6 +28,49 @@ import (
 )
 
 var heartbeatInterval = 20 * time.Second
+
+// readTimeout is how long an established connection may go without a single
+// inbound frame before the agent treats the link as down. It exists because
+// a severed network is not always a closed socket: `docker network
+// disconnect`, a firewall DROP rule and a stale NAT entry all produce a
+// black hole in which no FIN or RST ever arrives, the local send buffer
+// keeps accepting writes, and `conn.WriteMessage` keeps returning nil into a
+// void. Without a read deadline the agent believed such a link was healthy
+// indefinitely — runOnce's select loop kept writing frames that would never
+// be delivered, `live` stayed true so Run routed data frames straight into
+// the dead socket instead of the spool, and an entire outage's samples were
+// lost rather than queued. A silent peer is now a disconnect, which is what
+// hands the outage to the spool.
+//
+// 60s is three missed server pings, and is deliberately the same number as
+// the backend's own _LINK_DEAD_SECONDS (ws_agents.py) — the two sides
+// declare each other dead on the same schedule. It is safe to be this strict
+// because the backend sends an application `ping` every 20s
+// (_LINK_PING_INTERVAL_SECONDS) whether or not the agent is saying anything,
+// so a healthy connection is never idle for a whole minute; the deadline is
+// refreshed per read (see runOnce's reader goroutine), so any inbound frame
+// — ping, hello.ack, capabilities.set, transport.rekey — keeps it alive.
+//
+// A var, not a const, so tests can shrink it; production never changes it.
+var readTimeout = 3 * heartbeatInterval
+
+// handshakeTimeout bounds the one read in dialAndHandshake that waits for
+// the server's Noise handshake response. Same defect as readTimeout, one
+// step earlier: a partition landing between the TCP connect and that
+// response left the read blocked forever, and because dialAndHandshake's
+// ctx reaches the dialer but not gorilla's blocking ReadMessage, nothing
+// recovered from it — not reconnect backoff, not ctx cancellation, not
+// shutdown. Run's entire retry loop would sit in that one call. Mirrors the
+// server's own _HANDSHAKE_TIMEOUT_SECONDS. A var so tests can shrink it.
+var handshakeTimeout = 10 * time.Second
+
+// errReadTimeout is what a tripped readTimeout surfaces as. It is a
+// sentinel rather than the raw network error because gorilla replaces
+// timeout errors with its own unexported *netError, which does not unwrap
+// to os.ErrDeadlineExceeded — so without this there is no reliable way for
+// a caller (or a test) to tell "the peer went silent" apart from any other
+// dropped connection.
+var errReadTimeout = errors.New("link: no frame from server within the read deadline")
 
 // The paced catch-up budget for spooled data frames (D-5). runOnce drains at
 // most drainFramesPerTick frames — and at most drainBytesPerTick of them —
@@ -359,11 +403,16 @@ func dialAndHandshake(
 		conn.Close()
 		return nil, nil, fmt.Errorf("link: send handshake: %w", err)
 	}
+	// Bounded: see handshakeTimeout. Cleared before returning so the
+	// steady-state loop's own per-read deadline is the only one in force on
+	// an established connection.
+	_ = conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	_, msg2, err := conn.ReadMessage()
 	if err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("link: read handshake response: %w", err)
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	if err := session.ReadHandshakeMessage(msg2); err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("link: %w", err)
@@ -462,9 +511,15 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 		// goroutine-affinity note.
 		var inboundRekeyGen uint64
 		for {
+			// Refreshed before every read, not set once at connect: any
+			// inbound frame proves the path is still carrying traffic, so
+			// the deadline measures silence rather than connection age.
+			// This goroutine is the connection's sole reader, so it owns
+			// the read deadline outright.
+			_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 			_, ct, err := conn.ReadMessage()
 			if err != nil {
-				readErrCh <- err
+				readErrCh <- classifyReadError(err)
 				return
 			}
 			pt, err := session.Decrypt(ct)
@@ -932,6 +987,21 @@ func Uninstall(ctx context.Context, opts Options) error {
 	)
 	drainPending(conn, time.Now().Add(2*time.Second)) // best-effort; count not meaningful to the caller
 	return nil
+}
+
+// classifyReadError maps one error from the connection's reader onto
+// errReadTimeout when — and only when — it is the readTimeout deadline
+// expiring, and passes everything else (a real close, a decrypt failure, a
+// reset) through untouched. The remapping exists because gorilla hides
+// timeout errors behind its own unexported *netError, which does not unwrap
+// to os.ErrDeadlineExceeded; matching on the net.Error interface is the only
+// thing that survives that.
+func classifyReadError(err error) error {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("%w (%s of silence): peer unreachable", errReadTimeout, readTimeout)
+	}
+	return err
 }
 
 // drainPending reads and discards inbound WebSocket messages on conn until
