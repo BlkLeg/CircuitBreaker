@@ -101,6 +101,12 @@ func TestCorpus_TypedPayloadsDecode(t *testing.T) {
 				roundTripProbeCancelPayload(t, decoded.Payload)
 			case TypeProbeResult:
 				roundTripProbeResultPayload(t, decoded.Payload)
+			case TypeDiscoveryRequest:
+				roundTripDiscoveryRequestPayload(t, decoded.Payload)
+			case TypeDiscoveryCancel:
+				roundTripDiscoveryCancelPayload(t, decoded.Payload)
+			case TypeDiscoveryFinding:
+				roundTripDiscoveryFindingPayload(t, decoded.Payload)
 			}
 		})
 	}
@@ -542,16 +548,16 @@ func jsonValuesEqual(t *testing.T, a, b json.RawMessage) bool {
 // is a visible, reviewable exemption, and the slice that introduces a type's wire traffic must
 // delete its entry in the same commit that adds the fixture.
 //
-//   - discovery.request / discovery.finding — removed by slice 4 (local discovery).
 //   - update / uninstall               — server->agent command frames with no structured
 //     payload of their own yet; whichever task gives them one adds the fixture.
+//
+// discovery.request / discovery.cancel / discovery.finding left this list in slice 4, in the same
+// commit that added their fixtures.
 //
 // probe.assign / probe.cancel / probe.result left this list in slice 3, in the same commit that
 // added their fixtures. probe.cancel was never on it: a constant declared without a fixture must
 // fail this gate on arrival, which is the property the list exists to preserve.
 var pendingCorpusTypes = []string{
-	TypeDiscoveryRequest,
-	TypeDiscoveryFinding,
 	TypeUpdate,
 	TypeUninstall,
 }
@@ -969,4 +975,209 @@ func rawJSONMapString(m map[string]json.RawMessage) string {
 		out[k] = string(v)
 	}
 	return fmt.Sprintf("%v", out)
+}
+
+// discoveryKinds and discoveryOutcomes are the closed vocabularies from plan §4. Listing them
+// here rather than reaching for the constants is deliberate: the point is to catch a *renamed*
+// constant, which a test that reads the constant cannot do.
+var discoveryKinds = map[string]bool{"host": true, "summary": true}
+
+var discoveryOutcomes = map[string]bool{
+	"completed": true, "execution_error": true, "cancelled": true, "rejected": true,
+}
+
+func roundTripDiscoveryRequestPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first DiscoveryRequestPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("DiscoveryRequestPayload decode error = %v", err)
+	}
+	if len(first.DispatchID) != 32 {
+		t.Errorf("DispatchID = %q, want exactly 32 hex characters", first.DispatchID)
+	}
+	if first.ScanJobID == 0 {
+		t.Error("ScanJobID is zero — a request always names the job it belongs to")
+	}
+	// The version is what lets the agent refuse a request whose authorization has moved since it
+	// was built (plan §2). A request without one cannot be checked at all.
+	if first.ScopeVersion == "" {
+		t.Error("ScopeVersion is empty — the agent could not detect an incompatible scope change")
+	}
+	if first.DeadlineAt.IsZero() {
+		t.Error("DeadlineAt is zero — an undeadlined scan cannot be expired")
+	}
+	if len(first.Targets) > MaxDiscoveryTargets || len(first.TCPPorts) > MaxDiscoveryPorts {
+		t.Errorf("fixture exceeds the plan §4 bounds: %d targets, %d ports",
+			len(first.Targets), len(first.TCPPorts))
+	}
+
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("DiscoveryRequestPayload encode error = %v", err)
+	}
+	var second DiscoveryRequestPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("DiscoveryRequestPayload re-decode error = %v", err)
+	}
+	// Compared field-wise rather than with DeepEqual: `omitempty` drops a present-but-empty JSON
+	// array on re-encode, so `"tcp_ports": []` decodes to a non-nil empty slice and comes back
+	// nil. Both mean "do not port-scan", which is the same instruction — the same reason
+	// HelloPayload.PrimaryMACs is compared this way.
+	if first.DispatchID != second.DispatchID || first.ScanJobID != second.ScanJobID ||
+		first.HostTimeoutMS != second.HostTimeoutMS ||
+		first.MaxConcurrentHosts != second.MaxConcurrentHosts ||
+		first.ScopeVersion != second.ScopeVersion || !first.DeadlineAt.Equal(second.DeadlineAt) {
+		t.Errorf("DiscoveryRequestPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	if !slicesEqualIgnoringNil(first.Targets, second.Targets) ||
+		!slicesEqualIgnoringNil(first.Methods, second.Methods) {
+		t.Errorf("DiscoveryRequestPayload list round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	if len(first.TCPPorts) != len(second.TCPPorts) {
+		t.Errorf("TCPPorts round-trip mismatch: got %v, want %v", second.TCPPorts, first.TCPPorts)
+	}
+	for i := range first.TCPPorts {
+		if first.TCPPorts[i] != second.TCPPorts[i] {
+			t.Errorf("TCPPorts[%d] = %d, want %d", i, second.TCPPorts[i], first.TCPPorts[i])
+		}
+	}
+}
+
+func roundTripDiscoveryCancelPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first DiscoveryCancelPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("DiscoveryCancelPayload decode error = %v", err)
+	}
+	if len(first.DispatchID) != 32 {
+		t.Errorf("DispatchID = %q, want exactly 32 hex characters", first.DispatchID)
+	}
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("DiscoveryCancelPayload encode error = %v", err)
+	}
+	var second DiscoveryCancelPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("DiscoveryCancelPayload re-decode error = %v", err)
+	}
+	if first != second {
+		t.Errorf("DiscoveryCancelPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+func roundTripDiscoveryFindingPayload(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var first DiscoveryFindingPayload
+	if err := json.Unmarshal(raw, &first); err != nil {
+		t.Fatalf("DiscoveryFindingPayload decode error = %v", err)
+	}
+	if len(first.DispatchID) != 32 {
+		t.Errorf("DispatchID = %q, want exactly 32 hex characters", first.DispatchID)
+	}
+	// Without a finding id there is no idempotency key, so a spooled batch replayed after an
+	// outage would double every result it carries.
+	if first.FindingID == "" || len(first.FindingID) > 64 {
+		t.Errorf("FindingID = %q, want 1-64 characters (the width of its String(64) column)",
+			first.FindingID)
+	}
+	if !discoveryKinds[first.Kind] {
+		t.Errorf("Kind = %q, not in the closed vocabulary", first.Kind)
+	}
+	if first.Kind == DiscoveryKindSummary {
+		if !first.Terminal {
+			t.Error("a summary must be terminal — it is the frame that closes the dispatch")
+		}
+		if !discoveryOutcomes[first.Outcome] {
+			t.Errorf("summary Outcome = %q, not in the closed vocabulary", first.Outcome)
+		}
+	} else if first.IPAddress == "" {
+		t.Error("a host finding with no address describes nothing")
+	}
+	if len(first.OpenPorts) > MaxDiscoveryOpenPorts || len(first.Evidence) > MaxDiscoveryEvidence {
+		t.Errorf("fixture exceeds the plan §4 bounds: %d ports, %d evidence entries",
+			len(first.OpenPorts), len(first.Evidence))
+	}
+	for _, port := range first.OpenPorts {
+		if len([]rune(port.Banner)) > MaxDiscoveryBannerRune {
+			t.Errorf("banner on port %d exceeds %d runes", port.Port, MaxDiscoveryBannerRune)
+		}
+	}
+
+	reencoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("DiscoveryFindingPayload encode error = %v", err)
+	}
+	var second DiscoveryFindingPayload
+	if err := json.Unmarshal(reencoded, &second); err != nil {
+		t.Fatalf("DiscoveryFindingPayload re-decode error = %v", err)
+	}
+	if first.DispatchID != second.DispatchID || first.ScanJobID != second.ScanJobID ||
+		first.FindingID != second.FindingID || first.Kind != second.Kind ||
+		!first.ObservedAt.Equal(second.ObservedAt) || first.IPAddress != second.IPAddress ||
+		first.MACAddress != second.MACAddress || first.Hostname != second.Hostname ||
+		first.Terminal != second.Terminal || first.Outcome != second.Outcome ||
+		first.Msg != second.Msg || first.ErrorCode != second.ErrorCode {
+		t.Errorf("DiscoveryFindingPayload round-trip mismatch: got %+v, want %+v", second, first)
+	}
+	if !slicesEqualIgnoringNil(first.Evidence, second.Evidence) {
+		t.Errorf("Evidence round-trip mismatch: got %v, want %v", second.Evidence, first.Evidence)
+	}
+	if !reflect.DeepEqual(first.OpenPorts, second.OpenPorts) &&
+		!(len(first.OpenPorts) == 0 && len(second.OpenPorts) == 0) {
+		t.Errorf("OpenPorts round-trip mismatch: got %+v, want %+v", second.OpenPorts, first.OpenPorts)
+	}
+	// The two counts are pointers precisely so "0 hosts found" is distinguishable from "this is
+	// not a summary"; a value type would make an execution_error summary indistinguishable from a
+	// host finding on the server side.
+	if !intPtrEqual(first.HostsFound, second.HostsFound) ||
+		!intPtrEqual(first.AddressesScanned, second.AddressesScanned) {
+		t.Errorf("summary counts round-trip mismatch: got %+v, want %+v", second, first)
+	}
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// TestCorpus_DiscoveryFindingCarriesTerminalFalseExplicitly pins the one field whose Go zero
+// value is a legitimate observation. Terminal must not gain an `omitempty`: every host finding
+// sends false, and dropping the key would leave the server reading an absent field as its own
+// default — the same trap ProbeResultPayload.Up documents.
+func TestCorpus_DiscoveryFindingCarriesTerminalFalseExplicitly(t *testing.T) {
+	encoded, err := json.Marshal(DiscoveryFindingPayload{
+		DispatchID: "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+		FindingID:  "abcd",
+		Kind:       DiscoveryKindHost,
+		IPAddress:  "10.0.0.9",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["terminal"]; !ok {
+		t.Error("terminal was dropped from the encoded payload — it must carry no omitempty")
+	}
+}
+
+// TestCorpus_ReadinessNetworksSurviveAnEmptyList is D-8's load-bearing half: an agent that has
+// lost every interface must be able to say so. With `omitempty` the empty list would vanish and
+// the server would keep standing on a stale, wider-than-reality scope forever.
+func TestCorpus_ReadinessNetworksSurviveAnEmptyList(t *testing.T) {
+	encoded, err := json.Marshal(CapabilityReadinessPayload{Networks: []NetworkFacts{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["networks"]; !ok {
+		t.Error("networks was dropped from the encoded payload — it must carry no omitempty")
+	}
 }

@@ -37,6 +37,7 @@ TYPE_CAPABILITIES_SET = "capabilities.set"
 TYPE_PROBE_ASSIGN = "probe.assign"
 TYPE_PROBE_CANCEL = "probe.cancel"
 TYPE_DISCOVERY_REQUEST = "discovery.request"
+TYPE_DISCOVERY_CANCEL = "discovery.cancel"
 TYPE_KEY_ROTATE = "key.rotate"
 TYPE_UPDATE = "update"
 TYPE_DISCONNECT = "disconnect"
@@ -127,7 +128,25 @@ class HelloAckPayload(BaseModel):
 
 
 class CapabilityReadinessPayload(BaseModel):
+    """agent -> server `capability.readiness` payload.
+
+    ``networks`` is the same shape as ``HelloPayload.networks`` and exists so an
+    agent can refresh its directly connected networks *mid-session* (Slice 4
+    D-8). Hello carries them only at connect, so without this a subnet that
+    appeared on the agent host would not become discoverable until the next
+    reconnect — which may be days.
+
+    It is optional and callers must gate persistence on presence in
+    ``model_fields_set``, never on truthiness: an agent that predates the field
+    omits the key entirely and must leave the last known report standing, while
+    an explicit ``[]`` is a real report of "nothing directly connected" and must
+    replace it. That is why the Go side carries no ``omitempty`` for it — an
+    agent that has lost every interface must be able to say so, or a stale,
+    wider-than-reality scope stands forever.
+    """
+
     readiness: list[Readiness] = Field(default_factory=list)
+    networks: list[NetworkFacts] = Field(default_factory=list)
 
 
 class HeartbeatPayload(BaseModel):
@@ -295,6 +314,168 @@ class ProbeResultPayload(BaseModel):
     samples: list[ProbeSample] = Field(default_factory=list)
     msg: str = ""
     details: dict[str, Any] | None = None
+
+
+_DISPATCH_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_FINDING_ID_RE = re.compile(r"^[0-9a-f]{1,64}$")
+
+# Slice 4 plan §4's bounds. They are declared here, on the model, rather than
+# left to the ingest handler, because a bound the *schema* does not carry is one
+# the agent's own encoder has no reason to respect — and `discovery.finding` is
+# a spooled data frame, so a single oversized batch replayed after an outage is
+# the shape this has to survive.
+MAX_DISCOVERY_TARGETS = 16
+MAX_DISCOVERY_PORTS = 32
+MAX_DISCOVERY_EVIDENCE = 16
+MAX_DISCOVERY_OPEN_PORTS = 64
+MAX_DISCOVERY_BANNER_CHARS = 512
+MAX_DISCOVERY_MSG_CHARS = 2000
+
+# The closed `kind` vocabulary. A `host` finding describes one address; a
+# `summary` is the dispatch's single terminal frame. Both travel as the same
+# frame type so the summary rides the spool with the findings it closes, which
+# is what makes replay after an outage idempotent rather than a job that never
+# finishes.
+DISCOVERY_KIND_HOST = "host"
+DISCOVERY_KIND_SUMMARY = "summary"
+DISCOVERY_KINDS = frozenset({DISCOVERY_KIND_HOST, DISCOVERY_KIND_SUMMARY})
+
+
+class DiscoveryRequestPayload(BaseModel):
+    """server -> agent `discovery.request` payload (plan §4).
+
+    One bounded, one-shot scan. Every limit here is *also* enforced by the agent
+    against its own grant before it opens a socket — the backend deriving a
+    target and the agent accepting one are independent checks on purpose, so a
+    backend bug cannot widen what an agent will actually scan.
+
+    ``scope_version`` is the ``EffectiveScope.version`` in force when the
+    request was built. The agent re-derives its own and refuses a mismatch: plan
+    §2 requires an active request to be cancelled when scope changes
+    incompatibly, and a version is what makes that decidable without shipping
+    the whole CIDR list on every dispatch.
+
+    Datetimes are ``datetime`` and must be serialized with ``.isoformat()`` —
+    ``agent_registry.publish_agent_control_frame`` dumps with ``default=str``,
+    which renders a space separator that Go's ``time.Time`` rejects.
+    """
+
+    dispatch_id: str
+    scan_job_id: int
+    targets: list[str] = Field(default_factory=list, max_length=MAX_DISCOVERY_TARGETS)
+    methods: list[str] = Field(default_factory=list, max_length=8)
+    tcp_ports: list[int] = Field(default_factory=list, max_length=MAX_DISCOVERY_PORTS)
+    host_timeout_ms: int
+    max_concurrent_hosts: int
+    scope_version: str = Field(max_length=64)
+    deadline_at: datetime
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _dispatch_id_is_a_128_bit_hex_token(cls, v: str) -> str:
+        if not _DISPATCH_ID_RE.fullmatch(v):
+            raise ValueError("dispatch_id must be exactly 32 lowercase hex characters")
+        return v
+
+
+class DiscoveryCancelPayload(BaseModel):
+    """server -> agent `discovery.cancel` payload (plan §4), sent when the job is
+    cancelled, its profile disabled, scope changed incompatibly, the capability
+    disabled, or the agent revoked.
+
+    ``reason`` is advisory. Cancellation is best-effort and the backend stays
+    authoritative: a finding for a dispatch it has already closed is rejected on
+    arrival regardless of whether the cancel was ever delivered.
+    """
+
+    dispatch_id: str
+    reason: str | None = Field(default=None, max_length=64)
+
+
+class DiscoveryOpenPort(BaseModel):
+    """One reachable TCP port on a discovered host.
+
+    ``banner`` is an untrusted observation: whatever bytes the service sent
+    first, control characters stripped and truncated agent-side. It is bounded
+    again here because ``ScanResult.banner`` is an unbounded ``Text`` column, so
+    this cap is the only one there is.
+    """
+
+    port: int = Field(ge=1, le=65535)
+    protocol: str = Field(default="tcp", max_length=8)
+    banner: str | None = Field(default=None, max_length=MAX_DISCOVERY_BANNER_CHARS)
+
+
+class DiscoveryFindingPayload(BaseModel):
+    """agent -> server `discovery.finding` payload (plan §4), mirroring
+    apps/agent/internal/frame/frame.go's DiscoveryFindingPayload field-for-field.
+
+    ``kind`` is closed: ``host`` describes one discovered address, ``summary``
+    is the dispatch's single terminal frame carrying counts and outcome. A
+    summary has its own ``finding_id`` for the same reason every host finding
+    does — spool replay must be idempotent, and the frame that *closes* a job is
+    exactly the one an outage is most likely to duplicate.
+
+    ``finding_id`` is agent-chosen but replay-stable by construction (a digest
+    of dispatch/kind/address), which is what turns
+    ``uq_scan_results_job_finding`` into an idempotency key rather than a race.
+    It is bounded to the width of its ``String(64)`` column: an over-length
+    value would otherwise become a psycopg ``DataError`` inside the ``/link``
+    read loop.
+
+    Every string here is an untrusted observation. ``hostname`` is a PTR answer
+    from a resolver the agent does not control, ``banner`` is whatever bytes a
+    service chose to send, and ``mac_address`` is whatever the neighbor cache
+    held. None of them may reach ``Hardware`` without review, and none may be
+    embedded in a log line or an audit detail.
+    """
+
+    dispatch_id: str
+    scan_job_id: int
+    finding_id: str
+    kind: str = DISCOVERY_KIND_HOST
+    observed_at: datetime
+    ip_address: str | None = Field(default=None, max_length=45)
+    mac_address: str | None = Field(default=None, max_length=17)
+    hostname: str | None = Field(default=None, max_length=253)
+    open_ports: list[DiscoveryOpenPort] = Field(
+        default_factory=list, max_length=MAX_DISCOVERY_OPEN_PORTS
+    )
+    evidence: list[str] = Field(default_factory=list, max_length=MAX_DISCOVERY_EVIDENCE)
+    terminal: bool = False
+    # `summary` fields. Absent on a `host` finding; a `host` finding that
+    # carried them would simply be ignored by the ingest handler rather than
+    # rejected, since they say nothing about the address.
+    outcome: str | None = Field(default=None, max_length=24)
+    hosts_found: int | None = Field(default=None, ge=0)
+    addresses_scanned: int | None = Field(default=None, ge=0)
+    msg: str | None = Field(default=None, max_length=MAX_DISCOVERY_MSG_CHARS)
+    error_code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("dispatch_id")
+    @classmethod
+    def _dispatch_id_is_a_128_bit_hex_token(cls, v: str) -> str:
+        if not _DISPATCH_ID_RE.fullmatch(v):
+            raise ValueError("dispatch_id must be exactly 32 lowercase hex characters")
+        return v
+
+    @field_validator("finding_id")
+    @classmethod
+    def _finding_id_fits_its_column(cls, v: str) -> str:
+        if not _FINDING_ID_RE.fullmatch(v):
+            raise ValueError("finding_id must be 1-64 lowercase hex characters")
+        return v
+
+    @field_validator("evidence")
+    @classmethod
+    def _evidence_entries_are_short_labels(cls, v: list[str]) -> list[str]:
+        """Evidence names *how* the agent saw the host ("neighbor_cache",
+        "tcp_connect"), never what it saw. Bounding each entry keeps an
+        attacker from smuggling banner bytes through a field nothing else
+        truncates."""
+        if any(len(entry) > 32 for entry in v):
+            raise ValueError("evidence entries must be at most 32 characters")
+        return v
 
 
 _HEX_PK_RE = re.compile(r"^[0-9a-f]{64}$")

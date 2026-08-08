@@ -548,5 +548,204 @@
         "msg": "destination 8.8.8.8 is outside the agent's approved scope"
       }
     }
+  },
+  {
+    "description": "discovery.request — a fully populated bounded scan of two directly connected subnets",
+    "json": {
+      "v": 1, "type": "discovery.request", "seq": 0, "ts": "2026-08-08T18:00:00Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "scan_job_id": 481,
+        "targets": ["192.168.10.0/24", "fd00:a::/64"],
+        "methods": ["neighbor_cache", "icmp", "tcp_connect", "reverse_dns"],
+        "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
+        "host_timeout_ms": 1500,
+        "max_concurrent_hosts": 64,
+        "scope_version": "9f1c0b7a4e2d6538",
+        "deadline_at": "2026-08-08T18:05:00Z"
+      }
+    }
+  },
+  {
+    "description": "discovery.request — minimal: one target, neighbor cache only, no port scan",
+    "json": {
+      "v": 1, "type": "discovery.request", "seq": 1, "ts": "2026-08-08T18:00:01Z",
+      "payload": {
+        "dispatch_id": "0123456789abcdef0123456789abcdef",
+        "scan_job_id": 482,
+        "targets": ["10.77.0.0/24"],
+        "methods": ["neighbor_cache"],
+        "tcp_ports": [],
+        "host_timeout_ms": 1500,
+        "max_concurrent_hosts": 8,
+        "scope_version": "9f1c0b7a4e2d6538",
+        "deadline_at": "2026-08-08T18:02:00Z"
+      }
+    }
+  },
+  {
+    "description": "discovery.cancel — the job was cancelled centrally",
+    "json": {
+      "v": 1, "type": "discovery.cancel", "seq": 2, "ts": "2026-08-08T18:01:00Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "reason": "job_cancelled"
+      }
+    }
+  },
+  {
+    "description": "discovery.cancel — reason omitted; cancellation is best-effort and late findings are rejected regardless",
+    "json": {
+      "v": 1, "type": "discovery.cancel", "seq": 3, "ts": "2026-08-08T18:01:05Z",
+      "payload": {
+        "dispatch_id": "0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — a host seen by three methods, with open ports and banners",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 4, "ts": "2026-08-08T18:01:12Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "scan_job_id": 481,
+        "finding_id": "a3f0c1d2e4b5968701234567890abcde",
+        "kind": "host",
+        "observed_at": "2026-08-08T18:01:12Z",
+        "ip_address": "192.168.10.24",
+        "mac_address": "00:11:22:33:44:55",
+        "hostname": "nas.internal",
+        "open_ports": [
+          {"port": 443, "protocol": "tcp", "banner": "HTTP/1.1 400 Bad Request"},
+          {"port": 22, "protocol": "tcp", "banner": "SSH-2.0-OpenSSH_9.6"}
+        ],
+        "evidence": ["neighbor_cache", "icmp", "tcp_connect"],
+        "terminal": false
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — minimal host: an address and nothing else the agent could learn",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 5, "ts": "2026-08-08T18:01:13Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "scan_job_id": 481,
+        "finding_id": "b4a1",
+        "kind": "host",
+        "observed_at": "2026-08-08T18:01:13Z",
+        "ip_address": "192.168.10.25",
+        "evidence": ["icmp"],
+        "terminal": false
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — terminal summary, outcome completed",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 6, "ts": "2026-08-08T18:03:40Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "scan_job_id": 481,
+        "finding_id": "ffffffffffffffffffffffffffffffff",
+        "kind": "summary",
+        "observed_at": "2026-08-08T18:03:40Z",
+        "terminal": true,
+        "outcome": "completed",
+        "hosts_found": 2,
+        "addresses_scanned": 254
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — terminal summary, outcome execution_error with a bounded reason",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 7, "ts": "2026-08-08T18:03:41Z",
+      "payload": {
+        "dispatch_id": "7c2e5a91b4d3406f8a1e9c7d05b2f36a",
+        "scan_job_id": 481,
+        "finding_id": "ee00",
+        "kind": "summary",
+        "observed_at": "2026-08-08T18:03:41Z",
+        "terminal": true,
+        "outcome": "execution_error",
+        "hosts_found": 0,
+        "addresses_scanned": 12,
+        "msg": "icmp socket unavailable and every tcp connect timed out",
+        "error_code": "collector_unavailable"
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — terminal summary, outcome cancelled",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 8, "ts": "2026-08-08T18:03:42Z",
+      "payload": {
+        "dispatch_id": "0123456789abcdef0123456789abcdef",
+        "scan_job_id": 482,
+        "finding_id": "dd11",
+        "kind": "summary",
+        "observed_at": "2026-08-08T18:03:42Z",
+        "terminal": true,
+        "outcome": "cancelled",
+        "hosts_found": 1,
+        "addresses_scanned": 40
+      }
+    }
+  },
+  {
+    "description": "discovery.finding — terminal summary, outcome rejected: the request never started",
+    "json": {
+      "v": 1, "type": "discovery.finding", "seq": 9, "ts": "2026-08-08T18:03:43Z",
+      "payload": {
+        "dispatch_id": "0123456789abcdef0123456789abcdef",
+        "scan_job_id": 482,
+        "finding_id": "cc22",
+        "kind": "summary",
+        "observed_at": "2026-08-08T18:03:43Z",
+        "terminal": true,
+        "outcome": "rejected",
+        "hosts_found": 0,
+        "addresses_scanned": 0,
+        "error_code": "scope_version_mismatch"
+      }
+    }
+  },
+  {
+    "description": "capability.readiness — discovery collectors, refreshing the directly connected networks mid-session",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 14, "ts": "2026-08-08T12:03:00Z",
+      "payload": {
+        "readiness": [
+          {"collector": "discovery.neighbor", "state": "ready"},
+          {
+            "collector": "discovery.icmp", "state": "degraded",
+            "reason": "unprivileged icmp datagram socket unavailable; falling back to tcp connect",
+            "remediation": "set net.ipv4.ping_group_range to include the cb-agent group"
+          },
+          {"collector": "discovery.tcp", "state": "ready"},
+          {"collector": "discovery.dns", "state": "ready"}
+        ],
+        "networks": [
+          {"name": "eth0", "flags": ["up", "broadcast"], "addrs": ["10.88.0.4/24"]},
+          {"name": "eth1", "flags": ["up", "broadcast"], "addrs": ["10.77.0.9/24", "fd00:a::9/64"]}
+        ]
+      }
+    }
+  },
+  {
+    "description": "capability.readiness — every interface lost: an explicit empty networks list must replace the last report",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 15, "ts": "2026-08-08T12:04:00Z",
+      "payload": {
+        "readiness": [
+          {
+            "collector": "discovery.neighbor", "state": "unavailable",
+            "reason": "no directly connected network remains"
+          }
+        ],
+        "networks": []
+      }
+    }
   }
 ]

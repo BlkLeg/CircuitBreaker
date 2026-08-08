@@ -65,6 +65,7 @@ const (
 	TypeProbeAssign      = "probe.assign"
 	TypeProbeCancel      = "probe.cancel"
 	TypeDiscoveryRequest = "discovery.request"
+	TypeDiscoveryCancel  = "discovery.cancel"
 	TypeKeyRotate        = "key.rotate"
 	TypeUpdate           = "update"
 	TypeDisconnect       = "disconnect"
@@ -99,6 +100,7 @@ var allFrameTypes = []string{
 	TypeProbeAssign,
 	TypeProbeCancel,
 	TypeDiscoveryRequest,
+	TypeDiscoveryCancel,
 	TypeKeyRotate,
 	TypeUpdate,
 	TypeDisconnect,
@@ -126,6 +128,7 @@ var controlFrameTypes = map[string]bool{
 	TypeProbeAssign:         true,
 	TypeProbeCancel:         true,
 	TypeDiscoveryRequest:    true,
+	TypeDiscoveryCancel:     true,
 	TypeKeyRotate:           true,
 	TypeUpdate:              true,
 	TypeDisconnect:          true,
@@ -216,8 +219,21 @@ type HelloAckPayload struct {
 	AgentID      int64                      `json:"agent_id,omitempty"`
 }
 
+// CapabilityReadinessPayload is the agent -> server `capability.readiness` payload.
+//
+// Networks is the same shape as HelloPayload.Networks and exists so an agent can refresh its
+// directly connected networks *mid-session* (Slice 4 D-8). Hello carries them only at connect,
+// so without this a subnet that appeared on this host would not become discoverable until the
+// next reconnect — which may be days.
+//
+// It deliberately carries no `omitempty`, for the same reason HeartbeatPayload's spool fields do
+// not: an agent that has lost every interface must be able to send `[]`, and Go would drop that,
+// leaving the server to read an absent key as "no report" and stand on a stale, wider-than-
+// reality scope forever. The server gates persistence on the key's *presence*, not its
+// truthiness.
 type CapabilityReadinessPayload struct {
-	Readiness []Readiness `json:"readiness"`
+	Readiness []Readiness    `json:"readiness"`
+	Networks  []NetworkFacts `json:"networks"`
 }
 
 // HeartbeatPayload is the agent -> server `heartbeat` payload (D-12),
@@ -378,4 +394,116 @@ type ProbeResultPayload struct {
 	Samples    []ProbeSample  `json:"samples,omitempty"`
 	Msg        string         `json:"msg,omitempty"`
 	Details    map[string]any `json:"details,omitempty"`
+}
+
+// Slice 4 plan §4's bounds. Declared alongside the structs rather than left to the collector so
+// the encoder and the server's pydantic models are reading the same numbers — a bound only one
+// side knows about is one the other has no reason to respect.
+const (
+	MaxDiscoveryTargets    = 16
+	MaxDiscoveryPorts      = 32
+	MaxDiscoveryEvidence   = 16
+	MaxDiscoveryOpenPorts  = 64
+	MaxDiscoveryBannerRune = 512
+	MaxDiscoveryMsgRunes   = 2000
+)
+
+// The closed `kind` vocabulary for a discovery finding. A host finding describes one address; a
+// summary is the dispatch's single terminal frame. Both travel as the same frame type so the
+// summary rides the spool with the findings it closes, which is what makes replay after an
+// outage idempotent rather than a job that never finishes.
+const (
+	DiscoveryKindHost    = "host"
+	DiscoveryKindSummary = "summary"
+)
+
+// Discovery summary outcomes, mirroring ProbeResultPayload.Outcome's closed set.
+const (
+	DiscoveryOutcomeCompleted      = "completed"
+	DiscoveryOutcomeExecutionError = "execution_error"
+	DiscoveryOutcomeCancelled      = "cancelled"
+	DiscoveryOutcomeRejected       = "rejected"
+)
+
+// DiscoveryRequestPayload is the server -> agent `discovery.request` payload (plan §4), mirroring
+// apps/backend/src/app/schemas/agent_frame.py's DiscoveryRequestPayload.
+//
+// One bounded, one-shot scan. Every limit here is *also* checked by the agent against its own
+// grant before it opens a socket — the backend deriving a target and the agent accepting one are
+// independent checks on purpose, so a backend bug cannot widen what an agent will actually scan.
+//
+// ScopeVersion is the netscope.Scope.Version in force when the request was built. The agent
+// re-derives its own and refuses a mismatch: plan §2 requires an active request to be cancelled
+// when scope changes incompatibly, and a version is what makes that decidable without shipping
+// the whole CIDR list on every dispatch.
+type DiscoveryRequestPayload struct {
+	DispatchID         string    `json:"dispatch_id"`
+	ScanJobID          int64     `json:"scan_job_id"`
+	Targets            []string  `json:"targets,omitempty"`
+	Methods            []string  `json:"methods,omitempty"`
+	TCPPorts           []int     `json:"tcp_ports,omitempty"`
+	HostTimeoutMS      int       `json:"host_timeout_ms"`
+	MaxConcurrentHosts int       `json:"max_concurrent_hosts"`
+	ScopeVersion       string    `json:"scope_version"`
+	DeadlineAt         time.Time `json:"deadline_at"`
+}
+
+// DiscoveryCancelPayload is the server -> agent `discovery.cancel` payload (plan §4), sent when
+// the job is cancelled, its profile disabled, scope changed incompatibly, the capability
+// disabled, or the agent revoked. Reason is advisory: cancellation is best-effort and the
+// backend stays authoritative, rejecting any finding that arrives for a dispatch it has already
+// closed.
+type DiscoveryCancelPayload struct {
+	DispatchID string `json:"dispatch_id"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// DiscoveryOpenPort is one reachable TCP port on a discovered host. Banner is an untrusted
+// observation — whatever bytes the service sent first, control characters stripped and truncated
+// to MaxDiscoveryBannerRune here rather than on the server, because ScanResult.banner is an
+// unbounded Text column and the wire cap is the only one there is.
+type DiscoveryOpenPort struct {
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol,omitempty"`
+	Banner   string `json:"banner,omitempty"`
+}
+
+// DiscoveryFindingPayload is the agent -> server `discovery.finding` payload (plan §4), mirroring
+// apps/backend/src/app/schemas/agent_frame.py's DiscoveryFindingPayload.
+//
+// Kind is closed: "host" describes one discovered address, "summary" is the dispatch's single
+// terminal frame carrying counts and outcome. A summary has its own FindingID for the same reason
+// every host finding does — spool replay must be idempotent, and the frame that *closes* a job is
+// exactly the one an outage is most likely to duplicate.
+//
+// FindingID is chosen here but replay-stable by construction (a digest of dispatch/kind/address),
+// which is what turns the server's uq_scan_results_job_finding into an idempotency key rather
+// than a race. It is bounded to the width of that String(64) column.
+//
+// Terminal carries no `omitempty`, for the same reason ProbeResultPayload.Up does not: false is
+// the value every host finding sends, and an absent key must never be read as its own default.
+//
+// Every string here is an untrusted observation: Hostname is a PTR answer from a resolver this
+// host does not control, Banner is whatever bytes a service chose to send, MACAddress is whatever
+// the neighbor cache held. None of them may reach Hardware without review on the server side.
+type DiscoveryFindingPayload struct {
+	DispatchID string              `json:"dispatch_id"`
+	ScanJobID  int64               `json:"scan_job_id"`
+	FindingID  string              `json:"finding_id"`
+	Kind       string              `json:"kind"`
+	ObservedAt time.Time           `json:"observed_at"`
+	IPAddress  string              `json:"ip_address,omitempty"`
+	MACAddress string              `json:"mac_address,omitempty"`
+	Hostname   string              `json:"hostname,omitempty"`
+	OpenPorts  []DiscoveryOpenPort `json:"open_ports,omitempty"`
+	Evidence   []string            `json:"evidence,omitempty"`
+	Terminal   bool                `json:"terminal"`
+
+	// Summary fields. Absent on a host finding; a host finding that carried them is ignored by
+	// the server rather than rejected, since they say nothing about the address.
+	Outcome          string `json:"outcome,omitempty"`
+	HostsFound       *int   `json:"hosts_found,omitempty"`
+	AddressesScanned *int   `json:"addresses_scanned,omitempty"`
+	Msg              string `json:"msg,omitempty"`
+	ErrorCode        string `json:"error_code,omitempty"`
 }

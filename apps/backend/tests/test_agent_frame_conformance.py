@@ -6,8 +6,11 @@ import pytest
 from app.api import ws_agents
 from app.schemas import agent_frame
 from app.schemas.agent_frame import (
+    DISCOVERY_KIND_SUMMARY,
+    DISCOVERY_KINDS,
     TYPE_CAPABILITIES_SET,
     TYPE_CAPABILITY_READINESS,
+    TYPE_DISCOVERY_CANCEL,
     TYPE_DISCOVERY_FINDING,
     TYPE_DISCOVERY_REQUEST,
     TYPE_HEARTBEAT,
@@ -24,6 +27,9 @@ from app.schemas.agent_frame import (
     TYPE_UPDATE_STATUS,
     AgentFrame,
     CapabilityReadinessPayload,
+    DiscoveryCancelPayload,
+    DiscoveryFindingPayload,
+    DiscoveryRequestPayload,
     HeartbeatPayload,
     HelloAckPayload,
     HelloPayload,
@@ -53,6 +59,9 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_PROBE_ASSIGN: ProbeAssignPayload,
     TYPE_PROBE_CANCEL: ProbeCancelPayload,
     TYPE_PROBE_RESULT: ProbeResultPayload,
+    TYPE_DISCOVERY_REQUEST: DiscoveryRequestPayload,
+    TYPE_DISCOVERY_CANCEL: DiscoveryCancelPayload,
+    TYPE_DISCOVERY_FINDING: DiscoveryFindingPayload,
 }
 
 
@@ -100,16 +109,16 @@ def test_corpus_typed_payloads_decode_and_round_trip(entry):
 # slice that introduces a type's wire traffic must delete its entry in the same commit that
 # adds the fixture. Mirrors apps/agent/internal/frame/conformance_test.go's pendingCorpusTypes.
 #
-#   * discovery.request / discovery.finding -- removed by slice 4 (local discovery).
 #   * update / uninstall                    -- server->agent command frames with no structured
 #     payload of their own yet; whichever task gives them one adds the fixture.
+#
+# discovery.request / discovery.cancel / discovery.finding left this list in slice 4, in the same
+# commit that added their fixtures.
 #
 # probe.assign / probe.cancel / probe.result left this list in slice 3, in the same commit that
 # added their fixtures. ``probe.cancel`` was never on it: a constant declared without a fixture
 # must fail this gate on arrival, which is the property the list exists to preserve.
 PENDING_CORPUS_TYPES = {
-    TYPE_DISCOVERY_REQUEST,
-    TYPE_DISCOVERY_FINDING,
     TYPE_UPDATE,
     TYPE_UNINSTALL,
 }
@@ -306,3 +315,109 @@ def test_probe_payloads_survive_the_typed_models_by_name():
     assert any(entry["json"]["payload"]["up"] is False for entry in results), (
         "corpus must cover a result reporting a DOWN target"
     )
+
+
+def test_discovery_payloads_survive_the_typed_models_by_name():
+    """The discovery payloads' collection and summary fields asserted by name.
+
+    Same hazard as ``test_probe_payloads_survive_the_typed_models_by_name``:
+    pydantic drops unknown keys, so a model that misspelled ``open_ports`` or
+    ``evidence`` validates a real finding into an empty one and the round-trip
+    test above still passes — both sides of its comparison are equally empty.
+    For a finding that means a discovered host silently loses every port it was
+    listening on; for a summary it means the frame that *closes* a job arrives
+    with no outcome and the job never finalizes.
+    """
+    requests = _corpus_entries_of_type(TYPE_DISCOVERY_REQUEST)
+    assert requests, "corpus must cover discovery.request"
+    for entry in requests:
+        wire = entry["json"]["payload"]
+        payload = DiscoveryRequestPayload.model_validate(wire)
+        assert payload.targets == wire["targets"]
+        assert payload.methods == wire["methods"]
+        assert payload.tcp_ports == wire["tcp_ports"]
+        assert (payload.dispatch_id, payload.scan_job_id, payload.scope_version) == (
+            wire["dispatch_id"],
+            wire["scan_job_id"],
+            wire["scope_version"],
+        )
+        assert (payload.host_timeout_ms, payload.max_concurrent_hosts) == (
+            wire["host_timeout_ms"],
+            wire["max_concurrent_hosts"],
+        )
+
+    cancels = _corpus_entries_of_type(TYPE_DISCOVERY_CANCEL)
+    assert cancels, "corpus must cover discovery.cancel"
+    assert any("reason" not in e["json"]["payload"] for e in cancels), (
+        "corpus must cover a cancel with no reason — it is advisory, not required"
+    )
+    for entry in cancels:
+        wire = entry["json"]["payload"]
+        payload = DiscoveryCancelPayload.model_validate(wire)
+        assert payload.dispatch_id == wire["dispatch_id"]
+        assert payload.reason == wire.get("reason")
+
+    findings = _corpus_entries_of_type(TYPE_DISCOVERY_FINDING)
+    assert findings, "corpus must cover discovery.finding"
+    for entry in findings:
+        wire = entry["json"]["payload"]
+        payload = DiscoveryFindingPayload.model_validate(wire)
+        assert [port.model_dump(exclude_none=True) for port in payload.open_ports] == wire.get(
+            "open_ports", []
+        )
+        assert payload.evidence == wire.get("evidence", [])
+        assert payload.terminal is wire["terminal"]
+        assert (payload.ip_address, payload.mac_address, payload.hostname) == (
+            wire.get("ip_address"),
+            wire.get("mac_address"),
+            wire.get("hostname"),
+        )
+        if payload.kind == DISCOVERY_KIND_SUMMARY:
+            assert payload.outcome == wire["outcome"]
+            assert payload.hosts_found == wire["hosts_found"]
+            assert payload.addresses_scanned == wire["addresses_scanned"]
+
+    # Both `kind` values and every summary outcome are exercised, so a model that
+    # narrowed either vocabulary fails here rather than in whichever task first
+    # emits the value it dropped.
+    assert {e["json"]["payload"]["kind"] for e in findings} == DISCOVERY_KINDS
+    assert {
+        e["json"]["payload"]["outcome"]
+        for e in findings
+        if e["json"]["payload"]["kind"] == DISCOVERY_KIND_SUMMARY
+    } == {"completed", "execution_error", "cancelled", "rejected"}
+    assert any(e["json"]["payload"]["terminal"] is False for e in findings), (
+        "corpus must cover a non-terminal finding — false is the value every host finding sends"
+    )
+
+
+def test_readiness_networks_survive_the_typed_payload_by_name():
+    """D-8's mid-session network refresh, asserted the same way hello's is.
+
+    An explicit empty list is a real report ("this agent has lost every
+    interface") and must survive validation as an empty list rather than being
+    conflated with an absent key — the caller distinguishes them through
+    ``model_fields_set``, and only a present key narrows a live scope.
+    """
+    entries = [
+        e
+        for e in _corpus_entries_of_type(TYPE_CAPABILITY_READINESS)
+        if "networks" in e["json"]["payload"]
+    ]
+    assert entries, "corpus must cover a readiness frame carrying networks"
+
+    for entry in entries:
+        wire = entry["json"]["payload"]
+        payload = CapabilityReadinessPayload.model_validate(wire)
+        assert "networks" in payload.model_fields_set
+        assert [{"name": n.name, "flags": n.flags, "addrs": n.addrs} for n in payload.networks] == [
+            {"name": n["name"], "flags": n.get("flags", []), "addrs": n.get("addrs", [])}
+            for n in wire["networks"]
+        ]
+
+    assert any(e["json"]["payload"]["networks"] == [] for e in entries), (
+        "corpus must cover an explicitly empty networks list — it is what narrows a stale scope"
+    )
+    # And an old-shaped frame must still validate, leaving the last report standing.
+    legacy = CapabilityReadinessPayload.model_validate({"readiness": []})
+    assert "networks" not in legacy.model_fields_set
