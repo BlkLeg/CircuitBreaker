@@ -25,6 +25,21 @@ REMOTE_PROBE_DEFAULT_CONFIG = {
     "additional_hostnames": [],
 }
 
+# The registry default (`CAPABILITY_DEFINITIONS["local_discovery"]`), spelled out
+# for the same reason: a silent change to the server-side defaults must fail
+# loudly here rather than quietly ship a wider scan to every approved agent.
+LOCAL_DISCOVERY_DEFAULT_CONFIG = {
+    "scope_mode": "direct_private",
+    "excluded_cidrs": [],
+    "additional_cidrs": [],
+    "max_addresses_per_job": 1024,
+    "max_concurrent_hosts": 64,
+    "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
+    "host_timeout_ms": 1500,
+    "job_timeout_seconds": 300,
+    "auto_discovery_paused": False,
+}
+
 
 @contextlib.contextmanager
 def _capture_sql():
@@ -334,7 +349,7 @@ async def test_approve_with_omitted_capabilities_grants_the_full_normal_preset(
             },
         },
         "remote_probe": {"enabled": True, "config": REMOTE_PROBE_DEFAULT_CONFIG},
-        "local_discovery": {"enabled": True, "config": {}},
+        "local_discovery": {"enabled": True, "config": LOCAL_DISCOVERY_DEFAULT_CONFIG},
     }
 
 

@@ -313,8 +313,14 @@ def address_count(cidrs: Iterable[str]) -> int:
     Duplicates and overlaps are counted once, so asking for `10.0.0.0/24` twice
     does not spuriously exhaust the ceiling.
     """
-    collapsed = ipaddress.collapse_addresses(_parse_cidrs(list(cidrs)))  # type: ignore[arg-type]
-    return sum(network.num_addresses for network in collapsed)
+    v4 = [net for net in _parse_cidrs(list(cidrs)) if isinstance(net, ipaddress.IPv4Network)]
+    v6 = [net for net in _parse_cidrs(list(cidrs)) if isinstance(net, ipaddress.IPv6Network)]
+    # Collapsed per family: `collapse_addresses` raises TypeError on a mixed
+    # list, and a dual-stack target set is the normal case for an agent that
+    # reported both an RFC 1918 prefix and a ULA one.
+    return sum(net.num_addresses for net in ipaddress.collapse_addresses(v4)) + sum(
+        net.num_addresses for net in ipaddress.collapse_addresses(v6)
+    )
 
 
 def hostname_is_approved(scope: EffectiveScope, host: str) -> bool:

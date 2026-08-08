@@ -417,7 +417,20 @@ def _enroll_agent(client: httpx.Client, headers: dict, *, env: dict | None = Non
                 "additional_hostnames": [],
             },
         },
-        "local_discovery": {"enabled": True, "config": {}},
+        "local_discovery": {
+            "enabled": True,
+            "config": {
+                "scope_mode": "direct_private",
+                "excluded_cidrs": [],
+                "additional_cidrs": [],
+                "max_addresses_per_job": 1024,
+                "max_concurrent_hosts": 64,
+                "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
+                "host_timeout_ms": 1500,
+                "job_timeout_seconds": 300,
+                "auto_discovery_paused": False,
+            },
+        },
     }, "approve did not apply the server's default capability grants"
 
     assert proc.wait(timeout=15) == 0, "enroll process did not exit 0 after approval"

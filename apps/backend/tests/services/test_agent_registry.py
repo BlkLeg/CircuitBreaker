@@ -17,6 +17,21 @@ REMOTE_PROBE_DEFAULT_CONFIG = {
     "additional_hostnames": [],
 }
 
+# The registry default (`CAPABILITY_DEFINITIONS["local_discovery"]`), spelled out
+# for the same reason: a silent change to the server-side defaults must fail
+# loudly here rather than quietly ship a wider scan to every approved agent.
+LOCAL_DISCOVERY_DEFAULT_CONFIG = {
+    "scope_mode": "direct_private",
+    "excluded_cidrs": [],
+    "additional_cidrs": [],
+    "max_addresses_per_job": 1024,
+    "max_concurrent_hosts": 64,
+    "tcp_ports": [22, 53, 80, 443, 445, 3389, 8000, 8080, 8443],
+    "host_timeout_ms": 1500,
+    "job_timeout_seconds": 300,
+    "auto_discovery_paused": False,
+}
+
 
 def test_create_pending_agent_defaults_to_pending_status(db_session):
     agent = svc.create_pending_agent(
@@ -435,7 +450,10 @@ def test_bulk_structured_grants_dict_maps_capability_grants_per_agent(db_session
         "enabled": False,
         "config": REMOTE_PROBE_DEFAULT_CONFIG,
     }
-    assert result[agent_b.id]["local_discovery"] == {"enabled": True, "config": {}}
+    assert result[agent_b.id]["local_discovery"] == {
+        "enabled": True,
+        "config": LOCAL_DISCOVERY_DEFAULT_CONFIG,
+    }
 
 
 def test_bulk_structured_grants_dict_empty_for_agent_with_no_grants(db_session, factories):

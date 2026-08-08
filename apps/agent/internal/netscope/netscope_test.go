@@ -230,3 +230,15 @@ func TestAddressCount_SumsPrefixesAndCountsOverlapOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestAddressCount_HandlesADualStackTargetSet(t *testing.T) {
+	// The backend counts families separately because ipaddress.collapse_addresses
+	// raises on a mixed list; the Go side guards containment on family for the
+	// same reason. Both must reach the same total.
+	if got := AddressCount([]string{"10.0.0.0/24", "fd00::/120"}); got != 512 {
+		t.Errorf("AddressCount(dual stack) = %d, want 512", got)
+	}
+	if got := AddressCount([]string{"10.0.0.0/25", "10.0.0.128/25"}); got != 256 {
+		t.Errorf("AddressCount(adjacent halves) = %d, want 256", got)
+	}
+}

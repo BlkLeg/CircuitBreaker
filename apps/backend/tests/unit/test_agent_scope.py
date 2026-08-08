@@ -386,6 +386,19 @@ def test_address_count_sums_prefixes_and_counts_a_host_route_as_one() -> None:
     assert address_count(["fd00::/120"]) == 256
 
 
+def test_address_count_handles_a_dual_stack_target_set() -> None:
+    """`ipaddress.collapse_addresses` raises TypeError on a mixed-family list,
+    and an agent reporting both an RFC 1918 prefix and a ULA one is the normal
+    case — so the families are counted separately."""
+    assert address_count(["10.0.0.0/24", "fd00::/120"]) == 512
+
+
+def test_address_count_counts_an_overlapping_target_once() -> None:
+    """Naming a segment and a slice of it must not exhaust the ceiling twice."""
+    assert address_count(["10.0.0.0/24", "10.0.0.0/25"]) == 256
+    assert address_count(["10.0.0.0/25", "10.0.0.128/25"]) == 256
+
+
 def test_address_count_ignores_unparseable_entries() -> None:
     """Same fail-soft posture as `derive_scope`: this runs at dispatch time on
     data that has already been normalized, and a parse failure here must not

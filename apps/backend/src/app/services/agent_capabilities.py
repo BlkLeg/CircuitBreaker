@@ -149,6 +149,104 @@ def _normalize_remote_probe_config(config: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_LOCAL_DISCOVERY_DEFAULT_CONFIG: Mapping[str, Any] = MappingProxyType(
+    {
+        "scope_mode": SCOPE_MODE_DIRECT_PRIVATE,
+        "excluded_cidrs": (),
+        "additional_cidrs": (),
+        "max_addresses_per_job": 1024,
+        "max_concurrent_hosts": 64,
+        "tcp_ports": (22, 53, 80, 443, 445, 3389, 8000, 8080, 8443),
+        "host_timeout_ms": 1500,
+        "job_timeout_seconds": 300,
+        # Server-side scheduling control, not a collector setting: it pauses the
+        # automatic per-subnet profiles for this agent without deleting them or
+        # revoking the capability (plan §6). It rides the grant config because
+        # that is already the per-agent settings store the UI edits and the
+        # registry renders; the agent receives it and has no use for it, which is
+        # why the Go normalizer accepts the key and the runtime ignores it.
+        "auto_discovery_paused": False,
+    }
+)
+
+# Server-side hard ceilings, enforced *in addition* to the configurable values
+# above (Slice 4 plan §1). An oversized request is rejected rather than silently
+# truncated: an operator who typed 100 000 addresses has to find out here, not
+# discover later that the agent quietly scanned 4 096 of them. The Go mirror in
+# `apps/agent/internal/capability` carries the same numbers, because an agent
+# that accepted a setting the server rejects would be running a configuration
+# nobody approved.
+_LOCAL_DISCOVERY_BOUNDS: Mapping[str, tuple[int, int]] = MappingProxyType(
+    {
+        "max_addresses_per_job": (1, 4096),
+        "max_concurrent_hosts": (1, 256),
+        "host_timeout_ms": (100, 10_000),
+        "job_timeout_seconds": (30, 1800),
+    }
+)
+# Plan §1 names nine ports. The cap is generous against that and still a bound —
+# an unbounded set would be an unbounded scan of every host in the target.
+_MAX_TCP_PORTS = 32
+
+
+def _normalize_local_discovery_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Validate a `local_discovery` grant config (Slice 4 plan §1).
+
+    The scope half is delegated to `core.agent_scope` for the same reason
+    `_normalize_remote_probe_config` does it: that module is what the
+    dispatcher, the finding-ingest path and the Go agent all evaluate against, so
+    an administrator must not be able to save an entry the evaluator would later
+    read differently. Values are passed through untouched rather than widened
+    (`list(...)`), so `agent_scope` raises its own `ValueError` and
+    `schemas/agents.py::_validate_capability_map` turns it into a 422 instead of
+    a 500.
+
+    There is deliberately **no** `additional_hostnames` here, unlike
+    `remote_probe`. Discovery targets are prefixes; a name written here would
+    look approved while never matching anything, which is exactly the failure
+    `normalize_scope_hostname` refuses IP literals to avoid.
+    """
+    unknown = set(config) - set(_LOCAL_DISCOVERY_DEFAULT_CONFIG)
+    if unknown:
+        raise ValueError(f"unknown local discovery settings: {', '.join(sorted(unknown))}")
+    normalized = _materialized(_LOCAL_DISCOVERY_DEFAULT_CONFIG) | config
+
+    for field, (low, high) in _LOCAL_DISCOVERY_BOUNDS.items():
+        value = normalized[field]
+        # `True` is an `int` and would sail through the range check as 1,
+        # silently configuring a one-address, one-host scan.
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(
+                f"local discovery {field.replace('_', ' ')} must be between {low} and {high}"
+            )
+
+    if not isinstance(normalized["auto_discovery_paused"], bool):
+        raise ValueError("local discovery auto_discovery_paused must be a boolean")
+
+    ports = normalized["tcp_ports"]
+    if not isinstance(ports, list):
+        raise ValueError("local discovery tcp ports must be a list of port numbers")
+    if len(ports) > _MAX_TCP_PORTS:
+        raise ValueError(f"local discovery tcp ports must name at most {_MAX_TCP_PORTS} ports")
+    for port in ports:
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("local discovery tcp ports must be integers between 1 and 65535")
+    normalized["tcp_ports"] = sorted(set(ports))
+
+    # `in` on a frozenset is a hash lookup, so an unhashable value raises
+    # `TypeError` rather than answering False — the type test has to come first.
+    if not isinstance(normalized["scope_mode"], str) or normalized["scope_mode"] not in SCOPE_MODES:
+        known = ", ".join(sorted(SCOPE_MODES))
+        raise ValueError(f"local discovery scope_mode must be one of: {known}")
+    normalized["excluded_cidrs"] = normalize_scope_cidrs(
+        normalized["excluded_cidrs"], field="excluded_cidrs"
+    )
+    normalized["additional_cidrs"] = normalize_scope_cidrs(
+        normalized["additional_cidrs"], field="additional_cidrs"
+    )
+    return normalized
+
+
 def _reject_unknown_keys(capability: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Normalizer for a capability that has no configurable settings *yet*.
 
@@ -190,8 +288,8 @@ CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
     "local_discovery": CapabilityDefinition(
         name="local_discovery",
         default_enabled=True,
-        default_config=MappingProxyType({}),
-        normalize=_reject_unknown_keys("local_discovery"),
+        default_config=_LOCAL_DISCOVERY_DEFAULT_CONFIG,
+        normalize=_normalize_local_discovery_config,
     ),
 }
 

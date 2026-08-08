@@ -407,3 +407,141 @@ func TestRemoteProbeConfig_LocalEditsAreOverwrittenByServerGrant(t *testing.T) {
 		t.Errorf("grants.json still carries the host-side edit: %s", onDisk)
 	}
 }
+
+// --- Slice 4 Task 3: the local_discovery configuration schema (plan §1) -----
+
+// TestNormalizeLocalDiscoveryConfig_DefaultsAndBounds mirrors the backend's
+// test_defaults_match_the_plan_document and test_numeric_bounds_are_enforced.
+// The bounds are a cross-language constant for the same reason remote_probe's
+// are: an agent that accepted a ceiling the server rejects would run a scan
+// wider than any operator approved, and nothing would say so.
+func TestNormalizeLocalDiscoveryConfig_DefaultsAndBounds(t *testing.T) {
+	g := New(t.TempDir())
+	if _, err := g.ApplyGrants(json.RawMessage(`{"local_discovery":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, enabled := g.LocalDiscoveryConfig()
+	if !enabled {
+		t.Fatal("LocalDiscoveryConfig() enabled = false, want true")
+	}
+	if !reflect.DeepEqual(cfg, DefaultLocalDiscoveryConfig()) {
+		t.Fatalf("bare-boolean grant config = %+v, want the package default %+v", cfg, DefaultLocalDiscoveryConfig())
+	}
+	want := DefaultLocalDiscoveryConfig()
+	if want.MaxAddressesPerJob != 1024 || want.MaxConcurrentHosts != 64 ||
+		want.HostTimeoutMS != 1500 || want.JobTimeoutSeconds != 300 ||
+		want.ScopeMode != netscope.ScopeModeDirectPrivate {
+		t.Errorf("DefaultLocalDiscoveryConfig() = %+v, does not match plan §1", want)
+	}
+	if !reflect.DeepEqual(want.TCPPorts, []int{22, 53, 80, 443, 445, 3389, 8000, 8080, 8443}) {
+		t.Errorf("DefaultLocalDiscoveryConfig().TCPPorts = %v, does not match plan §1", want.TCPPorts)
+	}
+
+	for _, tc := range []struct {
+		key      string
+		accepted []int
+		rejected []int
+	}{
+		{"max_addresses_per_job", []int{MinDiscoveryAddresses, 1024, MaxDiscoveryAddresses}, []int{0, -1, MaxDiscoveryAddresses + 1}},
+		{"max_concurrent_hosts", []int{MinDiscoveryHosts, 64, MaxDiscoveryHosts}, []int{0, -1, MaxDiscoveryHosts + 1}},
+		{"host_timeout_ms", []int{MinDiscoveryHostTimeoutMS, 1500, MaxDiscoveryHostTimeoutMS}, []int{MinDiscoveryHostTimeoutMS - 1, 0, MaxDiscoveryHostTimeoutMS + 1}},
+		{"job_timeout_seconds", []int{MinDiscoveryJobSeconds, 300, MaxDiscoveryJobSeconds}, []int{MinDiscoveryJobSeconds - 1, 0, MaxDiscoveryJobSeconds + 1}},
+	} {
+		for _, value := range tc.accepted {
+			payload := json.RawMessage(fmt.Sprintf(`{"local_discovery":{"enabled":true,"config":{%q:%d}}}`, tc.key, value))
+			faults, err := g.ApplyGrants(payload)
+			if err != nil || len(faults) != 0 {
+				t.Fatalf("ApplyGrants(%s=%d) = %v, %v, want accepted", tc.key, value, faults, err)
+			}
+		}
+		for _, value := range tc.rejected {
+			payload := json.RawMessage(fmt.Sprintf(`{"local_discovery":{"enabled":true,"config":{%q:%d}}}`, tc.key, value))
+			faults, err := g.ApplyGrants(payload)
+			if err != nil {
+				t.Fatalf("ApplyGrants() error = %v, want nil (a per-capability fault is not a frame failure)", err)
+			}
+			if got := faultNames(faults); len(got) != 1 || got[0] != "local_discovery" {
+				t.Fatalf("ApplyGrants(%s=%d) faults = %v, want exactly one naming local_discovery", tc.key, value, faults)
+			}
+		}
+	}
+}
+
+// TestNormalizeLocalDiscoveryConfig_PortSet pins the half of the grant that
+// bounds what the collector may touch at all. A port the server did not name is
+// not scannable, so an unbounded or out-of-range set is a fault rather than
+// something to clamp quietly.
+func TestNormalizeLocalDiscoveryConfig_PortSet(t *testing.T) {
+	g := New(t.TempDir())
+
+	if _, err := g.ApplyGrants(json.RawMessage(`{"local_discovery":{"enabled":true,"config":{"tcp_ports":[443,22,443,80]}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := g.LocalDiscoveryConfig()
+	// Deduplicated and ordered, matching the server's normalizer: the two sides
+	// compare port sets, and [443,22] vs [22,443] must not read as a change.
+	if !reflect.DeepEqual(cfg.TCPPorts, []int{22, 80, 443}) {
+		t.Errorf("TCPPorts = %v, want [22 80 443]", cfg.TCPPorts)
+	}
+
+	// An explicitly empty set is a real instruction ("do not port-scan"), not an
+	// absent key, and must not be replaced by the defaults.
+	if _, err := g.ApplyGrants(json.RawMessage(`{"local_discovery":{"enabled":true,"config":{"tcp_ports":[]}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, _ := g.LocalDiscoveryConfig(); len(cfg.TCPPorts) != 0 {
+		t.Errorf("TCPPorts = %v, want an empty set to survive normalization", cfg.TCPPorts)
+	}
+
+	tooMany, _ := json.Marshal(makeRange(1, MaxDiscoveryPorts+2))
+	for _, bad := range []string{`[0]`, `[65536]`, `[-1]`, string(tooMany)} {
+		payload := json.RawMessage(fmt.Sprintf(`{"local_discovery":{"enabled":true,"config":{"tcp_ports":%s}}}`, bad))
+		faults, err := g.ApplyGrants(payload)
+		if err != nil {
+			t.Fatalf("ApplyGrants() error = %v, want nil", err)
+		}
+		if got := faultNames(faults); len(got) != 1 || got[0] != "local_discovery" {
+			t.Fatalf("ApplyGrants(tcp_ports=%s) faults = %v, want exactly one naming local_discovery", bad, faults)
+		}
+	}
+}
+
+// TestLocalDiscoveryConfig_UnknownScopeModeFaults mirrors remote_probe's: a
+// policy this build cannot evaluate must surface as a degraded capability, not
+// as a scan that silently derives nothing.
+func TestLocalDiscoveryConfig_UnknownScopeModeFaults(t *testing.T) {
+	g := New(t.TempDir())
+	faults, err := g.ApplyGrants(json.RawMessage(`{"local_discovery":{"enabled":true,"config":{"scope_mode":"everything"}}}`))
+	if err != nil {
+		t.Fatalf("ApplyGrants() error = %v, want nil", err)
+	}
+	if got := faultNames(faults); len(got) != 1 || got[0] != "local_discovery" {
+		t.Fatalf("faults = %v, want exactly one naming local_discovery", faults)
+	}
+}
+
+// TestLocalDiscoveryConfig_ServerOnlyKeysAreCarried checks that
+// auto_discovery_paused round-trips without faulting. It is a server-side
+// scheduling control that the agent has no use for; rejecting it would fault a
+// perfectly valid grant, and dropping it would make the cached snapshot differ
+// from what the server believes it sent.
+func TestLocalDiscoveryConfig_ServerOnlyKeysAreCarried(t *testing.T) {
+	g := New(t.TempDir())
+	payload := json.RawMessage(`{"local_discovery":{"enabled":true,"config":{"auto_discovery_paused":true,"max_concurrent_hosts":8}}}`)
+	faults, err := g.ApplyGrants(payload)
+	if err != nil || len(faults) != 0 {
+		t.Fatalf("ApplyGrants() = %v, %v, want accepted", faults, err)
+	}
+	cfg, _ := g.LocalDiscoveryConfig()
+	if !cfg.AutoDiscoveryPaused || cfg.MaxConcurrentHosts != 8 {
+		t.Errorf("LocalDiscoveryConfig() = %+v, want the paused flag carried and the host limit applied", cfg)
+	}
+}
+
+func makeRange(low, high int) []int {
+	out := make([]int, 0, high-low)
+	for i := low; i < high; i++ {
+		out = append(out, i)
+	}
+	return out
+}
