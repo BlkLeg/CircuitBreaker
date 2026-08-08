@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 
@@ -40,7 +41,37 @@ def _validate_cron(cron_expr: str | None) -> None:
         raise ValueError(f"Invalid cron expression: {e}") from e
 
 
-def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> DiscoveryProfile:
+def _normalize_cidr(cidr: str | None) -> str | None:
+    """Return the canonical form of `cidr`, or None when there is no network in it.
+
+    Server-derived and never read off a request: `normalized_cidr` is the key
+    the partial unique index for system-managed profiles is enforced on, so a
+    client that could set it could park a row on the slot the discovery
+    bootstrap owns. `strict=False` because an administrator types the subnet
+    they live on ("10.0.0.5/24"), not its network address.
+    """
+    if not cidr or not cidr.strip():
+        return None
+    try:
+        return str(ipaddress.ip_network(cidr.strip(), strict=False))
+    except ValueError:
+        # `cidr` is free text on this table — an IP range or a bare host is
+        # accepted today. Refusing here would reject profiles that scan fine;
+        # only the uniqueness key is lost, and that key is for agent-executed
+        # profiles, which always carry a real network.
+        return None
+
+
+def create_profile(
+    db: Session,
+    payload: DiscoveryProfileCreate,
+    actor: str,
+    *,
+    managed_by: str | None = None,
+) -> DiscoveryProfile:
+    """Create a profile. `managed_by` is keyword-only and server-set: it marks a
+    profile the discovery bootstrap owns and may re-upsert, and no request
+    schema carries it."""
     _validate_cron(payload.schedule_cron)
     vault = _get_vault()
     encrypted_community = None
@@ -56,6 +87,10 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
     profile = DiscoveryProfile(
         name=payload.name,
         cidr=payload.cidr,
+        normalized_cidr=_normalize_cidr(payload.cidr),
+        # None means the server scanner, which is every profile predating Slice 4.
+        scan_agent_id=payload.scan_agent_id,
+        managed_by=managed_by,
         vlan_ids=vlan_ids_json,
         scan_types=scan_types_json,
         nmap_arguments=payload.nmap_arguments,
@@ -93,8 +128,16 @@ def create_profile(db: Session, payload: DiscoveryProfileCreate, actor: str) -> 
 
 
 def update_profile(
-    db: Session, profile_id: int, payload: DiscoveryProfileUpdate, actor: str
+    db: Session,
+    profile_id: int,
+    payload: DiscoveryProfileUpdate,
+    actor: str,
+    *,
+    managed_by: str | None = None,
 ) -> DiscoveryProfile:
+    """Update a profile. `managed_by` is keyword-only and server-set; None means
+    "leave the marker as it is", so an ordinary API edit never disowns a
+    system-managed profile."""
     if getattr(payload, "schedule_cron", None) is not None:
         _validate_cron(payload.schedule_cron)
     profile = get_profile(db, profile_id)
@@ -106,7 +149,12 @@ def update_profile(
     data = payload.model_dump(exclude_unset=True)
 
     for field, value in data.items():
-        if field == "scan_types":
+        if field == "cidr":
+            profile.cidr = value
+            # Re-derived with `cidr` and only with it: a stale normalized value
+            # would leave the system-profile uniqueness key naming the old subnet.
+            profile.normalized_cidr = _normalize_cidr(value)
+        elif field == "scan_types":
             profile.scan_types = json.dumps(value)
         elif field == "vlan_ids":
             profile.vlan_ids = json.dumps(value)
@@ -124,6 +172,9 @@ def update_profile(
             profile.enabled = 1 if value else 0
         else:
             setattr(profile, field, value)
+
+    if managed_by is not None:
+        profile.managed_by = managed_by
 
     profile.updated_at = utcnow_iso()
 
