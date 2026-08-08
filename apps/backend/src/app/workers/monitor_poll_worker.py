@@ -17,16 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from app.core.nats_client import nats_client
-from app.core.redis import get_redis
-from app.core.subjects import (
-    MONITOR_ALERT_DOWN,
-    MONITOR_ALERT_RECOVERED,
-    monitor_alert_payload,
-)
 from app.services.monitoring.collectors import COLLECTORS, CheckResult, Sample
-from app.services.monitoring.proxmox_override import apply_proxmox_overrides
-from app.services.monitoring.state import AppliedTransition, apply_result
-from app.services.monitoring.writer import SampleRow, write_samples
+from app.services.monitoring.result_service import (
+    OUTCOME_COMPLETED,
+    SOURCE_SERVER,
+    MonitorResult,
+    process_results,
+)
+from app.services.monitoring.writer import SampleRow
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +35,14 @@ _JS_STREAM = "MONITOR_POLL"
 _JS_DURABLE = "monitor_pollers"
 _sema = asyncio.Semaphore(_MAX_PARALLEL)
 
+# What one collector run yields, before it is turned into a MonitorResult:
+# the sample row, the target verdict, the message, the execution outcome, and
+# the collector's free-form details. The last two are carried rather than
+# dropped so the shape matches what a remote vantage reports; on this path
+# `details` has nowhere to land (D-8) and the outcome is always `completed`,
+# because a server-side collector crash is a down datum, not an execution error.
+PollOutcome = tuple[SampleRow, bool, str, str, dict | None]
+
 
 def _touch_healthy() -> None:
     try:
@@ -46,7 +52,7 @@ def _touch_healthy() -> None:
         pass
 
 
-async def poll_one(item: dict) -> tuple[SampleRow, bool, str]:
+async def poll_one(item: dict) -> PollOutcome:
     """Run the check for one monitor in a worker thread. Never raises."""
     ts = datetime.now(UTC)
     collector = COLLECTORS.get(item["check_type"])
@@ -58,7 +64,8 @@ async def poll_one(item: dict) -> tuple[SampleRow, bool, str]:
             [Sample("avail", 0.0, error_reason="unknown_check_type")],
             ts,
         )
-        return row, False, f"unknown check type {item['check_type']!r}"
+        msg = f"unknown check type {item['check_type']!r}"
+        return row, False, msg, OUTCOME_COMPLETED, None
     try:
         async with _sema:
             result: CheckResult = await asyncio.to_thread(collector, item["host"], item["params"])
@@ -70,68 +77,37 @@ async def poll_one(item: dict) -> tuple[SampleRow, bool, str]:
             msg=f"check crashed: {type(exc).__name__}",
         )
     row = (item["item_id"], item["target_type"], item["target_id"], result.samples, ts)
-    return row, result.up, result.msg
+    return row, result.up, result.msg, OUTCOME_COMPLETED, result.details
 
 
 async def process_batch(items: list[dict], db_factory: Callable[[], Any]) -> int:
+    """Poll a claimed batch, then hand it to the one shared result path (§6).
+
+    Everything after the collectors — the Proxmox override, samples, the state
+    machine, events, alerts and the live push — lives in
+    `services/monitoring/result_service.py`, which the remote `probe.result`
+    ingest path calls with the identical record shape. This function is
+    deliberately thin: a second copy of that logic here is exactly the drift §6
+    exists to prevent.
+    """
     outcomes = await asyncio.gather(*(poll_one(i) for i in items))
-    transitions: list[AppliedTransition] = []
-    db = db_factory()
-    try:
-        outcomes = apply_proxmox_overrides(db, items, outcomes)
-        written = write_samples(db, [row for row, _, _ in outcomes])
-        for row, up, msg in outcomes:
-            item_id, _, _, _, ts = row
-            transition = apply_result(db, item_id, up=up, msg=msg, checked_at=ts)
-            if transition:
-                transitions.append(transition)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-    await _publish_transitions(transitions)
-    await _publish_live_status(outcomes)
-    return written
-
-
-async def _publish_transitions(transitions: list[AppliedTransition]) -> None:
-    for t in transitions:
-        if t.notify == "down":
-            subject = MONITOR_ALERT_DOWN.format(item_id=t.item_id)
-        elif t.notify == "recovered":
-            subject = MONITOR_ALERT_RECOVERED.format(item_id=t.item_id)
-        else:
-            continue
-        payload = monitor_alert_payload(
-            t.item_id, t.name, t.status_to, t.msg, t.occurred_at.isoformat()
+    results = [
+        MonitorResult(
+            item_id=row[0],
+            target_type=row[1],
+            target_id=row[2],
+            check_type=item.get("check_type"),
+            samples=row[3],
+            up=up,
+            msg=msg,
+            checked_at=row[4],
+            outcome=outcome,
+            details=details,
+            source=SOURCE_SERVER,
         )
-        try:
-            await nats_client.js_publish(subject, payload)
-        except Exception as exc:  # noqa: BLE001 — alerting is best-effort here
-            logger.warning("Failed to publish monitor alert %s: %s", subject, exc)
-
-
-async def _publish_live_status(outcomes: list[tuple[SampleRow, bool, str]]) -> None:
-    redis = await get_redis()
-    if redis is None:
-        return
-    for row, up, msg in outcomes:
-        item_id, _, _, _, ts = row
-        payload = json.dumps(
-            {
-                "monitor_id": item_id,
-                "status": "up" if up else "down",
-                "msg": msg,
-                "ts": ts.isoformat(),
-            }
-        )
-        try:
-            await redis.publish(f"monitor:{item_id}", payload)
-        except Exception:  # noqa: BLE001 — live push degrades silently
-            return
+        for item, (row, up, msg, outcome, details) in zip(items, outcomes, strict=True)
+    ]
+    return await process_results(results, db_factory)
 
 
 async def run_worker(shutdown_event: asyncio.Event | None = None) -> None:

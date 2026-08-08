@@ -18,6 +18,7 @@ from typing import Any
 
 from app.core.job_lock import _lock_id_for, advisory_unlock, try_advisory_lock
 from app.core.nats_client import nats_client
+from app.services.monitoring import probe_reconcile
 from app.services.monitoring.scheduler import enqueue_due
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,11 @@ logger = logging.getLogger(__name__)
 _HEALTHY_FILE = Path("/data/worker-monitor-scheduler.healthy")
 _TICK_S = float(os.getenv("CB_MONITOR_SCHED_TICK_S", "1.0"))
 _BATCH = int(os.getenv("CB_MONITOR_SCHED_BATCH", "200"))
+# D-2 fair sharing: no vantage (the server, or any one agent) may take more
+# than _PER_VANTAGE of a tick, and the claim locks _OVERSAMPLE rows so the
+# ranking has every vantage to rank before the global _BATCH cap applies.
+_PER_VANTAGE = int(os.getenv("CB_MONITOR_SCHED_PER_VANTAGE", "50"))
+_OVERSAMPLE = int(os.getenv("CB_MONITOR_SCHED_OVERSAMPLE", "1000"))
 _LOCK_NAME = "monitor_scheduler"
 
 
@@ -42,7 +48,27 @@ async def tick(
 ) -> int:
     db = db_factory()
     try:
-        return await enqueue_due(db, publish, batch=_BATCH)
+        # D-5: remote-probe reconciliation rides this tick rather than a worker
+        # of its own — this is already the single active clock, under the
+        # `monitor_scheduler` advisory lock, with a session open. It runs first
+        # so an expired run has released the partial unique index before the
+        # claim below can decide the monitor is due again.
+        #
+        # Guarded, because a reconciliation defect must never be able to stop
+        # the scheduler: an item that is never claimed is a wedged item, which
+        # is the one failure the whole engine is built to make impossible.
+        try:
+            await probe_reconcile.reconcile(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("monitor-scheduler reconcile failed: %s", exc, exc_info=True)
+            db.rollback()
+        return await enqueue_due(
+            db,
+            publish,
+            batch=_BATCH,
+            per_vantage=_PER_VANTAGE,
+            oversample=_OVERSAMPLE,
+        )
     finally:
         db.close()
 

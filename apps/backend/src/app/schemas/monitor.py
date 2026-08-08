@@ -72,6 +72,9 @@ class _MonitorBase(BaseModel):
     enabled: bool = True
     target_type: TargetType | None = None
     target_id: int | None = None
+    # Slice 3 §7: the vantage. NULL is server execution — today's behaviour and
+    # the only value any pre-Slice-3 monitor has.
+    probe_agent_id: int | None = None
 
     @model_validator(mode="after")
     def _validate_config(self) -> _MonitorBase:
@@ -96,9 +99,42 @@ class MonitorUpdate(BaseModel):
     enabled: bool | None = None
     target_type: TargetType | None = None
     target_id: int | None = None
+    # Slice 3 §7: the vantage. NULL is server execution. Only meaningful when
+    # the caller actually sets it — `exclude_unset` is what tells a reassignment
+    # apart from a rename that happens to echo the field back.
+    probe_agent_id: int | None = None
 
 
-class MonitorRead(BaseModel):
+class ProbeAgentRef(BaseModel):
+    """The assigned vantage, reduced to what a card and a link need."""
+
+    id: int
+    name: str | None = None
+
+
+class _ProbeVantageRead(BaseModel):
+    """The server-derived half of §7's probe block.
+
+    Read-only on purpose: `probe_agent_id` is the one writable field, and
+    `MonitorUpdate` deliberately does not accept any of these back. A frontend
+    that sends its form verbatim therefore cannot echo a stale execution
+    condition into the database — pinned by
+    `test_patch_with_echoed_readonly_probe_fields_does_not_change_the_assignment`.
+    """
+
+    probe_agent_id: int | None = None
+    # "server" | "agent" — derived from probe_agent_id, never stored.
+    probe_mode: str = "server"
+    probe_agent: ProbeAgentRef | None = None
+    # ready|queued|running|unavailable|stale — whether the *vantage* can run the
+    # check, which is orthogonal to `status` (whether the target is up).
+    probe_execution_status: str | None = None
+    probe_execution_reason: str | None = None
+    probe_last_dispatched_at: datetime | None = None
+    probe_last_result_at: datetime | None = None
+
+
+class MonitorRead(_ProbeVantageRead):
     id: int
     name: str
     check_type: str
@@ -177,8 +213,13 @@ class TargetMonitorCreate(BaseModel):
     config: dict | None = None
 
 
-class TargetMonitorSummary(BaseModel):
-    """Per-target monitor rollup for the inventory pages, drawers, and map."""
+class TargetMonitorSummary(_ProbeVantageRead):
+    """Per-target monitor rollup for the inventory pages, drawers, and map.
+
+    The probe block describes the *primary* monitor (the lowest-id one, the same
+    one `latency_ms` and `uptime_pct_24h` come from); a target whose monitors
+    disagree about their vantage is rendered from that one.
+    """
 
     target_type: str
     target_id: int
@@ -189,3 +230,87 @@ class TargetMonitorSummary(BaseModel):
     latency_ms: float | None = None
     uptime_pct_24h: float | None = None
     last_polled_at: datetime | None = None
+
+
+# ── Slice 3 §7: probe runs and per-agent assignments ─────────────────────────
+# These describe monitor execution, not the agent itself, which is why they live
+# beside the monitor schemas even though `api/agents.py` serves two of them.
+
+
+class MonitorProbeRunRead(BaseModel):
+    """One row of §7's bounded execution history.
+
+    `result_metadata` is deliberately absent: it is the audit record behind a
+    check (D-8) and the only place per-sample `error_reason` and `details` are
+    kept, none of which the history table renders.
+    """
+
+    run_id: str
+    agent_id: int
+    status: str
+    outcome: str | None = None
+    msg: str | None = None
+    error_code: str | None = None
+    scheduled_at: datetime
+    dispatched_at: datetime | None = None
+    deadline_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    attempt_count: int = 0
+    created_at: datetime
+
+
+class AgentProbeAssignment(BaseModel):
+    """One monitor assigned to an agent, as Agent Detail's probes section renders
+    it: target state and execution condition side by side, never folded."""
+
+    monitor_id: int
+    name: str
+    check_type: str
+    host: str
+    target_type: str | None = None
+    target_id: int | None = None
+    interval_secs: int
+    enabled: bool
+    status: str
+    probe_execution_status: str | None = None
+    probe_execution_reason: str | None = None
+    probe_last_dispatched_at: datetime | None = None
+    probe_last_result_at: datetime | None = None
+
+
+class AgentProbesRead(BaseModel):
+    """§7's Assigned Probes section: the assignments plus the concurrency the
+    agent is using against the limit its `remote_probe` grant configures."""
+
+    agent_id: int
+    max_concurrent: int
+    active_runs: int
+    assignments: list[AgentProbeAssignment] = Field(default_factory=list)
+
+
+class EligibleProbeAgent(BaseModel):
+    """One candidate vantage for a monitor, with everything §7's "Run from"
+    selector shows: liveness, grant, readiness, concurrency and whether this
+    particular destination is inside the agent's derived scope.
+
+    `reason` is `probe_eligibility`'s machine-readable vocabulary — the same
+    string the 409 detail and `monitor_items.probe_execution_reason` carry — so
+    the UI switches on it rather than parsing prose.
+    """
+
+    agent_id: int
+    name: str | None = None
+    online: bool
+    granted: bool
+    readiness: str | None = None
+    readiness_collector: str | None = None
+    max_concurrent: int
+    active_runs: int
+    assigned_monitors: int
+    scope_version: str
+    scope_networks: list[str] = Field(default_factory=list)
+    excluded_networks: list[str] = Field(default_factory=list)
+    in_scope: bool
+    eligible: bool
+    reason: str | None = None

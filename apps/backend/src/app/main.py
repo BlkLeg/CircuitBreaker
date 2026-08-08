@@ -777,6 +777,19 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # Slice 3 §1: probe runs are audit for checks the server did not perform
+    # itself and are retained for seven days. Long-term availability stays in
+    # telemetry_timeseries and the monitor rollups, so nothing here is the
+    # system of record for uptime.
+    from app.services.monitoring.probe_reconcile import purge_old_probe_runs
+
+    scheduler.add_job(
+        purge_old_probe_runs,
+        trigger=CronTrigger(hour=3, minute=20),
+        id="monitor_probe_run_purge",
+        replace_existing=True,
+    )
+
     # Monthly audit_log partition maintenance — ensures partitions exist ahead of time
     def _ensure_audit_partitions() -> None:
         try:

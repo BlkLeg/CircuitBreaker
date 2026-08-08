@@ -10,7 +10,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core import agent_crypto
+from app.core import agent_crypto, agent_scope
 from app.core.rate_limit import get_limit, limiter
 from app.core.rbac import require_role
 from app.core.time import utcnow
@@ -22,6 +22,8 @@ from app.db.models import (
     AgentHostSample,
     AgentHostSampleHourly,
     Hardware,
+    MonitorItem,
+    MonitorProbeRun,
     User,
 )
 from app.db.session import get_db
@@ -43,7 +45,19 @@ from app.schemas.agents import (
     ServerKeyRotationStatus,
     UpdateRequest,
 )
-from app.services import agent_capabilities, agent_enrollment, agent_registry, agent_update
+from app.schemas.monitor import (
+    AgentProbeAssignment,
+    AgentProbesRead,
+    EligibleProbeAgent,
+)
+from app.services import (
+    agent_capabilities,
+    agent_enrollment,
+    agent_registry,
+    agent_update,
+    monitor_service,
+)
+from app.services.monitoring import probe_eligibility
 
 router = APIRouter(tags=["agents"])
 
@@ -277,6 +291,199 @@ async def get_agents_presence(
         )
         for agent in agents
     ]
+
+
+# ── Slice 3 §7: probe vantages ───────────────────────────────────────────────
+
+
+def _active_run_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
+    """Runs each agent currently holds — §2's concurrency, measured server-side.
+
+    The two statuses here are exactly the ones `uq_monitor_probe_runs_active`
+    covers, so this counts leases the agent is still expected to answer for
+    rather than everything it has ever been sent.
+    """
+    if not agent_ids:
+        return {}
+    rows = db.execute(
+        select(MonitorProbeRun.agent_id, func.count())
+        .where(
+            MonitorProbeRun.agent_id.in_(agent_ids),
+            MonitorProbeRun.status.in_(("queued", "dispatched")),
+        )
+        .group_by(MonitorProbeRun.agent_id)
+    ).all()
+    return {agent_id: count for agent_id, count in rows}
+
+
+def _assigned_counts(db: Session, agent_ids: list[int]) -> dict[int, int]:
+    if not agent_ids:
+        return {}
+    rows = db.execute(
+        select(MonitorItem.probe_agent_id, func.count())
+        .where(MonitorItem.probe_agent_id.in_(agent_ids))
+        .group_by(MonitorItem.probe_agent_id)
+    ).all()
+    return {agent_id: count for agent_id, count in rows}
+
+
+def _max_concurrent(grant: dict[str, Any] | None) -> int:
+    """The grant's configured concurrency, defaults merged in by
+    `structured_grants_dict` — never a bare `grant.config`, which is `{}` for
+    every agent approved before `remote_probe` had a schema."""
+    config = (grant or {}).get("config") or {}
+    value = config.get("max_concurrent")
+    return int(value) if isinstance(value, int) else 0
+
+
+@router.get("/probe-eligible", response_model=list[EligibleProbeAgent])
+async def get_probe_eligible_agents(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+    monitor_id: Annotated[int | None, Query()] = None,
+    host: Annotated[str | None, Query()] = None,
+    check_type: Annotated[str, Query()] = "icmp",
+    target_type: Annotated[str | None, Query()] = None,
+    target_id: Annotated[int | None, Query()] = None,
+) -> Any:
+    """§7's eligible-agent listing: every active agent, judged against one
+    destination.
+
+    Scope compatibility is a property of the *pair*, not of the agent, so a
+    destination is required — either an existing `monitor_id` or an explicit
+    `host` (plus optional `check_type`/target, which decide which readiness
+    collector and which tenant apply). Without one there is nothing to answer.
+
+    Declared before "/{agent_id}" so "probe-eligible" isn't parsed as an agent
+    id, same as "/pending", "/capability-defaults" and "/presence" above.
+
+    Every row is rendered whether or not it is eligible: §7's selector shows why
+    an agent cannot be chosen, and the reason is `probe_eligibility`'s
+    machine-readable vocabulary — the same string the check-now 409 returns.
+    """
+    if monitor_id is not None:
+        probe_subject = db.get(MonitorItem, monitor_id)
+        if probe_subject is None:
+            raise HTTPException(status_code=404, detail="Monitor not found")
+    elif host:
+        # Transient and never added to the session: it exists only to give the
+        # one shared evaluator the shape it takes, so an assignment is judged by
+        # exactly the code that will judge the dispatch.
+        probe_subject = MonitorItem(
+            host=host,
+            check_type=check_type,
+            target_type=target_type,
+            target_id=target_id,
+        )
+    else:
+        raise HTTPException(status_code=422, detail="Either monitor_id or host is required")
+
+    # Resolved once for the whole listing rather than once per agent: every
+    # candidate is judged against the same answer set, which is also what makes
+    # the per-agent scope verdicts comparable.
+    resolved = list(await probe_eligibility.default_resolver(probe_subject.host))
+
+    async def _shared_resolver(_host: str) -> list[str]:
+        return resolved
+
+    agents = list(db.execute(select(Agent).where(Agent.status == "active")).scalars())
+    agent_ids = [agent.id for agent in agents]
+    grants = agent_registry.bulk_structured_grants_dict(db, agent_ids)
+    active_runs = _active_run_counts(db, agent_ids)
+    assigned = _assigned_counts(db, agent_ids)
+    collector = probe_eligibility.READINESS_COLLECTORS.get(probe_subject.check_type)
+    readiness: dict[int, str] = {}
+    if collector is not None and agent_ids:
+        readiness = {
+            row.agent_id: row.state
+            for row in db.execute(
+                select(AgentCapabilityReadiness).where(
+                    AgentCapabilityReadiness.agent_id.in_(agent_ids),
+                    AgentCapabilityReadiness.collector == collector,
+                )
+            ).scalars()
+        }
+
+    rows = []
+    for agent in agents:
+        grant = grants[agent.id].get(probe_eligibility.CAPABILITY)
+        scope = probe_eligibility.derive_agent_scope(db, agent.id, (grant or {}).get("config"))
+        decision = await probe_eligibility.evaluate_eligibility(
+            db, probe_subject, agent_id=agent.id, resolver=_shared_resolver
+        )
+        rows.append(
+            EligibleProbeAgent(
+                agent_id=agent.id,
+                name=agent.name,
+                online=await agent_registry.is_agent_online(agent.id),
+                granted=bool((grant or {}).get("enabled")),
+                readiness=readiness.get(agent.id),
+                readiness_collector=collector,
+                max_concurrent=_max_concurrent(grant),
+                active_runs=active_runs.get(agent.id, 0),
+                assigned_monitors=assigned.get(agent.id, 0),
+                scope_version=scope.version,
+                scope_networks=list(scope.networks),
+                excluded_networks=list(scope.excluded_networks),
+                # Answered independently of `eligible`: eligibility
+                # short-circuits on the first failing precondition, so an
+                # offline agent would otherwise report a scope verdict that was
+                # never computed.
+                in_scope=agent_scope.evaluate(scope, probe_subject.host, resolved).allowed,
+                eligible=decision.ok,
+                reason=decision.reason,
+            )
+        )
+    return rows
+
+
+@router.get("/{agent_id}/probes", response_model=AgentProbesRead)
+def get_agent_probes(
+    agent_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("viewer")],
+) -> Any:
+    """§7's Assigned Probes section: what this vantage is responsible for.
+
+    Target state (`status`) and execution condition (`probe_execution_*`) are
+    returned side by side and never folded into one another — the UP/DOWN pill
+    shows target state only, and a monitor whose agent is offline keeps its last
+    known target state (§2, D-12).
+    """
+    agent = agent_registry.get_agent(db, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    grant = agent_registry.structured_grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY)
+    items = list(
+        db.execute(
+            select(MonitorItem)
+            .where(MonitorItem.probe_agent_id == agent_id)
+            .order_by(MonitorItem.name, MonitorItem.id)
+        ).scalars()
+    )
+    return AgentProbesRead(
+        agent_id=agent_id,
+        max_concurrent=_max_concurrent(grant),
+        active_runs=_active_run_counts(db, [agent_id]).get(agent_id, 0),
+        assignments=[
+            AgentProbeAssignment(
+                monitor_id=item.id,
+                name=item.name,
+                check_type=item.check_type,
+                host=item.host,
+                target_type=item.target_type,
+                target_id=item.target_id,
+                interval_secs=item.interval_secs,
+                enabled=item.enabled,
+                status=item.last_status or "pending",
+                probe_execution_status=item.probe_execution_status,
+                probe_execution_reason=item.probe_execution_reason,
+                probe_last_dispatched_at=item.probe_last_dispatched_at,
+                probe_last_result_at=item.probe_last_result_at,
+            )
+            for item in items
+        ],
+    )
 
 
 @router.get("/{agent_id}/telemetry")
@@ -583,8 +790,20 @@ async def post_revoke(
     if agent_registry.get_agent(db, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = agent_registry.revoke_agent(db, agent_id, actor_user_id=user.id, reason=payload.reason)
+    # §8: a revoked agent's runs are cancelled and its assignments are kept as
+    # unavailable. The agent-initiated path (agent_link._handle_uninstall) does
+    # exactly the same thing through the same helper — the two must not diverge,
+    # since either one leaves the same runs holding the same partial unique
+    # index.
+    cancellation = monitor_service.cancel_agent_probe_runs(
+        db, agent_id, reason=monitor_service.CANCEL_AGENT_REVOKED
+    )
     db.commit()
     await agent_registry.broadcast_presence(agent_id, "revoked")
+    # Before the disconnect below, not after: an agent that is about to lose its
+    # socket should still get the chance to stop work it will never be able to
+    # report on.
+    await monitor_service.publish_probe_cancels(cancellation)
     # Immediate cross-worker disconnect (Task 9's delivery path, Task 10's
     # trigger): if the agent is connected right now, whichever worker holds
     # its /link socket picks this up via
@@ -609,8 +828,23 @@ async def put_capabilities(
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    was_granted = agent_registry.grants_dict(db, agent_id).get(probe_eligibility.CAPABILITY, False)
     agent_registry.set_capability_grants(db, agent_id, payload.capabilities, actor_user_id=user.id)
+    # §8's capability-disable row, and it has to happen *here* rather than being
+    # left to the result path: from the moment the grant is off,
+    # agent_link.dispatch_frame's gate (a bare grants_dict lookup) drops any
+    # probe.result as a capability_violation, so a still-open run would never be
+    # closed by the agent's own answer — it would hold
+    # uq_monitor_probe_runs_active until the reconciliation pass expired it.
+    cancellation = monitor_service.ProbeCancellation()
+    if was_granted and not agent_registry.grants_dict(db, agent_id).get(
+        probe_eligibility.CAPABILITY, False
+    ):
+        cancellation = monitor_service.cancel_agent_probe_runs(
+            db, agent_id, reason=monitor_service.CANCEL_CAPABILITY_DISABLED
+        )
     db.commit()
+    await monitor_service.publish_probe_cancels(cancellation)
     # Immediate cross-worker push (Task 9) on top of the DB write above: if the
     # agent is connected right now, whichever worker holds its /link socket
     # picks this up via agent_registry.claim_agent_control_frames and applies
@@ -641,6 +875,20 @@ def delete_agent(
     agent = agent_registry.get_agent(db, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
+    # §8: deletion is blocked while assignments remain. `monitor_items.
+    # probe_agent_id` is the one agents FK declared RESTRICT rather than
+    # CASCADE, so without this pre-check the delete would surface as an
+    # unhandled IntegrityError and a 500 — and the operator would learn nothing
+    # about which monitors are in the way. Unassigning is a decision they make
+    # explicitly, never a side effect of deleting the vantage.
+    assigned = db.execute(
+        select(func.count()).select_from(MonitorItem).where(MonitorItem.probe_agent_id == agent_id)
+    ).scalar_one()
+    if assigned:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{assigned} monitor(s) are still assigned to this agent",
+        )
     db.delete(agent)
     db.commit()
 

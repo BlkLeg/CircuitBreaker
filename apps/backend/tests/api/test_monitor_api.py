@@ -331,3 +331,349 @@ async def test_overview_route_wins_over_monitor_id(client, auth_headers):
     resp = await client.get("/api/v1/monitors/overview", headers=auth_headers)
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+# ── Slice 3 §7: the probe vantage on the monitor API ─────────────────────────
+# `probe_agent_id` is the only writable half; everything else in the probe block
+# is server-derived and must survive being echoed back by a frontend that sends
+# the whole form verbatim.
+
+
+class _FakeRedis:
+    """The two reads `is_agent_online` / `get_agent_connection_owner` make."""
+
+    def __init__(self, store: dict[str, str]) -> None:
+        self._store = store
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self._store else 0
+
+    async def get(self, key: str) -> str | None:
+        return self._store.get(key)
+
+
+@pytest.fixture
+def presence(monkeypatch):
+    """A Redis double plus a `mark(agent)` helper that brings one agent online.
+
+    Nothing is online until a test says so, so "offline" is the default and the
+    check-now 409 path is exercised without depending on a live Redis.
+    """
+    store: dict[str, str] = {}
+
+    async def _get_redis():
+        return _FakeRedis(store)
+
+    monkeypatch.setattr("app.core.redis.get_redis", _get_redis)
+
+    def mark(agent, worker: str = "worker-1") -> None:
+        store[f"agent:presence:{agent.id}"] = "{}"
+        store[f"agent:connection:{agent.id}"] = worker
+
+    return mark
+
+
+def _probe_agent(factories, name: str = "branch-office", **kwargs):
+    """An agent that passes every §2 precondition except liveness."""
+    agent = factories.agent(status="active", name=name, **kwargs)
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=True)
+    factories.agent_network(agent)  # 10.0.0.5/24 -> derived scope 10.0.0.0/24
+    factories.agent_capability_readiness(agent, collector="probe.icmp", state="ready")
+    return agent
+
+
+async def _create_icmp(client, auth_headers, **overrides):
+    return await _create(
+        client,
+        auth_headers,
+        check_type="icmp",
+        host="10.0.0.9",
+        config={},
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_with_probe_agent_id_persists_and_reads_back(client, auth_headers, factories):
+    agent = _probe_agent(factories)
+
+    resp = await _create_icmp(client, auth_headers, probe_agent_id=agent.id)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["probe_agent_id"] == agent.id
+    assert body["probe_mode"] == "agent"
+    assert body["probe_agent"] == {"id": agent.id, "name": "branch-office"}
+    assert body["probe_execution_status"] is None
+    assert body["probe_execution_reason"] is None
+    assert body["probe_last_dispatched_at"] is None
+    assert body["probe_last_result_at"] is None
+
+    got = await client.get(f"/api/v1/monitors/{body['id']}", headers=auth_headers)
+    assert got.json()["probe_agent_id"] == agent.id
+    assert got.json()["probe_agent"]["name"] == "branch-office"
+
+
+@pytest.mark.asyncio
+async def test_patch_probe_agent_id_reassigns(client, auth_headers, factories):
+    first = _probe_agent(factories, name="office-a")
+    second = _probe_agent(factories, name="office-b")
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=first.id)).json()["id"]
+
+    moved = await client.patch(
+        f"/api/v1/monitors/{mid}", headers=auth_headers, json={"probe_agent_id": second.id}
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["probe_agent_id"] == second.id
+    assert moved.json()["probe_agent"]["name"] == "office-b"
+
+    # §1: unassigning is explicit and returns the monitor to server execution.
+    home = await client.patch(
+        f"/api/v1/monitors/{mid}", headers=auth_headers, json={"probe_agent_id": None}
+    )
+    assert home.json()["probe_agent_id"] is None
+    assert home.json()["probe_mode"] == "server"
+    assert home.json()["probe_agent"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_with_echoed_readonly_probe_fields_does_not_change_the_assignment(
+    client, auth_headers, factories, db_session
+):
+    """`MonitorUpdate` is not `extra="forbid"` and the form is sent verbatim, so
+    the server-derived half of the probe block has to be inert on the way in."""
+    from app.db.models import MonitorItem
+
+    agent = _probe_agent(factories)
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=agent.id)).json()["id"]
+    db_session.get(MonitorItem, mid).probe_execution_status = "ready"
+    db_session.flush()
+
+    resp = await client.patch(
+        f"/api/v1/monitors/{mid}",
+        headers=auth_headers,
+        json={
+            "name": "renamed",
+            "probe_agent_id": agent.id,  # echoed unchanged — must not reassign
+            "probe_mode": "server",
+            "probe_agent": None,
+            "probe_execution_status": "unavailable",
+            "probe_execution_reason": "agent_offline",
+            "probe_last_dispatched_at": "2026-01-01T00:00:00Z",
+            "probe_last_result_at": "2026-01-01T00:00:00Z",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "renamed"
+    assert body["probe_agent_id"] == agent.id
+    assert body["probe_mode"] == "agent"
+    assert body["probe_execution_status"] == "ready"
+    assert body["probe_execution_reason"] is None
+    assert body["probe_last_dispatched_at"] is None
+    assert body["probe_last_result_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_mode_is_server_when_unassigned_and_agent_when_assigned(
+    client, auth_headers, factories
+):
+    server_body = (await _create_icmp(client, auth_headers, name="server-side")).json()
+    assert server_body["probe_mode"] == "server"
+    assert server_body["probe_agent"] is None
+    assert server_body["probe_agent_id"] is None
+
+    agent = _probe_agent(factories)
+    agent_body = (
+        await _create_icmp(client, auth_headers, name="agent-side", probe_agent_id=agent.id)
+    ).json()
+    assert agent_body["probe_mode"] == "agent"
+
+    overview = await client.get("/api/v1/monitors/overview", headers=auth_headers)
+    modes = {row["id"]: row["probe_mode"] for row in overview.json()}
+    assert modes[server_body["id"]] == "server"
+    assert modes[agent_body["id"]] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_check_now_returns_409_with_the_reason_when_the_agent_is_offline(
+    client, auth_headers, factories, presence
+):
+    """D-14: §2 forbids falling back to the server, so the only honest answer is
+    a refusal that names the availability reason."""
+    agent = _probe_agent(factories)  # presence deliberately not marked
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=agent.id)).json()["id"]
+
+    resp = await client.post(f"/api/v1/monitors/{mid}/check", headers=auth_headers)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "agent_offline"
+
+
+@pytest.mark.asyncio
+async def test_check_now_on_a_server_monitor_still_returns_200(client, auth_headers, presence):
+    mid = (await _create_icmp(client, auth_headers)).json()["id"]
+
+    resp = await client.post(f"/api/v1/monitors/{mid}/check", headers=auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["id"] == mid
+
+
+@pytest.mark.asyncio
+async def test_check_now_on_an_eligible_agent_opens_a_run(
+    client, auth_headers, factories, db_session, presence
+):
+    from app.db.models import MonitorProbeRun
+
+    agent = _probe_agent(factories)
+    presence(agent)
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=agent.id)).json()["id"]
+
+    resp = await client.post(f"/api/v1/monitors/{mid}/check", headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
+    assert [r.status for r in runs] == ["queued"]
+    assert runs[0].agent_id == agent.id
+
+
+@pytest.mark.asyncio
+async def test_probe_runs_endpoint_is_bounded_and_newest_first(
+    client, auth_headers, factories, db_session
+):
+    from app.db.models import MonitorItem
+
+    agent = _probe_agent(factories)
+    mid = (await _create_icmp(client, auth_headers, probe_agent_id=agent.id)).json()["id"]
+    monitor = db_session.get(MonitorItem, mid)
+    base = datetime(2026, 8, 7, 9, 0, tzinfo=UTC)
+    for i in range(4):
+        factories.monitor_probe_run(
+            monitor,
+            agent,
+            status="completed",
+            outcome="completed",
+            msg=f"run {i}",
+            created_at=base + timedelta(minutes=i),
+            scheduled_at=base + timedelta(minutes=i),
+        )
+    db_session.flush()
+
+    resp = await client.get(
+        f"/api/v1/monitors/{mid}/probe-runs", headers=auth_headers, params={"limit": 2}
+    )
+
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert [r["msg"] for r in rows] == ["run 3", "run 2"]
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["outcome"] == "completed"
+    assert set(rows[0]) >= {"run_id", "agent_id", "status", "created_at", "scheduled_at"}
+
+    assert (
+        await client.get("/api/v1/monitors/999999/probe-runs", headers=auth_headers)
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_assignment_write_requires_editor_level_auth(client, viewer_headers, factories):
+    """D-15: `require_write_auth` already *is* editor-level; no new dependency."""
+    agent = _probe_agent(factories)
+    monitor = factories.monitor_item(host="10.0.0.9", check_type="icmp")
+
+    patched = await client.patch(
+        f"/api/v1/monitors/{monitor.id}", headers=viewer_headers, json={"probe_agent_id": agent.id}
+    )
+    assert patched.status_code == 403
+
+    created = await client.post(
+        "/api/v1/monitors",
+        headers=viewer_headers,
+        json={
+            "name": "viewer-assigned",
+            "check_type": "icmp",
+            "host": "10.0.0.9",
+            "config": {},
+            "probe_agent_id": agent.id,
+        },
+    )
+    assert created.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cross_tenant_assignment_is_rejected(client, auth_headers, factories, db_session):
+    """D-9: refuse only when both sides carry a tenant and they differ."""
+    from app.db.models import Tenant
+
+    tenant_a, tenant_b = Tenant(name="probe-api-a"), Tenant(name="probe-api-b")
+    db_session.add_all([tenant_a, tenant_b])
+    db_session.flush()
+    agent = _probe_agent(factories, tenant_id=tenant_a.id)
+    hardware = factories.hardware(tenant_id=tenant_b.id, ip_address="10.0.0.9")
+
+    resp = await client.post(
+        "/api/v1/monitors",
+        headers=auth_headers,
+        json={
+            "name": "cross-tenant",
+            "check_type": "icmp",
+            "host": "10.0.0.9",
+            "config": {},
+            "target_type": "hardware",
+            "target_id": hardware.id,
+            "probe_agent_id": agent.id,
+        },
+    )
+    assert resp.status_code == 422
+    assert "tenant" in str(resp.json()["detail"]).lower()
+
+    same_tenant = factories.hardware(tenant_id=tenant_a.id, ip_address="10.0.0.10")
+    ok = await client.post(
+        "/api/v1/monitors",
+        headers=auth_headers,
+        json={
+            "name": "same-tenant",
+            "check_type": "icmp",
+            "host": "10.0.0.10",
+            "config": {},
+            "target_type": "hardware",
+            "target_id": same_tenant.id,
+            "probe_agent_id": agent.id,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.asyncio
+async def test_assignment_to_an_unknown_agent_is_rejected(client, auth_headers):
+    resp = await _create_icmp(client, auth_headers, probe_agent_id=999999)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_target_check_routes_an_assigned_monitor_to_its_agent_not_the_server(
+    client, auth_headers, factories, db_session
+):
+    """§2 allows no automatic fallback: a target-scoped "check now" must not
+    quietly have the server execute a check the operator assigned to an agent."""
+    from app.db.models import MonitorProbeRun
+
+    agent = _probe_agent(factories)
+    hw = factories.hardware(ip_address="10.0.0.9")
+    created = await client.post(f"/api/v1/monitors/target/hardware/{hw.id}", headers=auth_headers)
+    mid = created.json()["id"]
+    assigned = await client.patch(
+        f"/api/v1/monitors/{mid}", headers=auth_headers, json={"probe_agent_id": agent.id}
+    )
+    assert assigned.status_code == 200, assigned.text
+
+    resp = await client.post(
+        f"/api/v1/monitors/target/hardware/{hw.id}/check", headers=auth_headers
+    )
+
+    assert resp.status_code == 200
+    runs = db_session.query(MonitorProbeRun).filter(MonitorProbeRun.monitor_id == mid).all()
+    assert [r.status for r in runs] == ["queued"]
+    assert runs[0].agent_id == agent.id

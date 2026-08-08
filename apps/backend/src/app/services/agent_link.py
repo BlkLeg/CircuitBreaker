@@ -38,7 +38,7 @@ from app.schemas.agent_frame import (
     KeyRotatePayload,
     UpdateStatusPayload,
 )
-from app.services import agent_registry, agent_telemetry
+from app.services import agent_probe, agent_registry, agent_telemetry, monitor_service
 
 _logger = logging.getLogger(__name__)
 
@@ -124,7 +124,24 @@ async def _handle_log(db: Session, agent: Agent, frame: AgentFrame) -> None:
 
 
 async def _handle_uninstall(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """Agent-initiated revoke. Must not diverge from `api/agents.py::post_revoke`.
+
+    Both paths end with the same agent revoked, so both owe the same Slice 3
+    cleanup (§8): every run this agent still holds is cancelled and its
+    assignments are kept as unavailable rather than deleted. A run left open by
+    either path holds `uq_monitor_probe_runs_active` for its monitor until the
+    reconciliation pass expires it.
+
+    Commits before publishing, for the same reason `_handle_key_rotate` does:
+    the frame claims something about durable state, so that state has to be
+    durable first. `dispatch_frame`'s trailing commit is then a no-op.
+    """
     agent_registry.revoke_agent(db, agent.id, actor_user_id=None, reason="uninstalled by agent")
+    cancellation = monitor_service.cancel_agent_probe_runs(
+        db, agent.id, reason=monitor_service.CANCEL_AGENT_REVOKED
+    )
+    db.commit()
+    await monitor_service.publish_probe_cancels(cancellation)
 
 
 async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -> None:
@@ -135,6 +152,35 @@ async def _handle_host_telemetry(db: Session, agent: Agent, frame: AgentFrame) -
         if record:
             agent_registry.record_event(
                 db, agent.id, "protocol_violation", detail={"reason": str(exc), "repeated": count}
+            )
+            db.commit()
+
+
+async def _handle_probe_result(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """The only inbound frame that can move monitor state (§4).
+
+    `frame.ts` is deliberately not passed through: `probe.result` is a data
+    frame and therefore spools, and a spooled frame keeps its original producer
+    `TS` — so it is agent-clock provenance, never arrival time. The deadline
+    rule is judged against the server's own clock inside
+    `agent_probe.ingest_probe_result`.
+
+    Rejections follow `_handle_host_telemetry`'s shape exactly — catch the
+    domain error, rate-limit through `recordable_violation`, record one event,
+    commit — with one addition: the event *type* comes from the error, so a
+    result posted against a run this agent does not own is audited as a
+    `capability_violation` rather than as a malformed body.
+    """
+    try:
+        await agent_probe.ingest_probe_result(db, agent, frame.payload)
+    except agent_probe.InvalidProbeResult as exc:
+        record, count = agent_telemetry.recordable_violation(agent.id)
+        if record:
+            agent_registry.record_event(
+                db,
+                agent.id,
+                exc.event_type,
+                detail={"reason": str(exc), "repeated": count},
             )
             db.commit()
 
@@ -259,6 +305,7 @@ _HANDLERS: dict[str, Handler] = {
     TYPE_KEY_ROTATE: _handle_key_rotate,
     TYPE_TELEMETRY_HOST: _handle_host_telemetry,
     TYPE_CAPABILITY_READINESS: _handle_readiness,
+    TYPE_PROBE_RESULT: _handle_probe_result,
 }
 
 
