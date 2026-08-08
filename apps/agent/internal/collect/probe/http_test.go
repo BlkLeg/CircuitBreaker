@@ -2,12 +2,18 @@ package probe
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // httpHarness is the seam every test below runs through. It gives the checker a fake resolver
@@ -37,6 +44,10 @@ type httpHarness struct {
 	// failAfter, when non-zero, refuses every dial past the first failAfter. It is how a test
 	// makes the certificate capture fail while the request itself succeeds.
 	failAfter int
+	// budgets records how much of its context deadline each dial still had left. It is how a
+	// test can see that the certificate capture is given its own timeout rather than whatever
+	// the request happened to leave behind.
+	budgets []time.Duration
 
 	checker *httpChecker
 }
@@ -65,8 +76,13 @@ func (h *httpHarness) resolve(_ context.Context, host string) ([]string, error) 
 }
 
 func (h *httpHarness) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var budget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline)
+	}
 	h.mu.Lock()
 	h.dialed = append(h.dialed, addr)
+	h.budgets = append(h.budgets, budget)
 	backend, ok := h.routes[addr]
 	if h.failAfter > 0 && len(h.dialed) > h.failAfter {
 		ok = false
@@ -105,6 +121,20 @@ func (h *httpHarness) dials() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.dialed...)
+}
+
+// dialBudgets returns the remaining context deadline observed at each dial, in dial order.
+func (h *httpHarness) dialBudgets() []time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]time.Duration(nil), h.budgets...)
+}
+
+// trust points the checker at a private root pool. The checker verifies monitored certificates
+// against the system roots in production, so a test that wants a certificate to actually verify
+// has to hand it a root it can chain to.
+func (h *httpHarness) trust(pool *x509.CertPool) {
+	h.checker.rootCAs = pool
 }
 
 func (h *httpHarness) lookups() []string {
@@ -167,17 +197,19 @@ func TestHTTPChecker_SampleOrderIsAvailLatencyStatusThenCertDays(t *testing.T) {
 		t.Fatalf("plain sample order = %v, want %v", got, want)
 	}
 
-	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}))
-	t.Cleanup(secure.Close)
+	// The certificate has to be one the checker can verify. `_tls_details` builds a plain
+	// `ssl.create_default_context()`, so the backend captures a certificate only when it chains
+	// and matches the hostname — a self-signed httptest certificate with verify_tls:false would
+	// pin a cert_days_remaining sample the server vantage never produces, which is the opposite
+	// of what a parity test is for. Sample *order* is what this test exists to pin.
+	secure, pool := httpTrustedTLSServer(t, "secure.test", httpOKHandler())
 
 	hs := newHTTPHarness(t)
+	hs.trust(pool)
 	hs.publish(t, "secure.test", otherInScopeHost, secure)
 
 	out, err = hs.checker.Check(context.Background(), "secure.test", httpConfigJSON(t, map[string]any{
-		"url":        "https://secure.test/",
-		"verify_tls": false,
+		"url": "https://secure.test/",
 	}))
 	if err != nil {
 		t.Fatalf("tls check: %v", err)
@@ -468,23 +500,18 @@ func TestHTTPChecker_TLSDetailsComeFromASeparateConnectionAndNeverFailTheCheck(t
 	t.Run("capture opens its own handshake", func(t *testing.T) {
 		t.Parallel()
 		var handshakes atomic.Int64
-		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("ok"))
-		}))
-		srv.TLS = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		srv, pool := httpTrustedTLSServer(t, "sep.test", httpOKHandler(), func(cfg *tls.Config) {
+			cfg.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
 				handshakes.Add(1)
 				return nil, nil
-			},
-		}
-		srv.StartTLS()
-		t.Cleanup(srv.Close)
+			}
+		})
 
 		h := newHTTPHarness(t)
+		h.trust(pool)
 		h.publish(t, "sep.test", inScopeHost, srv)
 		out, err := h.checker.Check(context.Background(), "sep.test", httpConfigJSON(t, map[string]any{
-			"url": "https://sep.test/", "verify_tls": false,
+			"url": "https://sep.test/",
 		}))
 		if err != nil {
 			t.Fatalf("check: %v", err)
@@ -497,6 +524,10 @@ func TestHTTPChecker_TLSDetailsComeFromASeparateConnectionAndNeverFailTheCheck(t
 		}
 		if got := len(h.dials()); got != 2 {
 			t.Fatalf("checker dialed %d times (%v), want 2", got, h.dials())
+		}
+		// Both handshakes completed, so the second one really did produce the details.
+		if _, ok := out.Details["tls"].(map[string]any); !ok {
+			t.Fatalf("details = %+v, want a tls object", out.Details)
 		}
 	})
 
@@ -933,4 +964,256 @@ func httpSameStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// TLS parity with collectors/web.py::_tls_details and _request
+// ---------------------------------------------------------------------------
+
+// httpTrustedTLSServer starts an https test server presenting a certificate for dnsName issued by
+// a throwaway CA, and returns it alongside a pool that trusts that CA.
+//
+// It exists because `_tls_details` builds a plain `ssl.create_default_context()` and therefore
+// always verifies: the backend captures a certificate only when it can chain and match the
+// hostname. `httptest.NewTLSServer`'s self-signed certificate can do neither, so any test that
+// wants the capture to succeed has to mint one the checker can actually verify.
+func httpTrustedTLSServer(
+	t *testing.T,
+	dnsName string,
+	handler http.Handler,
+	mutate ...func(*tls.Config),
+) (*httptest.Server, *x509.CertPool) {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "cb-agent probe test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("self-sign CA: %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("parse CA: %v", err)
+	}
+
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: dnsName},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(30 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{dnsName},
+		BasicConstraintsValid: true,
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("sign leaf: %v", err)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+
+	config := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{leafDER, caDER}, PrivateKey: leafKey}},
+	}
+	for _, apply := range mutate {
+		apply(config)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = config
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv, pool
+}
+
+func httpOKHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+}
+
+// TestHTTPChecker_CertificateCaptureVerifiesLikeTheBackend pins the first half of the parity
+// contract for `_tls_details`: the capture context is a plain `ssl.create_default_context()`, so
+// `verify_tls: false` relaxes the *check*'s transport and never the certificate capture. An agent
+// that captured an unverifiable certificate would emit a `cert_days_remaining` series that the
+// server vantage never emits for the same monitor.
+func TestHTTPChecker_CertificateCaptureVerifiesLikeTheBackend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("verify_tls false does not unlock capture of an unverifiable certificate", func(t *testing.T) {
+		t.Parallel()
+		// httptest's own certificate is self-signed and names example.com/127.0.0.1, so it can
+		// neither chain nor match "selfsigned.test" — exactly what `_tls_details` swallows.
+		srv := httptest.NewTLSServer(httpOKHandler())
+		t.Cleanup(srv.Close)
+
+		h := newHTTPHarness(t)
+		h.publish(t, "selfsigned.test", inScopeHost, srv)
+
+		out, err := h.checker.Check(context.Background(), "selfsigned.test", httpConfigJSON(t, map[string]any{
+			"url": "https://selfsigned.test/", "verify_tls": false,
+		}))
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		if !out.Up {
+			t.Fatalf("up = false (msg %q): verify_tls:false must still let the request through", out.Msg)
+		}
+		if out.Details != nil {
+			t.Fatalf("details = %+v, want none: the backend's _tls_details always verifies", out.Details)
+		}
+		if got, want := httpSampleMetrics(out), []string{"avail", "latency_ms", "http_status"}; !httpSameStrings(got, want) {
+			t.Fatalf("samples = %v, want %v — no cert sample the server vantage would not emit", got, want)
+		}
+	})
+
+	t.Run("a verifiable certificate is captured", func(t *testing.T) {
+		t.Parallel()
+		srv, pool := httpTrustedTLSServer(t, "trusted.test", httpOKHandler())
+
+		h := newHTTPHarness(t)
+		h.trust(pool)
+		h.publish(t, "trusted.test", inScopeHost, srv)
+
+		out, err := h.checker.Check(context.Background(), "trusted.test", httpConfigJSON(t, map[string]any{
+			"url": "https://trusted.test/",
+		}))
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		details, ok := out.Details["tls"].(map[string]any)
+		if !ok {
+			t.Fatalf("details = %+v, want a tls object", out.Details)
+		}
+		if details["subject_cn"] != "trusted.test" {
+			t.Fatalf("subject_cn = %v, want trusted.test", details["subject_cn"])
+		}
+		if httpSampleValue(t, out, "cert_days_remaining") < 28 {
+			t.Fatalf("cert_days_remaining = %v, want ~29", httpSampleValue(t, out, "cert_days_remaining"))
+		}
+	})
+}
+
+// TestHTTPChecker_TLSFloorMatchesTheBackend pins the TLS version floor. httpx builds its client
+// context from `ssl` defaults in both the verify and the no-verify branch, and both floor at TLS
+// 1.2 (`ssl.create_default_context().minimum_version == TLSVersion.TLSv1_2`). A lower floor here
+// would report a TLS-1.0-only target UP from an agent vantage and DOWN from the server vantage.
+func TestHTTPChecker_TLSFloorMatchesTheBackend(t *testing.T) {
+	t.Parallel()
+
+	legacy := httptest.NewUnstartedServer(httpOKHandler())
+	legacy.TLS = &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS11}
+	legacy.Config.ErrorLog = log.New(io.Discard, "", 0)
+	legacy.StartTLS()
+	t.Cleanup(legacy.Close)
+
+	h := newHTTPHarness(t)
+	h.publish(t, "legacy.test", inScopeHost, legacy)
+
+	out, err := h.checker.Check(context.Background(), "legacy.test", httpConfigJSON(t, map[string]any{
+		"url": "https://legacy.test/", "verify_tls": false,
+	}))
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if out.Up {
+		t.Fatalf("up = true: a TLS-1.1-only target is DOWN from the server vantage, so it must be DOWN here too (%+v)", out)
+	}
+	if got, want := httpSampleMetrics(out), []string{"avail"}; !httpSameStrings(got, want) {
+		t.Fatalf("samples = %v, want %v", got, want)
+	}
+	if out.Samples[0].Value != 0 || out.Samples[0].ErrorReason != "http_error" {
+		t.Fatalf("avail sample = %+v, want value 0 with error_reason http_error", out.Samples[0])
+	}
+	if out.Msg != "request failed: ConnectError" {
+		t.Fatalf("msg = %q, want %q", out.Msg, "request failed: ConnectError")
+	}
+}
+
+// TestHTTPChecker_CertificateCaptureGetsAnIndependentTimeoutBudget pins the last piece of the
+// `_tls_details` contract: the backend calls it with `float(params.get("timeout", 10.0))`, a full
+// timeout that starts when the capture starts, not the remainder of a deadline the request has
+// already been burning. Sharing the request's deadline makes the cert_days_remaining series
+// vanish intermittently on a slow-but-healthy target — a telemetry gap the server vantage never
+// has. The capture must still be bounded by the run's own deadline, which is the second subtest.
+func TestHTTPChecker_CertificateCaptureGetsAnIndependentTimeoutBudget(t *testing.T) {
+	t.Parallel()
+
+	const requestTimeout = 10 * time.Second
+	const requestDelay = 1200 * time.Millisecond
+
+	t.Run("a slow request does not eat the capture's budget", func(t *testing.T) {
+		t.Parallel()
+		srv, pool := httpTrustedTLSServer(t, "slow.test", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(requestDelay)
+			_, _ = w.Write([]byte("ok"))
+		}))
+
+		h := newHTTPHarness(t)
+		h.trust(pool)
+		h.publish(t, "slow.test", inScopeHost, srv)
+
+		out, err := h.checker.Check(context.Background(), "slow.test", httpConfigJSON(t, map[string]any{
+			"url": "https://slow.test/", "timeout": requestTimeout.Seconds(),
+		}))
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		budgets := h.dialBudgets()
+		if len(budgets) != 2 {
+			t.Fatalf("checker dialed %d times (%v), want 2", len(budgets), h.dials())
+		}
+		if capture := budgets[1]; capture < requestTimeout-500*time.Millisecond {
+			t.Fatalf("certificate capture started with %s of its %s timeout after a request that took %s; "+
+				"the backend gives _tls_details a full, independent timeout", capture, requestTimeout, requestDelay)
+		}
+		if _, ok := out.Details["tls"].(map[string]any); !ok {
+			t.Fatalf("details = %+v, want a tls object", out.Details)
+		}
+	})
+
+	t.Run("the run's own deadline still bounds the capture", func(t *testing.T) {
+		t.Parallel()
+		srv, pool := httpTrustedTLSServer(t, "bounded.test", httpOKHandler())
+
+		h := newHTTPHarness(t)
+		h.trust(pool)
+		h.publish(t, "bounded.test", inScopeHost, srv)
+
+		// The runtime hands Check a context carrying the assignment's deadline. An "independent"
+		// capture timeout must never outlive it, or a probe.cancel would leave a connection open.
+		const runBudget = 2 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), runBudget)
+		defer cancel()
+
+		if _, err := h.checker.Check(ctx, "bounded.test", httpConfigJSON(t, map[string]any{
+			"url": "https://bounded.test/", "timeout": requestTimeout.Seconds(),
+		})); err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		budgets := h.dialBudgets()
+		if len(budgets) != 2 {
+			t.Fatalf("checker dialed %d times (%v), want 2", len(budgets), h.dials())
+		}
+		if capture := budgets[1]; capture > runBudget {
+			t.Fatalf("certificate capture had %s of budget, more than the run's own %s deadline", capture, runBudget)
+		}
+	})
 }

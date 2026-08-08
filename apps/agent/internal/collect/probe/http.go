@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,16 @@ const httpDefaultTimeout = 10.0
 // default policy wholesale — forgetting it would turn a redirect loop into an unbounded walk
 // that only the assignment deadline stops.
 const httpMaxRedirects = 10
+
+// httpMinTLSVersion is the floor httpx gives every monitor request. Both of httpx's branches end
+// up there: `verify=True` builds `ssl.create_default_context()` and `verify=False` builds a bare
+// `ssl.SSLContext(PROTOCOL_TLS_CLIENT)`, and on any current OpenSSL both report
+// `minimum_version == TLSVersion.TLSv1_2`. `_tls_details` inherits the same floor.
+//
+// A lower floor here is not leniency, it is a parity break: a TLS-1.0-only target (the old
+// iLO/iDRAC/switch UI this product exists to watch) would read UP from an agent vantage and DOWN
+// from the server vantage, so moving the monitor between vantages would flip its availability.
+const httpMinTLSVersion = tls.VersionTLS12
 
 // httpDefaultStatusRanges mirrors web.py's `_DEFAULT_RANGES`. An *empty* accepted_statuses list
 // falls back to it, exactly like the backend's `ranges or _DEFAULT_RANGES`.
@@ -115,6 +126,12 @@ type httpChecker struct {
 	// test can put a listener behind an in-scope address: 127.0.0.1 is permanently special-use
 	// in netscope, so a test that dialed loopback directly could not exercise the scope path.
 	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// rootCAs is the trust anchor set for monitored targets. nil — the production value — means
+	// the host's system roots, which is what `ssl.create_default_context()` loads on the backend.
+	// It is a field so a test can mint a certificate the checker can actually verify; without
+	// that seam the always-verifying certificate capture could only ever be observed failing.
+	rootCAs *x509.CertPool
 }
 
 func newHTTPChecker(deps Deps) Checker {
@@ -180,8 +197,9 @@ func (c *httpChecker) Check(ctx context.Context, host string, cfg json.RawMessag
 	}
 	// Certificate capture is a second, independent connection and never fails the check —
 	// byte-for-byte the backend's `_tls_details`, including that it inspects the *original*
-	// URL rather than wherever the redirects ended up.
-	details := c.tlsDetails(requestCtx, parsed, conf)
+	// URL rather than wherever the redirects ended up, and that it gets its own full timeout
+	// rather than requestCtx's leftovers (hence ctx, not requestCtx).
+	details := c.tlsDetails(ctx, parsed, conf)
 	if days, ok := httpCertDays(details); ok {
 		samples = append(samples, frame.ProbeSample{Metric: "cert_days_remaining", Value: days})
 	}
@@ -265,10 +283,15 @@ func (c *httpChecker) request(ctx context.Context, target *url.URL, conf httpCon
 			// the agent would be dialing the proxy and the proxy would be reaching the target.
 			Proxy:       nil,
 			DialContext: c.dialContext,
-			//nolint:gosec // G402: verify_tls is the monitor's own setting; the backend's
-			// collector honors it identically, and this is a monitored third-party target, not
-			// the Circuit Breaker control plane.
-			TLSClientConfig:   &tls.Config{InsecureSkipVerify: !conf.verifyTLS(), MinVersion: tls.VersionTLS10},
+			TLSClientConfig: &tls.Config{
+				// G402: verify_tls is the monitor's own setting and the backend's collector
+				// honors it identically on the *request* — this is a monitored third-party
+				// target, not the Circuit Breaker control plane. It does not relax the version
+				// floor, and it does not reach the certificate capture (see tlsDetails).
+				InsecureSkipVerify: !conf.verifyTLS(), //nolint:gosec
+				MinVersion:         httpMinTLSVersion,
+				RootCAs:            c.rootCAs,
+			},
 			DisableKeepAlives: true,
 		},
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
@@ -360,11 +383,18 @@ func (c *httpChecker) resolveHost(ctx context.Context, host string) ([]string, e
 // tlsDetails is the Go twin of web.py's `_tls_details`: a separate TLS connection, best effort,
 // never able to fail the check.
 //
-// One deliberate difference: the handshake honors the monitor's verify_tls, where the backend
-// always verifies. The backend's behavior means a monitor explicitly configured for a
-// self-signed target silently loses its expiry samples — the certificate is exactly what an
-// operator wants to watch there — and capture is auxiliary either way, so it cannot widen what
-// the check accepts.
+// The handshake **always verifies**, whatever the monitor's verify_tls says, because
+// `_tls_details` builds a plain `ssl.create_default_context()` — verify_tls reaches httpx's
+// request context and nothing else. Honoring it here would look like a kindness (a self-signed
+// target is exactly where an operator wants expiry watched) and would in fact be a parity break:
+// the agent would emit a cert_days_remaining series and a details.tls object that the server
+// vantage never emits for the same monitor, so reassigning the monitor would silently start or
+// stop a telemetry series. If self-signed expiry tracking is wanted, it has to be added to the
+// backend collector first — that is the authoritative side.
+//
+// ctx is the run's context, not the request's: the backend passes `_tls_details` a full,
+// independent `timeout`, so the capture must not inherit whatever budget a slow request left
+// behind. The run's own deadline still bounds it, which is what keeps probe.cancel honest.
 func (c *httpChecker) tlsDetails(ctx context.Context, target *url.URL, conf httpConfig) map[string]any {
 	if target.Scheme != "https" {
 		return nil
@@ -381,11 +411,10 @@ func (c *httpChecker) tlsDetails(ctx context.Context, target *url.URL, conf http
 	if err != nil {
 		return nil
 	}
-	//nolint:gosec // G402: see the TLSClientConfig comment in request.
 	tlsConn := tls.Client(conn, &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: !conf.verifyTLS(),
-		MinVersion:         tls.VersionTLS10,
+		ServerName: host,
+		MinVersion: httpMinTLSVersion,
+		RootCAs:    c.rootCAs,
 	})
 	defer tlsConn.Close()
 	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
