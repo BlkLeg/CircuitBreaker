@@ -178,3 +178,55 @@ func TestDerive_VersionMatchesTheBackendDigest(t *testing.T) {
 		t.Errorf("empty Version = %q, want %q", empty.Version, "b030b0aa1cde5b3e")
 	}
 }
+
+// --- Prefix-shaped questions (Slice 4, D-15) ---------------------------------
+//
+// NetworkInScope's decisions are pinned by the shared corpus. What the corpus
+// cannot express is the two answers that have no backend counterpart, and the
+// arithmetic behind the job ceiling.
+
+func TestNetworkIsDirectlyConnected_SeparatesDerivedFromApproved(t *testing.T) {
+	scope := Derive(
+		[]InterfaceFacts{{Name: "eth0", Flags: []string{"up"}, Addrs: []string{"10.0.0.5/24"}}},
+		Config{AdditionalCIDRs: []string{"172.16.5.0/24"}},
+	)
+
+	if !NetworkIsDirectlyConnected(scope, "10.0.0.0/25") {
+		t.Error("a prefix inside the attached /24 must read as directly connected")
+	}
+	// In scope, but only because an administrator approved the route — §7 requires the agent to
+	// be able to tell the two apart at execution time.
+	if NetworkIsDirectlyConnected(scope, "172.16.5.0/24") {
+		t.Error("a centrally approved routed network is not directly connected")
+	}
+	if NetworkIsDirectlyConnected(scope, "not-a-cidr") {
+		t.Error("an unparseable prefix must not read as directly connected")
+	}
+}
+
+func TestAddressCount_SumsPrefixesAndCountsOverlapOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cidrs []string
+		want  uint64
+	}{
+		{"empty", nil, 0},
+		{"one /24", []string{"10.0.0.0/24"}, 256},
+		{"a /24 and a /25", []string{"10.0.0.0/24", "10.0.1.0/25"}, 384},
+		{"a host route", []string{"10.0.0.7/32"}, 1},
+		{"an IPv6 /120", []string{"fd00::/120"}, 256},
+		// Naming the same segment twice, or a segment and a slice of it, must not exhaust the
+		// ceiling twice over.
+		{"an exact duplicate", []string{"10.0.0.0/24", "10.0.0.0/24"}, 256},
+		{"a contained prefix", []string{"10.0.0.0/24", "10.0.0.0/25"}, 256},
+		// Fail-soft, matching parseCIDRs everywhere else: by the time this is asked, every
+		// prefix has already been refused-or-accepted by NetworkInScope.
+		{"an unparseable entry", []string{"10.0.0.0/24", "garbage"}, 256},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AddressCount(tc.cidrs); got != tc.want {
+				t.Errorf("AddressCount(%v) = %d, want %d", tc.cidrs, got, tc.want)
+			}
+		})
+	}
+}

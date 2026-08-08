@@ -49,6 +49,15 @@ REASON_EMPTY_SCOPE = "empty_scope"
 REASON_OUT_OF_SCOPE = "out_of_scope"
 REASON_INVALID_DESTINATION = "invalid_destination"
 REASON_UNRESOLVED_HOSTNAME = "unresolved_hostname"
+REASON_PREFIX_TOO_WIDE = "prefix_too_wide"
+
+# The widest prefix that may ever be dispatched as a discovery target, whatever
+# the grant or the agent's own report says. A /16 is 65 536 addresses and a /48
+# of IPv6 ULA is the standard site allocation; anything wider is a routing
+# mistake being read as a scope, and no bounded job can cover it. Expressed as a
+# *minimum prefix length* because that is the direction the comparison runs.
+MIN_SCOPE_PREFIX_V4 = 16
+MIN_SCOPE_PREFIX_V6 = 48
 
 # IPv6 unique local addresses. `network_acl.is_rfc1918` answers False for every v6
 # network and has no ULA equivalent, so the private-space test is defined here for
@@ -241,6 +250,73 @@ def evaluate(
     return Decision(True, REASON_IN_SCOPE)
 
 
+def network_in_scope(scope: EffectiveScope, cidr: str) -> Decision:
+    """Decide whether every address in *cidr* is permitted under *scope*.
+
+    `evaluate` answers about one address; Slice 4 hands an agent a whole prefix,
+    so the containment question has to be first-class. Enumerating the prefix and
+    calling `evaluate` per address is not an implementation — a /16 is 65 536
+    calls — and a second copy of the rules on the discovery side is exactly the
+    divergence `fixtures/agent_scope_corpus.json` exists to forbid.
+
+    The rule order matches `_evaluate_address` deliberately, because the security
+    weight is in the order and not in the individual tests:
+
+    1. **Width first.** A prefix wider than the `MIN_SCOPE_PREFIX_*` ceiling is
+       refused before anything else, so no derived-or-granted network can smuggle
+       an unbounded job through by being legitimately in scope.
+    2. **Special use.** Refused if the prefix *overlaps* blocked space at all —
+       not merely if it is contained in it — since a request covering both a
+       usable segment and link-local is still a request for link-local.
+    3. **Exclusions.** Also on overlap, for the same reason: an administrator
+       excluding a /25 must not be walked around by asking for the enclosing /24.
+    4. **Containment.** Only then, and only as full containment in a single
+       allow-list network. A prefix half inside a reported subnet describes
+       addresses on a segment the agent never reported.
+
+    Like `derive_scope`, nothing here raises: it runs at dispatch time against
+    values an agent or a stored grant supplied, and an unparseable prefix is a
+    refusal (`invalid_destination`) rather than an exception that would read as
+    the target being unreachable.
+    """
+    try:
+        network = ipaddress.ip_network(str(cidr).strip(), strict=False)
+    except (ValueError, TypeError):
+        return Decision(False, REASON_INVALID_DESTINATION)
+
+    text = str(network)
+    minimum = MIN_SCOPE_PREFIX_V4 if network.version == 4 else MIN_SCOPE_PREFIX_V6
+    if network.prefixlen < minimum:
+        return Decision(False, REASON_PREFIX_TOO_WIDE, text)
+    if any(_overlaps(blocked, network) for blocked in _BLOCKED_NETWORKS):
+        return Decision(False, REASON_SPECIAL_USE, text)
+    if any(_overlaps(excluded, network) for excluded in _parsed(scope.excluded_networks)):
+        return Decision(False, REASON_EXCLUDED, text)
+
+    networks = _parsed(scope.networks)
+    if not networks:
+        return Decision(False, REASON_EMPTY_SCOPE, text)
+    if any(_contains_network(allowed, network) for allowed in networks):
+        return Decision(True, REASON_IN_SCOPE, text)
+    return Decision(False, REASON_OUT_OF_SCOPE, text)
+
+
+def address_count(cidrs: Iterable[str]) -> int:
+    """How many addresses a set of target prefixes covers, for the job ceiling.
+
+    Unparseable entries are skipped rather than raising, matching `derive_scope`'s
+    posture — but note the asymmetry with `network_in_scope`, which *refuses* an
+    unparseable prefix. That is the safe pairing: the counter must never be the
+    thing that decides a malformed target is acceptable, and by the time this is
+    consulted every prefix has already been through `network_in_scope`.
+
+    Duplicates and overlaps are counted once, so asking for `10.0.0.0/24` twice
+    does not spuriously exhaust the ceiling.
+    """
+    collapsed = ipaddress.collapse_addresses(_parse_cidrs(list(cidrs)))  # type: ignore[arg-type]
+    return sum(network.num_addresses for network in collapsed)
+
+
 def hostname_is_approved(scope: EffectiveScope, host: str) -> bool:
     """Whether *host* matches an `additional_hostnames` entry.
 
@@ -285,6 +361,19 @@ def _contains(network: IPNetwork, address: IPAddress) -> bool:
     `network_acl.is_cidr_allowed`: that one compares prefixes with `subnet_of`,
     which raises across families, whereas `in` simply answers False."""
     return address in network
+
+
+def _overlaps(left: IPNetwork, right: IPNetwork) -> bool:
+    """Whether two prefixes share any address. `overlaps` raises across families,
+    which `_contains` deliberately avoids for addresses; here the version test is
+    explicit because both operands are networks."""
+    return left.version == right.version and left.overlaps(right)
+
+
+def _contains_network(outer: IPNetwork, inner: IPNetwork) -> bool:
+    """Full containment across both families. `subnet_of` raises on a mismatched
+    version, so the guard is not optional."""
+    return outer.version == inner.version and inner.subnet_of(outer)  # type: ignore[arg-type]
 
 
 def _is_directed_broadcast(network: IPNetwork, address: IPAddress) -> bool:

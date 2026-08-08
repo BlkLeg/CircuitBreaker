@@ -15,6 +15,7 @@ type corpusEntry struct {
 	Config      Config           `json:"config"`
 	Destination struct {
 		Host     string   `json:"host"`
+		CIDR     string   `json:"cidr"`
 		Resolved []string `json:"resolved"`
 	} `json:"destination"`
 	Expected string `json:"expected"`
@@ -47,7 +48,17 @@ func TestScopeCorpus_MatchesEveryCase(t *testing.T) {
 		t.Run(entry.Description, func(t *testing.T) {
 			scope := Derive(entry.Facts, entry.Config)
 
-			decision := Evaluate(scope, entry.Destination.Host, entry.Destination.Resolved)
+			// A corpus entry names either a single destination (host) or a whole target
+			// prefix (cidr). Slice 4 dispatches prefixes rather than addresses, so
+			// NetworkInScope has to sit under the same cross-language gate as Evaluate —
+			// otherwise the one rule set both languages agree on covers only half of what
+			// actually authorizes work.
+			var decision Decision
+			if entry.Destination.CIDR != "" {
+				decision = NetworkInScope(scope, entry.Destination.CIDR)
+			} else {
+				decision = Evaluate(scope, entry.Destination.Host, entry.Destination.Resolved)
+			}
 
 			if want := entry.Expected == "allow"; decision.Allowed != want {
 				t.Errorf("Allowed = %v, want %v (reason %q)", decision.Allowed, want, decision.Reason)

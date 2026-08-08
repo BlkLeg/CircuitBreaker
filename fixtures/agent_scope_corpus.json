@@ -285,5 +285,136 @@
     "destination": {"host": "10.0.0.9"},
     "expected": "deny",
     "reason": "empty_scope"
+  },
+  {
+    "description": "prefix — a /25 wholly inside a directly connected /24 is dispatchable",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"scope_mode": "direct_private"},
+    "destination": {"cidr": "10.0.0.0/25"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "prefix — the directly connected network itself is dispatchable",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["192.168.4.7/24"]}],
+    "config": {},
+    "destination": {"cidr": "192.168.4.0/24"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "prefix — an IPv6 ULA /64 the agent is attached to is dispatchable",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/64"]}],
+    "config": {},
+    "destination": {"cidr": "fd00:a::/64"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "prefix — a centrally approved routed network is dispatchable",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["172.16.5.0/24"]},
+    "destination": {"cidr": "172.16.5.0/24"},
+    "expected": "allow",
+    "reason": "in_scope"
+  },
+  {
+    "description": "prefix — a /23 straddling the derived /24 is not contained by it",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"cidr": "10.0.0.0/23"},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "prefix — a network the agent never reported is out of scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"cidr": "10.9.9.0/24"},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "prefix — a point-to-point tunnel's network is never dispatchable",
+    "facts": [
+      {"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]},
+      {"name": "wg0", "flags": ["pointtopoint", "up"], "addrs": ["10.9.0.2/24"]}
+    ],
+    "config": {},
+    "destination": {"cidr": "10.9.0.0/24"},
+    "expected": "deny",
+    "reason": "out_of_scope"
+  },
+  {
+    "description": "prefix — link-local space is refused even when explicitly added",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["169.254.0.0/24"]},
+    "destination": {"cidr": "169.254.0.0/24"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "prefix — loopback space is refused even when explicitly added",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["127.0.0.0/24"]},
+    "destination": {"cidr": "127.0.0.0/24"},
+    "expected": "deny",
+    "reason": "special_use"
+  },
+  {
+    "description": "prefix — a /24 enclosing an excluded /25 does not walk around the exclusion",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"excluded_cidrs": ["10.0.0.128/25"]},
+    "destination": {"cidr": "10.0.0.0/24"},
+    "expected": "deny",
+    "reason": "excluded_cidr"
+  },
+  {
+    "description": "prefix — an agent with no usable network can be dispatched nothing",
+    "facts": [],
+    "config": {},
+    "destination": {"cidr": "10.0.0.0/24"},
+    "expected": "deny",
+    "reason": "empty_scope"
+  },
+  {
+    "description": "prefix — a directly connected /8 is still too wide to dispatch",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/8"]}],
+    "config": {},
+    "destination": {"cidr": "10.0.0.0/8"},
+    "expected": "deny",
+    "reason": "prefix_too_wide"
+  },
+  {
+    "description": "prefix — an IPv6 ULA /40 is past the separate v6 ceiling",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/40"]}],
+    "config": {},
+    "destination": {"cidr": "fd00:a::/40"},
+    "expected": "deny",
+    "reason": "prefix_too_wide"
+  },
+  {
+    "description": "prefix — the IPv4 default route is not a scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"cidr": "0.0.0.0/0"},
+    "expected": "deny",
+    "reason": "prefix_too_wide"
+  },
+  {
+    "description": "prefix — the IPv6 default route is not a scope",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/64"]}],
+    "config": {},
+    "destination": {"cidr": "::/0"},
+    "expected": "deny",
+    "reason": "prefix_too_wide"
+  },
+  {
+    "description": "prefix — an unparseable target is refused, not skipped",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {},
+    "destination": {"cidr": "10.0.0.0/33"},
+    "expected": "deny",
+    "reason": "invalid_destination"
   }
 ]

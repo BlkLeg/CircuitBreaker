@@ -44,10 +44,22 @@ const (
 	ReasonInvalidDestination = "invalid_destination"
 	ReasonUnresolvedHostname = "unresolved_hostname"
 
+	ReasonPrefixTooWide = "prefix_too_wide"
+
 	// ReasonNotDirectlyConnected has no backend counterpart on purpose: it is §3's agent-side
 	// extra rule, which the backend cannot express because only the agent knows which of the
 	// networks it was authorized for it is actually attached to right now.
 	ReasonNotDirectlyConnected = "not_directly_connected"
+)
+
+// The widest prefix that may ever be dispatched as a discovery target, whatever the grant or
+// this host's own interfaces say. Byte-identical to agent_scope.py's MIN_SCOPE_PREFIX_*: a /16
+// is 65 536 addresses and a /48 of ULA is the standard site allocation, and anything wider is a
+// routing mistake being read as a scope. Expressed as a *minimum prefix length* because that is
+// the direction the comparison runs.
+const (
+	MinScopePrefixV4 = 16
+	MinScopePrefixV6 = 48
 )
 
 // ulaV6 is IPv6 unique local address space. The private-space test is defined here for both
@@ -205,6 +217,167 @@ func Evaluate(scope Scope, destination string, resolved []string) Decision {
 		}
 	}
 	return Decision{Allowed: true, Reason: ReasonInScope}
+}
+
+// NetworkInScope decides whether every address in cidr is permitted under scope.
+//
+// Evaluate answers about one address; a discovery request names a whole prefix, so the
+// containment question has to be first-class — enumerating a /16 to ask it 65 536 times is not
+// an implementation, and a second copy of the rules inside internal/collect/discover is exactly
+// the divergence fixtures/agent_scope_corpus.json exists to forbid.
+//
+// The rule order mirrors agent_scope.py's network_in_scope exactly, because the security weight
+// is in the order rather than in the individual tests:
+//
+//  1. Width first, so no legitimately-in-scope network can smuggle an unbounded job through.
+//  2. Special use, on *overlap* rather than containment: a request covering both a usable
+//     segment and link-local is still a request for link-local.
+//  3. Exclusions, also on overlap, so an excluded /25 cannot be walked around by asking for the
+//     enclosing /24.
+//  4. Containment, and only as full containment in a single allow-list network.
+//
+// Unlike evaluateAddress this does not apply the agent-side directly-connected rule, because
+// Derive only ever puts directly connected or centrally approved networks into Networks — the
+// distinction exists for addresses that reached the allow list some other way, which a prefix
+// cannot. Callers that need "and I am still attached to it right now" ask
+// NetworkIsDirectlyConnected as a separate question, which is what makes the answer to *this*
+// one comparable with the backend's.
+//
+// Nothing here fails: it runs against a server-issued request, and an unparseable prefix is a
+// refusal rather than an error that would read as the target being unreachable.
+func NetworkInScope(scope Scope, cidr string) Decision {
+	network, ok := parsePrefix(cidr)
+	if !ok {
+		return Decision{Reason: ReasonInvalidDestination}
+	}
+	text := network.String()
+	minimum := MinScopePrefixV6
+	if network.Addr().Is4() {
+		minimum = MinScopePrefixV4
+	}
+	if network.Bits() < minimum {
+		return Decision{Reason: ReasonPrefixTooWide, Address: text}
+	}
+	if overlapsAny(blockedNetworks, network) {
+		return Decision{Reason: ReasonSpecialUse, Address: text}
+	}
+	if overlapsAny(parseCIDRs(scope.ExcludedNetworks), network) {
+		return Decision{Reason: ReasonExcluded, Address: text}
+	}
+
+	networks := parseCIDRs(scope.Networks)
+	if len(networks) == 0 {
+		return Decision{Reason: ReasonEmptyScope, Address: text}
+	}
+	for _, allowed := range networks {
+		if containsNetwork(allowed, network) {
+			return Decision{Allowed: true, Reason: ReasonInScope, Address: text}
+		}
+	}
+	return Decision{Reason: ReasonOutOfScope, Address: text}
+}
+
+// NetworkIsDirectlyConnected reports whether cidr is contained in a network this host is
+// actually attached to right now.
+//
+// §7 requires the agent to re-check that an automatically-scoped target is still directly
+// connected at execution time, not merely at the moment the server derived scope. That is a
+// question only the agent can answer, so it is deliberately *not* folded into NetworkInScope:
+// doing so would make the two evaluators disagree by design and the shared corpus meaningless.
+func NetworkIsDirectlyConnected(scope Scope, cidr string) bool {
+	network, ok := parsePrefix(cidr)
+	if !ok {
+		return false
+	}
+	for _, direct := range parseCIDRs(scope.DirectNetworks) {
+		if containsNetwork(direct, network) {
+			return true
+		}
+	}
+	return false
+}
+
+// AddressCount reports how many addresses a set of target prefixes covers, for the job ceiling.
+//
+// Overlapping and duplicate entries are counted once, so naming the same /24 twice does not
+// spuriously exhaust the limit. Unparseable entries are skipped rather than failing — by the
+// time this is consulted every prefix has already been through NetworkInScope, which *refuses*
+// an unparseable one, so the counter is never what decides a malformed target is acceptable.
+func AddressCount(cidrs []string) uint64 {
+	var total uint64
+	for _, network := range deduplicated(parseCIDRs(cidrs)) {
+		bits := 32
+		if network.Addr().Is6() {
+			bits = 128
+		}
+		host := uint(bits - network.Bits())
+		// A /0..(bits-64) prefix would overflow uint64. Nothing that wide survives
+		// NetworkInScope, but this must not wrap to a small number if it is ever asked.
+		if host >= 64 {
+			return ^uint64(0)
+		}
+		total += uint64(1) << host
+	}
+	return total
+}
+
+// deduplicated drops any prefix wholly contained in another, which is what makes AddressCount
+// count overlapping targets once. Not a full collapse (adjacent prefixes are not merged), which
+// only ever over-counts and therefore only ever refuses a job the ceiling would have allowed.
+func deduplicated(networks []netip.Prefix) []netip.Prefix {
+	kept := make([]netip.Prefix, 0, len(networks))
+	for i, candidate := range networks {
+		covered := false
+		for j, other := range networks {
+			if i == j {
+				continue
+			}
+			// A duplicate is contained in its twin both ways round; keep the first.
+			if candidate == other && j > i {
+				continue
+			}
+			if containsNetwork(other, candidate) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept
+}
+
+func overlapsAny(networks []netip.Prefix, candidate netip.Prefix) bool {
+	for _, network := range networks {
+		if network.Addr().Is4() == candidate.Addr().Is4() && network.Overlaps(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsNetwork reports full containment. netip has no Prefix.Contains(Prefix), so this is the
+// prefix-length comparison plus a masked-address test, guarded on family — Contains answers
+// false across families rather than raising, but the Bits() comparison would be meaningless.
+func containsNetwork(outer, inner netip.Prefix) bool {
+	if outer.Addr().Is4() != inner.Addr().Is4() {
+		return false
+	}
+	return outer.Bits() <= inner.Bits() && outer.Contains(inner.Masked().Addr())
+}
+
+// parsePrefix reads one target prefix, accepting a bare address as a host route and masking off
+// host bits — the same tolerance ipaddress.ip_network(..., strict=False) gives the backend.
+func parsePrefix(value string) (netip.Prefix, bool) {
+	text := strings.TrimSpace(value)
+	if prefix, err := netip.ParsePrefix(text); err == nil {
+		return prefix.Masked(), true
+	}
+	if address, ok := parseAddress(text); ok {
+		return netip.PrefixFrom(address, address.BitLen()), true
+	}
+	return netip.Prefix{}, false
 }
 
 // HostnameIsApproved reports whether host matches an additional_hostnames entry.

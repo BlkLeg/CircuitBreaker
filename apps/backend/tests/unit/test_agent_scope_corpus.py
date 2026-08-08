@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core.agent_scope import derive_scope, evaluate
+from app.core.agent_scope import derive_scope, evaluate, network_in_scope
 
 _CORPUS_PATH = Path(__file__).resolve().parents[4] / "fixtures" / "agent_scope_corpus.json"
 
@@ -24,10 +24,21 @@ def _load_corpus() -> list[dict]:
 
 @pytest.mark.parametrize("entry", _load_corpus(), ids=lambda e: e["description"])
 def test_every_corpus_case_matches_the_evaluator(entry):
+    """A corpus entry names either a single destination (`host`) or a whole
+    target prefix (`cidr`), and drives the matching evaluator.
+
+    Slice 4 dispatches prefixes rather than addresses, so `network_in_scope` has
+    to be under the same cross-language gate as `evaluate` — otherwise the one
+    rule set the two languages agree on would cover only half of what actually
+    authorizes work.
+    """
     scope = derive_scope(entry["facts"], entry["config"])
     destination = entry["destination"]
 
-    decision = evaluate(scope, destination["host"], resolved=destination.get("resolved"))
+    if "cidr" in destination:
+        decision = network_in_scope(scope, destination["cidr"])
+    else:
+        decision = evaluate(scope, destination["host"], resolved=destination.get("resolved"))
 
     assert decision.allowed is (entry["expected"] == "allow")
     assert decision.reason == entry["reason"]

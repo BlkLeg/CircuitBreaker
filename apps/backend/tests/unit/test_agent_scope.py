@@ -11,9 +11,20 @@ from __future__ import annotations
 import pytest
 
 from app.core.agent_scope import (
+    MIN_SCOPE_PREFIX_V4,
+    MIN_SCOPE_PREFIX_V6,
+    REASON_EMPTY_SCOPE,
+    REASON_EXCLUDED,
+    REASON_IN_SCOPE,
+    REASON_INVALID_DESTINATION,
+    REASON_OUT_OF_SCOPE,
+    REASON_PREFIX_TOO_WIDE,
+    REASON_SPECIAL_USE,
+    address_count,
     derive_scope,
     evaluate,
     hostname_is_approved,
+    network_in_scope,
     normalize_scope_cidr,
     normalize_scope_cidrs,
     normalize_scope_hostname,
@@ -276,3 +287,108 @@ def test_scope_version_changes_only_when_effective_scope_changes() -> None:
     assert (
         derive_scope(facts, _config(additional_hostnames=["nas.lan"])).version != baseline.version
     )
+
+
+# --- Whole-prefix containment (Slice 4, D-15) ---------------------------------
+#
+# `evaluate` answers about one address. Slice 4 dispatches a *prefix* to an
+# agent, so "is every address in this CIDR permitted" has to be a first-class
+# question — asking it by enumerating a /16 is not an implementation, and a
+# second copy of the rules on the discovery side is exactly the divergence the
+# shared corpus exists to forbid.
+
+
+def test_network_in_scope_accepts_a_prefix_wholly_inside_a_derived_network() -> None:
+    scope = derive_scope([_ETH0], _config())
+
+    assert network_in_scope(scope, "10.0.0.0/25").allowed is True
+    assert network_in_scope(scope, "10.0.0.0/24").reason == REASON_IN_SCOPE
+
+
+def test_network_in_scope_rejects_a_prefix_that_only_overlaps() -> None:
+    """A /23 straddling the derived /24 is not in scope even though half of it is.
+
+    Containment, not intersection: dispatching the /23 would hand the agent 256
+    addresses on a segment it never reported.
+    """
+    scope = derive_scope([_ETH0], _config())
+
+    decision = network_in_scope(scope, "10.0.0.0/23")
+
+    assert decision.allowed is False
+    assert decision.reason == REASON_OUT_OF_SCOPE
+
+
+def test_network_in_scope_denies_special_use_before_any_allow_rule() -> None:
+    """The §7 ordering rule, restated for prefixes: no `additional_cidrs` entry
+    can hand an agent loopback or link-local reachability."""
+    scope = derive_scope([_ETH0], _config(additional_cidrs=["169.254.0.0/24"]))
+
+    decision = network_in_scope(scope, "169.254.0.0/24")
+
+    assert decision.allowed is False
+    assert decision.reason == REASON_SPECIAL_USE
+
+
+def test_network_in_scope_denies_a_prefix_overlapping_an_exclusion() -> None:
+    """Partial overlap is enough. An exclusion is an administrator saying "not
+    that segment"; honoring it only for fully-contained prefixes would let a
+    wider request walk straight through it."""
+    scope = derive_scope([_ETH0], _config(excluded_cidrs=["10.0.0.128/25"]))
+
+    decision = network_in_scope(scope, "10.0.0.0/24")
+
+    assert decision.allowed is False
+    assert decision.reason == REASON_EXCLUDED
+
+
+def test_network_in_scope_denies_everything_when_scope_is_empty() -> None:
+    scope = derive_scope([], _config())
+
+    assert network_in_scope(scope, "10.0.0.0/24").reason == REASON_EMPTY_SCOPE
+
+
+def test_network_in_scope_rejects_prefixes_wider_than_the_hard_ceiling() -> None:
+    """A ceiling that holds even when the agent genuinely reported that prefix:
+    a /8 on an interface is a routing mistake, and 16 million addresses is not a
+    discovery job whatever the grant says."""
+    scope = derive_scope(
+        [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/8"]}], _config()
+    )
+
+    decision = network_in_scope(scope, "10.0.0.0/8")
+
+    assert decision.allowed is False
+    assert decision.reason == REASON_PREFIX_TOO_WIDE
+    assert MIN_SCOPE_PREFIX_V4 == 16
+
+
+def test_network_in_scope_rejects_malformed_and_default_route_prefixes() -> None:
+    scope = derive_scope([_ETH0], _config())
+
+    assert network_in_scope(scope, "not-a-cidr").reason == REASON_INVALID_DESTINATION
+    assert network_in_scope(scope, "0.0.0.0/0").reason == REASON_PREFIX_TOO_WIDE
+    assert network_in_scope(scope, "::/0").reason == REASON_PREFIX_TOO_WIDE
+
+
+def test_network_in_scope_applies_a_separate_ipv6_ceiling() -> None:
+    facts = [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["fd00:a::5/40"]}]
+    scope = derive_scope(facts, _config())
+
+    assert network_in_scope(scope, "fd00:a::/40").reason == REASON_PREFIX_TOO_WIDE
+    assert MIN_SCOPE_PREFIX_V6 == 48
+
+
+def test_address_count_sums_prefixes_and_counts_a_host_route_as_one() -> None:
+    assert address_count(["10.0.0.0/24"]) == 256
+    assert address_count(["10.0.0.0/24", "10.0.1.0/25"]) == 384
+    assert address_count(["10.0.0.7/32"]) == 1
+    assert address_count(["fd00::/120"]) == 256
+
+
+def test_address_count_ignores_unparseable_entries() -> None:
+    """Same fail-soft posture as `derive_scope`: this runs at dispatch time on
+    data that has already been normalized, and a parse failure here must not
+    read as "zero addresses, therefore under the limit"."""
+    assert address_count(["10.0.0.0/24", "garbage"]) == 256
+    assert address_count([]) == 0
