@@ -114,30 +114,43 @@ export default function MonitorsPage() {
   const { statuses } = useMonitorStream({ monitorIds });
 
   // Fold live pushes onto the fetched rows: status, last check, and both series.
+  //
+  // D-13: an execution-condition refresh carries no `status` key at all, because
+  // the vantage becoming unavailable is not a target transition. So `status`,
+  // `last_polled_at`, `recent_checks` and `latency_series` are only touched when
+  // the push actually carries a target status — otherwise a probe going offline
+  // would clobber the UP/DOWN pill with `undefined` and log a phantom check.
   const live = useMemo(() => {
     if (statuses.size === 0) return monitors;
     return monitors.map((m) => {
       const push = statuses.get(m.id);
       if (!push) return m;
-      const check = {
-        id: `live-${push.ts}`,
-        status_to: push.status,
-        msg: push.msg || '',
-        created_at: push.ts,
-      };
-      const alreadyLogged = (m.recent_checks || [])[0]?.created_at === push.ts;
-      return {
-        ...m,
-        status: push.status,
-        last_polled_at: push.ts || m.last_polled_at,
-        recent_checks: alreadyLogged
+      const next = { ...m };
+      if (push.status) {
+        const check = {
+          id: `live-${push.ts}`,
+          status_to: push.status,
+          msg: push.msg || '',
+          created_at: push.ts,
+        };
+        const alreadyLogged = (m.recent_checks || [])[0]?.created_at === push.ts;
+        next.status = push.status;
+        next.last_polled_at = push.ts || m.last_polled_at;
+        next.recent_checks = alreadyLogged
           ? m.recent_checks
-          : [check, ...(m.recent_checks || [])].slice(0, CHECKS_MAX),
-        latency_series:
+          : [check, ...(m.recent_checks || [])].slice(0, CHECKS_MAX);
+        next.latency_series =
           push.latency_ms != null
             ? [...(m.latency_series || []), push.latency_ms].slice(-SERIES_MAX)
-            : m.latency_series,
-      };
+            : m.latency_series;
+      }
+      if (Object.hasOwn(push, 'probe_execution_status')) {
+        next.probe_execution_status = push.probe_execution_status;
+      }
+      if (Object.hasOwn(push, 'probe_execution_reason')) {
+        next.probe_execution_reason = push.probe_execution_reason;
+      }
+      return next;
     });
   }, [monitors, statuses]);
 

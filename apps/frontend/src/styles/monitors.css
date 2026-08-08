@@ -245,6 +245,26 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Slice 3 §7: the vantage and the secondary execution condition. Both sit under
+   the target line and neither is allowed to look like the UP/DOWN pill — the
+   pill shows target state only. */
+.mon-vantage {
+  opacity: 0.85;
+}
+.mon-exec {
+  margin-top: 2px;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mon-exec[data-exec='unavailable'],
+.mon-exec[data-exec='stale'] {
+  color: var(--color-warning, #d19a1c);
+}
 .mon-card-mid {
   min-height: 20px;
   margin: 7px 0;
@@ -296,7 +316,9 @@
 }
 .mon-stats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* auto-fit rather than a fixed count: Slice 3 added a fifth tile and five
+     fixed columns are unreadable on a narrow card. */
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 8px;
   margin: 8px 0;
 }
@@ -360,4 +382,16 @@
   .mon-card {
     transition: none;
   }
+}
+
+/* "Run from" selector notes and warnings. Warnings are advisory only — the
+   server is the authority and rejects an ineligible assignment on save. */
+.mon-run-from-note,
+.mon-run-from-warning {
+  margin: 4px 0 0;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+.mon-run-from-warning {
+  color: var(--color-warning, #d19a1c);
 }

@@ -9,6 +9,33 @@ export function groupStatusOf(monitor) {
   return monitor.enabled ? monitor.status || 'pending' : 'paused';
 }
 
+/**
+ * Slice 3 §7: which vantage runs the check. Deliberately *not* folded into
+ * groupStatusOf/headlineOf above — MonitorsPage imports groupStatusOf for the
+ * summary counts, the group buckets and the status filter, so execution state
+ * leaking into it would silently rewrite the dashboard (D-13).
+ */
+export function probeVantageLabel(monitor) {
+  if (monitor.probe_agent_id == null) return 'via Server';
+  return `via ${monitor.probe_agent?.name || `agent ${monitor.probe_agent_id}`}`;
+}
+
+/**
+ * The secondary execution condition, or null when the vantage is healthy or is
+ * the server. A Map so a wire value can never index into Object.prototype.
+ */
+const EXEC_LABELS = new Map([
+  ['queued', 'probe queued'],
+  ['running', 'probe running'],
+  ['stale', 'probe stale'],
+  ['unavailable', 'probe unavailable'],
+]);
+
+export function executionConditionOf(monitor) {
+  if (monitor.probe_agent_id == null) return null;
+  return EXEC_LABELS.get(monitor.probe_execution_status) || null;
+}
+
 /** The card footer's headline figure. */
 export function headlineOf(monitor) {
   if (!monitor.enabled) return 'Paused';
@@ -47,6 +74,7 @@ export default function MonitorCard({
   const status = groupStatusOf(monitor);
   const target = monitor.config?.url || monitor.host;
   const showSparkline = status === 'up' && (monitor.latency_series?.length ?? 0) > 0;
+  const execCondition = executionConditionOf(monitor);
 
   return (
     <article className="mon-card" data-status={status} data-expanded={expanded || undefined}>
@@ -61,8 +89,21 @@ export default function MonitorCard({
           <span className="mon-badge">{monitor.check_type.toUpperCase()}</span>
         </span>
         <span className="mon-target" style={{ display: 'block' }}>
-          {monitor.target_type ? `${target} · ${monitor.target_type.replace('_', ' ')}` : target}
+          <span className="mon-target-addr">
+            {monitor.target_type ? `${target} · ${monitor.target_type.replace('_', ' ')}` : target}
+          </span>
+          <span className="mon-vantage"> · {probeVantageLabel(monitor)}</span>
         </span>
+        {execCondition && (
+          <span
+            className="mon-exec"
+            data-exec={monitor.probe_execution_status}
+            title={monitor.probe_execution_reason || undefined}
+            style={{ display: 'block' }}
+          >
+            {execCondition}
+          </span>
+        )}
         <span className="mon-card-mid" style={{ display: 'block' }}>
           {showSparkline ? (
             <LatencySparkline series={monitor.latency_series} />

@@ -28,6 +28,14 @@ const apiDefaults = vi.hoisted(() => {
       Promise.resolve({
         data: [{ id: 1, event_type: 'approved', created_at: '2026-07-27T12:00:00Z', detail: null }],
       }),
+    // Slice 3 Task 21: the page now also loads its assigned probes. Empty
+    // here — the assigned-probes surface has its own suite
+    // (agent-assigned-probes.test.jsx); this fixture only has to keep the
+    // section from reporting a load failure in every unrelated test.
+    getAgentProbes: () =>
+      Promise.resolve({
+        data: { agent_id: 3, max_concurrent: 20, active_runs: 0, assignments: [] },
+      }),
     getAgentTelemetry: () => Promise.resolve({ data: { latest: null, readiness: [] } }),
     getAgentTelemetryHistory: () => Promise.resolve({ data: { points: [] } }),
     getAgentsPresence: () =>
@@ -100,6 +108,7 @@ vi.mock('../api/agents', () => ({
       : { enabled: Boolean(value?.enabled), config: value?.config ?? {} },
   getAgent: vi.fn(apiDefaults.getAgent),
   getAgentEvents: vi.fn(apiDefaults.getAgentEvents),
+  getAgentProbes: vi.fn(apiDefaults.getAgentProbes),
   getAgentTelemetry: vi.fn(apiDefaults.getAgentTelemetry),
   getAgentTelemetryHistory: vi.fn(apiDefaults.getAgentTelemetryHistory),
   getAgentsPresence: vi.fn(apiDefaults.getAgentsPresence),
@@ -147,6 +156,7 @@ describe('AgentDetailPage', () => {
     const api = await import('../api/agents');
     api.getAgent.mockImplementation(apiDefaults.getAgent);
     api.getAgentEvents.mockImplementation(apiDefaults.getAgentEvents);
+    api.getAgentProbes.mockImplementation(apiDefaults.getAgentProbes);
     api.getAgentTelemetry.mockImplementation(apiDefaults.getAgentTelemetry);
     api.getAgentTelemetryHistory.mockImplementation(apiDefaults.getAgentTelemetryHistory);
     api.getAgentsPresence.mockImplementation(apiDefaults.getAgentsPresence);

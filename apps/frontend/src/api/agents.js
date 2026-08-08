@@ -21,6 +21,25 @@ export const getCapabilityDefaults = () => client.get('/agents/capability-defaul
 export const getAgentEvents = (id, limit = 50) =>
   client.get(`/agents/${id}/events`, { params: { limit } });
 export const getAgentTelemetry = (id) => client.get(`/agents/${id}/telemetry`);
+// Slice 3 §7: the Assigned Probes section on Agent Detail. Returns
+// {agent_id, max_concurrent, active_runs, assignments} — see AgentProbesRead.
+// Target state (`status`) and execution condition (`probe_execution_*`) come
+// back side by side and are never folded into one another: the UP/DOWN pill
+// shows target state only, so a monitor whose agent went offline keeps its last
+// known target state while its execution condition turns unavailable.
+export const getAgentProbes = (id) => client.get(`/agents/${id}/probes`);
+// Slice 3 §7's eligible-agent listing, for the "Run from" selector and for the
+// reassign action on Agent Detail. Scope compatibility is a property of the
+// (agent, destination) *pair*, so the backend requires a destination — either
+// `monitor_id` for an existing monitor or `host` (plus optional
+// check_type/target_type/target_id) for one being created. Every active agent
+// comes back whether or not it is eligible, carrying `eligible` and the
+// machine-readable `reason` — the same vocabulary the check-now 409 detail and
+// `monitor_items.probe_execution_reason` use — so the UI switches on the code
+// rather than parsing prose.
+export const listProbeEligibleAgents = (params = {}) =>
+  client.get('/agents/probe-eligible', { params });
+
 export const getAgentTelemetryHistory = (id, range = '1h') =>
   client.get(`/agents/${id}/telemetry/history`, { params: { range } });
 
