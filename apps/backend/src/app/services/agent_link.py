@@ -1,8 +1,7 @@
 """Frame decode -> validate -> capability check -> dispatch. No domain logic
 lives here — telemetry lands in telemetry_service, probe results in the
-monitoring engine's result path, discovery findings in
-discovery_import_service (slices 2-4). This module only transports and
-authenticates (spec §1.2).
+monitoring engine's result path, discovery findings in agent_discovery
+(slices 2-4). This module only transports and authenticates (spec §1.2).
 
 `receive_frame` is the validate stage: it decodes one inbound wire frame for
 a /link session and rejects malformed bodies, unsupported protocol
@@ -21,10 +20,15 @@ from collections.abc import Awaitable, Callable
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.core.log_sanitize import safe_log_fragment
 from app.db.models import Agent
 from app.schemas.agent_frame import (
     FRAME_VERSION,
+    MAX_VIOLATION_ADDRESS_CHARS,
+    MAX_VIOLATION_DETAIL_CHARS,
+    MAX_VIOLATION_FRAME_TYPE_CHARS,
     TYPE_CAPABILITY_READINESS,
+    TYPE_CAPABILITY_VIOLATION,
     TYPE_DISCOVERY_FINDING,
     TYPE_HEARTBEAT,
     TYPE_KEY_ROTATE,
@@ -34,11 +38,18 @@ from app.schemas.agent_frame import (
     TYPE_UNINSTALL,
     TYPE_UPDATE_STATUS,
     AgentFrame,
+    CapabilityViolationPayload,
     HeartbeatPayload,
     KeyRotatePayload,
     UpdateStatusPayload,
 )
-from app.services import agent_probe, agent_registry, agent_telemetry, monitor_service
+from app.services import (
+    agent_discovery,
+    agent_probe,
+    agent_registry,
+    agent_telemetry,
+    monitor_service,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -185,6 +196,109 @@ async def _handle_probe_result(db: Session, agent: Agent, frame: AgentFrame) -> 
             db.commit()
 
 
+async def _handle_discovery_finding(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """The only inbound frame that puts agent-authored rows in front of an
+    operator for review (plan §4, §5).
+
+    `frame.ts` is deliberately not passed through, for the reason
+    `_handle_probe_result` documents at length: `discovery.finding` is a data
+    frame and therefore spools, so a replayed frame keeps its original producer
+    `TS` — agent-clock provenance, never arrival time. The dispatch-lease rule is
+    judged against the server's own clock inside
+    `agent_discovery.ingest_discovery_finding`.
+
+    Rejections follow `_handle_probe_result`'s shape exactly — catch the domain
+    error, rate-limit through `recordable_violation`, record one event, commit —
+    with one addition. `InvalidDiscoveryFinding.audited` marks the single branch
+    that already wrote its own event: the finding-ceiling breach, which has to
+    commit that audit atomically with closing the job rather than hand it back
+    here. Returning before the limiter, rather than after it, matters — a breach
+    that already recorded itself must not consume the window and suppress the
+    next genuine rejection.
+    """
+    try:
+        await agent_discovery.ingest_discovery_finding(db, agent, frame.payload)
+    except agent_discovery.InvalidDiscoveryFinding as exc:
+        if exc.audited:
+            return
+        record, count = agent_telemetry.recordable_violation(agent.id)
+        if record:
+            agent_registry.record_event(
+                db,
+                agent.id,
+                exc.event_type,
+                detail={"reason": str(exc), "repeated": count},
+            )
+            db.commit()
+
+
+# Distinguishes an agent's own refusal report from the `capability_violation`
+# row `dispatch_frame` writes when *this server* drops a frame. Both are the
+# same event type — plan §7 asks for one vocabulary — but they mean opposite
+# things about who refused, and only the agent-reported one carries a scope
+# reason, so the row has to say which it is.
+_VIOLATION_REPORTED_BY_AGENT = "agent"
+
+
+async def _handle_capability_violation(db: Session, agent: Agent, frame: AgentFrame) -> None:
+    """The agent reporting that *it* refused something we asked for (plan §7).
+
+    `probe.Runtime.emitCapabilityViolation` sends this when the scope evaluator
+    on the agent disagrees with the one that built the assignment. Before Task 17
+    the frame was declared and silently dropped, so the one signal that a backend
+    bug is dispatching out-of-scope work produced no row at all and read as a
+    flaky monitor instead.
+
+    Two properties are load-bearing and neither is inherited from anywhere else
+    in this module, because `capability.violation` is deliberately absent from
+    `CAPABILITY_FOR_TYPE`: `dispatch_frame`'s grant gate never runs for it, so an
+    agent with every capability disabled can still reach this handler.
+
+      1. The payload is validated against `CapabilityViolationPayload` — a closed
+         `reason` vocabulary and bounded free text — and anything outside it is
+         dropped with a log line and no write, mirroring
+         `_handle_update_status`'s unknown-phase branch. The destination is
+         `agent_events.detail`, an unbounded JSONB column with no retention job.
+      2. `recordable_violation` runs *before* the write, not after, so an agent
+         emitting these as fast as its link allows costs one row per minute.
+
+    The detail is assembled from named payload fields only. That is what keeps a
+    banner or an evidence value out of the audit trail structurally rather than by
+    review: an unknown wire key is ignored by the model and so has nothing to be
+    copied from. The one free-text field goes through `safe_log_fragment`, the
+    same way every reason on the finding-ingest path does.
+    """
+    try:
+        payload = CapabilityViolationPayload.model_validate(frame.payload)
+    except ValidationError:
+        # The payload is not echoed. It is attacker-authored text, and this is
+        # precisely the frame type plan §7's no-untrusted-contents rule is about.
+        _logger.warning(
+            "agent %s: dropped an out-of-contract capability.violation payload", agent.id
+        )
+        return
+
+    record, count = agent_telemetry.recordable_violation(agent.id)
+    if not record:
+        return
+
+    detail: dict[str, object] = {
+        "reason": payload.reason,
+        "reported_by": _VIOLATION_REPORTED_BY_AGENT,
+        "repeated": count,
+    }
+    if payload.frame_type:
+        detail["frame_type"] = safe_log_fragment(payload.frame_type, MAX_VIOLATION_FRAME_TYPE_CHARS)
+    if payload.address:
+        detail["address"] = safe_log_fragment(payload.address, MAX_VIOLATION_ADDRESS_CHARS)
+    if payload.detail:
+        detail["detail"] = safe_log_fragment(payload.detail, MAX_VIOLATION_DETAIL_CHARS)
+
+    _logger.warning("agent %s reported a capability violation: %s", agent.id, payload.reason)
+    agent_registry.record_event(db, agent.id, "capability_violation", detail=detail)
+    db.commit()
+
+
 async def _handle_readiness(db: Session, agent: Agent, frame: AgentFrame) -> None:
     try:
         await agent_telemetry.ingest_readiness(db, agent, frame.payload)
@@ -306,6 +420,8 @@ _HANDLERS: dict[str, Handler] = {
     TYPE_TELEMETRY_HOST: _handle_host_telemetry,
     TYPE_CAPABILITY_READINESS: _handle_readiness,
     TYPE_PROBE_RESULT: _handle_probe_result,
+    TYPE_DISCOVERY_FINDING: _handle_discovery_finding,
+    TYPE_CAPABILITY_VIOLATION: _handle_capability_violation,
 }
 
 

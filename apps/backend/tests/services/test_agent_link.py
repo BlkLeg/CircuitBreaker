@@ -793,3 +793,454 @@ async def test_probe_result_dispatch_commits_exactly_once(db_session, factories)
     assert db_session.get(MonitorItem, monitor.id).last_status == "down"
     assert db_session.query(MonitorEvent).filter_by(item_id=monitor.id).count() == 1
     assert db_session.query(TelemetryTimeseries).filter_by(item_id=monitor.id).count() == 1
+
+
+# ── discovery.finding dispatch (Slice 4 §4, Task 17) ──────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def reset_violation_window():
+    """`agent_telemetry._violations` is process-global; leaking counts across
+    tests would make every rate-limit assertion below order-dependent. Mirrors
+    the identically-named fixture in test_agent_telemetry.py."""
+    from app.services import agent_telemetry
+
+    agent_telemetry._violations.clear()
+    yield
+    agent_telemetry._violations.clear()
+
+
+def _events_of_type(db, agent, event_type: str) -> list:
+    from app.db.models import AgentEvent
+
+    return list(
+        db.query(AgentEvent)
+        .filter_by(agent_id=agent.id, event_type=event_type)
+        .order_by(AgentEvent.id)
+    )
+
+
+def _frozen_monotonic(monkeypatch) -> dict:
+    """Pin `recordable_violation`'s only clock, returning the dict that moves it.
+
+    Only `agent_telemetry`'s own `time` reference is replaced: patching stdlib
+    `time.monotonic` globally would also move asyncio's clock underneath these
+    async tests.
+    """
+    from types import SimpleNamespace
+
+    from app.services import agent_telemetry
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(agent_telemetry, "time", SimpleNamespace(monotonic=lambda: clock["now"]))
+    return clock
+
+
+def _discovery_finding_payload(**overrides) -> dict:
+    """A schema-valid `discovery.finding`. It names no real dispatch — every
+    test here asserts routing and auditing, never acceptance, which is
+    test_agent_discovery_ingest.py's subject."""
+    payload = {
+        "dispatch_id": "f" * 32,
+        "scan_job_id": 4242,
+        "finding_id": "ab12cd34",
+        "kind": "host",
+        "observed_at": "2026-08-08T12:00:00Z",
+        "ip_address": "10.0.0.9",
+        "open_ports": [{"port": 22, "protocol": "tcp", "banner": "SSH-2.0-OpenSSH_9.6"}],
+        "evidence": ["tcp_connect"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_discovery_finding_with_the_grant_reaches_the_ingest_service(
+    db_session, factories, monkeypatch
+):
+    """The one `_HANDLERS` line Task 17 adds. Without it a granted agent's
+    findings are accepted by the capability gate and then silently dropped,
+    which is indistinguishable from a scan that found nothing.
+
+    Also pins that `frame.ts` is *not* forwarded: `discovery.finding` is a data
+    frame and therefore spools, so its `TS` is the producer's clock and never
+    arrival time — the lease rule is judged against the server's own clock
+    inside the ingest service (see `_handle_probe_result` for the same rule).
+    """
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    ingest = AsyncMock(return_value=agent_discovery.DISPOSITION_ACCEPTED)
+    monkeypatch.setattr(agent_discovery, "ingest_discovery_finding", ingest)
+
+    payload = _discovery_finding_payload()
+    frame = AgentFrame(type="discovery.finding", ts="2026-08-08T12:00:01Z", payload=payload)
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    ingest.assert_awaited_once_with(db_session, agent, payload)
+    assert "received_at" not in (ingest.await_args.kwargs or {}), (
+        "the agent's own frame timestamp must never be handed to the lease check"
+    )
+
+
+@pytest.mark.asyncio
+async def test_discovery_finding_without_the_grant_is_dropped_as_a_capability_violation(
+    db_session, factories, monkeypatch
+):
+    """Already true via `CAPABILITY_FOR_TYPE[TYPE_DISCOVERY_FINDING]`; pinned
+    here because it is the outermost of §4's authorization checks — an agent
+    whose `local_discovery` grant is off must never reach the ingest service at
+    all, so nothing it claims can become a reviewable row."""
+    from unittest.mock import AsyncMock
+
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=False)
+    ingest = AsyncMock()
+    monkeypatch.setattr(agent_discovery, "ingest_discovery_finding", ingest)
+
+    frame = AgentFrame(
+        type="discovery.finding", ts="2026-08-08T12:00:01Z", payload=_discovery_finding_payload()
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    ingest.assert_not_awaited()
+    events = _events_of_type(db_session, agent, "capability_violation")
+    assert len(events) == 1
+    assert events[0].detail == {"frame_type": "discovery.finding"}
+
+
+@pytest.mark.asyncio
+async def test_malformed_discovery_finding_records_a_protocol_violation(db_session, factories):
+    """A body that does not parse is a schema mistake, not an authorization
+    failure, and must be audited as the ordinary `protocol_violation` the
+    telemetry and probe paths already use. Runs against the real ingest service
+    rather than a stub so the event type comes from the domain error it
+    actually raises."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+
+    frame = AgentFrame(type="discovery.finding", ts="2026-08-08T12:00:01Z", payload={})
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    events = _events_of_type(db_session, agent, "protocol_violation")
+    assert len(events) == 1
+    assert events[0].detail["reason"] == "payload schema is invalid"
+    assert events[0].detail["repeated"] == 1
+    assert _events_of_type(db_session, agent, "capability_violation") == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_malformed_discovery_findings_collapse_to_one_audit_event(
+    db_session, factories, monkeypatch
+):
+    """`discovery.finding` is a spooled data frame, so the shape this has to
+    survive is a whole outage's worth of rejected bodies replayed in one burst
+    at reconnect. Every rejection must go through
+    `agent_telemetry.recordable_violation`, which is the only bound on how many
+    rows one agent can write into `agent_events`."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    clock = _frozen_monotonic(monkeypatch)
+
+    for seq in range(100):
+        await agent_link.dispatch_frame(
+            db_session,
+            agent,
+            AgentFrame(type="discovery.finding", seq=seq, ts="2026-08-08T12:00:01Z", payload={}),
+        )
+
+    events = _events_of_type(db_session, agent, "protocol_violation")
+    assert len(events) == 1, "100 rejections inside one minute must collapse to one audit event"
+
+    clock["now"] += 61
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(type="discovery.finding", seq=100, ts="2026-08-08T12:00:01Z", payload={}),
+    )
+
+    events = _events_of_type(db_session, agent, "protocol_violation")
+    assert len(events) == 2
+    assert events[1].detail["repeated"] == 100, "the suppressed count must survive the window"
+
+
+@pytest.mark.asyncio
+async def test_discovery_finding_rejection_keeps_the_event_type_the_domain_error_chose(
+    db_session, factories, monkeypatch
+):
+    """A finding posted against a dispatch this agent does not own is what a
+    stolen token looks like, so `ingest_discovery_finding` raises with
+    `event_type="capability_violation"` and the handler must record *that*
+    rather than its own default — and must rate-limit it identically, since an
+    attacker replaying a guessed token is exactly the flood the limiter exists
+    for. The stolen-token scenario itself belongs to
+    test_agent_discovery_ingest.py; this pins only the routing.
+    """
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    _frozen_monotonic(monkeypatch)
+
+    async def _refuse(db, refused_agent, payload, **kwargs):
+        raise agent_discovery.InvalidDiscoveryFinding(
+            agent_discovery.REASON_DISPATCH_OWNER_MISMATCH,
+            event_type=agent_discovery.EVENT_CAPABILITY_VIOLATION,
+        )
+
+    monkeypatch.setattr(agent_discovery, "ingest_discovery_finding", _refuse)
+
+    for seq in range(100):
+        await agent_link.dispatch_frame(
+            db_session,
+            agent,
+            AgentFrame(
+                type="discovery.finding",
+                seq=seq,
+                ts="2026-08-08T12:00:01Z",
+                payload=_discovery_finding_payload(),
+            ),
+        )
+
+    events = _events_of_type(db_session, agent, "capability_violation")
+    assert len(events) == 1
+    assert events[0].detail["reason"] == agent_discovery.REASON_DISPATCH_OWNER_MISMATCH
+    assert _events_of_type(db_session, agent, "protocol_violation") == []
+
+
+@pytest.mark.asyncio
+async def test_self_audited_discovery_rejection_is_not_recorded_twice(
+    db_session, factories, monkeypatch
+):
+    """`InvalidDiscoveryFinding.audited` marks the one rejection that wrote and
+    committed its own event atomically with closing the job (the finding-ceiling
+    breach). The handler must skip its own `record_event` for it, and must not
+    consume the rate-limit window either — otherwise the very next genuine
+    rejection is suppressed by a breach that already recorded itself.
+    """
+    from app.services import agent_discovery
+
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=True)
+    _frozen_monotonic(monkeypatch)
+
+    async def _refuse_already_audited(db, refused_agent, payload, **kwargs):
+        raise agent_discovery.InvalidDiscoveryFinding(
+            agent_discovery.REASON_FINDING_CEILING,
+            event_type=agent_discovery.EVENT_CAPABILITY_VIOLATION,
+            audited=True,
+        )
+
+    real_ingest = agent_discovery.ingest_discovery_finding
+    monkeypatch.setattr(agent_discovery, "ingest_discovery_finding", _refuse_already_audited)
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(
+            type="discovery.finding",
+            ts="2026-08-08T12:00:01Z",
+            payload=_discovery_finding_payload(),
+        ),
+    )
+
+    assert _events_of_type(db_session, agent, "capability_violation") == []
+    assert _events_of_type(db_session, agent, "protocol_violation") == []
+
+    # Same agent, same minute: the window was never consumed, so an ordinary
+    # rejection still records.
+    monkeypatch.setattr(agent_discovery, "ingest_discovery_finding", real_ingest)
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(type="discovery.finding", seq=1, ts="2026-08-08T12:00:01Z", payload={}),
+    )
+    assert len(_events_of_type(db_session, agent, "protocol_violation")) == 1
+
+
+# ── capability.violation: the agent's own scope-disagreement reports (§7) ─────
+
+
+def _capability_violation_payload(**overrides) -> dict:
+    """The shape `probe.Runtime.emitCapabilityViolation` sends: which of our
+    frames it refused, plus the scope evaluator's own machine-readable reason."""
+    payload = {
+        "frame_type": "probe.assign",
+        "reason": "out_of_scope",
+        "address": "203.0.113.9",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_agent_reported_capability_violation_is_recorded_on_the_agents_timeline(
+    db_session, factories
+):
+    """Plan §7 requires a `capability_violation` event for rejected agent
+    behavior, and the agent's own refusal is the half the server cannot observe:
+    the two ends disagreed about this agent's scope, so a backend bug that
+    dispatches out-of-scope work is visible on the timeline instead of looking
+    like a flaky monitor. The frame is declared but was silently dropped before
+    Task 17, so this produced no row at all."""
+    agent = factories.agent(status="active")
+
+    frame = AgentFrame(
+        type="capability.violation",
+        ts="2026-08-08T12:00:01Z",
+        payload=_capability_violation_payload(),
+    )
+    await agent_link.dispatch_frame(db_session, agent, frame)
+
+    events = _events_of_type(db_session, agent, "capability_violation")
+    assert len(events) == 1
+    assert events[0].detail["reason"] == "out_of_scope"
+    assert events[0].detail["frame_type"] == "probe.assign"
+    assert events[0].detail["address"] == "203.0.113.9"
+    # A server-side gate drop writes only {"frame_type": ...}; the two must be
+    # tellable apart, because they mean opposite things about who refused.
+    assert events[0].detail["reported_by"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_capability_violation_needs_no_grant_and_so_must_be_bounded(db_session, factories):
+    """`capability.violation` is deliberately absent from `CAPABILITY_FOR_TYPE`,
+    so `dispatch_frame`'s grant gate does not apply: an agent with every
+    capability off can still write here. That is why the payload is validated
+    against a closed vocabulary before anything is persisted — the destination
+    is an unbounded JSONB column with no retention job."""
+    agent = factories.agent(status="active")
+    factories.agent_capability_grant(agent, capability="local_discovery", enabled=False)
+    factories.agent_capability_grant(agent, capability="remote_probe", enabled=False)
+
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(
+            type="capability.violation",
+            ts="2026-08-08T12:00:01Z",
+            payload=_capability_violation_payload(),
+        ),
+    )
+
+    assert len(_events_of_type(db_session, agent, "capability_violation")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"frame_type": "probe.assign", "reason": "in_scope"}, id="an-acceptance"),
+        pytest.param(
+            {"frame_type": "probe.assign", "reason": "unresolved_hostname"},
+            id="a-resolution-failure-the-agent-reports-as-an-execution-error",
+        ),
+        pytest.param(
+            {"frame_type": "probe.assign", "reason": "capability not granted"},
+            id="free-prose",
+        ),
+        pytest.param(
+            {"frame_type": "probe.assign", "reason": "x" * 400},
+            id="an-unbounded-reason",
+        ),
+        pytest.param(
+            {"frame_type": "probe.assign", "reason": "out_of_scope", "detail": "d" * 400},
+            id="an-over-long-detail",
+        ),
+        pytest.param(
+            {"frame_type": "probe.assign", "reason": "out_of_scope", "address": "a" * 400},
+            id="an-address-wider-than-an-ipv6-literal",
+        ),
+        pytest.param({}, id="an-empty-body"),
+    ],
+)
+async def test_unbounded_capability_violation_writes_no_row(db_session, factories, payload):
+    """Anything outside the bounded payload is dropped, not stored. A frame the
+    grant gate does not cover and no retention job prunes is the wrong place to
+    be permissive, and the agent's own emitter sends exactly the closed
+    vocabulary — a report outside it is not a scope disagreement this server can
+    act on. Dropping mirrors `_handle_update_status`'s unknown-phase branch."""
+    agent = factories.agent(status="active")
+
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(type="capability.violation", ts="2026-08-08T12:00:01Z", payload=payload),
+    )
+
+    assert _events_of_type(db_session, agent, "capability_violation") == []
+    assert _events_of_type(db_session, agent, "protocol_violation") == []
+
+
+@pytest.mark.asyncio
+async def test_capability_violation_free_text_is_sanitized_before_it_is_stored(
+    db_session, factories
+):
+    """`detail` is the one free-text field, so it is the one log-injection
+    vector: a CRLF plus a forged level prefix is exactly what plan §7's
+    no-untrusted-contents rule exists for. It goes through
+    `core.log_sanitize.safe_log_fragment`, the same way every reason on the
+    finding-ingest path does."""
+    agent = factories.agent(status="active")
+
+    await agent_link.dispatch_frame(
+        db_session,
+        agent,
+        AgentFrame(
+            type="capability.violation",
+            ts="2026-08-08T12:00:01Z",
+            payload=_capability_violation_payload(
+                detail="refused\r\nERROR forged record token=hunter2"
+            ),
+        ),
+    )
+
+    stored = _events_of_type(db_session, agent, "capability_violation")[0].detail["detail"]
+    assert "\r" not in stored and "\n" not in stored
+    assert "hunter2" not in stored, "a secret-shaped fragment must be redacted, not stored"
+
+
+@pytest.mark.asyncio
+async def test_hundred_capability_violations_in_one_minute_write_at_most_one_row(
+    db_session, factories, monkeypatch
+):
+    """The required bound. `capability.violation` needs no grant, so an agent
+    that has lost every capability can still emit it as fast as it likes into an
+    unbounded JSONB column that nothing prunes; `recordable_violation` runs
+    *before* any write, so the flood costs one row, not a hundred.
+
+    The surviving row records the machine-readable reason and, at most, an
+    address — never a banner or an evidence value. The payload below carries
+    both, exactly as a hostile agent would.
+    """
+    agent = factories.agent(status="active")
+    _frozen_monotonic(monkeypatch)
+
+    payload = _capability_violation_payload(
+        banner="SSH-2.0-OpenSSH_9.6 leaked-banner-bytes",
+        evidence=["tcp_connect", "leaked-evidence-value"],
+        open_ports=[{"port": 22, "banner": "leaked-banner-bytes"}],
+    )
+    for seq in range(100):
+        await agent_link.dispatch_frame(
+            db_session,
+            agent,
+            AgentFrame(
+                type="capability.violation", seq=seq, ts="2026-08-08T12:00:01Z", payload=payload
+            ),
+        )
+
+    events = _events_of_type(db_session, agent, "capability_violation")
+    assert len(events) == 1, "100 reports inside one minute must collapse to one audit row"
+    detail = events[0].detail
+    assert detail["reason"] == "out_of_scope"
+    assert detail["address"] == "203.0.113.9"
+    assert detail["repeated"] == 1
+    assert "banner" not in detail and "evidence" not in detail and "open_ports" not in detail
+    serialized = json.dumps(detail)
+    assert "leaked-banner-bytes" not in serialized
+    assert "leaked-evidence-value" not in serialized

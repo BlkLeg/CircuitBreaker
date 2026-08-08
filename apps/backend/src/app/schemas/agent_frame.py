@@ -10,6 +10,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.agent_scope import (
+    REASON_EMPTY_SCOPE,
+    REASON_EXCLUDED,
+    REASON_INVALID_DESTINATION,
+    REASON_OUT_OF_SCOPE,
+    REASON_PREFIX_TOO_WIDE,
+    REASON_SPECIAL_USE,
+)
+
 FRAME_VERSION = 1
 
 # agent -> server
@@ -475,6 +484,103 @@ class DiscoveryFindingPayload(BaseModel):
         truncates."""
         if any(len(entry) > 32 for entry in v):
             raise ValueError("evidence entries must be at most 32 characters")
+        return v
+
+
+# Slice 4 plan §7's bounds on the agent's own outbound refusal report. Unlike
+# every other agent -> server frame, `capability.violation` is deliberately
+# absent from `agent_link.CAPABILITY_FOR_TYPE`, so `dispatch_frame`'s grant gate
+# never runs for it: an agent with every capability disabled can still send one,
+# and it lands in `agent_events.detail` — an unbounded JSONB column with no
+# retention job. The bounds therefore have to live on the model, because the
+# handler is the only thing between the wire and that column.
+
+# `not_directly_connected` has no `core/agent_scope.py` counterpart on purpose —
+# it is internal/netscope's agent-side-only rule (netscope.go:48-52), since only
+# the agent knows which of the networks it was authorized for it is attached to
+# right now. It is quoted here rather than imported because there is nothing to
+# import it from.
+REASON_NOT_DIRECTLY_CONNECTED = "not_directly_connected"
+
+# The closed `capability.violation` reason vocabulary: the scope evaluator's own
+# machine-readable refusals, which is exactly what
+# `probe.Runtime.emitCapabilityViolation` sends (probe/runtime.go:606-619).
+#
+# Two of the evaluator's reasons are deliberately absent. `in_scope` is an
+# acceptance and can never describe a refusal. `unresolved_hostname` is a name
+# that resolved to nothing: the destination was never judged, so the agent
+# reports it as an execution error and explicitly does *not* emit a capability
+# violation for it (probe/runtime.go:511-518) — accepting it here would let the
+# misleading row that comment exists to prevent be written by some other sender.
+CAPABILITY_VIOLATION_REASONS = frozenset(
+    {
+        REASON_SPECIAL_USE,
+        REASON_EXCLUDED,
+        REASON_EMPTY_SCOPE,
+        REASON_OUT_OF_SCOPE,
+        REASON_INVALID_DESTINATION,
+        REASON_PREFIX_TOO_WIDE,
+        REASON_NOT_DIRECTLY_CONNECTED,
+    }
+)
+
+# `frame_type` is one of this module's own TYPE_* strings; 32 characters is
+# comfortably wider than the longest of them and leaves no room for a smuggled
+# payload.
+MAX_VIOLATION_FRAME_TYPE_CHARS = 32
+# `reason` is closed, so its widest member *is* its bound — derived rather than
+# written down so the two can never drift. It matters despite the membership
+# check below: pydantic applies `max_length` first, so a hostile 40 KiB reason is
+# refused on width and never reaches a set lookup or an error string.
+MAX_VIOLATION_REASON_CHARS = max(len(reason) for reason in CAPABILITY_VIOLATION_REASONS)
+# An address is the widest untrusted value the event is allowed to carry, and 45
+# characters is a full IPv6 literal. Byte-identical to
+# `agent_discovery._MAX_REASON_ADDRESS_CHARS`, for the same reason: anything
+# longer is not an address.
+MAX_VIOLATION_ADDRESS_CHARS = 45
+# The one free-text field, capped at the same 200 characters
+# `core.log_sanitize.safe_log_fragment` defaults to and `update.status`'s `error`
+# is truncated to.
+MAX_VIOLATION_DETAIL_CHARS = 200
+
+
+class CapabilityViolationPayload(BaseModel):
+    """agent -> server `capability.violation` payload (plan §7): the agent
+    refused something this server asked it to do, and the two ends therefore
+    disagree about this agent's authorization.
+
+    Mirrors the anonymous struct `probe.Runtime.emitCapabilityViolation` encodes
+    (`frame_type` plus the evaluator's own reason) and adds two optional fields
+    the same shape allows for: `address`, the destination that was refused, and
+    `detail`, short prose for an operator.
+
+    Every field is bounded and `reason` is a closed vocabulary, because this is
+    the only inbound frame no capability grant gates — see
+    `CAPABILITY_VIOLATION_REASONS` above. Unknown keys are ignored rather than
+    rejected, which is both this module's additive-compatibility convention and
+    the property that keeps a banner or an evidence value out of the audit row:
+    the handler builds its detail from these named fields alone, so a field that
+    does not exist here cannot be persisted.
+
+    `frame_type` is optional-with-default for the same backward-compatibility
+    reason `HelloPayload` documents: the reason *is* the security signal, and a
+    report that names no frame must still be auditable rather than dropped.
+    """
+
+    frame_type: str = Field(default="", max_length=MAX_VIOLATION_FRAME_TYPE_CHARS)
+    reason: str = Field(max_length=MAX_VIOLATION_REASON_CHARS)
+    address: str | None = Field(default=None, max_length=MAX_VIOLATION_ADDRESS_CHARS)
+    detail: str | None = Field(default=None, max_length=MAX_VIOLATION_DETAIL_CHARS)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_is_in_the_closed_vocabulary(cls, v: str) -> str:
+        """Rejected here rather than filtered by the handler so the bound is
+        visible on the wire contract itself. The message deliberately does not
+        echo the offending value: it is attacker-authored text, and pydantic's
+        own error string is what a caller would otherwise log."""
+        if v not in CAPABILITY_VIOLATION_REASONS:
+            raise ValueError("reason is outside the capability.violation vocabulary")
         return v
 
 

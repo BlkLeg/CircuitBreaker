@@ -346,9 +346,18 @@ def record_network_facts(db: Session, agent: Agent, networks: list[NetworkFacts]
     and must leave the last known report standing, while an explicit `[]` is
     a real report of "nothing directly connected" and must replace it — an
     agent that has lost every usable interface must not keep a stale,
-    wider-than-reality scope. Today's Go build tags `networks` `omitempty` and
-    so cannot yet send that `[]`; the rule belongs to the backend, not to one
-    client's encoding. Caller owns the commit.
+    wider-than-reality scope.
+
+    The Go encodings differ by frame, deliberately (Slice 4 D-8). On
+    `capability.readiness` — the mid-session refresh path, which is
+    `agent_telemetry.ingest_readiness` — `Networks` is tagged `json:"networks"`
+    with **no** `omitempty` (`internal/frame/frame.go:236`), so an agent that
+    has lost every interface really can send `[]` and really does move the
+    generation. `HelloPayload.Networks` still carries `omitempty`
+    (`frame.go:205`), so the at-connect frame cannot express that `[]` and a
+    hello from an agent with no interfaces is indistinguishable from one that
+    predates the field. Either way the rule above belongs to the backend, not
+    to one client's encoding. Caller owns the commit.
     """
     facts = _normalized_network_facts(networks)
     row = (

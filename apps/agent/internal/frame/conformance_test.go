@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"circuitbreaker.dev/cb-agent/internal/capability"
+	"circuitbreaker.dev/cb-agent/internal/netscope"
 )
 
 type corpusEntry struct {
@@ -1179,5 +1181,136 @@ func TestCorpus_ReadinessNetworksSurviveAnEmptyList(t *testing.T) {
 	}
 	if _, ok := fields["networks"]; !ok {
 		t.Error("networks was dropped from the encoded payload — it must carry no omitempty")
+	}
+}
+
+// TestCorpus_NetworkFactsCarryNothingButNameFlagsAndAddrs is D-8's other half, and it is a
+// privacy guard rather than a wire-shape one.
+//
+// `networks` is the only structured host inventory the agent volunteers on a *periodic* frame, so
+// it is the field a future contributor will reach for when the UI wants "just one more thing"
+// about an interface. Plan §6 draws the line: no routing-table secrets, no Wi-Fi SSIDs, no DNS
+// search domains, no interface counters — none of which any capability requires today. Nothing
+// else in the suite would fail if one of them were added, because an additive field round-trips
+// perfectly and every existing corpus entry keeps passing.
+//
+// The assertion walks the struct type rather than a marshalled instance on purpose: a new field
+// tagged `omitempty` and left at its zero value would be invisible in the encoded key set, and
+// that is exactly how such a field gets added.
+func TestCorpus_NetworkFactsCarryNothingButNameFlagsAndAddrs(t *testing.T) {
+	want := []string{"name", "flags", "addrs"}
+
+	typ := reflect.TypeOf(NetworkFacts{})
+	got := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" {
+			// An untagged exported field still marshals, under its Go name.
+			name = field.Name
+		}
+		got = append(got, name)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NetworkFacts marshals %v, want exactly %v — plan §6 forbids reporting routing "+
+			"tables, SSIDs, DNS search domains and interface counters on this frame", got, want)
+	}
+
+	// And the encoding really does say those names: a tag typo would satisfy the walk above while
+	// putting a key on the wire that record_network_facts cannot read.
+	encoded, err := json.Marshal(NetworkFacts{
+		Name:  "eth0",
+		Flags: []string{"up", "broadcast"},
+		Addrs: []string{"10.20.0.5/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("encoded NetworkFacts %s has %d keys, want exactly %v", encoded, len(keys), want)
+	}
+	for _, name := range want {
+		if _, ok := keys[name]; !ok {
+			t.Errorf("encoded NetworkFacts %s omits %q — check the json tag", encoded, name)
+		}
+	}
+}
+
+// TestCorpus_CapabilityViolationReasonsAreTheEvaluatorsOwn consumes the corpus's
+// capability.violation fixtures from the Go side.
+//
+// This package declares TypeCapabilityViolation but no payload struct for it, and inventing one
+// here would mirror nothing: the only emitter is probe.Runtime.emitCapabilityViolation, which
+// marshals an anonymous {frame_type, reason} pair whose reason is netscope's own Decision.Reason.
+// So the cross-language contract worth pinning is not a round-trip — it is that the bytes both
+// languages read carry only reasons this agent's evaluator can actually produce.
+// apps/backend/src/app/schemas/agent_frame.py's CAPABILITY_VIOLATION_REASONS is a closed
+// vocabulary and agent_link._handle_capability_violation drops anything outside it with no write,
+// so a fixture naming free prose is not a lenient fixture: it is a frame the server receives and
+// never records, which is the one signal that the backend is dispatching out-of-scope work.
+func TestCorpus_CapabilityViolationReasonsAreTheEvaluatorsOwn(t *testing.T) {
+	// Every netscope reason that can describe a refusal. Two are deliberately absent, mirroring
+	// the backend frozenset: ReasonInScope is an acceptance and can never describe one, and
+	// ReasonUnresolvedHostname is a name that resolved to nothing, which the runtime reports as
+	// an execution error and explicitly does not raise a violation for.
+	refusals := map[string]bool{
+		netscope.ReasonSpecialUse:           true,
+		netscope.ReasonExcluded:             true,
+		netscope.ReasonEmptyScope:           true,
+		netscope.ReasonOutOfScope:           true,
+		netscope.ReasonInvalidDestination:   true,
+		netscope.ReasonPrefixTooWide:        true,
+		netscope.ReasonNotDirectlyConnected: true,
+	}
+	declared := map[string]bool{}
+	for _, typ := range allFrameTypes {
+		declared[typ] = true
+	}
+
+	seen := map[string]bool{}
+	for _, entry := range loadCorpus(t) {
+		decoded, err := Decode(entry.JSON)
+		if err != nil {
+			t.Fatalf("Decode(%q) error = %v", entry.Description, err)
+		}
+		if decoded.Type != TypeCapabilityViolation {
+			continue
+		}
+		// The exact shape emitCapabilityViolation encodes. The fixtures' optional address and
+		// detail keys are ignored here on purpose: no agent code path reads them back, and the
+		// backend model is where their bounds live.
+		var payload struct {
+			FrameType string `json:"frame_type"`
+			Reason    string `json:"reason"`
+		}
+		if err := json.Unmarshal(decoded.Payload, &payload); err != nil {
+			t.Fatalf("%q: decode capability.violation payload: %v", entry.Description, err)
+		}
+		if !refusals[payload.Reason] {
+			t.Errorf("%q: reason %q is not one of netscope's refusal reasons — the backend's "+
+				"closed vocabulary drops it and writes no audit row", entry.Description, payload.Reason)
+		}
+		// An absent frame_type is a real shape: the reason is the security signal. A *present*
+		// one must name a frame this protocol declares, or it is prose being smuggled into an
+		// audit row.
+		if payload.FrameType != "" && !declared[payload.FrameType] {
+			t.Errorf("%q: frame_type %q is not a declared frame type", entry.Description, payload.FrameType)
+		}
+		seen[payload.Reason] = true
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("the corpus carries no capability.violation fixture")
+	}
+	for reason := range refusals {
+		if !seen[reason] {
+			t.Errorf("no corpus fixture reports %q — test_capability_violation_payloads_survive_"+
+				"the_typed_model_by_name asserts set equality over the same vocabulary, so the "+
+				"backend half fails on the same gap", reason)
+		}
 	}
 }

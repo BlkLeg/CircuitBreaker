@@ -23,6 +23,7 @@ from app.db.models import (
     HardwareLiveMetric,
 )
 from app.schemas.agent_frame import CapabilityReadinessPayload, HostTelemetryPayload
+from app.services.agent_registry import record_network_facts
 from app.services.telemetry_cache import cache_telemetry, publish_telemetry
 from app.services.telemetry_normalize import (
     _NON_LIVE_STATUSES,
@@ -233,6 +234,12 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
     `protocol_violation` event and then commits, which would otherwise make a
     partial write durable. Direct callers get the same guarantee, and none of
     the caller's other pending work is discarded.
+
+    A report may also carry `networks` (D-8), which is forwarded to
+    `agent_registry.record_network_facts` inside this same transaction — after
+    the validation pre-pass, so a report rejected for a bad `state` refreshes no
+    scope either. See the comment at the forward for why the gate is the key's
+    presence rather than its truthiness.
     """
     try:
         report = CapabilityReadinessPayload.model_validate(payload)
@@ -253,6 +260,32 @@ async def ingest_readiness(db: Session, agent: Agent, payload: dict[str, Any]) -
         elif (row.state, row.reason, row.remediation, row.missing) != values:
             changed = True
         row.state, row.reason, row.remediation, row.missing, row.updated_at = (*values, now)
+    # D-8: `networks` is the one optional field this frame gained, and it exists
+    # only to refresh `agent_networks` *mid-session* — `hello.networks` is sent
+    # at connect, so a subnet that appeared on the agent host would otherwise
+    # not become discoverable until the next reconnect. The facts keep living in
+    # `agent_networks.facts` (the sole input to `core.agent_scope.derive_scope`)
+    # rather than in an `agent_capability_readiness` column, so there is no
+    # second copy of the scope to disagree.
+    #
+    # Gated on *presence*, never truthiness, which is the rule
+    # `record_network_facts` documents: an agent build predating the field omits
+    # the key entirely and must leave the last known report standing, while an
+    # explicit `[]` is a real report of "nothing directly connected" and must
+    # replace it — an agent that has lost every usable interface must be able to
+    # say so, or the server keeps enforcing a stale, wider-than-reality scope
+    # forever and the generation in-flight work is cancelled on never moves.
+    #
+    # The forward lands *before* the commit below, so the refreshed scope and
+    # the readiness report it arrived with are one transaction: no reader can
+    # observe a `generation` bump whose readiness rows never landed, or the
+    # reverse. `record_network_facts` deliberately owns no commit of its own.
+    #
+    # It does not feed `changed`, which stays the readiness-row question the
+    # publish below fans out — that message carries readiness rows only, and
+    # scope consumers already have `agent_networks.generation`.
+    if "networks" in report.model_fields_set:
+        record_network_facts(db, agent, report.networks)
     db.commit()
     if changed:
         redis = await get_redis()

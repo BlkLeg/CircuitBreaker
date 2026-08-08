@@ -6,10 +6,14 @@ import pytest
 from app.api import ws_agents
 from app.schemas import agent_frame
 from app.schemas.agent_frame import (
+    CAPABILITY_VIOLATION_REASONS,
     DISCOVERY_KIND_SUMMARY,
     DISCOVERY_KINDS,
+    MAX_VIOLATION_ADDRESS_CHARS,
+    MAX_VIOLATION_DETAIL_CHARS,
     TYPE_CAPABILITIES_SET,
     TYPE_CAPABILITY_READINESS,
+    TYPE_CAPABILITY_VIOLATION,
     TYPE_DISCOVERY_CANCEL,
     TYPE_DISCOVERY_FINDING,
     TYPE_DISCOVERY_REQUEST,
@@ -27,6 +31,7 @@ from app.schemas.agent_frame import (
     TYPE_UPDATE_STATUS,
     AgentFrame,
     CapabilityReadinessPayload,
+    CapabilityViolationPayload,
     DiscoveryCancelPayload,
     DiscoveryFindingPayload,
     DiscoveryRequestPayload,
@@ -55,6 +60,7 @@ _PAYLOAD_MODEL_FOR_TYPE = {
     TYPE_UPDATE_STATUS: UpdateStatusPayload,
     TYPE_TELEMETRY_HOST: HostTelemetryPayload,
     TYPE_CAPABILITY_READINESS: CapabilityReadinessPayload,
+    TYPE_CAPABILITY_VIOLATION: CapabilityViolationPayload,
     TYPE_HEARTBEAT: HeartbeatPayload,
     TYPE_PROBE_ASSIGN: ProbeAssignPayload,
     TYPE_PROBE_CANCEL: ProbeCancelPayload,
@@ -421,3 +427,54 @@ def test_readiness_networks_survive_the_typed_payload_by_name():
     # And an old-shaped frame must still validate, leaving the last report standing.
     legacy = CapabilityReadinessPayload.model_validate({"readiness": []})
     assert "networks" not in legacy.model_fields_set
+
+
+def test_capability_violation_payloads_survive_the_typed_model_by_name():
+    """The one inbound frame no capability grant gates, pinned on the wire.
+
+    ``agent_link._handle_capability_violation`` drops whatever this model
+    refuses, so a corpus fixture outside the closed vocabulary is not a
+    backward-compatibility case like hello's partial payloads — it is a frame
+    that reaches the server and writes nothing. Asserting the reasons as a set
+    makes the vocabulary itself part of the fixture's contract: a model that
+    narrows it, or an agent that begins emitting a reason the model never
+    learned, fails here rather than in whichever task first sends it.
+
+    The optional fields are asserted by name for the reason
+    ``test_hello_networks_survive_the_typed_payload_by_name`` gives: pydantic
+    ignores unknown keys, so a misspelled ``address`` or ``detail`` silently
+    strips the destination an operator needs from the audit row while the
+    round-trip test above still passes, both sides of its comparison equally
+    empty.
+    """
+    entries = _corpus_entries_of_type(TYPE_CAPABILITY_VIOLATION)
+    assert entries, "corpus must cover capability.violation"
+
+    for entry in entries:
+        wire = entry["json"]["payload"]
+        payload = CapabilityViolationPayload.model_validate(wire)
+        assert (payload.reason, payload.address, payload.detail) == (
+            wire["reason"],
+            wire.get("address"),
+            wire.get("detail"),
+        )
+        # An absent `frame_type` is a real shape, not a malformed one: the reason is
+        # the security signal, so the field defaults rather than rejecting.
+        assert payload.frame_type == wire.get("frame_type", "")
+
+    assert {e["json"]["payload"]["reason"] for e in entries} == CAPABILITY_VIOLATION_REASONS
+    assert any("frame_type" not in e["json"]["payload"] for e in entries), (
+        "corpus must cover a violation that names no frame"
+    )
+    # Both bounds are exercised exactly, not approached: one character wider and the
+    # payload is refused and the row never written, so fixtures that stayed short would
+    # not notice either cap moving. The address bound is a full IPv6 literal, which is
+    # the widest untrusted value this frame may carry.
+    assert (
+        max(len(e["json"]["payload"].get("detail") or "") for e in entries)
+        == MAX_VIOLATION_DETAIL_CHARS
+    )
+    assert (
+        max(len(e["json"]["payload"].get("address") or "") for e in entries)
+        == MAX_VIOLATION_ADDRESS_CHARS
+    )

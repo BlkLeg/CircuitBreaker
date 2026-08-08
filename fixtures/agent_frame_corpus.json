@@ -75,10 +75,57 @@
     }
   },
   {
-    "description": "capability.violation — agent reporting a server-side drop",
+    "description": "capability.violation — the agent refused an out-of-scope assignment, fully populated to the field bounds",
     "json": {
       "v": 1, "type": "capability.violation", "seq": 100, "ts": "2026-07-27T12:10:00Z",
-      "payload": {"frame_type": "probe.result", "reason": "capability not granted"}
+      "payload": {
+        "frame_type": "probe.assign",
+        "reason": "out_of_scope",
+        "address": "0000:0000:0000:0000:0000:ffff:255.255.255.255",
+        "detail": "the assignment named a destination outside the scope this agent derived from its own directly connected interfaces; no packet was dialed, and the run was reported as rejected rather than as a timeout."
+      }
+    }
+  },
+  {
+    "description": "capability.violation — minimal: the reason alone, from an agent that names no frame",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 101, "ts": "2026-07-27T12:10:01Z",
+      "payload": {"reason": "special_use"}
+    }
+  },
+  {
+    "description": "capability.violation — the destination is inside an operator exclusion",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 102, "ts": "2026-07-27T12:10:02Z",
+      "payload": {"frame_type": "probe.assign", "reason": "excluded_cidr", "address": "10.8.0.7"}
+    }
+  },
+  {
+    "description": "capability.violation — this agent was granted no scope at all",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 103, "ts": "2026-07-27T12:10:03Z",
+      "payload": {"frame_type": "probe.assign", "reason": "empty_scope", "detail": "no authorized prefixes; every destination refuses"}
+    }
+  },
+  {
+    "description": "capability.violation — the destination was not an address at all",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 104, "ts": "2026-07-27T12:10:04Z",
+      "payload": {"frame_type": "probe.assign", "reason": "invalid_destination"}
+    }
+  },
+  {
+    "description": "capability.violation — the dispatched target was wider than a scan may ever be",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 105, "ts": "2026-07-27T12:10:05Z",
+      "payload": {"frame_type": "probe.assign", "reason": "prefix_too_wide", "address": "10.0.0.0/8"}
+    }
+  },
+  {
+    "description": "capability.violation — in scope on paper, but this host is no longer attached to that network",
+    "json": {
+      "v": 1, "type": "capability.violation", "seq": 106, "ts": "2026-07-27T12:10:06Z",
+      "payload": {"frame_type": "probe.assign", "reason": "not_directly_connected", "address": "2001:db8::1"}
     }
   },
   {
