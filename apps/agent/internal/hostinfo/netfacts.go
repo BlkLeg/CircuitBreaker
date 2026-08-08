@@ -16,11 +16,16 @@ type netFactsCollector struct {
 	Addrs      func(net.Interface) ([]net.Addr, error)
 }
 
-// networkFacts reports the real host's directly connected networks for the `hello` frame.
+// Networks reports the real host's directly connected networks, for the `hello` frame at connect
+// and for `capability.readiness` thereafter (Slice 4 D-8). It is exported so the readiness path
+// has the same enumerator hello uses rather than a second one that could disagree with it about
+// the same machine.
+//
 // Returns nil rather than erroring if the interface list can't be read (e.g. a sandboxed
 // environment without /sys/class/net) — a hello with no networks is still a valid hello, and
-// failing here would cost the link the whole connect.
-func networkFacts() []frame.NetworkFacts {
+// failing here would cost the link the whole connect. That nil is *distinct* from an empty
+// slice; see collect.
+func Networks() []frame.NetworkFacts {
 	return netFactsCollector{}.collect()
 }
 
@@ -42,13 +47,20 @@ func (c netFactsCollector) addrs(iface net.Interface) ([]net.Addr, error) {
 // at least one usable address. Output is sorted by interface name and then by address so the
 // same host configuration always produces the same report: the backend bumps a scope generation
 // whenever the normalized facts differ, and the kernel's enumeration order is not a contract.
+// The two empty results are deliberately different values, and callers must keep them apart. nil
+// means the question could not be asked; `[]frame.NetworkFacts{}` means it was asked and this host
+// genuinely has nothing directly connected. Hello can conflate them — `networks` carries
+// `omitempty` there — but capability.readiness cannot: its `networks` field has no omitempty
+// precisely so an agent that lost every interface can send `[]` and replace the server's copy
+// (D-8), and coercing an unreadable interface list into that same `[]` would wipe a working
+// scope every time /sys/class/net blinked.
 func (c netFactsCollector) collect() []frame.NetworkFacts {
 	ifaces, err := c.interfaces()
 	if err != nil {
 		return nil
 	}
 
-	var facts []frame.NetworkFacts
+	facts := []frame.NetworkFacts{}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue

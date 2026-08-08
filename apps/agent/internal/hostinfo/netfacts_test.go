@@ -170,3 +170,35 @@ func TestNetFacts_EnumeratorErrorYieldsEmptySliceNotPanic(t *testing.T) {
 		t.Errorf("collect() = %+v, want %+v", got, want)
 	}
 }
+
+// TestNetFacts_UnreadableAndEmptyAreDistinguishableResults pins the one thing about collect's two
+// empty results that a `len(got) == 0` assertion cannot see.
+//
+// capability.readiness' `networks` field carries no `omitempty` so that an agent which lost every
+// interface can send `[]` and replace the server's scope (D-8). That makes nil and `[]` two
+// different statements on the wire, and the daemon decides which to send by testing this exact
+// nilness: an unreadable /sys/class/net coerced into `[]` would wipe a working scope and churn
+// the scope generation every time the read blinked.
+func TestNetFacts_UnreadableAndEmptyAreDistinguishableResults(t *testing.T) {
+	unreadable := netFactsCollector{
+		Interfaces: func() ([]net.Interface, error) { return nil, errors.New("no /sys/class/net") },
+	}
+	if got := unreadable.collect(); got != nil {
+		t.Errorf("collect() = %#v with an unreadable interface list, want nil — the question could not be asked", got)
+	}
+
+	// Loopback only: the host was enumerated successfully and has nothing directly connected.
+	empty := netFactsCollector{
+		Interfaces: func() ([]net.Interface, error) {
+			return []net.Interface{{Name: "lo", Flags: net.FlagUp | net.FlagLoopback}}, nil
+		},
+		Addrs: func(net.Interface) ([]net.Addr, error) { return []net.Addr{cidrAddr(t, "127.0.0.1/8")}, nil },
+	}
+	got := empty.collect()
+	if got == nil {
+		t.Fatal("collect() = nil on a host with no directly connected network, want a non-nil empty slice — the answer is \"nothing\", not \"unknown\"")
+	}
+	if len(got) != 0 {
+		t.Errorf("collect() = %+v, want no entries", got)
+	}
+}

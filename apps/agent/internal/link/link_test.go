@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -2004,6 +2005,260 @@ func TestRun_DeliversProbeAssignToTheCallback(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("OnProbeCancel was never called")
+	}
+}
+
+// serveInboundFrames stands up one link server that completes the Noise handshake, accepts the
+// hello, immediately pushes frames in the order given and then reads until the agent goes away.
+// It is a helper rather than a third inline copy of the handshake because the two discovery tests
+// below differ only in the handlers they install, never in what the server does.
+func serveInboundFrames(t *testing.T, frames ...map[string]any) (wsURL, serverPKHex string) {
+	t.Helper()
+	serverPriv, serverPub := generateTestKeypair(t)
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newTestResponderSession(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.ReadHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		conn.WriteMessage(websocket.BinaryMessage, msg2)
+		// The hello has to be *decrypted*, not merely read: skipping a message desynchronizes the
+		// responder's receive cipher from the agent's send cipher and fails every later decrypt.
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.Decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		outbound := append([]map[string]any{
+			{"v": 1, "type": "hello.ack", "seq": 0, "ts": time.Now().UTC(),
+				"payload": map[string]any{"accepted": true, "agent_id": 1}},
+		}, frames...)
+		for _, f := range outbound {
+			data, marshalErr := json.Marshal(f)
+			if marshalErr != nil {
+				t.Errorf("marshal inbound frame: %v", marshalErr)
+				return
+			}
+			if err := conn.WriteMessage(websocket.BinaryMessage, responder.Encrypt(data)); err != nil {
+				return
+			}
+		}
+
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http"), hex.EncodeToString(serverPub[:])
+}
+
+// discoveryTestDispatchID is the 32 lowercase hex characters a backend dispatch id is, and the one
+// field a finding can be matched against server-side.
+const discoveryTestDispatchID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+// discoveryInboundFrames are one `discovery.request` and one `discovery.cancel` for the same
+// dispatch, as the backend writes them.
+func discoveryInboundFrames() []map[string]any {
+	return []map[string]any{
+		{"v": 1, "type": "discovery.request", "seq": 1, "ts": time.Now().UTC(),
+			"payload": map[string]any{
+				"dispatch_id": discoveryTestDispatchID, "scan_job_id": 41,
+				"targets": []string{"10.20.0.8/30"}, "methods": []string{"neighbor_cache"},
+				"tcp_ports": []int{22}, "host_timeout_ms": 200, "max_concurrent_hosts": 4,
+				"scope_version": "3f1c9a2b4d6e8071", "deadline_at": "2026-08-08T18:00:20Z",
+			}},
+		{"v": 1, "type": "discovery.cancel", "seq": 2, "ts": time.Now().UTC(),
+			"payload": map[string]any{"dispatch_id": discoveryTestDispatchID, "reason": "scope_changed"}},
+	}
+}
+
+// TestRun_DeliversDiscoveryRequestAndCancelToTheirCallbacks is Task 14's inbound half, and the
+// regression guard for the gap it closed: before these two switch arms existed the frame types
+// decoded cleanly, passed the seq guard and were then dropped on the floor. Server-side that is
+// indistinguishable from an agent that never heard the dispatch — the scan job sits at
+// `running` with no finding and no refusal until its dispatch deadline expires.
+//
+// The payload is asserted field by field for the same reason the probe test above does it:
+// dispatch_id is the only identifier a finding may be posted against, and every bound here is
+// re-checked by the agent against its own grant, so anything this path re-encodes or normalizes
+// makes the whole dispatch either unmatchable or wrongly authorized.
+func TestRun_DeliversDiscoveryRequestAndCancelToTheirCallbacks(t *testing.T) {
+	wsURL, serverPK := serveInboundFrames(t, discoveryInboundFrames()...)
+
+	dir := t.TempDir()
+	key, err := enroll.LoadOrCreateDeviceKey(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+	}
+
+	requested := make(chan frame.DiscoveryRequestPayload, 4)
+	cancelled := make(chan frame.DiscoveryCancelPayload, 4)
+	opts := Options{
+		Config: &config.Config{ServerURL: wsURL, ServerStaticPK: serverPK},
+		Key:    key, AgentVersion: "0.1.0-test",
+		OnDiscoveryRequest: func(payload json.RawMessage) error {
+			var req frame.DiscoveryRequestPayload
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return err
+			}
+			requested <- req
+			return nil
+		},
+		OnDiscoveryCancel: func(payload json.RawMessage) error {
+			var cancellation frame.DiscoveryCancelPayload
+			if err := json.Unmarshal(payload, &cancellation); err != nil {
+				return err
+			}
+			cancelled <- cancellation
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() { _ = Run(ctx, opts) }()
+
+	select {
+	case req := <-requested:
+		if req.DispatchID != discoveryTestDispatchID {
+			t.Errorf("dispatch_id = %q, want %q", req.DispatchID, discoveryTestDispatchID)
+		}
+		if req.ScanJobID != 41 {
+			t.Errorf("scan_job_id = %d, want 41", req.ScanJobID)
+		}
+		if len(req.Targets) != 1 || req.Targets[0] != "10.20.0.8/30" {
+			t.Errorf("targets = %v, want [10.20.0.8/30]", req.Targets)
+		}
+		if len(req.Methods) != 1 || req.Methods[0] != "neighbor_cache" {
+			t.Errorf("methods = %v, want [neighbor_cache]", req.Methods)
+		}
+		if len(req.TCPPorts) != 1 || req.TCPPorts[0] != 22 {
+			t.Errorf("tcp_ports = %v, want [22]", req.TCPPorts)
+		}
+		if req.HostTimeoutMS != 200 || req.MaxConcurrentHosts != 4 {
+			t.Errorf("bounds = %+v, want host_timeout_ms 200 and max_concurrent_hosts 4", req)
+		}
+		if req.ScopeVersion != "3f1c9a2b4d6e8071" {
+			t.Errorf("scope_version = %q, want %q", req.ScopeVersion, "3f1c9a2b4d6e8071")
+		}
+		if req.DeadlineAt.IsZero() {
+			t.Error("deadline_at did not decode")
+		}
+	case <-ctx.Done():
+		t.Fatal("OnDiscoveryRequest was never called")
+	}
+
+	select {
+	case cancellation := <-cancelled:
+		if cancellation.DispatchID != discoveryTestDispatchID || cancellation.Reason != "scope_changed" {
+			t.Errorf("cancellation = %+v", cancellation)
+		}
+	case <-ctx.Done():
+		t.Fatal("OnDiscoveryCancel was never called")
+	}
+}
+
+// TestRunOnce_DiscoveryFramesSurviveAMissingOrRefusingHandler pins the two properties the
+// discovery arms share with the probe arms, both of which are about not amplifying a small fault
+// into a dropped link.
+//
+// No handler: runOnce is reachable without Run's defaulting (this package's own tests call it
+// directly, and Uninstall's one-shot connection installs nothing), so an inbound discovery frame
+// must be a no-op rather than a nil call that takes the process down.
+//
+// A refusing handler: a refusal is already reported to the server as a terminal `rejected`
+// summary by internal/collect/discover itself, so the returned error is log material only. Ending
+// the connection over it would tear down the very link that summary has to travel back over, and
+// the job would then hang for its whole deadline — the exact failure the refusal was avoiding.
+func TestRunOnce_DiscoveryFramesSurviveAMissingOrRefusingHandler(t *testing.T) {
+	tests := []struct {
+		name    string
+		install bool
+	}{
+		{name: "no handler installed at all", install: false},
+		{name: "handlers that refuse the frame", install: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wsURL, serverPK := serveInboundFrames(t, discoveryInboundFrames()...)
+
+			dir := t.TempDir()
+			key, err := enroll.LoadOrCreateDeviceKey(dir)
+			if err != nil {
+				t.Fatalf("LoadOrCreateDeviceKey() error = %v", err)
+			}
+
+			var calls atomic.Int32
+			// runOnce is called directly here, bypassing Run's callback defaulting, so the
+			// handlers this connection does need are supplied explicitly — and the two under
+			// test are left nil in the first case on purpose.
+			opts := Options{
+				Config: &config.Config{ServerURL: wsURL, ServerStaticPK: serverPK},
+				Key:    key, AgentVersion: "0.1.0-test",
+				OnConnected:       func() {},
+				OnRejected:        func(string) {},
+				OnCapabilitiesSet: func(json.RawMessage) error { return nil },
+				OnUpdate:          func(json.RawMessage, SendUpdateStatus) error { return nil },
+			}
+			if tt.install {
+				refuse := func(json.RawMessage) error {
+					calls.Add(1)
+					return errors.New("refused: local_discovery is not enabled on this agent")
+				}
+				opts.OnDiscoveryRequest = refuse
+				opts.OnDiscoveryCancel = refuse
+			}
+
+			// The context is the mechanism, not a safety net: "runOnce ran until the test
+			// stopped it" is exactly the assertion, so it is deliberately far shorter than
+			// readTimeout (60s) and heartbeatInterval (20s), neither of which can fire first.
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() {
+				_, runErr := runOnce(ctx, opts)
+				errCh <- runErr
+			}()
+
+			select {
+			case runErr := <-errCh:
+				if !errors.Is(runErr, context.DeadlineExceeded) {
+					t.Fatalf("runOnce err = %v, want context.DeadlineExceeded — an inbound "+
+						"discovery frame with no handler, or one its handler refused, must "+
+						"not end the connection", runErr)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("runOnce never returned")
+			}
+
+			if tt.install && calls.Load() != 2 {
+				t.Errorf("handler calls = %d, want 2 (one discovery.request, one discovery.cancel) "+
+					"— the connection surviving proves nothing if the arms never ran",
+					calls.Load())
+			}
+		})
 	}
 }
 

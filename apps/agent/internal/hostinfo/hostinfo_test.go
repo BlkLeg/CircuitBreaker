@@ -85,7 +85,7 @@ func TestCollect(t *testing.T) {
 // usable interface both sides are nil and a Collect that never touched Networks would pass. Skip
 // loudly there rather than bank a green the environment cannot support.
 func TestCollect_NetworksAreWiredFromNetFacts(t *testing.T) {
-	want := networkFacts()
+	want := Networks()
 	if len(want) == 0 {
 		t.Skip("host reports no usable interfaces; the comparison would degenerate to nil == nil")
 	}

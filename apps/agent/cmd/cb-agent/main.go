@@ -21,6 +21,7 @@ import (
 
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/collect"
+	discovercollect "circuitbreaker.dev/cb-agent/internal/collect/discover"
 	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
 	probecollect "circuitbreaker.dev/cb-agent/internal/collect/probe"
 	"circuitbreaker.dev/cb-agent/internal/config"
@@ -220,10 +221,8 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
 		os.Exit(1)
 	}
-	statusWriter, sp := rt.statusWriter, rt.sp
-	dataFrames, controlFrames := rt.dataFrames, rt.controlFrames
+	statusWriter := rt.statusWriter
 	queueReadiness := rt.queueReadiness
-	onCapabilitiesSet := rt.onCapabilitiesSet
 
 	currentLink := update.CurrentLinkPath(config.StateDir())
 
@@ -368,27 +367,64 @@ func runDaemon() {
 		return syscall.Exec(installedBinaryPath, os.Args, os.Environ())
 	}
 
-	onSpoolStats := func(depth int, bytes int64) {
-		if err := statusWriter.SetSpoolStats(depth, bytes); err != nil {
-			log.Printf("cb-agent: status: %v", err)
-		}
+	if err := link.Run(ctx, rt.linkOptions(cfg, key, AgentVersion, linkHooks{
+		onUpdate:       onUpdate,
+		onConnected:    onConnected,
+		onRejected:     onRejected,
+		onDisconnected: onDisconnected,
+	})); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
+		os.Exit(1)
 	}
+}
 
-	if err := link.Run(ctx, link.Options{
-		Config: cfg, Key: key, AgentVersion: AgentVersion,
+// linkHooks are the connection-lifecycle handlers runDaemon owns rather than
+// startDaemonState: each turns a connection event into an update-marker
+// decision, a re-exec or a status-file write, and those depend on runDaemon's
+// own process-lifetime state (the confirm-once guard, the current-version
+// symlink, os.Args) rather than on anything daemonRuntime holds.
+//
+// The zero value is legal, because link.Run nil-defaults every one of these
+// four — which is what lets a test drive the *inbound* bindings without an
+// update marker, a status file or a re-exec target.
+type linkHooks struct {
+	onUpdate       func(payload json.RawMessage, send link.SendUpdateStatus) error
+	onConnected    func()
+	onRejected     func(reason string)
+	onDisconnected func(cause error)
+}
+
+// linkOptions assembles the one link.Options the daemon runs with.
+//
+// It is a method on daemonRuntime rather than a literal inside runDaemon
+// because these bindings are the *only* delivery path for a server -> agent
+// frame, and a missing one is not a compile error — it is a frame type the
+// agent decodes, accepts, and silently drops. That is exactly how
+// `discovery.request` came to be unwired: the runtime was constructed,
+// configured and started, its own tests passed, and nothing ever handed it a
+// dispatch, so a scan job sat at `running` until its dispatch deadline
+// expired. Reachable options are what let a test assert the bindings rather
+// than trust them.
+func (rt *daemonRuntime) linkOptions(
+	cfg *config.Config, key *enroll.DeviceKey, agentVersion string, hooks linkHooks,
+) link.Options {
+	return link.Options{
+		Config: cfg, Key: key, AgentVersion: agentVersion,
 		StateDir:          config.StateDir(),
-		OnCapabilitiesSet: onCapabilitiesSet,
-		// Both are the probe runtime's own methods rather than wrappers: they
-		// run on link's inbound goroutine, and internal/collect/probe's
-		// contract is precisely that neither dials, resolves nor blocks on a
-		// consumer there. Anything wrapped around them would be a place for
-		// that property to be lost.
-		OnProbeAssign:  rt.probeRuntime.Assign,
-		OnProbeCancel:  rt.probeRuntime.Cancel,
-		OnUpdate:       onUpdate,
-		OnConnected:    onConnected,
-		OnRejected:     onRejected,
-		OnDisconnected: onDisconnected,
+		OnCapabilitiesSet: rt.onCapabilitiesSet,
+		// All four are their runtime's own methods rather than wrappers: they
+		// run on link's inbound goroutine, and internal/collect/probe's and
+		// internal/collect/discover's contract is precisely that none of them
+		// dials, resolves nor blocks on a consumer there. Anything wrapped
+		// around them would be a place for that property to be lost.
+		OnProbeAssign:      rt.probeRuntime.Assign,
+		OnProbeCancel:      rt.probeRuntime.Cancel,
+		OnDiscoveryRequest: rt.discoverRuntime.Request,
+		OnDiscoveryCancel:  rt.discoverRuntime.Cancel,
+		OnUpdate:           hooks.onUpdate,
+		OnConnected:        hooks.onConnected,
+		OnRejected:         hooks.onRejected,
+		OnDisconnected:     hooks.onDisconnected,
 		ReportPendingUpdateOutcome: func() (string, bool) {
 			version, ok, _ := update.ReadRollbackReport(config.StateDir())
 			return version, ok
@@ -398,22 +434,25 @@ func runDaemon() {
 				log.Printf("cb-agent: %v", err)
 			}
 		},
-		Spool:         sp,
-		DataFrames:    dataFrames,
-		ControlFrames: controlFrames,
-		OnSpoolStats:  onSpoolStats,
-	}); err != nil && ctx.Err() == nil {
-		fmt.Fprintf(os.Stderr, "cb-agent: %v\n", err)
-		os.Exit(1)
+		Spool:         rt.sp,
+		DataFrames:    rt.dataFrames,
+		ControlFrames: rt.controlFrames,
+		OnSpoolStats: func(depth int, bytes int64) {
+			if err := rt.statusWriter.SetSpoolStats(depth, bytes); err != nil {
+				log.Printf("cb-agent: status: %v", err)
+			}
+		},
 	}
 }
 
 // daemonRuntime is everything startDaemonState builds and runDaemon needs
 // afterwards: the capability gate, the runtime status writer, the outbound
-// data-frame spool, the two frame channels link.Run drains, the probe runtime
-// link's probe.assign/probe.cancel callbacks are bound to, the closures
-// (queueReadiness, publishReadiness, applyHostConfig, applyProbeConfig) that
-// the link's callbacks fire, and the linked flag those callbacks flip.
+// data-frame spool, the two frame channels link.Run drains, the probe and
+// discovery runtimes that linkOptions binds link's inbound callbacks to
+// (probe.assign/probe.cancel and discovery.request/discovery.cancel
+// respectively), the closures (queueReadiness, publishReadiness,
+// applyHostConfig, applyProbeConfig, applyDiscoveryConfig) that the link's
+// callbacks fire, and the linked flag those callbacks flip.
 // Bundling them in a struct is what lets the startup sequence be exercised by
 // a test without executing the full daemon (link.Run, signal handling, the
 // update-rollback watcher).
@@ -433,10 +472,20 @@ type daemonRuntime struct {
 
 	// probeRuntime executes server-assigned monitor checks. It exists whether
 	// or not `remote_probe` is granted — applyProbeConfig is what enables or
-	// disables it — so runDaemon can bind link's callbacks to it
+	// disables it — so linkOptions can bind link's callbacks to it
 	// unconditionally and an assignment sent to an ungranted agent is refused
 	// with a `rejected` result instead of being silently swallowed.
 	probeRuntime *probecollect.Runtime
+
+	// discoverRuntime executes server-dispatched local-network discovery. Like
+	// probeRuntime it exists whether or not `local_discovery` is granted, and for
+	// a sharper reason than symmetry: once the grant is off, the backend's own
+	// grant gate (agent_link.dispatch_frame) drops this agent's terminal
+	// discovery.finding, so a dispatch that arrived at a nil handler would be a
+	// scan job nothing ever closes — it would hang for its whole dispatch
+	// deadline. A constructed runtime refuses it with a terminal `rejected`
+	// summary instead, which is the frame that closes the job.
+	discoverRuntime *discovercollect.Runtime
 
 	queueReadiness   func(force bool)
 	publishReadiness func(items []frame.Readiness)
@@ -448,6 +497,16 @@ type daemonRuntime struct {
 	// one coalesced signal, nothing consumes it, and a consumer would race the
 	// direct call applyHostConfig already makes.
 	applyProbeConfig func()
+	// applyDiscoveryConfig is applyProbeConfig's counterpart for
+	// `local_discovery`: it re-derives this host's scope, rebuilds the validator
+	// from the gate's current grant and pushes both into discoverRuntime, or
+	// disables it outright. Called from onCapabilitiesSet for the same reason
+	// applyProbeConfig is, and never from a Gate.Changes() subscription.
+	//
+	// Rebuilding the validator rather than the runtime is the whole of Task 14's
+	// grant-change path: nothing restarts, every dispatch in flight keeps running,
+	// and the next request is judged against the new authorization.
+	applyDiscoveryConfig func()
 
 	// onCapabilitiesSet is the capabilities.set handler internal/link fires.
 	// It lives here rather than in runDaemon because it is the thing that
@@ -466,7 +525,7 @@ var newHostCollector = func(cfg capability.HostConfig) collect.Collector {
 	return hostcollect.New(cfg)
 }
 
-// newProbeRuntime, probeReadiness and probeNetworkFacts are the probe half of
+// newProbeRuntime, probeReadiness and hostNetworkFacts are the probe half of
 // the same seam, and exist for the same reason: the production checkers open
 // real sockets, readiness opens an unprivileged ICMP socket, and the scope
 // evaluator's input is whatever interfaces the machine happens to have. No
@@ -477,15 +536,39 @@ var newProbeRuntime = func(out chan<- frame.Frame) *probecollect.Runtime {
 
 var probeReadiness = probecollect.Readiness
 
-// probeNetworkFacts reports this host's directly connected networks — the only
-// input netscope.Derive needs to turn the server's grant config into the scope
-// this agent enforces for itself (§3). It is re-read on every applyProbeConfig
-// rather than captured once at startup, so an interface that comes up after
-// the daemon started is reflected at the next grant push instead of at the
-// next restart.
-var probeNetworkFacts = func() []frame.NetworkFacts {
-	return hostinfo.Collect(AgentVersion).Networks
+// newDiscoverRuntime and discoverReadiness are the discovery half of the same
+// seam, for the same reason again: the production collectors open ICMP and TCP
+// sockets, and readiness dumps the kernel's neighbor cache, opens an
+// unprivileged ICMP socket and reads this machine's resolver configuration. No
+// test may depend on any of it. Production never reassigns either.
+//
+// The runtime is constructed with RuntimeOptions' defaults for every collector
+// and with no Validator, deliberately: a Runtime without one scans nothing, so a
+// wiring mistake reads as a refusal rather than as an approval. applyDiscoveryConfig
+// installs the real one, built from the grant, before the first request can arrive.
+var newDiscoverRuntime = func(out chan<- frame.Frame) *discovercollect.Runtime {
+	return discovercollect.NewRuntime(out, discovercollect.RuntimeOptions{})
 }
+
+// discoverReadiness takes a context where probeReadiness takes none, because one
+// of discovery's four checks is a real kernel round trip (see discover.Readiness).
+// The daemon's own lifetime context is what bounds it, so a wedged netlink socket
+// cannot outlive the daemon that asked.
+var discoverReadiness = discovercollect.Readiness
+
+// hostNetworkFacts reports this host's directly connected networks. It has two
+// readers: netscope.Derive needs them to turn the server's grant config into
+// the scope this agent enforces for itself (§3), and every capability.readiness
+// frame carries them so the server's copy is refreshed mid-session rather than
+// only at reconnect (Slice 4 D-8). It is hostinfo's own hello enumerator, not a
+// second one — the server compares the two reports for equality to decide
+// whether the scope generation moved, so two enumerators that disagreed by a
+// single sort order would churn it forever.
+//
+// It is re-read on every call rather than captured once at startup, so an
+// interface that comes up after the daemon started is reflected at the next
+// readiness report instead of at the next restart.
+var hostNetworkFacts = hostinfo.Networks
 
 // probeInterfaceFacts re-labels the hello report as the scope evaluator's
 // input. The two structs carry identical JSON, but internal/netscope must not
@@ -517,19 +600,22 @@ func probeInterfaceFacts(networks []frame.NetworkFacts) []netscope.InterfaceFact
 //  4. the spool — spool.Open's unclean-shutdown recovery must be reflected in
 //     status.json before the first connection attempt.
 //  5. the readiness/collector closures, which capture 2, 3 and 4.
-//  6. the probe runtime and applyProbeConfig, which capture 5. The runtime is
-//     constructed and started here, before the gate's grant is pushed into it,
-//     so runDaemon can bind link's probe callbacks to it unconditionally —
-//     an assignment for an ungranted agent is then refused with a `rejected`
-//     result rather than dropped on a nil handler.
+//  6. the probe and discovery runtimes and their apply*Config closures, which
+//     capture 5. Both runtimes are constructed and started here, before the
+//     gate's grant is pushed into either, so linkOptions can bind link's probe and
+//     discovery callbacks to them unconditionally — work dispatched to an
+//     ungranted agent is then refused with a terminal `rejected` frame, which is
+//     what closes the server-side run or job, rather than dropped on a nil
+//     handler.
 //  7. the readiness reconciliation ticker, which only offers the report
 //     built by 5 to the link.
-//  8. applyHostConfig() and applyProbeConfig() last, because they are the
-//     steps that start the collector goroutine — whose very first collection
-//     fires immediately — and open this agent's probe scope.
+//  8. applyHostConfig(), applyProbeConfig() and applyDiscoveryConfig() last,
+//     because they are the steps that start the collector goroutine — whose very
+//     first collection fires immediately — and open (or actively close) this
+//     agent's probe and discovery scopes.
 //
-// ctx is the daemon's lifetime context; the collector goroutine and the probe
-// runtime's workers are children of it, so canceling ctx stops both.
+// ctx is the daemon's lifetime context; the collector goroutine and both
+// runtimes' workers are children of it, so canceling ctx stops all three.
 func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion string, ctx context.Context) (*daemonRuntime, error) {
 	// (1) Audit the dedicated-user file-permission model
 	// (specs/2026-07-26-cb-agent-design.md §4.1) before this daemon writes
@@ -596,6 +682,13 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	// the gate's current grant.
 	dataFrames := make(chan frame.Frame, 8)
 	controlFrames := make(chan frame.Frame, 8)
+	// The interface enumerator is captured here, once, rather than read from
+	// its package var at each use. publishReadiness runs on the host
+	// collector's own goroutine as well as on the link's, and a test that
+	// restores the seam in t.Cleanup while that goroutine is still collecting
+	// would race with it. Production never reassigns it, so the capture costs
+	// nothing and makes the seam a construction-time one.
+	networkFacts := hostNetworkFacts
 	var linked atomic.Bool
 	var readinessMu sync.Mutex
 	readinessState := make(map[string]frame.Readiness, len(identityReadiness)+len(hostcollect.CollectorNames))
@@ -604,6 +697,30 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 	}
 	var readinessPayload json.RawMessage
 	var readinessSentAt time.Time
+	// The last networks report that was actually enumerated. capability.readiness
+	// carries `networks` with no omitempty (D-8) so that an agent which has lost
+	// every interface can send `[]` and replace the server's copy — which means
+	// there is no encoding for "I could not look". hostinfo.Networks returns nil
+	// for exactly that case, and sending it as `[]` would tell the server every
+	// interface was gone: a wiped scope and a bumped generation every time
+	// /sys/class/net was momentarily unreadable. Repeating the last real report
+	// is the one answer that is true either way, and record_network_facts'
+	// change gate makes the repeat free. The seed is `[]` rather than nil so the
+	// very first frame is still a JSON array; an agent that has never once
+	// enumerated its interfaces has nothing truer to say.
+	lastNetworks := []frame.NetworkFacts{}
+	// A force that has been asked for but not yet spent. The send below is
+	// deliberately non-blocking — controlFrames is bounded and publishReadiness
+	// runs on the host collector's goroutine, which must not stall behind the
+	// link's websocket writer — so a forced frame can be dropped outright. By
+	// then publishReadiness has already overwritten readinessPayload, which
+	// makes the dropped change the new dedup baseline: no later publish of the
+	// same state computes `changed` again, and the reconcile tick's unforced
+	// call is refused by the readinessReportInterval floor. Remembering the
+	// unspent force is what stops that change from being silently swallowed
+	// for a whole report interval — a networks-only change (D-8) has no other
+	// re-reporter, and the server would sit on a stale scope until then.
+	readinessForcePending := false
 	queueReadiness := func(force bool) {
 		// Unlinked: runOnce drops control frames until the connection is
 		// established (internal/link), so sending here would consume the
@@ -616,17 +733,30 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		}
 		readinessMu.Lock()
 		defer readinessMu.Unlock()
-		if len(readinessPayload) == 0 || (!force && time.Since(readinessSentAt) < readinessReportInterval) {
+		readinessForcePending = readinessForcePending || force
+		if len(readinessPayload) == 0 || (!readinessForcePending && time.Since(readinessSentAt) < readinessReportInterval) {
 			return
 		}
 		select {
 		case controlFrames <- frame.Frame{Type: frame.TypeCapabilityReadiness, TS: time.Now().UTC(), Payload: append(json.RawMessage(nil), readinessPayload...)}:
 			readinessSentAt = time.Now()
+			// Only a frame that actually left clears the debt. The payload sent
+			// is always the newest one, so a single send settles however many
+			// forces piled up behind a busy writer.
+			readinessForcePending = false
 		default:
 		}
 	}
 	publishReadiness := func(items []frame.Readiness) {
+		// Enumerated before the lock: this is a syscall into the kernel's
+		// interface list, and readinessMu is also taken by queueReadiness on
+		// the link's own goroutine.
+		networks := networkFacts()
 		readinessMu.Lock()
+		if networks == nil {
+			networks = lastNetworks
+		}
+		lastNetworks = networks
 		for _, r := range items {
 			readinessState[r.Collector] = r
 		}
@@ -640,7 +770,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		if err := statusWriter.MergeReadiness(merged); err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
-		payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: merged})
+		payload, err := json.Marshal(frame.CapabilityReadinessPayload{Readiness: merged, Networks: networks})
 		if err != nil {
 			readinessMu.Unlock()
 			return
@@ -721,9 +851,64 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		// Configure needs no restart: an in-flight check keeps running, and a
 		// raised concurrency limit is picked up by the dispatcher within one
 		// poll.
-		scope := netscope.Derive(probeInterfaceFacts(probeNetworkFacts()), cfg.Config)
+		scope := netscope.Derive(probeInterfaceFacts(networkFacts()), cfg.Config)
 		probeRuntime.Configure(scope, cfg.MaxConcurrent)
 		publishReadiness(probeReadiness())
+	}
+
+	// (6b) The discovery runtime. Findings — including the terminal summary that
+	// closes the scan job — are data frames, so they go to dataFrames: a
+	// discovery.finding spools through an outage instead of being dropped while
+	// disconnected, which is the whole reason its finding ids are replay-stable
+	// digests rather than fresh samples. Started before applyDiscoveryConfig runs
+	// so there is a dispatcher and a finding pump waiting for the first request;
+	// ctx is the daemon's, so a shutdown cancels every open dispatch and closes
+	// each of them out with a `cancelled` summary.
+	discoverRuntime := newDiscoverRuntime(dataFrames)
+	discoverRuntime.Start(ctx)
+	applyDiscoveryConfig := func() {
+		cfg, granted := capGate.LocalDiscoveryConfig()
+		if !granted {
+			// Disable, not just "stop accepting", for a reason sharper than the
+			// probe half's: D-14 requires a revoked grant to stop scanning now,
+			// and once `local_discovery` is off the backend's own grant gate
+			// drops this agent's terminal discovery.finding — so a dispatch left
+			// running would produce findings nobody accepts and a job nothing
+			// ever closes. Disable cancels each one in flight, and each is closed
+			// out with a `cancelled` summary while the grant that carries it is
+			// still installed.
+			discoverRuntime.Disable("local_discovery is not granted on this agent")
+			// The same D-4 reasoning as the two disable branches above:
+			// ingest_readiness only ever upserts, so a row nothing will report
+			// again has to be actively overwritten or Agent Detail keeps reading
+			// this vantage as a discovery-ready one. Driving it off
+			// discover.DiscoverNames rather than a local list is what keeps a
+			// newly added discovery method from being left behind at a stale
+			// state, and publishing through publishReadiness is what puts these
+			// rows on the same single frame Task 13 gave `networks` to.
+			items := make([]frame.Readiness, 0, len(discovercollect.DiscoverNames))
+			for _, name := range discovercollect.DiscoverNames {
+				items = append(items, frame.Readiness{Collector: name, State: "disabled"})
+			}
+			publishReadiness(items)
+			return
+		}
+		// The same derivation applyProbeConfig makes, from the same enumerator:
+		// this host's own interfaces plus the server's normalized grant config,
+		// never anything host-editable (§3). There is deliberately no second
+		// enumerator — the server compares the facts this agent reports against
+		// the ones it stored to decide whether the scope generation moved, and two
+		// enumerators that disagreed would churn it forever.
+		//
+		// Configure needs no restart: a dispatch in flight keeps running against
+		// the authorization it was admitted under, and the next request is judged
+		// against this validator. A grant change that *invalidates* live work is
+		// D-16's scope-version path, which the server drives with an explicit
+		// discovery.cancel per dispatch, because only the server knows which jobs
+		// it has already closed.
+		scope := netscope.Derive(probeInterfaceFacts(networkFacts()), cfg.Config)
+		discoverRuntime.Configure(scope, discovercollect.NewValidator(cfg, nil))
+		publishReadiness(discoverReadiness(ctx))
 	}
 
 	// onCapabilitiesSet installs a server grant payload. Per-capability faults
@@ -743,6 +928,7 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 		publishReadiness(capabilityReadiness(capGate.Snapshot(), faults))
 		applyHostConfig()
 		applyProbeConfig()
+		applyDiscoveryConfig()
 		return nil
 	}
 
@@ -773,23 +959,27 @@ func startDaemonState(cfg *config.Config, key *enroll.DeviceKey, agentVersion st
 
 	// (8) Last: this starts the collector goroutine, whose first collection
 	// fires immediately (internal/collect's Runner.run), and opens (or, for an
-	// ungranted capability, actively closes) this agent's probe scope.
+	// ungranted capability, actively closes) this agent's probe and discovery
+	// scopes.
 	applyHostConfig()
 	applyProbeConfig()
+	applyDiscoveryConfig()
 
 	return &daemonRuntime{
-		capGate:           capGate,
-		statusWriter:      statusWriter,
-		sp:                sp,
-		dataFrames:        dataFrames,
-		controlFrames:     controlFrames,
-		linked:            &linked,
-		probeRuntime:      probeRuntime,
-		queueReadiness:    queueReadiness,
-		publishReadiness:  publishReadiness,
-		applyHostConfig:   applyHostConfig,
-		applyProbeConfig:  applyProbeConfig,
-		onCapabilitiesSet: onCapabilitiesSet,
+		capGate:              capGate,
+		statusWriter:         statusWriter,
+		sp:                   sp,
+		dataFrames:           dataFrames,
+		controlFrames:        controlFrames,
+		linked:               &linked,
+		probeRuntime:         probeRuntime,
+		discoverRuntime:      discoverRuntime,
+		queueReadiness:       queueReadiness,
+		publishReadiness:     publishReadiness,
+		applyHostConfig:      applyHostConfig,
+		applyProbeConfig:     applyProbeConfig,
+		applyDiscoveryConfig: applyDiscoveryConfig,
+		onCapabilitiesSet:    onCapabilitiesSet,
 	}, nil
 }
 

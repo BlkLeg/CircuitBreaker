@@ -4,24 +4,37 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/flynn/noise"
+	"github.com/gorilla/websocket"
+
 	"circuitbreaker.dev/cb-agent/internal/capability"
 	"circuitbreaker.dev/cb-agent/internal/collect"
+	discovercollect "circuitbreaker.dev/cb-agent/internal/collect/discover"
 	hostcollect "circuitbreaker.dev/cb-agent/internal/collect/host"
 	probecollect "circuitbreaker.dev/cb-agent/internal/collect/probe"
 	"circuitbreaker.dev/cb-agent/internal/config"
 	"circuitbreaker.dev/cb-agent/internal/enroll"
 	"circuitbreaker.dev/cb-agent/internal/frame"
+	"circuitbreaker.dev/cb-agent/internal/link"
+	"circuitbreaker.dev/cb-agent/internal/netscope"
 	"circuitbreaker.dev/cb-agent/internal/spool"
 	"circuitbreaker.dev/cb-agent/internal/status"
 	"circuitbreaker.dev/cb-agent/internal/update"
@@ -1080,18 +1093,70 @@ func (f fakeHostCollector) Collect(context.Context) (collect.Result, error) {
 	return collect.Result{Readiness: f.readiness}, nil
 }
 
+// networkFixture is the interface enumerator the startDaemonState tests install
+// behind the hostNetworkFacts seam, and the only supported way to change what
+// this host appears to enumerate *after* startDaemonState has returned.
+//
+// It has to be an atomic behind a stable func value rather than a plain
+// reassignment of the package var, for two independent reasons. First,
+// startDaemonState captures hostNetworkFacts once, at construction (see the
+// comment on networkFacts there), so a test that reassigned the package var
+// mid-run would be writing a var nothing reads any more and the change would
+// silently do nothing — a test asserting on it would pass or fail for the wrong
+// reason. Second, the captured enumerator is called from the host collector's
+// own goroutine as well as the link's, so whatever the test mutates has to be
+// synchronized: an atomic.Pointer is, a func-typed package var is not.
+type networkFixture struct {
+	v atomic.Pointer[[]frame.NetworkFacts]
+}
+
+// set replaces what the daemon's captured enumerator reports from now on. A nil
+// n is a meaningful value, not "unset": it is hostinfo.Networks' encoding for
+// "the interface list could not be read at all".
+func (f *networkFixture) set(n []frame.NetworkFacts) { f.v.Store(&n) }
+
+// report is the func value installed as hostNetworkFacts. It is never
+// reassigned for the lifetime of the daemon under test.
+func (f *networkFixture) report() []frame.NetworkFacts { return *f.v.Load() }
+
+// daemonFixtureNetworks is the interface list every startDaemonState test's host
+// appears to have: one directly connected private /24, whatever the machine
+// running the test actually has plugged in.
+//
+// It is a named var rather than a literal inside the helper because the scope the
+// daemon derives from it is *also* recomputed by the discovery tests, which have
+// to state the netscope version a dispatch is authorized under (D-16). Two copies
+// of these facts would make that version silently disagree and every discovery
+// request refuse itself.
+var daemonFixtureNetworks = []frame.NetworkFacts{{
+	Name:  "eth0",
+	Flags: []string{"up", "broadcast"},
+	Addrs: []string{"10.20.0.5/24"},
+}}
+
 // startDaemonStateTestDir prepares an isolated state directory with a device
 // key and, when grants is non-empty, a pre-seeded grants.json, points
-// config.StateDir() at it, and swaps in fakeHostCollector plus the two probe
-// host seams for the duration of the test.
+// config.StateDir() at it, and swaps in fakeHostCollector plus the probe and
+// discovery host seams for the duration of the test.
 //
-// The probe seams are swapped for every startDaemonState test, not only the
-// probe ones: applyProbeConfig runs as part of the startup sequence, and its
-// production path opens an unprivileged ICMP socket and enumerates the running
-// machine's interfaces. Neither belongs in a unit test, and the derived scope
-// has to be the same fixed /24 everywhere or an assertion would pass or fail
-// on what the test host happens to have plugged in.
+// Those collector seams are swapped for every startDaemonState test, not only the
+// probe and discovery ones: applyProbeConfig and applyDiscoveryConfig both run as
+// part of the startup sequence, and their production paths open an unprivileged
+// ICMP socket, dump the kernel neighbor cache, read the machine's resolver
+// configuration and enumerate its interfaces. None of that belongs in a unit
+// test, and the derived scope has to be the same fixed /24 everywhere or an
+// assertion would pass or fail on what the test host happens to have plugged in.
 func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Readiness) (string, *enroll.DeviceKey) {
+	t.Helper()
+	dir, key, _ := startDaemonStateTestDirNetworks(t, grants, readiness)
+	return dir, key
+}
+
+// startDaemonStateTestDirNetworks is startDaemonStateTestDir for the tests that
+// have to change this host's interface list while the daemon is running: it
+// hands back the networkFixture that owns the enumeration so the test can call
+// set() at any point, including after startDaemonState has captured the seam.
+func startDaemonStateTestDirNetworks(t *testing.T, grants string, readiness []frame.Readiness) (string, *enroll.DeviceKey, *networkFixture) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("CB_AGENT_STATE_DIR", dir)
@@ -1110,7 +1175,8 @@ func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Read
 	}
 	t.Cleanup(func() { newHostCollector = prev })
 
-	prevReadiness, prevFacts := probeReadiness, probeNetworkFacts
+	prevReadiness, prevFacts := probeReadiness, hostNetworkFacts
+	prevDiscoverReadiness := discoverReadiness
 	probeReadiness = func() []frame.Readiness {
 		items := make([]frame.Readiness, 0, len(probecollect.ProbeNames))
 		for _, name := range probecollect.ProbeNames {
@@ -1118,15 +1184,24 @@ func startDaemonStateTestDir(t *testing.T, grants string, readiness []frame.Read
 		}
 		return items
 	}
-	probeNetworkFacts = func() []frame.NetworkFacts {
-		return []frame.NetworkFacts{{
-			Name:  "eth0",
-			Flags: []string{"up", "broadcast"},
-			Addrs: []string{"10.20.0.5/24"},
-		}}
+	discoverReadiness = func(context.Context) []frame.Readiness {
+		items := make([]frame.Readiness, 0, len(discovercollect.DiscoverNames))
+		for _, name := range discovercollect.DiscoverNames {
+			items = append(items, frame.Readiness{Collector: name, State: "ready"})
+		}
+		return items
 	}
-	t.Cleanup(func() { probeReadiness, probeNetworkFacts = prevReadiness, prevFacts })
-	return dir, key
+	// Seeded and installed here, before startDaemonState is ever called, so the
+	// construction-time capture picks up fx.report and every later change the
+	// test makes travels through the fixture rather than through the package var.
+	fx := &networkFixture{}
+	fx.set(daemonFixtureNetworks)
+	hostNetworkFacts = fx.report
+	t.Cleanup(func() {
+		probeReadiness, hostNetworkFacts = prevReadiness, prevFacts
+		discoverReadiness = prevDiscoverReadiness
+	})
+	return dir, key, fx
 }
 
 // awaitReadiness polls the persisted status file until every wanted collector
@@ -1989,4 +2064,1005 @@ func TestStartDaemonState_ProbeRuntimeIsWiredAfterTheGate(t *testing.T) {
 		t.Errorf("probe.result outcome = %q, want %q", result.Outcome, probecollect.OutcomeRejected)
 	}
 	stub.assertNoCheckStart(t, 200*time.Millisecond)
+}
+
+// --- Task 13: current networks ride every capability.readiness frame (D-8) ---
+
+// readinessFrameNetworks decodes a capability.readiness frame's `networks` and, separately, the
+// raw key as it appeared on the wire. Both are needed: a nil slice and an absent key both decode
+// to a nil Networks, and D-8's whole point is that the wire must tell them apart.
+func readinessFrameNetworks(t *testing.T, f frame.Frame) ([]frame.NetworkFacts, json.RawMessage) {
+	t.Helper()
+	if f.Type != frame.TypeCapabilityReadiness {
+		t.Fatalf("frame type = %q, want %q", f.Type, frame.TypeCapabilityReadiness)
+	}
+	var payload frame.CapabilityReadinessPayload
+	if err := json.Unmarshal(f.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal readiness payload %s: %v", f.Payload, err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(f.Payload, &keys); err != nil {
+		t.Fatalf("unmarshal readiness payload %s as a map: %v", f.Payload, err)
+	}
+	raw, ok := keys["networks"]
+	if !ok {
+		t.Fatalf("readiness payload %s carries no `networks` key — the field must have no omitempty", f.Payload)
+	}
+	return payload.Networks, raw
+}
+
+// TestPublishReadiness_CarriesTheCurrentNetworks pins D-8: `hello` reports this host's directly
+// connected networks only at connect, so without them on the periodic frame a subnet that came up
+// on this machine would not become discoverable until the next reconnect — which may be days.
+func TestPublishReadiness_CarriesTheCurrentNetworks(t *testing.T) {
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	drainFrames(rt.controlFrames)
+
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	networks, _ := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
+	want := hostNetworkFacts()
+	if !reflect.DeepEqual(networks, want) {
+		t.Fatalf("readiness networks = %+v, want the host enumerator's own report %+v", networks, want)
+	}
+}
+
+// TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch is the load-bearing half of D-8's
+// no-omitempty tag. An agent that has lost every interface must be able to say `[]`: the server
+// gates persistence on the key's presence, so a dropped field would leave it standing on a stale,
+// wider-than-reality scope forever. It must also be a *change* — the frame has to go out now
+// rather than at the next rate-limit window.
+func TestPublishReadiness_AnEmptyNetworkListIsReportedAsSuch(t *testing.T) {
+	_, key, fx := startDaemonStateTestDirNetworks(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+	awaitReadinessFrame(t, rt.controlFrames)
+	drainFrames(rt.controlFrames)
+
+	// Every interface has gone away, but the enumeration itself succeeded.
+	fx.set([]frame.NetworkFacts{})
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	networks, raw := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
+	if len(networks) != 0 {
+		t.Errorf("readiness networks = %+v, want none", networks)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("readiness networks encoded as %s, want [] — null is not a report the server can read", raw)
+	}
+}
+
+// TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport covers the case the wire has
+// no encoding for. hostinfo.Networks returns nil when the interface list could not be read at all,
+// and `networks` carries no omitempty, so the frame must say *something*: sending that nil as `[]`
+// would claim every interface had disappeared and wipe a working scope — and bump the server's
+// scope generation — every time /sys/class/net was momentarily unreadable.
+func TestPublishReadiness_AnUnreadableInterfaceListRepeatsTheLastReport(t *testing.T) {
+	_, key, fx := startDaemonStateTestDirNetworks(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+	want, _ := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
+	if len(want) == 0 {
+		t.Fatal("the fixture enumerator reported no networks; this test asserts one is not lost")
+	}
+	drainFrames(rt.controlFrames)
+
+	fx.set(nil)
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "degraded"}})
+
+	networks, raw := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
+	if string(raw) == "null" {
+		t.Fatalf("readiness networks encoded as null; the field is list-typed on the server")
+	}
+	if !reflect.DeepEqual(networks, want) {
+		t.Errorf("readiness networks = %+v after an unreadable interface list, want the last real report %+v", networks, want)
+	}
+}
+
+// TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor pins the recovery half of D-8's
+// "the frame has to go out now": a forced frame that could not be enqueued must still be sent at
+// the next opportunity rather than swallowed.
+//
+// The send onto controlFrames is deliberately non-blocking — the channel is bounded and
+// publishReadiness runs on the host collector's goroutine, which must not stall behind the link's
+// websocket writer — so a force *can* be dropped when the writer is behind. By that point
+// publishReadiness has already overwritten readinessPayload, which makes the dropped change the new
+// dedup baseline: no later publish of the same state looks changed again, and the reconcile tick's
+// unforced queueReadiness is refused by the readinessReportInterval floor. Without a pending-force
+// memory the change is therefore never sent at all, and a networks-only change (which nothing else
+// re-reports) waits a whole report interval — exactly the wiped-scope window D-8 exists to close.
+func TestQueueReadiness_ADroppedForcedFrameSurvivesTheRateLimitFloor(t *testing.T) {
+	_, key, fx := startDaemonStateTestDirNetworks(t, `{"host_telemetry":{"enabled":false}}`, nil)
+	// A floor and a tick longer than the test can possibly run, so the delivery asserted below can
+	// only be the surviving force — never the rate-limit window elapsing or the reconciler firing.
+	shrinkReadinessTimers(t, time.Hour, time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+
+	// One successful send first: the floor only bites once readinessSentAt has been stamped.
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+	awaitReadinessFrame(t, rt.controlFrames)
+	drainFrames(rt.controlFrames)
+
+	// Now fill the channel so the next forced send has nowhere to go. Heartbeats are used as
+	// filler because they are the one control frame this test never asserts on.
+	for len(rt.controlFrames) < cap(rt.controlFrames) {
+		rt.controlFrames <- frame.Frame{Type: frame.TypeHeartbeat, TS: time.Now().UTC()}
+	}
+
+	// A networks-only change: the readiness half of the payload is identical, so nothing but the
+	// preserved force can get this onto the wire.
+	fx.set([]frame.NetworkFacts{})
+	rt.publishReadiness([]frame.Readiness{{Collector: "host.core", State: "ready"}})
+
+	// The writer catches up. Every frame drained here must be filler — if a readiness frame is
+	// among them the channel was not actually full and the test proves nothing.
+	for n := 0; n < cap(rt.controlFrames); n++ {
+		f := <-rt.controlFrames
+		if f.Type == frame.TypeCapabilityReadiness {
+			t.Fatalf("frame %d was %q; the forced send was not dropped, so this test is vacuous", n, f.Type)
+		}
+	}
+
+	// An unforced caller, standing in for the reconcile tick. Inside the floor it may only send
+	// because the dropped force is still owed.
+	rt.queueReadiness(false)
+	networks, raw := readinessFrameNetworks(t, awaitReadinessFrame(t, rt.controlFrames))
+	if len(networks) != 0 || string(raw) != "[]" {
+		t.Errorf("readiness networks = %+v (raw %s), want the dropped change's empty list", networks, raw)
+	}
+}
+
+// --- Task 14: the discovery runtime's daemon wiring ---
+
+// discoveryNeighborStub is the injected kernel-neighbor-cache read every
+// discovery test below runs against, and the handle they use to hold a dispatch
+// open.
+//
+// The neighbor cache is the only one of discovery's four collectors whose
+// dependency is injectable from outside internal/collect/discover
+// (discover.RuntimeOptions.Neighbors; Liveness' socket and dialer are
+// unexported), and it is the only one these tests use: every request below names
+// methods ["neighbor_cache"] with no tcp_ports, which is exactly the shape that
+// makes discover.Liveness open nothing at all — its ICMP half and its TCP half
+// are both gated on the request's method list. A cmd-level test that let the
+// sweep run would be probing whatever is really on the runner's 10.20.0.0/24.
+//
+// hold is what makes "in flight" observable. The cache is read once per dispatch,
+// inside the scan and before any sweep, so a read that blocks is a dispatch the
+// runtime has genuinely started and not yet summarised — which is the state
+// D-14's disable path and plan §4's cancellation both have to interrupt.
+type discoveryNeighborStub struct {
+	entries []discovercollect.Neighbor
+
+	// reads receives one value per read, so a test can wait for the dispatch to
+	// have actually reached the collector.
+	reads chan struct{}
+	// hold blocks every read until it is closed. A non-blocking stub is
+	// constructed with it already closed.
+	hold chan struct{}
+	// calls counts reads, so a test can assert that a refused request never
+	// looked at the host at all.
+	calls atomic.Int64
+}
+
+func (s *discoveryNeighborStub) read(ctx context.Context) ([]discovercollect.Neighbor, error) {
+	s.calls.Add(1)
+	select {
+	case s.reads <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.hold:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.entries, nil
+}
+
+// awaitRead waits for the next neighbor-cache read.
+func (s *discoveryNeighborStub) awaitRead(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.reads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no discovery dispatch reached the neighbor cache within 5s")
+	}
+}
+
+// useDiscoveryStub swaps newDiscoverRuntime for one whose only host-facing
+// dependency is the returned stub, for the duration of the test. It must be
+// called before startDaemonState, which is what constructs the runtime.
+//
+// blocking chooses whether a dispatch runs to completion or parks in the
+// collector until the test releases it.
+func useDiscoveryStub(t *testing.T, blocking bool) *discoveryNeighborStub {
+	t.Helper()
+	stub := &discoveryNeighborStub{
+		entries: []discovercollect.Neighbor{{
+			IP:    netip.MustParseAddr(discoveryKnownHost),
+			MAC:   discoveryKnownMAC,
+			State: discovercollect.NeighborReachable,
+		}},
+		reads: make(chan struct{}, 16),
+		hold:  make(chan struct{}),
+	}
+	if !blocking {
+		close(stub.hold)
+	}
+	// Released unconditionally at the end of the test: a dispatch still parked in
+	// the collector would otherwise keep its goroutine alive past the assertions.
+	t.Cleanup(func() {
+		select {
+		case <-stub.hold:
+		default:
+			close(stub.hold)
+		}
+	})
+
+	prev := newDiscoverRuntime
+	newDiscoverRuntime = func(out chan<- frame.Frame) *discovercollect.Runtime {
+		return discovercollect.NewRuntime(out, discovercollect.RuntimeOptions{Neighbors: stub.read})
+	}
+	t.Cleanup(func() { newDiscoverRuntime = prev })
+	return stub
+}
+
+// The one discovery topology every test below runs under. The target is a /30
+// inside the fixture host's own directly connected /24, so it is neither the
+// enclosing network's address nor its directed broadcast and netscope enumerates
+// all four of its addresses; exactly one of them is in the stubbed neighbor
+// cache, so a completed dispatch reports exactly one host.
+const (
+	discoveryInScopeTarget    = "10.20.0.8/30"
+	discoveryOutOfScopeTarget = "8.8.8.0/30"
+	discoveryTargetAddresses  = 4
+	discoveryKnownHost        = "10.20.0.9"
+	discoveryKnownMAC         = "aa:bb:cc:dd:ee:ff"
+)
+
+// Dispatch ids the backend would mint: exactly 32 lowercase hex characters.
+// Distinct per request in a test, because the runtime refuses a duplicate id
+// while the first one is still open.
+const (
+	discoveryDispatchOne   = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	discoveryDispatchTwo   = "b2c3d4e5f60718293a4b5c6d7e8f90a1"
+	discoveryDispatchThree = "c3d4e5f60718293a4b5c6d7e8f90a1b2"
+)
+
+// discoveryHostTimeoutMS is the per-address budget every request below carries.
+// Named because the assertions about how fast a cancellation takes effect are
+// derived from it rather than written as a bare duration.
+const discoveryHostTimeoutMS = 200
+
+// discoveryScopeVersion recomputes the netscope version the daemon under test
+// derives, from the same fixture interface list startDaemonStateTestDirNetworks
+// installs plus the grant's own scope config.
+//
+// It is recomputed rather than read back off the runtime on purpose: D-16's
+// contract is that the server and the agent derive the same version
+// independently, and a test that asked the runtime what version it happened to
+// hold would pin nothing at all.
+func discoveryScopeVersion(cfg capability.LocalDiscoveryConfig) string {
+	return netscope.Derive(probeInterfaceFacts(daemonFixtureNetworks), cfg.Config).Version
+}
+
+// discoveryRequest builds one discovery.request payload for a neighbor-cache-only
+// scan of target, carrying the scope version the daemon is expected to hold.
+func discoveryRequest(t *testing.T, dispatchID, target, scopeVersion string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(frame.DiscoveryRequestPayload{
+		DispatchID:         dispatchID,
+		ScanJobID:          41,
+		Targets:            []string{target},
+		Methods:            []string{discovercollect.MethodNeighborCache},
+		HostTimeoutMS:      discoveryHostTimeoutMS,
+		MaxConcurrentHosts: discoveryTargetAddresses,
+		ScopeVersion:       scopeVersion,
+		DeadlineAt:         time.Now().UTC().Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("marshal discovery.request: %v", err)
+	}
+	return data
+}
+
+// discoveryCancel builds one discovery.cancel payload.
+func discoveryCancel(t *testing.T, dispatchID, reason string) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(frame.DiscoveryCancelPayload{DispatchID: dispatchID, Reason: reason})
+	if err != nil {
+		t.Fatalf("marshal discovery.cancel: %v", err)
+	}
+	return data
+}
+
+// awaitDiscoveryDispatch drains the daemon's outbound *data* channel until the
+// dispatch's single terminal summary arrives, and returns the host findings that
+// preceded it alongside that summary.
+//
+// Reading from dataFrames rather than controlFrames is itself an assertion: a
+// discovery.finding is a data frame, so it spools through an outage instead of
+// being dropped while disconnected, which is the whole reason finding ids are
+// replay-stable.
+func awaitDiscoveryDispatch(
+	t *testing.T, ch <-chan frame.Frame, dispatchID string,
+) ([]frame.DiscoveryFindingPayload, frame.DiscoveryFindingPayload) {
+	t.Helper()
+	var hosts []frame.DiscoveryFindingPayload
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeDiscoveryFinding {
+				continue
+			}
+			var payload frame.DiscoveryFindingPayload
+			if err := json.Unmarshal(f.Payload, &payload); err != nil {
+				t.Fatalf("decode discovery.finding payload %s: %v", f.Payload, err)
+			}
+			if payload.DispatchID != dispatchID {
+				t.Fatalf("discovery.finding dispatch_id = %q, want %q", payload.DispatchID, dispatchID)
+			}
+			if !payload.Terminal {
+				hosts = append(hosts, payload)
+				continue
+			}
+			return hosts, payload
+		case <-deadline:
+			t.Fatalf("no terminal discovery.finding for %q within 5s (host findings so far: %d)",
+				dispatchID, len(hosts))
+		}
+	}
+}
+
+// TestStartDaemonState_DiscoveryRuntimeIsWiredAfterTheGate pins the startup
+// ordering the discovery runtime depends on, exactly as its probe counterpart
+// does: the capability gate is restored from its on-disk cache *before* the
+// runtime is configured, so a restart while disconnected comes back up already
+// enforcing the last scope and the last bounds the server sent. A runtime
+// configured before the gate loaded would hold an empty scope and refuse every
+// dispatch until the first capabilities.set arrived.
+//
+// It also pins that the runtime's findings leave on the daemon's data channel and
+// that discovery readiness is reported from startup, without waiting for a
+// connection or a grant push. Run under -race (apps/agent/Makefile's `test`
+// target): the configure path and the runtime's dispatcher are different
+// goroutines.
+func TestStartDaemonState_DiscoveryRuntimeIsWiredAfterTheGate(t *testing.T) {
+	stub := useDiscoveryStub(t, false)
+	dir, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	if rt.discoverRuntime == nil {
+		t.Fatal("daemonRuntime.discoverRuntime is nil, want a runtime link's discovery callbacks can bind to")
+	}
+
+	awaitReadiness(t, dir, discovercollect.DiscoverNames...)
+
+	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
+	if err := rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchOne, discoveryInScopeTarget, version)); err != nil {
+		t.Fatalf("Request(in scope) error = %v", err)
+	}
+	hosts, summary := awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchOne)
+	if len(hosts) != 1 {
+		t.Fatalf("host findings = %+v, want exactly the one address in the neighbor cache", hosts)
+	}
+	if hosts[0].IPAddress != discoveryKnownHost || hosts[0].MACAddress != discoveryKnownMAC {
+		t.Errorf("host finding = %+v, want ip %q and mac %q",
+			hosts[0], discoveryKnownHost, discoveryKnownMAC)
+	}
+	if summary.Outcome != frame.DiscoveryOutcomeCompleted {
+		t.Errorf("summary outcome = %q (msg %q), want %q",
+			summary.Outcome, summary.Msg, frame.DiscoveryOutcomeCompleted)
+	}
+	if summary.AddressesScanned == nil || *summary.AddressesScanned != discoveryTargetAddresses {
+		t.Errorf("summary addresses_scanned = %v, want %d",
+			summary.AddressesScanned, discoveryTargetAddresses)
+	}
+
+	// The cached grant's scope is already being enforced: a target on no network
+	// this host is attached to is refused before the collector is ever read.
+	before := stub.calls.Load()
+	if err := rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchTwo, discoveryOutOfScopeTarget, version)); err == nil {
+		t.Fatal("Request(out of scope) error = nil, want the refusal the validator makes")
+	}
+	_, summary = awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchTwo)
+	if summary.Outcome != frame.DiscoveryOutcomeRejected {
+		t.Errorf("summary outcome = %q, want %q", summary.Outcome, frame.DiscoveryOutcomeRejected)
+	}
+	if summary.ErrorCode == "" {
+		t.Error("summary error_code is empty, want the machine-readable scope reason")
+	}
+	if got := stub.calls.Load(); got != before {
+		t.Errorf("neighbor cache reads = %d after a refused request, want %d — a refusal must touch nothing",
+			got, before)
+	}
+}
+
+// TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted is the "starts
+// only when local_discovery is granted" half of Task 14.
+//
+// The runtime *object* is constructed and started unconditionally, for the same
+// reason the probe runtime is: link's callbacks bind to it once, so a dispatch
+// that arrives for an ungranted agent has to be refused with a terminal summary
+// that closes the job rather than dropped on a nil handler — and once
+// local_discovery is off, agent_link's grant gate would drop the agent's own
+// summary, so a dispatch nobody refuses is a job nothing ever closes. What must
+// not start is the *work*: no collector is read, no socket is opened, and every
+// discovery readiness row says so.
+func TestStartDaemonState_DiscoveryRuntimeScansNothingWhileUngranted(t *testing.T) {
+	stub := useDiscoveryStub(t, false)
+	_, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":false},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
+	err = rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchOne, discoveryInScopeTarget, version))
+	if !errors.Is(err, discovercollect.ErrNotEnabled) {
+		t.Fatalf("Request() error = %v, want %v", err, discovercollect.ErrNotEnabled)
+	}
+	hosts, summary := awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchOne)
+	if len(hosts) != 0 {
+		t.Errorf("host findings = %+v, want none — an ungranted agent observed nothing", hosts)
+	}
+	if summary.Outcome != frame.DiscoveryOutcomeRejected {
+		t.Errorf("summary outcome = %q, want %q", summary.Outcome, frame.DiscoveryOutcomeRejected)
+	}
+	if summary.ErrorCode != discovercollect.ErrorCodeCapabilityDisabled {
+		t.Errorf("summary error_code = %q, want %q",
+			summary.ErrorCode, discovercollect.ErrorCodeCapabilityDisabled)
+	}
+	if got := stub.calls.Load(); got != 0 {
+		t.Errorf("neighbor cache reads = %d, want 0 — an ungranted capability may perform no work", got)
+	}
+}
+
+// TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName pins the
+// discovery half of D-4. ingest_readiness only ever upserts — it never deletes —
+// so a revoked local_discovery grant that merely returned bare would leave Agent
+// Detail reading this vantage as a discovery-ready one for good. Every name in
+// discover.DiscoverNames must be actively overwritten with "disabled" on the one
+// readiness sink publishReadiness owns, and the agent's own identity row must
+// survive that overwrite.
+func TestApplyDiscoveryConfig_DisablePublishesDisabledForEveryDiscoverName(t *testing.T) {
+	_, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	rt.linked.Store(true)
+	rt.queueReadiness(true)
+
+	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range discovercollect.DiscoverNames {
+		if states[name] != "ready" {
+			t.Fatalf("pre-condition: readiness[%q] = %q, want %q", name, states[name], "ready")
+		}
+	}
+	drainFrames(rt.controlFrames)
+
+	if _, err := rt.capGate.ApplyGrants([]byte(`{"local_discovery":{"enabled":false}}`)); err != nil {
+		t.Fatalf("ApplyGrants() error = %v", err)
+	}
+	rt.applyDiscoveryConfig()
+
+	states, _ = readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	for _, name := range discovercollect.DiscoverNames {
+		if states[name] != "disabled" {
+			t.Errorf("readiness[%q] = %q after the grant was revoked, want %q", name, states[name], "disabled")
+		}
+	}
+	if states["agent.identity"] == "" {
+		t.Errorf("readiness = %v, want it to still carry agent.identity", states)
+	}
+}
+
+// TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFutureWork
+// pins D-14 at the daemon's own seam: the whole path from a server
+// capabilities.set that turns local_discovery off, through the gate, to a
+// dispatch that stops now rather than at the end of its deadline.
+//
+// It has to go through onCapabilitiesSet rather than calling
+// applyDiscoveryConfig directly, because the frame handler is what the server
+// actually reaches — a wiring that installed the grant but forgot to re-apply the
+// discovery half would pass an applyDiscoveryConfig-only test and leave a revoked
+// agent scanning.
+//
+// Both halves are asserted. Cancelling in flight: the running dispatch is closed
+// out with a `cancelled` summary, because once the grant is off agent_link's
+// grant gate drops the agent's own terminal summary and a dispatch nobody closes
+// is a job that hangs for its whole dispatch deadline. Stopping future work: the
+// next dispatch is refused with `capability_disabled` and never reaches the
+// collector.
+func TestOnCapabilitiesSet_DisablingLocalDiscoveryCancelsInFlightWorkAndStopsFutureWork(t *testing.T) {
+	stub := useDiscoveryStub(t, true)
+	_, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
+	if err := rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchOne, discoveryInScopeTarget, version)); err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+	stub.awaitRead(t)
+
+	if err := rt.onCapabilitiesSet([]byte(`{"local_discovery":{"enabled":false}}`)); err != nil {
+		t.Fatalf("onCapabilitiesSet() error = %v", err)
+	}
+
+	_, summary := awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchOne)
+	if summary.Outcome != frame.DiscoveryOutcomeCancelled {
+		t.Errorf("summary outcome = %q (msg %q), want %q",
+			summary.Outcome, summary.Msg, frame.DiscoveryOutcomeCancelled)
+	}
+	if rt.discoverRuntime.OpenDispatches() != 0 {
+		t.Errorf("OpenDispatches() = %d after the grant was revoked, want 0",
+			rt.discoverRuntime.OpenDispatches())
+	}
+
+	before := stub.calls.Load()
+	err = rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchTwo, discoveryInScopeTarget, version))
+	if !errors.Is(err, discovercollect.ErrNotEnabled) {
+		t.Fatalf("Request() after revocation error = %v, want %v", err, discovercollect.ErrNotEnabled)
+	}
+	_, summary = awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchTwo)
+	if summary.ErrorCode != discovercollect.ErrorCodeCapabilityDisabled {
+		t.Errorf("summary error_code = %q, want %q",
+			summary.ErrorCode, discovercollect.ErrorCodeCapabilityDisabled)
+	}
+	if got := stub.calls.Load(); got != before {
+		t.Errorf("neighbor cache reads = %d after revocation, want %d — no future work may start",
+			got, before)
+	}
+}
+
+// TestOnCapabilitiesSet_DiscoveryBoundsAreReAppliedWithoutRestart pins the
+// grant-change path plan §2 asks for: a rewritten local_discovery config must be
+// what the *next* dispatch is judged against, with no restart. Rebuilding the
+// runtime instead would abandon every dispatch in flight and hand the backend a
+// batch of expired jobs for a change that is supposed to be transparent, so this
+// also asserts the runtime is the same object afterwards.
+//
+// max_addresses_per_job is the bound under test because it is enforced by the
+// validator the grant builds rather than by anything the request carries: a
+// wiring that installed the new grant but never rebuilt the validator would keep
+// refusing the same target forever.
+func TestOnCapabilitiesSet_DiscoveryBoundsAreReAppliedWithoutRestart(t *testing.T) {
+	stub := useDiscoveryStub(t, false)
+	_, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":true,"config":{"max_addresses_per_job":1}},"host_telemetry":{"enabled":false}}`,
+		nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+	before := rt.discoverRuntime
+
+	// The scope is unchanged by either grant — max_addresses_per_job is not one of
+	// the four fields netscope digests — so one version covers both halves.
+	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
+
+	if err := rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchOne, discoveryInScopeTarget, version)); err == nil {
+		t.Fatal("Request() error = nil, want the address ceiling to refuse a /30 under a grant of 1")
+	}
+	_, summary := awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchOne)
+	if summary.ErrorCode != discovercollect.ErrorCodeAddressLimit {
+		t.Fatalf("summary error_code = %q (msg %q), want %q",
+			summary.ErrorCode, summary.Msg, discovercollect.ErrorCodeAddressLimit)
+	}
+	if got := stub.calls.Load(); got != 0 {
+		t.Errorf("neighbor cache reads = %d, want 0 — a refused request touches nothing", got)
+	}
+
+	if err := rt.onCapabilitiesSet([]byte(
+		`{"local_discovery":{"enabled":true,"config":{"max_addresses_per_job":4}}}`)); err != nil {
+		t.Fatalf("onCapabilitiesSet() error = %v", err)
+	}
+
+	if err := rt.discoverRuntime.Request(
+		discoveryRequest(t, discoveryDispatchTwo, discoveryInScopeTarget, version)); err != nil {
+		t.Fatalf("Request() after the raised ceiling error = %v", err)
+	}
+	hosts, summary := awaitDiscoveryDispatch(t, rt.dataFrames, discoveryDispatchTwo)
+	if summary.Outcome != frame.DiscoveryOutcomeCompleted {
+		t.Errorf("summary outcome = %q (msg %q), want %q",
+			summary.Outcome, summary.Msg, frame.DiscoveryOutcomeCompleted)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("host findings = %+v, want the one address in the neighbor cache", hosts)
+	}
+	if rt.discoverRuntime != before {
+		t.Error("applyDiscoveryConfig replaced the discovery runtime, want the running one reconfigured in place")
+	}
+}
+
+// generateDaemonTestKeypair and daemonTestResponder are a third copy of internal/link's and
+// internal/enroll's Noise test responder, duplicated for the same reason those two are duplicates
+// of each other: this repo has no shared Go test-utility package, and neither existing copy is
+// exported. They exist here because the one thing cmd/cb-agent owns that no other package can
+// check is whether the daemon's *own* link options deliver an inbound frame to the runtime that
+// has to act on it.
+func generateDaemonTestKeypair(t *testing.T) (priv, pub [32]byte) {
+	t.Helper()
+	dhKey, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKeypair() error = %v", err)
+	}
+	copy(priv[:], dhKey.Private)
+	copy(pub[:], dhKey.Public)
+	return priv, pub
+}
+
+type daemonTestResponder struct {
+	hs   *noise.HandshakeState
+	send *noise.CipherState // responder -> agent
+	recv *noise.CipherState // agent -> responder
+}
+
+func newDaemonTestResponder(t *testing.T, priv, pub [32]byte) *daemonTestResponder {
+	t.Helper()
+	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
+	hs, err := noise.NewHandshakeState(noise.Config{
+		CipherSuite:   cs,
+		Pattern:       noise.HandshakeIK,
+		Initiator:     false,
+		StaticKeypair: noise.DHKey{Private: priv[:], Public: pub[:]},
+	})
+	if err != nil {
+		t.Fatalf("NewHandshakeState() error = %v", err)
+	}
+	return &daemonTestResponder{hs: hs}
+}
+
+func (s *daemonTestResponder) readHandshakeMessage(msg1 []byte) ([]byte, error) {
+	if _, _, _, err := s.hs.ReadMessage(nil, msg1); err != nil {
+		return nil, fmt.Errorf("daemonTestResponder: read message 1: %w", err)
+	}
+	msg2, c1, c2, err := s.hs.WriteMessage(nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("daemonTestResponder: write message 2: %w", err)
+	}
+	s.recv, s.send = c1, c2
+	return msg2, nil
+}
+
+func (s *daemonTestResponder) encrypt(plaintext []byte) []byte {
+	ct, err := s.send.Encrypt(nil, nil, plaintext)
+	if err != nil {
+		panic(fmt.Sprintf("daemonTestResponder: encrypt: %v", err))
+	}
+	return ct
+}
+
+func (s *daemonTestResponder) decrypt(ciphertext []byte) ([]byte, error) {
+	pt, err := s.recv.Decrypt(nil, nil, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("daemonTestResponder: decrypt: %w", err)
+	}
+	return pt, nil
+}
+
+// discoveryLinkServer is a minimal stand-in for the backend's link endpoint
+// (api/ws_agents.py's link_stream): it completes the Noise handshake, accepts the hello,
+// dispatches one `discovery.request`, sends the matching `discovery.cancel` when the test says
+// so, and surfaces every `discovery.finding` the agent sends back.
+//
+// It is a real socket rather than a direct call into daemonRuntime because the two things being
+// pinned here are exactly the two that a direct call cannot see: that internal/link has an
+// inbound arm for each of these frame types, and that runDaemon's own link options bind those
+// arms to the discovery runtime.
+type discoveryLinkServer struct {
+	url         string
+	serverPKHex string
+	// findings carries every discovery.finding frame the agent sent, decrypted and decoded, in
+	// the order it sent them.
+	findings chan frame.Frame
+	// cancelNow releases the discovery.cancel write. Cancellation is ordered *after* the
+	// dispatch has demonstrably reached the collector rather than racing it, because a
+	// cancellation that lands first is a different scenario (a queued dispatch closed out
+	// without ever running) and would pin nothing about a running one.
+	cancelNow chan struct{}
+	// done releases the handler at teardown. httptest.Server.Close blocks until its handlers
+	// return, and this one deliberately parks on the connection so the link stays up.
+	done chan struct{}
+}
+
+func (s *discoveryLinkServer) sendCancel() { close(s.cancelNow) }
+
+func newDiscoveryLinkServer(t *testing.T, request, cancellation json.RawMessage) *discoveryLinkServer {
+	t.Helper()
+	serverPriv, serverPub := generateDaemonTestKeypair(t)
+	s := &discoveryLinkServer{
+		serverPKHex: hex.EncodeToString(serverPub[:]),
+		findings:    make(chan frame.Frame, 64),
+		cancelNow:   make(chan struct{}),
+		done:        make(chan struct{}),
+	}
+
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		responder := newDaemonTestResponder(t, serverPriv, serverPub)
+		_, msg1, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		msg2, err := responder.readHandshakeMessage(msg1)
+		if err != nil {
+			t.Errorf("responder handshake: %v", err)
+			return
+		}
+		if err := conn.WriteMessage(websocket.BinaryMessage, msg2); err != nil {
+			return
+		}
+		// The hello is *decrypted*, not merely read: the responder's receive cipher carries a
+		// nonce counter, so skipping one message desynchronizes every later decrypt.
+		_, helloCt, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if _, err := responder.decrypt(helloCt); err != nil {
+			t.Errorf("decrypt hello: %v", err)
+			return
+		}
+
+		send := func(f frame.Frame) bool {
+			data, encodeErr := frame.Encode(f)
+			if encodeErr != nil {
+				t.Errorf("encode %s: %v", f.Type, encodeErr)
+				return false
+			}
+			return conn.WriteMessage(websocket.BinaryMessage, responder.encrypt(data)) == nil
+		}
+		acceptance, err := json.Marshal(frame.HelloAckPayload{Accepted: true, AgentID: 1})
+		if err != nil {
+			t.Errorf("marshal hello.ack: %v", err)
+			return
+		}
+		if !send(frame.Frame{V: frame.FrameVersion, Type: frame.TypeHelloAck,
+			Seq: 0, TS: time.Now().UTC(), Payload: acceptance}) {
+			return
+		}
+		if !send(frame.Frame{V: frame.FrameVersion, Type: frame.TypeDiscoveryRequest,
+			Seq: 1, TS: time.Now().UTC(), Payload: request}) {
+			return
+		}
+
+		// One reader and one writer is all gorilla/websocket permits concurrently, so the
+		// agent's frames are drained on their own goroutine while the write side below waits
+		// its turn to send the cancellation.
+		go func() {
+			for {
+				_, ct, readErr := conn.ReadMessage()
+				if readErr != nil {
+					return
+				}
+				pt, decryptErr := responder.decrypt(ct)
+				if decryptErr != nil {
+					t.Errorf("decrypt agent frame: %v", decryptErr)
+					return
+				}
+				f, decodeErr := frame.Decode(pt)
+				if decodeErr != nil {
+					t.Errorf("decode agent frame: %v", decodeErr)
+					return
+				}
+				if f.Type != frame.TypeDiscoveryFinding {
+					continue
+				}
+				select {
+				case s.findings <- f:
+				default:
+					t.Errorf("more than %d discovery.finding frames arrived", cap(s.findings))
+					return
+				}
+			}
+		}()
+
+		select {
+		case <-s.cancelNow:
+		case <-s.done:
+			return
+		}
+		if !send(frame.Frame{V: frame.FrameVersion, Type: frame.TypeDiscoveryCancel,
+			Seq: 2, TS: time.Now().UTC(), Payload: cancellation}) {
+			return
+		}
+		// Park rather than return: returning closes the connection, and the terminal summary
+		// this test is waiting for still has to travel back over it.
+		<-s.done
+	}))
+	t.Cleanup(srv.Close)
+	// Registered *after* srv.Close so that it runs *before* it — t.Cleanup is LIFO. The handler
+	// above parks on the connection, and httptest.Server.Close never returns while a hijacked
+	// connection's handler is still running.
+	t.Cleanup(func() { close(s.done) })
+	s.url = "ws" + strings.TrimPrefix(srv.URL, "http")
+	return s
+}
+
+// TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime is Task 14's inbound half at the
+// only level that can observe all of it: a `discovery.request` written by a stand-in backend has
+// to cross a real Noise-encrypted link, be recognized by internal/link's inbound switch, be
+// delivered to the binding runDaemon installed, start a scan, and have the matching
+// `discovery.cancel` reach the same dispatch — with the terminal summary arriving back at the
+// server as the frame that closes the scan job.
+//
+// Every earlier version of this test called rt.discoverRuntime.Request directly, which proved
+// only that the method worked. It passed for the entire period during which nothing delivered an
+// inbound frame to it at all: link.Options had no discovery callbacks and the inbound switch had
+// no arm for either frame type, so a real dispatch was decoded, accepted and dropped, and the
+// scan job hung to its dispatch deadline. Driving the socket is what makes that failure visible
+// here instead of in production.
+func TestDiscoveryRuntime_RequestAndCancelFramesReachTheRuntime(t *testing.T) {
+	// Blocking, so the dispatch is demonstrably *running* when the cancellation arrives: a
+	// dispatch that had already completed would produce the same terminal frame count with none
+	// of the same meaning.
+	stub := useDiscoveryStub(t, true)
+	_, key := startDaemonStateTestDir(t,
+		`{"local_discovery":{"enabled":true},"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	const reason = "scope_changed"
+	version := discoveryScopeVersion(capability.DefaultLocalDiscoveryConfig())
+	srv := newDiscoveryLinkServer(t,
+		discoveryRequest(t, discoveryDispatchThree, discoveryInScopeTarget, version),
+		discoveryCancel(t, discoveryDispatchThree, reason))
+
+	// The options are the daemon's own, not a hand-built set: rt.linkOptions is what runDaemon
+	// runs with, so a binding dropped from it fails this test rather than silently disabling a
+	// frame type. The hooks are left zero — link.Run nil-defaults them, and none of the
+	// update-marker or status-file work they do is what is under test here.
+	linkCfg := &config.Config{ServerURL: srv.url, ServerStaticPK: srv.serverPKHex}
+	go func() { _ = link.Run(ctx, rt.linkOptions(linkCfg, key, "0.1.0-test", linkHooks{})) }()
+
+	stub.awaitRead(t)
+	srv.sendCancel()
+
+	// Read the findings off the *server* side, not rt.dataFrames: once link.Run is up it owns
+	// that channel, and asserting on what actually left the socket is the stronger claim anyway.
+	hosts, summary := awaitDiscoveryDispatch(t, srv.findings, discoveryDispatchThree)
+	if summary.Outcome != frame.DiscoveryOutcomeCancelled {
+		t.Errorf("summary outcome = %q (msg %q), want %q",
+			summary.Outcome, summary.Msg, frame.DiscoveryOutcomeCancelled)
+	}
+	if !strings.Contains(summary.Msg, reason) {
+		t.Errorf("summary msg = %q, want it to carry the cancellation reason %q", summary.Msg, reason)
+	}
+	if summary.DispatchID != discoveryDispatchThree {
+		t.Errorf("summary dispatch_id = %q, want %q", summary.DispatchID, discoveryDispatchThree)
+	}
+	if len(hosts) != 0 {
+		t.Errorf("host findings = %+v, want none — the collector was still parked when the "+
+			"cancellation arrived", hosts)
+	}
+	if rt.discoverRuntime.OpenDispatches() != 0 {
+		t.Errorf("OpenDispatches() = %d after the cancellation, want 0",
+			rt.discoverRuntime.OpenDispatches())
+	}
+}
+
+// TestDaemonLinkOptions_EveryActionableInboundFrameTypeHasAHandler is the cheap standing guard
+// behind the expensive test above. A link.Options field left unset is not a compile error, and an
+// unset inbound handler is not an error at runtime either — internal/link nil-guards every one of
+// them — so the failure mode of forgetting a binding is silence: the agent decodes the frame,
+// accepts it, and does nothing. This asserts that each server -> agent type the daemon is
+// required to act on has *something* installed, which is the property that was false for
+// discovery.request and cost a whole scan job's dispatch deadline to notice.
+func TestDaemonLinkOptions_EveryActionableInboundFrameTypeHasAHandler(t *testing.T) {
+	useDiscoveryStub(t, false)
+	_, key := startDaemonStateTestDir(t, `{"host_telemetry":{"enabled":false}}`, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt, err := startDaemonState(&config.Config{}, key, "0.1.0-test", ctx)
+	if err != nil {
+		t.Fatalf("startDaemonState() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.sp.Close() })
+
+	opts := rt.linkOptions(&config.Config{}, key, "0.1.0-test", linkHooks{})
+	for _, binding := range []struct {
+		frameType string
+		handler   func(json.RawMessage) error
+	}{
+		{frame.TypeCapabilitiesSet, opts.OnCapabilitiesSet},
+		{frame.TypeProbeAssign, opts.OnProbeAssign},
+		{frame.TypeProbeCancel, opts.OnProbeCancel},
+		{frame.TypeDiscoveryRequest, opts.OnDiscoveryRequest},
+		{frame.TypeDiscoveryCancel, opts.OnDiscoveryCancel},
+	} {
+		if binding.handler == nil {
+			t.Errorf("link.Options has no handler for %q — the daemon would decode the frame "+
+				"and drop it", binding.frameType)
+		}
+	}
+	// The two data-frame paths every one of those handlers reports its outcome over. A nil
+	// channel here would make a refusal unreportable, which is the same silent failure by
+	// another route.
+	if opts.DataFrames == nil || opts.ControlFrames == nil {
+		t.Error("link.Options carries no outbound frame channels, so no handler could report anything")
+	}
 }

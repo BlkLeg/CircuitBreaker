@@ -177,6 +177,21 @@ type Options struct {
 	// server as a `probe.result` by the runtime itself.
 	OnProbeAssign func(json.RawMessage) error
 	OnProbeCancel func(json.RawMessage) error
+	// OnDiscoveryRequest and OnDiscoveryCancel are the same contract for the
+	// server -> agent `discovery.request` / `discovery.cancel` payloads (Slice
+	// 4 §4), and it is the same contract for the same reason: they are called
+	// from runOnce's inbound switch, on the one goroutine this connection
+	// shares with the websocket writer and the heartbeat, rekey and
+	// spool-drain tickers. A handler that scanned inline would stall
+	// heartbeats past the server's 60s dead-link deadline and tear down the
+	// link every finding has to travel back over — so both must validate and
+	// enqueue only. internal/collect/discover's Runtime.Request/Runtime.Cancel
+	// are that enqueue-only implementation; the returned error is logged and
+	// never ends the connection, since a refused dispatch is reported to the
+	// server as a terminal `discovery.finding` summary by the runtime itself,
+	// and that summary is what closes the scan job.
+	OnDiscoveryRequest func(json.RawMessage) error
+	OnDiscoveryCancel  func(json.RawMessage) error
 	// OnUpdate applies one `update` instruction (download, verify, swap,
 	// re-exec). send lets it report its own progress — "started" right after
 	// unmarshalling the instruction, "failed" with a message on any
@@ -269,6 +284,12 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	if opts.OnProbeCancel == nil {
 		opts.OnProbeCancel = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnDiscoveryRequest == nil {
+		opts.OnDiscoveryRequest = func(json.RawMessage) error { return nil }
+	}
+	if opts.OnDiscoveryCancel == nil {
+		opts.OnDiscoveryCancel = func(json.RawMessage) error { return nil }
 	}
 	if opts.OnUpdate == nil {
 		opts.OnUpdate = func(json.RawMessage, SendUpdateStatus) error { return nil }
@@ -832,6 +853,23 @@ func runOnce(ctx context.Context, opts Options) (stable bool, err error) {
 				if opts.OnProbeCancel != nil {
 					if err := opts.OnProbeCancel(f.Payload); err != nil {
 						log.Printf("link: probe.cancel: %v", err)
+					}
+				}
+			case frame.TypeDiscoveryRequest:
+				// Nil-guarded and error-logging for the same two reasons as the
+				// probe arms above: runOnce is reachable without Run's
+				// defaulting, and a refusal is already on its way back to the
+				// server as a terminal `rejected` summary, so ending the
+				// connection over it would only strand the job it just closed.
+				if opts.OnDiscoveryRequest != nil {
+					if err := opts.OnDiscoveryRequest(f.Payload); err != nil {
+						log.Printf("link: discovery.request refused: %v", err)
+					}
+				}
+			case frame.TypeDiscoveryCancel:
+				if opts.OnDiscoveryCancel != nil {
+					if err := opts.OnDiscoveryCancel(f.Payload); err != nil {
+						log.Printf("link: discovery.cancel: %v", err)
 					}
 				}
 			case frame.TypeUpdate:
