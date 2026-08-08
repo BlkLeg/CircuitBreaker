@@ -42,8 +42,15 @@ var icmpPayload = []byte("cb-agent-probe")
 // CAP_NET_RAW and this must not become a reason to add it.
 var ErrICMPUnavailable = errors.New("probe: unprivileged datagram ICMP is unavailable on this host")
 
-// icmpSession is one open unprivileged-ICMP socket. Injected so no test reaches the kernel.
-type icmpSession interface {
+// EchoSession is one open unprivileged-ICMP socket. Injected so no test reaches the kernel.
+//
+// It is exported, together with ListenUnprivilegedICMP, for internal/collect/discover: the
+// host-liveness sweep of Slice 4 sends one echo per address and needs this exact socket. A copy
+// over there would be a second place to keep the ping_group_range degradation, the reply matching
+// and the cancellation-collapses-the-deadline behavior correct. This is the only thing that
+// package may take from here — discovery follows no redirects and sends no credentials (§7 of
+// plans/2026-08-04-cbi-agent-slice4-local-discovery.md), which puts http.go out of its reach.
+type EchoSession interface {
 	// Ping sends one echo request and waits up to timeout for its reply. ok=false means the
 	// deadline passed with no answer, which is packet loss and not a failure; a non-nil error
 	// means the probe could not be performed at all.
@@ -52,7 +59,7 @@ type icmpSession interface {
 }
 
 // icmpOpener opens an echo session on "udp4" or "udp6".
-type icmpOpener func(network string) (icmpSession, error)
+type icmpOpener func(network string) (EchoSession, error)
 
 // icmpChecker mirrors collectors/net.py::collect_icmp.
 type icmpChecker struct {
@@ -62,7 +69,7 @@ type icmpChecker struct {
 }
 
 func newICMPChecker(deps Deps) Checker {
-	return &icmpChecker{scope: deps.Scope, resolve: deps.Resolve, open: listenUnprivilegedICMP}
+	return &icmpChecker{scope: deps.Scope, resolve: deps.Resolve, open: ListenUnprivilegedICMP}
 }
 
 // icmpConfig is the slice of the monitor's config this check reads.
@@ -224,7 +231,9 @@ type datagramICMPSession struct {
 	id int
 }
 
-func listenUnprivilegedICMP(network string) (icmpSession, error) {
+// ListenUnprivilegedICMP opens one echo session on "udp4" or "udp6". An error here is the
+// host-wide condition ErrICMPUnavailable describes, not a fault of any target.
+func ListenUnprivilegedICMP(network string) (EchoSession, error) {
 	address := "0.0.0.0"
 	if network == "udp6" {
 		address = "::"

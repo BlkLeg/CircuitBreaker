@@ -32,7 +32,7 @@ func (s *fakeICMPSession) isClosed() bool {
 // datagram-ICMP socket and /etc/resolv.conf names a resolver.
 func healthyReadinessDeps() readinessDeps {
 	return readinessDeps{
-		openICMP:      func(string) (icmpSession, error) { return &fakeICMPSession{}, nil },
+		openICMP:      func(string) (EchoSession, error) { return &fakeICMPSession{}, nil },
 		systemServers: func() ([]string, error) { return []string{"10.0.0.1"}, nil },
 	}
 }
@@ -67,7 +67,7 @@ func TestProbeReadiness_TCPAndHTTPAreReadyByDefault(t *testing.T) {
 // CAP_NET_RAW — with a remediation an operator can act on.
 func TestProbeReadiness_ICMPIsUnavailableWhenPingGroupRangeIsUnusable(t *testing.T) {
 	deps := healthyReadinessDeps()
-	deps.openICMP = func(string) (icmpSession, error) {
+	deps.openICMP = func(string) (EchoSession, error) {
 		return nil, errors.New("listen ip4:1 0.0.0.0: socket: permission denied")
 	}
 
@@ -147,7 +147,7 @@ func TestProbeReadiness_DNSIsReadyWithAConfiguredResolver(t *testing.T) {
 func TestProbeReadiness_ClosesTheProbeSocket(t *testing.T) {
 	session := &fakeICMPSession{}
 	deps := healthyReadinessDeps()
-	deps.openICMP = func(string) (icmpSession, error) { return session, nil }
+	deps.openICMP = func(string) (EchoSession, error) { return session, nil }
 
 	evaluateReadiness(deps)
 

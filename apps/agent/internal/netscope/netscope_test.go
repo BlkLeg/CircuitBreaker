@@ -242,3 +242,31 @@ func TestAddressCount_HandlesADualStackTargetSet(t *testing.T) {
 		t.Errorf("AddressCount(adjacent halves) = %d, want 256", got)
 	}
 }
+
+// TestNetworkIsApproved_IsTheOtherHalfOfTheAttachmentQuestion pins the exemption Slice 4's
+// request validator depends on: an administrator-added routed network is on no segment this host
+// is attached to, so a target inside it can only be authorized by this half.
+func TestNetworkIsApproved_IsTheOtherHalfOfTheAttachmentQuestion(t *testing.T) {
+	scope := Derive(
+		[]InterfaceFacts{{Name: "eth0", Flags: []string{"up"}, Addrs: []string{"10.0.0.5/24"}}},
+		Config{AdditionalCIDRs: []string{"172.16.5.0/24"}},
+	)
+
+	if !NetworkIsApproved(scope, "172.16.5.0/24") {
+		t.Error("the approved network itself must read as approved")
+	}
+	// Containment rather than equality: the backend dispatches a slice of an approved network as
+	// readily as the whole of it, and an exact-match test would refuse the slice.
+	if !NetworkIsApproved(scope, "172.16.5.128/25") {
+		t.Error("a prefix inside the approved network must read as approved")
+	}
+	if NetworkIsApproved(scope, "10.0.0.0/25") {
+		t.Error("a directly connected prefix is derived, not approved")
+	}
+	if NetworkIsApproved(scope, "172.16.0.0/16") {
+		t.Error("a prefix merely overlapping the approved network is not contained by it")
+	}
+	if NetworkIsApproved(scope, "not-a-cidr") {
+		t.Error("an unparseable prefix must not read as approved")
+	}
+}

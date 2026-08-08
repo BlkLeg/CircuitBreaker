@@ -297,6 +297,31 @@ func NetworkIsDirectlyConnected(scope Scope, cidr string) bool {
 	return false
 }
 
+// NetworkIsApproved reports whether cidr is contained in a network an administrator explicitly
+// added to the grant, rather than one this host derived from its own interfaces.
+//
+// It is the other half of the question NetworkIsDirectlyConnected asks, and it exists because §3
+// scopes the directly-connected requirement to *automatically* derived targets: plan §2 lets an
+// administrator approve a routed subnet on purpose, and such a subnet is by definition not on a
+// segment this host is attached to. Requiring both would make the override unusable.
+//
+// Like its twin this is agent-side only and deliberately outside NetworkInScope. The backend
+// authorized the prefix in the first place and has no equivalent question to ask, so folding
+// either half in would make the two evaluators disagree by design and the shared corpus
+// meaningless.
+func NetworkIsApproved(scope Scope, cidr string) bool {
+	network, ok := parsePrefix(cidr)
+	if !ok {
+		return false
+	}
+	for _, approved := range parseCIDRs(scope.ApprovedNetworks) {
+		if containsNetwork(approved, network) {
+			return true
+		}
+	}
+	return false
+}
+
 // AddressCount reports how many addresses a set of target prefixes covers, for the job ceiling.
 //
 // Overlapping and duplicate entries are counted once, so naming the same /24 twice does not

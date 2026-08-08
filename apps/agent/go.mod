@@ -13,6 +13,14 @@ require (
 	golang.org/x/crypto v0.31.0
 )
 
+// v0.30.0 is the last release declaring go 1.18; CI pins setup-go to 1.22 (D-11),
+// so a newer x/sys (v0.31.0+ declares go 1.23.0) compiles locally and breaks CI. v0.28.0 is what
+// the graph already resolved to as an indirect dependency, and D-11 keeps it there: promoting it
+// to direct is not a reason to move it.
+// unix is the reason for the dependency: reading the kernel neighbor cache over RTM_GETNEIGH
+// needs the netlink constants and raw socket calls, and the stdlib syscall package is frozen.
+require golang.org/x/sys v0.28.0
+
 // v0.33.0 is the last release declaring go 1.18; CI pins setup-go to 1.22 (D-11),
 // so a newer x/net (v0.36.0+ declares go 1.23.0) compiles locally and breaks CI.
 // icmp + ipv4/ipv6 are the reason for the dependency: the stdlib cannot build ICMP echo
@@ -22,6 +30,5 @@ require golang.org/x/net v0.33.0
 require (
 	golang.org/x/mod v0.18.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/tools v0.22.0 // indirect
 )

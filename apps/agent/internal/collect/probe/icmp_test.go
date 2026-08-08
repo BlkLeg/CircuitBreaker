@@ -90,7 +90,7 @@ type fakeICMPOpener struct {
 	err      error
 }
 
-func (o *fakeICMPOpener) open(network string) (icmpSession, error) {
+func (o *fakeICMPOpener) open(network string) (EchoSession, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.networks = append(o.networks, network)

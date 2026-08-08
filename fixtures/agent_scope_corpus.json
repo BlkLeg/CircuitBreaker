@@ -416,5 +416,13 @@
     "destination": {"cidr": "10.0.0.0/33"},
     "expected": "deny",
     "reason": "invalid_destination"
+  },
+  {
+    "description": "prefix — a slice of a centrally approved routed network is dispatchable",
+    "facts": [{"name": "eth0", "flags": ["broadcast", "up"], "addrs": ["10.0.0.5/24"]}],
+    "config": {"additional_cidrs": ["192.168.50.0/24"]},
+    "destination": {"cidr": "192.168.50.128/25"},
+    "expected": "allow",
+    "reason": "in_scope"
   }
 ]

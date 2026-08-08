@@ -79,7 +79,7 @@ func newDNSChecker(deps Deps) Checker {
 	return &dnsChecker{
 		deps:          deps,
 		exchange:      exchangeDNS,
-		systemServers: systemNameservers,
+		systemServers: SystemNameservers,
 		now:           time.Now,
 	}
 }
@@ -314,10 +314,14 @@ func exchangeDNS(ctx context.Context, msg *dns.Msg, server string, timeout time.
 	return retried, nil
 }
 
-// systemNameservers reads this host's own resolvers. An empty list is reported as such rather
+// SystemNameservers reads this host's own resolvers. An empty list is reported as such rather
 // than defaulted to a public resolver: §5's readiness contract is that DNS is *degraded* when no
 // usable resolver is configured, not that the agent silently picks one.
-func systemNameservers() ([]string, error) {
+//
+// Exported because internal/collect/discover's readiness answers the same question about the same
+// file for its reverse-DNS collector. A second reader there would be a second parse of
+// resolv.conf that could disagree with this one about the same host.
+func SystemNameservers() ([]string, error) {
 	cfg, err := dns.ClientConfigFromFile(dnsResolvConfPath)
 	if err != nil {
 		return nil, err

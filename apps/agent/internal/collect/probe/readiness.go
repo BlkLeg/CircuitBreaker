@@ -18,8 +18,12 @@ var ProbeNames = []string{"probe.icmp", "probe.tcp", "probe.http", "probe.dns"}
 // The two operator-facing instructions probe readiness can attach. They are constants because a
 // remediation is an instruction someone will paste into a shell, not prose to be reworded per
 // call site.
+//
+// ICMPReadinessRemediation is exported because internal/collect/discover's readiness reports on
+// the very same socket and the very same sysctl. Two wordings for one kernel setting could only
+// drift into telling one operator two different things.
 const (
-	icmpReadinessRemediation = `allow unprivileged ICMP for the cb-agent user's group, e.g. sysctl -w net.ipv4.ping_group_range="0 2147483647"`
+	ICMPReadinessRemediation = `allow unprivileged ICMP for the cb-agent user's group, e.g. sysctl -w net.ipv4.ping_group_range="0 2147483647"`
 	dnsReadinessRemediation  = "configure at least one nameserver in /etc/resolv.conf, or set an explicit resolver on each DNS monitor"
 )
 
@@ -47,8 +51,8 @@ type readinessDeps struct {
 // upserts, so a row the UI should stop showing has to be actively overwritten.
 func Readiness() []frame.Readiness {
 	return evaluateReadiness(readinessDeps{
-		openICMP:      listenUnprivilegedICMP,
-		systemServers: systemNameservers,
+		openICMP:      ListenUnprivilegedICMP,
+		systemServers: SystemNameservers,
 	})
 }
 
@@ -69,7 +73,7 @@ func evaluateReadiness(deps readinessDeps) []frame.Readiness {
 // namespace or a seccomp filter decides otherwise — the open is the check.
 func icmpReadiness(open icmpOpener) frame.Readiness {
 	if open == nil {
-		open = listenUnprivilegedICMP
+		open = ListenUnprivilegedICMP
 	}
 	session, err := open("udp4")
 	if err != nil {
@@ -77,7 +81,7 @@ func icmpReadiness(open icmpOpener) frame.Readiness {
 			Collector:   "probe.icmp",
 			State:       "unavailable",
 			Reason:      err.Error(),
-			Remediation: icmpReadinessRemediation,
+			Remediation: ICMPReadinessRemediation,
 		}
 	}
 	// The open *was* the probe. Holding the socket afterwards would bind a port for the life of
@@ -91,7 +95,7 @@ func icmpReadiness(open icmpOpener) frame.Readiness {
 // operator-visible condition — nothing to fall back to — so both are degraded.
 func dnsReadiness(servers func() ([]string, error)) frame.Readiness {
 	if servers == nil {
-		servers = systemNameservers
+		servers = SystemNameservers
 	}
 	list, err := servers()
 	if err != nil {
